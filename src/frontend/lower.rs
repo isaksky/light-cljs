@@ -48,8 +48,8 @@
 //!
 //! **Temporal dead zone.** Within the function that declares a binding,
 //! whether it is initialized at a reference is still decided by position:
-//! the subset has no labels, so code of one function runs in source order
-//! except for jumps that never enter a scope past a declaration. An
+//! code of one function runs in source order except for jumps that never
+//! enter a scope past a declaration. An
 //! exception or a `return` may leave a `try` block early for its catch or
 //! finally block, which follow the whole `try` block, where every binding
 //! declared inside it is out of scope. An unlabelled `break` only leaves
@@ -60,7 +60,10 @@
 //! iteration (a loop body is a single statement, so it declares nothing
 //! there). A `for` head's bindings are all initialized before its first
 //! test, and its test, body, update and `continue` target all lie after
-//! them in its scope (`Lowerer::for_statement`). So a reference before the
+//! them in its scope (`Lowerer::for_statement`). A labelled `break` only
+//! leaves scopes, to the end of its labelled statement (never a
+//! declaration), and a labelled `continue` lands where an unlabelled one
+//! in its loop would (clj-quickjs-82). So a reference before the
 //! declaration (or inside its own
 //! initializer) still always runs before initialization, and one after it
 //! always runs after. Such references, assignments to `const` bindings and
@@ -100,10 +103,12 @@
 //! A catch parameter is a binding of the catch body's scope, initialized
 //! from the exception value.
 //!
-//! **`break` and `continue`** (unlabelled, clj-quickjs-78) jump to the end
+//! **`break` and `continue`** (clj-quickjs-78) jump to the end
 //! or the `continue` target (the test, or a `for` loop's update) of the
-//! innermost loop of the running function
-//! (`Lowerer::jump`), first popping the catch handler of every `try` block
+//! innermost loop of the running function, or with a label (clj-quickjs-82)
+//! to the end of the innermost statement with that label or the `continue`
+//! target of the innermost loop with that label in its label set
+//! (`Lowerer::jump`, `Lowerer::labelled`), first popping the catch handler of every `try` block
 //! they leave, running the finally block of every `try` block or catch body
 //! they leave and discarding the pending completion of every finally block
 //! they leave (clj-quickjs-79). The script completion value needs nothing
@@ -371,14 +376,25 @@ struct FnCtx {
     child_count: usize,
     /// Constructs `break`/`continue` may leave, innermost last.
     exits: Vec<Exit>,
+    /// The label set of the loop about to be lowered (`L1: L2: while ...`),
+    /// taken by [`Lowerer::push_loop`].
+    loop_labels: Vec<String>,
 }
 
 /// A construct of the running function that a `break` or `continue` inside
 /// it may leave (QuickJS keeps the same chain as `BlockEnv`).
-#[derive(Clone, Copy)]
 enum Exit {
-    /// A loop body: `break` jumps to `brk`, `continue` to `cont`.
-    Loop { brk: usize, cont: usize },
+    /// A loop body: `break` jumps to `brk`, `continue` to `cont`; `labels`
+    /// is the loop's label set (clj-quickjs-82), possibly empty.
+    Loop {
+        brk: usize,
+        cont: usize,
+        labels: Vec<String>,
+    },
+    /// A labelled statement that is not a loop (clj-quickjs-82): `break`
+    /// to one of its labels jumps to `brk`, past it. An unlabelled `break`
+    /// passes it by.
+    Labelled { labels: Vec<String>, brk: usize },
     /// The block of a `try` statement with a catch clause: its catch handler
     /// is on the handler stack, so leaving pops it.
     Catch,
@@ -489,6 +505,7 @@ impl<'s> Lowerer<'s> {
             children: Vec::new(),
             child_count: 0,
             exits: Vec::new(),
+            loop_labels: Vec::new(),
         });
     }
 
@@ -1141,10 +1158,7 @@ impl<'s> Lowerer<'s> {
                 self.out().bind(start);
                 self.expr(test)?;
                 self.out().branch(Opcode::JumpIfFalse, end, test.span);
-                self.cur_mut().exits.push(Exit::Loop {
-                    brk: end,
-                    cont: start,
-                });
+                self.push_loop(end, start);
                 self.statement(body)?;
                 self.cur_mut().exits.pop();
                 self.out().branch(Opcode::Jump, start, span);
@@ -1159,7 +1173,7 @@ impl<'s> Lowerer<'s> {
                 let cont = self.out().label();
                 let end = self.out().label();
                 self.out().bind(start);
-                self.cur_mut().exits.push(Exit::Loop { brk: end, cont });
+                self.push_loop(end, cont);
                 self.statement(body)?;
                 self.cur_mut().exits.pop();
                 self.out().bind(cont);
@@ -1183,8 +1197,9 @@ impl<'s> Lowerer<'s> {
                 handler,
                 finalizer,
             } => self.try_statement(block, handler.as_ref(), finalizer.as_deref(), span)?,
-            StmtKind::Break => self.jump(true, span)?,
-            StmtKind::Continue => self.jump(false, span)?,
+            StmtKind::Break(label) => self.jump(true, label.as_ref(), span)?,
+            StmtKind::Continue(label) => self.jump(false, label.as_ref(), span)?,
+            StmtKind::Labelled { .. } => self.labelled(stmt)?,
             // Created when its statement list was entered (hoisting).
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
         }
@@ -1287,7 +1302,7 @@ impl<'s> Lowerer<'s> {
             self.expr(test)?;
             self.out().branch(Opcode::JumpIfFalse, end, test.span);
         }
-        self.cur_mut().exits.push(Exit::Loop { brk: end, cont });
+        self.push_loop(end, cont);
         self.statement(body)?;
         self.cur_mut().exits.pop();
         self.out().bind(cont);
@@ -1318,38 +1333,92 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    /// Lower an unlabelled `break` (`is_break`) or `continue` at `span`: leave
-    /// every `try` construct between it and the innermost loop, innermost
-    /// first, so the handler stack is the loop's again, then jump past the
-    /// loop or to its test (as QuickJS's `emit_break` walks its `BlockEnv`
-    /// chain). A `try` block with a catch handler pops it (`pop_catch`); a
-    /// `try` block or catch body with a finally handler runs the finally
-    /// block, which comes back to the next instruction (`call_finally`); a
-    /// finally block discards its pending completion (`drop_completion`)
-    /// (clj-quickjs-79, `crate::vm::exception`). Statements leave nothing on
-    /// the operand stack, so no operand needs dropping and `call_finally`
-    /// runs at its handler's height.
-    fn jump(&mut self, is_break: bool, span: Span) -> Result<(), SyntaxError> {
+    /// Push the exit of a loop whose `break` target is `brk` and `continue`
+    /// target `cont`, with the label set a [`Self::labelled`] around it left
+    /// in `loop_labels`.
+    fn push_loop(&mut self, brk: usize, cont: usize) {
+        let ctx = self.cur_mut();
+        let labels = std::mem::take(&mut ctx.loop_labels);
+        ctx.exits.push(Exit::Loop { brk, cont, labels });
+    }
+
+    /// Lower the labelled statement `stmt` with its whole label set
+    /// `L1: L2: ... body` (clj-quickjs-82). A loop body takes the label set
+    /// as its own (so `continue L1` continues it); any other body is wrapped
+    /// in an [`Exit::Labelled`] whose `break` target follows it. A labelled
+    /// `break` only leaves scopes, like an unlabelled one, and the body's
+    /// completion value is the statement's (ECMAScript `LabelledEvaluation`
+    /// turns `break L` into a normal completion; the value the body produced
+    /// so far is already stored, as for `UpdateEmpty`).
+    fn labelled(&mut self, stmt: &Stmt) -> Result<(), SyntaxError> {
+        let mut labels = Vec::new();
+        let mut body = stmt;
+        while let StmtKind::Labelled { label, body: inner } = &body.kind {
+            labels.push(label.name.clone());
+            body = inner;
+        }
+        if matches!(
+            body.kind,
+            StmtKind::While { .. } | StmtKind::DoWhile { .. } | StmtKind::For { .. }
+        ) {
+            self.cur_mut().loop_labels = labels;
+            return self.statement(body);
+        }
+        let brk = self.out().label();
+        self.cur_mut().exits.push(Exit::Labelled { labels, brk });
+        self.statement(body)?;
+        self.cur_mut().exits.pop();
+        self.out().bind(brk);
+        Ok(())
+    }
+
+    /// Lower a `break` (`is_break`) or `continue` at `span`, to `label` or
+    /// unlabelled: leave every `try` construct between it and its target,
+    /// innermost first, so the handler stack is the target's again, then
+    /// jump past the target or to its `continue` target (as QuickJS's
+    /// `emit_break` walks its `BlockEnv` chain). The target is the innermost
+    /// loop when unlabelled, else the innermost loop or labelled statement
+    /// with that label (clj-quickjs-82). A `try` block with a catch handler
+    /// pops it (`pop_catch`); a `try` block or catch body with a finally
+    /// handler runs the finally block, which comes back to the next
+    /// instruction (`call_finally`); a finally block discards its pending
+    /// completion (`drop_completion`) (clj-quickjs-79,
+    /// `crate::vm::exception`). Statements leave nothing on the operand
+    /// stack, so no operand needs dropping and `call_finally` runs at its
+    /// handler's height.
+    fn jump(
+        &mut self,
+        is_break: bool,
+        label: Option<&Ident>,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
         let keyword = if is_break { "break" } else { "continue" };
         let at = Span::new(span.start, span.start + keyword.len());
-        let exits = self.cur().exits.clone();
-        for exit in exits.iter().rev() {
-            match *exit {
-                Exit::Catch => self.out().op(Opcode::PopCatch, at),
-                Exit::Finally => self.out().op(Opcode::CallFinally, at),
-                Exit::FinallyBody => self.out().op(Opcode::DropCompletion, at),
-                Exit::Loop { brk, cont } => {
-                    let target = if is_break { brk } else { cont };
-                    self.out().branch(Opcode::Jump, target, at);
-                    return Ok(());
+        let named = |labels: &[String]| label.is_some_and(|l| labels.contains(&l.name));
+        for i in (0..self.cur().exits.len()).rev() {
+            let (op, target) = match &self.cur().exits[i] {
+                Exit::Catch => (Some(Opcode::PopCatch), None),
+                Exit::Finally => (Some(Opcode::CallFinally), None),
+                Exit::FinallyBody => (Some(Opcode::DropCompletion), None),
+                Exit::Loop { brk, cont, labels } if label.is_none() || named(labels) => {
+                    (None, Some(if is_break { *brk } else { *cont }))
                 }
+                Exit::Labelled { labels, brk } if is_break && named(labels) => (None, Some(*brk)),
+                Exit::Loop { .. } | Exit::Labelled { .. } => (None, None),
+            };
+            if let Some(op) = op {
+                self.out().op(op, at);
+            }
+            if let Some(target) = target {
+                self.out().branch(Opcode::Jump, target, at);
+                return Ok(());
             }
         }
         // The parser rejects this; kept as a guard.
         Err(self.error(
             SyntaxErrorKind::Invalid,
             at,
-            format!("`{keyword}` must be inside a loop of the same function"),
+            format!("`{keyword}` has no target in the same function"),
         ))
     }
 

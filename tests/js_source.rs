@@ -5,7 +5,7 @@
 
 use clj_quickjs::frontend::{SyntaxErrorKind, compile_function, compile_script};
 use clj_quickjs::{
-    Budget, Executable, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime,
+    Budget, Cancel, Executable, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime,
     ValidationErrorKind, ValueView, VmError, VmErrorKind,
 };
 
@@ -434,6 +434,20 @@ fn script_completion_value_follows_javascript() {
         eval("1; for (let i = 0; i < 3; i = i + 1) { 2; if (i > 1) { break; } }"),
         ValueView::Undefined
     );
+    // Labelled statements (clj-quickjs-82): the body's value; `break L`
+    // keeps the value produced so far (LabelledEvaluation, UpdateEmpty).
+    assert_eq!(num("5; L: { break L; }"), 5.0);
+    assert_eq!(num("5; L: { 6; break L; }"), 6.0);
+    assert_eq!(eval("5; L: if (true) break L;"), ValueView::Undefined);
+    assert_eq!(num("5; L: 7;"), 7.0);
+    // The inner loop's own value (undefined) replaces the 6 when `break L`
+    // leaves it, as for an unlabelled `break` out of nested loops.
+    assert_eq!(
+        eval("5; L: while (true) { 6; while (true) { break L; } }"),
+        ValueView::Undefined
+    );
+    assert_eq!(num("5; L: while (true) { 6; { break L; } }"), 6.0);
+    assert_eq!(num("5; L: { try { 6; break L; } finally { 7; } }"), 6.0);
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
@@ -1050,6 +1064,240 @@ fn for_loops() {
         .spawn(move || compile_script("nested", &nested).map(|_| ()))
         .unwrap();
     handle.join().unwrap().unwrap();
+}
+
+/// Labelled statements and labelled `break`/`continue` (clj-quickjs-82).
+/// `TEST_FOR_BREAK` is adapted from `test_for_break` and `TEST_CYCLIC_LABELS`
+/// is the loop of `test_cyclic_labels`, both in
+/// `research/quickjs/tests/test_loop.js`; `TEST_LABELS` and the two
+/// `test_labels2` loops are adapted from `test_labels` and `test_labels2` in
+/// `research/quickjs/tests/test_language.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution).
+/// Modified: `let` for `var`, `x = x + 1` for `x++`, the `with` statement of
+/// `test_labels` is omitted, and the asserted condition is the script's
+/// completion value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn labelled_break_and_continue() {
+    const TEST_FOR_BREAK: &str = "
+        let i, c;
+        c = 0;
+        L1: for(i = 0; i < 3; i = i + 1) {
+            c = c + 1;
+            if (i == 0)
+                continue;
+            while (1) {
+                break L1;
+            }
+        }
+        c === 2 && i === 1";
+    assert_eq!(eval(TEST_FOR_BREAK), ValueView::Bool(true));
+    // The same loop under a 3-instruction budget yields inside it and
+    // resumes there with the same result.
+    let looping = exe(TEST_FOR_BREAK);
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 1, "{yields} yields");
+
+    const TEST_LABELS: &str = "
+        do x: { break x; } while(0);
+        if (1)
+            x: { break x; }
+        else
+            x: { break x; }
+        while (0) x: { break x; };";
+    assert_eq!(eval(TEST_LABELS), ValueView::Undefined);
+
+    // `test_labels2`: an unlabelled `break` inside a labelled block leaves
+    // the enclosing loop, not the block.
+    assert_eq!(
+        eval(
+            "while (1) label: break
+             let i = 0
+             while (i < 3) label: {
+                 if (i > 0)
+                     break
+                 i++
+             }
+             i === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            "for (;;) label: break
+             let i
+             for (i = 0; i < 3; i++) label: {
+                 if (i > 0)
+                     break
+             }
+             i === 1"
+        ),
+        ValueView::Bool(true)
+    );
+
+    // `continue` to an outer labelled loop from nested loops, and through a
+    // label set: each of `i` (0..3) adds the `j` values (0..i) before the
+    // first `j === i`.
+    assert_eq!(
+        num("let s = 0;
+             outer: for (let i = 0; i < 4; i++) {
+                 let j = 0;
+                 inner: while (true) {
+                     if (j === i) continue outer;
+                     do { s = s + j; j++; continue inner; } while (false);
+                 }
+             }
+             s"),
+        // i = 0: 0; i = 1: 0; i = 2: 0 + 1; i = 3: 0 + 1 + 2.
+        4.0
+    );
+    assert_eq!(
+        num("let n = 0, i = 0;
+             a: b: while (i < 5) { i++; while (true) { if (i % 2) continue a; else continue b; } n = 99; }
+             n * 10 + i"),
+        5.0
+    );
+    // `break` to an outer label leaves every loop and block in between;
+    // `break` to the label of a non-loop statement continues after it.
+    assert_eq!(
+        num("let n = 0;
+             L: { while (true) { do { n++; if (n > 2) break L; } while (true); } n = 99; }
+             n"),
+        3.0
+    );
+    assert_eq!(
+        num("let n = 0; L: if (true) { n = 1; break L; n = 2; } else n = 3; n"),
+        1.0
+    );
+    assert_eq!(
+        num("let n = 0; L: try { n = 1; break L; } catch (e) { n = 2; } n = n + 10; n"),
+        11.0
+    );
+    // A labelled jump through finally blocks runs them, innermost first,
+    // and a jump out of a catch body no longer has the handler.
+    assert_eq!(
+        num("let log = 0;
+             L: { try { try { break L; } finally { log = log * 10 + 1; } } finally { log = log * 10 + 2; } log = 99; }
+             log"),
+        12.0
+    );
+    assert_eq!(
+        num("let log = 0;
+             outer: for (let i = 0; i < 3; i++) {
+                 for (;;) {
+                     try { if (i < 2) continue outer; break outer; } finally { log = log + 1; }
+                 }
+             }
+             log"),
+        3.0
+    );
+    assert_eq!(
+        num("let r = 0;
+             try {
+                 L: try { throw 1; } catch (e) { break L; }
+                 throw 2;
+             } catch (e) { r = e; }
+             r"),
+        2.0
+    );
+    // A label in a function body; labels are not bindings.
+    assert_eq!(
+        num(
+            "function f(x) { x: { if (x) break x; return 1; } return 2; }
+             f(true) * 10 + f(false)"
+        ),
+        21.0
+    );
+    // Each closure created in a `for (let ...)` loop that `continue L` and
+    // `break L` leave keeps its iteration's binding.
+    assert_eq!(
+        num("let fs = 0, g = 0;
+             L: for (let i = 0; i < 3; i++) {
+                 const h = () => i;
+                 if (i === 0) { fs = h; continue L; }
+                 g = h;
+                 break L;
+             }
+             fs() * 10 + g()"),
+        1.0
+    );
+
+    // Completion values (ECMAScript LabelledEvaluation and UpdateEmpty).
+    assert_eq!(num("5; L: { break L; }"), 5.0);
+    assert_eq!(num("5; L: { 6; break L; }"), 6.0);
+    assert_eq!(eval("5; L: if (true) break L;"), ValueView::Undefined);
+
+    // `test_cyclic_labels`'s loop never completes: it yields under every
+    // budget until cancelled.
+    const TEST_CYCLIC_LABELS: &str = "
+        for (;;) {
+            l: break l;
+            l: break l;
+            l: break l;
+        }";
+    let looping = exe(TEST_CYCLIC_LABELS);
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    for _ in 0..20 {
+        match task
+            .run_with(Budget::instructions(50), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(matches!(task.cancel(), Cancel::Requested));
+    match task
+        .run_with(Budget::instructions(50), &mut NoEffects)
+        .unwrap()
+    {
+        RunOutcome::Cancelled => {}
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // Label sets and labelled loops near the nesting limit compile within
+    // the 2 MiB stack the parser is tested with.
+    let labels: String = (0..250).map(|i| format!("l{i}: ")).collect();
+    let loops: String = (0..60).map(|i| format!("l{i}: while (1) ")).collect();
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let a = compile_script("labels", &format!("{labels}x;")).map(|_| ());
+            let b = compile_script("loops", &format!("{loops}break l0;")).map(|_| ());
+            (a, b)
+        })
+        .unwrap();
+    let (a, b) = handle.join().unwrap();
+    a.unwrap();
+    b.unwrap();
 }
 
 #[test]

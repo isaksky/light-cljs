@@ -60,6 +60,17 @@ pub(super) struct Parser<'a> {
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
     in_loop: bool,
+    /// The labels of the enclosing labelled statements of the current
+    /// function, outermost first.
+    labels: Vec<LabelEntry>,
+}
+
+/// A label of an enclosing labelled statement (clj-quickjs-82).
+struct LabelEntry {
+    name: String,
+    /// It labels an iteration statement (directly or through a label set
+    /// `L1: L2: while ...`), so `continue` may target it.
+    iteration: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -76,6 +87,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             in_function: false,
             in_loop: false,
+            labels: Vec::new(),
         }
     }
 
@@ -263,6 +275,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Break | Keyword::Continue) => {
                 self.parse_break_continue()?
             }
+            TokenKind::Identifier(_) if self.at_label() => self.parse_labelled()?,
             _ => {
                 if let Some(error) = self.statement_start_error() {
                     return Err(error);
@@ -285,28 +298,97 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Function) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
-                "a function declaration cannot be the body of `if`/`while`/`do`/`for`; wrap it in a block",
+                "a function declaration cannot be the body of `if`/`while`/`do`/`for` or a labelled statement; wrap it in a block",
             )),
             TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
                 format!(
-                    "a `{}` declaration cannot be the body of `if`/`while`/`do`/`for`; wrap it in a block",
+                    "a `{}` declaration cannot be the body of `if`/`while`/`do`/`for` or a labelled statement; wrap it in a block",
                     k.as_str()
                 ),
             )),
             TokenKind::Keyword(k) => {
                 unsupported_statement(*k).map(|what| self.unsupported(span, what))
             }
-            TokenKind::Identifier(_)
-                if self
-                    .peek_next()
-                    .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Colon)) =>
-            {
-                Some(self.unsupported(span, "labelled statements are"))
-            }
             _ => None,
         }
+    }
+
+    /// The current identifier is followed by `:`: it starts a labelled
+    /// statement (one token of lookahead; QuickJS `is_label`). Reserved
+    /// words lex as keywords, so they never get here.
+    fn at_label(&self) -> bool {
+        self.peek_next()
+            .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Colon))
+    }
+
+    /// LabelledStatement: LabelIdentifier `:` Statement (clj-quickjs-82),
+    /// from the first label of a label set `L1: L2: ... body`, which is
+    /// parsed in one loop and nested outermost first. The labels are in
+    /// scope in the body; they mark an iteration statement when the body
+    /// after the whole set is a loop, so `continue` may target any label of
+    /// the set. Early errors: a label already in scope in the same function
+    /// (QuickJS `js_parse_statement_or_decl`: "duplicate label name"); a
+    /// declaration as the body (strict mode, reported by
+    /// [`Self::statement_start_error`]).
+    #[inline(never)]
+    fn parse_labelled(&mut self) -> PResult<StmtKind> {
+        let saved = self.depth;
+        let outer = self.labels.len();
+        let mut set = Vec::new();
+        while let TokenKind::Identifier(name) = &self.tok.kind {
+            let label = Ident {
+                name: name.clone(),
+                span: self.tok.span,
+            };
+            if !self.at_label() {
+                break;
+            }
+            self.deeper(cost::STATEMENT)?;
+            if self.labels.iter().any(|l| l.name == label.name) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    label.span,
+                    format!(
+                        "label `{}` is already declared by an enclosing labelled statement",
+                        label.name
+                    ),
+                ));
+            }
+            self.advance()?;
+            self.advance()?; // `:`
+            self.labels.push(LabelEntry {
+                name: label.name.clone(),
+                iteration: false,
+            });
+            set.push(label);
+        }
+        let iteration = matches!(
+            self.tok.kind,
+            TokenKind::Keyword(Keyword::While | Keyword::Do | Keyword::For)
+        );
+        for entry in &mut self.labels[outer..] {
+            entry.iteration = iteration;
+        }
+        let mut body = self.parse_statement()?;
+        self.labels.truncate(outer);
+        let outermost = set.remove(0);
+        while let Some(label) = set.pop() {
+            let span = self.span_from(label.span.start);
+            body = self.bounded(Stmt::new(
+                StmtKind::Labelled {
+                    label,
+                    body: Box::new(body),
+                },
+                span,
+            ))?;
+        }
+        self.depth = saved;
+        Ok(StmtKind::Labelled {
+            label: outermost,
+            body: Box::new(body),
+        })
     }
 
     fn parse_expression_statement(&mut self) -> PResult<StmtKind> {
@@ -514,26 +596,63 @@ impl<'a> Parser<'a> {
         Ok(StmtKind::Throw(argument))
     }
 
-    /// BreakStatement: `break` `;` and ContinueStatement: `continue` `;`,
-    /// unlabelled. Restricted productions (`break` [no LineTerminator here]
-    /// LabelIdentifier): a line break after the keyword ends the statement.
-    /// Early error: outside a loop of the same function (QuickJS
-    /// `emit_break`: "break must be inside loop or switch", "continue must
-    /// be inside loop"; the subset has no `switch` yet).
+    /// BreakStatement: `break` [no LineTerminator here] LabelIdentifier? `;`
+    /// and ContinueStatement likewise. Restricted productions: a line break
+    /// after the keyword ends the statement. Early errors (QuickJS
+    /// `emit_break`; the subset has no `switch` yet): an unlabelled one
+    /// outside a loop of the same function ("break must be inside loop or
+    /// switch", "continue must be inside loop"); a label that no enclosing
+    /// labelled statement of the same function declares ("break/continue
+    /// label not found"); `continue` to a label of a statement that is not
+    /// a loop (clj-quickjs-82).
     #[inline(never)]
     fn parse_break_continue(&mut self) -> PResult<StmtKind> {
         let keyword = self.advance()?;
-        let (name, kind) = if keyword.kind == TokenKind::Keyword(Keyword::Break) {
-            ("break", StmtKind::Break)
-        } else {
-            ("continue", StmtKind::Continue)
-        };
-        if matches!(self.tok.kind, TokenKind::Identifier(_)) && !self.tok.newline_before {
-            return Err(self.unsupported(
-                keyword.span.to(self.tok.span),
-                &format!("labelled `{name}` is"),
-            ));
+        let is_break = keyword.kind == TokenKind::Keyword(Keyword::Break);
+        let name = if is_break { "break" } else { "continue" };
+        if let TokenKind::Identifier(label) = &self.tok.kind
+            && !self.tok.newline_before
+        {
+            let label = Ident {
+                name: label.clone(),
+                span: self.tok.span,
+            };
+            match self.labels.iter().rev().find(|l| l.name == label.name) {
+                None => {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        label.span,
+                        format!(
+                            "undefined label `{}`: no enclosing statement of the same function has it",
+                            label.name
+                        ),
+                    ));
+                }
+                Some(entry) if !is_break && !entry.iteration => {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        label.span,
+                        format!(
+                            "`continue {}` must target a label of an enclosing loop",
+                            label.name
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+            self.advance()?;
+            self.expect_semi()?;
+            return Ok(if is_break {
+                StmtKind::Break(Some(label))
+            } else {
+                StmtKind::Continue(Some(label))
+            });
         }
+        let kind = if is_break {
+            StmtKind::Break(None)
+        } else {
+            StmtKind::Continue(None)
+        };
         if !self.in_loop {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
@@ -711,9 +830,11 @@ impl<'a> Parser<'a> {
         let (name, params) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
+        let outer_labels = std::mem::take(&mut self.labels);
         let body = self.parse_block()?;
         self.in_function = outer;
         self.in_loop = outer_loop;
+        self.labels = outer_labels;
         self.depth = saved;
         let function = Function::new(
             FunctionKind::Ordinary,
@@ -796,9 +917,11 @@ impl<'a> Parser<'a> {
         let (kind, body) = if self.is_punct(Punct::LBrace) {
             let outer = std::mem::replace(&mut self.in_function, true);
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
+            let outer_labels = std::mem::take(&mut self.labels);
             let body = self.parse_block()?;
             self.in_function = outer;
             self.in_loop = outer_loop;
+            self.labels = outer_labels;
             (FunctionKind::Arrow, body)
         } else {
             // The body is an AssignmentExpression, so the arrow ends with

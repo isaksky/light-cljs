@@ -353,10 +353,10 @@ Deferred:
   below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- labels, `switch`, `var`, update and compound
+- `switch`, `var`, update and compound
   assignment operators (rejected by the parser). (Unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
-  clj-quickjs-81, below.)
+  clj-quickjs-81; labels: clj-quickjs-82, below.)
 
 ### Parking and wakeups (clj-quickjs-7)
 
@@ -1265,8 +1265,8 @@ Supported (`cargo test --lib frontend::tests::break_and_continue`,
 
 Deferred:
 
-- Labels (`break l;` is `Unsupported`) and `switch`. (`do`-`while`, `for`:
-  clj-quickjs-80, -81, below.)
+- `switch`. (`do`-`while`, `for`, labels: clj-quickjs-80, -81, -82,
+  below.)
 
 ### Exponentiation operator (clj-quickjs-63)
 
@@ -1352,7 +1352,7 @@ Supported (`cargo test --lib frontend::tests::do_while_statements`,
 
 Deferred:
 
-- Labelled `do`-`while` (labels: clj-quickjs-82).
+- Nothing specific (labelled `do`-`while`: clj-quickjs-82, below).
 
 ### `for` loops (clj-quickjs-81)
 
@@ -1385,7 +1385,7 @@ Supported (`cargo test --lib frontend::tests::for_statements`,
 Deferred:
 
 - `var` heads (clj-quickjs-89), for-in (clj-quickjs-85 to -88) and for-of
-  (`Unsupported`), labelled `for` (labels: clj-quickjs-82).
+  (`Unsupported`). (Labelled `for`: clj-quickjs-82, below.)
 
 ### String values (clj-quickjs-65)
 
@@ -1416,3 +1416,34 @@ Deferred:
   (clj-quickjs-68). No `typeof`, templates, `length`, indexing or string
   methods yet; lone surrogate escapes are still rejected by the lexer
   (clj-quickjs-141).
+
+### Labelled statements (clj-quickjs-82)
+
+Supported (`cargo test --lib frontend::tests::labelled_statements`,
+`cargo test --test js_source labelled_break_and_continue`):
+
+- `L: Statement` on any statement but a declaration, including blocks,
+  `if`, `try` and loops, and as the body of `if`/`else` and loops; label
+  sets (`L1: L2: while ...`). `break L;` leaves the statement labelled `L`;
+  `continue L;` continues the loop labelled `L`, leaving every loop in
+  between. The label must be on the keyword's line (otherwise ASI ends the
+  statement). Labels are scoped to their statement and function, separate
+  from bindings, and may be reused by sibling statements.
+- Early errors (`Invalid`): an undefined label (labels do not cross
+  function boundaries), `continue` to a label of a statement that is not a
+  loop, a label repeated inside its own statement, a labelled declaration.
+- Lowering reuses the `break`/`continue` exit stack: a labelled jump pops
+  catch handlers, runs finally blocks and drops pending finally completions
+  on the way, like an unlabelled one, and is an ordinary branch, so a task
+  may yield, wait or migrate anywhere inside a labelled statement. No new
+  opcode. QuickJS `test_for_break`, `test_labels` (without `with`),
+  `test_labels2` and `test_cyclic_labels` run from source (adapted, with
+  notice).
+- Completion values follow ECMAScript `LabelledEvaluation` and
+  `UpdateEmpty`: `5; L: { break L; }` is 5, `5; L: { 6; break L; }` is 6,
+  `5; L: if (true) break L;` is `undefined`.
+
+Deferred:
+
+- `switch` (clj-quickjs-83), so `break` does not yet target a `switch`;
+  `with` (clj-quickjs-110).

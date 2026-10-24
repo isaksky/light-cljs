@@ -1468,8 +1468,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `test_labels2` in `research/quickjs/tests/test_language.js` (`while (1)
   label: break` followed by a line break) and the body of `test_while_break`
   in `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8. Modified:
-  the label is dropped (labelled statements are not supported) and the
-  next line is `x`, checked as a parse tree; `let` for `var`, `x = x + 1`
+  the label is dropped (the labelled form is in `labelled_statements`) and
+  the next line is `x`, checked as a parse tree; `let` for `var`, `x = x + 1`
   for `x++`, and the asserted condition is the script's completion value.
   Each test carries the notice. Consulted only, in
   `research/quickjs/quickjs.c`: the `TOK_BREAK`/`TOK_CONTINUE` case of
@@ -1534,3 +1534,20 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `JS_STRING_LEN_MAX`, `js_strict_eq2` (string branch), `js_add_slow`
   (string concatenation) and `js_string_compare` (code-unit order) were
   consulted only, for semantics. No code was copied.
+- `src/frontend/tests.rs` `labelled_statements` and `tests/js_source.rs`
+  `labelled_break_and_continue` (clj-quickjs-82): `test_for_break` (line
+  193) and `test_cyclic_labels` (line 374) of
+  `research/quickjs/tests/test_loop.js`, and `test_labels` (line 399) and
+  `test_labels2` (line 410) of `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
+  Modified: `let` for `var`, `i = i + 1` for `i++` in `test_for_break`,
+  the `with` statement of `test_labels` omitted, the next line after
+  `while (1) label: break` is `y` in the parse-tree case, and the asserted
+  conditions are script completion values; `test_cyclic_labels` is
+  compiled as a function and its loop is run under an instruction budget
+  and cancelled. Each test carries the notice. Consulted only, in
+  `research/quickjs/quickjs.c`: the label handling of
+  `js_parse_statement_or_decl`, `is_label`, `emit_break` and
+  `push_break_entry` (`is_regular_stmt`). Unlike QuickJS, a label set
+  (`L1: L2: while ...`) lets `continue` target any of its labels. No code
+  was copied.

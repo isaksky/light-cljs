@@ -1,4 +1,4 @@
-//! Syntax trdecl.height(),e for the documented JavaScript subset (`docs/grammar.md`).
+//! Syntax tree for the documented JavaScript subset (`docs/grammar.md`).
 //!
 //! Every node carries the [`Span`] of the source text it was parsed from.
 //! Parentheses are not represented: a parenthesized expression is its inner
@@ -80,7 +80,11 @@ impl Stmt {
             } => max_height(block)
                 .max(handler.as_ref().map_or(0, |h| max_height(&h.body)))
                 .max(finalizer.as_deref().map_or(0, max_height)),
-            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Empty => 0,
+            StmtKind::Labelled { body, .. } => body.height,
+            StmtKind::Return(None)
+            | StmtKind::Break(_)
+            | StmtKind::Continue(_)
+            | StmtKind::Empty => 0,
         };
         Stmt {
             kind,
@@ -141,12 +145,21 @@ pub enum StmtKind {
         handler: Option<CatchClause>,
         finalizer: Option<Vec<Stmt>>,
     },
-    /// `break;` (unlabelled): leaves the innermost enclosing loop. Only
-    /// inside a loop of the same function.
-    Break,
-    /// `continue;` (unlabelled): starts the next iteration of the innermost
-    /// enclosing loop. Only inside a loop of the same function.
-    Continue,
+    /// `break;` leaves the innermost enclosing loop (only inside a loop of
+    /// the same function); `break L;` (clj-quickjs-82) leaves the enclosing
+    /// statement labelled `L` of the same function.
+    Break(Option<Ident>),
+    /// `continue;` starts the next iteration of the innermost enclosing
+    /// loop (only inside a loop of the same function); `continue L;`
+    /// (clj-quickjs-82) that of the enclosing loop labelled `L` of the same
+    /// function.
+    Continue(Option<Ident>),
+    /// `L: body` (clj-quickjs-82). The body is never a declaration. A label
+    /// set `L1: L2: body` nests: the outer node's body is the inner one.
+    Labelled {
+        label: Ident,
+        body: Box<Stmt>,
+    },
     /// `;`
     Empty,
 }

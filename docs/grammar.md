@@ -23,7 +23,8 @@ binding"). Property access parses but is rejected by the compiler.
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
 jumps out of `try` statements that run their finally blocks on the way
-(clj-quickjs-79). Prefix and postfix `++`/`--` on identifier bindings
+(clj-quickjs-79). Labelled statements and labelled `break`/`continue`
+(clj-quickjs-82) parse and execute. Prefix and postfix `++`/`--` on identifier bindings
 (clj-quickjs-64) parse and execute.
 
 ## Semantics model
@@ -64,7 +65,7 @@ StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
                     | ForStatement
                     | ReturnStatement | ThrowStatement | TryStatement
-                    | BreakStatement | ContinueStatement
+                    | BreakStatement | ContinueStatement | LabelledStatement
                     | ExpressionStatement
 Block               = "{" { StatementListItem } "}"
 IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
@@ -74,8 +75,9 @@ ForStatement        = "for" "(" [ ForInit ] ";" [ Expression ] ";" [ Expression 
 ForInit             = Expression | ( "let" | "const" ) Declarator { "," Declarator }
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
 ThrowStatement      = "throw" [no LineTerminator here] Expression ";"
-BreakStatement      = "break" ";"        (* [no LineTerminator here] before a label *)
-ContinueStatement   = "continue" ";"
+BreakStatement      = "break" [no LineTerminator here] [ Identifier ] ";"
+ContinueStatement   = "continue" [no LineTerminator here] [ Identifier ] ";"
+LabelledStatement   = Identifier ":" Statement   (* the Statement is not a declaration *)
 TryStatement        = "try" Block ( Catch [ Finally ] | Finally )
 Catch               = "catch" [ "(" BindingIdentifier ")" ] Block
 Finally             = "finally" Block
@@ -147,11 +149,26 @@ Notes on the grammar:
   same function (not in the test of a `do`-`while` or the head of a
   `for`): a function
   nested in the loop starts a new context (`while (x) { function f() {
-  break; } }` is an early error). They are unlabelled; a label after the
-  keyword on the same line (`break l;`) is rejected as unsupported.
+  break; } }` is an early error). With a label (clj-quickjs-82; only on the
+  same line as the keyword) they are accepted anywhere inside a statement
+  of the same function that has that label, which for `continue` must be
+  a loop (`L: { continue L; }` is an early error).
+- `LabelledStatement` (clj-quickjs-82): an identifier followed by `:` at
+  the start of a statement is a label (reserved words are not labels). A
+  labelled statement may be the body of `if`/`else` and of loops, and
+  labels stack: in `L1: L2: while (x) continue L1;` (a label set)
+  `continue` to either label continues the loop. Early errors (`Invalid`):
+  a `break`/`continue` label that no enclosing statement of the same
+  function has (labels do not cross function boundaries), reported at the
+  label; a label inside a statement with the same label (`L: L: ;`,
+  `L: { L: ; }`), at the second label; a labelled declaration
+  (`L: function f() {}`, `L: let x;`). Sibling statements may reuse a
+  label, and labels are separate from bindings (`let x; x: { break x; }`
+  is valid).
 - `FunctionDeclaration` and `LexicalDeclaration` are statement-list items:
   allowed in the script, a function body or a block, but not as the direct
-  body of `if`/`else`/`while`/`do`/`for` (strict mode rejects that; wrap it
+  body of `if`/`else`/`while`/`do`/`for` or of a labelled statement
+  (strict mode rejects that; wrap it
   in a block).
 - Function parameter names must be distinct (strict mode).
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
@@ -228,7 +245,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var` (also as a `for` head), for-in and for-of loops, `switch`, labelled statements, labelled `break`/`continue`, `debugger`, `with` | Unsupported |
+| `var` (also as a `for` head), for-in and for-of loops, `switch`, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -240,7 +257,7 @@ Every form below is rejected where it starts. Error kinds:
 | reserved word as a binding name or reference; binding, assigning, incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` body, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -263,6 +280,7 @@ checks left to later stages:
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
+  and each label of a labelled statement 1,
   plus 1 for a block or an `if`/`while`/`do`-`while`/`for`/`try` (the
   expressions of a `for` head are charged as expressions); a function or
   arrow function 3 plus its body block (or, for a concise arrow body, its
@@ -315,7 +333,11 @@ keeps the value its loop body produced so far, as ECMAScript `UpdateEmpty`
 does, so `5; while (true) { 6; break; }` is 6 and
 `5; while (true) { break; }` is `undefined`; a finally block that a jump
 runs and that completes normally keeps it, so
-`5; while (true) { try { 6; break; } finally { 7; } }` is 6).
+`5; while (true) { try { 6; break; } finally { 7; } }` is 6; a labelled
+statement's value is its body's, and a `break` to its label keeps the
+value produced so far (clj-quickjs-82), so `5; L: { break L; }` is 5,
+`5; L: { 6; break L; }` is 6 and `5; L: if (true) break L;` is
+`undefined`).
 `frontend::compile_function(source)` compiles a source made of exactly one
 function declaration into an entry point whose parameters are the task's
 arguments (missing ones are `undefined`); `return` completes the task and
@@ -343,7 +365,7 @@ Executed, with JavaScript semantics:
 | `do body while (test)` (clj-quickjs-80) | runs the body, then evaluates the test, and repeats while it is truthy: the body always runs at least once |
 | `for (init; test; update) body` (clj-quickjs-81) | runs the init once (an expression's value is discarded), then repeats: evaluates the test (absent: true) and stops when it is falsy, runs the body, then the update (its value discarded) |
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
-| `break`, `continue` (unlabelled) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
+| `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
@@ -428,7 +450,7 @@ Gaps specific to execution:
   bitwise and shift operators and `++`/`--` applied to them fail with `UnsupportedOperand` where JavaScript
   would call ToPrimitive (`===`/`==` compare them by identity).
 - **Temporal dead zone: static within a function, dynamic across
-  closures.** The subset has no labels; an exception or `return` only
+  closures.** An exception or `return` only
   leaves a `try` block for its catch or finally block (outside the scope
   of the block's bindings); an unlabelled `break` only leaves scopes and
   `continue` jumps to the loop test, from which the body is entered again
@@ -439,7 +461,11 @@ Gaps specific to execution:
   lie after them in its scope, while the back edge enters the body at its
   start, clj-quickjs-81); a `break` or `continue` through finally
   blocks enters each one at its start and then goes on leaving scopes
-  (clj-quickjs-79), so no jump enters a scope past a declaration. So
+  (clj-quickjs-79); a labelled `break` (clj-quickjs-82) only leaves scopes,
+  to the end of its labelled statement, which is never a declaration, and
+  a labelled `continue` jumps to the `continue` target of an enclosing
+  loop like an unlabelled one, so no jump enters a scope past a
+  declaration. So
   within the function that declares a binding, whether it is initialized at a reference is
   known from source order, and the compiler
   decides it statically. A closure may run at any time, so a binding a
@@ -616,6 +642,18 @@ for (;;) { break; }
 ```
 
 ```js accept
+// Labelled statements (clj-quickjs-82): `continue` to any label of a loop's
+// label set, `break` out of any labelled statement; a label is not a binding.
+outer: inner: for (let i = 0; i < 3; i++) {
+  while (true) { if (i === 1) continue outer; break inner; }
+}
+let x = 0;
+x: { if (x) break x; x = 1; }
+while (1) L: break
+x
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -753,8 +791,22 @@ while (x) {
 }
 ```
 
-```js reject Unsupported 1:11
+```js reject Invalid 1:17
 while (x) break outer;
+```
+
+```js reject Invalid 1:15
+L: { continue L; }
+```
+
+```js reject Invalid 2:3
+L: {
+  L: while (x) break L;
+}
+```
+
+```js reject Invalid 1:4
+L: function f() {}
 ```
 
 ```js reject Invalid 1:4

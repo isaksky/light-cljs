@@ -1,7 +1,8 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start`, three scripts in
-//! `arrow_functions_and_asi`, one in `break_and_continue` and six in
+//! `arrow_functions_and_asi`, one in `break_and_continue`, two in
+//! `labelled_statements` and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
 //! notice),
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
@@ -236,8 +237,13 @@ fn render_stmt(s: &Stmt) -> String {
                 render_stmt(body)
             )
         }
-        StmtKind::Break => "(break)".into(),
-        StmtKind::Continue => "(continue)".into(),
+        StmtKind::Break(None) => "(break)".into(),
+        StmtKind::Break(Some(l)) => format!("(break {})", l.name),
+        StmtKind::Continue(None) => "(continue)".into(),
+        StmtKind::Continue(Some(l)) => format!("(continue {})", l.name),
+        StmtKind::Labelled { label, body } => {
+            format!("(label {} {})", label.name, render_stmt(body))
+        }
         StmtKind::Empty => "(empty)".into(),
     }
 }
@@ -408,8 +414,8 @@ fn throw_and_try_statements() {
 /// `while (1) break` newline `x` is adapted from the first statement of
 /// `test_labels2` in `research/quickjs/tests/test_language.js` (QuickJS,
 /// revision 7d1c13c5d8f8; see `docs/architecture.md` for the attribution):
-/// its label is dropped (labelled statements are not supported) and the
-/// next line is `x`. The other cases are written for this project.
+/// its label is dropped (the labelled form is in `labelled_statements`) and
+/// the next line is `x`. The other cases are written for this project.
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
 /// released under the MIT license: Permission is hereby granted, free of
@@ -429,7 +435,7 @@ fn throw_and_try_statements() {
 /// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #[test]
 fn break_and_continue() {
-    use SyntaxErrorKind::{Invalid, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, UnexpectedToken};
     assert_eq!(ast("while (x) break;"), "(while x (break))");
     assert_eq!(
         ast("while (x) { continue; }"),
@@ -467,11 +473,186 @@ fn break_and_continue() {
     rejects("while (x) { g = function () { break; }; }", Invalid, 1, 31);
     rejects("function f() { break; }", Invalid, 1, 16);
     rejects("while (x) {} break;", Invalid, 1, 14);
-    // Labels after the keyword are not supported yet (on the same line).
-    rejects_with("while (x) break l;", Unsupported, 1, 11, "labelled `break`");
-    rejects_with("while (x) continue l;", Unsupported, 1, 11, "labelled");
+    // A label after the keyword on the same line must be declared
+    // (clj-quickjs-82; see `labelled_statements`).
+    rejects_with("while (x) break l;", Invalid, 1, 17, "undefined label `l`");
+    rejects_with("while (x) continue l;", Invalid, 1, 20, "undefined label");
     rejects("while (x) break 1;", UnexpectedToken, 1, 17);
     rejects("while (x) break if;", UnexpectedToken, 1, 17);
+}
+
+/// Labelled statements and labelled `break`/`continue` (clj-quickjs-82).
+/// `while (1) L: break` newline `y` is adapted from the first statement of
+/// `test_labels2` in `research/quickjs/tests/test_language.js` (the next
+/// line is `y` instead of `var i = 0`), and the script compiled at the end
+/// is `test_cyclic_labels` from `research/quickjs/tests/test_loop.js`
+/// (QuickJS, revision 7d1c13c5d8f8; see `docs/architecture.md` for the
+/// attribution). The other cases are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn labelled_statements() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
+    assert_eq!(ast("L: x;"), "(label L x)");
+    assert_eq!(ast("L: { break L; }"), "(label L (block (break L)))");
+    assert_eq!(
+        ast("L1: L2: while (x) continue L1;"),
+        "(label L1 (label L2 (while x (continue L1))))"
+    );
+    // ASI after `break`: the label belongs to the statement before it; `y`
+    // starts a new statement.
+    assert_eq!(
+        ast("while (1) L: break\ny"),
+        "(while 1 (label L (break))) y"
+    );
+    assert_eq!(
+        ast("while (1) L: break\nL"),
+        "(while 1 (label L (break))) L"
+    );
+    assert_eq!(
+        ast("if (a) L: ; else M: ;"),
+        "(if a (label L (empty)) (label M (empty)))"
+    );
+    // Bodies of loops, and labels on other statements.
+    assert_eq!(
+        ast("do x: { break x; } while (0);"),
+        "(do (label x (block (break x))) 0)"
+    );
+    assert_eq!(
+        ast("for (;;) L: { if (a) break; continue; }"),
+        "(for _ _ _ (label L (block (if a (break)) (continue))))"
+    );
+    assert_eq!(
+        ast("L: try { break L; } finally { L2: if (a) break L; }"),
+        "(label L (try (block (break L)) (finally (label L2 (if a (break L))))))"
+    );
+    assert_eq!(
+        ast("L: while (a) { M: while (b) { continue L; } }"),
+        "(label L (while a (block (label M (while b (block (continue L)))))))"
+    );
+    // A label is not a binding: the same name may be both.
+    assert_eq!(
+        ast("let x; x: { break x; } x;"),
+        "(let (x)) (label x (block (break x))) x"
+    );
+    // Sibling statements may reuse a label (`test_cyclic_labels`).
+    assert_eq!(
+        ast("L: ; L: { break L; }"),
+        "(label L (empty)) (label L (block (break L)))"
+    );
+    // The label of `break`/`continue` must be on the same line.
+    assert_eq!(
+        ast("L: while (1) { break\nL; }"),
+        "(label L (while 1 (block (break) L)))"
+    );
+    // `a ? b : c` is not a label.
+    assert_eq!(ast("a ? b : c;"), "(? a b c)");
+
+    // Early errors, at the label reference or the repeated label.
+    rejects_with("break L;", Invalid, 1, 7, "undefined label `L`");
+    rejects_with("L: ; break L;", Invalid, 1, 12, "undefined label");
+    rejects_with(
+        "while (x) { continue L; }",
+        Invalid,
+        1,
+        22,
+        "undefined label",
+    );
+    rejects_with(
+        "L: { continue L; }",
+        Invalid,
+        1,
+        15,
+        "label of an enclosing loop",
+    );
+    rejects_with(
+        "L: if (x) while (y) continue L;",
+        Invalid,
+        1,
+        30,
+        "label of an enclosing loop",
+    );
+    rejects_with(
+        "L: { while (x) continue L; }",
+        Invalid,
+        1,
+        25,
+        "label of an enclosing loop",
+    );
+    rejects_with("L: L: ;", Invalid, 1, 4, "already declared");
+    rejects_with("L: { L: ; }", Invalid, 1, 6, "already declared");
+    rejects_with(
+        "L: while (x) { M: L: ; }",
+        Invalid,
+        1,
+        19,
+        "already declared",
+    );
+    // Labels do not cross function boundaries.
+    rejects_with(
+        "L: { (function () { break L; }); }",
+        Invalid,
+        1,
+        27,
+        "undefined label",
+    );
+    rejects(
+        "L: while (x) { (() => { continue L; })(); }",
+        Invalid,
+        1,
+        34,
+    );
+    // ... and so a function may reuse an enclosing function's label.
+    assert_eq!(
+        ast("L: { function f() { L: ; } }"),
+        "(label L (block (function f () (label L (empty)))))"
+    );
+    // A labelled declaration (strict mode).
+    rejects_with("L: function f() {}", Invalid, 1, 4, "labelled statement");
+    rejects_with("L: M: let x;", Invalid, 1, 7, "labelled statement");
+    rejects_with(
+        "if (a) L: const c = 1;",
+        Invalid,
+        1,
+        11,
+        "labelled statement",
+    );
+    // Unlabelled `break` and `continue` still need a loop.
+    rejects_with("L: { break; }", Invalid, 1, 6, "inside a loop");
+    // Reserved words are not labels.
+    rejects("yield: x;", ReservedWord, 1, 1);
+    rejects("if: x;", UnexpectedToken, 1, 3);
+    rejects("while (x) break yield;", UnexpectedToken, 1, 17);
+
+    // `test_cyclic_labels` compiles (calling it would loop forever).
+    super::compile_script(
+        "cyclic",
+        "function test_cyclic_labels()
+         {
+             /* just check that it compiles without a crash */
+             for (;;) {
+                 l: break l;
+                 l: break l;
+                 l: break l;
+             }
+         }",
+    )
+    .unwrap_or_else(|e| panic!("test_cyclic_labels: {e}"));
 }
 
 /// `for (init; test; update)` with an empty, expression or `let`/`const`
@@ -1540,7 +1721,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("for (x of y) {}", 1, 1, "for`-`of"),
         ("switch (x) {}", 1, 1, "switch"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
-        ("label: x;", 1, 1, "labelled"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
         ("import x from 'y';", 1, 1, "import"),
@@ -1691,6 +1871,14 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n))
         }),
         ("for", |n| format!("{}x;", "for (;;) ".repeat(n))),
+        ("label sets", |n| {
+            let labels: String = (0..n).map(|i| format!("l{i}: ")).collect();
+            format!("{labels}x;")
+        }),
+        ("labelled loops", |n| {
+            let loops: String = (0..n).map(|i| format!("l{i}: while (1) ")).collect();
+            format!("{loops}break l0;")
+        }),
         ("for with heads", |n| {
             format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))
         }),
