@@ -1655,3 +1655,18 @@ fn namespace_definitions_use_same_value() {
         vec![Primitive::Bool(true)],
     );
 }
+
+#[test]
+fn namespace_escaped_reexport_names() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {if as ns} from './barrel.js'; __rt.effect(0, ns.n===7);",
+            ),
+            ("barrel.js", r"export * as \u0069f from './m.js';"),
+            ("m.js", "export let n=7;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}

@@ -334,6 +334,7 @@ impl Parser<'_> {
         if self.is_punct(Punct::Star) {
             self.advance()?;
             let namespace = if self.is_module_word("as") {
+                self.lexer.expect_property_name();
                 self.advance()?;
                 Some(self.parse_module_name()?)
             } else {

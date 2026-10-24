@@ -5721,6 +5721,16 @@ fn module_star_and_from_exports_are_static_requests() {
 
 #[test]
 fn module_namespace_reexport_entries() {
+    let escaped = super::parse_module(
+        r"export * as \u0069f from './a'; export * as \u0064efault from './a';",
+    )
+    .unwrap();
+    let names: Vec<_> = escaped
+        .indirect_export_entries()
+        .iter()
+        .map(|entry| entry.export_name.as_str())
+        .collect();
+    assert_eq!(names, ["if", "default"]);
     let record =
         super::parse_module("export * as ns from './a'; export * as default from './a';").unwrap();
     assert_eq!(record.requested_modules(), &["./a"]);
