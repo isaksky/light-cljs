@@ -840,6 +840,65 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
         .ok_or(Fault::Internal("operand stack underflow"))
 }
 
+/// Keep object-pattern temporaries out of the general dispatch frame, which
+/// must also run unrelated calls on 64 KiB worker stacks.
+#[inline(never)]
+fn object_pattern_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
+    match instr {
+        Instr::RequireCoercible => {
+            if matches!(
+                state.operands().last(),
+                Some(Value::Null | Value::Undefined)
+            ) {
+                return Err(Fault::TypeError(
+                    "cannot destructure null or undefined".into(),
+                ));
+            }
+        }
+        Instr::OwnKeys => {
+            let source = state.pop()?;
+            state.push(keys::rest_keys(heap, state.diag.task, &source)?);
+        }
+        Instr::IsEnumerable => {
+            let key = property::to_property_key(&state.pop()?)?;
+            let source = state.pop()?;
+            let own = match source {
+                Value::Object(id) => property::get_own_property(heap, state.diag.task, id, &key)?,
+                Value::String(s) => property::string_own_property(&s, &key),
+                _ => None,
+            };
+            state.push(Value::Bool(own.is_some_and(|p| p.flags.enumerable)));
+        }
+        Instr::DefineElem => {
+            let value = state.pop()?;
+            let key = property::to_property_key(&state.pop()?)?;
+            let object = state.pop()?;
+            let Value::Object(id) = object else {
+                return Err(Fault::Internal("define_elem needs an object"));
+            };
+            // Compiler-private rest destination. Restrict this like DefineField:
+            // defining on a function could allocate a metadata property record.
+            if !heap
+                .read(id, |o| matches!(o, HeapObject::Plain(_)))
+                .unwrap_or(false)
+            {
+                return Err(Fault::Internal("define_elem needs an ordinary object"));
+            }
+            let desc = crate::object::PropertyDescriptor {
+                value: Some(value),
+                writable: Some(true),
+                enumerable: Some(true),
+                configurable: Some(true),
+                ..Default::default()
+            };
+            property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
+            state.push(object);
+        }
+        _ => return Err(Fault::Internal("invalid object pattern instruction")),
+    }
+    Ok(Flow::Next)
+}
+
 /// Keep protocol validation temporaries out of the main dispatch frame:
 /// even a worker with a 64 KiB Rust stack must execute ordinary calls.
 #[inline(never)]
@@ -1568,54 +1627,8 @@ pub(crate) fn step(
         Instr::RequireObject => {
             require_iterator_object(state)?;
         }
-        Instr::RequireCoercible => {
-            if matches!(
-                state.operands().last(),
-                Some(Value::Null | Value::Undefined)
-            ) {
-                return Err(Fault::TypeError(
-                    "cannot destructure null or undefined".into(),
-                ));
-            }
-        }
-        Instr::OwnKeys => {
-            let source = state.pop()?;
-            state.push(keys::rest_keys(heap, state.diag.task, &source)?);
-        }
-        Instr::IsEnumerable => {
-            let key = property::to_property_key(&state.pop()?)?;
-            let source = state.pop()?;
-            let own = match source {
-                Value::Object(id) => property::get_own_property(heap, state.diag.task, id, &key)?,
-                Value::String(s) => property::string_own_property(&s, &key),
-                _ => None,
-            };
-            state.push(Value::Bool(own.is_some_and(|p| p.flags.enumerable)));
-        }
-        Instr::DefineElem => {
-            let value = state.pop()?;
-            let key = property::to_property_key(&state.pop()?)?;
-            let object = state.pop()?;
-            let Value::Object(id) = object else {
-                return Err(Fault::Internal("define_elem needs an object"));
-            };
-            // Compiler-private rest destination. Restrict this like DefineField:
-            // defining on a function could allocate a metadata property record.
-            if !heap
-                .read(id, |o| matches!(o, HeapObject::Plain(_)))
-                .unwrap_or(false)
-            {
-                return Err(Fault::Internal("define_elem needs an ordinary object"));
-            }
-            let desc = crate::object::PropertyDescriptor {
-                value: Some(value),
-                writable: Some(true),
-                enumerable: Some(true),
-                configurable: Some(true),
-                ..Default::default()
-            };
-            property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
-            state.push(object);
+        Instr::RequireCoercible | Instr::OwnKeys | Instr::IsEnumerable | Instr::DefineElem => {
+            return object_pattern_step(state, heap, instr);
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),

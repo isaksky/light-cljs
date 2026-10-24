@@ -58,6 +58,7 @@ fn object_destructuring() {
         "let closed = 0; let it = {next() { return {value: {get a() { throw 17; }}}; }, return() { closed++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [{a}] = it; } catch(e) { error = e; } error === 17 && closed === 1",
         "let log = ''; let k = {toString() { log += 'k'; return 'x'; }}; let o = {}; let src = {get a() { log += 'g'; return undefined; }}; function def() { log += 'd'; return 7; } ({a: o[k] = def()} = src); o.x === 7 && log === 'gdk'",
         "let error = 0; let log = ''; function def() { log += 'd'; return 7; } try { ({a: null.x = def()} = {}); } catch(e) { error = e instanceof TypeError; } error && log === 'd'",
+        "let result; for (let {['p' in {p: 1}]: x, a = 'q' in {q: 1}} = {true: 7}; result === undefined;) { result = x === 7 && a; } result",
     ] {
         // Every fixture returns a boolean; binding names remain lexical.
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");

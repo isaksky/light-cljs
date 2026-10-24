@@ -380,8 +380,11 @@ fn catch_parameters_are_block_scoped_bindings() {
         let err = compile_script("t", src).expect_err(src);
         assert_eq!(err.kind, SyntaxErrorKind::Invalid, "{src}: {err}");
     }
-    let err = compile_script("t", "try {} catch ({ a }) {}").unwrap_err();
-    assert_eq!(err.kind, SyntaxErrorKind::Unsupported, "{err}");
+    compile_script("t", "try {} catch ({ a }) {}").unwrap();
+    assert_eq!(
+        num("let a = 1; let r; try { throw {a: 2}; } catch ({a}) { r = a; } r * 10 + a"),
+        21.0
+    );
     let err = compile_script("t", "try {}").unwrap_err();
     assert_eq!(err.kind, SyntaxErrorKind::UnexpectedEnd, "{err}");
     let err = compile_script("t", "throw\n1;").unwrap_err();

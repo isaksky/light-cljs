@@ -1331,6 +1331,7 @@ impl<'a> Parser<'a> {
         let start = self.tok.span.start;
         self.lexer.expect_property_name();
         self.advance()?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut properties = Vec::new();
         let mut rest = None;
         let mut height = 1;
@@ -1362,6 +1363,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.no_in = no_in;
         self.expect_punct(Punct::RBrace)?;
         self.depth = saved;
         self.check_height(height)?;
