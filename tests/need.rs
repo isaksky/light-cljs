@@ -1359,6 +1359,9 @@ fn array_join_resumes_without_repeating_conversions() {
     for src in [
         "let n = 0; let s = [{toString() { n++; __rt.effect(1, 3); return 'x' + __rt.need(5, 3); }}, {toString() { n++; return 'y'; }}].join('-'); s === 'x7-y' && n === 2",
         "let n = 0; let o = {get length() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }, 0: 'x', 1: 'y'}; Array.prototype.join.call(o) === 'x,y' && n === 1",
+        // The inline separator has no local/root other than join.separator
+        // while the length getter waits, before separator coercion begins.
+        "let n = 0; let o = {get length() { __rt.effect(1, 3); return __rt.need(5, 3) - 5; }, 0: 'x', 1: 'y'}; Array.prototype.join.call(o, {toString() { n++; return '-'; }}) === 'x-y' && n === 1",
         "let n = 0; let o = {length: {valueOf() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }}, 0: 'x', 1: 'y'}; Array.prototype.join.call(o) === 'x,y' && n === 1",
         "let n = 0; let s = {toString() { n++; __rt.effect(1, 3); __rt.need(5, 3); return '-'; }}; [1, 2].join(s) === '1-2' && n === 1",
         "let n = 0; let a = [1, 2]; Object.defineProperty(a, 1, {get() { n++; __rt.effect(1, 3); return __rt.need(5, 3); }}); a.join() === '1,7' && n === 1",

@@ -1049,12 +1049,11 @@ pellet):
 [a, b] = [b, a];
 ```
 
-Arrays inherit from `Array.prototype`, which supports `push`; its
-`toString` fails explicitly instead of answering `"[object Array]"`
-(`UnsupportedOperand` at run time, at the call's `(`):
+Arrays inherit from `Array.prototype`, which supports `push`, `join` and
+`toString`. The latter calls the receiver's `join` method:
 
 ```js accept
-[1, 2].toString();
+[1, 2].toString() === "1,2";
 ```
 
 Functions take own properties, and a `function` declaration or
