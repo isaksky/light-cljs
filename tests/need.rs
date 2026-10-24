@@ -126,6 +126,99 @@ fn accessor_cancellation_and_dependency_failure_unwind() {
     assert_eq!(number(only_runnable(wakeups).run().unwrap()), 17.0);
 }
 
+/// Run a synthetic property fixture with collection at every yield, a
+/// pending dependency and resumption on another thread. Both sides of the
+/// wait use one-instruction budgets, including native return delivery.
+fn resume_property_fixture(src: &str) -> (f64, Recorder) {
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(&compile_script("property-handoff", src).unwrap(), &[])
+        .unwrap();
+    let expected = key(&rt, NUMBER);
+    let mut host = Recorder::default();
+    let mut yielded = 0;
+    loop {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                yielded += 1;
+                assert!(yielded < 1000, "bounded initial execution: {src}");
+                rt.collect().unwrap();
+            }
+            outcome => {
+                assert_eq!(waiting(outcome), expected);
+                break;
+            }
+        }
+    }
+    let request = one_request(&task, expected);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+    rt.collect().unwrap();
+    let result = thread::spawn(move || {
+        let mut yielded = 0;
+        loop {
+            match resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yielded += 1;
+                    assert!(yielded < 1000, "bounded resumed execution");
+                    rt.collect().unwrap();
+                }
+                outcome => break (number(outcome), host),
+            }
+        }
+    })
+    .join()
+    .unwrap();
+    assert_eq!(task.dependency_log().edges(), &[expected]);
+    result
+}
+
+#[test]
+fn native_length_conversion_waits_and_resumes() {
+    // The fresh length object survives only through the nested conversion
+    // continuation once the getter has returned.
+    for src in [
+        "let list = {get length() { __rt.effect(2, 1); return {valueOf() { __rt.effect(2, 2); return __rt.need(5, 3) - 6; }}; }, get 0() { __rt.effect(2, 3); return 9; }}; __rt.effect(1, 3) + Reflect.apply(x => x, null, list) + 1",
+        "let list = {get length() { __rt.effect(2, 1); return {valueOf() { __rt.effect(2, 2); return __rt.need(5, 3) - 6; }}; }, get 0() { __rt.effect(2, 3); return 9; }}; __rt.effect(1, 3) + (x => x).apply(null, list) + 1",
+        "let o = {get length() { __rt.effect(2, 1); return {valueOf() { __rt.effect(2, 2); return __rt.need(5, 3) - 7; }}; }, set 0(v) { __rt.effect(2, 3); this.x = v; }, set length(v) { __rt.effect(2, 4); this.len = v; }}; let before = __rt.effect(1, 3); let n = Array.prototype.push.call(o, 9); before + o.x + n",
+    ] {
+        let (result, host) = resume_property_fixture(src);
+        assert_eq!(result, 113.0, "{src}");
+        assert_eq!(host.effects, [3.0]);
+        let expected: &[f64] = if src.contains("push.call") {
+            &[1.0, 2.0, 3.0, 4.0]
+        } else {
+            &[1.0, 2.0, 3.0]
+        };
+        assert_eq!(
+            host.reports, expected,
+            "length getter/conversion and writes run once: {src}"
+        );
+    }
+}
+
+#[test]
+fn descriptor_key_conversion_waits_and_resumes() {
+    for src in [
+        "let o = {}; let k = {get toString() { __rt.effect(2, 1); __rt.need(5, 3); return function() { __rt.effect(2, 2); return 'z'; }; }}; let d = {get get() { __rt.effect(2, 3); return () => 9; }}; let before = __rt.effect(1, 3); Object.defineProperty(o, k, d); before + o.z + 1",
+        "let o = {}; let k = {get toString() { __rt.effect(2, 1); return function() { __rt.effect(2, 2); __rt.need(5, 3); return 'z'; }; }}; let d = {get get() { __rt.effect(2, 3); return () => 9; }}; let before = __rt.effect(1, 3); Object.defineProperty(o, k, d); before + o.z + 1",
+        "let o = {get z() { return 9; }}; let k = {get toString() { __rt.effect(2, 1); __rt.need(5, 3); return function() { __rt.effect(2, 2); return 'z'; }; }}; let before = __rt.effect(1, 3); let d = Object.getOwnPropertyDescriptor(o, k); __rt.effect(2, 3); before + d.get.call(o) + 1",
+        "let o = {get z() { return 9; }}; let k = {get toString() { __rt.effect(2, 1); return function() { __rt.effect(2, 2); __rt.need(5, 3); return 'z'; }; }}; let before = __rt.effect(1, 3); let d = Object.getOwnPropertyDescriptor(o, k); __rt.effect(2, 3); before + d.get.call(o) + 1",
+    ] {
+        let (result, host) = resume_property_fixture(src);
+        assert_eq!(result, 113.0, "{src}");
+        assert_eq!(host.effects, [3.0]);
+        assert_eq!(
+            host.reports,
+            [1.0, 2.0, 3.0],
+            "conversion precedes descriptor access and runs once: {src}"
+        );
+    }
+}
+
 fn key(rt: &Runtime, (def, kind): (DependencyId, ResultKind)) -> DependencyKey {
     DependencyKey::new(rt.world(), def, kind)
 }

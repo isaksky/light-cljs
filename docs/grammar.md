@@ -1358,7 +1358,7 @@ enumerable, configurable accessor. Getters take zero parameters and setters
 exactly one (which may have a default). Both own `this` and `arguments`,
 inherit surrounding strictness (clj-quickjs-266), have a home object, cannot be constructed, have
 no own `prototype`, and have names `"get z"` / `"set z"`. Identifier,
-reserved-word, string and numeric names work. `get` and `set` remain ordinary
+reserved-word (including escaped reserved words), string and numeric names work. `get` and `set` remain ordinary
 keys in `{get: 1}`, `{get, set}` and `{get() {}, set() {}}`.
 
 A later getter or setter preserves the other half of an accessor. A data
@@ -1396,6 +1396,7 @@ let o = {get z() { return this.x; }, set z(v) { this.x = v; }};
 o.z = 7; o.z === 7;
 let d = Object.getOwnPropertyDescriptor(o, "z"); d.get.name === "get z";
 ({get: 1, set: 2, get a() { return this.get; }}).a === 1;
+({get \u0069f() { return 1; }}).if === 1;
 ```
 
 ```js reject Invalid 1:3

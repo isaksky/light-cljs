@@ -1671,6 +1671,15 @@ fn accessor_literals() {
         ast("({get, set})"),
         "(object (shorthand get get) (shorthand set set))"
     );
+    let script = parse_script(r"({get \u0069f() {}, set \u0069f(v) {}})").unwrap();
+    let StmtKind::Expr(expr) = &script.body[0].kind else {
+        panic!("expression")
+    };
+    let ExprKind::Object(properties) = &expr.kind else {
+        panic!("object")
+    };
+    assert_eq!(properties[0].name, PropertyName::Identifier("if".into()));
+    assert_eq!(properties[1].name, PropertyName::Identifier("if".into()));
     for src in ["({get a(x) {}})", "({set a() {}})", "({set a(x, y) {}})"] {
         assert!(parse_script(src).is_err(), "{src}");
     }

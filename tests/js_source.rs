@@ -97,6 +97,7 @@ fn accessor_properties() {
 fn accessor_descriptors_and_integrity() {
     // Synthetic fixtures, not light-cljs output.
     for src in [
+        r"let o = {get \u0069f() { return this.x; }, set \u0069f(v) { this.x = v; }}; o.if = 7; o.if === 7 && Object.getOwnPropertyDescriptor(o, 'if').get.name === 'get if'",
         "let a = {get 'x'() { return 2; }, set 1(v) { this.x1 = v; }, get 1() { return this.x1; }}; a[1] = 3; a.x === 2 && a[1] === 3",
         "let a = {get async() { return 3; }, get if() { return 4; }, get get() { return 5; }, get set() { return 6; }}; a.async + a.if + a.get + a.set === 18",
         "let a = {get __proto__() { return 3; }, set __proto__(v) { this.x = v; }}; a.__proto__ = 4; a.__proto__ === 3 && a.x === 4 && Object.getPrototypeOf(a) === Object.prototype",

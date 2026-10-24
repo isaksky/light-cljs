@@ -216,6 +216,15 @@ impl<'a> Parser<'a> {
         self.lexer.clone().next_token().ok()
     }
 
+    /// Probe an IdentifierName without treating escaped reserved words as
+    /// identifier references. Keep the lexer clone off recursive parse frames.
+    #[inline(never)]
+    fn peek_property_name(&self) -> Option<Token> {
+        let mut lookahead = self.lexer.clone();
+        lookahead.expect_property_name();
+        lookahead.next_token().ok()
+    }
+
     fn is_punct(&self, p: Punct) -> bool {
         self.tok.kind == TokenKind::Punct(p)
     }
@@ -1762,7 +1771,10 @@ impl<'a> Parser<'a> {
     /// same literal (`proto_seen`) is an early error.
     fn parse_property_definition(&mut self, proto_seen: &mut bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
-        let next = self.peek_next();
+        // An accessor's following token is an IdentifierName: even an
+        // escaped reserved word is valid here. Probe in the same lexer
+        // mode that consuming that name will use.
+        let next = self.peek_property_name();
         let accessor = match &self.tok.kind {
             TokenKind::Identifier(word)
                 if (word == "get" || word == "set")
