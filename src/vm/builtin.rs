@@ -85,6 +85,8 @@
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); `getOwnPropertyNames` of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-261) |
 //! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
+//! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
+//! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
 //! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
@@ -383,7 +385,7 @@ pub(crate) fn call(
         }
         Builtin::StringPrototypeCharAt
         | Builtin::StringPrototypeCharCodeAt
-        | Builtin::StringPrototypeCodePointAt => string_access(heap, which, this, &arg(0)),
+        | Builtin::StringPrototypeCodePointAt => string_access(which, this, &arg(0)),
         Builtin::StringFromCharCode | Builtin::StringFromCodePoint => {
             string_from_codes(which, args)
         }
@@ -392,8 +394,8 @@ pub(crate) fn call(
 
 /// RequireObjectCoercible, ToString, then ToIntegerOrInfinity. These methods
 /// accept any primitive receiver; thisStringValue would be too restrictive.
-/// Object conversion needs a resumable ToPrimitive frame and fails explicitly.
-fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fault> {
+/// Object operands have already passed through native::Convert.
+fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fault> {
     if matches!(this, Value::Undefined | Value::Null) {
         return Err(Fault::TypeError(format!(
             "String.prototype.{} called on {}",
@@ -401,16 +403,7 @@ fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Resu
             this.type_name()
         )));
     }
-    let string = match this {
-        Value::Object(id) if is_intrinsic(heap, *id, |r| r.string_prototype) => JsString::from(""),
-        Value::Object(_) => {
-            return Err(Fault::Unsupported(
-                "String code-unit methods need resumable ToPrimitive for object receivers"
-                    .to_string(),
-            ));
-        }
-        _ => crate::vm::dispatch::to_js_string(this)?,
-    };
+    let string = crate::vm::dispatch::to_js_string(this)?;
     let number = crate::vm::dispatch::to_number(pos)?;
     let index = if number.is_nan() { 0.0 } else { number.trunc() };
     // Check before casting: infinity and huge indices must not saturate or wrap.
@@ -457,9 +450,7 @@ fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
             let unit = if unit < 0.0 { unit + 65536.0 } else { unit };
             units.push(unit as u16);
         } else {
-            if !n.is_finite() || !(0.0..=0x10ffff as f64).contains(&n) || n.trunc() != n {
-                return Err(Fault::RangeError("invalid code point".to_string()));
-            }
+            validate_code_point(n)?;
             let point = n as u32;
             if point <= 0xffff {
                 units.push(point as u16);
@@ -476,6 +467,39 @@ fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
     JsString::from_code_units(units)
         .map(Value::String)
         .ok_or(Fault::OutOfMemory("string too long"))
+}
+
+fn validate_code_point(n: f64) -> Result<(), Fault> {
+    if !n.is_finite() || !(0.0..=0x10ffff as f64).contains(&n) || n.trunc() != n {
+        return Err(Fault::RangeError("invalid code point".to_string()));
+    }
+    Ok(())
+}
+
+/// Finish each primitive conversion before native::Convert visits the next
+/// operand. In particular, invalid code points must throw before later
+/// arguments' valueOf/toString callbacks can run.
+pub(crate) fn string_builtin_operand(
+    which: Builtin,
+    index: usize,
+    value: &Value,
+) -> Result<Value, Fault> {
+    match which {
+        Builtin::StringPrototypeCharAt
+        | Builtin::StringPrototypeCharCodeAt
+        | Builtin::StringPrototypeCodePointAt
+            if index == 0 =>
+        {
+            crate::vm::dispatch::to_js_string(value).map(Value::String)
+        }
+        _ => {
+            let n = crate::vm::dispatch::to_number(value)?;
+            if which == Builtin::StringFromCodePoint {
+                validate_code_point(n)?;
+            }
+            Ok(Value::Number(n))
+        }
+    }
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

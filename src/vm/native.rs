@@ -44,7 +44,8 @@
 //!   operand area and the loop resumes the native with `CallResult`. A
 //!   built-in function callee (`crate::vm::builtin`, clj-quickjs-117) runs
 //!   to completion or pushes its own conversion continuation (Number/String
-//!   with an object argument); its result is delivered the same way, with
+//!   constructors and string code-unit built-ins with object operands);
+//!   its result is delivered the same way, with
 //!   the supplied `this` (undefined for reduce); a forwarding built-in (`Reflect.apply`,
 //!   clj-quickjs-102) is first followed to the call it makes
 //!   (`crate::vm::dispatch::resolve`), whose frame then delivers the result.
@@ -98,7 +99,7 @@
 //! Native frames are stacked beside the call frames: each records the call
 //! depth of the frame that started it, and it is *running* when no call
 //! frame is above that depth. A callback may itself start a resumable
-//! native, so frames nest. A Number/String built-in callback can push a
+//! native, so frames nest. A coercing built-in callback can push a
 //! conversion at the same call depth; its parent awaits its return. Only
 //! the innermost frame at that depth runs. These pushes check the native
 //! count against the task's call-depth limit.
@@ -297,6 +298,10 @@ enum ConvertTarget {
         which: builtin::Builtin,
         construct: bool,
     },
+    StringBuiltin {
+        which: builtin::Builtin,
+        access: bool,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -484,24 +489,70 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
     Ok(true)
 }
 
-/// Number/String's object argument uses the same resumable method lookup
-/// and callback protocol as coercing instructions. Callers resolve forwarding
-/// first and remove their operands before entering this frame. The first
-/// argument is the only one needed after argument evaluation has completed.
-pub(crate) fn start_primitive_constructor(
+/// Built-in object operands use the same resumable method lookup and callback
+/// protocol as coercing instructions. Forwarding is resolved before entry;
+/// only operands needed after argument evaluation are retained in the frame.
+pub(crate) fn start_builtin_conversion(
     state: &mut VmState,
     which: builtin::Builtin,
+    this: &Value,
     args: &[Value],
     construct: bool,
     popped: usize,
 ) -> Result<bool, Fault> {
-    let hint = match which {
-        builtin::Builtin::Number => Hint::Number,
-        builtin::Builtin::String => Hint::String,
+    use builtin::Builtin;
+    let (target, operands, hint) = match which {
+        Builtin::Number | Builtin::String => {
+            let Some(value @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::PrimitiveConstructor { which, construct },
+                vec![value.clone()],
+                if which == Builtin::String {
+                    Hint::String
+                } else {
+                    Hint::Number
+                },
+            )
+        }
+        Builtin::StringPrototypeCharAt
+        | Builtin::StringPrototypeCharCodeAt
+        | Builtin::StringPrototypeCodePointAt
+            if !construct =>
+        {
+            // RequireObjectCoercible precedes any position conversion. Leave
+            // null/undefined to the leaf's TypeError path without callbacks.
+            if matches!(this, Value::Null | Value::Undefined) {
+                return Ok(false);
+            }
+            let pos = args.first().cloned().unwrap_or(Value::Undefined);
+            if !matches!(this, Value::Object(_)) && !matches!(pos, Value::Object(_)) {
+                return Ok(false);
+            }
+            (
+                ConvertTarget::StringBuiltin {
+                    which,
+                    access: true,
+                },
+                vec![this.clone(), pos],
+                Hint::String,
+            )
+        }
+        Builtin::StringFromCharCode | Builtin::StringFromCodePoint if !construct => {
+            if !args.iter().any(|v| matches!(v, Value::Object(_))) {
+                return Ok(false);
+            }
+            (
+                ConvertTarget::StringBuiltin {
+                    which,
+                    access: false,
+                },
+                args.to_vec(),
+                Hint::Number,
+            )
+        }
         _ => return Ok(false),
-    };
-    let Some(value @ Value::Object(_)) = args.first() else {
-        return Ok(false);
     };
     // A built-in callback can start another native at the same call depth.
     // Bound recursion through such callbacks must still have a finite limit.
@@ -511,20 +562,20 @@ pub(crate) fn start_primitive_constructor(
             "maximum native call depth of {limit} frames exceeded"
         )));
     }
-    let operands = vec![value.clone()];
+    let end = operands.len();
     let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
     state.truncate_operands(state.stack_len() - popped)?;
-    assert_no_borrow("starting a constructor conversion frame (growing native storage)");
+    assert_no_borrow("starting a built-in conversion frame (growing native storage)");
     state.natives.push(NativeFrame {
         depth: state.depth(),
         base: state.stack_len(),
         pc,
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
-            target: ConvertTarget::PrimitiveConstructor { which, construct },
+            target,
             operands,
             next: 0,
-            end: 1,
+            end,
             hint,
             method: 0,
         },
@@ -690,7 +741,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 (Callee::Code(id, code), call) => (id, code, call),
                 (Callee::Builtin(which), call) => {
                     set_awaiting(state, Awaiting::CallResult)?;
-                    if start_primitive_constructor(state, which, &call.args, false, 0)? {
+                    if start_builtin_conversion(state, which, &call.this, &call.args, false, 0)? {
                         return Ok(Flow::Next);
                     }
                     // Runs to completion (`crate::vm::builtin`); no safepoint
@@ -815,7 +866,6 @@ impl NativeState {
                     Input::CallResult(v) => {
                         if !matches!(v, Value::Object(_)) {
                             operands[*next] = v;
-                            *next += 1;
                             *method = 0;
                         }
                     }
@@ -826,6 +876,13 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        if let ConvertTarget::StringBuiltin { which, .. } = *target {
+                            operands[*next] =
+                                builtin::string_builtin_operand(which, *next, receiver)?;
+                            // Access converts its receiver with string hint,
+                            // then its position with number hint.
+                            *hint = Hint::Number;
+                        }
                         *next += 1;
                         continue;
                     }
@@ -864,6 +921,14 @@ impl NativeState {
                     ConvertTarget::PrimitiveConstructor { which, construct } => {
                         builtin::primitive_constructor(heap, task, which, operands, construct)
                             .map(Action::Return)
+                    }
+                    ConvertTarget::StringBuiltin { which, access } => {
+                        let (this, args) = if access {
+                            (&operands[0], &operands[1..])
+                        } else {
+                            (&Value::Undefined, &operands[..])
+                        };
+                        builtin::call(heap, task, which, this, args).map(Action::Return)
                     }
                 }
             }

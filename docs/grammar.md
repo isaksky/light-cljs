@@ -412,11 +412,10 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
-- **String code-unit methods** (clj-quickjs-143) support primitive coercion;
-  object receivers or arguments that need ToPrimitive fail explicitly with
-  `UnsupportedOperand`. String construction (`String(v)`, clj-quickjs-72),
-  primitive string `length` and indexing (clj-quickjs-142), and the other
-  string methods remain deferred. See "String code-unit access" below.
+- **String methods remain partial** (clj-quickjs-143). Code-unit access
+  and construction execute, including resumable object coercion. Other
+  string methods remain deferred. Bulk primitive-string conversion can
+  delay yielding and collection (clj-quickjs-265). See "String code-unit access" below.
 - **Scope errors are checked by the compiler, not the parser.**
   `parse_script` accepts redeclaration (`let a; let a;`), a `let` that
   repeats a parameter name and declarations of the reserved binding `__rt`;
@@ -2161,8 +2160,8 @@ Number({valueOf: function () { return 7; }}) === 7 && String({toString: function
 ### String code-unit access (clj-quickjs-143)
 
 `String.prototype.charAt(pos)`, `charCodeAt(pos)` and `codePointAt(pos)`
-require a non-null, non-undefined receiver, convert primitive receivers to
-strings, and use ToIntegerOrInfinity on primitive positions (absent,
+require a non-null, non-undefined receiver, convert receivers to
+strings, and use ToIntegerOrInfinity on positions (absent,
 undefined and NaN become zero; fractions truncate toward zero). Positions
 outside the UTF-16 length give `""`, NaN and undefined respectively.
 `charAt` returns exactly one unit, including a lone surrogate; `codePointAt`
@@ -2171,7 +2170,7 @@ otherwise it returns the unit. `String.prototype` itself acts as `""`.
 Null/undefined receivers throw catchable TypeError.
 
 `String.fromCharCode(...units)` applies ToNumber and ToUint16 to each
-primitive argument: fractions truncate, integers wrap modulo 65536, and
+argument: fractions truncate, integers wrap modulo 65536, and
 NaN/infinities become zero. `String.fromCodePoint(...points)` applies
 ToNumber and requires finite integers in 0..0x10FFFF; otherwise it throws
 catchable RangeError. Astral points produce two units; surrogate code
@@ -2180,22 +2179,22 @@ through `call`/`apply`. All five functions have `length` 1 and the usual
 non-enumerable method properties on the realm intrinsics. Synthetic
 fixtures, not light-cljs output:
 
-```javascript
+```js accept
 'abc'.charAt(1.9) === 'b' && 'abc'.charAt(-1) === '';
 '\u{10ffff}'.codePointAt(0) === 0x10ffff;
 String.fromCharCode.apply(null, [65, 66, 67]) === 'ABC';
-String.fromCharCode(0xd800).charCodeAt(0) === 0xd800;
-String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00';
+String.fromCharCode(0xd800).length === 1 && String.fromCharCode(0xd800).charCodeAt(0) === 0xd800;
+String.fromCodePoint(0x41, 0x1f600).length === 3 && String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00';
 ```
 
-Explicit gaps: object conversions fail with `UnsupportedOperand` pending
-resumable ToPrimitive support for these built-ins (clj-quickjs-70). The
-separate string property and constructor prerequisites (clj-quickjs-142,
-clj-quickjs-72) are still explicit unsupported failures; error constructors
-and error-object properties are also deferred. In particular the acceptance
-rows reading `String.fromCharCode(0xd800).length` and
-`String.fromCodePoint(0x41, 0x1f600).length` cannot execute yet, although the
-constructed UTF-16 contents are tested exactly.
+Object receivers use resumable ToPrimitive with string hint before position
+conversion with number hint. Static arguments convert in order with number
+hint, validating each code point before converting the next argument.
+Callbacks may yield, wait, be collected around and migrate without replay.
+String and Number wrappers use their observable conversion methods too.
+
+Explicit gaps: error constructors and error-object properties remain deferred;
+the thrown values are the existing catchable TypeError and RangeError objects.
 
 Bulk primitive-string coercion in the static constructors currently runs
 inside a leaf call. Repeated large string arguments can delay yielding and

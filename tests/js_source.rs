@@ -36,13 +36,13 @@ use clj_quickjs::{
 #[test]
 fn string_code_unit_access() {
     for src in [
-        r#"let a = 'abc'; a.charCodeAt(1) === 0x62 && a.charAt(1) === 'b' && a.charAt(-1) === '' && a.charAt(3) === ''"#,
+        r#"let a = String('abc'); a.length === 3 && a[1] === 'b' && a.charCodeAt(1) === 0x62 && a.charAt(1) === 'b' && a.charAt(-1) === '' && a.charAt(3) === ''"#,
         r#"String.fromCharCode(65) === 'A' && String.fromCharCode.apply(null, [65, 66, 67]) === 'ABC'"#,
         r#"let a = String.fromCharCode(0x20ac); a === '€' && a.charCodeAt(0) === 0x20ac"#,
         r#"let a = '\u{10ffff}'; a.codePointAt(0) === 0x10ffff && String.fromCodePoint(0x10ffff) === a && a.codePointAt(1) === 0xdfff && a.codePointAt(2) === undefined"#,
         r#"'abc'.charCodeAt() === 0x61 && Object.is('abc'.charCodeAt(3), NaN) && 'abc'.charAt(NaN) === 'a'"#,
         r#"String.fromCharCode() === '' && String.fromCodePoint() === '' && String.fromCharCode(0x10041) === 'A'"#,
-        r#"String.fromCharCode(0xd800) === '\ud800' && String.fromCharCode(0xd800).charCodeAt(0) === 0xd800 && String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00'"#,
+        r#"String.fromCharCode(0xd800).length === 1 && String.fromCharCode(0xd800) === '\ud800' && String.fromCharCode(0xd800).charCodeAt(0) === 0xd800 && String.fromCodePoint(0x41, 0x1f600).length === 3 && String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00'"#,
         r#"'abc'.charAt(1.9) === 'b' && 'abc'.charAt(-0.9) === 'a' && 'abc'.charAt('2') === 'c' && 'abc'.charCodeAt(null) === 97 && 'abc'.codePointAt(true) === 98"#,
         r#"'abc'.charAt(Infinity) === '' && 'abc'.charAt(-Infinity) === '' && Object.is('abc'.charCodeAt(-1), NaN) && 'abc'.codePointAt(-1) === undefined && 'abc'.charAt(4294967296) === ''"#,
         r#"String.fromCharCode(-1, 65536, 65.9, NaN, Infinity, undefined, null, true, '66') === '\uffff\0A\0\0\0\0\u0001B'"#,
@@ -85,22 +85,138 @@ fn string_code_unit_access() {
 }
 
 #[test]
-fn string_code_unit_access_explicit_gaps() {
-    // Missing prerequisites must fail explicitly, never return a wrong value.
+fn string_code_unit_coercion() {
+    // Synthetic fixtures, not light-cljs output.
     for src in [
-        "String.fromCharCode(0xd800).length",
-        "String.fromCodePoint(0x41, 0x1f600).length",
-        "String('abc')",
-        "'abc'.charAt({valueOf: () => 1})",
-        "String.fromCharCode({valueOf: () => 65})",
-        "String.fromCodePoint({valueOf: () => 65})",
-        "String.prototype.charAt.call({toString: () => 'abc'}, 0)",
+        "'abc'.charAt({valueOf: () => 1}) === 'b'",
+        "String.fromCharCode({valueOf: () => 65}) === 'A'",
+        "String.fromCodePoint({valueOf: () => 65}) === 'A'",
+        "String.prototype.charAt.call({toString: () => 'abc'}, 0) === 'a'",
+        "new String('abc').charAt(1) === 'b' && new String('abc').charCodeAt(2) === 99 && new String('😀').codePointAt(0) === 0x1f600",
+        "String.fromCharCode(new Number(65)) === 'A' && String.fromCodePoint(new String('128512')) === '😀'",
+        "let order = ''; let receiver = {toString: () => {order += 's'; return 123; }}; let pos = {valueOf: () => {order += 'p'; return 1; }}; String.prototype.charAt.call(receiver, pos) === '2' && order === 'sp'",
+        "let order = ''; let receiver = {toString: () => {order += 's'; receiver.valueOf = () => {order += 'v'; return 'abc'; }; return {}; }}; String.prototype.charCodeAt.call(receiver, 1) === 98 && order === 'sv'",
+        "let calls = 0; let pos = {valueOf: () => {calls++; return 0; }}; let caught = false; try { String.prototype.charAt.call(null, pos); } catch (e) { caught = true; } caught && calls === 0",
+        "let calls = 0; let later = {valueOf: () => {calls++; return 65; }}; let caught = false; try { String.fromCodePoint(0x110000, later); } catch (e) { caught = true; } caught && calls === 0",
+        "let order = ''; let bad = {valueOf: () => {order += 'a'; return 1.5; }}; let later = {valueOf: () => {order += 'b'; return 65; }}; let caught = false; try { String.fromCodePoint(bad, later); } catch (e) { caught = true; } caught && order === 'a'",
+        "let calls = 0; let bad = {valueOf: () => {calls++; throw 42; }}; let caught = 0; try { String.fromCharCode(bad, bad); } catch (e) { caught = e; } caught === 42 && calls === 1",
+        "let bad = {toString: () => ({}), valueOf: () => ({})}; let caught = false; try { String.prototype.codePointAt.call(bad); } catch (e) { caught = true; } caught",
+        "let f = String.fromCharCode.bind(null, {valueOf: () => 65}); f.apply(null, [66]) === 'AB' && Reflect.apply(String.fromCodePoint, null, [{valueOf: () => 0x1f600}]) === '😀'",
+        // A conversion method that is itself a built-in needs a nested native.
+        "let receiver = {toString: String.fromCharCode.bind(null, {valueOf: () => 65})}; String.prototype.charAt.call(receiver, 0) === 'A'",
     ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Both the receiver and later
+/// arguments must survive while a callback waits, without repeating effects.
+#[test]
+fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
+    for (expression, expected_order, expected_waits) in [
+        (
+            "String.prototype.charAt.call(receiver(), position()) === 'b'",
+            "sp",
+            2,
+        ),
+        (
+            "String.prototype.charCodeAt.apply(receiver(), [position()]) === 98",
+            "sp",
+            2,
+        ),
+        (
+            "Reflect.apply(String.prototype.codePointAt, receiver(), [position()]) === 98",
+            "sp",
+            2,
+        ),
+        (
+            "String.fromCharCode(code(65, 143), code(66, 144)) === 'AB'",
+            "nn",
+            2,
+        ),
+        (
+            "String.fromCodePoint(code(65, 143), code(0x1f600, 144)) === 'A😀'",
+            "nn",
+            2,
+        ),
+        (
+            "String.prototype.charAt.call({toString: String.fromCharCode.bind(null, code(65, 143))}, 0) === 'A'",
+            "n",
+            1,
+        ),
+        (
+            "(() => { let caught = 0; try { String.fromCodePoint({valueOf: () => {order += 'n'; __rt.need(143, 1); throw 42; }}, code(65, 144)); } catch (e) { caught = e; } return caught === 42; })()",
+            "n",
+            1,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let order = '';
+             function receiver() {{ return {{toString: function () {{ order += 's'; __rt.need(143, 1); return 'abc'; }} }}; }}
+             function position() {{ return {{valueOf: function () {{ order += 'p'; __rt.need(144, 1); return 1; }} }}; }}
+             function code(n, key) {{ return {{n: n, key: key, valueOf: function () {{ order += 'n'; __rt.need(this.key, 1); return this.n; }} }}; }}
+             let ok = {expression}; ok && order === '{expected_order}'"
         );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next_task, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next_task;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= expected_waits, "repeated wait: {expression}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {expression}");
+        assert_eq!(waits, expected_waits, "{expression}");
+    }
+}
+
+#[test]
+fn string_code_unit_native_recursion_obeys_depth_limit() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 8,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let script =
+        exe("let o = {}; o.valueOf = String.fromCharCode.bind(null, o); String.fromCharCode(o)");
+    match rt
+        .spawn(&script, &[])
+        .unwrap()
+        .run_with(Budget::instructions(1000), &mut NoEffects)
+        .unwrap()
+    {
+        RunOutcome::Failed(e) => assert!(matches!(e.kind(), VmErrorKind::StackOverflow)),
+        other => panic!("native recursion did not unwind: {other:?}"),
     }
 }
 
@@ -9324,7 +9440,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k.length === 4",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k.length === 7",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",

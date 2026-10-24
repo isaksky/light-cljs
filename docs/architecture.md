@@ -3441,7 +3441,7 @@ before freezing its views; existing intrinsic tracing and publication cover
 these functions. All use `PropertyFlags::METHOD` and function length 1.
 There are no new heap kinds or mutable string representations.
 
-Access methods use RequireObjectCoercible and primitive ToString, then
+Access methods use RequireObjectCoercible and ToString, then
 ToIntegerOrInfinity, checking bounds before any Rust index cast. They read
 the flat `JsString::code_units()` slice in O(1); `codePointAt` reads at most
 two units. These generic methods accept number and boolean receivers as
@@ -3461,8 +3461,17 @@ conversion work), with at most two output units per argument and
 but repeated large primitive strings can make the aggregate conversion
 work large within one call. Bounded resumable coercion is clj-quickjs-265;
 until then this can delay yielding and collection.
-It runs no JavaScript and retains no continuation across a wait. Object
-coercion fails explicitly until these built-ins use resumable ToPrimitive;
-primitive conversion reuses the dispatch helpers. All operands stay rooted
-on the VM stack during a call; strings remain independently owned,
+Primitive-only calls run no JavaScript and retain no continuation across a
+wait. Object operands select `native::start_builtin_conversion` after
+call/apply/bind resolution, including native callbacks that are built-ins.
+`NativeState::Convert` retains and traces all relevant operands. Access
+converts the receiver with string hint, finishes primitive ToString, then
+converts the position with number hint. Static arguments convert with
+number hint and validate each code point before any later callback runs.
+Completed operands are stored as strings or numbers and never replayed.
+The final primitive-only helper then accesses or constructs the string.
+Nested built-in conversions share the existing native-depth bound, unwind
+and cancellation protocol. The source coercion tests force one-instruction
+yields, GC between slices and during waits, thread migration, callback
+errors, forwarding and nested natives. Strings remain independently owned,
 immutable leaf buffers outside the heap.
