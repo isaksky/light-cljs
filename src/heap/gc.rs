@@ -1087,4 +1087,80 @@ mod tests {
             assert!(heap.is_live(result));
         }
     }
+
+    /// Two requests pending at once behind a scope: each is served (two
+    /// collections), a thread that started entering heap access while both
+    /// were pending resumes once the first is served, a parked run resumes,
+    /// and the request flag clears only after the last one.
+    #[test]
+    fn concurrent_requests_are_each_served_and_waiters_resume() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        const HANDSHAKE: Duration = Duration::from_secs(10);
+        let wait_for = |what: &str, cond: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + HANDSHAKE;
+            while !cond() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::yield_now();
+            }
+        };
+
+        let rt = Runtime::new();
+        let heap = rt.heap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let arg = rt.scope(|s| {
+            let o = s.new_object();
+            s.persist(o)
+        });
+        let task = rt.spawn(&spin_until_stopped(), &[&arg]).unwrap();
+        drop(arg);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut host = SpinHost {
+            entered: Some(entered_tx),
+            stop: Arc::clone(&stop),
+            deadline: Instant::now() + HANDSHAKE,
+        };
+        let runner = std::thread::spawn(move || {
+            match task.run_with(crate::Budget::UNLIMITED, &mut host).unwrap() {
+                RunOutcome::Complete(r) => r,
+                other => panic!("{other:?}"),
+            }
+        });
+        entered_rx.recv_timeout(HANDSHAKE).unwrap();
+
+        let (seen_tx, seen_rx) = mpsc::channel();
+        std::thread::scope(|t| {
+            rt.scope(|s| {
+                let requesters: Vec<_> = (0..2)
+                    .map(|_| t.spawn(|| rt.request_collection()))
+                    .collect();
+                wait_for("two pending requests", &|| lock(&heap.gc).pending == 2);
+                assert!(rt.collection_requested());
+                // Entering while both are pending: waits for the first.
+                t.spawn(|| {
+                    seen_tx
+                        .send(rt.scope(|_| rt.heap_stats().collections))
+                        .unwrap()
+                });
+                assert_eq!(rt.heap_stats().collections, 0, "held by this scope");
+                let stats = s.released(move || {
+                    requesters
+                        .into_iter()
+                        .map(|r| r.join().unwrap().unwrap())
+                        .collect::<Vec<_>>()
+                });
+                assert_eq!(stats.len(), 2);
+                assert!(stats.iter().all(|st| st.live == 1), "{stats:?}");
+            });
+        });
+        assert!(seen_rx.recv_timeout(HANDSHAKE).unwrap() >= 1);
+        assert_eq!(rt.heap_stats().collections, 2);
+        assert!(!rt.collection_requested());
+        assert_eq!(lock(&heap.gc).pending, 0);
+        // The parked run resumes and finishes with its frame's object.
+        stop.store(true, Ordering::Release);
+        let result = runner.join().unwrap();
+        assert!(heap.is_live(object_id(result.value_in(heap).unwrap())));
+    }
 }

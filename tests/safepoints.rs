@@ -228,6 +228,47 @@ fn a_running_task_parks_at_a_safepoint_and_its_frames_are_roots() {
     assert!(result.same_object(&weak_kept.upgrade().unwrap()));
 }
 
+/// The backward branch alone is a poll point: a loop that never allocates
+/// or calls still lets a requested collection run, and its frame's object
+/// survives.
+#[test]
+fn an_allocation_free_loop_parks_at_its_backward_branch() {
+    // function(kept) { do {} while (host_effect(0, null)); return kept; }
+    let mut asm = Assembler::new();
+    let (top, done) = (asm.label(), asm.label());
+    asm.bind(top);
+    asm.constant(Primitive::Null).host_effect(0);
+    asm.jump_if_false(done).jump(top);
+    asm.bind(done);
+    asm.get_local(0).op(Opcode::Return);
+    let exe = asm.finish("allocation-free-loop", 1, 1).unwrap();
+
+    let rt = Runtime::new();
+    let kept = new_rooted_object(&rt);
+    let weak = kept.downgrade();
+    let garbage = new_rooted_object(&rt).downgrade();
+    let task = rt.spawn(&exe, &[&kept]).unwrap();
+    drop(kept);
+    let stop = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let worker = {
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            let mut host = LoopHost::new(entered_tx, stop);
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap()
+        })
+    };
+    entered_rx.recv_timeout(HANDSHAKE).unwrap();
+    // The loop cannot exit before `stop`, so the collection completes only
+    // because the run parks at its backward branch.
+    let stats = rt.request_collection().unwrap();
+    assert_eq!((stats.live, stats.reclaimed), (1, 1));
+    assert!(weak.is_live() && !garbage.is_live());
+    stop.store(true, Ordering::Release);
+    let result = complete(worker.join().unwrap());
+    assert!(result.same_object(&weak.upgrade().unwrap()));
+}
+
 #[test]
 fn threads_entering_heap_access_wait_for_a_pending_request() {
     let rt = Runtime::new();
