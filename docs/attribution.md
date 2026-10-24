@@ -343,3 +343,15 @@ A minimal asserting helper and invocation were added; the QuickJS MIT
 copyright and permission notice from `research/quickjs/LICENSE` is retained
 in the fixture. This is a synthetic fixture, not light-cljs output.
 The Rust representation and tests were written afresh, without copying C.
+
+## Regular expression pattern parser (clj-quickjs-186)
+
+`src/regexp/parse.rs::tests::annex_b_and_escapes` adapts the parse-level
+patterns from `research/quickjs/tests/test_builtin.js::test_regexp`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained above that
+test. Other tests are synthetic fixtures, not light-cljs output.
+`get_class_atom`, `re_parse_term`, `re_parse_captures`, `re_parse_char_class`,
+`re_parse_alternative`, `re_parse_disjunction` and `lre_compile` in
+`research/quickjs/libregexp.c` at that revision were consulted as semantic
+references. No upstream implementation was copied or linked.

@@ -275,7 +275,7 @@ fn in_ranges(table: &[(u32, u32)], c: char) -> bool {
 }
 
 /// IdentifierStartChar: `ID_Start`, `$` or `_`.
-fn is_ident_start(c: char) -> bool {
+pub(crate) fn is_ident_start(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphabetic() || c == '$' || c == '_'
     } else {
@@ -284,7 +284,7 @@ fn is_ident_start(c: char) -> bool {
 }
 
 /// IdentifierPartChar: `ID_Continue`, `$`, ZWNJ or ZWJ.
-fn is_ident_part(c: char) -> bool {
+pub(crate) fn is_ident_part(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || c == '$' || c == '_'
     } else {

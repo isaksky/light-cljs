@@ -90,6 +90,8 @@ pub mod task;
 mod value;
 pub mod vm;
 
+pub mod regexp;
+
 pub use atom::{AtomError, AtomErrorKind, CasOutcome, Publisher};
 pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
 pub use dep::{

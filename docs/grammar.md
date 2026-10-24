@@ -466,7 +466,8 @@ checks left to later stages:
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
   Pattern early errors are clj-quickjs-56. RegExp objects and matching are
-  deferred (clj-quickjs-186–194), so compilation rejects literals explicitly
+  deferred (clj-quickjs-187–194); the standalone pattern parser is available
+  (clj-quickjs-186). Compilation rejects literals explicitly
   with `Unsupported` naming RegExp objects.
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
@@ -3122,3 +3123,20 @@ consuming iterables. Map iteration and `forEach` (clj-quickjs-170), BigInt
 keys (clj-quickjs-171) are deferred. Generic Object.prototype.toString
 consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
 calling it on a Map explicitly fails with UnsupportedOperand.
+
+## Regular expression pattern parsing API (clj-quickjs-186)
+
+Execution: the Rust `regexp::parse::parse` entry point validates UTF-16
+pattern text and flags to an arena IR; it does not execute patterns.
+Supported forms include alternatives, captures and named/forward references,
+noncapturing and scoped i/m/s groups, assertions and lookaround, greedy/lazy
+quantifiers, character classes/ranges, character/class escapes, Annex B
+non-Unicode forms, and strict u-mode parsing with surrogate-pair joining.
+Errors include messages and UTF-16 offsets (flag errors index the flags).
+Quantifier counts above u64::MAX fail explicitly.
+
+Explicit gaps: v patterns and Unicode property escapes are deferred to
+clj-quickjs-194/-192. Pattern validation at literal sites remains
+clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects,
+matching, flag-dependent matching and methods remain clj-quickjs-187–193.
+Compiling a literal continues to report `Unsupported` for RegExp objects.

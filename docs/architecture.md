@@ -4445,3 +4445,40 @@ step, preserving observable conversions in the existing continuation.
 
 The unchanged upstream `rope_concat`/`test_rope` functions run in
 `tests/fixtures/js/quickjs_rope.js`, invoked by `upstream_string_rope`.
+
+## Regular expression pattern IR (clj-quickjs-186)
+
+The engine is in-tree: its parser, IR and eventual backtracking matcher belong
+in `src/regexp/`. No regex crate or C engine is used. ECMAScript backreferences,
+lookaround, Annex B escapes, UTF-16 lone surrogates and capture-reset semantics
+need an ECMAScript engine rather than the Rust `regex` crate's language.
+`research/quickjs/libregexp.c` at revision `7d1c13c5d8f8` is a semantic reference
+only; this Rust parser was written independently.
+
+`regexp::parse::parse(&JsString, &JsString)` takes pattern text (without slash
+delimiters) and flags. It returns an owned, validated `ir::Pattern` or a
+`SyntaxError { message, offset }`. Offsets count UTF-16 code units within the
+pattern; flag-validation and unsupported-v errors instead index the flags.
+The IR is a flat arena with backward node edges. Explicit group frames parse
+nested disjunctions without Rust recursion; destruction is flat as well.
+One lexical pass counts captures, permitting forward decimal/named references
+and Annex B's fallback from out-of-range decimal references to octal escapes.
+Capture indices begin at one and retain opening-parenthesis order and names.
+Lookaround records direction/polarity; repetition records minimum, maximum
+and greediness; classes preserve ranges, built-in sets and negation for the
+matcher. Modifiers record scoped i/m/s additions and removals. There are no
+runtime values or GC edges in the IR.
+
+Non-Unicode parsing implements Annex B identity, control and octal escapes,
+literal malformed braces, class-escape range endpoints, and quantified
+lookahead. Unicode parsing enforces strict escapes and syntax characters,
+combines raw or fixed-width escaped surrogate pairs, and preserves lone
+surrogates. Capture names reuse the frontend's Unicode 16.0.0 identifier
+predicates, including escaped names. Duplicate names are rejected globally.
+Quantifier counts have an explicit u64 implementation limit and overflow
+returns a positioned error. Flags `dgimsuvy` are validated, but v patterns
+and u-mode property escapes fail explicitly pending clj-quickjs-194/-192.
+This parser introduces no matching or JavaScript RegExp objects. Literal-site
+early errors must reuse it in clj-quickjs-56. The matcher in clj-quickjs-187
+will be a leaf native with a documented step limit and a catchable error
+on exhaustion, per the engine policy decision.

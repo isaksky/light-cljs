@@ -2732,3 +2732,16 @@ iteration/forEach and BigInt keys. Symbol keys compare by identity;
 `Map.prototype[Symbol.toStringTag]` is "Map". Generic Object.prototype.toString
 consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
 calling it on a Map explicitly fails with UnsupportedOperand.
+
+### Regular expression pattern parser (clj-quickjs-186)
+
+Supported: `regexp::parse::parse(&JsString, &JsString)` validates UTF-16
+patterns and flags to an owned arena IR with positioned errors. It handles
+groups, alternatives, assertions/lookaround, captures and forward references,
+quantifiers, classes, Annex B escapes and strict u-mode parsing, preserving
+lone surrogates. Run `cargo test --lib regexp::parse::tests::`.
+
+Deferred: JavaScript RegExp objects and matching, literal-site early errors,
+v grammar and Unicode property escapes. Quantifier counts above u64::MAX
+return an explicit error. See `docs/architecture.md`, "Regular expression
+pattern IR", and `docs/grammar.md` for the API boundary.
