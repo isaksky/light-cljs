@@ -158,6 +158,81 @@ fn task_frames_retain_values_between_runs_and_results_outlive_the_task() {
 }
 
 #[test]
+fn task_operands_retain_values_between_runs() {
+    let rt = Runtime::new();
+    let mut asm = Assembler::new();
+    asm.op(Opcode::NewObject).op(Opcode::Return);
+    let task = rt
+        .spawn(&asm.finish("pending-return", 0, 0).unwrap(), &[])
+        .unwrap();
+    let outcome = task
+        .run_with(Budget::instructions(1), &mut NoEffects)
+        .unwrap();
+    assert!(matches!(outcome, RunOutcome::Yielded));
+    // The object is reachable only from the saved operand stack.
+    let stats = rt.collect().unwrap();
+    assert_eq!((stats.live, stats.reclaimed), (1, 0));
+    let result = complete(task.run().unwrap());
+    let weak = result.downgrade();
+    rt.collect().unwrap();
+    assert!(weak.upgrade().unwrap().same_object(&result));
+    drop(result);
+    assert_eq!(rt.collect().unwrap().reclaimed, 1);
+    assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+}
+
+#[test]
+fn weak_upgrade_roots_an_otherwise_unrooted_live_object() {
+    let rt = Runtime::new();
+    // The scope has closed: nothing roots the object, but no collection ran.
+    let weak = rt.scope(|s| {
+        let o = s.new_object();
+        s.downgrade(o)
+    });
+    let revived = weak.upgrade().expect("not collected yet");
+    for _ in 0..2 {
+        let stats = rt.collect().unwrap();
+        assert_eq!((stats.live, stats.reclaimed), (1, 0));
+    }
+    assert!(weak.upgrade().unwrap().same_object(&revived));
+    drop(revived);
+    assert_eq!(rt.collect().unwrap().reclaimed, 1);
+    assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+}
+
+#[test]
+fn collection_recovers_after_a_host_panic() {
+    struct Panic;
+    impl Host for Panic {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            panic!("host bug")
+        }
+    }
+    let rt = Runtime::new();
+    let mut asm = Assembler::new();
+    asm.constant(Primitive::Null)
+        .host_effect(0)
+        .op(Opcode::Return);
+    let exe = asm.finish("panicking-effect", 1, 1).unwrap();
+    let arg = new_rooted_object(&rt);
+    let weak = arg.downgrade();
+    let task = rt.spawn(&exe, &[&arg]).unwrap();
+    drop(arg); // Now reachable only from the task's locals.
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        task.run_with(Budget::UNLIMITED, &mut Panic)
+    }));
+    assert!(run.is_err());
+    // The unwound guard deregistered its mutator, and the poisoned task's
+    // saved state is still traced.
+    let stats = rt.collect().expect("no mutator leaked by the panic");
+    assert_eq!((stats.live, stats.reclaimed), (1, 0));
+    assert!(weak.is_live());
+    drop(task);
+    assert_eq!(rt.collect().unwrap().reclaimed, 1);
+    assert!(!weak.is_live());
+}
+
+#[test]
 fn collection_refuses_while_a_run_guard_exists() {
     let rt = Runtime::new();
     let arg = new_rooted_object(&rt);
