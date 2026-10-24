@@ -550,7 +550,9 @@ Supported:
 - Contract: "Consumer cancellation" in `src/task.rs` and "Cancellation" in
   `src/dep.rs` module docs. Tests force each handoff window with hooks
   (`cargo test --lib task::cancel_tests`) and race cancellation against
-  parking and settlement with barriers (`cargo test --test cancellation`).
+  parking and settlement with barriers (`cargo test --test cancellation`;
+  consumers run the synthetic source fixture
+  `tests/fixtures/js/cancel_consumer.js`).
 
 Deferred:
 

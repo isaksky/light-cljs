@@ -599,7 +599,9 @@ Design: `design.md` §§8, 10, 15.
   second cancellation gets `AlreadyComplete`.
 - **Tests.** `src/task/cancel_tests.rs` forces every window with hooks
   (including the new `CancelBeforeCas`); `tests/cancellation.rs` races
-  parking consumers, settlement and a canceller with barriers.
+  parking consumers, settlement and a canceller with barriers; its
+  consumers run the synthetic source fixture
+  `tests/fixtures/js/cancel_consumer.js`.
 - **Deferred.** Polling between VM instructions; language-level
   cancellation semantics (clj-quickjs-27, -28).
 

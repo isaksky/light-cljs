@@ -209,6 +209,12 @@ impl ExecState {
     /// must not be lost. Both only ever add a bit, so the loop terminates.
     /// `Release` publishes the run's effects to the next claim's `Acquire`.
     pub(crate) fn release(&self, execution: u64, end: End) {
+        self.release_with(execution, end, || {});
+    }
+
+    /// [`ExecState::release`] with `before_cas` run after each read of the
+    /// word, as in [`ExecState::park`] (the test hook point).
+    fn release_with(&self, execution: u64, end: End, mut before_cas: impl FnMut()) {
         let mut current = self.0.load(Ordering::Relaxed);
         loop {
             let w = Word(current);
@@ -222,6 +228,7 @@ impl ExecState {
                     Word(Word::new(TERMINAL, execution).0 | CANCELLED)
                 }
             };
+            before_cas();
             match self.0.compare_exchange_weak(
                 current,
                 next.0,
@@ -506,6 +513,31 @@ mod tests {
         assert_eq!(cancel, CancelDelivery::Requested);
         assert_eq!(phase(&s), (Phase::Runnable, n));
         assert!(cancelled(&s));
+    }
+
+    /// A cancellation between a plain release's read and CAS fails the CAS;
+    /// the release rereads and keeps the bit, so the task is runnable with
+    /// the request recorded: the next claim keeps it and every wake of that
+    /// execution is stale. (A store of the word computed before the
+    /// cancellation would lose it and let the task resume ordinarily.)
+    #[test]
+    fn cancellation_between_release_read_and_cas_is_preserved() {
+        let s = ExecState::new();
+        let n = s.claim().unwrap();
+        let mut fired = false;
+        s.release_with(n, End::Runnable, || {
+            if !fired {
+                fired = true;
+                assert_eq!(s.cancel(|| {}), CancelDelivery::Requested);
+            }
+        });
+        assert!(fired);
+        assert_eq!(phase(&s), (Phase::Runnable, n));
+        assert!(cancelled(&s), "the release kept the request");
+        let next = s.claim().unwrap();
+        assert!(cancelled(&s), "the claim kept the request");
+        assert_eq!(s.wake(next, || {}), Delivery::Stale);
+        assert_eq!(s.park(next, || {}), Park::Cancelled);
     }
 
     /// A cancellation between park's read and CAS fails the CAS; park

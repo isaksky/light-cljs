@@ -8,17 +8,18 @@
 //! barrier or a bounded join.
 //!
 //! Needs are issued from Rust through the run guard, standing in for the
-//! `__rt.need` VM operation of pellet clj-quickjs-23. Consumer tasks run a
-//! trivial hand-assembled program that is never executed: an early VM test
-//! fixture, not JavaScript source support.
+//! `__rt.need` VM operation of pellet clj-quickjs-23. Consumer tasks run
+//! JavaScript source: the synthetic fixture `fixtures/js/cancel_consumer.js`
+//! (not light-cljs output), compiled with `frontend::compile_script`.
 
 use std::collections::HashMap;
 use std::sync::Barrier;
 use std::thread;
 
+use clj_quickjs::frontend::compile_script;
 use clj_quickjs::{
-    Assembler, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Need, NeedError,
-    Opcode, Primitive, ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus,
+    Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Need,
+    NeedError, Primitive, ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus,
     ValueView, Wake, WakeHandle,
 };
 
@@ -27,11 +28,16 @@ const KIND: ResultKind = ResultKind::new(4);
 const ITERATIONS: usize = 200;
 const CONSUMERS: usize = 6;
 
+/// The source fixture: a loop that completes with this value.
+const FIXTURE_RESULT: f64 = 4950.0;
+
 fn consumer(rt: &Runtime) -> Task {
-    let mut asm = Assembler::new();
-    asm.constant(Primitive::Undefined).op(Opcode::Return);
-    rt.spawn(&asm.finish("consumer", 0, 0).unwrap(), &[])
-        .unwrap()
+    let exe = compile_script(
+        "cancel_consumer",
+        include_str!("fixtures/js/cancel_consumer.js"),
+    )
+    .unwrap();
+    rt.spawn(&exe, &[]).unwrap()
 }
 
 /// Consumers subscribe, then (released by the barrier) park on their own
@@ -153,6 +159,13 @@ fn consumer_cancellation_races_settlement_without_lost_or_double_enqueue() {
                     (_, other) => panic!("{context}: read {other:?}"),
                 }
                 assert!(!guard.cancel_requested(), "{context}");
+                // The uncancelled consumer goes on to run its source to the end.
+                match guard.run() {
+                    RunOutcome::Complete(v) => {
+                        assert_eq!(v.view(), ValueView::Number(FIXTURE_RESULT), "{context}")
+                    }
+                    other => panic!("{context}: {other:?}"),
+                }
             }
         }
         for task in &consumers {
@@ -160,7 +173,7 @@ fn consumer_cancellation_races_settlement_without_lost_or_double_enqueue() {
                 assert_eq!(task.status(), TaskStatus::Cancelled, "{context}");
                 assert_eq!(task.try_begin_run().err(), Some(RunError::Finished));
             } else {
-                assert_eq!(task.status(), TaskStatus::Ready, "{context}");
+                assert_eq!(task.status(), TaskStatus::Finished, "{context}");
             }
             assert_eq!(task.dependency_log().waiting(), None, "{context}");
         }
@@ -226,4 +239,62 @@ fn concurrent_cancellations_of_one_consumer_enqueue_it_once() {
         let mut guard = woken[0].try_begin_run().unwrap();
         assert!(matches!(guard.need(DEF, KIND).unwrap(), Need::Ready(_)));
     }
+}
+
+/// A host that refuses every effect (the fixture performs none).
+struct NoEffects;
+
+impl Host for NoEffects {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        Err(format!("unexpected effect {}", call.op))
+    }
+}
+
+/// Two consumers running the same compiled source fixture, cut into
+/// budgeted runs and interleaved. One yields mid-loop and is then cancelled
+/// from another thread: its next run observes the request at run start,
+/// executes nothing more, releases its VM state and ends `Cancelled`. The
+/// other consumer of the same shared code completes the loop with the
+/// fixture's value.
+#[test]
+fn a_yielded_source_consumer_is_cancelled_at_its_next_run() {
+    let rt = Runtime::new();
+    let (cancelled, other) = (consumer(&rt), consumer(&rt));
+    let budget = Budget::instructions(25);
+    for task in [&cancelled, &other] {
+        assert!(matches!(
+            task.run_with(budget, &mut NoEffects).unwrap(),
+            RunOutcome::Yielded
+        ));
+    }
+    assert!(
+        cancelled.source_location().is_some(),
+        "suspended mid-source"
+    );
+    let request = thread::scope(|s| s.spawn(|| cancelled.cancel()).join().unwrap());
+    assert!(matches!(request, Cancel::Requested));
+    assert_eq!(cancelled.status(), TaskStatus::Ready, "not observed yet");
+    assert!(matches!(
+        cancelled.run_with(budget, &mut NoEffects).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+    assert_eq!(cancelled.source_location(), None, "VM state released");
+    assert_eq!(
+        cancelled.run_with(budget, &mut NoEffects).unwrap_err(),
+        RunError::Finished
+    );
+
+    let mut runs = 1;
+    let result = loop {
+        runs += 1;
+        match other.run_with(budget, &mut NoEffects).unwrap() {
+            RunOutcome::Yielded => assert!(runs < 1000, "the loop terminates"),
+            RunOutcome::Complete(v) => break v.view(),
+            outcome => panic!("{outcome:?}"),
+        }
+    };
+    assert!(runs > 2, "the fixture spans several runs");
+    assert_eq!(result, ValueView::Number(FIXTURE_RESULT));
+    assert!(!other.cancel_requested());
 }

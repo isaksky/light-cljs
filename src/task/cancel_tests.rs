@@ -473,6 +473,50 @@ fn cancelled_consumer_roots_are_reclaimable_after_terminal_cleanup() {
     assert_eq!(task.status(), TaskStatus::Cancelled);
 }
 
+/// Terminal cleanup also releases the cancelled task's open transient
+/// builders, even one retained from outside: its draft (and the object in
+/// it) becomes reclaimable while the builder object itself stays alive
+/// through the external root, and any later use reports `OwnerFinished`.
+#[test]
+fn cancellation_releases_open_builder_drafts() {
+    // let b = vector_builder(); conj!(b, {}); /* yield */ return 1;
+    let mut asm = Assembler::new();
+    asm.op(Opcode::NewVectorBuilder).set_local(0);
+    asm.get_local(0)
+        .op(Opcode::NewObject)
+        .op(Opcode::BuilderConj)
+        .op(Opcode::Pop);
+    asm.constant(Primitive::Number(1.0)).op(Opcode::Return);
+    let rt = Runtime::new();
+    let owner = rt.spawn(&asm.finish("owner", 0, 1).unwrap(), &[]).unwrap();
+    let first = owner.run_with(Budget::instructions(6), &mut crate::host::NoHost);
+    assert!(matches!(first, Ok(RunOutcome::Yielded)), "{first:?}");
+    let (_, _, locals) = owner.saved_state().unwrap();
+    let builder = crate::Rooted::new(rt.heap(), locals[0]);
+    assert_eq!(rt.collect().unwrap().reclaimed, 0, "the draft is live");
+
+    assert!(matches!(owner.cancel(), Cancel::Requested));
+    assert!(matches!(owner.run().unwrap(), RunOutcome::Cancelled));
+    let stats = rt.collect().unwrap();
+    assert_eq!(
+        (stats.live, stats.reclaimed),
+        (1, 1),
+        "only the draft's object"
+    );
+    assert!(builder.downgrade().is_live());
+
+    let mut asm = Assembler::new();
+    asm.get_local(0).op(Opcode::Freeze).op(Opcode::Return);
+    let other = rt
+        .spawn(&asm.finish("other", 1, 1).unwrap(), &[&builder])
+        .unwrap();
+    let RunOutcome::Failed(err) = other.run().unwrap() else {
+        panic!("expected Failed");
+    };
+    let expected = crate::BuilderError::OwnerFinished { owner: owner.id() };
+    assert_eq!(err.kind(), crate::VmErrorKind::Builder(expected));
+}
+
 /// Cell cancellation by the embedder (no producer id): every waiter, in
 /// every handoff state, is woken exactly once with the terminal outcome,
 /// redelivery is stale, and each resumed need reads `Need::Cancelled`
