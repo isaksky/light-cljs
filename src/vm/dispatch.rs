@@ -280,10 +280,13 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
         Value::Symbol(_) => return Err(Fault::TypeError("cannot convert symbol to string".into())),
-        Value::BigInt(_) => {
-            return Err(Fault::Unsupported(
-                "BigInt ToString is not supported".into(),
-            ));
+        Value::BigInt(n) => {
+            // Long values must go through native::Convert; this helper is
+            // also used by leaf operations on already converted operands.
+            let mut formatter = crate::value::bigint::BigIntToString::new(n, 10);
+            formatter.advance().ok_or(Fault::Internal(
+                "BigInt ToString requires a resumable frame",
+            ))?
         }
         Value::Undefined => JsString::from("undefined"),
         Value::Null => JsString::from("null"),

@@ -151,7 +151,7 @@ impl StringRaw {
             Stage::ElementValue => {
                 let value = Self::value(input)?;
                 self.stage = Stage::ElementString;
-                if matches!(value, Value::Object(_)) {
+                if matches!(value, Value::Object(_) | Value::BigInt(_)) {
                     return Ok(Action::ToString(value));
                 }
                 self.stage = Stage::Substitution;
@@ -176,7 +176,7 @@ impl StringRaw {
                     .cloned();
                 self.stage = Stage::Element;
                 match value {
-                    Some(value @ Value::Object(_)) => {
+                    Some(value @ (Value::Object(_) | Value::BigInt(_))) => {
                         self.stage = Stage::SubstitutionString;
                         Ok(Action::ToString(value))
                     }

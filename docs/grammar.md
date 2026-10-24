@@ -3323,8 +3323,7 @@ instruction, independent of limb count. Every intermediate result obeys the
 Mixing BigInt with Number, boolean, undefined or null throws catchable TypeError
 (`cannot mix BigInt and other types`); unary plus on BigInt also throws TypeError.
 Object operands use resumable ToPrimitive in source order, including waits.
-Explicit gaps: string concatenation involving BigInt still fails explicitly
-pending BigInt ToString (clj-quickjs-202).
+String concatenation involving BigInt uses decimal ToString (clj-quickjs-202).
 
 ### BigInt division, remainder and exponentiation (clj-quickjs-199)
 
@@ -3536,10 +3535,8 @@ yield through native continuations. Each advance handles at most 256 bounded
 scan/limb steps (a decimal group reads at most nine digits); an existing string
 rope may first flatten in linear time.
 
-Explicit gaps: BigInt wrapper objects, prototype conversion methods/ToString,
-`Number(bigint)` and `asIntN`/`asUintN` remain with their sibling pellets.
-Reads of deferred BigInt `toString`/`valueOf` fail with UnsupportedOperand,
-including reads during ToPrimitive on BigInt.prototype.
+Explicit gaps: BigInt wrapper objects, `Number(bigint)` and `asIntN`/`asUintN`
+remain with their sibling pellets. Prototype conversion is supported below.
 
 ### Execution: Date UTC field access (clj-quickjs-181)
 
@@ -3652,3 +3649,25 @@ folding and the other deferred RegExp flags remain separate work.
 'abc'.replace(/(?<x>b)/, '<$<x>>') === 'a<b>c';
 'ab'.replaceAll('', (match, offset) => offset) === '0a1b2';
 ```
+
+### BigInt string formatting (clj-quickjs-202)
+
+Lexical grammar: existing method calls and template substitutions suffice;
+no new token or opcode is needed.
+
+Execution: `BigInt.prototype.toString(radix)` accepts bases 2 through 36,
+uses lower-case digits and a minus sign, and defaults to decimal when radix
+is absent or undefined. Its length is 0. Radix uses ToIntegerOrInfinity;
+invalid bases throw RangeError and BigInt/Symbol radices throw TypeError.
+Receiver branding precedes observable radix coercion. `valueOf()` returns
+the primitive unchanged. Both methods reject other receivers, including
+the unbranded `BigInt.prototype`, with TypeError.
+
+Shared ToString emits decimal digits without an `n` suffix for String calls
+and construction, templates, string concatenation, computed property keys,
+and other built-ins that apply ToString. Object callbacks retain the original
+conversion hint and run once. Long formatting yields in bounded native steps,
+including after object conversion; it survives collection and migration.
+
+Explicit gaps: wrapper objects and locale-sensitive `toLocaleString` remain
+unsupported; JSON serialization of BigInts still throws TypeError.

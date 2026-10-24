@@ -412,16 +412,10 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 }
 
 /// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// conversions.
+/// Number conversion and wrapper objects.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "BigInt.prototype.toString()",
-        "BigInt.prototype.valueOf()",
-        "String(BigInt.prototype)",
-        "(1n).toString()",
-        "(1n).valueOf()",
-        "String(1n)",
         "Number(1n)",
         "new Number(1n)",
         "Number({ valueOf() { return 1n; } })",
@@ -429,8 +423,6 @@ fn bigint_deferred_operations_fail_explicitly() {
         "try { Number(1n); } catch (e) { 99; }",
         "try { new Number(1n); } catch (e) { 99; }",
         "try { Number({ valueOf() { return 1n; } }); } catch (e) { 99; }",
-        "({})[1n]",
-        "let o = {}; o[1n] = 3",
         "Object(1n)",
         "Object.prototype.valueOf.call(1n)",
         "Object.prototype.toString.call(1n)",
@@ -469,6 +461,159 @@ fn bigint_deferred_operations_fail_explicitly() {
         ),
         ValueView::Bool(true)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. The first three rows mirror
+/// QuickJS test_bigint3 (7d1c13c5d8f8); see docs/attribution.md.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon. Permission is hereby granted, free
+/// of charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the Software,
+/// and to permit persons to whom the Software is furnished to do so, subject
+/// to the following conditions: The above copyright notice and this permission
+/// notice shall be included in all copies or substantial portions of the
+/// Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+/// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+/// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+/// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+/// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+/// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+/// USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn bigint_to_string_with_radix() {
+    for src in [
+        "(1n << 100n).toString(10) === '1267650600228229401496703205376'",
+        "(-1n << 100n).toString(36) === '-3ewfdnca0n6ld1ggvfgg'",
+        "(1n << 100n).toString(8) === '2000000000000000000000000000000000'",
+        "(0n).toString() === '0' && (-0n).toString(2) === '0'",
+        "(-255n).toString(16) === '-ff' && (255n).toString(2) === '11111111'",
+        "(10n ** 2000n).toString().length === 2001",
+        "'x' + 12n === 'x12' && 12n + 'x' === '12x' && String(-5n) === '-5'",
+        "`${10n}` === '10' && (1n).valueOf() === 1n",
+        "(1n).toString() === '1' && String(1n) === '1'",
+        "(42n).toString(undefined) === '42' && (255n).toString('16.9') === 'ff'",
+        "BigInt.prototype.toString.length === 0 && BigInt.prototype.valueOf.length === 0",
+        "BigInt.prototype.toString.call(-255n, 16) === '-ff' && BigInt.prototype.valueOf.call(1n) === 1n",
+        "let calls = 0; (255n).toString({valueOf() { calls++; return 16; }}) === 'ff' && calls === 1",
+        "let x = {valueOf() { return 12n; }}; 'x' + x === 'x12' && x + 'x' === '12x'",
+        "let x = {toString() { return -5n; }}; String(x) === '-5' && `${x}` === '-5'",
+        "let o = {}; o[12n] = 7; o['12'] === 7 && ({12: 3})[12n] === 3",
+        "[1n, -2n].join(3n) === '13-2' && ''.concat(12n) === '12'",
+        "parseInt(255n, 16) === 597 && Symbol.keyFor(Symbol.for(12n)) === '12'",
+        "String.raw({raw: [1n, 2n]}, 3n) === '132'",
+        "let o = {}; Object.defineProperty(o, 12n, {value: 7, configurable: true}); Object.getOwnPropertyDescriptor(o, 12n).value === 7 && 12n in o && delete o[12n]",
+        "new String(12n).valueOf() === '12' && String(Symbol(12n)) === 'Symbol(12)'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (src, kind) in [
+        ("(1n).toString(1)", "RangeError"),
+        ("(1n).toString(37)", "RangeError"),
+        ("(1n).toString(null)", "RangeError"),
+        ("(1n).toString(NaN)", "RangeError"),
+        ("(1n).toString(Infinity)", "RangeError"),
+        (
+            "(1n).toString({valueOf() { return undefined; }})",
+            "RangeError",
+        ),
+        ("(1n).toString(10n)", "TypeError"),
+        ("(1n).toString(Symbol())", "TypeError"),
+        ("BigInt.prototype.toString.call(1)", "TypeError"),
+        ("BigInt.prototype.valueOf.call('1')", "TypeError"),
+        ("BigInt.prototype.toString()", "TypeError"),
+        ("BigInt.prototype.valueOf()", "TypeError"),
+        ("String(BigInt.prototype)", "TypeError"),
+        (
+            "BigInt.prototype.toString.call(1, {valueOf() { throw 99; }})",
+            "TypeError",
+        ),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let ok = false; try {{ {src}; }} catch(e) {{ ok = e instanceof {kind}; }} ok"
+            )),
+            ValueView::Bool(true),
+            "{src}"
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Formatter buffers survive
+/// dependency callbacks, collection at yields and execution on new threads.
+#[test]
+fn bigint_to_string_yields_collects_and_migrates() {
+    for expression in [
+        "value.toString().length === 4000",
+        "String(value).length === 4000",
+        "('' + value).length === 4000",
+        "`${value}`.length === 4000",
+        "[value].join('').length === 4000",
+        "String.raw({raw: ['', '']}, value).length === 4000",
+        "let o = {}; o[value] = 1; Object.keys(o)[0].length === 4000",
+        "let o = {}; Object.defineProperty(o, __rt.need(2021, 1), {value: 1}); Object.keys(o).length === 0 && Object.getOwnPropertyNames(o)[0].length === 4000",
+        "Symbol.keyFor(Symbol.for(value)).length === 4000",
+        "new Error(value).message.length === 4000",
+        "''.concat(value).length === 4000",
+        "String.prototype.charAt.call(value, 0) === '1'",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let calls = 0; let value = {{valueOf() {{ calls++; return __rt.need(2021, 1); }}, toString() {{ calls++; return __rt.need(2021, 1); }} }}; {expression}"
+        );
+        // Primitive toString needs the BigInt receiver; other expressions
+        // exercise ToPrimitive callbacks on the object above.
+        let source = if expression.starts_with("value.toString()") {
+            "let value = __rt.need(2021, 1); value.toString().length === 4000".to_owned()
+        } else {
+            source
+        };
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut yields = 0;
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value =
+                        clj_quickjs::JsBigInt::from_digits(&format!("1{}", "0".repeat(3999)), 10)
+                            .unwrap();
+                    let value = rt.root(Primitive::BigInt(value));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waits, 1);
+                    assert!(yields > 100, "formatter must yield: {yields}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "{expression}");
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output. Primitive enumeration has no

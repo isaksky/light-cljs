@@ -134,7 +134,7 @@ impl Intl {
             return Ok(Action::Continue);
         }
         self.stage = Stage::OptionString;
-        if matches!(value, Value::Object(_)) {
+        if matches!(value, Value::Object(_) | Value::BigInt(_)) {
             return Ok(Action::ToString(value));
         }
         self.apply_option(dispatch::to_js_string(&value)?.to_string_lossy())

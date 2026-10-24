@@ -373,11 +373,14 @@ enum ConvertTarget {
         first: u8,
         time: f64,
     },
+
+    BigIntToString,
 }
 
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    BigIntFormat(Box<crate::value::bigint::BigIntToString>),
     BigIntParse {
         parser: Box<crate::value::bigint::StringToBigInt>,
         instr: Option<Instr>,
@@ -452,6 +455,7 @@ enum NativeState {
     /// The original receiver stays in `operands[next]` until its method
     /// returns a primitive; completed operands are never converted again.
     Convert {
+        formatter: Option<Box<crate::value::bigint::BigIntToString>>,
         target: ConvertTarget,
         operands: Vec<Value>,
         next: usize,
@@ -529,7 +533,7 @@ impl ArrayJoin {
     }
 
     fn element(&mut self, value: Value) -> Result<Action, Fault> {
-        if matches!(value, Value::Object(_)) {
+        if matches!(value, Value::Object(_) | Value::BigInt(_)) {
             self.stage = JoinStage::ElementString;
             return Ok(Action::ToString(value));
         }
@@ -573,7 +577,7 @@ impl ArrayJoin {
                 if matches!(self.separator, Value::Undefined) {
                     self.separator = Value::String(JsString::from(","));
                 }
-                if matches!(self.separator, Value::Object(_)) {
+                if matches!(self.separator, Value::Object(_) | Value::BigInt(_)) {
                     return Ok(Action::ToString(self.separator.clone()));
                 }
                 self.separator = Value::String(dispatch::to_js_string(&self.separator)?);
@@ -695,6 +699,7 @@ impl Trace for NativeFrame {
             }
             NativeState::StringSearch(_)
             | NativeState::StringBuild(_)
+            | NativeState::BigIntFormat(_)
             | NativeState::NumberParse(_) => {} // No heap edges.
 
             NativeState::PropertyCall {
@@ -804,6 +809,7 @@ pub(crate) fn typed_array_write(
     push_native(
         state,
         NativeState::Convert {
+            formatter: None,
             target: ConvertTarget::TypedArrayWrite,
             operands: vec![
                 base.clone(),
@@ -896,10 +902,15 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         .len()
         .checked_sub(count)
         .ok_or(Fault::Internal("operand stack underflow"))?;
-    if !ops[at + first..at + end]
-        .iter()
-        .any(|v| matches!(v, Value::Object(_)))
-    {
+    if !ops[at + first..at + end].iter().any(|v| {
+        matches!(v, Value::Object(_))
+            || (matches!(v, Value::BigInt(_))
+                && (matches!(
+                    instr,
+                    ToString | GetElem | ToPropertyKey | Delete | PutElem | In
+                ) || (instr == Plus
+                    && ops[at..].iter().any(|v| matches!(v, Value::String(_))))))
+    }) {
         return Ok(false);
     }
     let operands = ops[at..].to_vec();
@@ -913,6 +924,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         pc: state.top().pc.saturating_sub(1),
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
+            formatter: None,
             target: ConvertTarget::Instruction(instr),
             operands,
             next: first,
@@ -1113,7 +1125,7 @@ pub(crate) fn start_builtin(
     }
     if which == Builtin::ObjectDefineProperty
         && !construct
-        && !matches!(args.get(1), Some(Value::Object(_)))
+        && !matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_)))
     {
         let desc = descriptor::DefineProperty::new(args)?;
         state.truncate_operands(state.stack_len() - popped)?;
@@ -1222,6 +1234,21 @@ pub(crate) fn start_builtin(
                 Hint::Number,
             )
         }
+        Builtin::BigIntPrototypeToString if !construct => {
+            if !matches!(this, Value::BigInt(_)) {
+                return Err(Fault::TypeError("not a BigInt".into()));
+            }
+            let radix = args
+                .first()
+                .filter(|v| !matches!(v, Value::Undefined))
+                .cloned()
+                .unwrap_or(Value::Number(10.0));
+            (
+                ConvertTarget::BigIntToString,
+                vec![radix, this.clone()],
+                Hint::Number,
+            )
+        }
         Builtin::NumberPrototypeToString if !construct => {
             // thisNumberValue must reject an invalid receiver before any
             // observable radix conversion, even through call/apply/bind.
@@ -1290,7 +1317,7 @@ pub(crate) fn start_builtin(
             )
         }
         Builtin::SymbolFor if !construct => {
-            let Some(value @ Value::Object(_)) = args.first() else {
+            let Some(value @ (Value::Object(_) | Value::BigInt(_))) = args.first() else {
                 return Ok(false);
             };
             (
@@ -1303,7 +1330,11 @@ pub(crate) fn start_builtin(
             if matches!(which, Builtin::Symbol | Builtin::BigInt) && construct {
                 return Ok(false);
             }
-            let Some(value @ Value::Object(_)) = args.first() else {
+            let Some(value) = args.first().filter(|v| {
+                matches!(v, Value::Object(_))
+                    || (matches!(which, Builtin::String | Builtin::Symbol)
+                        && matches!(v, Value::BigInt(_)))
+            }) else {
                 return Ok(false);
             };
             (
@@ -1321,7 +1352,7 @@ pub(crate) fn start_builtin(
             )
         }
         Builtin::ObjectDefineProperty | Builtin::ObjectGetOwnPropertyDescriptor
-            if !construct && matches!(args.get(1), Some(Value::Object(_))) =>
+            if !construct && matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_))) =>
         {
             if which == Builtin::ObjectGetOwnPropertyDescriptor
                 && matches!(args.first(), None | Some(Value::Null | Value::Undefined))
@@ -1354,7 +1385,9 @@ pub(crate) fn start_builtin(
                 return Ok(false);
             }
             let pos = args.first().cloned().unwrap_or(Value::Undefined);
-            if !matches!(this, Value::Object(_)) && !matches!(pos, Value::Object(_)) {
+            if !matches!(this, Value::Object(_) | Value::BigInt(_))
+                && !matches!(pos, Value::Object(_))
+            {
                 return Ok(false);
             }
             (
@@ -1486,7 +1519,14 @@ pub(crate) fn start_builtin(
     ) {
         (1, 2)
     } else {
-        (0, operands.len())
+        (
+            0,
+            if matches!(target, ConvertTarget::BigIntToString) {
+                1
+            } else {
+                operands.len()
+            },
+        )
     };
     let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
     state.truncate_operands(state.stack_len() - popped)?;
@@ -1497,6 +1537,7 @@ pub(crate) fn start_builtin(
         pc,
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
+            formatter: None,
             target,
             operands,
             next: first,
@@ -1697,6 +1738,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             push_native(
                 state,
                 NativeState::Convert {
+                    formatter: None,
                     target,
                     operands: vec![value],
                     next: 0,
@@ -1869,6 +1911,26 @@ pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), F
     }
 }
 
+/// Operands whose primitive completion is ToString rather than ToNumber.
+fn string_operand(target: ConvertTarget, index: usize) -> bool {
+    use ConvertTarget::*;
+    match target {
+        StringValue | SymbolDescription | SymbolRegistryKey => true,
+        PrimitiveConstructor { which, .. } => {
+            matches!(which, builtin::Builtin::String | builtin::Builtin::Symbol)
+        }
+        Instruction(Instr::ToString) => true,
+        Instruction(Instr::GetElem | Instr::ToPropertyKey | Instr::Delete | Instr::PutElem) => {
+            index == 1
+        }
+        Instruction(Instr::In) | NumberParse { .. } => index == 0,
+        PropertyBuiltin { .. } => index == 1,
+        StringSplit { .. } => index != 1,
+        StringBuiltin { which, .. } => builtin::string_operand_is_text(which, index),
+        _ => false,
+    }
+}
+
 /// Parse a string only after both operands have passed through ToPrimitive.
 /// Invalid strings become NaN, which is unequal/unordered for these operations.
 fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
@@ -1899,6 +1961,10 @@ impl NativeState {
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::BigIntFormat(formatter) => Ok(match formatter.advance() {
+                Some(text) => Action::Return(Value::String(text)),
+                None => Action::Continue,
+            }),
             NativeState::BigIntParse {
                 parser,
                 instr,
@@ -2274,6 +2340,7 @@ impl NativeState {
                         value,
                     } => {
                         *self = NativeState::Convert {
+                            formatter: None,
                             target: ConvertTarget::TypedArrayWrite,
                             operands: vec![target.clone(), target, Value::Number(index), value],
                             next: 3,
@@ -2361,6 +2428,7 @@ impl NativeState {
                 })
             }
             NativeState::Convert {
+                formatter,
                 target,
                 operands,
                 next,
@@ -2369,6 +2437,13 @@ impl NativeState {
                 method,
                 method_get,
             } => {
+                if let Some(pending) = formatter {
+                    let Some(text) = pending.advance() else {
+                        return Ok(Action::Continue);
+                    };
+                    operands[*next] = Value::String(text);
+                    *formatter = None;
+                }
                 match input {
                     Input::Start => {}
                     Input::CallResult(v) => {
@@ -2392,6 +2467,14 @@ impl NativeState {
                 }
                 while *next < *end {
                     let receiver = &operands[*next];
+                    if let Value::BigInt(value) = receiver
+                        && string_operand(*target, *next)
+                    {
+                        *formatter = Some(Box::new(crate::value::bigint::BigIntToString::new(
+                            value, 10,
+                        )));
+                        return Ok(Action::Continue);
+                    }
                     if !matches!(receiver, Value::Object(_)) {
                         if let ConvertTarget::TypedArray { kind, from_buffer } = target {
                             let number =
@@ -2657,6 +2740,20 @@ impl NativeState {
                         builtin::math(which, operands).map(Action::Return)
                     }
                     ConvertTarget::Instruction(instr) => {
+                        // `+` first obtains both primitives with hint default.
+                        // Only a string primitive then selects ToString.
+                        if instr == Instr::Plus
+                            && operands.iter().any(|v| matches!(v, Value::String(_)))
+                            && let Some(index) =
+                                operands.iter().position(|v| matches!(v, Value::BigInt(_)))
+                            && let Value::BigInt(value) = &operands[index]
+                        {
+                            *next = index;
+                            *formatter = Some(Box::new(crate::value::bigint::BigIntToString::new(
+                                value, 10,
+                            )));
+                            return Ok(Action::Continue);
+                        }
                         if let Some(parser) = bigint_comparison(instr, operands) {
                             *self = parser;
                             return Ok(Action::Continue);
@@ -2746,6 +2843,18 @@ impl NativeState {
                         // NaN; only an originally undefined radix means 10.
                         let radix = Value::Number(dispatch::to_number(&operands[0])?);
                         builtin::number_to_string(number, &radix).map(Action::Return)
+                    }
+                    ConvertTarget::BigIntToString => {
+                        // Only an originally undefined radix defaulted to 10.
+                        let radix =
+                            builtin::to_radix(&Value::Number(dispatch::to_number(&operands[0])?))?;
+                        let Value::BigInt(value) = &operands[1] else {
+                            return Err(Fault::Internal("BigInt formatting receiver"));
+                        };
+                        *self = NativeState::BigIntFormat(Box::new(
+                            crate::value::bigint::BigIntToString::new(value, radix),
+                        ));
+                        Ok(Action::Continue)
                     }
                     ConvertTarget::StringBuiltin { which, access, .. } => {
                         if builtin::is_string_build(which) {
@@ -2882,7 +2991,7 @@ impl NativeState {
     /// callback. Allocates nothing and touches no heap object.
     fn fail(&mut self, failure: Failure) -> Action {
         match (self, failure) {
-            (NativeState::BigIntParse { .. }, _) => Action::Unwind,
+            (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Reduce { .. }
                 | NativeState::TypedArray(_)
@@ -3016,6 +3125,7 @@ mod tests {
             .unwrap(),
         );
         let pending = |concat_len| NativeState::Convert {
+            formatter: None,
             method_get: false,
             target: ConvertTarget::StringBuiltin {
                 which: builtin::Builtin::StringPrototypeConcat,

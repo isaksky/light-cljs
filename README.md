@@ -2755,8 +2755,8 @@ survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
 sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
 with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
 TypeError. Arithmetic and bitwise operators are supported below. JavaScript
-ToString, Number conversion and width truncation remain deferred to
-clj-quickjs-202–204 and fail explicitly;
+ToString is supported below; Number conversion and width truncation remain
+deferred to clj-quickjs-203–204 and fail explicitly;
 JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
@@ -2882,8 +2882,8 @@ BigInt `+`, `-`, `*`, unary minus, prefix/postfix `++`/`--` and their compound
 assignments produce exact results, including binding and property updates.
 Mixed numeric types and unary plus throw TypeError; results above 1 Mbit throw
 RangeError before assignment. Object conversion remains resumable. Each
-arithmetic operation consumes one instruction. BigInt string conversion remains
-deferred; division, exponentiation and bitwise operations are supported below.
+arithmetic operation consumes one instruction. BigInt string conversion,
+division, exponentiation and bitwise operations are supported below.
 Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
 `cargo test --lib value::bigint:: -- --test-threads=3`.
 
@@ -3005,8 +3005,21 @@ use that prototype for property lookup and `Object.getPrototypeOf`.
 Objects use resumable ToPrimitive with hint number. String comparison shares
 the parser. Scans and decimal limb work are budgeted, with a 1 Mbit cap and
 catchable RangeError for oversized valid input. Rope flattening may first take
-linear time. Prototype conversion methods and wrappers remain deferred;
-reads of BigInt's deferred `toString`/`valueOf` fail explicitly.
+linear time. Prototype conversion methods are supported below; wrappers
+remain deferred.
+
+Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.
+
+### BigInt string formatting (clj-quickjs-202)
+
+Supported: `BigInt.prototype.toString(radix)` in bases 2–36 and `valueOf()`.
+Invalid radices throw RangeError; invalid receivers throw TypeError.
+Decimal ToString supports `String(bigint)`, templates, string `+`, computed
+property keys and built-in string coercions. Large conversions yield through
+task-owned native state, using base-10^9 chunks for decimal output and direct
+bit extraction for power-of-two radices. The 1 Mbit magnitude cap still applies.
+Deferred: BigInt wrappers and locale-sensitive `toLocaleString`.
 
 Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.

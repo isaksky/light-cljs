@@ -318,6 +318,9 @@ pub(crate) enum Builtin {
 
     StringPrototypeReplace,
     StringPrototypeReplaceAll,
+
+    BigIntPrototypeToString,
+    BigIntPrototypeValueOf,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -365,6 +368,9 @@ impl Builtin {
             Builtin::TypedArraySet => "set",
             Builtin::TypedArrayFill => "fill",
             Builtin::TypedArrayJoin => "join",
+
+            Builtin::BigIntPrototypeToString => "toString",
+            Builtin::BigIntPrototypeValueOf => "valueOf",
             Builtin::IntlLocale => "Locale",
             Builtin::IntlGetCanonicalLocales => "getCanonicalLocales",
             Builtin::IntlLocaleToString => "toString",
@@ -499,6 +505,8 @@ impl Builtin {
             Builtin::TypedArraySet => 1,
             Builtin::TypedArrayFill => 1,
             Builtin::TypedArrayJoin => 1,
+
+            Builtin::BigIntPrototypeToString | Builtin::BigIntPrototypeValueOf => 0,
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
@@ -785,6 +793,13 @@ pub(crate) fn call(
                 .map(Value::String)
                 .unwrap_or(Value::Undefined)),
             _ => Err(Fault::TypeError("Symbol.keyFor requires a symbol".into())),
+        },
+        Builtin::BigIntPrototypeToString => Err(Fault::Internal(
+            "BigInt formatting requires a resumable frame",
+        )),
+        Builtin::BigIntPrototypeValueOf => match this {
+            Value::BigInt(_) => Ok(this.clone()),
+            _ => Err(Fault::TypeError("not a BigInt".into())),
         },
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
@@ -1101,6 +1116,13 @@ pub(crate) fn string_build(
 /// Receiver validation precedes radix coercion; the continuation retains only
 /// the validated numeric value and the radix operand.
 pub(crate) fn number_to_string(n: f64, radix: &Value) -> Result<Value, Fault> {
+    let radix = to_radix(radix)?;
+    Ok(Value::String(JsString::from(
+        number_to_string_radix(n, radix).as_str(),
+    )))
+}
+
+pub(crate) fn to_radix(radix: &Value) -> Result<u32, Fault> {
     let radix = if matches!(radix, Value::Undefined) {
         10.0
     } else {
@@ -1111,9 +1133,7 @@ pub(crate) fn number_to_string(n: f64, radix: &Value) -> Result<Value, Fault> {
             "radix must be between 2 and 36".to_string(),
         ));
     }
-    Ok(Value::String(JsString::from(
-        number_to_string_radix(n, radix as u32).as_str(),
-    )))
+    Ok(radix as u32)
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

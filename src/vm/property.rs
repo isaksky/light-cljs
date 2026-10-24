@@ -225,11 +225,7 @@ pub(crate) fn to_property_key(key: &Value) -> Result<Key, Fault> {
     Ok(match key {
         Value::String(s) => Key::from_name(s),
         Value::Symbol(s) => Key::Symbol(s.clone()),
-        Value::BigInt(_) => {
-            return Err(Fault::Unsupported(
-                "BigInt property keys need ToString, which is not supported".into(),
-            ));
-        }
+        Value::BigInt(_) => Key::from_name(&super::dispatch::to_js_string(key)?),
         Value::Number(n) => match number_index(*n) {
             Some(index) => Key::Index(index),
             None => Key::Name(JsString::from(number_to_string(*n).as_str())),
@@ -653,20 +649,6 @@ fn lookup(
             };
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(Read::property(property, has))),
-                None if realm.is_some_and(|r| id == r.bigint_prototype)
-                    && matches!(key, Key::Name(name)
-                        if name == &JsString::from("toString") || name == &JsString::from("valueOf")) =>
-                {
-                    if has {
-                        return Ok(Some(Read::Value(Value::Undefined)));
-                    }
-                    // Deferred BigInt methods must not expose Object's
-                    // implementations, which would accept the unbranded
-                    // BigInt.prototype and silently return the wrong value.
-                    return Err(Fault::Unsupported(
-                        "BigInt prototype conversion methods are not supported".into(),
-                    ));
-                }
                 None if realm.is_some_and(|r| id == r.date_prototype)
                     && matches!(key, Key::Name(name)
                         if name == &JsString::from("toString") || name == &JsString::from("toJSON")) =>

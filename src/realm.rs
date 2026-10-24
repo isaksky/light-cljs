@@ -987,6 +987,18 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(method, &[])?;
         b.add(shared, method.name(), function, PropertyFlags::METHOD)?;
     }
+    for method in [
+        Builtin::BigIntPrototypeToString,
+        Builtin::BigIntPrototypeValueOf,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(
+            bigint_prototype,
+            method.name(),
+            function,
+            PropertyFlags::METHOD,
+        )?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1667,7 +1679,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 196); // Includes typed-array methods and String replace/replaceAll.
+        assert_eq!(first.all.len(), 198); // Includes typed arrays, replacement and BigInt methods.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

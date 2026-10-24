@@ -586,3 +586,15 @@ lastIndex handling and callback ordering. The Rust continuation and
 substitution code was written independently; no C implementation was copied
 or linked. Replacement tests are synthetic fixtures, not light-cljs output
 or adapted QuickJS test text. Upstream license: `research/quickjs/LICENSE`.
+
+## BigInt string formatting (clj-quickjs-202)
+
+`tests/js_source.rs::bigint_to_string_with_radix` adapts three radix assertions
+from `research/quickjs/tests/test_bigint.js::test_bigint3`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS MIT copyright and permission notice is retained with the test;
+see `research/quickjs/LICENSE`. Other fixtures are synthetic, not light-cljs
+output. `js_thisBigIntValue`, `js_bigint_toString`, `js_bigint_valueOf` and
+`js_bigint_to_string1` in `research/quickjs/quickjs.c` at that revision were
+semantic references; the Rust chunked formatter and native continuation
+changes were written afresh, without adapting upstream implementation code.

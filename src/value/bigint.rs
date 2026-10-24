@@ -876,6 +876,123 @@ fn divide_magnitudes(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     (q, u)
 }
 
+/// Task-owned radix conversion. Non-binary radices divide by the largest
+/// radix power fitting u32 (10^9 for decimal), rather than one digit at a time.
+/// Each advance does at most 256 limb updates or output-digit copies.
+#[derive(Debug)]
+pub(crate) struct BigIntToString {
+    negative: bool,
+    limbs: Vec<u32>,
+    radix: u32,
+    base: u32,
+    width: usize,
+    cursor: usize,
+    remainder: u64,
+    digits: Vec<u16>,
+    output: Vec<u16>,
+    copying: bool,
+    binary_bit: usize,
+}
+
+impl BigIntToString {
+    pub(crate) fn new(value: &JsBigInt, radix: u32) -> Self {
+        assert!((2..=36).contains(&radix));
+        let (negative, limbs) = value.to_sign_magnitude();
+        let mut base = radix;
+        let mut width = 1;
+        while let Some(next) = base.checked_mul(radix) {
+            base = next;
+            width += 1;
+        }
+        let bits = limbs.last().map_or(0, |last| {
+            (limbs.len() - 1) * 32 + 32 - last.leading_zeros() as usize
+        });
+        Self {
+            negative,
+            cursor: limbs.len(),
+            limbs,
+            radix,
+            base,
+            width,
+            remainder: 0,
+            digits: if bits == 0 { vec![b'0' as u16] } else { vec![] },
+            output: vec![],
+            copying: bits == 0,
+            binary_bit: bits,
+        }
+    }
+
+    fn digit(n: u32) -> u16 {
+        (if n < 10 {
+            b'0' + n as u8
+        } else {
+            b'a' + (n - 10) as u8
+        }) as u16
+    }
+
+    pub(crate) fn advance(&mut self) -> Option<super::JsString> {
+        for _ in 0..256 {
+            if self.copying {
+                if self.output.is_empty() && self.negative {
+                    self.output.push(b'-' as u16);
+                }
+                if let Some(digit) = self.digits.pop() {
+                    self.output.push(digit);
+                } else {
+                    return super::JsString::from_owned_code_units(std::mem::take(
+                        &mut self.output,
+                    ));
+                }
+            } else if self.radix.is_power_of_two() {
+                // Direct high-to-low extraction is linear for 2/4/8/16/32.
+                let width = self.radix.trailing_zeros() as usize;
+                let take = if self.output.is_empty() {
+                    (self.binary_bit - 1) % width + 1
+                } else {
+                    width
+                };
+                if self.output.is_empty() && self.negative {
+                    self.output.push(b'-' as u16);
+                }
+                self.binary_bit -= take;
+                let limb = self.binary_bit / 32;
+                let shift = self.binary_bit % 32;
+                let pair = self.limbs[limb] as u64
+                    | ((self.limbs.get(limb + 1).copied().unwrap_or(0) as u64) << 32);
+                self.output
+                    .push(Self::digit(((pair >> shift) & ((1 << take) - 1)) as u32));
+                if self.binary_bit == 0 {
+                    return super::JsString::from_owned_code_units(std::mem::take(
+                        &mut self.output,
+                    ));
+                }
+            } else if self.cursor != 0 {
+                self.cursor -= 1;
+                let value = (self.remainder << 32) | self.limbs[self.cursor] as u64;
+                self.limbs[self.cursor] = (value / self.base as u64) as u32;
+                self.remainder = value % self.base as u64;
+            } else {
+                while self.limbs.last() == Some(&0) {
+                    self.limbs.pop();
+                }
+                let mut chunk = self.remainder as u32;
+                // At most 31 digits: a constant amount per division pass.
+                for i in 0..self.width {
+                    self.digits.push(Self::digit(chunk % self.radix));
+                    chunk /= self.radix;
+                    if chunk == 0 && self.limbs.is_empty() && i + 1 < self.width {
+                        break;
+                    }
+                }
+                self.remainder = 0;
+                self.cursor = self.limbs.len();
+                self.copying = self.limbs.is_empty();
+            }
+        }
+        None
+    }
+}
+
 impl fmt::Display for JsBigInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Repr::Small(value) = self.0 {
@@ -909,6 +1026,72 @@ impl fmt::Display for JsBigInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radix_format_matches_unsigned_arithmetic() {
+        let mut random = 123u128;
+        for _ in 0..80 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            for value in [0, 1, u64::MAX as u128, random] {
+                for radix in 2..=36 {
+                    let mut n = value;
+                    let mut expected = Vec::new();
+                    loop {
+                        expected.push(
+                            char::from_digit((n % radix as u128) as u32, radix).unwrap() as u16
+                        );
+                        n /= radix as u128;
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                    expected.reverse();
+                    for negative in [false, true] {
+                        let mut limbs = vec![];
+                        let mut n = value;
+                        while n != 0 {
+                            limbs.push(n as u32);
+                            n >>= 32;
+                        }
+                        let value = JsBigInt::from_sign_magnitude(negative, limbs).unwrap();
+                        let mut formatter = BigIntToString::new(&value, radix);
+                        let text = loop {
+                            if let Some(text) = formatter.advance() {
+                                break text;
+                            }
+                        };
+                        let mut expected = expected.clone();
+                        if negative && !value.is_zero() {
+                            expected.insert(0, b'-' as u16);
+                        }
+                        assert_eq!(text.code_units(), expected, "radix {radix}, value {value}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn radix_format_at_the_size_cap_is_incremental() {
+        let value =
+            JsBigInt::from_sign_magnitude(true, vec![u32::MAX; MAX_BIGINT_BITS / 32]).unwrap();
+        let mut formatter = BigIntToString::new(&value, 2);
+        let mut steps = 0;
+        let result = loop {
+            steps += 1;
+            if let Some(text) = formatter.advance() {
+                break text;
+            }
+        };
+        assert_eq!(steps, MAX_BIGINT_BITS / 256);
+        assert_eq!(result.len(), MAX_BIGINT_BITS + 1);
+        assert_eq!(result.code_units()[0], b'-' as u16);
+        assert!(
+            result.code_units()[1..]
+                .iter()
+                .all(|unit| *unit == b'1' as u16)
+        );
+    }
 
     fn parse(text: &str) -> Result<JsBigInt, BigIntError> {
         let mut parser = StringToBigInt::new(text.into());

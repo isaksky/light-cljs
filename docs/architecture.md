@@ -4873,7 +4873,7 @@ leaf computation costing one instruction, without internal polls. Each result
 and intermediate operation checks the cap and maps overflow to RangeError;
 later cancellation cannot hide an oversized intermediate. BigInt/Number and
 other non-string primitive mixtures throw TypeError. BigInt ToString and the
-remaining numeric operators retain explicit failures for their sibling pellets.
+remaining numeric operators are supported by the later BigInt sections below.
 
 The Number constructor keeps a separate explicit UnsupportedOperand guard for
 BigInt until clj-quickjs-203: `Number(bigint)` is permitted by JavaScript and
@@ -5197,9 +5197,8 @@ The append-only global/Builtin registries install callable, nonconstructible
 inherits from Object.prototype. Both are rooted and copied into the existing
 immutable realm views. BigInt primitive property lookup and prototype reflection
 use that prototype without allocating a wrapper or introducing a heap kind.
-Reads of deferred `toString` and `valueOf` stop at BigInt.prototype with
-UnsupportedOperand before reaching Object's methods; presence checks report
-those standard names without retrieving them. Own overrides are found first.
+`toString` and `valueOf` are installed by clj-quickjs-202 below, so the
+unbranded prototype rejects conversion with TypeError.
 
 `JsBigInt::from_integral_number` validates finiteness/integrality and decodes the
 binary64 significand and exponent directly into canonical limbs (at most 1024
@@ -5326,3 +5325,41 @@ before leaf StringToNumber. Limits throw catchable RangeError; no dependency
 or instruction budget can turn exhaustion into a successful partial
 replacement. Realm/GC inventory
 counts grow by the two additional immutable built-in functions.
+
+## BigInt radix formatting and ToString (clj-quickjs-202)
+
+`BigIntToString` owns a magnitude copy, a division cursor/remainder, reverse
+chunk digits and an output buffer; none contains heap pointers. Decimal
+conversion divides by 10^9, emitting nine digits per pass except the leading
+chunk. Other non-binary bases use the largest radix power fitting u32.
+This chunked schoolbook conversion remains quadratic in the number of limbs,
+but avoids per-digit whole-magnitude division: the 6,700-bit/2,001-digit
+acceptance case completes inside the ordinary source test. Bases 2/4/8/16/32
+extract groups of bits directly in linear time, including at the 1 Mbit cap.
+Each advance performs at most 256 limb divisions or digit copies (a completed
+chunk emits at most 31 digits). Reverse-digit copying is also incremental;
+finishing transfers the owned UTF-16 buffer to JsString without copying it.
+Initial magnitude copying is bounded by the existing 1 Mbit cap. Host Display
+retains its synchronous decimal formatter; JavaScript formatting uses native
+steps, each charged as one instruction. Arithmetic keeps its one-instruction
+leaf policy.
+
+The append-only Builtin registry adds `BigIntPrototypeToString` and
+`BigIntPrototypeValueOf`, with two functions appended to the realm root list.
+No heap kind, opcode or dependency is added. Methods require a primitive
+BigInt receiver; prototype branding is checked before any radix callback.
+The existing Number radix helper is shared for ToIntegerOrInfinity and
+RangeError validation. Only an originally missing/undefined radix defaults
+to 10; an object returning undefined converts to NaN and throws RangeError.
+
+The shared native Convert state retains an optional formatter alongside its
+traced operands. Targets that apply ToString format BigInt primitives before
+continuing, including values returned by object callbacks. Binary `+` first
+obtains both primitives using hint default, then formats if either is a string.
+Array join, String.raw and Intl option coercions request the same resumable
+ToString path. The primitive leaf helper can finish only a single bounded
+formatter advance; long conversions must use the native state. Its retained
+operands and all pre-existing continuation fields stay traced across yields,
+waits, collection and thread migration. Failure/cancellation drops the buffers.
+JSON still rejects BigInt serialization. Wrappers and locale-sensitive
+BigInt.prototype.toLocaleString remain deferred.
