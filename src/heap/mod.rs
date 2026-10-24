@@ -24,9 +24,13 @@
 //!
 //! **Locks.** Every heap lock is a short metadata lock; none is held while
 //! bytecode executes. Lock order (a thread only ever acquires in this order):
-//! `gc` (collector state and mutator count) → `roots` → `scopes` → `sources`
+//! `gc` (collector state and the per-thread mutator registry; see [`gc`] for
+//! the safepoint rendezvous and its condition variable) → `roots` → `scopes` → `sources`
 //! → task bodies (collector only) → `objects`. The collector holds all of
-//! them for the duration of one stop-the-world collection.
+//! them for the duration of one stop-the-world collection. A run holds its
+//! own task body while it takes `gc` (to poll, or for a nested registration
+//! such as an atom operation); that is no cycle because the collector never
+//! locks the body of an executing task.
 //!
 //! **No unsafe code.** Objects are only reached through the `objects` lock,
 //! so the collector needs no raw pointers; `Box` provides address stability.
@@ -54,7 +58,8 @@ pub mod roots;
 
 use std::any::Any;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 
 pub use gc::{CollectError, CollectStats};
 use gc::{GcState, RootSource, SourceRegistry, Trace};
@@ -352,8 +357,15 @@ pub struct HeapStats {
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
-    /// Collector state and the registered-mutator count.
+    /// Collector state: the per-thread mutator registry, pending
+    /// collection requests, the collection counter.
     gc: Mutex<GcState>,
+    /// Notified when a thread stops at a safepoint or leaves heap access,
+    /// and when a collection request ends ([`gc`] module docs).
+    gc_changed: Condvar,
+    /// True while a collection request is pending: what VM polls read.
+    /// Written only under the `gc` lock.
+    requested: AtomicBool,
     /// Persistent root slots.
     roots: Mutex<RootTable>,
     /// Locals of open scopes.
@@ -375,10 +387,12 @@ impl Heap {
     /// Allocate a new object and return its identity, or `None` when the
     /// object table has no index left (2^32 slots).
     ///
-    /// The caller must make the returned id reachable from a root before the
-    /// next collection can start; callers are registered mutators (a run
-    /// holding a guard, or a scope on the collecting thread), which is what
-    /// prevents a collection in between.
+    /// The caller must be a registered mutator of this thread (a run guard,
+    /// an unreleased scope, or a native operation; see [`gc`]) and must make
+    /// the returned id reachable from a root before its next safepoint: a
+    /// collection cannot start while it is between safepoints. Every
+    /// allocation path reachable from outside the crate goes through such a
+    /// registration; a released scope cannot be reached at all.
     pub(crate) fn alloc(&self, object: HeapObject) -> Option<ObjectId> {
         lock(&self.objects).alloc(object, false)
     }

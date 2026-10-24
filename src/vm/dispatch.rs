@@ -29,6 +29,16 @@
 //! instruction, including `HostEffect`, runs to completion within one run, so
 //! a later run continues exactly where this one stopped and never replays an
 //! executed instruction or its effect.
+//!
+//! **Safepoints.** At run entry and before each instruction [`polls`] selects
+//! (backward branches, `Call`, `Return`, and every instruction that may
+//! allocate) the loop calls `Heap::safepoint` with the task's `VmState`: if
+//! a collection is requested on another thread, the run reports its frames
+//! and parks until the collection has run (`crate::heap::gc`). Polls happen
+//! only between instructions, so a value an instruction holds in a Rust
+//! local (an allocation not yet pushed, an atom value not yet rooted) never
+//! meets a collection, and a straight-line stretch without poll points is
+//! bounded by the code length.
 
 use std::sync::Arc;
 
@@ -468,6 +478,67 @@ fn step(
     Ok(Flow::Next)
 }
 
+/// True when the loop polls for a requested collection before running
+/// `instr` at `pc` (the VM poll points of `crate::heap::gc`): backward
+/// branches (every loop), calls and returns, and every instruction that may
+/// allocate. Each is an instruction boundary, where every value the run
+/// holds is in its frames. Exhaustive, so a new instruction must decide.
+fn polls(instr: Instr, pc: usize) -> bool {
+    match instr {
+        Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
+        Instr::Call(_) | Instr::Return => true,
+        Instr::NewObject
+        | Instr::NewVector(_)
+        | Instr::NewMap(_)
+        | Instr::Assoc
+        | Instr::Dissoc
+        | Instr::Conj
+        | Instr::PopLast
+        | Instr::NewVectorBuilder
+        | Instr::NewMapBuilder
+        | Instr::BuilderConj
+        | Instr::BuilderAssoc
+        | Instr::Freeze
+        | Instr::Function(..)
+        | Instr::CurrentFunction
+        | Instr::NewCell
+        | Instr::AtomNew
+        | Instr::AtomLoad
+        | Instr::AtomCas => true,
+        Instr::Const(_)
+        | Instr::Undefined
+        | Instr::GetLocal(_)
+        | Instr::SetLocal(_)
+        | Instr::Pop
+        | Instr::Dup
+        | Instr::Add
+        | Instr::Sub
+        | Instr::Mul
+        | Instr::Lt
+        | Instr::StrictEq
+        | Instr::Not
+        | Instr::HostEffect(_)
+        | Instr::Count
+        | Instr::Nth
+        | Instr::Get
+        | Instr::GetOr
+        | Instr::Div
+        | Instr::Rem
+        | Instr::Neg
+        | Instr::ToNumber
+        | Instr::ToNumberPair
+        | Instr::Gt
+        | Instr::Le
+        | Instr::Ge
+        | Instr::LooseEq
+        | Instr::ThrowError(_)
+        | Instr::GetCapture(_)
+        | Instr::CellInit
+        | Instr::CellGet
+        | Instr::CellSet => false,
+    }
+}
+
 /// Run until the task returns or fails, or until `budget` instructions have
 /// executed (`None`: unlimited).
 pub(crate) fn execute(
@@ -477,6 +548,8 @@ pub(crate) fn execute(
     mut budget: Option<u64>,
 ) -> Exit {
     let mut code = Arc::clone(&state.top().code);
+    // Run entry is a poll point.
+    heap.safepoint(state);
     loop {
         if let Some(left) = &mut budget {
             if *left == 0 {
@@ -486,6 +559,9 @@ pub(crate) fn execute(
         }
         let pc = state.top().pc;
         let instr = code.instrs.get(pc).copied();
+        if instr.is_some_and(|i| polls(i, pc)) {
+            heap.safepoint(state);
+        }
         let result = match instr {
             Some(instr) => {
                 state.top_mut().pc = pc + 1;

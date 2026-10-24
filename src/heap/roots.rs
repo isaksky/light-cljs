@@ -75,9 +75,8 @@ use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::thread::{self, ThreadId};
 
-use super::gc::Trace;
+use super::gc::{Access, MutatorToken, Trace};
 use super::{Heap, HeapObject, ObjectId};
 use crate::value::{Primitive, Value, ValueView};
 
@@ -125,8 +124,6 @@ impl Trace for RootTable {
 /// Locals of one open scope.
 #[derive(Debug)]
 struct ScopeEntry {
-    /// The thread that opened the scope (the only one that can use it).
-    thread: ThreadId,
     locals: Vec<Value>,
 }
 
@@ -139,11 +136,8 @@ pub(crate) struct ScopeTable {
 }
 
 impl ScopeTable {
-    fn open(&mut self, thread: ThreadId) -> usize {
-        let entry = Some(ScopeEntry {
-            thread,
-            locals: Vec::new(),
-        });
+    fn open(&mut self) -> usize {
+        let entry = Some(ScopeEntry { locals: Vec::new() });
         match self.free.pop() {
             Some(slot) => {
                 self.entries[slot] = entry;
@@ -171,11 +165,6 @@ impl ScopeTable {
             .as_mut()
             .expect("scope entry exists while the scope is open")
             .locals
-    }
-
-    /// True if any scope is open on a thread other than `me`.
-    pub(crate) fn open_elsewhere(&self, me: ThreadId) -> bool {
-        self.entries.iter().flatten().any(|e| e.thread != me)
     }
 }
 
@@ -337,15 +326,25 @@ type Brand<'s> = PhantomData<fn(&'s ()) -> &'s ()>;
 /// Scoped heap access, created by [`Runtime::scope`](crate::Runtime::scope).
 ///
 /// Holds every [`Local`] value created in it; all are released when the scope
-/// callback returns. Not `Sync`: a scope is used by the thread that opened it,
-/// and while it is open a collection may only be started from that thread
-/// (see [`crate::heap::gc`]).
+/// callback returns. Not `Sync` or `Send`: a scope is used by the thread that
+/// opened it.
+///
+/// A scope is the **no-GC access scope** for host and native code: while it
+/// is open (and not [released](Scope::released)) its thread is a registered
+/// mutator, so a collection requested on another thread waits until the
+/// scope is closed or released, and then sees the scope's locals as roots.
+/// A collection started on the scope's own thread runs at once (the locals
+/// are roots). A scope never spans a task suspension: it ends when its
+/// callback returns. See [`crate::heap::gc`].
 pub struct Scope<'s> {
     heap: &'s Arc<Heap>,
     /// This scope's entry in the heap's scope table.
     slot: usize,
     _brand: Brand<'s>,
     _not_sync: PhantomData<Cell<()>>,
+    /// The thread's registration as a mutator; dropped after the entry is
+    /// closed (fields drop after `Drop::drop`).
+    _mutator: MutatorToken<'s>,
 }
 
 /// A value handle valid only within its [`Scope`]. See the module docs.
@@ -357,12 +356,15 @@ pub struct Local<'s> {
 
 impl<'s> Scope<'s> {
     pub(crate) fn new(heap: &'s Arc<Heap>) -> Self {
-        let slot = heap.scopes().open(thread::current().id());
+        // Register first: entering waits while a collection is requested.
+        let mutator = heap.enter_mutator(Access::Scope);
+        let slot = heap.scopes().open();
         Scope {
             heap,
             slot,
             _brand: PhantomData,
             _not_sync: PhantomData,
+            _mutator: mutator,
         }
     }
 
@@ -416,9 +418,9 @@ impl<'s> Scope<'s> {
             .heap
             .alloc(HeapObject::Plain)
             .expect("heap object table exhausted");
-        // No collection can run between the allocation and the push: other
-        // threads cannot collect while this scope is open, and this thread is
-        // busy here.
+        // No collection can run between the allocation and the push: this
+        // thread is a registered mutator between safepoints (the scope is
+        // open and not released).
         self.new_local(Value::Object(id))
     }
 
@@ -472,6 +474,45 @@ impl<'s> Scope<'s> {
     /// JavaScript `===` between two locals.
     pub fn strict_equals(&self, a: Local<'s>, b: Local<'s>) -> bool {
         self.local_value(a).strict_equals(self.local_value(b))
+    }
+
+    /// Release heap access for the duration of `f`: a safepoint.
+    ///
+    /// While `f` runs this thread's scopes (this one and any enclosing
+    /// scopes on the thread) no longer delay collections, so `f` may block
+    /// on work that needs a collection to finish. `f` cannot use any scope:
+    /// it must be `Send`, and a reference to a `Scope` is not, so it cannot
+    /// allocate through one or hold an unrooted heap value (it may open a new
+    /// scope with [`Runtime::scope`](crate::Runtime::scope), which counts as
+    /// reentering). When `f` returns, or unwinds, heap access is reentered,
+    /// waiting first while a collection is requested.
+    ///
+    /// Locals stay valid across a release: they are roots the whole time, so
+    /// a collection during `f` keeps their objects (nothing moves).
+    ///
+    /// A run guard or native operation on this thread is not released: it
+    /// still delays collections (see [`crate::heap::gc`]).
+    ///
+    /// ```compile_fail,E0277
+    /// use clj_quickjs::Runtime;
+    /// let rt = Runtime::new();
+    /// rt.scope(|s| {
+    ///     // error: the scope cannot be used while released.
+    ///     s.released(|| s.new_object());
+    /// });
+    /// ```
+    pub fn released<R>(&self, f: impl FnOnce() -> R + Send) -> R {
+        self.heap.release_scopes(f)
+    }
+
+    /// Poll for a requested collection: if one is pending, release heap
+    /// access until it has run ([`Scope::released`] with nothing to do).
+    /// Native code that keeps a scope open for long should call this
+    /// regularly; it costs one atomic load when nothing is requested.
+    pub fn safepoint(&self) {
+        if self.heap.collection_requested() {
+            self.released(|| ());
+        }
     }
 
     /// The raw value of a local (crate tests).

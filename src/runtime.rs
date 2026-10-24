@@ -223,10 +223,42 @@ impl Runtime {
     /// (nothing moves).
     ///
     /// Fails without collecting, and without waiting, with
-    /// [`CollectError::MutatorActive`] while any [`RunGuard`](crate::RunGuard)
-    /// exists (including inside a host effect) or a scope is open on another
-    /// thread. See [`crate::heap::gc`].
+    /// [`CollectError::MutatorActive`] while this thread holds a
+    /// [`RunGuard`](crate::RunGuard) (including inside a host effect), or
+    /// another thread is in heap access (a run guard, an unreleased scope, an
+    /// atom operation) and not stopped at a safepoint. To wait for running
+    /// mutators instead, use [`Runtime::request_collection`]. See
+    /// [`crate::heap::gc`].
     pub fn collect(&self) -> Result<CollectStats, CollectError> {
         self.0.heap.collect()
+    }
+
+    /// Request a collection and block until the safepoint rendezvous
+    /// completes and the collection has run: the deterministic collection
+    /// hook for tests and executors.
+    ///
+    /// Waits until every other thread is outside heap access or stopped at a
+    /// safepoint: a running task polls at its VM poll points (run entry,
+    /// backward branches, calls, returns, allocation) and parks with its
+    /// frames reported as roots; a thread with a scope open delays the
+    /// collection until it closes the scope or releases it
+    /// ([`Scope::released`], [`Scope::safepoint`]). Threads that never enter
+    /// heap access do not delay it. While the request is pending, threads
+    /// entering heap access wait for it. Concurrent requests each collect.
+    ///
+    /// Fails at once with [`CollectError::MutatorActive`], without
+    /// requesting, if this thread holds a run guard (including inside a host
+    /// effect). Scopes open on this thread are fine: their locals are roots.
+    /// It deadlocks only if a thread in heap access waits for this one
+    /// without reaching a safepoint (for example a host effect blocking on
+    /// it); see [`crate::heap::gc`].
+    pub fn request_collection(&self) -> Result<CollectStats, CollectError> {
+        self.0.heap.request_collection()
+    }
+
+    /// True while a collection request is pending ([`Runtime::request_collection`]):
+    /// threads in heap access should reach a safepoint. A snapshot; one atomic load.
+    pub fn collection_requested(&self) -> bool {
+        self.0.heap.collection_requested()
     }
 }

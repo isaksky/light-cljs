@@ -11,8 +11,10 @@
 //! * [`Rooted`] (persistent root) and [`Local`] (scoped access within
 //!   [`Runtime::scope`]): the only ways to keep heap values alive from Rust.
 //!   A [`WeakHandle`] names a value without keeping it alive.
-//! * [`Runtime::collect`]: deterministic stop-the-world mark/sweep of the
-//!   shared heap ([`heap::gc`]).
+//! * [`Runtime::collect`] (never waits) and [`Runtime::request_collection`]
+//!   (waits for the safepoint rendezvous): deterministic stop-the-world
+//!   mark/sweep of the shared heap ([`heap::gc`]). [`Scope`]s are the no-GC
+//!   access scope for host code; [`Scope::released`] is a safepoint.
 //! * [`Runtime::publish`]: the publication check for handing a value to
 //!   another task; rejects values reaching task-owned mutation with a
 //!   [`PublishError`] naming the path (`value::share`).
@@ -59,9 +61,10 @@
 //! ([`Assembler`]), which is an early VM test tool, not JavaScript source
 //! support; at that level the VM runs nested calls and recursion in explicit
 //! task-owned frames, bounded by [`VmLimits`] instead of the Rust stack.
-//! Garbage collection is a precise nonmoving mark/sweep that runs only when
-//! no task run or foreign scope is active (cooperative safepoints are
-//! deferred; see [`heap::gc`]).
+//! Garbage collection is a precise nonmoving mark/sweep run at a safepoint
+//! rendezvous: [`Runtime::request_collection`] waits for running tasks to
+//! reach VM poll points and for scopes to close or be released
+//! ([`Scope::released`]); see [`heap::gc`].
 
 pub mod atom;
 pub mod collections;

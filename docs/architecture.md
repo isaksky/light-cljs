@@ -116,14 +116,14 @@ collected by a precise, nonmoving, stop-the-world mark/sweep
   constants. Heap objects report their own edges through `Trace`; a `Native`
   object's payload is a Rust value whose `Trace` reports its edges (the
   analogue of a QuickJS class `gc_mark`).
-- **When it runs.** A `RunGuard` is a registered mutator from acquisition to
-  drop; a scope is a mutator for threads other than its own. `collect`
-  refuses with `CollectError::MutatorActive`, without waiting, while either
-  exists. During the pause it holds every heap lock, so runs, scopes,
+- **When it runs.** At a rendezvous where every other thread is outside heap
+  access or stopped at a safepoint (below). `collect` refuses with
+  `CollectError::MutatorActive` instead of waiting; `request_collection`
+  waits. During the pause it holds every heap lock, so runs, scopes,
   allocations and root changes on other threads wait briefly. No lock is held
-  across bytecode execution; the mutator count only stops the collector from
-  starting. Lock order: `gc` → `roots` → `scopes` → `sources` → task bodies →
-  `objects`.
+  across bytecode execution. Lock order: `gc` → `roots` → `scopes` →
+  `sources` → task bodies → `objects` (a run holds its own body while taking
+  `gc`; the collector never locks an executing task's body).
 - **Ownership.** A task's allocations are not owned by the task: completion
   drops its frames, and what remains reachable (the returned `Rooted` and
   anything it references) survives. `Executable` code is independently owned
@@ -132,8 +132,50 @@ collected by a precise, nonmoving, stop-the-world mark/sweep
 - **No unsafe code.** Objects are reached only under the `objects` lock;
   reclaimed objects are dropped after all heap locks are released.
 
-Cooperative safepoints (collection that waits for running mutators to reach
-poll points) are pellet clj-quickjs-17.
+## Safepoints and mutator registration (clj-quickjs-17)
+
+`src/heap/gc.rs` (registry, rendezvous, contract), `src/vm/dispatch.rs`
+(poll points), `Scope::released` / `Scope::safepoint` (`src/heap/roots.rs`).
+Design: `design.md` §11 ("how native/host code participates in
+safepoints"). This replaces QuickJS's one-thread-per-runtime rule
+(`research/quickjs/doc/quickjs.texi`, "Runtime and contexts", revision
+7d1c13c5d8f8).
+
+- **Registration.** Heap access is a per-thread registration in the `gc`
+  lock's registry: `Access::Run` (a `RunGuard`, acquisition to drop),
+  `Access::Scope` (an open scope), `Access::Op` (an atom operation, which
+  has no safepoint inside). Tokens are not `Send`. Every allocation path
+  reachable from outside the crate goes through one; a released scope
+  cannot be reached (the release closure must be `Send`).
+- **Stopped.** A thread is stopped when it holds no registration, is parked
+  at a VM poll with its running frames reported, or is blocked in its own
+  request. A collection needs every other thread stopped and the collector
+  to hold no run guard or operation (its own scopes are roots).
+- **Request.** `Runtime::request_collection` raises a pending count (and an
+  `AtomicBool` mirror that polls read with `Acquire`, written under the lock
+  with `Release`), waits on the `gc` condition variable until the rendezvous
+  holds, collects, and withdraws the request. Threads *entering* heap access
+  wait until a pending request is served; nested registrations never wait
+  (the request is waiting for them). Waiters continue once their request is
+  served even if another is pending (a served-request ticket), so
+  back-to-back requests cannot starve them.
+- **VM polls** happen at instruction boundaries only: run entry, backward
+  branches, `Call`, `Return` and every instruction that may allocate. A run
+  parks only if it is its thread's only run guard and no operation is in
+  progress. The running task's root source skips its body (held by the
+  parked guard): the runner reported those frames as `TaskFrame` roots.
+- **Scopes** are the no-GC access scope for host code: a requested
+  collection waits until a scope closes or is released. Releasing
+  (`Scope::released`, or `Scope::safepoint` when a request is pending)
+  drops the thread's scope registrations for the closure, then reenters
+  like a new entry. Locals stay in the scope table, so they are roots and
+  remain valid. A scope never spans a task suspension.
+- **Atoms.** No collection completes while an atom operation runs, so the
+  epoch-based grace period of replaced boxes still holds.
+- **Deferred:** automatic collection triggers, worker-local allocation
+  buffers, releasing access around long leaf host effects (a request waits
+  for an effect to return), and parking a thread that holds two run guards.
+  Worker integration is clj-quickjs-25.
 
 ## Persistent collections (clj-quickjs-3)
 
@@ -705,7 +747,9 @@ Design: `design.md` §§8, 10, 15.
   below) and the object-table lock to clone the cell's `Arc`.
 - **Reclamation.** Atom operations are registered heap mutators
   (`Heap::enter_mutator`, nested inside a run's registration in the VM), and
-  collections run only with no mutator registered. A replaced box is
+  no collection runs while an operation is in progress (it has no
+  safepoint, so its thread is never stopped; see the safepoints section). A
+  replaced box is
   retired with the writer's collection epoch and freed by a later write
   that observes a newer epoch, or when the cell drops. This is the only
   `unsafe` code in the crate; each block states its invariant.

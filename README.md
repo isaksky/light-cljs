@@ -43,6 +43,8 @@ cargo test --test atoms           # atoms: identity CAS, single-writer publicati
 cargo test --lib atom::           # SameValue comparison, replaced-box reclamation
 cargo test --test cancellation    # consumer and cell cancellation racing settlement and parking
 cargo test --lib task::cancel_tests # hook-forced cancellation in every handoff window
+cargo test --test safepoints      # safepoints: collection requests during runs and scopes
+cargo test --lib heap::gc::       # rendezvous root snapshot with running tasks
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -148,11 +150,11 @@ Supported:
 
 Deferred:
 
-- Collection while tasks run: `collect` refuses with
-  `CollectError::MutatorActive` (it never waits) while any `RunGuard` exists
-  or a scope is open on another thread. Cooperative safepoints and mutator
-  registration are pellet clj-quickjs-17; executor integration is
-  clj-quickjs-25; per-root-kind coverage is clj-quickjs-31.
+- `collect` never waits: it refuses with `CollectError::MutatorActive`
+  while another thread is in heap access and not at a safepoint. Waiting
+  collection while tasks run is `Runtime::request_collection`
+  (clj-quickjs-17, below). Executor integration is clj-quickjs-25;
+  per-root-kind coverage is clj-quickjs-31.
 - No automatic collection trigger (allocation never collects), no
   generational, concurrent or compacting collection, and no worker-local
   allocation buffers.
@@ -616,3 +618,35 @@ Deferred:
 - `src/host/sim.rs` still uses its stand-in tail-call convention for the
   simulated producers (`tests/fixtures/js/sim_is_even.js`); switching it to
   compiled calls belongs to the end-to-end pellets.
+
+### Safepoints and mutator registration (clj-quickjs-17)
+
+Supported (`src/heap/gc.rs` module docs; tests in `tests/safepoints.rs`,
+early VM tests with hand-assembled bytecode):
+
+- Every heap access is a per-thread mutator registration: a `RunGuard`, an
+  open `Runtime::scope` scope, or an atom operation. A thread with none
+  never delays a collection.
+- `Runtime::request_collection()` requests a collection and blocks until
+  every other thread is outside heap access or stopped at a safepoint, then
+  collects: the deterministic collection hook. `Runtime::collection_requested()`
+  reports a pending request. Threads entering heap access wait for a
+  pending request to be served; nested registrations never wait.
+- VM poll points: run entry, backward branches, `Call`, `Return`, and every
+  instruction that may allocate. A run stopped there reports its frames as
+  roots (`TaskFrame`) and continues after the collection.
+- A scope is the no-GC access scope for host code: it delays a requested
+  collection until it closes or is released. `Scope::released(f)` is a
+  safepoint (the closure must be `Send`, so it cannot use any scope);
+  `Scope::safepoint()` releases only when a collection is requested. Scope
+  locals stay roots and valid across a release.
+- No global interpreter lock and no heap lock held during execution: the
+  registry only decides when a collection may start.
+
+Deferred:
+
+- An automatic collection trigger (allocation never requests one),
+  worker-local allocation buffers, and releasing heap access around a
+  long-running leaf host effect (a request waits for the effect to return).
+- A thread holding two run guards at once, or a guard it is not executing,
+  delays collection until it drops them (only a thread's single run parks).

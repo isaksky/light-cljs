@@ -137,8 +137,8 @@
 //! (budget boundary) and between runs (run start).
 //!
 //! **Locks.** The state word is not a lock. The task body mutex is taken only
-//! by the claim's owner (and for an instant by the collector, which cannot
-//! run while a run guard exists, or by a diagnostic reader such as
+//! by the claim's owner (and for an instant by the collector, which never locks the body of an
+//! executing task, or by a diagnostic reader such as
 //! `Task::source_location`); the claim only `try_lock`s it, reporting
 //! `AlreadyRunning` on contention, so starting a run never waits. The
 //! dependency log mutex is a leaf; terminal cleanup releases it before
@@ -157,7 +157,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use crate::dep::{self, DependencyLog, DependencyTable, HookPoint, Need, NeedError, Waiter};
 use crate::error::{SourceLocation, VmError, VmErrorKind};
-use crate::heap::gc::{MutatorToken, RootCategory, RootSource, Trace};
+use crate::heap::gc::{Access, MutatorToken, RootCategory, RootSource, Trace};
 use crate::heap::{Heap, ObjectId, Rooted};
 use crate::host::{Host, NoHost};
 use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WakeHandle, WorldId};
@@ -334,13 +334,25 @@ pub(crate) struct TaskInner {
 }
 
 /// A task is a root source while any handle to it exists: its saved frames
-/// (`TaskFrame`) and its executable's constants (`ExecutableConstant`). The
-/// collector only runs when no run guard exists, so the body lock is free.
+/// (`TaskFrame`) and its executable's constants (`ExecutableConstant`).
+///
+/// An executing task's body is held by its run guard, whose thread is
+/// stopped at a VM safepoint during any collection and reported these
+/// frames itself (`crate::heap::gc`); its body is skipped, never waited
+/// for. Otherwise the body is free or held for an instant by a diagnostic
+/// reader, so the lock is short.
 impl RootSource for TaskInner {
     fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
         self.executable
             .0
             .trace(&mut |id| visit(RootCategory::ExecutableConstant, id));
+        // During a collection no thread is between registering for a run
+        // and holding its body, or between releasing the body and
+        // deregistering (those threads are in heap access and not stopped),
+        // so `Executing` here means a run parked at a safepoint.
+        if let Phase::Executing { .. } = self.exec.snapshot().phase {
+            return;
+        }
         // A poisoned body (a run panicked) is traced as-is: its values are
         // conservative roots until the task handle is dropped.
         let body = self.body.lock().unwrap_or_else(PoisonError::into_inner);
@@ -426,9 +438,11 @@ impl Drop for ExecutionClaim<'_> {
 /// Exclusive right to run a task, held for one execution. Not `Send`: the
 /// run happens on the thread that acquired it.
 ///
-/// A guard is a registered heap mutator from acquisition to drop: while any
-/// guard exists, [`Runtime::collect`](crate::Runtime::collect) refuses to run
-/// (see [`crate::heap::gc`]).
+/// A guard is a registered heap mutator from acquisition to drop: a
+/// collection requested on another thread waits until the run stops at a VM
+/// safepoint or the guard is dropped, and
+/// [`Runtime::collect`](crate::Runtime::collect) refuses to run meanwhile
+/// (see [`crate::heap::gc`]). The guard's thread cannot collect.
 pub struct RunGuard<'t> {
     task: &'t Arc<TaskInner>,
     // Field order matters (fields drop in order): the body lock is released
@@ -560,10 +574,11 @@ impl Task {
         if crate::host::inside_effect() {
             return Err(RunError::InsideHostEffect);
         }
-        // Register as a mutator before taking the body, so a collector that
-        // sees no mutators also sees every body unlocked. On the error paths
+        // Register as a mutator before claiming and taking the body, so a
+        // collector that sees this thread stopped never sees an executing
+        // task whose frames nobody reported. On the error paths
         // below the token is dropped, deregistering again.
-        let mutator = self.0.heap.enter_mutator();
+        let mutator = self.0.heap.enter_mutator(Access::Run);
         let claim = match self.0.exec.claim() {
             Ok(number) => ExecutionClaim {
                 state: &self.0.exec,
@@ -809,8 +824,8 @@ impl RunGuard<'_> {
             ))
         } else {
             // The returned value is rooted while this guard (a registered
-            // mutator) still exists, so no collection can run while the value
-            // is held only in a Rust local.
+            // mutator) still exists, with no safepoint in between, so no
+            // collection can run while the value is held only in a Rust local.
             match execute(vm, &task.heap, host, budget.0) {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => RunOutcome::Failed(error),

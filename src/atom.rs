@@ -90,9 +90,12 @@
 //!
 //! A replaced box may still be read by an operation that loaded its pointer
 //! just before the replacement, so it is retired, not freed. Every atom
-//! operation runs inside a **mutator registration** (`Heap::enter_mutator`,
-//! nested inside a run's registration for VM intrinsics), and a collection
-//! runs only while no mutator is registered. So a completed collection is a
+//! operation runs inside a **mutator registration** (`Heap::enter_mutator`
+//! with `Access::Op`, nested inside a run's registration for VM
+//! intrinsics). An operation contains no safepoint, and a collection runs
+//! only while every other thread is stopped at a safepoint or outside heap
+//! access (`crate::heap::gc`), so no collection runs while an operation is
+//! in progress. So a completed collection is a
 //! grace period: a box retired at collection epoch `e` (collections
 //! completed when its writer registered) is unreachable by every operation
 //! registered after the next collection, and is freed by the next write to
@@ -274,9 +277,11 @@ impl AtomCell {
                 if r.epoch < epoch {
                     // SAFETY: `r.ptr` was unlinked at epoch `r.epoch`, and a
                     // collection has completed since (`epoch` is this
-                    // writer's registration epoch). That collection ran with
-                    // no mutator registered, so every operation that could
-                    // have loaded `r.ptr` (registered before it was
+                    // writer's registration epoch). That collection ran only
+                    // with every other thread stopped at a safepoint or out of
+                    // heap access, and an atom operation (an `Access::Op`
+                    // registration) contains no safepoint, so every operation
+                    // that could have loaded `r.ptr` (registered before it was
                     // unlinked) has finished, and later ones cannot load it.
                     // The list owned it.
                     drop(unsafe { Box::from_raw(r.ptr) });
@@ -304,8 +309,9 @@ impl AtomCell {
 
 impl Trace for AtomCell {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        // The collector runs with no mutator registered, so no writer can
-        // replace or retire the current box during the trace.
+        // The collector runs only while no atom operation is in progress (an
+        // operation contains no safepoint), so no writer can replace or
+        // retire the current box during the trace.
         Self::read(self.current.load(Ordering::Acquire)).trace(visit);
     }
 }
@@ -411,7 +417,7 @@ struct Access<'h> {
 
 /// Register as a mutator, then find the atom cell named by `atom`.
 fn access(heap: &Heap, atom: Value) -> Result<Access<'_>, AtomError> {
-    let mutator = heap.enter_mutator();
+    let mutator = heap.enter_mutator(crate::heap::gc::Access::Op);
     let Value::Object(id) = atom else {
         return Err(AtomError::NotAnAtom {
             found: atom.type_name(),
@@ -441,7 +447,7 @@ pub(crate) fn new_atom<R>(
     single_writer: bool,
     keep: impl FnOnce(Value) -> R,
 ) -> Result<R, AtomError> {
-    let _mutator = heap.enter_mutator();
+    let _mutator = heap.enter_mutator(crate::heap::gc::Access::Op);
     share::check(heap, initial).map_err(AtomError::NotShareable)?;
     let cell = Arc::new(AtomCell::new(initial, single_writer));
     let id = heap
