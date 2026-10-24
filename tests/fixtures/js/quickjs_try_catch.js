@@ -1,13 +1,14 @@
 // Adapted from research/quickjs/tests/test_loop.js (test_try_catch1,
-// test_try_catch2, test_try_catch3, test_try_catch4, test_try_catch6 and
-// test_try_catch7), QuickJS revision 7d1c13c5d8f8 (VERSION 2026-06-04).
-// Modifications: rewritten for the documented subset (`let` instead of
-// `var`; strings are not values yet, so each logged letter is a digit
-// appended with `s = s * 10 + d`: "t" = 1, "c" = 2, "f" = 3, "a" = 4,
-// "g" = 5, and the thrown strings are those digits); no assert() function: a
-// failing check records its number in `failed`, and the script completes
-// with `failed`, so 0 means every check passed. test_try_catch5 (`for`,
-// `break`) and test_try_catch8 (`for`-`in`, object literals) are omitted.
+// test_try_catch2, test_try_catch3, test_try_catch4, test_try_catch5,
+// test_try_catch6 and test_try_catch7), QuickJS revision 7d1c13c5d8f8
+// (VERSION 2026-06-04). Modifications: rewritten for the documented subset
+// (`let` instead of `var`, `while (true)` instead of `for(;;)`; strings are
+// not values yet, so each logged letter is a digit appended with
+// `s = s * 10 + d`: "t" = 1, "c" = 2, "f" = 3, "a" = 4, "g" = 5, "b" = 6,
+// and the thrown strings are those digits); no assert() function: a failing
+// check records its number in `failed`, and the script completes with
+// `failed`, so 0 means every check passed. test_try_catch8 (`for`-`in`,
+// object literals) is omitted.
 //
 // QuickJS Javascript Engine
 //
@@ -99,6 +100,21 @@ function test_try_catch6() {
   if (s !== 13) { failed = failed || 7; }
 }
 test_try_catch6();
+
+// test_try_catch5: "tf" (`while (true)` for `for(;;)`; "b" = 6)
+{
+  let s = 0;
+  while (true) {
+    try {
+      s = s * 10 + 1;
+      break;
+      s = s * 10 + 6;
+    } finally {
+      s = s * 10 + 3;
+    }
+  }
+  if (s !== 13) { failed = failed || 9; }
+}
 
 // test_try_catch7: "tfag"
 {

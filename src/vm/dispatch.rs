@@ -638,10 +638,19 @@ fn step(
             Completion::Normal => {}
             Completion::Return(v) => return return_flow(state, v),
             Completion::Throw(exception) => return Err(Fault::Rethrow(exception)),
+            // `end_finally` already continued at the resume point.
+            Completion::Jump(_) => {}
             // Cancellation unwinding goes on to the next finally block.
             Completion::Cancel if state.unwind_cancel() => return Ok(Flow::FrameChanged),
             Completion::Cancel => return Ok(Flow::CleanupEnded),
         },
+        Instr::CallFinally => state.call_finally()?,
+        // A jump out of a cleanup finally block ends the cleanup.
+        Instr::DropCompletion => {
+            if !state.drop_completion()? {
+                return Ok(Flow::CleanupEnded);
+            }
+        }
         Instr::NewObject => {
             // The new object is pushed in the same instruction; no collection
             // can run in between because this run holds a mutator guard.
@@ -804,7 +813,9 @@ fn step(
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
-        Instr::Call(_) | Instr::Return => true,
+        // `CallFinally` may enter a finally block before it, and every cycle
+        // through a jump completion's resume point passes one.
+        Instr::Call(_) | Instr::Return | Instr::CallFinally => true,
         Instr::NewObject
         | Instr::NewVector(_)
         | Instr::NewMap(_)
@@ -869,6 +880,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::PopCatch
         | Instr::PopFinally
         | Instr::EndFinally
+        | Instr::DropCompletion
         // Allocates nothing; each step of the native it starts polls.
         | Instr::Reduce
         | Instr::NeedAll
@@ -1052,6 +1064,84 @@ mod tests {
             ),
             "{e}"
         );
+    }
+
+    #[test]
+    fn jump_completions_resume_after_call_finally() {
+        // `call_finally` runs the finally block, whose `end_finally`
+        // continues after the `call_finally`; `drop_completion` discards a
+        // pending completion (clj-quickjs-79).
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally).op(Opcode::CallFinally);
+        asm.constant(Primitive::Number(5.0)).op(Opcode::Return);
+        asm.bind(finally).op(Opcode::EndFinally);
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        let exe = asm.finish("t", 0, 0).unwrap();
+        let again = Executable::load(exe.to_spec()).unwrap();
+        assert_eq!(again.0.instrs, exe.0.instrs);
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally).op(Opcode::PopFinally);
+        asm.bind(finally).op(Opcode::DropCompletion);
+        asm.constant(Primitive::Number(7.0)).op(Opcode::Return);
+        let dropped = asm.finish("t", 0, 0).unwrap();
+        let heap = Heap::default();
+        for (exe, expected) in [(exe, 5.0), (dropped, 7.0)] {
+            let mut s = state(&exe, 1);
+            match execute(&mut s, &heap, &mut NoHost, None) {
+                Exit::Return(v) => assert_eq!(v, Value::Number(expected)),
+                other => panic!("{other:?}"),
+            }
+            assert!(!s.has_handlers());
+        }
+    }
+
+    #[test]
+    fn mismatched_jump_completions_fail_as_internal_errors() {
+        let mut programs = Vec::new();
+        // `call_finally` without a finally handler, or with operands above
+        // its height; `end_finally` of a jump with operands above it;
+        // `drop_completion` without a pending completion.
+        programs.push(
+            Assembler::new()
+                .op(Opcode::CallFinally)
+                .op(Opcode::Undefined)
+                .op(Opcode::Return)
+                .finish("t", 0, 0)
+                .unwrap(),
+        );
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally)
+            .op(Opcode::Undefined)
+            .op(Opcode::CallFinally)
+            .op(Opcode::Return);
+        asm.bind(finally).op(Opcode::EndFinally);
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        programs.push(asm.finish("t", 0, 0).unwrap());
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally).op(Opcode::CallFinally);
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        asm.bind(finally)
+            .op(Opcode::Undefined)
+            .op(Opcode::EndFinally)
+            .op(Opcode::Return);
+        programs.push(asm.finish("t", 0, 0).unwrap());
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally).op(Opcode::DropCompletion);
+        asm.bind(finally).op(Opcode::EndFinally);
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        programs.push(asm.finish("t", 0, 0).unwrap());
+        let heap = Heap::default();
+        for exe in programs {
+            match execute(&mut state(&exe, 1), &heap, &mut NoHost, None) {
+                Exit::Fail(e) => assert_eq!(e.kind, VmErrorKind::Internal, "{e}"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

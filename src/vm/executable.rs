@@ -409,6 +409,8 @@ impl Executable {
                 Opcode::PopCatch => Instr::PopCatch,
                 Opcode::PopFinally => Instr::PopFinally,
                 Opcode::EndFinally => Instr::EndFinally,
+                Opcode::CallFinally => Instr::CallFinally,
+                Opcode::DropCompletion => Instr::DropCompletion,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

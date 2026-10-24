@@ -16,13 +16,34 @@
 //!   finally block runs, and execution continues at its target (the block);
 //! * a **pending completion** ([`Completion`]): the reason a finally block is
 //!   running: `Normal` (`pop_finally`, the protected code finished), `Return`
-//!   with the saved return value, or `Throw` with the saved [`Exception`].
-//!   `end_finally` pops it and resumes that completion: continue after the
-//!   block, continue returning (through the next finally handler of the
-//!   frame, if any), or re-raise the saved exception.
+//!   with the saved return value, `Throw` with the saved [`Exception`], or
+//!   `Jump` with a resume point (`call_finally`, below). `end_finally` pops
+//!   it and resumes that completion: continue after the block, continue
+//!   returning (through the next finally handler of the frame, if any),
+//!   re-raise the saved exception, or continue at the resume point.
 //!
 //! An abrupt completion inside a finally block overrides its pending one, as
 //! in JavaScript: unwinding discards every pending completion it passes.
+//!
+//! **`break` and `continue` through finally blocks** (clj-quickjs-79). The
+//! compiler lowers a jump that leaves `try` statements to one instruction
+//! per construct left, innermost first (`crate::frontend` lowering,
+//! `Lowerer::jump`), then the `jump` to the loop: `pop_catch` for a `try`
+//! block with a catch handler; `call_finally` for a `try` block or catch
+//! body with a finally handler, which turns that handler into a pending
+//! `Jump` completion whose resume point is the next instruction and runs the
+//! finally block, whose `end_finally` comes back there to leave the next
+//! construct; and `drop_completion` for a finally block itself, which pops
+//! its pending completion unresumed (the jump overrides a pending return,
+//! exception or jump). Like QuickJS's `emit_break` (`quickjs.c`, revision
+//! 7d1c13c5d8f8), which emits a `gosub` to each finally block on the way
+//! and drops the return addresses of finally blocks it leaves. A finally
+//! block that completes abruptly discards the pending jump like any other
+//! pending completion. The resume point lives only in the handler stack, so
+//! a task may yield, wait, migrate or be collected inside a finally block
+//! that a jump runs and continue the jump afterwards. A `drop_completion`
+//! that would discard a pending cancellation ends the cleanup instead, as a
+//! `return` does (`crate::task`, "Cancellation and finally blocks").
 //!
 //! The QuickJS analogue (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8:
 //! `OP_catch`, `OP_gosub`, `OP_ret`, `OP_throw` and the `exception:` label of
@@ -156,6 +177,11 @@ pub(crate) enum Completion {
     /// continues to the next finally handler. Nothing may override it: an
     /// exception or `return` that would discard it ends the cleanup.
     Cancel,
+    /// A `break` or `continue` leaving the protected code (`CallFinally`):
+    /// when the block finishes, execution continues at this instruction
+    /// index of the frame, the instruction after the `CallFinally`, with the
+    /// operand stack at the handler's height.
+    Jump(u32),
 }
 
 /// What a handler-stack entry is. See the module docs.
@@ -180,7 +206,8 @@ impl Trace for Handler {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.kind {
             HandlerKind::Catch { .. } | HandlerKind::Finally { .. } => {}
-            HandlerKind::Pending(Completion::Normal | Completion::Cancel) => {}
+            HandlerKind::Pending(Completion::Normal | Completion::Cancel | Completion::Jump(_)) => {
+            }
             HandlerKind::Pending(Completion::Return(v)) => v.trace(visit),
             HandlerKind::Pending(Completion::Throw(e)) => e.value.trace(visit),
         }

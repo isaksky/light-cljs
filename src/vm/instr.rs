@@ -75,6 +75,8 @@
 //! | `UShr`          | 0x44 | –                  | a b → `a >>> b`        | ToUint32(a) shifted right, zero-filling |
 //! | `BitNot`        | 0x45 | –                  | a → `~a`               | bitwise NOT of ToInt32(a) |
 //! | `Pow`           | 0x46 | –                  | a b → `a ** b`         | Number::exponentiate |
+//! | `CallFinally`   | 0x47 | –                  | –                      | run the innermost finally block, then continue after this instruction |
+//! | `DropCompletion`| 0x48 | –                  | –                      | discard the pending completion of the running finally block |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -183,6 +185,21 @@
 //! `pow`, except that a non-finite exponent with base `1` or `-1` gives NaN
 //! (`pow` gives 1 there, and also for `1 ** NaN`). It follows QuickJS's
 //! `pow` opcode and `js_pow` (`research/quickjs/quickjs.c`).
+//! Opcodes `0x47`–`0x48` carry `break`/`continue` through finally blocks
+//! (clj-quickjs-79), documented in `crate::vm::exception`. `CallFinally`
+//! turns the running frame's innermost handler, a finally handler, into a
+//! pending *jump* completion whose resume point is the next instruction,
+//! and continues at the finally block; that block's `EndFinally` continues
+//! at the resume point. It is QuickJS's `gosub` with the return address
+//! kept in the task-owned handler stack. `DropCompletion` pops the running
+//! frame's innermost entry, a pending completion, without resuming it (a
+//! jump out of a finally block overrides it). Neither has an operand: the
+//! resume point is the fall-through edge, which the stack check already
+//! follows. At run time `CallFinally` requires the operand stack to be at
+//! its handler's height and `EndFinally` of a jump completion requires it
+//! again, so the resume point is entered at the validated depth; a mismatch
+//! (hand-assembled code only) fails the task with `Internal`, like the
+//! other handler-stack mismatches above.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -279,6 +296,8 @@ pub enum Opcode {
     UShr = 0x44,
     BitNot = 0x45,
     Pow = 0x46,
+    CallFinally = 0x47,
+    DropCompletion = 0x48,
 }
 
 /// Operand encoding of an opcode.
@@ -397,6 +416,8 @@ impl Opcode {
             0x44 => UShr,
             0x45 => BitNot,
             0x46 => Pow,
+            0x47 => CallFinally,
+            0x48 => DropCompletion,
             _ => return None,
         })
     }
@@ -475,6 +496,8 @@ impl Opcode {
             UShr => "ushr",
             BitNot => "bit_not",
             Pow => "pow",
+            CallFinally => "call_finally",
+            DropCompletion => "drop_completion",
         }
     }
 
@@ -496,7 +519,7 @@ impl Opcode {
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
-            | UShr | BitNot | Pow => OperandKind::None,
+            | UShr | BitNot | Pow | CallFinally | DropCompletion => OperandKind::None,
         }
     }
 }
@@ -611,6 +634,8 @@ pub(crate) enum Instr {
     UShr,
     BitNot,
     Pow,
+    CallFinally,
+    DropCompletion,
 }
 
 impl Instr {
@@ -686,6 +711,8 @@ impl Instr {
             Instr::UShr => Opcode::UShr,
             Instr::BitNot => Opcode::BitNot,
             Instr::Pow => Opcode::Pow,
+            Instr::CallFinally => Opcode::CallFinally,
+            Instr::DropCompletion => Opcode::DropCompletion,
         }
     }
 
@@ -709,7 +736,8 @@ impl Instr {
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot => {
                 (1, 1)
             }
-            Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally => (0, 0),
+            Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
+            | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
@@ -732,6 +760,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 70);
+        assert_eq!(assigned, 72);
     }
 }

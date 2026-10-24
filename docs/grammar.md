@@ -19,8 +19,8 @@ compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). String values and property access parse but are rejected by the
 compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`
-loops (clj-quickjs-78) parse and execute, except a jump out of a `try`
-statement that has a finally block.
+loops (clj-quickjs-78) parse and execute, including jumps out of `try`
+statements that run their finally blocks on the way (clj-quickjs-79).
 
 ## Semantics model
 
@@ -269,7 +269,9 @@ value; a `try` statement's value is that of its block or catch body, never
 that of a finally block that completes normally; a `break` or `continue`
 keeps the value its loop body produced so far, as ECMAScript `UpdateEmpty`
 does, so `5; while (true) { 6; break; }` is 6 and
-`5; while (true) { break; }` is `undefined`).
+`5; while (true) { break; }` is `undefined`; a finally block that a jump
+runs and that completes normally keeps it, so
+`5; while (true) { try { 6; break; } finally { 7; } }` is 6).
 `frontend::compile_function(source)` compiles a source made of exactly one
 function declaration into an entry point whose parameters are the task's
 arguments (missing ones are `undefined`); `return` completes the task and
@@ -291,7 +293,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
-| `break`, `continue` (unlabelled) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again; leaving a `try` block pops its catch handler, so a later exception is not caught by it |
+| `break`, `continue` (unlabelled) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
@@ -308,7 +310,6 @@ Errors:
 | A name declared twice in one block, script or function body (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
 | String values, property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
-| A `break` or `continue` that would leave a `try` block, catch body or finally block of a `try` statement with a finally block (until finally blocks run on the way) | compile time | `SyntaxError`, kind `Unsupported`, at the keyword |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading or assigning a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
@@ -326,11 +327,13 @@ exceptions: a `try` statement can catch them (see "Exceptions").
 
 `throw`, `try`/`catch`/`finally` and `return` through finally blocks follow
 JavaScript (clj-quickjs-11). The VM keeps the handlers and the *pending
-completion* of a running finally block (normal, a saved return value, or a
-saved exception) in task-owned state, so a task can yield, wait or migrate
+completion* of a running finally block (normal, a saved return value, a
+saved exception, or a `break`/`continue` jump with its resume point,
+clj-quickjs-79) in task-owned state, so a task can yield, wait or migrate
 inside any of them and resume exactly there; a finally block never runs
-because the task suspends. An abrupt completion of a finally block (`return`
-or `throw`) replaces the pending one; a normal completion keeps it.
+because the task suspends. An abrupt completion of a finally block (`return`,
+`throw`, or a `break`/`continue` out of it) replaces the pending one; a
+normal completion keeps it.
 
 ```js accept
 function f() {
@@ -350,9 +353,9 @@ A failure that leaves through finally blocks keeps the position and call
 chain where it was raised. A `__rt.need` that waits raises nothing and runs
 no handler. Cancelling the task (`Task::cancel`) is not catchable: it runs
 the pending finally blocks, skipping catch blocks, then the task ends
-cancelled; a `return`, exception or `__rt.need` that would escape such a
-finally block ends the cleanup there (`src/task.rs`, "Cancellation and
-finally blocks").
+cancelled; a `return`, exception, `break`, `continue` or `__rt.need` that
+would escape such a finally block ends the cleanup there (`src/task.rs`,
+"Cancellation and finally blocks").
 
 Gaps specific to execution:
 
@@ -373,9 +376,10 @@ Gaps specific to execution:
   leaves a `try` block for its catch or finally block (outside the scope
   of the block's bindings); an unlabelled `break` only leaves scopes and
   `continue` jumps to the loop test, from which the body is entered again
-  at its start (clj-quickjs-78), so no jump enters a scope past a
-  declaration. So within the function
-  that declares a binding, whether it is initialized at a reference is
+  at its start (clj-quickjs-78); a `break` or `continue` through finally
+  blocks enters each one at its start and then goes on leaving scopes
+  (clj-quickjs-79), so no jump enters a scope past a declaration. So
+  within the function that declares a binding, whether it is initialized at a reference is
   known from source order, and the compiler
   decides it statically. A closure may run at any time, so a binding a
   closure captures is checked at run time when it may be read before its
@@ -520,6 +524,13 @@ while (true) {
 ```
 
 ```js accept
+// `break` and `continue` run the finally blocks they leave (clj-quickjs-79).
+while (x) {
+  try { if (y) continue; break; } finally { cleanup(); }
+}
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -640,12 +651,6 @@ while (x) {
 while (x) break outer;
 ```
 
-```js compile-reject Unsupported 2:9
-while (x) {
-  try { break; } finally { cleanup(); }
-}
-```
-
 ```js reject UnexpectedToken 1:11
 let a = 1 let b = 2;
 ```
@@ -708,7 +713,13 @@ generated from perl's Unicode database, not from QuickJS's
 `libunicode-table.h`. For `break` and `continue` (clj-quickjs-78):
 the `TOK_BREAK` / `TOK_CONTINUE` case of `js_parse_statement_or_decl`,
 `emit_break` (the chain of enclosing loops and handlers a jump leaves, and
-its early errors), `push_break_entry` and `close_scopes`. The tests
+its early errors), `push_break_entry` and `close_scopes`; for jumps through
+finally blocks (clj-quickjs-79), `emit_break`'s `OP_gosub` to each
+enclosing finally block and the `OP_ret` it returns through (here a pending
+jump completion of the task-owned handler stack, `src/vm/exception.rs`).
+`test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
+`tests/exceptions.rs` `break_and_continue_run_finally_blocks` and in
+`tests/fixtures/js/quickjs_try_catch.js`, each with the notice. The tests
 in `src/frontend/tests.rs` are written for this project and are not adapted
 from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
 in `hashbang_comment_only_at_start`, which carries its notice, the name

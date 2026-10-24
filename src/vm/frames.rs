@@ -467,10 +467,79 @@ impl VmState {
         }
         match self.handlers.pop() {
             Some(Handler {
+                kind: HandlerKind::Pending(Completion::Jump(resume)),
+                height,
+                ..
+            }) => {
+                // The resume point was validated at the depth of its
+                // `CallFinally`, which ran at this height.
+                if self.stack.len() != height {
+                    return Err(Fault::Internal(
+                        "end_finally of a jump with the operand stack off its handler's height",
+                    ));
+                }
+                self.top_mut().pc = resume as usize;
+                Ok(Completion::Jump(resume))
+            }
+            Some(Handler {
                 kind: HandlerKind::Pending(completion),
                 ..
             }) => Ok(completion),
             _ => Err(Fault::Internal("handler stack changed")),
+        }
+    }
+
+    /// `CallFinally`: the running frame's innermost entry, a finally handler,
+    /// becomes a pending jump completion resuming at the running frame's
+    /// next instruction (its saved `pc`, already past the `CallFinally`),
+    /// and execution continues at the handler's finally block. The operand
+    /// stack must be at the handler's height, so the resume point is entered
+    /// at the depth the validator checked.
+    pub(crate) fn call_finally(&mut self) -> Result<(), Fault> {
+        let len = self.stack.len();
+        let resume = self.top().pc;
+        let resume = u32::try_from(resume)
+            .map_err(|_| Fault::Internal("call_finally resume point out of range"))?;
+        let target = match self.own_handler() {
+            Some(h) if h.height != len => {
+                return Err(Fault::Internal(
+                    "call_finally with the operand stack off its finally handler's height",
+                ));
+            }
+            Some(h) => match h.kind {
+                HandlerKind::Finally { target } => {
+                    h.kind = HandlerKind::Pending(Completion::Jump(resume));
+                    target
+                }
+                _ => return Err(Fault::Internal("call_finally without a finally handler")),
+            },
+            None => return Err(Fault::Internal("call_finally without a finally handler")),
+        };
+        self.top_mut().pc = target as usize;
+        Ok(())
+    }
+
+    /// `DropCompletion`: pop the running frame's innermost entry, a pending
+    /// completion, without resuming it (a `break` or `continue` leaves its
+    /// finally block). Returns false, leaving it in place, when it is a
+    /// pending cancellation: nothing may override that, so the cleanup ends
+    /// (`crate::task`, "Cancellation and finally blocks").
+    pub(crate) fn drop_completion(&mut self) -> Result<bool, Fault> {
+        match self.own_handler() {
+            Some(Handler {
+                kind: HandlerKind::Pending(Completion::Cancel),
+                ..
+            }) => Ok(false),
+            Some(Handler {
+                kind: HandlerKind::Pending(_),
+                ..
+            }) => {
+                self.handlers.pop();
+                Ok(true)
+            }
+            _ => Err(Fault::Internal(
+                "drop_completion without a pending completion of its frame",
+            )),
         }
     }
 

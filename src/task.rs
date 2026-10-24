@@ -222,12 +222,16 @@
 //!   run, only enclosing finally blocks do.
 //! * **Nothing overrides or outlives it.** Cleanup code runs with the task
 //!   already cancelled, so it cannot be revived: every wake is stale, and
-//!   `RunGuard::need` refuses. An exception or `return` that would discard
-//!   the pending cancel completion (escape the finally block), a `need`, or
-//!   a failure ends the cleanup at once with terminal cleanup and
+//!   `RunGuard::need` refuses. An exception, `return`, `break` or
+//!   `continue` that would discard the pending cancel completion (escape the
+//!   finally block; a jump's `drop_completion`, clj-quickjs-79), a `need`,
+//!   or a failure ends the cleanup at once with terminal cleanup and
 //!   `Cancelled` (the remaining finally blocks do not run; the cleanup
 //!   cannot wait, so no waiter is left behind). A `try`/`catch` entirely
-//!   inside a finally block works as usual, and so do calls.
+//!   inside a finally block works as usual, and so do calls and loops,
+//!   including `break`/`continue` through finally blocks inside it. A
+//!   cancellation observed while a finally block runs for a `break` or
+//!   `continue` discards the pending jump like any pending completion.
 //! * **Budgets.** Cleanup runs under the run's budget like any code: when it
 //!   is used up the run returns `Yielded` and the task stays runnable
 //!   ([`TaskStatus::Ready`] until the cleanup ends); the next run continues

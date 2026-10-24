@@ -570,3 +570,249 @@ __rt.count(make()) * 10 + __rt.count(thrown)
     assert_eq!((expected, &expected_log[..]), (32.0, &[2.0, 3.0, 1.0][..]));
     step_with_collections(src, expected, &expected_log);
 }
+
+/// `break` and `continue` through finally blocks (clj-quickjs-79).
+/// `TEST_TRY_CATCH5` is adapted from `test_try_catch5` in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution): `let` for `var`,
+/// `while (true)` for `for(;;)`, and, with no string values, each logged
+/// letter is a digit appended with `s = s * 10 + d` ("t" = 1, "b" = 2,
+/// "f" = 3), so `"tf"` is 13. The other scripts are written for this
+/// project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn break_and_continue_run_finally_blocks() {
+    const TEST_TRY_CATCH5: &str = "
+        let s;
+        s = 0;
+        while (true) {
+            try {
+                s = s * 10 + 1;
+                break;
+                s = s * 10 + 2;
+            } finally {
+                s = s * 10 + 3;
+            }
+        }
+        s";
+    assert_eq!(num(TEST_TRY_CATCH5), 13.0, "\"tf\"");
+
+    // `continue` through a finally block runs it once per iteration, after
+    // the protected code and before the test.
+    let (i, log) = num_log(
+        "let i = 0;
+         while (__rt.effect(1, i * 1000) < 3000) {
+           i = i + 1;
+           try { if (i === 2) continue; __rt.effect(1, i * 10); }
+           finally { __rt.effect(1, i); }
+           __rt.effect(1, i * 100);
+         }
+         i",
+    );
+    assert_eq!(i, 3.0);
+    assert_eq!(
+        log,
+        [
+            0.0, 10.0, 1.0, 100.0, 1000.0, 2.0, 2000.0, 30.0, 3.0, 300.0, 3000.0
+        ]
+    );
+
+    // A `break` through two nested finally blocks (and a catch handler
+    // between them) runs the inner one, then the outer one, then leaves the
+    // loop; the catch handler it left does not catch the later `throw`.
+    let (r, log) = num_log(
+        "let r = 0;
+         try {
+           while (true) {
+             try {
+               try {
+                 try { __rt.effect(1, 1); break; } catch (e) { __rt.effect(1, 91); }
+                 __rt.effect(1, 92);
+               } finally { __rt.effect(1, 2); }
+               __rt.effect(1, 93);
+             } finally { __rt.effect(1, 3); }
+             __rt.effect(1, 94);
+           }
+           __rt.effect(1, 4);
+           throw 5;
+         } catch (e) { r = e; }
+         r",
+    );
+    assert_eq!((r, &log[..]), (5.0, &[1.0, 2.0, 3.0, 4.0][..]));
+
+    // A `continue` from a catch body runs the finally block too.
+    let (i, log) = num_log(
+        "let i = 0;
+         while (i < 2) {
+           i = i + 1;
+           try { throw i; } catch (e) { __rt.effect(1, e); continue; } finally { __rt.effect(1, 10); }
+           __rt.effect(1, 99);
+         }
+         i",
+    );
+    assert_eq!((i, &log[..]), (2.0, &[1.0, 10.0, 2.0, 10.0][..]));
+
+    // A `return` inside the finally block overrides the pending `break`.
+    let (r, log) = num_log(
+        "function f() {
+           while (true) {
+             try { try { break; } finally { __rt.effect(1, 1); return 5; } }
+             finally { __rt.effect(1, 2); }
+           }
+           return 6;
+         }
+         f()",
+    );
+    assert_eq!((r, &log[..]), (5.0, &[1.0, 2.0][..]));
+
+    // A `throw` inside the finally block replaces the pending `break` and is
+    // caught by an outer catch block (outer finally blocks run on the way).
+    let (r, log) = num_log(
+        "let r = 0;
+         try {
+           while (true) {
+             try { try { break; } finally { __rt.effect(1, 1); throw 7; } }
+             finally { __rt.effect(1, 2); }
+           }
+           r = 1;
+         } catch (e) { r = e; }
+         r",
+    );
+    assert_eq!((r, &log[..]), (7.0, &[1.0, 2.0][..]));
+
+    // A `break` or `continue` inside the finally block itself discards the
+    // pending exception, return or jump.
+    assert_eq!(
+        num("let r = 0; while (true) { try { throw 7; } finally { r = 1; break; } } r"),
+        1.0
+    );
+    assert_eq!(
+        num("let i = 0, r = 0;
+             while (i < 3) {
+               i = i + 1;
+               try { throw i; } catch (e) { r = r + e; throw e; } finally { continue; }
+             }
+             r"),
+        6.0
+    );
+    assert_eq!(
+        num("function f() { while (true) { try { return 1; } finally { break; } } return 2; } f()"),
+        2.0
+    );
+    let (r, log) = num_log(
+        "let r = 0;
+         while (true) {
+           try {
+             while (true) { try { break; } finally { __rt.effect(1, 1); break; } }
+             __rt.effect(1, 2);
+           } finally { __rt.effect(1, 3); }
+           r = 4;
+           break;
+         }
+         r",
+    );
+    assert_eq!((r, &log[..]), (4.0, &[1.0, 2.0, 3.0][..]));
+
+    // A jump that stays inside a finally block keeps that block's pending
+    // completion: the pending return still completes.
+    assert_eq!(
+        num("function f() {
+               try { return 1; }
+               finally { let i = 0; while (true) { try { i = i + 1; break; } finally {} } }
+             }
+             f()"),
+        1.0
+    );
+
+    // Completion values: a finally block that completes normally keeps the
+    // value the jump carries; a jump out of a finally block carries the
+    // value that block produced.
+    assert_eq!(
+        num("5; while (true) { try { 6; break; } finally { 7; } }"),
+        6.0
+    );
+    assert_eq!(
+        eval("5; while (true) { 1; try { break; } finally { 7; } }"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("5; while (true) { try { throw 1; } catch (e) { 4; break; } finally { 7; } }"),
+        4.0
+    );
+    assert_eq!(
+        num("while (true) { try { throw 1; } finally { 8; break; } }"),
+        8.0
+    );
+    assert_eq!(
+        eval("while (true) { 3; try { throw 1; } finally { break; } }"),
+        ValueView::Undefined
+    );
+}
+
+/// Finally blocks reached by `break` and `continue`, with calls and
+/// allocations inside, yield after every two instructions; each run happens
+/// on a new thread with a collection in between, and the jumps still
+/// complete with the same result and effects, each exactly once.
+#[test]
+fn a_jump_through_finally_survives_yields_migration_and_collection() {
+    let src = "
+        function busy(n) { let i = 0; while (i < n) { i = i + 1; } return i; }
+        let s = 0, i = 0;
+        while (i < 3) {
+          i = i + 1;
+          try {
+            try { if (i === 2) continue; if (i === 3) break; s = s * 10 + 1; }
+            finally { s = s * 10 + __rt.effect(1, busy(i)); }
+          } finally { s = s * 10 + __rt.effect(1, __rt.count(__rt.vector(i, i))) * 2 + 1; }
+        }
+        s";
+    let (expected, expected_log) = num_log(src);
+    assert_eq!(
+        (expected, &expected_log[..]),
+        (1152535.0, &[1.0, 2.0, 2.0, 2.0, 3.0, 2.0][..])
+    );
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut log = Log::default();
+    let mut yields = 0;
+    let result = loop {
+        let (outcome, back) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut log = std::mem::take(&mut log);
+                    let outcome = task.run_with(Budget::instructions(2), &mut log).unwrap();
+                    (outcome, log)
+                })
+                .join()
+                .unwrap()
+        });
+        log = back;
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Number(expected));
+    assert_eq!(log.0, expected_log);
+    assert!(yields > 50, "only {yields} yields");
+}

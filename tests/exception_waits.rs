@@ -684,6 +684,76 @@ fn cancellation_cleanup_allows_calls_and_local_catches() {
     ));
 }
 
+/// `break` and `continue` during cancellation cleanup (clj-quickjs-79): a
+/// jump out of a finally block running for the cancellation would discard
+/// it, so it ends the cleanup there, as a `return` does (enclosing finally
+/// blocks do not run). A loop entirely inside the cleanup block jumps
+/// through its own finally blocks as usual. A task cancelled while it waits
+/// in a finally block that a `break` runs loses the pending jump: only the
+/// enclosing finally blocks run.
+#[test]
+fn a_jump_out_of_a_cleanup_finally_block_ends_the_cleanup() {
+    let cases: [(&str, &[f64], &[f64]); 4] = [
+        (
+            "try {
+               while (true) { try { __rt.need(5, 3); } finally { __rt.effect(1, 1); break; } }
+               __rt.effect(1, 91);
+             } finally { __rt.effect(1, 92); }",
+            &[],
+            &[1.0],
+        ),
+        (
+            "let i = 0;
+             try {
+               while (i < 5) {
+                 i = i + 1;
+                 try { __rt.need(5, 3); } finally { __rt.effect(1, i); continue; }
+               }
+               __rt.effect(1, 91);
+             } finally { __rt.effect(1, 92); }",
+            &[],
+            &[1.0],
+        ),
+        (
+            "try {
+               try { __rt.need(5, 3); }
+               finally {
+                 while (true) { try { __rt.effect(1, 1); break; } finally { __rt.effect(1, 2); } }
+                 __rt.effect(1, 3);
+               }
+               __rt.effect(1, 91);
+             } finally { __rt.effect(1, 4); }",
+            &[],
+            &[1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            "try {
+               while (true) {
+                 try { __rt.effect(1, 1); break; }
+                 finally { __rt.need(5, 3); __rt.effect(1, 91); }
+               }
+               __rt.effect(1, 92);
+             } finally { __rt.effect(1, 2); }",
+            &[1.0],
+            &[1.0, 2.0],
+        ),
+    ];
+    for (src, before, after) in cases {
+        let rt = Runtime::new();
+        let task = spawn(&rt, src);
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, A);
+        assert_eq!(log.0, before, "{src}");
+        let resumed = cancel_parked(&task);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(resumed, log);
+        cancelled(outcome);
+        assert_eq!(log.0, after, "{src}");
+        assert_eq!(task.status(), TaskStatus::Cancelled, "{src}");
+        assert_eq!(task.dependency_log().waiting(), None, "{src}");
+    }
+}
+
 /// A task without finally blocks is cancelled without running any code (the
 /// clj-quickjs-24 terminal cleanup), and a catch block never sees a
 /// cancellation.
@@ -886,6 +956,70 @@ fn a_pending_return_survives_migration_and_collection_under_the_executor() {
             (w0, id, 3.0),
             (w1, id, 4.0),
             (w1, id, 5.0)
+        ]
+    );
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// A `break` and a `continue` through two finally blocks of a callee
+/// (clj-quickjs-79): the outer finally block that the `break` runs parks on
+/// a pending cell, with the jump pending in the task's handler stack.
+/// Collections run on both workers while it is parked; the woken task
+/// resumes on the other worker, finishes the finally block and completes
+/// the jump (leaving the loop, then the function). Each effect ran exactly
+/// once, on the worker the language's control flow put it on.
+#[test]
+fn a_break_through_finally_survives_a_wait_and_migration_under_the_executor() {
+    let rt = Runtime::new();
+    let effects = Effects::default();
+    let exec = migrating_executor(&rt, &effects);
+    let task = spawn(
+        &rt,
+        "function f() {
+           let n = 0;
+           while (true) {
+             n = n + 1;
+             try {
+               try { __rt.effect(1, n); if (n === 2) break; continue; }
+               finally { __rt.effect(1, 10 + n); }
+             } finally { if (n === 2) __rt.effect(1, __rt.need(5, 3)); }
+             __rt.effect(1, 91);
+           }
+           __rt.effect(1, 5);
+           return n;
+         }
+         let r;
+         try { r = f(); } catch (e) { __rt.effect(1, 92); } finally { __rt.effect(1, 6); }
+         r",
+    );
+    exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    let parked = OutcomeKind::Waiting(key(&rt, A));
+    assert!(exec.wait_for(TIMEOUT, |ev| released(ev, task.id(), parked)));
+    collect_on_worker(&exec, WorkerId::new(0));
+    collect_on_worker(&exec, WorkerId::new(1));
+    assert_eq!(task.status(), TaskStatus::Waiting);
+
+    let request = task.take_producer_requests().pop().unwrap();
+    let value = rt.root(Primitive::Number(4.0));
+    let wakeups = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert_eq!(exec.wake(wakeups).unwrap(), 1);
+    let outcome = exec.take_outcome(task.id(), TIMEOUT).expect("an outcome");
+    assert_eq!(number(outcome), 2.0);
+    let (w0, w1) = (WorkerId::new(0), WorkerId::new(1));
+    let id = task.id();
+    assert_eq!(
+        *effects.lock().unwrap(),
+        [
+            (w0, id, 1.0),
+            (w0, id, 11.0),
+            (w0, id, 2.0),
+            (w0, id, 12.0),
+            (w1, id, 4.0),
+            (w1, id, 5.0),
+            (w1, id, 6.0)
         ]
     );
     exec.shutdown(TIMEOUT).unwrap();

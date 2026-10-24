@@ -376,7 +376,9 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   Initialization is decided statically by source position within the
   declaring function (no jump of the subset enters a scope past a
   declaration: exceptions, `return`, and since clj-quickjs-78 `break` and
-  `continue`, only leave scopes or restart a loop body from its start; see
+  `continue`, only leave scopes or restart a loop body from its start, and
+  the finally blocks they run since clj-quickjs-79 are entered at their
+  start; see
   `docs/grammar.md`, "Explicit gaps"); bindings
   that closures capture use the VM's run-time check, binding cells, where
   needed (clj-quickjs-21, below).
@@ -969,8 +971,8 @@ docs.
 
 - **Handler stack.** `VmState` keeps one stack of entries beside its
   frames: catch handlers, finally handlers, and the *pending completion*
-  of each running finally block (`Normal`, `Return(value)`, or
-  `Throw(exception)`). Each entry names its frame by index and the
+  of each running finally block (`Normal`, `Return(value)`,
+  `Throw(exception)`, or `Jump(resume)` since clj-quickjs-79). Each entry names its frame by index and the
   value-stack height to restore. Leaving a frame drops its entries.
 - **Raising.** `throw`, a re-raising `end_finally`, or a catchable failing
   instruction pops entries until a handler: frames above its frame are
@@ -984,6 +986,19 @@ docs.
   there is one, it becomes a pending `Return` and its block runs;
   `end_finally` resumes the return (through the next finally handler, then
   out of the frame). The compiler emits no per-return cleanup code.
+- **`break` and `continue`** (clj-quickjs-79). The compiler emits one
+  instruction per `try` construct a jump leaves, innermost first:
+  `pop_catch`, `call_finally` (opcode `0x47`: the finally handler becomes a
+  pending `Jump` to the next instruction and its block runs; its
+  `end_finally` comes back) or `drop_completion` (`0x48`: a jump out of a
+  finally block discards its pending completion), then the `jump` to the
+  loop. This is QuickJS's `emit_break` with `gosub`, the return address
+  kept in the task-owned handler stack instead of on the C value stack, so
+  the jump survives yields, waits, migration and collections inside the
+  finally block. Both instructions check the handler stack and operand
+  height at run time (`Internal` on a mismatch, hand-assembled code only);
+  the resume point is the validated fall-through edge. A `drop_completion`
+  of a pending cancellation ends the cleanup, like a `return`.
 - **Catchability.** ReferenceError, TypeError and StackOverflow failures
   are raised as fresh immutable error objects (a native heap payload with
   no edges, shareable); other failures are uncatchable and end the run
@@ -1304,9 +1319,17 @@ and Charlie Gordon) and is listed here with its source path and revision:
   7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
   `let` for `var`; logged letters are digits appended to a number and the
   thrown strings are those digits (no string values); failure flags instead
-  of `assert()` calls. `test_try_catch5` (`for`, `break`) and
-  `test_try_catch8` (`for`-`in`, object literals) are omitted. The file
-  carries the full notice.
+  of `assert()` calls. `test_try_catch8` (`for`-`in`, object literals) is
+  omitted. `test_try_catch5` was added with clj-quickjs-79 (`while (true)`
+  for `for(;;)`). The file carries the full notice.
+- `tests/exceptions.rs` `break_and_continue_run_finally_blocks`
+  (clj-quickjs-79): the body of `test_try_catch5` in
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8. Modified:
+  `let` for `var`, `while (true)` for `for(;;)`, and logged letters are
+  digits appended to a number. The test carries the notice. Consulted
+  only: `emit_break` in `research/quickjs/quickjs.c` (its `OP_gosub` to
+  each enclosing finally block and the dropped return addresses of finally
+  blocks a jump leaves). No code was copied.
 - `research/quickjs/quickjs.c` (clj-quickjs-11), consulted only:
   `js_parse_statement`'s `TOK_TRY` branch (catch binding scope, optional
   catch binding), the `OP_throw`, `OP_catch`, `OP_gosub` and `OP_ret`

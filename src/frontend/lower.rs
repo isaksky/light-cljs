@@ -87,10 +87,12 @@
 //! **`break` and `continue`** (unlabelled, clj-quickjs-78) jump to the end
 //! or the test of the innermost loop of the running function
 //! (`Lowerer::jump`), first popping the catch handler of every `try` block
-//! they leave; a jump out of a `try` statement with a finally block is
-//! rejected as `Unsupported`. The script completion value needs nothing
+//! they leave, running the finally block of every `try` block or catch body
+//! they leave and discarding the pending completion of every finally block
+//! they leave (clj-quickjs-79). The script completion value needs nothing
 //! extra: local 0 already holds the value the loop body produced so far
-//! (ECMAScript `UpdateEmpty`).
+//! (ECMAScript `UpdateEmpty`), and a finally block that a jump runs restores
+//! it on completing normally, as for any other completion.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -361,10 +363,13 @@ enum Exit {
     /// The block of a `try` statement with a catch clause: its catch handler
     /// is on the handler stack, so leaving pops it.
     Catch,
-    /// A block, catch body or finally body of a `try` statement with a
-    /// finally block: leaving would have to run (or abandon) the finally
-    /// block, which is not supported yet.
+    /// The block or catch body of a `try` statement with a finally block:
+    /// its finally handler is on the handler stack, so leaving runs the
+    /// finally block first (`call_finally`).
     Finally,
+    /// The finally block of a `try` statement: its pending completion is on
+    /// the handler stack, so leaving discards it (`drop_completion`).
+    FinallyBody,
 }
 
 /// A lowered function waiting to be loaded ([`Lowerer::load_all`]).
@@ -1159,13 +1164,17 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// Lower an unlabelled `break` (`is_break`) or `continue` at `span`: pop
-    /// the catch handler of every `try` block it leaves, innermost first, so
-    /// the handler stack is the loop's again, then jump past the innermost
+    /// Lower an unlabelled `break` (`is_break`) or `continue` at `span`: leave
+    /// every `try` construct between it and the innermost loop, innermost
+    /// first, so the handler stack is the loop's again, then jump past the
     /// loop or to its test (as QuickJS's `emit_break` walks its `BlockEnv`
-    /// chain). Statements leave nothing on the operand stack, so no operand
-    /// needs dropping. Leaving a `try` statement that has a finally block is
-    /// rejected until finally blocks can run on the way.
+    /// chain). A `try` block with a catch handler pops it (`pop_catch`); a
+    /// `try` block or catch body with a finally handler runs the finally
+    /// block, which comes back to the next instruction (`call_finally`); a
+    /// finally block discards its pending completion (`drop_completion`)
+    /// (clj-quickjs-79, `crate::vm::exception`). Statements leave nothing on
+    /// the operand stack, so no operand needs dropping and `call_finally`
+    /// runs at its handler's height.
     fn jump(&mut self, is_break: bool, span: Span) -> Result<(), SyntaxError> {
         let keyword = if is_break { "break" } else { "continue" };
         let at = Span::new(span.start, span.start + keyword.len());
@@ -1173,12 +1182,8 @@ impl<'s> Lowerer<'s> {
         for exit in exits.iter().rev() {
             match *exit {
                 Exit::Catch => self.out().op(Opcode::PopCatch, at),
-                Exit::Finally => {
-                    return Err(self.unsupported(
-                        at,
-                        &format!("`{keyword}` out of a `try` statement with a `finally` block"),
-                    ));
-                }
+                Exit::Finally => self.out().op(Opcode::CallFinally, at),
+                Exit::FinallyBody => self.out().op(Opcode::DropCompletion, at),
                 Exit::Loop { brk, cont } => {
                     let target = if is_break { brk } else { cont };
                     self.out().branch(Opcode::Jump, target, at);
@@ -1227,8 +1232,9 @@ impl<'s> Lowerer<'s> {
         if let Some((_, label)) = finally {
             self.out().branch(Opcode::PushFinally, label, span);
         }
-        // A `break`/`continue` inside sees the finally handler (block and
-        // catch body) or the pending completion (finally body) below it.
+        // A `break`/`continue` inside sees the finally handler below it in
+        // the block and catch body, and the pending completion in the
+        // finally body.
         if finally.is_some() {
             self.cur_mut().exits.push(Exit::Finally);
         }
@@ -1271,6 +1277,9 @@ impl<'s> Lowerer<'s> {
         if let Some((body, label)) = finally {
             self.out().op(Opcode::PopFinally, span);
             self.out().bind(label);
+            if let Some(exit) = self.cur_mut().exits.last_mut() {
+                *exit = Exit::FinallyBody;
+            }
             let saved = match self.cur().completion {
                 Some(slot) => {
                     let tmp = self.temp(span)?;

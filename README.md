@@ -819,7 +819,8 @@ Supported:
   Script completion values follow `try` statements.
 - Task-owned handler state: the VM keeps catch and finally handlers and the
   *pending completion* of a running finally block (normal, saved return
-  value, or saved exception with its diagnostic) in the task's `VmState`,
+  value, saved exception with its diagnostic, or a `break`/`continue` jump,
+  clj-quickjs-79) in the task's `VmState`,
   next to its frames (`src/vm/exception.rs`). Raising unwinds frames in the
   interpreter loop, never on the Rust stack. A task yields (and is
   collected) inside try, catch and finally blocks and resumes with its
@@ -835,7 +836,8 @@ Supported:
   `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
   source position and call chain, also after leaving through finally
   blocks.
-- Adapted QuickJS `test_try_catch1`–`4`, `6` and `7` run from source
+- Adapted QuickJS `test_try_catch1`–`7` run from source (`5` since
+  clj-quickjs-79)
   (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice).
 
 Deferred:
@@ -847,8 +849,6 @@ Deferred:
   clj-quickjs-27 (below).
 - Error objects have no properties (`message`, `name`), no `Error`
   constructors or `instanceof`; strings cannot be thrown (no string values).
-- `break`/`continue` through finally blocks (rejected as `Unsupported`
-  since clj-quickjs-78; clj-quickjs-79).
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
@@ -1260,9 +1260,6 @@ Supported (`cargo test --lib frontend::tests::break_and_continue`,
 
 Deferred:
 
-- Jumps out of a `try` statement with a finally block (its block, catch
-  body or finally body) are rejected at compile time as `Unsupported`
-  (clj-quickjs-79).
 - Labels (`break l;` is `Unsupported`), `do`-`while`, `for` and `switch`.
 
 ### Exponentiation operator (clj-quickjs-63)
@@ -1285,3 +1282,24 @@ Deferred:
   operands wait for StringToNumber (clj-quickjs-67) and object operands for
   ToPrimitive (they fail with `UnsupportedOperand`). BigInt is outside the
   subset.
+
+### `break` and `continue` through finally blocks (clj-quickjs-79)
+
+Supported (`cargo test --test exceptions break_and_continue`,
+`cargo test --test exceptions a_jump_through_finally`,
+`cargo test --test exception_waits jump`,
+`cargo test --test exception_waits a_break_through_finally`):
+
+- A `break` or `continue` that leaves a `try` block or catch body with a
+  finally clause runs the finally blocks it leaves, innermost first, then
+  completes the jump. A finally block that completes abruptly (`return`,
+  `throw`, `break`, `continue`) replaces the pending jump; a jump out of a
+  finally block discards its pending return, exception or jump.
+- The pending jump is a fourth pending-completion kind of the task-owned
+  handler stack (opcodes `call_finally` `0x47` and `drop_completion`
+  `0x48`), so a task may yield, wait, migrate or be collected inside a
+  finally block a jump runs and finish the jump afterwards.
+- During cancellation cleanup a jump out of a finally block running for the
+  cancellation ends the cleanup there, like a `return`.
+- Completion values: `5; while (true) { try { 6; break; } finally { 7; } }`
+  is 6. QuickJS `test_try_catch5` runs from source (adapted, with notice).

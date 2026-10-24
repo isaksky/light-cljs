@@ -323,6 +323,17 @@ fn script_completion_value_follows_javascript() {
         eval("3; while (true) { 4; while (true) { break; } break; }"),
         ValueView::Undefined
     );
+    // Through a finally block (clj-quickjs-79): a normally completing
+    // finally block never sets the value; a jump out of a finally block
+    // carries the value that block produced.
+    assert_eq!(
+        num("5; while (true) { try { 6; break; } finally { 7; } }"),
+        6.0
+    );
+    assert_eq!(
+        num("while (true) { try { throw 1; } finally { 8; break; } }"),
+        8.0
+    );
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
@@ -490,27 +501,22 @@ fn while_break_and_continue() {
     assert_eq!(num("5; while (true) { 6; break; }"), 6.0);
     assert_eq!(eval("5; while (true) { break; }"), ValueView::Undefined);
 
-    // Jumps out of a `try` statement with a finally block wait for
-    // clj-quickjs-79: rejected at the keyword.
-    for (src, column) in [
-        ("while (x) { try { break; } finally {} }", 19),
+    // Jumps out of a `try` statement with a finally block run it on the way
+    // (clj-quickjs-79; behaviour in `tests/exceptions.rs`
+    // `break_and_continue_run_finally_blocks`).
+    for (src, expected) in [
+        ("let x = 1; while (x) { try { break; } finally {} } x", 1.0),
         (
-            "while (x) { try {} catch (e) { continue; } finally {} }",
-            32,
+            "let x = 1; while (x) { try { throw 0; } catch (e) { x = 0; continue; } finally {} } x",
+            0.0,
         ),
-        ("while (x) { try {} finally { break; } }", 30),
+        ("let x = 1; while (x) { try {} finally { break; } } x", 1.0),
         (
-            "while (x) { try { try { continue; } catch (e) {} } finally {} }",
-            25,
+            "let x = 1; while (x) { try { try { x = 0; continue; } catch (e) {} } finally {} } x",
+            0.0,
         ),
     ] {
-        let e = compile_script("t", src).unwrap_err();
-        assert_eq!(
-            (e.kind, e.line, e.column),
-            (SyntaxErrorKind::Unsupported, 1, column),
-            "{src}: {e}"
-        );
-        assert!(e.message.contains("`finally` block"), "{src}: {e}");
+        assert_eq!(num(src), expected, "{src}");
     }
 }
 
