@@ -1882,7 +1882,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 231); // Includes NumberFormat and Date string formats (-183).
+        assert_eq!(first.all.len(), 240); // Includes the nine iterator intrinsics (clj-quickjs-237).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

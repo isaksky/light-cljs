@@ -270,6 +270,17 @@ fn for_of_abrupt_completions() {
 }
 
 #[test]
+fn for_of_close_preserves_exception_diagnostics() {
+    let src = "let it = {\nnext() { return {value: 1, done: false}; },\nreturn() { throw 99; }\n};\nit[Symbol.iterator] = function() { return this; };\nfor (let x of it) break;";
+    let error = failure(src);
+    assert_eq!(error.kind(), VmErrorKind::Thrown);
+    assert_eq!(error.diagnostic().source.unwrap().line, 3);
+    let error = failure(&src.replace("break;", "throw 17;"));
+    assert_eq!(error.diagnostic().source.unwrap().line, 6);
+    assert!(error.message().contains("17"));
+}
+
+#[test]
 fn upstream_string_rope() {
     assert_eq!(
         eval(include_str!("fixtures/js/quickjs_rope.js")),
