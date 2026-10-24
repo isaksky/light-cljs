@@ -94,3 +94,18 @@ The remaining cases are synthetic fixtures, not light-cljs output.
 `js_string_substring`, `js_string_slice`, `js_string_concat` and `js_string_pad`
 in `research/quickjs/quickjs.c` at that revision were read as semantic
 references. The resumable Rust implementation was written afresh.
+
+## Number predicates and constants (clj-quickjs-147)
+
+`tests/js_source.rs::number_predicates_and_constants` adapts the three
+invalid Number string conversions from `research/quickjs/tests/test_builtin.js`,
+`test_number`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). The full QuickJS copyright and MIT permission notice
+is retained on `string_code_unit_access` in that file (see
+`research/quickjs/LICENSE`). Other cases are synthetic fixtures written
+for this runtime, not light-cljs output.
+
+`js_global_isNaN`, `js_global_isFinite`, `js_number_isNaN`,
+`js_number_isFinite`, `js_number_isInteger`, `js_number_isSafeInteger`
+and `js_number_funcs` in `research/quickjs/quickjs.c` at the same revision
+were read as semantic references. The Rust implementation was written afresh.

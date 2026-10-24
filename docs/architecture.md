@@ -3579,3 +3579,29 @@ clj-quickjs-265. Unwind/cancellation drop the builder with its native frame.
 No heap kind, tracing edge, publication category or public string API changes;
 ropes remain clj-quickjs-146. Tests cover callback waits, budget yields,
 collection and thread migration during coercion and long result construction.
+
+## Number predicates and constants (clj-quickjs-147)
+
+The shared realm appends `isNaN` and `isFinite` to `Global` and resolves
+unshadowed identifiers with `get_builtin_global` (operands 6 and 7), just
+like existing built-in globals. Global-object properties await
+clj-quickjs-104. It also installs four Number predicate functions and eight
+primitive Number constants before copying the intrinsic views and publishing
+the realm. Constants use `PropertyFlags::FIXED`; `MIN_VALUE` is binary64
+bit pattern 1, the smallest subnormal (Rust's `MIN_POSITIVE` is normal).
+All function objects use the existing intrinsic roots and shareability rules.
+
+The Number predicates are bounded leaf computations that inspect only
+`Value::Number`; objects and wrappers return false without callbacks. Global
+predicates apply ToNumber to the first argument (undefined if absent).
+Object arguments enter `native::Convert` with number hint and a
+`NumberPredicate` completion target. The traced operand vector roots the
+receiver across ordinary VM callback frames, waits, yields, GC and worker
+migration; completion applies the same leaf predicate to the resulting
+primitive. No Rust frame survives suspension. Forwarded, bound and native
+callback calls use this same conversion entry point.
+
+Synthetic source tests cover constants, descriptors, numeric boundaries,
+non-coercing object inputs, conversion order and throws. The existing
+one-instruction conversion matrix additionally exercises these globals
+through waits, collection at every yield and thread migration.

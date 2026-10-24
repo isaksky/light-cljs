@@ -47,6 +47,7 @@
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
 //! | `Reflect` (clj-quickjs-102) | ordinary object, prototype `Object.prototype` | `apply` |
 //! | `Reflect.apply` | built-in function | `length` (3), `name` |
+//! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
 //!
 //! Every built-in function inherits from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -105,7 +106,8 @@
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102), and `Array` (clj-quickjs-155). The compiler emits `get_builtin_global i` for such a
-//! name. When the global object exists (clj-quickjs-104) these become its
+//! name; `isNaN` and `isFinite` use the same path (clj-quickjs-147).
+//! When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
 
@@ -137,17 +139,22 @@ pub(crate) enum Global {
     Reflect = 4,
     /// `Array` (clj-quickjs-155): exposes its prototype; calls remain unsupported.
     Array = 5,
+    /// Coercing number predicates (clj-quickjs-147).
+    IsNaN = 6,
+    IsFinite = 7,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 6] = [
+    const ALL: [Global; 8] = [
         Global::Object,
         Global::Number,
         Global::String,
         Global::Function,
         Global::Reflect,
         Global::Array,
+        Global::IsNaN,
+        Global::IsFinite,
     ];
 
     /// The JavaScript name.
@@ -159,6 +166,8 @@ impl Global {
             Global::Function => "Function",
             Global::Reflect => "Reflect",
             Global::Array => "Array",
+            Global::IsNaN => "isNaN",
+            Global::IsFinite => "isFinite",
         }
     }
 
@@ -212,6 +221,9 @@ pub(crate) struct Intrinsics {
     number: ObjectId,
     /// The `String` constructor.
     string: ObjectId,
+    /// The coercing global number predicates.
+    is_nan: ObjectId,
+    is_finite: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -290,6 +302,8 @@ impl Intrinsics {
             Global::Function => Value::Object(self.function),
             Global::Reflect => Value::Object(self.reflect),
             Global::Array => Value::Object(self.array),
+            Global::IsNaN => Value::Object(self.is_nan),
+            Global::IsFinite => Value::Object(self.is_finite),
         }
     }
 }
@@ -486,6 +500,29 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let method = b.function(which, &[])?;
         b.add(string, which.name(), method, PropertyFlags::METHOD)?;
     }
+    for which in [
+        Builtin::NumberIsNaN,
+        Builtin::NumberIsFinite,
+        Builtin::NumberIsInteger,
+        Builtin::NumberIsSafeInteger,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(number, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    for (name, value) in [
+        ("EPSILON", f64::EPSILON),
+        ("MAX_SAFE_INTEGER", 9_007_199_254_740_991.0),
+        ("MIN_SAFE_INTEGER", -9_007_199_254_740_991.0),
+        ("MAX_VALUE", f64::MAX),
+        ("MIN_VALUE", f64::from_bits(1)),
+        ("NaN", f64::NAN),
+        ("POSITIVE_INFINITY", f64::INFINITY),
+        ("NEGATIVE_INFINITY", f64::NEG_INFINITY),
+    ] {
+        b.add_value(number, name, Value::Number(value), PropertyFlags::FIXED)?;
+    }
+    let is_nan = b.function(Builtin::GlobalIsNaN, &[])?;
+    let is_finite = b.function(Builtin::GlobalIsFinite, &[])?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -524,6 +561,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         string_prototype,
         number,
         string,
+        is_nan,
+        is_finite,
     })
 }
 
@@ -690,10 +729,21 @@ impl Build<'_> {
     /// Define `name` on the allocated intrinsic `id` (an ordinary object
     /// or a built-in function), for the edges that close a cycle.
     fn add(&self, id: ObjectId, name: &str, value: ObjectId, flags: PropertyFlags) -> Option<()> {
+        self.add_value(id, name, Value::Object(value), flags)
+    }
+
+    /// Define a primitive or intrinsic value before the realm is published.
+    fn add_value(
+        &self,
+        id: ObjectId,
+        name: &str,
+        value: Value,
+        flags: PropertyFlags,
+    ) -> Option<()> {
         let key = self.heap.keys().intern(&JsString::from(name))?;
         let defined = self.heap.with_object_mut(id, |o| match o {
-            HeapObject::Plain(o) => o.define_with(key, Value::Object(value), flags),
-            HeapObject::Builtin(f) => f.properties.define_with(key, Value::Object(value), flags),
+            HeapObject::Plain(o) => o.define_with(key, value, flags),
+            HeapObject::Builtin(f) => f.properties.define_with(key, value, flags),
             _ => false,
         });
         (defined == Some(true)).then_some(())
@@ -713,7 +763,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 47);
+        assert_eq!(first.all.len(), 53);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -731,7 +781,11 @@ mod tests {
         assert_eq!(Global::from_u16(4), Some(Global::Reflect));
         assert_eq!(Global::from_name("Array"), Some(Global::Array));
         assert_eq!(Global::from_u16(5), Some(Global::Array));
-        assert_eq!(Global::from_u16(6), None);
+        assert_eq!(Global::from_name("isNaN"), Some(Global::IsNaN));
+        assert_eq!(Global::from_name("isFinite"), Some(Global::IsFinite));
+        assert_eq!(Global::from_u16(6), Some(Global::IsNaN));
+        assert_eq!(Global::from_u16(7), Some(Global::IsFinite));
+        assert_eq!(Global::from_u16(8), None);
     }
 
     /// Every built-in function inherits from `Function.prototype`, which

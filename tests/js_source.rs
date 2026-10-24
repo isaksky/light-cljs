@@ -13,6 +13,68 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-147).
+/// The three invalid Number string conversions adapt test_number in QuickJS
+/// tests/test_builtin.js, revision 7d1c13c5d8f8. The full QuickJS copyright
+/// and MIT permission notice is retained on string_code_unit_access below.
+#[test]
+fn number_predicates_and_constants() {
+    for src in [
+        r#"isNaN(NaN) && isNaN('abc') && !isNaN('12') && isNaN(undefined) && isNaN()"#,
+        r#"isFinite('1e3') && !isFinite(Infinity) && !isFinite(-Infinity) && !isFinite(NaN) && !isFinite()"#,
+        r#"!isNaN(null) && !isNaN(true) && isFinite(null) && isFinite(false) && isFinite('')"#,
+        r#"!Number.isNaN('abc') && Number.isNaN(NaN) && !Number.isNaN(undefined) && !Number.isNaN()"#,
+        r#"Number.isNaN(Number('+')) && Number.isNaN(Number('-')) && Number.isNaN(Number('\x00a'))"#,
+        r#"Number.isFinite(0) && Number.isFinite(-0) && Number.isFinite(Number.MAX_VALUE) && !Number.isFinite('1e3') && !Number.isFinite(null) && !Number.isFinite(undefined) && !Number.isFinite(Infinity) && !Number.isFinite(-Infinity) && !Number.isFinite(NaN) && !Number.isFinite()"#,
+        r#"Number.isInteger(5.0) && !Number.isInteger(5.5) && Number.isInteger(-0) && Number.isInteger(-5) && Number.isInteger(Number.MAX_VALUE) && !Number.isInteger(NaN) && !Number.isInteger(Infinity) && !Number.isInteger(-Infinity) && !Number.isInteger('5') && !Number.isInteger()"#,
+        r#"!Number.isSafeInteger(2**53) && Number.isSafeInteger(2**53 - 1) && Number.isSafeInteger(-(2**53 - 1)) && !Number.isSafeInteger(-(2**53)) && Number.isSafeInteger(-0) && !Number.isSafeInteger(5.5) && !Number.isSafeInteger(NaN) && !Number.isSafeInteger(Infinity) && !Number.isSafeInteger('5') && !Number.isSafeInteger()"#,
+        r#"Number.EPSILON === 2**-52 && Number.EPSILON / 2 + 1 === 1 && Number.MIN_VALUE === 5e-324 && Number.MIN_VALUE / 2 === 0 && Number.MAX_VALUE === 1.7976931348623157e308 && Number.MAX_VALUE * 2 === Infinity"#,
+        r#"Number.MAX_SAFE_INTEGER === 9007199254740991 && Number.MIN_SAFE_INTEGER === -9007199254740991 && Number.NaN !== Number.NaN && Number.POSITIVE_INFINITY === Infinity && Number.NEGATIVE_INFINITY === -Infinity"#,
+        r#"let o = {valueOf() { throw 1; }, toString() { throw 2; }}; !Number.isNaN(o) && !Number.isFinite(o) && !Number.isInteger(o) && !Number.isSafeInteger(o) && !Number.isFinite(new Number(1)) && !Number.isNaN(new Number(NaN))"#,
+        r#"let log = ''; let o = {valueOf() { log += 'v'; return {}; }, toString() { log += 's'; return 'abc'; }}; isNaN(o) && !isFinite(o) && log === 'vsvs'"#,
+        r#"let o = {n: 7, valueOf() { return this.n; }}; !isNaN(o) && isFinite(o) && isFinite(new Number(2)) && isNaN(new String('abc'))"#,
+        r#"let caught = false; try { isNaN({valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } caught"#,
+        r#"let caught = false; try { isFinite({valueOf() { return {}; }, toString() { return {}; }}); } catch (e) { caught = true; } caught"#,
+        r#"isNaN.name === 'isNaN' && isFinite.name === 'isFinite' && isNaN.length === 1 && isFinite.length === 1 && Number.isNaN.name === 'isNaN' && Number.isFinite.name === 'isFinite' && Number.isInteger.name === 'isInteger' && Number.isSafeInteger.name === 'isSafeInteger' && Number.isNaN.length === 1 && Number.isFinite.length === 1 && Number.isInteger.length === 1 && Number.isSafeInteger.length === 1"#,
+        r#"let isNaN = function () { return 7; }; let isFinite = 8; isNaN() === 7 && isFinite === 8"#,
+        r#"isNaN.call(null, 'abc') && isFinite.apply(null, ['7']) && Number.isInteger.call(null, 7) && Number.isSafeInteger.bind(null)(7)"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for name in [
+        "EPSILON",
+        "MIN_VALUE",
+        "MAX_VALUE",
+        "MAX_SAFE_INTEGER",
+        "MIN_SAFE_INTEGER",
+        "POSITIVE_INFINITY",
+        "NEGATIVE_INFINITY",
+        "NaN",
+    ] {
+        let src = format!(
+            "let d = Object.getOwnPropertyDescriptor(Number, '{name}'); !d.writable && !d.enumerable && !d.configurable && Object.is(d.value, Number['{name}'])"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{name}");
+    }
+    assert_eq!(
+        eval(
+            r#"'use strict'; let caught = false; try { Number.EPSILON = 1; } catch (e) { caught = true; } caught && Number.EPSILON === 2**-52"#
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        failure("'use strict'; Number.EPSILON = 1").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        failure("isFinite(Object.create(null))").kind(),
+        VmErrorKind::TypeError
+    );
+    for src in ["new isNaN(1)", "new isFinite(1)", "new Number.isInteger(1)"] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
 /// String access cases adapted from QuickJS tests/test_builtin.js,
 /// test_string and rope_concat, revision 7d1c13c5d8f8.
 /// Synthetic fixtures, not light-cljs output.
@@ -10101,6 +10163,14 @@ fn primitive_wrapper_constructors_convert_object_arguments() {
 #[test]
 fn primitive_wrapper_conversion_waits_yields_collects_and_migrates() {
     for (expression, expected) in [
+        ("isNaN(argument())", "false"),
+        ("isFinite(argument())", "true"),
+        ("isNaN.call(null, argument())", "false"),
+        ("isFinite.apply(null, [argument()])", "true"),
+        ("Reflect.apply(isFinite, null, [argument()])", "true"),
+        ("isNaN.bind(null, argument())()", "false"),
+        ("__rt.reduce(isFinite, argument(), __rt.vector(0))", "true"),
+        ("isFinite(wrapper())", "true"),
         ("Number(argument())", "7"),
         ("new Number(argument())", "7"),
         ("String(argument())", "'seven'"),

@@ -902,9 +902,10 @@ Executed, with JavaScript semantics:
 | `Function.prototype`, `Function` (clj-quickjs-102) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` are not supported yet (clj-quickjs-111): the call fails with `UnsupportedOperand`, `new` with a `TypeError` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
-| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumber / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper exposes virtual own `length` and code-unit indices (clj-quickjs-142), as described above. Other keys use ordinary storage. Boolean wrappers, other radixes, and Number constants are deferred. |
+| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumber / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper exposes virtual own `length` and code-unit indices (clj-quickjs-142), as described above. Other keys use ordinary storage. Boolean wrappers and other radixes are deferred; Number predicates and constants are described below (clj-quickjs-147). |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
 | `__rt.name(args)` | the private VM operation of that intrinsic (see "Reserved intrinsic binding") |
+| Number predicates and constants (clj-quickjs-147) | globals `isNaN(v)` and `isFinite(v)` apply ToNumber, including resumable ToPrimitive with number hint for objects. `Number.isNaN`, `.isFinite`, `.isInteger` and `.isSafeInteger` return false for non-numbers without coercion. Integers must be finite; safe integers additionally have magnitude at most 9007199254740991. Each function has length 1. `Number` owns non-writable, non-enumerable, non-configurable constants `EPSILON` (2^-52), `MIN_VALUE` (smallest positive binary64 subnormal), `MAX_VALUE` (largest finite binary64), `MAX_SAFE_INTEGER` (2^53 - 1), `MIN_SAFE_INTEGER` (-(2^53 - 1)), `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`. |
 
 Strings convert with StringToNumber and compare loosely with numbers
 (clj-quickjs-67); each line below evaluates to `true`:
@@ -2313,3 +2314,20 @@ Synthetic fixtures, not light-cljs output:
 'abc'.padStart(6, '12') === '121abc' && 'abc'.padEnd(5) === 'abc  ';
 'abc'.padStart(Infinity, '') === 'abc' && '\u{10000}'.slice(0, 1) === '\ud800';
 ```
+
+### Number predicates and constants (clj-quickjs-147)
+
+Execution: `isNaN('abc')` is true and `isFinite('1e3')` is true;
+`Number.isNaN('abc')` and `Number.isFinite('1e3')` are false.
+Global predicates use observable `valueOf`/`toString` callbacks with number
+hint and can yield, wait, be collected around and migrate during conversion.
+`Number.isInteger(-0)` is true; `Number.isSafeInteger(2**53)` is false.
+`Number.EPSILON / 2 + 1 === 1` and `Number.MIN_VALUE / 2 === 0` are true.
+The constants' descriptors have all three flags false; strict writes throw
+catchable TypeError.
+
+Explicit gaps: global-object integration remains clj-quickjs-104. The two
+globals resolve through `get_builtin_global`, like the existing built-in
+globals, and lexical declarations shadow them. Error constructors remain
+deferred; tests assert caught failures and the runtime's TypeError kind.
+`Number.parseInt` and `Number.parseFloat` belong to the parsing pellet.

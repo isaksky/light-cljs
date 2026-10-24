@@ -89,6 +89,7 @@
 //! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
 //! | `String.prototype.substring`, `.slice`, `.concat`, `.padStart`, `.padEnd` (clj-quickjs-145) | generic ToString receivers and resumable argument coercion; UTF-16 extraction/combination, with at most 256 output units copied per native step; length above `2^30 - 1`: catchable `RangeError` ("string too long") |
 //! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
+//! | global `isNaN`, `isFinite`; `Number.isNaN`, `.isFinite`, `.isInteger`, `.isSafeInteger` (clj-quickjs-147) | globals apply ToNumber (objects through a resumable native conversion); Number methods return false for non-numbers without coercion; all ignore `this` and use only the first argument (absent: undefined) |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
@@ -213,6 +214,14 @@ pub(crate) enum Builtin {
     StringPrototypeConcat,
     StringPrototypePadStart,
     StringPrototypePadEnd,
+    /// Coercing global number predicates (clj-quickjs-147).
+    GlobalIsNaN,
+    GlobalIsFinite,
+    /// Non-coercing Number predicates (clj-quickjs-147).
+    NumberIsNaN,
+    NumberIsFinite,
+    NumberIsInteger,
+    NumberIsSafeInteger,
 }
 
 impl Builtin {
@@ -258,6 +267,10 @@ impl Builtin {
             Builtin::StringPrototypeConcat => "concat",
             Builtin::StringPrototypePadStart => "padStart",
             Builtin::StringPrototypePadEnd => "padEnd",
+            Builtin::GlobalIsNaN | Builtin::NumberIsNaN => "isNaN",
+            Builtin::GlobalIsFinite | Builtin::NumberIsFinite => "isFinite",
+            Builtin::NumberIsInteger => "isInteger",
+            Builtin::NumberIsSafeInteger => "isSafeInteger",
         }
     }
 
@@ -299,6 +312,12 @@ impl Builtin {
             | Builtin::StringPrototypePadStart
             | Builtin::StringPrototypePadEnd => 1,
             Builtin::StringPrototypeSubstring | Builtin::StringPrototypeSlice => 2,
+            Builtin::GlobalIsNaN
+            | Builtin::GlobalIsFinite
+            | Builtin::NumberIsNaN
+            | Builtin::NumberIsFinite
+            | Builtin::NumberIsInteger
+            | Builtin::NumberIsSafeInteger => 1,
         }
     }
 }
@@ -421,7 +440,35 @@ pub(crate) fn call(
         | Builtin::StringPrototypePadEnd => Err(Fault::Internal(
             "string operation requires a resumable native frame",
         )),
+        Builtin::GlobalIsNaN
+        | Builtin::GlobalIsFinite
+        | Builtin::NumberIsNaN
+        | Builtin::NumberIsFinite
+        | Builtin::NumberIsInteger
+        | Builtin::NumberIsSafeInteger => number_predicate(which, &arg(0)),
     }
+}
+
+/// Global predicates receive a primitive after resumable ToPrimitive;
+/// Number predicates inspect only the Number type and never call JavaScript.
+pub(super) fn number_predicate(which: Builtin, value: &Value) -> Result<Value, Fault> {
+    let n = if matches!(which, Builtin::GlobalIsNaN | Builtin::GlobalIsFinite) {
+        crate::vm::dispatch::to_number(value)?
+    } else if let Value::Number(n) = value {
+        *n
+    } else {
+        return Ok(Value::Bool(false));
+    };
+    let result = match which {
+        Builtin::GlobalIsNaN | Builtin::NumberIsNaN => n.is_nan(),
+        Builtin::GlobalIsFinite | Builtin::NumberIsFinite => n.is_finite(),
+        Builtin::NumberIsInteger => n.is_finite() && n.trunc() == n,
+        Builtin::NumberIsSafeInteger => {
+            n.is_finite() && n.trunc() == n && n.abs() <= 9_007_199_254_740_991.0
+        }
+        _ => return Err(Fault::Internal("not a number predicate")),
+    };
+    Ok(Value::Bool(result))
 }
 
 /// RequireObjectCoercible, ToString, then ToIntegerOrInfinity. These methods

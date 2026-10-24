@@ -306,6 +306,7 @@ enum ConvertTarget {
         // Running concat length: reject overflow before coercing a later argument.
         concat_len: usize,
     },
+    NumberPredicate(builtin::Builtin),
 }
 
 /// The operation-specific state of a native frame.
@@ -509,6 +510,16 @@ pub(crate) fn start_builtin_conversion(
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
     let (target, operands, hint) = match which {
+        Builtin::GlobalIsNaN | Builtin::GlobalIsFinite if !construct => {
+            let Some(value @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::NumberPredicate(which),
+                vec![value.clone()],
+                Hint::Number,
+            )
+        }
         Builtin::Number | Builtin::String => {
             let Some(value @ Value::Object(_)) = args.first() else {
                 return Ok(false);
@@ -1014,6 +1025,9 @@ impl NativeState {
                     ConvertTarget::PrimitiveConstructor { which, construct } => {
                         builtin::primitive_constructor(heap, task, which, operands, construct)
                             .map(Action::Return)
+                    }
+                    ConvertTarget::NumberPredicate(which) => {
+                        builtin::number_predicate(which, &operands[0]).map(Action::Return)
                     }
                     ConvertTarget::StringBuiltin { which, access, .. } => {
                         if builtin::is_string_build(which) {
