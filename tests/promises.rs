@@ -642,6 +642,80 @@ fn thenable_resolving_functions_are_traced() {
 }
 
 #[test]
+fn adoption_of_foreign_task_local_result_rejects() {
+    for method in ["resolve", "reject"] {
+        let rt = Runtime::new();
+        let inner = finish(&function(
+            &rt,
+            &format!("function make() {{ return Promise.{method}({{value: 1}}); }}"),
+            &[],
+        ));
+        rt.publish(&inner).unwrap();
+        let task = function(
+            &rt,
+            r#"function adopt(inner) {
+            new Promise(r => r(inner))
+                .then(() => __rt.effect(0, 99))
+                .catch(e => __rt.effect(0, e instanceof TypeError));
+            // Ordinary handlers still cannot receive a foreign result.
+            inner.then(() => __rt.effect(0, 98), () => __rt.effect(0, 97))
+                .catch(e => __rt.effect(0, e instanceof TypeError));
+            return 42;
+        }"#,
+            &[inner],
+        );
+        let mut host = Effects::default();
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(host.0, [Primitive::Bool(true), Primitive::Bool(true)]);
+    }
+}
+
+#[test]
+fn thenable_resolvers_settle_after_then_returns() {
+    for reject_first in [false, true] {
+        let rt = Runtime::new();
+        let task = function(
+            &rt,
+            &format!(
+                r#"function body() {{
+            let resolve; let reject; let settled = 0;
+            Promise.resolve({{then(r, j) {{ resolve = r; reject = j; return 99; }}}})
+                .then(v => {{ settled++; __rt.effect(0, v); }},
+                      e => {{ settled++; __rt.effect(0, -e); }});
+            Promise.resolve().then(() => {{
+                __rt.effect(0, settled);
+                if ({reject_first}) {{ reject(7); resolve(8); }}
+                else {{ resolve(7); reject(8); }}
+                resolve(9); reject(10);
+            }}).then(() => __rt.effect(0, settled));
+            return 42;
+        }}"#
+            ),
+            &[],
+        );
+        let mut host = Effects::default();
+        for _ in 0..2000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Number(42.));
+                    assert_eq!(
+                        host.0,
+                        [0., if reject_first { -7. } else { 7. }, 1.].map(Primitive::Number)
+                    );
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+    }
+}
+
+#[test]
 fn thenable_jobs_preserve_saved_then_across_budgeting_and_collection() {
     let rt = Runtime::new();
     let task = function(

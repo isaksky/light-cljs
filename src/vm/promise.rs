@@ -78,6 +78,10 @@ pub(crate) struct Reaction {
     derived: ObjectId,
     fulfilled: Value,
     rejected: Value,
+    // An engine resolve/reject pair forwards to another Promise. If the
+    // source result is inaccessible, reject that target locally as well as
+    // this reaction's derived Promise, without exposing the foreign value.
+    forwarding: Option<ObjectId>,
 }
 impl Trace for Reaction {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
@@ -85,6 +89,9 @@ impl Trace for Reaction {
         visit(self.derived);
         self.fulfilled.trace(visit);
         self.rejected.trace(visit);
+        if let Some(guard) = self.forwarding {
+            visit(guard);
+        }
     }
 }
 fn alloc(heap: &Heap, object: HeapObject) -> Result<ObjectId, Fault> {
@@ -158,6 +165,25 @@ fn claim(heap: &Heap, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
     })
     .ok_or(Fault::Internal("promise reclaimed"))?
 }
+fn forwarding_guard(heap: &Heap, fulfilled: &Value, rejected: &Value) -> Option<ObjectId> {
+    let resolver = |value: &Value| {
+        let Value::Object(id) = value else {
+            return None;
+        };
+        heap.read(*id, |o| match o {
+            HeapObject::Builtin(b) => match b.which {
+                Builtin::PromiseResolver(guard, reject) => Some((guard, reject)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+    };
+    match (resolver(fulfilled), resolver(rejected)) {
+        (Some((a, false)), Some((b, true))) if a == b => Some(a),
+        _ => None,
+    }
+}
 fn settle(
     heap: &Heap,
     task: TaskId,
@@ -198,6 +224,7 @@ fn rejection_tracking(_promise: ObjectId, _handled: bool) {}
 pub(crate) enum PromiseState {
     RejectTypeError {
         promise: ObjectId,
+        forwarding: Option<ObjectId>,
         message: &'static str,
         called: bool,
     },
@@ -249,7 +276,16 @@ pub(crate) enum PromiseState {
 impl Trace for PromiseState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match self {
-            Self::RejectTypeError { promise, .. } => visit(*promise),
+            Self::RejectTypeError {
+                promise,
+                forwarding,
+                ..
+            } => {
+                visit(*promise);
+                if let Some(guard) = forwarding {
+                    visit(*guard);
+                }
+            }
             Self::Return(value) => value.trace(visit),
             Self::Static {
                 promise,
@@ -350,6 +386,7 @@ impl PromiseState {
         match self {
             Self::RejectTypeError {
                 promise,
+                forwarding,
                 message,
                 called,
             } => {
@@ -367,7 +404,12 @@ impl PromiseState {
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("missing TypeError result"));
                 };
-                settle(heap, task, *promise, true, value)?;
+                settle(heap, task, *promise, true, value.clone())?;
+                if let Some(guard) = forwarding
+                    && let Some(target) = claim(heap, *guard)?
+                {
+                    settle(heap, task, target, true, value)?;
+                }
                 Ok(Action::Return(Value::Undefined))
             }
             Self::Return(value) => Ok(Action::Return(value.clone())),
@@ -446,6 +488,7 @@ impl PromiseState {
                 if *value == Value::Object(*promise) {
                     *self = Self::RejectTypeError {
                         promise: *promise,
+                        forwarding: None,
                         message: "promise cannot resolve itself",
                         called: false,
                     };
@@ -506,6 +549,7 @@ impl PromiseState {
                 if result.owner.is_some_and(|owner| owner != task) {
                     *self = Self::RejectTypeError {
                         promise: reaction.derived,
+                        forwarding: reaction.forwarding,
                         message: "promise result belongs to another task",
                         called: false,
                     };
@@ -710,13 +754,17 @@ pub(crate) fn leaf(
                     Value::Undefined
                 }
             };
+            let fulfilled = handler(0);
+            let rejected = handler(1);
+            let forwarding = forwarding_guard(heap, &fulfilled, &rejected);
             let record = alloc(
                 heap,
                 HeapObject::PromiseReaction(Reaction {
                     source,
                     derived,
-                    fulfilled: handler(0),
-                    rejected: handler(1),
+                    fulfilled,
+                    rejected,
+                    forwarding,
                 }),
             )?;
             let callable = function(heap, Builtin::PromiseReaction(record))?;

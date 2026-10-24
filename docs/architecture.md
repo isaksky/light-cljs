@@ -5698,6 +5698,16 @@ the pending adoption. All nested calls, getters, finally handlers and
 by resolution run on the resolving task; reactions still run on their
 registering task. Dependency completion only publishes and wakes tasks.
 
+A reaction registered with a matching engine resolve/reject pair also traces
+that pair's guard as a forwarding capability. If the source holds a foreign
+task-owned result or rejection reason, the reaction rejects both its derived
+Promise and the forwarding target with a local TypeError, claiming the guard
+first. This prevents intrinsic Promise adoption from leaving its outer Promise
+pending when the otherwise ignored intermediate Promise rejects at the
+ownership boundary. Ordinary user handlers still cannot receive foreign
+results or reasons. `adoption_of_foreign_task_local_result_rejects` covers
+both states and preserves the ordinary-handler policy.
+
 Root inventory: `thenable_resolving_functions_are_traced` retains an object
 result through a saved fresh resolver, its resolving guard and Promise,
 then reclaims that chain. `thenable_jobs_preserve_saved_then_across_budgeting_and_collection`
@@ -5707,6 +5717,9 @@ active native frames, nested adoption and ignored late rejects/throws.
 migrates the task, and asserts exactly one outer settlement. The `js_source`
 case `promise_thenable_adoption` checks exact job order, once-only synchronous
 getter lookup, asynchronous method calls, receiver identity and rejection.
+`thenable_resolvers_settle_after_then_returns` collects after every instruction
+while a saved fresh pair remains unclaimed after `then` returns 99, then checks
+later resolve-first and reject-first calls each settle exactly once.
 
 QuickJS references and provenance: semantic reference only, no source or test
 text copied: `research/quickjs/quickjs.c`,
