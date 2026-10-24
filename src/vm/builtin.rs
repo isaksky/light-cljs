@@ -244,7 +244,6 @@ pub(crate) enum Builtin {
     ArrayIsArray,
 
 
-
     /// NativeError constructors share Error's resumable implementation.
     NativeError(NativeErrorKind),
 }
