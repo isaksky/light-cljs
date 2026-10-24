@@ -1653,6 +1653,9 @@ fn accessor_literals() {
     let ExprKind::Object(properties) = &expr.kind else {
         panic!("object")
     };
+    assert_eq!(properties.len(), 2);
+    assert_eq!(properties[0].name, PropertyName::Identifier("a".into()));
+    assert_eq!(properties[1].name, PropertyName::Identifier("a".into()));
     for (property, expected) in properties
         .iter()
         .zip([FunctionKind::Getter, FunctionKind::Setter])
@@ -1663,8 +1666,11 @@ fn accessor_literals() {
         assert_eq!(f.kind, expected);
         assert!(!property.sets_prototype());
     }
-    assert!(parse_script("({get: 1, set: 2})").is_ok());
-    assert!(parse_script("({get, set})").is_ok());
+    assert_eq!(ast("({get: 1, set: 2})"), "(object (get 1) (set 2))");
+    assert_eq!(
+        ast("({get, set})"),
+        "(object (shorthand get get) (shorthand set set))"
+    );
     for src in ["({get a(x) {}})", "({set a() {}})", "({set a(x, y) {}})"] {
         assert!(parse_script(src).is_err(), "{src}");
     }

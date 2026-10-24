@@ -38,8 +38,15 @@ fn getter_waits_on_dependency_and_resumes() {
         "let o = {get z() { return __rt.need(5, 3) + this.x; }, x: 2}; __rt.effect(1, 3) + o.z + 1",
         "let o = {set z(v) { this.x = __rt.need(5, 3) + v; }}; let before = __rt.effect(1, 3); let assigned = (o.z = 2); before + o.x + assigned - 1",
         "let o = {}; let d = {get value() { return __rt.need(5, 3) + 2; }}; let before = __rt.effect(1, 3); Object.defineProperty(o, 'z', d); before + o.z + 1",
+        // The object is retained only by the accumulated descriptor while
+        // the later field getter waits, then by the target property.
+        "let marker = {n: 9}; let o = {}; let d = {get value() { let v = marker; marker = null; return v; }, get writable() { __rt.need(5, 3); return true; }}; let before = __rt.effect(1, 3); Object.defineProperty(o, 'z', d); before + o.z.n + 1",
+        "let o = {set z(v) { this.x = __rt.need(5, 3) + v.n; }}; let before = __rt.effect(1, 3); let assigned = (o.z = {n: 2}); before + o.x + assigned.n - 1",
         "let o = {get valueOf() { let n = __rt.need(5, 3); return () => n + 2; }}; __rt.effect(1, 3) + (+o) + 1",
         "let args = {get length() { return 1; }, get 0() { return __rt.need(5, 3) + 2; }}; __rt.effect(1, 3) + Reflect.apply(x => x, null, args) + 1",
+        // The first argument is retained only by the native list cursor
+        // across the second index getter's wait.
+        "let args = {length: 2, get 0() { return {n: 1}; }, get 1() { return __rt.need(5, 3) + 2; }}; __rt.effect(1, 3) + Reflect.apply((a, b) => a.n + b, null, args)",
         "let a = {length: 0, set 0(v) { this.x = __rt.need(5, 3) + v; }}; let before = __rt.effect(1, 3); Array.prototype.push.call(a, 2); before + a.x + 1",
         "let f = () => 0; Object.defineProperty(f, 'name', {get: function() { return 'x' + __rt.need(5, 3); }}); let before = __rt.effect(1, 3); let b = f.bind(null); before + (b.name === 'bound x7' ? 10 : 0)",
         "let p = {}; let f = () => 0; Object.defineProperty(f, 'prototype', {get: function() { __rt.need(5, 3); return p; }}); let o = Object.create(p); __rt.effect(1, 3) + (o instanceof f ? 10 : 0)",
