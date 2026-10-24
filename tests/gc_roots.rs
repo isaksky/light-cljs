@@ -928,6 +928,8 @@ fn realm_intrinsics_retain() {
         "String.prototype.padStart",
         "String.prototype.padEnd",
         "String.prototype.split",
+        "String.prototype.replace",
+        "String.prototype.replaceAll",
         "Symbol",
         "Symbol.for",
         "Symbol.keyFor",
@@ -1049,7 +1051,8 @@ fn realm_intrinsics_retain() {
     // BigInt adds one constructor function and one prototype (-201).
     // UTC field access adds fifteen Date methods (-181).
     // Typed-array set/fill/join append three built-ins (-168).
-    assert_eq!(rt.heap_usage().objects.builtin, 161);
+    // String replacement adds two built-in functions (-189).
+    assert_eq!(rt.heap_usage().objects.builtin, 163);
     assert_eq!(rt.heap_usage().objects.plain, 33);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
