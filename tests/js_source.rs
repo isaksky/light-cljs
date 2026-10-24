@@ -12707,7 +12707,9 @@ fn symbol_values() {
         "'' + Symbol()",
         "Symbol() + 1",
         "Symbol() * 1",
+        "Number(Symbol())",
         "Symbol(Symbol())",
+        "new Error(Symbol())",
         "`${Symbol()}`",
         "String({toString() { return Symbol(); }})",
         "new String(Symbol())",
@@ -12715,8 +12717,12 @@ fn symbol_values() {
         "String.raw({raw: [Symbol()]})",
     ] {
         assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
-        let caught =
-            format!("let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught");
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{
+               caught = e instanceof TypeError && e instanceof Error &&
+                 Object.getPrototypeOf(e) === TypeError.prototype && e.name === 'TypeError';
+             }} caught"
+        );
         assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
     }
 }
@@ -12903,7 +12909,7 @@ fn symbol_numeric_coercion_stops_before_rhs() {
             ] {
                 let expression = format!("{left} {op} {right}");
                 let source = format!(
-                    "let s = Symbol(); let log = ''; let caught = false; try {{ {expression}; }} catch (e) {{ caught = true; }} caught && log === '{expected}'"
+                    "let s = Symbol(); let log = ''; let caught = false; try {{ {expression}; }} catch (e) {{ caught = e instanceof TypeError && e instanceof Error; }} caught && log === '{expected}'"
                 );
                 assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
                 let uncaught = format!("let s = Symbol(); let log = ''; {expression}");
@@ -12918,7 +12924,7 @@ fn symbol_numeric_coercion_stops_before_rhs() {
     // Plus and relational operators first convert both objects to primitives.
     for expression in ["s + rhs", "s < rhs", "s > rhs", "s <= rhs", "s >= rhs"] {
         let source = format!(
-            "let log = ''; let s = Symbol(); let rhs = {{valueOf() {{ log += 'r'; return 1; }}}}; try {{ {expression}; }} catch (e) {{}} log === 'r'"
+            "let log = ''; let s = Symbol(); let rhs = {{valueOf() {{ log += 'r'; return 1; }}}}; let caught = false; try {{ {expression}; }} catch (e) {{ caught = e instanceof TypeError && e instanceof Error; }} caught && log === 'r'"
         );
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
     }
