@@ -820,6 +820,7 @@ limit. Null/undefined receivers throw TypeError before coercing arguments.
 Object conversion callbacks can yield, wait, collect and migrate. Each scan
 or copying step does at most 256 units/comparisons; appending emits one
 ordinary own array element per step. RegExp/`Symbol.split` dispatch is deferred.
+
 Global `JSON.parse` recognizes JSON into task-owned objects and arrays,
 with budgeted parsing and resumable ToString (clj-quickjs-159); see
 "JSON.parse" below for grammar, errors and resource limits.
@@ -2673,6 +2674,8 @@ function make() { return Error(); } make().stack.indexOf('    at make (') === 0;
 let stack; try { null(); } catch (e) { stack = e.stack; } typeof stack === 'string';
 let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.writable && d.configurable && !d.enumerable;
 let has = false; try { missing; } catch (e) { has = 'stack' in e; } has;
+```
+
 ### JSON.parse (clj-quickjs-159)
 
 Execution: global `JSON` is an ordinary, non-callable realm namespace with
