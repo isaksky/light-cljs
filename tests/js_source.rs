@@ -22046,6 +22046,8 @@ fn intl_date_time_format_time_options() {
         "new Intl.DateTimeFormat('en',{hour:'numeric',dayPeriod:'long',hour12:true}).format(Date.UTC(2017,0,1,6)) === '6 in the morning'",
         "new Intl.DateTimeFormat('en',{dayPeriod:'long'}).format(Date.UTC(2017,0,1,12)) === 'noon'",
         "new Intl.DateTimeFormat('en',{dayPeriod:'narrow'}).format(Date.UTC(2017,0,1,12)) === 'n'",
+        "new Intl.DateTimeFormat('fr',{hour:'numeric',hour12:true,dayPeriod:'long',timeZone:'UTC'}).format(Date.UTC(2017,0,1,6)) === '6 du matin'",
+        "new Intl.DateTimeFormat('fr',{dayPeriod:'narrow',timeZone:'UTC'}).format(Date.UTC(2017,0,1,6)) === 'mat.'",
         "new Intl.DateTimeFormat('en',{hour:'numeric',dayPeriod:'short',hourCycle:'h23'}).format(Date.UTC(2017,0,1,12)) === '12 noon'",
         "new Intl.DateTimeFormat('en',{dayPeriod:'long'}).format(Date.UTC(2017,0,1,13)) === 'in the afternoon'",
         "new Intl.DateTimeFormat('en',{dayPeriod:'short'}).format(Date.UTC(2017,0,1,18)) === 'in the evening'",
