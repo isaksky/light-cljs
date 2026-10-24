@@ -165,6 +165,7 @@ impl Stmt {
             StmtKind::ForIn { head, object, body } | StmtKind::ForOf { head, object, body } => {
                 let target = match head {
                     ForInHead::Member(target) => target.height,
+                    ForInHead::Var(_, Some(init)) => init.height,
                     _ => 0,
                 };
                 target.max(object.height).max(body.height)
@@ -341,8 +342,9 @@ pub enum ForInHead {
     Lexical(LexicalKind, Ident),
     /// `for (var k in o)` (clj-quickjs-89): `k` is a `var` binding of the
     /// enclosing function (or script), one for the whole loop; each key is
-    /// assigned to it.
-    Var(Ident),
+    /// assigned to it. Non-strict for-in heads may have an initializer,
+    /// evaluated once before the object expression (Annex B.3.5).
+    Var(Ident, Option<Box<Expr>>),
     /// `for (o.p in keys)` or `for (o[k] in keys)`: the property reference
     /// is evaluated anew for each key (clj-quickjs-87).
     Member(Box<Expr>),

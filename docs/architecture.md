@@ -2642,8 +2642,12 @@ key-table lock, so enumerating `{...}` never contends on
 (`js_for_in_prepare_prototype_chain_enum`) is not copied: it would read
 prototypes before they are reached. Details: `src/vm/keys.rs`, "Prototype
 chain".
-Deferred: property targets (clj-quickjs-87), the non-strict
-`for (var k = 1 in o)` (clj-quickjs-90), Proxy traps (clj-quickjs-91).
+Non-strict `var` identifier heads may retain an initializer in the AST
+(clj-quickjs-90, Annex B.3.5). Lowering uses the ordinary assignment path
+before evaluating the object, preserving name inference and resumability
+without new opcodes or per-loop runtime state. Strict, lexical, destructuring
+and for-of initialized heads remain early errors.
+Deferred: Proxy traps (clj-quickjs-91). Property targets are clj-quickjs-87.
 ## Forwarding calls: `call`, `apply`, `Reflect.apply` (clj-quickjs-102)
 
 Contract: `src/vm/builtin.rs` ("Forwarding built-ins", `forward`) and
@@ -3146,6 +3150,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_parse_for_in_of` (left-hand-side parsing and `put_lvalue` per
   iteration) was consulted as a semantic reference only. Additional
   evaluation-order, setter, failure and resumability cases are synthetic.
+- `tests/js_source.rs` `sloppy_for_in_var_initializer` (clj-quickjs-90):
+  the final group ("variable assigment in the for in") of `test_for_in`
+  in `research/quickjs/tests/test_loop.js`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Modified: the assertion is
+  the script completion value and also checks the final binding. The full
+  MIT notice in the test file applies. Empty enumeration, evaluation order,
+  abrupt completion, closures, name inference and suspension cases are
+  synthetic fixtures. `js_parse_for_in_of` in `research/quickjs/quickjs.c`
+  was consulted for Annex B initializer restrictions and ordering only;
+  no implementation code was copied.
 - `tests/js_source.rs` `for_in_walks_the_prototype_chain` (clj-quickjs-86):
   the second and third groups of `test_for_in` (line 77) of
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as

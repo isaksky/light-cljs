@@ -144,6 +144,7 @@ ForInStatement      = "for" "(" ForInHead "in" Expression ")" Statement   (* clj
 ForOfStatement      = "for" "(" ForOfHead "of" AssignmentExpression ")" Statement (* clj-quickjs-237, -238 *)
 ForInHead           = LeftHandSideExpression   (* an identifier or member reference, possibly parenthesized; clj-quickjs-87 *)
                     | ( "let" | "const" | "var" ) BindingIdentifier
+                    | "var" BindingIdentifier "=" AssignmentExpression[~In] (* non-strict only; Annex B.3.5, clj-quickjs-90 *)
 ForOfHead           = LeftHandSideExpression   (* an identifier, possibly parenthesized *)
                     | ( "let" | "const" | "var" ) BindingIdentifier
                     | "using" [no LineTerminator here] BindingIdentifier
@@ -431,8 +432,8 @@ Notes on the grammar:
   scoped to the whole loop (a `const` needs an initializer here too); a
   `var` head (clj-quickjs-89) declares bindings of the enclosing function
   or script. An initializer in a for-in `var` head
-  (`for (var k = 1 in o)`) is `Invalid` as for `let`/`const`; the
-  non-strict `var` form (Annex B) is clj-quickjs-90.
+  (`for (var k = 1 in o)`) is allowed only in non-strict code
+  (Annex B.3.5, clj-quickjs-90); strict code rejects it as `Invalid`.
 - `ForInStatement` (clj-quickjs-85): the head's first element (an
   expression, or the initializers of a declaration list) is parsed with
   `[~In]` (clj-quickjs-74), so a top-level `in` after it starts a for-in
@@ -443,7 +444,8 @@ Notes on the grammar:
   side is an identifier or member reference (`for (a.x in o)`,
   `for (a[0] in o)`, clj-quickjs-87), possibly parenthesized
   (`for ((k) in o)`, `for ((a.x) in o)`), or one `let`/`const`/`var` binding
-  without an initializer. Early errors (`Invalid`): an initializer
+  without an initializer, or in non-strict code one `var` identifier with
+  an initializer. Early errors (`Invalid`): a lexical or strict initializer
   (`for (let k = 1 in o)`, at the `in`), more than one binding
   (`for (let a, b in o)`), and any other target (`for (1 in o)`,
   `for (f() in o)`). `__rt.count` as a target is `ReservedWord`.
@@ -537,7 +539,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
-| rest parameters, destructuring for-in/for-of heads | Unsupported |
+| rest parameters, destructuring for-in/for-of heads without initializers | Unsupported |
+| initialized for-in heads in strict code or with `let`/`const` or a binding pattern; initialized for-of heads in either mode (clj-quickjs-90) | Invalid |
 | object spread `...` (in an object literal) | Unsupported |
 | an optional chain as an assignment/update target (`a?.b = 1`, `a?.b++`), a `new` callee (`new a?.b()`), or before a tagged template in the same chain | Invalid |
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
@@ -1380,6 +1383,7 @@ Executed, with JavaScript semantics:
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
 | `for (k in o) body`, `for (let k in o)`, `for (const k in o)` (clj-quickjs-85, -86) | evaluates `o` once (with a `let`/`const` head's binding in its temporal dead zone: `for (let k in k)` is a ReferenceError), then runs the body once per enumerable string key of `o` and its prototype chain: first `o`'s own keys, snapshotted when the loop starts, in OrdinaryOwnPropertyKeys order (array indices ascending, then the other keys in creation order; as `Object.keys`, clj-quickjs-123), then each prototype's, snapshotted when the walk reaches it (clj-quickjs-86), each key a string; an inherited key is skipped when an object nearer `o` had an own property of that name, enumerable or not (a non-enumerable own `x` hides an inherited enumerable `x`), so each name is visited at most once; before each key it checks that the key is still an own enumerable property of the object it was found on and skips it otherwise (so a property deleted or made non-enumerable before it is reached is not visited), and keys added to an object after its snapshot are not visited (a prototype the walk has not reached yet is read when it is reached; when the chain changes, the walk continues on the prototype it is on). `Object.prototype` and the other realm intrinsics have no enumerable properties, so the walk ends there without reading them under any lock, and after a function (`Function.prototype`, clj-quickjs-102). `null`, `undefined`, numbers and booleans run zero iterations, a string visits its indices `"0"`, `"1"`, ...; enumerating an object of another task fails with `ForeignObject`. An identifier head is assigned each key as by `k = key` (a `const` binding is a TypeError, an undeclared name creates a global in sloppy code and throws ReferenceError in strict code, at the name); a `let`/`const` head is a fresh binding per iteration scoped to the loop, so closures keep their iteration's key. `break`, `continue`, labels, `return` and exceptions leave or continue the loop as in other loops (through finally blocks too). The enumerator is task-owned frame state (`crate::vm::keys`): a yield, a dependency wait, a collection or migration inside the loop resumes it exactly. Lowered to `for_in_start` and `for_in_next` (new, `0x63`, `0x64`) with the enumerator in a scratch local |
 | `for (var ...; ...; ...)`, `for (var k in o)` (clj-quickjs-89) | the head declares `var` bindings of the enclosing function or script, hoisted like a `var` statement's (readable, `undefined`, before the loop; one binding per name, shared with other `var`s and a parameter of that name); each initializer of a `for` head is an assignment run once, before the first test, and a for-in `var` head is assigned each key as by `k = key`; there is no per-iteration copy, so every closure created in the body shares the one binding and sees its latest value (closures made by `for (var i = 0; i < 3; i++)` all return 3 afterwards), and the binding keeps its last value after the loop (`for (var k in {x: 1, y: 2}) {}` leaves `k` `"y"`) |
+| `for (var k = init in o)` in non-strict code (Annex B.3.5, clj-quickjs-90) | declares the same hoisted `var` binding as an uninitialized head; evaluates and assigns `init` once before evaluating `o`, then assigns each key as usual. If `o` has no keys (including `null`/`undefined`), `k` retains the initializer's value. An initializer that throws prevents evaluation of `o`. The initializer contributes no script completion value; empty enumeration completes with `undefined`, and body values follow ordinary for-in completion. Both head expressions may yield, wait, collect and migrate through ordinary VM frames |
 | `for (o.p in keys)`, `for (o[k] in keys)` (clj-quickjs-87) | each enumerated key evaluates the target's object, then its computed key expression and property-key conversion if present, then assigns the enumerated string through ordinary property assignment. The reference is evaluated once per iteration and never when enumeration is empty. Setters run with the target as receiver; strict writes to non-writable properties throw TypeError at the `.` or `[`. The current key and reference remain traced task state across calls, yields, dependency waits, collections and migration. Parenthesized targets behave the same; the body and completion values follow the other for-in heads |
 | `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
@@ -2828,6 +2832,23 @@ function g() {
 
 ```js reject Invalid 1:16
 for (var k = 1 in o) {}
+```
+
+```js sloppy-accept
+for (var k = 2 in o) ;
+for (var k = ("x" in o) in o) ;
+```
+
+```js sloppy-reject Invalid 1:16
+for (let k = 2 in o) ;
+```
+
+```js sloppy-reject Invalid 1:16
+for (var k = 2 of o) ;
+```
+
+```js sloppy-reject Invalid 1:19
+for (var [k] = [] in o) ;
 ```
 
 ```js compile-reject Invalid 1:16

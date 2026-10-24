@@ -1279,19 +1279,23 @@ impl<'a> Parser<'a> {
                     let name = name.identifier().cloned().ok_or_else(|| {
                         self.unsupported(name.span, "destructuring iteration heads are")
                     })?;
-                    return self.parse_for_of_rest(ForInHead::Var(name));
+                    return self.parse_for_of_rest(ForInHead::Var(name, None));
                 }
                 if self.is_keyword(Keyword::In) {
                     let name = name.identifier().cloned().ok_or_else(|| {
                         self.unsupported(name.span, "destructuring iteration heads are")
                     })?;
-                    return self.parse_for_in_rest(ForInHead::Var(name));
+                    return self.parse_for_in_rest(ForInHead::Var(name, None));
                 }
-                Some(ForInit::Var(self.parse_declarators(
-                    None,
-                    Some(keyword),
-                    Some(name),
-                )?))
+                let mut declarators = self.parse_declarators(None, Some(keyword), Some(name))?;
+                if self.is_keyword(Keyword::In) {
+                    // Only the single sloppy `var` identifier initializer
+                    // can leave `in` unconsumed in parse_declarators.
+                    let first = declarators.pop().unwrap();
+                    let name = first.name.identifier().unwrap().clone();
+                    return self.parse_for_in_rest(ForInHead::Var(name, first.init.map(Box::new)));
+                }
+                Some(ForInit::Var(declarators))
             }
             _ => {
                 let outer = std::mem::replace(&mut self.no_in, true);
@@ -1375,8 +1379,8 @@ impl<'a> Parser<'a> {
 
     /// The current token is an `in` after a later declarator or an
     /// initializer of a `for` head's declaration list: a for-in head
-    /// declares exactly one binding, without an initializer (an early
-    /// error; QuickJS `js_parse_for_in_of`).
+    /// declares exactly one binding. Only a non-strict `var` identifier
+    /// may have an initializer (Annex B.3.5; QuickJS `js_parse_for_in_of`).
     #[inline(never)]
     fn for_in_declaration_error(&self) -> SyntaxError {
         self.error(
@@ -1715,7 +1719,8 @@ impl<'a> Parser<'a> {
     /// required for `const`. `lexical`: `None` for `var`. `for_keyword`: in
     /// the head of the `for` statement at that span, whose initializers are
     /// parsed with `[~In]`; `in`/`of` after a later name or an initializer
-    /// is an invalid iteration head. `first`: the first name, already parsed.
+    /// is an invalid iteration head, except the first simple `var` binding's
+    /// initializer before `in` in sloppy code. `first`: the first name, already parsed.
     fn parse_declarators(
         &mut self,
         lexical: Option<LexicalKind>,
@@ -1736,7 +1741,14 @@ impl<'a> Parser<'a> {
                 let init = self.parse_assignment()?;
                 self.no_in = outer;
                 if for_keyword.is_some() && (self.is_keyword(Keyword::In) || self.is_of()) {
-                    return Err(self.for_in_declaration_error());
+                    let annex_b = self.is_keyword(Keyword::In)
+                        && !self.strict
+                        && lexical.is_none()
+                        && declarators.is_empty()
+                        && name.identifier().is_some();
+                    if !annex_b {
+                        return Err(self.for_in_declaration_error());
+                    }
                 }
                 Some(init)
             } else {

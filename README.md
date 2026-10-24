@@ -2199,9 +2199,8 @@ Supported (`cargo test --lib frontend::tests::for_in_heads`,
 
 Deferred:
 
-- Property targets `for (a.b in o)` (clj-quickjs-87, `Unsupported`), the
-  non-strict `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps
-  (clj-quickjs-91). (`var` heads: clj-quickjs-89; inherited properties:
+- Proxy traps (clj-quickjs-91). (Property targets: clj-quickjs-87;
+  initialized non-strict `var` heads: clj-quickjs-90; `var` heads: clj-quickjs-89; inherited properties:
   clj-quickjs-86; arrays: clj-quickjs-88, all below.)
 
 ### `for`-`in` over the prototype chain (clj-quickjs-86)
@@ -2268,9 +2267,16 @@ Supported (`cargo test --lib frontend::tests::for_var_heads`,
   `let`/`const` name of the script, the function or an enclosing block is
   `Invalid`, as for a `var` statement.
 
-Deferred:
+### Non-strict for-in initializers (clj-quickjs-90)
 
-- The non-strict `for (var k = 1 in o)` (Annex B) is clj-quickjs-90.
+Supported (`cargo test --lib frontend::tests::sloppy_for_in_var_initializer`,
+`cargo test --test js_source sloppy_for_in`): non-strict
+`for (var k = init in o)` evaluates and assigns `init` before evaluating `o`,
+then shares the hoisted binding across iterations. Empty enumeration keeps
+the initialized value. Strict code, `let`/`const`, destructuring and for-of
+heads reject initializers. Suspension, collection and migration preserve
+the head's evaluation order. The upstream initializer group runs from source
+with its MIT notice retained.
 
 ### Properties and methods of number and string primitives (clj-quickjs-73)
 

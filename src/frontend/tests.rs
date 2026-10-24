@@ -1270,7 +1270,10 @@ fn render_stmt(s: &Stmt) -> String {
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Const, name) => {
                     format!("(const {})", name.name)
                 }
-                super::ast::ForInHead::Var(name) => format!("(var {})", name.name),
+                super::ast::ForInHead::Var(name, init) => match init {
+                    Some(init) => format!("(var {} {})", name.name, render_expr(init)),
+                    None => format!("(var {})", name.name),
+                },
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Using, name) => {
                     format!("(using {})", name.name)
                 }
@@ -2036,6 +2039,50 @@ fn for_in_heads() {
     rejects_with("for (k in o) let x;", Invalid, 1, 14, "cannot be the body");
     // `break`/`continue` belong to the loop, not to a function in it.
     rejects("for (k in o) (function () { break; });", Invalid, 1, 29);
+}
+
+#[test]
+fn sloppy_for_in_var_initializer() {
+    use SyntaxErrorKind::Invalid;
+    let script = parse_script_with("for (var k = 2 in o) ;", ScriptOptions::SLOPPY).unwrap();
+    assert_eq!(render_stmt(&script.body[0]), "(for-in (var k 2) o (empty))");
+    for source in [
+        "for (var k = 2 in o) ;",
+        "for (var k = (a in b) in o) ;",
+        "for (var k = () => a in o) ;",
+    ] {
+        parse_script_with(source, ScriptOptions::SLOPPY).expect(source);
+    }
+    rejects("for (var k = 2 in o) ;", Invalid, 1, 16);
+    for source in [
+        "for (let k = 2 in o) ;",
+        "for (const k = 2 in o) ;",
+        "for (var [k] = [] in o) ;",
+        "for (var {k} = {} in o) ;",
+        "for (var k = 1 of o) ;",
+        "for (var k = 1, j = 2 in o) ;",
+        "for (var k = 1, j in o) ;",
+        "'use strict'; for (var k = 2 in o) ;",
+        "function f() { 'use strict'; for (var k = 2 in o) ; }",
+    ] {
+        assert_eq!(
+            parse_script_with(source, ScriptOptions::SLOPPY)
+                .expect_err(source)
+                .kind,
+            Invalid,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        super::compile_script_with(
+            "sloppy-for-in",
+            "{ let k; for (var k = 2 in o) ; }",
+            ScriptOptions::SLOPPY,
+        )
+        .unwrap_err()
+        .kind,
+        Invalid
+    );
 }
 
 /// `do`-`while` (clj-quickjs-80), including its ASI rule: the `;` after

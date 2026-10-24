@@ -495,7 +495,7 @@ fn var_declared_names<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
             var_declared_names(body, out);
         }
         StmtKind::ForIn { head, body, .. } | StmtKind::ForOf { head, body, .. } => {
-            if let ForInHead::Var(name) = head {
+            if let ForInHead::Var(name, _) = head {
                 out.push(name);
             }
             var_declared_names(body, out);

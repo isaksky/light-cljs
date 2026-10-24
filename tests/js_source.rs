@@ -8239,6 +8239,14 @@ fn script_completion_value_follows_javascript() {
     );
     assert_eq!(num("for (let i = 0; i < 3; i = i + 1) { i * 2; }"), 4.0);
     // A `var` head (clj-quickjs-89) has no completion value either.
+    assert_eq!(
+        sloppy_eval("5; for (var k = 2 in {}) {}"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        sloppy_eval("5; for (var k = 2 in {x:1, y:2}) 7;"),
+        ValueView::Number(7.0)
+    );
     assert_eq!(eval("5; for (var i = 0; i < 0; ) {}"), ValueView::Undefined);
     assert_eq!(num("for (var i = 7; i < 9; i++) i;"), 8.0);
     assert_eq!(
@@ -15045,6 +15053,78 @@ fn sloppy_eval(src: &str) -> ValueView {
         RunOutcome::Complete(v) => v.view(),
         other => panic!("{src:?}: expected Complete, got {other:?}"),
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. The first script adapts the
+/// last group of QuickJS tests/test_loop.js::test_for_in at 7d1c13c5d8f8,
+/// with its assertion returned as the script completion value. The full
+/// QuickJS copyright and MIT notice above for_in_assigns_member_targets
+/// applies to this adaptation too.
+#[test]
+fn sloppy_for_in_var_initializer() {
+    for source in [
+        "var tab = []; for (var k = 2 in {x:1, y:2}) tab.push(k); tab.toString() === 'x,y' && k === 'y'",
+        "for (var k = 2 in {}) {} k === 2",
+        "for (var k = 2 in null) {} k === 2",
+        "for (var k = 2 in undefined) {} k === 2",
+        "var log = ''; function init() { log += 'i'; return 2; } function obj() { log += 'o'; return k === 2 ? {x:1, y:2} : {}; } for (var k = init() in obj()) log += k; log === 'ioxy'",
+        "function f() { var before = k; for (var k = 2 in {}) {} return before === undefined && k === 2; } f()",
+        "var n = 0; function init() { n++; throw 7; } function obj() { n += 100; return {}; } try { for (var k = init() in obj()) {} } catch (e) {} n === 1 && k === undefined",
+        "var f; for (var k = function() {} in {}) f = k; k.name === 'k'",
+        "var fs = []; for (var k = 2 in {x:1, y:2}) fs.push(() => k); fs[0]() === 'y' && fs[1]() === 'y'",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Both head expressions may
+/// suspend; the initialized object stays rooted while evaluating the RHS.
+#[test]
+fn sloppy_for_in_initializer_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let code = compile_script_with(
+        "sloppy-for-in",
+        "var log = ''; function init() { __rt.need(190, 1); log += 'i'; return {v:2}; } function obj() { __rt.need(190, 2); log += k.v === 2 ? 'o' : '!'; return {x:1, y:2}; } for (var k = init() in obj()) log += k; log === 'ioxy'",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut waits = 0;
+    let mut complete = false;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(1.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waits, 2);
 }
 
 /// Synthetic fixtures, not light-cljs output. The nested eval cases follow

@@ -3763,6 +3763,7 @@ impl<'s> Lowerer<'s> {
     /// Lower `for (head in object) body` (clj-quickjs-85):
     ///
     /// ```text
+    ///        <var initializer>; <assign k>; pop  (non-strict Annex B head)
     ///        <object>; for_in_start; set_local it
     /// start: new_cell; dup; set_local k      (a lexical binding kept in a cell)
     ///        get_local it; for_in_next; jump_if_false done
@@ -3801,13 +3802,17 @@ impl<'s> Lowerer<'s> {
         body: &Stmt,
         span: Span,
     ) -> Result<(), SyntaxError> {
-        if let ForInHead::Var(name) = head {
+        if let ForInHead::Var(name, _) = head {
             self.check_var_not_shadowed(name)?;
         }
         self.reset_completion(span);
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
         let mut cell = None;
+        if let ForInHead::Var(name, Some(init)) = head {
+            self.assign(name, init)?;
+            self.out().op(Opcode::Pop, name.span);
+        }
         if let ForInHead::Lexical(kind, name) = head {
             let kind = match kind {
                 LexicalKind::Let => BindingKind::Let,
@@ -3856,7 +3861,7 @@ impl<'s> Lowerer<'s> {
             }
             // The function's `var` binding, declared at its entry: one
             // binding for the whole loop, assigned each key.
-            ForInHead::Var(name) => {
+            ForInHead::Var(name, _) => {
                 let access = self.resolve(&name.name);
                 self.store(access, name.span)?;
                 self.out().op(Opcode::Pop, name.span);
@@ -3911,7 +3916,7 @@ impl<'s> Lowerer<'s> {
         body: &Stmt,
         span: Span,
     ) -> Result<(), SyntaxError> {
-        if let ForInHead::Var(name) = head {
+        if let ForInHead::Var(name, _) = head {
             self.check_var_not_shadowed(name)?;
         }
         self.reset_completion(span);
@@ -3986,7 +3991,7 @@ impl<'s> Lowerer<'s> {
                         Repr::Value => this.out().op_u16(Opcode::SetLocal, b.slot, name.span),
                     }
                 }
-                ForInHead::Binding(name) | ForInHead::Var(name) => {
+                ForInHead::Binding(name) | ForInHead::Var(name, _) => {
                     let access = this.resolve_reference(&name.name);
                     this.store(access, name.span)?;
                     this.out().op(Opcode::Pop, name.span);
@@ -6395,7 +6400,7 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
             var_names_in(body, out);
         }
         StmtKind::ForIn { head, body, .. } | StmtKind::ForOf { head, body, .. } => {
-            if let ForInHead::Var(name) = head {
+            if let ForInHead::Var(name, _) = head {
                 out.push(name);
             }
             var_names_in(body, out);
