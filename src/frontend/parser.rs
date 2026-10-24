@@ -1612,6 +1612,7 @@ impl<'a> Parser<'a> {
         let delegate = !self.tok.newline_before && self.eat_punct(Punct::Star)?;
         let value = if !delegate
             && (self.tok.newline_before
+                || matches!(&self.tok.kind, TokenKind::Template(part) if !part.head)
                 || matches!(
                     self.tok.kind,
                     TokenKind::Eof
@@ -1963,28 +1964,13 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         if self.is_punct(Punct::LParen) {
-            let mut function = self.parse_object_method(span.start, generator, asynchronous)?;
-            if let Some(kind) = accessor {
-                let arity = usize::from(kind == FunctionKind::Setter);
-                if function.params.len() != arity {
-                    return Err(self.error(
-                        SyntaxErrorKind::Invalid,
-                        span,
-                        "a getter takes no parameters and a setter takes exactly one",
-                    ));
-                }
-                function.kind = kind;
-            }
-            let value = self.expr(
-                ExprKind::Function(Box::new(function)),
-                self.span_from(span.start),
-            )?;
-            return Ok(PropertyDef {
+            return self.parse_method_property(
                 name,
                 name_span,
-                value,
-                shorthand: false,
-            });
+                span,
+                accessor,
+                (generator, asynchronous),
+            );
         }
         if generator || asynchronous {
             return Err(self.unexpected("`(` after a method name"));
@@ -2010,6 +1996,40 @@ impl<'a> Parser<'a> {
         Ok(PropertyDef {
             name,
             name_span: span,
+            value,
+            shorthand: false,
+        })
+    }
+
+    /// Keep method AST construction off the recursive ordinary-property path.
+    #[inline(never)]
+    fn parse_method_property(
+        &mut self,
+        name: PropertyName,
+        name_span: Span,
+        span: Span,
+        accessor: Option<FunctionKind>,
+        (generator, asynchronous): (bool, bool),
+    ) -> PResult<PropertyDef> {
+        let mut function = self.parse_object_method(span.start, generator, asynchronous)?;
+        if let Some(kind) = accessor {
+            let arity = usize::from(kind == FunctionKind::Setter);
+            if function.params.len() != arity {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    "a getter takes no parameters and a setter takes exactly one",
+                ));
+            }
+            function.kind = kind;
+        }
+        let value = self.expr(
+            ExprKind::Function(Box::new(function)),
+            self.span_from(span.start),
+        )?;
+        Ok(PropertyDef {
+            name,
+            name_span,
             value,
             shorthand: false,
         })
@@ -2751,6 +2771,9 @@ impl<'a> Parser<'a> {
         // ends an operand. Carry that distinction through its parameters.
         let mut function_head = None;
         let mut function_body = None;
+        // Carry declaration/expression position through a contextual async
+        // prefix; its following function must be on the same line.
+        let mut async_prefix = None;
         // Return/break/continue may end at a line break; break/continue
         // can first consume one label on the same line.
         let mut restricted = None;
@@ -2761,13 +2784,15 @@ impl<'a> Parser<'a> {
         let mut conditionals = Vec::new();
         while open > 0 {
             let mut token = lexer.next_token().ok()?;
-            let keyword_position = !after_dot && !std::mem::take(&mut property_name);
-            // Only a function name or its opening parenthesis can follow
-            // a pending function keyword. In particular, a property colon
+            let name_position = std::mem::take(&mut property_name);
+            let keyword_position = !after_dot && !name_position;
+            let previous_async = async_prefix.take().filter(|_| !token.newline_before);
+            // Only a generator star, function name or opening parenthesis
+            // can follow a pending function keyword. A property colon
             // must not carry it into an unrelated control head.
             if !matches!(
                 token.kind,
-                TokenKind::Identifier(_) | TokenKind::Punct(Punct::LParen)
+                TokenKind::Identifier(_) | TokenKind::Punct(Punct::LParen | Punct::Star)
             ) {
                 function_head = None;
             }
@@ -2864,7 +2889,15 @@ impl<'a> Parser<'a> {
                     statement = true;
                 }
                 TokenKind::Keyword(Keyword::Function) if keyword_position => {
-                    function_head = Some(
+                    function_head = Some(previous_async.unwrap_or(
+                        was_statement
+                            || (token.newline_before && !was_operand && in_statement_body),
+                    ));
+                }
+                TokenKind::Identifier(_)
+                    if keyword_position && token.span.text(lexer.source()) == "async" =>
+                {
+                    async_prefix = Some(
                         was_statement
                             || (token.newline_before && !was_operand && in_statement_body),
                     );
@@ -2897,6 +2930,16 @@ impl<'a> Parser<'a> {
                 );
             after_dot = token.kind == TokenKind::Punct(Punct::Dot);
             after_arrow = token.kind == TokenKind::Punct(Punct::Arrow);
+            // The real method parser requests IdentifierName after async
+            // and *, including async *m. Keep escaped reserved-word names
+            // from prematurely ending cover-grammar lookahead here too.
+            if name_position
+                && (token.kind == TokenKind::Punct(Punct::Star)
+                    || token.span.text(lexer.source()) == "async")
+            {
+                property_name = true;
+                lexer.expect_property_name();
+            }
             match token.kind {
                 TokenKind::Punct(Punct::LBrace) => {
                     open += 1;

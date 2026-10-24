@@ -3879,6 +3879,64 @@ fn rejects_early_errors_and_misplaced_tokens() {
     rejects("x.1", UnexpectedToken, 1, 2);
 }
 
+#[test]
+fn generator_async_review_regressions() {
+    // Synthetic fixtures, not light-cljs output. Bare yield may end any
+    // template substitution, before either a template middle or tail.
+    for src in [
+        "function* g() { `${yield}`; }",
+        "function* g() { `${yield}a${yield}`; }",
+    ] {
+        let script = parse_script(src).unwrap();
+        let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+            panic!()
+        };
+        let StmtKind::Expr(e) = &f.body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Template { exprs, .. } = &e.kind else {
+            panic!()
+        };
+        for e in exprs {
+            assert!(matches!(
+                e.kind,
+                ExprKind::Yield {
+                    value: None,
+                    delegate: false
+                }
+            ));
+            assert_eq!(e.span.text(src), "yield");
+        }
+        let e = compile_script("syntax", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
+        assert_eq!(e.span.start, 0);
+    }
+    // Contextual async preserves a declaration's regexp lexical goal in
+    // cover grammar lookahead. Async expressions still end an operand.
+    for src in [
+        "async (x = function () { async function g() {} /[)]/.test(''); }) => x",
+        "(x = function () { async function g() {} /[)]/.test(''); }) => x",
+        "async (x = function () { async function* g() {} /[)]/.test(''); }) => x",
+        "async (x = async function () {} / 2) => x",
+        r"async (x = {*\u0069f() {}}) => x",
+        r"async (x = {async \u0069f() {}}) => x",
+        r"async (x = {async *\u0069f() {}}) => x",
+        r"(x = {*\u0069f() {}}) => x",
+        r"(x = {async \u0069f() {}}) => x",
+        r"(x = {async *\u0069f() {}}) => x",
+    ] {
+        parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        let e = compile_script("syntax", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+        let start = if src.starts_with("async") {
+            0
+        } else {
+            src.find("async").unwrap_or_else(|| src.find('*').unwrap())
+        };
+        assert_eq!(e.span.start, start, "{src}: {e}");
+    }
+}
+
 // ----- robustness ----------------------------------------------------------------
 
 #[test]
