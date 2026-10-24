@@ -884,6 +884,7 @@ fn object_property_reclaims() {
     // seven NativeError prototypes (clj-quickjs-229), JSON (clj-quickjs-159),
     // Map.prototype (clj-quickjs-169), ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
+    // and Date.prototype (clj-quickjs-179),
     // which the realm keeps for the
     // runtime's lifetime.
     let Held {
