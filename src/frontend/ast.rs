@@ -380,6 +380,7 @@ impl Expr {
     pub(crate) fn new(kind: ExprKind, span: Span) -> Expr {
         let child = match &kind {
             ExprKind::Number(_)
+            | ExprKind::BigInt(_)
             | ExprKind::String(_)
             | ExprKind::RegExp { .. }
             | ExprKind::Bool(_)
@@ -452,6 +453,7 @@ pub enum ExprKind {
     Await(Box<Expr>),
     /// A numeric literal, or `NaN` / `Infinity` (which the subset reserves).
     Number(f64),
+    BigInt(crate::value::JsBigInt),
     /// A string literal's cooked value (UTF-16 code units).
     String(JsString),
     Bool(bool),

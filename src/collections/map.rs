@@ -61,6 +61,12 @@ pub(crate) fn key_hash(key: &Value) -> u64 {
         Value::Object(id) => id.to_bits() ^ 0x6f62_6a65_6374_0000,
         Value::String(s) => s.content_hash() ^ 0x7374_7269_6e67_0000,
         Value::Symbol(s) => s.identity() ^ 0x7379_6d62_6f6c_0000,
+        Value::BigInt(n) => {
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            n.hash(&mut hasher);
+            hasher.finish() ^ 0x6269_6769_6e74_0000
+        }
     };
     // splitmix64 finalizer.
     let mut z = raw;

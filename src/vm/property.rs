@@ -225,6 +225,11 @@ pub(crate) fn to_property_key(key: &Value) -> Result<Key, Fault> {
     Ok(match key {
         Value::String(s) => Key::from_name(s),
         Value::Symbol(s) => Key::Symbol(s.clone()),
+        Value::BigInt(_) => {
+            return Err(Fault::Unsupported(
+                "BigInt property keys need ToString, which is not supported".into(),
+            ));
+        }
         Value::Number(n) => match number_index(*n) {
             Some(index) => Key::Index(index),
             None => Key::Name(JsString::from(number_to_string(*n).as_str())),

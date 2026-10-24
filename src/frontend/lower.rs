@@ -115,12 +115,10 @@
 //! numbers (`is_number`), and otherwise to `plus`, JavaScript `+` on
 //! primitives, which concatenates two strings at run time and applies no
 //! ToNumber first. The relational operators (clj-quickjs-68) lower to
-//! `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` when neither operand
-//! is statically a number: those compare two strings by UTF-16 code units
-//! and convert any other primitives with ToNumber at run time. With a
-//! static number on either side the operands can never both be strings, so
-//! ToNumber and the number-only comparison are IsLessThan, and they are
-//! emitted instead.
+//! `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` unless both operands
+//! are statically Numbers: those preserve primitive types (including a
+//! BigInt's explicit deferred-operator error), compare strings by UTF-16
+//! code units, and convert other supported primitives with ToNumber.
 //!
 //! **Strings.** A string literal (UTF-16 code units, possibly with lone
 //! surrogates, decoded by the lexer) is a constant, deduplicated by
@@ -385,6 +383,7 @@ enum ConstKey {
     Number(u64),
     /// Strings by content (code units).
     String(JsString),
+    BigInt(crate::value::JsBigInt),
 }
 
 /// Internal bytecode emitter: byte code, one span per instruction, a
@@ -2403,6 +2402,7 @@ impl<'s> Lowerer<'s> {
             Primitive::Number(n) => ConstKey::Number(n.to_bits()),
             Primitive::String(s) => ConstKey::String(s.clone()),
             Primitive::Symbol(_) => unreachable!("symbols have no literal syntax"),
+            Primitive::BigInt(n) => ConstKey::BigInt(n.clone()),
             Primitive::Undefined => {
                 self.out().op(Opcode::Undefined, span);
                 return Ok(());
@@ -2814,6 +2814,7 @@ impl<'s> Lowerer<'s> {
         match &e.kind {
             ExprKind::RegExp { .. } => Err(self.unsupported(span, "RegExp objects")),
             ExprKind::Number(_)
+            | ExprKind::BigInt(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::This
@@ -2908,6 +2909,7 @@ impl<'s> Lowerer<'s> {
         let span = e.span;
         match &e.kind {
             ExprKind::Number(n) => self.constant(Primitive::Number(*n), span),
+            ExprKind::BigInt(n) => self.constant(Primitive::BigInt(n.clone()), span),
             ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span),
             ExprKind::Null => self.constant(Primitive::Null, span),
             ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span),
@@ -3507,11 +3509,10 @@ impl<'s> Lowerer<'s> {
                 return;
             }
             BinaryOp::Sub => Opcode::Sub,
-            // Two strings compare by code units, so a relational operator
-            // with no statically numeric operand decides at run time; with
-            // one, ToNumber and a numeric comparison are IsLessThan.
+            // Preserve an unknown operand's type for IsLessThan, including
+            // explicit rejection of BigInt until its comparisons land.
             BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
-                if !left_number && !right_number =>
+                if !left_number || !right_number =>
             {
                 let compare = match op {
                     BinaryOp::Lt => Opcode::CompareLt,
@@ -3558,12 +3559,11 @@ impl<'s> Lowerer<'s> {
                 return;
             }
         };
-        // ToNumber(left) must happen after the right operand is evaluated,
-        // so a non-number left operand converts both together.
-        if !left_number {
+        // Both operands must reach ToNumeric together, even with a known
+        // Number on the left: a BigInt on the right is a mixed-type error.
+        // Conversion still follows evaluation of both operands.
+        if !left_number || !right_number {
             self.out().op(Opcode::ToNumberPair, span);
-        } else if !right_number {
-            self.out().op(Opcode::ToNumber, span);
         }
         self.out().op(numeric, span);
     }

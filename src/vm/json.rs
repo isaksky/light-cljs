@@ -724,6 +724,11 @@ impl Stringifier {
                 Value::Null => self.append(JsString::from("null"))?,
                 Value::Bool(b) => self.append(JsString::from(if *b { "true" } else { "false" }))?,
                 Value::Object(id) => self.container(heap, task, *id)?,
+                Value::BigInt(_) => {
+                    return Err(Fault::TypeError(
+                        "JSON.stringify cannot serialize BigInt".into(),
+                    ));
+                }
                 Value::Undefined | Value::Symbol(_) => {
                     return Err(Fault::Internal("JSON.stringify emitting omitted value"));
                 }

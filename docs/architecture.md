@@ -4486,3 +4486,44 @@ This parser introduces no matching or JavaScript RegExp objects. Literal-site
 early errors must reuse it in clj-quickjs-56. The matcher in clj-quickjs-187
 will be a leaf native with a documented step limit and a catchable error
 on exhaustion, per the engine policy decision.
+
+## BigInt primitives (clj-quickjs-196)
+
+`JsBigInt` in `src/value/bigint.rs` is the single integer type for subsequent
+BigInt operators. It uses in-tree little-endian base-2^32 sign/magnitude limbs,
+with no crate dependency. Values fitting `i64` are inline; larger values use an
+immutable `Arc<[u32]>` body. `from_sign_magnitude` is the checked normalization
+boundary: it removes high zero limbs, canonicalizes negative zero to zero and
+selects the inline form whenever possible. Its representation is private, so
+value equality and hashing never depend on the construction path. Future
+add/sub/mul/divrem/pow/shift/logic and radix-conversion implementations extend
+this type and pass every result through the same boundary. They are deferred
+to the sibling BigInt pellets; this pellet implements digit parsing and decimal
+inspection, not those operators.
+
+The magnitude cap is 1 Mbit (`MAX_BIGINT_BITS`), following the user-selected
+QuickJS policy. Constructors return `BigIntError::TooLarge` with the text
+`BigInt is too large`. Literal overflow is a positioned frontend `TooLarge`;
+future arithmetic overflow must become catchable RangeError with that text.
+Every operation costs one VM instruction regardless of limb count. The cap
+bounds each leaf computation, including equality and hashing, but there is no
+cancellation/yield poll within that computation. Power-of-two literals pack
+bits in linear time; decimal input/output use bounded quadratic limb work.
+Future arithmetic must preserve the cap and avoid unbounded intermediate sizes.
+
+BigInts are immutable primitives stored directly in `Value` and `Primitive`.
+Like strings and symbols, their shared bodies contain no heap edges and live
+outside the precise traced heap: collection follows no BigInt edges, and the
+last primitive/constant/collection/root clone releases its body. They require no
+new heap kind or category, are publishable, and retain exact values in
+persistent vectors/maps across collection and task publication. Persistent map
+keys use canonical integer equality/hashing, distinct from Number keys.
+
+Strict equality compares mathematical integer values; ToBoolean is false only
+for zero; `typeof` and diagnostic type names are `bigint`. Mixed BigInt/Number
+arithmetic throws TypeError. Other deferred numeric operators, loose and
+relational equality, ToString, wrappers and property-key conversion fail
+explicitly with UnsupportedOperand naming BigInt. JSON serialization rejects
+BigInt with TypeError. `Rooted::bigint` and `Scope::bigint` return an immutable
+root-free `JsBigInt`, inspectable as decimal (`Display`) or sign/magnitude.
+The CLI prints a BigInt completion with an `n` suffix.

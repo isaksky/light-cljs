@@ -62,6 +62,7 @@ fn main() {
     match outcome {
         Ok(RunOutcome::Complete(v)) => match v.view() {
             ValueView::Number(n) => println!("{name} completed with {n}"),
+            ValueView::BigInt => println!("{name} completed with {}n", v.bigint().unwrap()),
             ValueView::String => match v.string() {
                 Some(s) => println!("{name} completed with {s:?}"),
                 None => println!("{name} completed with a string"),

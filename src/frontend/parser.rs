@@ -2638,6 +2638,7 @@ impl<'a> Parser<'a> {
                 flags: flags.clone(),
             },
             TokenKind::Number(n) => ExprKind::Number(*n),
+            TokenKind::BigInt(n) => ExprKind::BigInt(n.clone()),
             TokenKind::String(s) => ExprKind::String(s.clone()),
             TokenKind::Keyword(Keyword::True) => ExprKind::Bool(true),
             TokenKind::Keyword(Keyword::False) => ExprKind::Bool(false),
@@ -2831,6 +2832,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Keyword(_) if after_dot => false,
                 TokenKind::Identifier(_)
                 | TokenKind::Number(_)
+                | TokenKind::BigInt(_)
                 | TokenKind::String(_)
                 | TokenKind::RegExp { .. } => false,
                 TokenKind::Keyword(

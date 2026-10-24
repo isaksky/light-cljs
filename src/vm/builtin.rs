@@ -1068,6 +1068,9 @@ pub(crate) fn array_string_receiver(
         Value::Symbol(_) => Err(Fault::Unsupported(
             "Symbol wrapper objects are not supported".into(),
         )),
+        Value::BigInt(_) => Err(Fault::Unsupported(
+            "BigInt wrapper objects are not supported".into(),
+        )),
     }
 }
 
@@ -1080,6 +1083,7 @@ fn describe_receiver(v: &Value) -> &'static str {
         Value::Number(_) => "a number",
         Value::String(_) => "a string",
         Value::Symbol(_) => "a symbol",
+        Value::BigInt(_) => "a BigInt",
         Value::Object(_) => "an object",
     }
 }
@@ -1278,6 +1282,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
         Value::Number(_) => unsupported("a number"),
         Value::String(_) => unsupported("a string"),
         Value::Symbol(_) => unsupported("a symbol"),
+        Value::BigInt(_) => unsupported("a BigInt"),
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {

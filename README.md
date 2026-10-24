@@ -1293,8 +1293,7 @@ Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
 Deferred:
 
 - (`**=`: clj-quickjs-84, below.) Object
-  operands convert since clj-quickjs-70; strings since clj-quickjs-67. BigInt is outside the
-  subset.
+  operands convert since clj-quickjs-70; strings since clj-quickjs-67. BigInt exponentiation remains deferred to clj-quickjs-199.
 
 ### `break` and `continue` through finally blocks (clj-quickjs-79)
 
@@ -2745,3 +2744,17 @@ Deferred: JavaScript RegExp objects and matching, literal-site early errors,
 v grammar and Unicode property escapes. Quantifier counts above u64::MAX
 return an explicit error. See `docs/architecture.md`, "Regular expression
 pattern IR", and `docs/grammar.md` for the API boundary.
+
+### BigInt primitives (clj-quickjs-196)
+
+Supported: exact decimal and `0x`/`0o`/`0b` integer literals with `n` suffix,
+strict equality, `typeof`, ToBoolean, persistent map keys, publication and GC
+survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
+`Scope::bigint`, returning immutable `JsBigInt` with decimal `Display` and
+sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
+with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
+TypeError. BigInt operators and JavaScript conversions remain deferred to
+clj-quickjs-197–204 and fail explicitly; JSON serialization throws TypeError.
+
+Validation: `cargo test --lib bigint -- --test-threads=3` and
+`cargo test --test js_source bigint -- --test-threads=3`.

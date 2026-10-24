@@ -355,3 +355,14 @@ test. Other tests are synthetic fixtures, not light-cljs output.
 `re_parse_alternative`, `re_parse_disjunction` and `lre_compile` in
 `research/quickjs/libregexp.c` at that revision were consulted as semantic
 references. No upstream implementation was copied or linked.
+
+## BigInt primitives (clj-quickjs-196)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_bigint_new`,
+`js_bigint_normalize`, `js_bigint_from_string`, `js_strict_eq2`) and
+`research/quickjs/tests/test_bigint.js::test_bigint1`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The arbitrary-precision literal examples use the upstream mathematical
+constants; Rust code and synthetic source test bodies were written afresh,
+without copying QuickJS code or test bodies. The 1 Mbit size policy follows
+the user decision recorded in `docs/architecture.md`.

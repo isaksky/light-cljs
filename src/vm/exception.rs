@@ -226,5 +226,6 @@ pub(crate) fn describe_thrown(value: &Value) -> String {
         // shows it (a lone surrogate as U+FFFD).
         Value::String(ref s) => s.to_string_lossy(),
         Value::Symbol(ref s) => s.to_string(),
+        Value::BigInt(ref n) => format!("{n}n"),
     }
 }

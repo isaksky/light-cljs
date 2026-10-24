@@ -2027,7 +2027,9 @@ impl NativeState {
                         // throw before any right-hand conversion callback.
                         // Plus and comparisons instead need both primitives.
                         if matches!(target, ConvertTarget::Instruction(Instr::ToNumberPair)) {
-                            operands[*next] = Value::Number(dispatch::to_number(receiver)?);
+                            if !matches!(receiver, Value::BigInt(_)) {
+                                operands[*next] = Value::Number(dispatch::to_number(receiver)?);
+                            }
                             *next += 1;
                             continue;
                         }

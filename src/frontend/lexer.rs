@@ -5,8 +5,8 @@
 //! an operator outside the subset (`**`, `>>>=`, `?.`, `=>`, ...) arrives at
 //! the parser as one token and is rejected there with a precise diagnostic.
 //! A `/` initially lexes as division; the parser requests the regexp goal
-//! where an operand is expected. BigInt literals and numeric separators
-//! are rejected here.
+//! where an operand is expected. Integer `n` literals retain exact BigInt
+//! digits; numeric separators are rejected here.
 //!
 //! Template literals (clj-quickjs-57) lex as one token per part. The lexer
 //! keeps a stack of open substitutions, and the `}` that closes one (the
@@ -44,6 +44,7 @@ pub enum TokenKind {
     Keyword(Keyword),
     /// A numeric literal's value.
     Number(f64),
+    BigInt(crate::value::JsBigInt),
     /// A string literal's cooked value: UTF-16 code units, possibly with
     /// lone surrogates (clj-quickjs-141).
     String(JsString),
@@ -65,6 +66,7 @@ impl TokenKind {
             TokenKind::Identifier(name) => format!("identifier `{name}`"),
             TokenKind::Keyword(k) => format!("keyword `{}`", k.as_str()),
             TokenKind::Number(_) => "number literal".to_string(),
+            TokenKind::BigInt(_) => "BigInt literal".to_string(),
             TokenKind::String(_) => "string literal".to_string(),
             TokenKind::Template(part) if part.head => "template literal".to_string(),
             TokenKind::Template(_) => "`}` closing a template substitution".to_string(),
@@ -711,8 +713,7 @@ impl<'a> Lexer<'a> {
             Some("0b" | "0B") => 2,
             _ => 10,
         };
-        // `bigint_suffix`: a BigInt suffix `n` would be valid after the
-        // literal (it is unsupported): an integer with no leading zero.
+        // A BigInt suffix is valid only after an integer with no leading zero.
         let (value, bigint_suffix) = if radix != 10 {
             self.pos += 2;
             let digits_start = self.pos;
@@ -733,12 +734,32 @@ impl<'a> Lexer<'a> {
             self.eat_digits(10)?;
             self.lex_decimal_tail(start)?
         };
+        if self.peek_char() == Some('n') && bigint_suffix {
+            let digits_start = start + if radix == 10 { 0 } else { 2 };
+            let digits_end = self.pos;
+            self.bump();
+            if self
+                .peek_char()
+                .is_some_and(|c| is_ident_start(c) || c.is_ascii_digit() || c == '\\')
+            {
+                return Err(self.error_at(
+                    self.pos,
+                    SyntaxErrorKind::InvalidToken,
+                    "identifier or digit starts immediately after BigInt literal",
+                ));
+            }
+            let bigint =
+                crate::value::JsBigInt::from_digits(&self.src[digits_start..digits_end], radix)
+                    .map_err(|error| {
+                        self.error(
+                            SyntaxErrorKind::TooLarge,
+                            Span::new(start, self.pos),
+                            error.to_string(),
+                        )
+                    })?;
+            return Ok(TokenKind::BigInt(bigint));
+        }
         match self.peek_char() {
-            Some('n') if bigint_suffix => Err(self.error(
-                SyntaxErrorKind::Unsupported,
-                Span::new(start, self.pos + 1),
-                "BigInt literals are not supported",
-            )),
             Some(c) if is_ident_start(c) || c.is_ascii_digit() || c == '\\' => Err(self.error_at(
                 self.pos,
                 SyntaxErrorKind::InvalidToken,

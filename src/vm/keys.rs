@@ -374,7 +374,7 @@ pub(crate) fn object_keys(
         // wrapper's indices, then its `length` (clj-quickjs-142).
         Value::String(s) => string_own_keys(&s, filter)?,
         // Number and Boolean wrappers have no own properties.
-        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) => Vec::new(),
+        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) | Value::BigInt(_) => Vec::new(),
     };
     let exhausted = || Fault::OutOfMemory("heap object table exhausted");
     let prototype = realm::intrinsics(heap)
@@ -613,9 +613,12 @@ pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<V
         }
         // `null` and `undefined` run no iteration; a Number or Boolean
         // wrapper has no own enumerable keys.
-        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) | Value::Symbol(_) => {
-            ForInIterator::new(None, Vec::new())
-        }
+        Value::Undefined
+        | Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::Symbol(_)
+        | Value::BigInt(_) => ForInIterator::new(None, Vec::new()),
     };
     heap.alloc(HeapObject::Native(Box::new(iterator)))
         .map(Value::Object)

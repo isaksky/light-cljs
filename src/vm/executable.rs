@@ -15,6 +15,9 @@
 //! A loaded [`Executable`] is an `Arc` handle: cloning it or spawning tasks
 //! from it never copies the code. Constants are primitives only in this slice,
 //! so an executable holds no heap edges and is not tied to one runtime.
+//! BigInt constants carry the private, normalized `JsBigInt` type: its only
+//! constructors enforce the magnitude cap, so a loaded constant cannot
+//! bypass that limit. Source overflow is rejected as frontend `TooLarge`.
 //!
 //! **Function code.** Each executable is the code of one function (the task
 //! entry is just the function a task starts in). Its child function table

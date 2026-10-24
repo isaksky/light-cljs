@@ -204,7 +204,23 @@ fn new_function(
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
+/// Until ToNumeric BigInt operators land, reject mixed numeric types without
+/// ever passing a BigInt through ToNumber.
+fn reject_mixed_bigint(a: &Value, b: &Value) -> Result<(), Fault> {
+    if matches!(
+        (a, b),
+        (Value::BigInt(_), Value::Number(_)) | (Value::Number(_), Value::BigInt(_))
+    ) {
+        Err(Fault::TypeError(
+            "cannot mix BigInt and Number in arithmetic".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn numbers(op: Opcode, a: &Value, b: &Value) -> Result<(f64, f64), Fault> {
+    reject_mixed_bigint(a, b)?;
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Ok((*x, *y)),
         _ => Err(Fault::Unsupported(format!(
@@ -253,6 +269,9 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
         Value::Number(x) => Ok(*x),
         Value::String(s) => Ok(string_to_number(s)),
         Value::Symbol(_) => Err(Fault::TypeError("cannot convert symbol to number".into())),
+        Value::BigInt(_) => Err(Fault::Unsupported(
+            "BigInt numeric operations are not supported".into(),
+        )),
         Value::Object(_) => Err(Fault::Unsupported(
             "converting an object to a number (ToPrimitive) is not supported".to_string(),
         )),
@@ -267,6 +286,11 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
         Value::Symbol(_) => return Err(Fault::TypeError("cannot convert symbol to string".into())),
+        Value::BigInt(_) => {
+            return Err(Fault::Unsupported(
+                "BigInt ToString is not supported".into(),
+            ));
+        }
         Value::Undefined => JsString::from("undefined"),
         Value::Null => JsString::from("null"),
         Value::Bool(b) => JsString::from(if *b { "true" } else { "false" }),
@@ -282,6 +306,7 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
 /// ToString of both concatenate; otherwise the ToNumber of both add.
 /// native::Convert handles objects with hint default before this helper.
 fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
+    reject_mixed_bigint(a, b)?;
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
         (Value::Object(_), _) | (_, Value::Object(_)) => {
@@ -302,6 +327,11 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
 /// compares the ToNumber of both. native::Convert has already converted
 /// objects in source order with hint number, before operands are swapped.
 fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
+    if matches!(x, Value::BigInt(_)) || matches!(y, Value::BigInt(_)) {
+        return Err(Fault::Unsupported(
+            "BigInt comparisons are not supported".into(),
+        ));
+    }
     Ok(match (x, y) {
         (Value::Object(_), _) | (_, Value::Object(_)) => {
             return Err(Fault::Internal("object reached primitive comparison"));
@@ -327,6 +357,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::Number(_) => "number",
         Value::String(_) => "string",
         Value::Symbol(_) => "symbol",
+        Value::BigInt(_) => "bigint",
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
@@ -359,6 +390,11 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
 /// native::Convert with hint default.
 fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
+    if matches!(a, BigInt(_)) || matches!(b, BigInt(_)) {
+        return Err(Fault::Unsupported(
+            "BigInt loose equality is not supported".into(),
+        ));
+    }
     Ok(match (a, b) {
         (Undefined | Null, Undefined | Null) => true,
         (Undefined | Null, _) | (_, Undefined | Null) => false,
@@ -374,6 +410,7 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
             return Err(Fault::Internal("unconverted object reached loose equality"));
         }
         (Symbol(_), _) | (_, Symbol(_)) => false,
+        (BigInt(_), _) | (_, BigInt(_)) => unreachable!("BigInt rejected above"),
     })
 }
 
@@ -1349,8 +1386,17 @@ pub(crate) fn step(
         Instr::ToNumberPair => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let x = to_number(&a)?;
-            let y = to_number(&b)?;
+            let a = if matches!(a, Value::BigInt(_)) {
+                a
+            } else {
+                Value::Number(to_number(&a)?)
+            };
+            let b = if matches!(b, Value::BigInt(_)) {
+                b
+            } else {
+                Value::Number(to_number(&b)?)
+            };
+            let (x, y) = numbers(Opcode::ToNumberPair, &a, &b)?;
             state.push(Value::Number(x));
             state.push(Value::Number(y));
         }

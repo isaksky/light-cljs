@@ -17,11 +17,13 @@
 //! Equality and identity are distinct: [`Value::strict_equals`] is JavaScript
 //! `===`; [`Value::same_object`] is heap identity only.
 
+pub(crate) mod bigint;
 pub(crate) mod share;
 pub(crate) mod string;
 pub(crate) mod symbol;
 
 use crate::heap::ObjectId;
+pub use bigint::{BigIntError, JsBigInt, MAX_BIGINT_BITS};
 pub use string::JsString;
 pub use symbol::JsSymbol;
 
@@ -42,6 +44,8 @@ pub(crate) enum Value {
     String(JsString),
     /// An immutable primitive compared by identity.
     Symbol(JsSymbol),
+    /// An exact integer primitive with canonical immutable storage.
+    BigInt(JsBigInt),
 }
 
 impl Value {
@@ -53,6 +57,7 @@ impl Value {
             Value::Number(n) => !(*n == 0.0 || n.is_nan()),
             Value::Object(_) | Value::Symbol(_) => true,
             Value::String(s) => !s.is_empty(),
+            Value::BigInt(n) => !n.is_zero(),
         }
     }
 
@@ -68,6 +73,7 @@ impl Value {
             (Value::Object(a), Value::Object(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
+            (Value::BigInt(a), Value::BigInt(b)) => a == b,
             _ => false,
         }
     }
@@ -88,6 +94,7 @@ impl Value {
             Value::Object(_) => "object",
             Value::String(_) => "string",
             Value::Symbol(_) => "symbol",
+            Value::BigInt(_) => "bigint",
         }
     }
 
@@ -101,6 +108,7 @@ impl Value {
             Value::Object(_) => None,
             Value::String(s) => Some(Primitive::String(s.clone())),
             Value::Symbol(s) => Some(Primitive::Symbol(s.clone())),
+            Value::BigInt(n) => Some(Primitive::BigInt(n.clone())),
         }
     }
 
@@ -114,6 +122,7 @@ impl Value {
             Value::Object(_) => ValueView::Object,
             Value::String(_) => ValueView::String,
             Value::Symbol(_) => ValueView::Symbol,
+            Value::BigInt(_) => ValueView::BigInt,
         }
     }
 }
@@ -127,6 +136,7 @@ impl From<Primitive> for Value {
             Primitive::Number(n) => Value::Number(n),
             Primitive::String(s) => Value::String(s),
             Primitive::Symbol(s) => Value::Symbol(s),
+            Primitive::BigInt(n) => Value::BigInt(n),
         }
     }
 }
@@ -153,6 +163,8 @@ pub enum Primitive {
     String(JsString),
     /// An immutable primitive compared by identity.
     Symbol(JsSymbol),
+    /// An exact immutable integer.
+    BigInt(JsBigInt),
 }
 
 impl Primitive {
@@ -182,6 +194,8 @@ pub enum ValueView {
     String,
     /// A symbol primitive.
     Symbol,
+    /// A BigInt primitive; inspect with `Rooted::bigint` or `Scope::bigint`.
+    BigInt,
 }
 
 #[cfg(test)]

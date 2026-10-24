@@ -236,6 +236,14 @@ impl Rooted {
         }
     }
 
+    /// The exact immutable BigInt, independent of this root's lifetime.
+    pub fn bigint(&self) -> Option<crate::JsBigInt> {
+        match &self.value {
+            Value::BigInt(n) => Some(n.clone()),
+            _ => None,
+        }
+    }
+
     /// True only when both handles reference the same heap object (identity,
     /// not equality). Primitives are never "the same object".
     pub fn same_object(&self, other: &Rooted) -> bool {
@@ -331,6 +339,7 @@ impl WeakHandle {
             | Value::Bool(_)
             | Value::Number(_)
             | Value::String(_)
+            | Value::BigInt(_)
             | Value::Symbol(_) => true,
         }
     }
@@ -514,6 +523,14 @@ impl<'s> Scope<'s> {
     pub fn string(&self, local: Local<'s>) -> Option<JsString> {
         match self.local_value(local) {
             Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The exact immutable BigInt; the returned value outlives this scope.
+    pub fn bigint(&self, local: Local<'s>) -> Option<crate::JsBigInt> {
+        match self.local_value(local) {
+            Value::BigInt(n) => Some(n),
             _ => None,
         }
     }

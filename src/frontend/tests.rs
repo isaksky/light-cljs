@@ -36,6 +36,7 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Await(value) => format!("(await {})", render_expr(value)),
         ExprKind::RegExp { pattern, flags } => format!("/{pattern}/{flags}"),
         ExprKind::Number(n) => format!("{n}"),
+        ExprKind::BigInt(n) => format!("{n}n"),
         ExprKind::String(s) => format!("{s:?}"),
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::Null => "null".into(),
@@ -2419,6 +2420,55 @@ fn radix_literals_round_correctly() {
 }
 
 #[test]
+fn bigint_literal_lexing() {
+    for (source, decimal) in [
+        ("0n", "0"),
+        ("123n", "123"),
+        ("0xFFn", "255"),
+        ("0Xffn", "255"),
+        ("0o17n", "15"),
+        ("0O17n", "15"),
+        ("0b101n", "5"),
+        ("0B101n", "5"),
+        ("0xffffffffffffffffn", "18446744073709551615"),
+        (
+            "0x5a4653ca673768565b41f775d6947d55cf3813d1n",
+            "515377520732011331036461129765621272702107522001",
+        ),
+    ] {
+        assert_eq!(ast(source), format!("{decimal}n"));
+        assert!(compile_script("bigint", source).is_ok());
+    }
+    for (source, column) in [
+        ("1.5n", 4),
+        ("1e3n", 4),
+        (".5n", 3),
+        ("01n", 1),
+        ("08n", 1),
+        ("1nn", 3),
+        ("0xn", 1),
+        ("1n2", 3),
+        ("1nfoo", 3),
+    ] {
+        rejects(source, SyntaxErrorKind::InvalidToken, 1, column);
+    }
+    for source in ["01n", "08n"] {
+        let err = super::compile_script_with("bigint", source, ScriptOptions { strict: false })
+            .unwrap_err();
+        assert_eq!(err.kind, SyntaxErrorKind::InvalidToken);
+        assert_eq!(err.column, 3);
+    }
+    let too_large = format!("0x1{}n", "0".repeat(crate::MAX_BIGINT_BITS / 4));
+    rejects_with(
+        &too_large,
+        SyntaxErrorKind::TooLarge,
+        1,
+        1,
+        "BigInt is too large",
+    );
+}
+
+#[test]
 fn automatic_semicolon_insertion() {
     assert_eq!(ast("let a = 1\nlet b = 2"), "(let (a 1)) (let (b 2))");
     assert_eq!(ast("a\nb"), "a b");
@@ -3175,7 +3225,7 @@ fn rejects_lexically_ambiguous_input() {
     rejects("017", InvalidToken, 1, 1);
     rejects("08", InvalidToken, 1, 1);
     rejects_with("1_000", Unsupported, 1, 2, "separator");
-    rejects_with("10n", Unsupported, 1, 1, "BigInt");
+    assert!(compile_script("bigint", "10n").is_ok());
     rejects("0x;", InvalidToken, 1, 1);
     rejects("1e+;", InvalidToken, 1, 1);
     // Strings.

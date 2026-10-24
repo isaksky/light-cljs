@@ -88,6 +88,142 @@ fn rope_strings_are_content_keys_and_publishable() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn bigint_literals_and_strict_equality() {
+    for src in [
+        "515377520732011331036461129765621272702107522001n === 515377520732011331036461129765621272702107522001n",
+        "0x5a4653ca673768565b41f775d6947d55cf3813d1n === 515377520732011331036461129765621272702107522001n",
+        "0xffffffffffffffffn === 18446744073709551615n",
+        "0o17n === 15n && 0b101n === 5n && 0n === 0n",
+        "1n !== 1 && !(1n === 1) && typeof 1n === 'bigint'",
+        "(0n ? 1 : 2) === 2 && (1n ? 1 : 2) === 1 && !0n && !!1n",
+        "let x = 0; if (0n) x = 1; if (1n) x = 2; x === 2",
+        "(0n || 2) === 2 && (1n && 3) === 3 && (0n && 3) === 0n && (1n || 3) === 1n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &exe("515377520732011331036461129765621272702107522001n"),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(value) = task.run().unwrap() else {
+        panic!("BigInt completion")
+    };
+    assert_eq!(value.view(), ValueView::BigInt);
+    assert_eq!(
+        value.bigint().unwrap().to_string(),
+        "515377520732011331036461129765621272702107522001"
+    );
+    let host = rt.root(Primitive::BigInt(clj_quickjs::JsBigInt::from(i64::MIN)));
+    let inspect =
+        compile_function("function f(n) { return !!n && typeof n === 'bigint'; }").unwrap();
+    assert!(
+        matches!(rt.spawn(&inspect, &[&host]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    let exact = rt.scope(|scope| {
+        let local = scope.primitive(Primitive::BigInt(value.bigint().unwrap()));
+        assert_eq!(scope.view(local), ValueView::BigInt);
+        scope.bigint(local).unwrap()
+    });
+    drop(value);
+    drop(task);
+    rt.collect().unwrap();
+    assert_eq!(
+        exact.to_string(),
+        "515377520732011331036461129765621272702107522001"
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn bigint_values_publish_and_survive_collection() {
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &exe("__rt.vector(515377520732011331036461129765621272702107522001n)"),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(vector) = task.run().unwrap() else {
+        panic!("vector completion")
+    };
+    rt.publish(&vector).unwrap();
+    drop(task);
+    rt.collect().unwrap();
+    let reader = compile_function("function f(v) { return __rt.get(v, 0) === 515377520732011331036461129765621272702107522001n; }").unwrap();
+    let reader = rt.spawn(&reader, &[&vector]).unwrap();
+    assert!(
+        matches!(reader.run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    for src in [
+        "__rt.get(__rt.map(10n, 1), 10n) === 1",
+        "__rt.get(__rt.map(0xffffffffffffffffn, 7), 18446744073709551615n) === 7",
+        "__rt.get(__rt.map(1n, 7, 1, 8), 1n) === 7",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
+/// arithmetic, conversions and loose/relational comparisons.
+#[test]
+fn bigint_deferred_operations_fail_explicitly() {
+    for src in [
+        "1n + 1n",
+        "1n - 1n",
+        "1n * 1n",
+        "1n / 1n",
+        "1n % 1n",
+        "1n ** 1n",
+        "1n & 1n",
+        "1n | 1n",
+        "1n ^ 1n",
+        "1n << 1n",
+        "1n >> 1n",
+        "1n >>> 1n",
+        "-1n",
+        "+1n",
+        "~1n",
+        "1n < 2n",
+        "1n < 2",
+        "1 < 2n",
+        "1n == 1n",
+        "String(1n)",
+        "let x = 1n; x++",
+    ] {
+        let error = failure(src);
+        assert_eq!(
+            error.kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}: {error}"
+        );
+        assert!(
+            error.message().to_ascii_lowercase().contains("bigint"),
+            "{src}: {error}"
+        );
+    }
+    for src in [
+        "1n + 1",
+        "1 + 1n",
+        "1n - 1",
+        "1 * 1n",
+        "1n / 1",
+        "1 % 1n",
+        "1n ** 1",
+        "1 & 1n",
+        "1n << 1",
+        "1n - {valueOf() { return 1; }}",
+        "({valueOf() { return 1n; }}) * 1",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+    assert_eq!(failure("JSON.stringify(1n)").kind(), VmErrorKind::TypeError);
+}
+
 /// Synthetic fixtures, not light-cljs output. The first two rows adapt
 /// QuickJS tests/test_builtin.js::test_array, revision 7d1c13c5d8f8;
 /// its full copyright and MIT permission notice is retained on array_push.
@@ -2232,7 +2368,7 @@ fn fixtures_compute_through_vm_instructions() {
         Opcode::Rem,
         // `+` with a binding operand may concatenate strings: `plus`.
         Opcode::Plus,
-        Opcode::Lt,
+        Opcode::CompareLt,
         Opcode::StrictEq,
         Opcode::JumpIfFalse,
         Opcode::Jump,
@@ -5640,8 +5776,8 @@ fn strings_compare_by_code_units() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
-    // The relational operators with no static number operand lower to the
-    // string-aware compare opcodes; with one, to ToNumber and `lt`.
+    // Unless both operands are static Numbers, preserve their primitive
+    // types for the comparison (a dynamic operand may now be a BigInt).
     let ops = opcodes(&exe("let a = 'a', b = 'b'; a < b; a > b; a <= b; a >= b"));
     for op in [
         Opcode::CompareLt,
@@ -5653,7 +5789,7 @@ fn strings_compare_by_code_units() {
     }
     let ops = opcodes(&exe("let a = 'a'; a < 1"));
     assert!(
-        ops.contains(&Opcode::Lt) && !ops.contains(&Opcode::CompareLt),
+        ops.contains(&Opcode::CompareLt) && !ops.contains(&Opcode::Lt),
         "{ops:?}"
     );
     // Functions use the available Object.prototype default, which is nonnumeric.
@@ -6656,7 +6792,7 @@ fn exponent_operator() {
         "{ops:?}"
     );
     assert!(opcodes(&exe("let t = true; t ** 2")).contains(&Opcode::ToNumberPair));
-    assert!(opcodes(&exe("let t = true; 2 ** t")).contains(&Opcode::ToNumber));
+    assert!(opcodes(&exe("let t = true; 2 ** t")).contains(&Opcode::ToNumberPair));
 }
 
 /// Prefix and postfix `++`/`--` on identifier bindings (clj-quickjs-64).
