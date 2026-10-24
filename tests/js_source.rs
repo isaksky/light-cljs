@@ -1871,6 +1871,30 @@ fn legacy_octal_literals_in_sloppy_scripts() {
     }
 }
 
+/// Legacy octal and `\8` `\9` string escapes run in sloppy scripts and are
+/// early errors in strict code (clj-quickjs-258).
+#[test]
+fn legacy_octal_escapes_in_sloppy_scripts() {
+    let src = r#"function f() { return "\101\8"; } f() + "\400" === "A8 0""#;
+    let script =
+        compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_or_else(|e| panic!("{e}"));
+    match run(&script, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    for (src, options) in [
+        (src, ScriptOptions::STRICT),
+        (
+            r#"function f() { 'use strict'; return "\101"; }"#,
+            ScriptOptions::SLOPPY,
+        ),
+        (r#"'\9'; 'use strict';"#, ScriptOptions::SLOPPY),
+    ] {
+        let e = compile_script_with("strict", src, options).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::InvalidToken, "{src}");
+    }
+}
+
 #[test]
 fn hashbang_script_runs() {
     assert_eq!(num("#!/usr/bin/env qjs\n1 + 1"), 2.0);

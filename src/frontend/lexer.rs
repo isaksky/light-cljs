@@ -206,7 +206,7 @@ puncts! {
     Caret = "^",
 }
 
-pub(super) fn is_line_terminator(c: char) -> bool {
+fn is_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
@@ -265,7 +265,8 @@ pub struct Lexer<'a> {
     /// escapes is an ordinary name.
     after_dot: bool,
     /// The code being lexed is strict-mode code, where legacy octal and
-    /// leading-zero number literals are early errors (clj-quickjs-51). The
+    /// leading-zero number literals (clj-quickjs-51) and legacy octal and
+    /// `\8` `\9` string escapes (clj-quickjs-258) are early errors. The
     /// parser keeps it in step with its own mode ([`Lexer::set_strict`]).
     strict: bool,
 }
@@ -724,14 +725,15 @@ impl<'a> Lexer<'a> {
             'f' => out.push(0x0C),
             'v' => out.push(0x0B),
             '0' if !self.peek_char().is_some_and(|c| c.is_ascii_digit()) => out.push(0),
-            '0'..='7' => {
+            '0'..='7' if self.strict => {
                 return Err(escape_error(
                     self,
                     SyntaxErrorKind::InvalidToken,
                     "octal escape sequences are not allowed in strict mode",
                 ));
             }
-            '8' | '9' => {
+            '0'..='7' => out.push(self.legacy_octal_escape(c)),
+            '8' | '9' if self.strict => {
                 return Err(escape_error(
                     self,
                     SyntaxErrorKind::InvalidToken,
@@ -769,6 +771,31 @@ impl<'a> Lexer<'a> {
             other => push_char(out, other),
         }
         Ok(())
+    }
+
+    /// The rest of a LegacyOctalEscapeSequence of sloppy code whose first
+    /// digit `first` was just read (clj-quickjs-258; ECMAScript B.1.2,
+    /// QuickJS `js_parse_string` and `lre_parse_escape`): at most two more
+    /// octal digits after `0`..`3`, one after `4`..`7`, so the value is at
+    /// most 0o377 and `\400` is U+0020 then `0`. Returns that code unit.
+    fn legacy_octal_escape(&mut self, first: char) -> u16 {
+        let more = if first <= '3' { 2 } else { 1 };
+        let mut value = first as u16 - u16::from(b'0');
+        for _ in 0..more {
+            let Some(digit @ '0'..='7') = self.peek_char() else {
+                break;
+            };
+            self.bump();
+            value = value * 8 + (digit as u16 - u16::from(b'0'));
+        }
+        value
+    }
+
+    /// Whether a line terminator (possibly inside a comment) comes before
+    /// the next token, or `None` if the whitespace and comments before it
+    /// do not lex.
+    pub(crate) fn newline_before_next(&self) -> Option<bool> {
+        self.clone().skip_trivia().ok()
     }
 
     /// Exactly `n` hex digits.
@@ -842,6 +869,22 @@ pub(crate) fn leading_zero_in_strict_code(src: &str, start: usize) -> SyntaxErro
         Span::new(start, start + 1),
         "legacy octal and leading-zero number literals are not allowed in strict mode",
     )
+}
+
+/// The strict-mode early error for a legacy octal or `\8` `\9` escape in
+/// the string literal token `string` of `src`, which lexed as sloppy code,
+/// at its first such escape; `None` if it has none (clj-quickjs-258).
+pub(crate) fn legacy_escape_in_strict_code(src: &str, string: Span) -> Option<SyntaxError> {
+    if !string.text(src).contains('\\') {
+        return None;
+    }
+    let mut lexer = Lexer {
+        src,
+        pos: string.start,
+        after_dot: false,
+        strict: true,
+    };
+    lexer.next_token().err()
 }
 
 fn radix_value(digits: &str, radix: u32) -> f64 {

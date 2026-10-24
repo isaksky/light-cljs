@@ -15,8 +15,8 @@ use super::ast::{
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{
-    Keyword, Lexer, Punct, Token, TokenKind, is_leading_zero_literal, is_line_terminator,
-    leading_zero_in_strict_code,
+    Keyword, Lexer, Punct, Token, TokenKind, is_leading_zero_literal, leading_zero_in_strict_code,
+    legacy_escape_in_strict_code,
 };
 use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
@@ -151,14 +151,16 @@ impl<'a> Parser<'a> {
     }
 
     /// `e`, the error lexing the next token in sloppy code, or the strict
-    /// one if that token is strict code (clj-quickjs-51). It is when it
-    /// follows a `"use strict"` directive ([`Self::use_strict_candidate`],
-    /// whose statement the parser has not finished yet): the current token
-    /// is the candidate string and a line break comes before the next
-    /// token (a number literal there ends the statement), or it is the `;`
-    /// right after the string. Only a leading-zero number literal lexes
-    /// differently in strict code, so the strict error is used only when
-    /// it is the strict-mode error at such a literal's leading `0`.
+    /// one if that token is strict code (clj-quickjs-51, -258). It is when
+    /// it follows a `"use strict"` directive
+    /// ([`Self::use_strict_candidate`], whose statement the parser has not
+    /// finished yet): the current token is the candidate string and a line
+    /// break comes before the next token (a number or string literal there
+    /// ends the statement), or it is the `;` right after the string.
+    /// Lexing as strict and as sloppy code differ only at a leading-zero
+    /// number literal or a legacy octal or `\8` `\9` string escape, where
+    /// strict lexing stops with its early error, so a strict error that is
+    /// not `e` is that early error, which comes first in the token.
     /// `before` is the lexer as it was before the failed token.
     #[cold]
     fn directive_lex_error(&self, before: Option<Lexer<'a>>, e: SyntaxError) -> SyntaxError {
@@ -166,15 +168,15 @@ impl<'a> Parser<'a> {
             return e;
         };
         lexer.set_strict(true);
+        let newline_before = lexer.newline_before_next() == Some(true);
         let Err(strict) = lexer.next_token() else {
             return e;
         };
-        let zero = strict.span.start;
-        if strict != leading_zero_in_strict_code(self.src, zero) {
+        if strict == e {
             return e;
         }
         let ends_directive = if self.tok.span == candidate {
-            self.src[candidate.end..zero].contains(is_line_terminator)
+            newline_before
         } else {
             self.is_punct(Punct::Semicolon) && self.prev_end == candidate.end
         };
@@ -315,7 +317,7 @@ impl<'a> Parser<'a> {
         let mut prologue = true;
         while self.tok.kind != TokenKind::Eof {
             let stmt = self.parse_body_item(prologue)?;
-            prologue = prologue && self.directive(&stmt, None, &[])?;
+            prologue = prologue && self.directive(&stmt, &body, None, &[])?;
             body.push(stmt);
         }
         Ok(Script {
@@ -335,10 +337,19 @@ impl<'a> Parser<'a> {
     /// `name` and `params` were parsed before its body, in the enclosing
     /// mode, so they are checked again now (QuickJS
     /// `js_parse_function_check_names`): `eval` or `arguments` there is a
-    /// [`SyntaxErrorKind::ReservedWord`] at that name. Directives are kept
-    /// as ordinary expression statements in the tree.
+    /// [`SyntaxErrorKind::ReservedWord`] at that name. The `earlier`
+    /// statements of the body, all directives of the prologue, were lexed
+    /// as sloppy code, so they are checked again too, and so is the token
+    /// after `stmt` (clj-quickjs-51, -258). Directives are kept as
+    /// ordinary expression statements in the tree.
     #[inline(never)]
-    fn directive(&mut self, stmt: &Stmt, name: Option<&Ident>, params: &[Ident]) -> PResult<bool> {
+    fn directive(
+        &mut self,
+        stmt: &Stmt,
+        earlier: &[Stmt],
+        name: Option<&Ident>,
+        params: &[Ident],
+    ) -> PResult<bool> {
         let StmtKind::Expr(Expr {
             kind: ExprKind::String(_),
             span,
@@ -367,13 +378,32 @@ impl<'a> Parser<'a> {
                     ),
                 ));
             }
-            // The token after the directive was lexed as sloppy code,
-            // before the directive was recognised (`"use strict"; 010`).
-            if let TokenKind::Number(_) = self.tok.kind {
-                let start = self.tok.span.start;
-                if is_leading_zero_literal(&self.src[start..]) {
-                    return Err(leading_zero_in_strict_code(self.src, start));
+            // The directives before it are strict code too (ECMAScript
+            // 12.9.4.1 and B.1.2 early errors; QuickJS lexes the whole
+            // prologue again in strict mode): `"\07"; "use strict";`.
+            for earlier in earlier {
+                if let StmtKind::Expr(Expr { span, .. }) = &earlier.kind
+                    && let Some(e) = legacy_escape_in_strict_code(self.src, *span)
+                {
+                    return Err(e);
                 }
+            }
+            // The token after the directive was lexed as sloppy code,
+            // before the directive was recognised (`"use strict"; 010`,
+            // `"use strict"; "\07"`).
+            match self.tok.kind {
+                TokenKind::Number(_) => {
+                    let start = self.tok.span.start;
+                    if is_leading_zero_literal(&self.src[start..]) {
+                        return Err(leading_zero_in_strict_code(self.src, start));
+                    }
+                }
+                TokenKind::String(_) => {
+                    if let Some(e) = legacy_escape_in_strict_code(self.src, self.tok.span) {
+                        return Err(e);
+                    }
+                }
+                _ => {}
             }
         }
         Ok(true)
@@ -1126,7 +1156,7 @@ impl<'a> Parser<'a> {
             if prologue && !simple {
                 self.reject_use_strict(&stmt)?;
             }
-            prologue = prologue && self.directive(&stmt, name, params)?;
+            prologue = prologue && self.directive(&stmt, &body, name, params)?;
             body.push(stmt);
         }
         // Restore the enclosing mode before the token after `}` is lexed.

@@ -2451,6 +2451,100 @@ fn legacy_octal_literals_in_sloppy_mode() {
     );
 }
 
+/// Legacy octal escapes (`\07`, `\101`) and `\8` `\9` in string literals
+/// are lexed in sloppy code and stay early errors in strict code, also in
+/// the directives of a prologue before and the token right after a
+/// `"use strict"` directive (clj-quickjs-258; ECMAScript B.1.2, QuickJS
+/// `js_parse_string` and `js_parse_directives`).
+#[test]
+fn legacy_octal_escapes_in_sloppy_mode() {
+    use SyntaxErrorKind::{InvalidToken, UnexpectedEnd};
+    let value = |src: &str| match &sloppy_script(src).body[0].kind {
+        StmtKind::Expr(Expr {
+            kind: ExprKind::String(s),
+            ..
+        }) => s.clone(),
+        other => panic!("sloppy {src:?} is not a string statement: {other:?}"),
+    };
+    for (src, expected) in [
+        (r#""\07";"#, "\u{7}"),
+        (r#""\101";"#, "A"),
+        (r#""\400";"#, " 0"),
+        (r#""\8";"#, "8"),
+        (r#""\9";"#, "9"),
+        (r#""\1";"#, "\u{1}"),
+        (r#""\377";"#, "\u{FF}"),
+        (r#""\3777";"#, "\u{FF}7"),
+        (r#""\47";"#, "'"),
+        (r#""\777";"#, "?7"),
+        (r#""\08";"#, "\u{0}8"),
+        (r#""\0";"#, "\u{0}"),
+        (r#""\00";"#, "\u{0}"),
+        (r#""\000";"#, "\u{0}"),
+        (r#""\0000";"#, "\u{0}0"),
+        (r#""\18";"#, "\u{1}8"),
+        (r#""a\12b\9c";"#, "a\nb9c"),
+        (r"'\101\102';", "AB"),
+    ] {
+        assert_eq!(value(src), expected, "sloppy {src:?}");
+    }
+    // Strict code (the default) rejects each at its escape.
+    for (src, column) in [
+        (r#""\07""#, 2),
+        (r#""\101""#, 2),
+        (r#""\400""#, 2),
+        (r#""\8""#, 2),
+        (r#""\9""#, 2),
+        (r#""\08""#, 2),
+        (r#""ab\1""#, 4),
+        (r#"x = '\8';"#, 6),
+    ] {
+        rejects(src, InvalidToken, 1, column);
+    }
+    // A `"use strict"` directive makes the string right after it strict,
+    // although that token is read before the directive is recognised ...
+    sloppy_rejects(r#""use strict"; "\07""#, InvalidToken, 1, 16);
+    sloppy_rejects("'use strict'\n'\\8';", InvalidToken, 2, 2);
+    sloppy_rejects(
+        r#"function f() { "use strict"; "\101"; }"#,
+        InvalidToken,
+        1,
+        31,
+    );
+    sloppy_rejects(r#"() => { 'use strict'; 'a\1' }"#, InvalidToken, 1, 25);
+    // ... also when lexing it as sloppy code fails: the strict error at
+    // the escape is reported, not the sloppy one.
+    sloppy_rejects(r#""use strict"; "\07"#, InvalidToken, 1, 16);
+    sloppy_rejects("'use strict' /*\n*/ '\\9", InvalidToken, 2, 5);
+    // Not a directive: the sloppy error stands.
+    sloppy_rejects(r#"'use strict' "\07"#, UnexpectedEnd, 1, 14);
+    sloppy_rejects(r#"x = 'use strict'; "\07"#, UnexpectedEnd, 1, 19);
+    // The directives before it are strict code too.
+    sloppy_rejects(r#""\07"; "use strict";"#, InvalidToken, 1, 2);
+    sloppy_rejects(r#""a"; '\8'; 'b'; 'use strict'"#, InvalidToken, 1, 7);
+    sloppy_rejects(
+        r#"function f() { "\1"
+            'use strict' }"#,
+        InvalidToken,
+        1,
+        17,
+    );
+    // Only the code a directive applies to is strict: an enclosing or a
+    // neighbouring function, a later statement of a script whose prologue
+    // has ended, and a string that is not a `"use strict"` directive stay
+    // sloppy.
+    for src in [
+        r#""\07"; x = function () { "use strict"; };"#,
+        r#"function f() { "use strict"; } "\07";"#,
+        r#"x = () => { 'use strict' }; '\8';"#,
+        r#"1; "use strict"; "\07";"#,
+        r#""use strict" + "\07";"#,
+        r#""\07"; "use\x20strict"; "\8";"#,
+    ] {
+        sloppy_script(src);
+    }
+}
+
 // ----- negative: unsupported syntax --------------------------------------------
 
 #[test]

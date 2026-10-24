@@ -1674,7 +1674,7 @@ Deferred:
 
 - Every other sloppy-mode difference (listed in `docs/grammar.md`,
   "Explicit gaps"): references that would denote the `arguments` object (clj-quickjs-97) or the global `eval`
-  (clj-quickjs-106), octal escapes in strings (clj-quickjs-258), sloppy function-name
+  (clj-quickjs-106), sloppy function-name
   stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
   (clj-quickjs-110); strict reserved words and duplicate parameters stay
   rejected in sloppy code.
@@ -1712,6 +1712,12 @@ Supported (`cargo test --lib frontend::tests::legacy_octal_literals_in_sloppy_mo
   access) and leading-zero decimals (`08`, `09.5`, `08e1`). They stay `InvalidToken` in strict code,
   including the literal right after a `"use strict"` directive (`"use strict"; 010`).
 
-Deferred:
+### Legacy octal string escapes in sloppy code (clj-quickjs-258)
 
-- Octal escapes and `\8` `\9` in sloppy string literals (clj-quickjs-258).
+Supported (`cargo test --lib frontend::tests::legacy_octal_escapes_in_sloppy_mode`,
+`cargo test --test js_source legacy_octal_escapes_in_sloppy_scripts`):
+
+- In sloppy code, legacy octal escapes (`"\07"` is U+0007, `"\101"` is `A`, `"\400"` is U+0020 then
+  `0`) and `\8` `\9` (the characters `8`, `9`). They stay `InvalidToken` in strict code, including
+  the string right after a `"use strict"` directive (`"use strict"; "\07"`) and the directives
+  before it in the same prologue (`"\07"; "use strict";`).
