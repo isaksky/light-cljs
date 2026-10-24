@@ -1018,9 +1018,9 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // Each completed task created its own global binding overlay (-104).
-    // Reclaim those objects, their self-cycles and the thirteen temporary accessor
+    // Reclaim those objects, their self-cycles and the fourteen temporary accessor
     // descriptors; the intrinsic values must survive independently.
-    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 13);
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 14);
     assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
