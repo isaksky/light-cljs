@@ -452,9 +452,7 @@ pub(crate) fn call(
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)
-        | Builtin::JsonParse => {
-            Err(Fault::Internal("Error built-ins require a resumable frame"))
-        }
+        | Builtin::JsonParse => Err(Fault::Internal("Error built-ins require a resumable frame")),
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
             v @ Value::Object(_) => Ok(v),
