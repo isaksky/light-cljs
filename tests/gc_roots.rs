@@ -884,7 +884,8 @@ fn object_property_reclaims() {
     // seven NativeError prototypes (clj-quickjs-229), JSON (clj-quickjs-159),
     // Map.prototype (clj-quickjs-169), ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
-    // and Date.prototype (clj-quickjs-179),
+    // Date.prototype (clj-quickjs-179) and the typed-array prototypes
+    // (clj-quickjs-166, clj-quickjs-167),
     // which the realm keeps for the
     // runtime's lifetime.
     let Held {
@@ -892,10 +893,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 28);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 31);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 28);
+    assert_eq!(rt.heap_usage().objects.plain, 31);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1024,8 +1025,9 @@ fn realm_intrinsics_retain() {
     // Locale adds one prototype and fourteen built-ins (-210).
     // Locale likely-subtag methods add two built-in functions (-211).
     // Date adds one prototype and five built-ins (-179).
-    assert_eq!(rt.heap_usage().objects.builtin, 124);
-    assert_eq!(rt.heap_usage().objects.plain, 28);
+    // Floating-point typed arrays add three constructors and prototypes (-167).
+    assert_eq!(rt.heap_usage().objects.builtin, 127);
+    assert_eq!(rt.heap_usage().objects.plain, 31);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
