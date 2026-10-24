@@ -6430,6 +6430,9 @@ receiver and argument forwarding, array iteration, return values and catchable
 TypeErrors. `yield_star_inner_next_waits` collects at instruction boundaries and
 migrates a suspended task, checking exact effects and result sequence. The saved
 activation GC test also retains a delegate's closure solely through hidden locals.
+`yield_star_protocol_getters_wait` separately parks in the iterator getter/call,
+cached next getter, done getter and final value getter, checking exact callback
+counts, result identity and saved locals across collection and worker migration.
 
 QuickJS references and provenance: `research/quickjs/quickjs.c`,
 `js_parse_assign_expr2` (yield-star iterator loop), `OP_yield_star`, and

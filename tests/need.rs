@@ -254,6 +254,97 @@ fn yield_star_inner_next_waits() {
 }
 
 #[test]
+fn yield_star_protocol_getters_wait() {
+    // Synthetic fixtures, not light-cljs output. Isolate a wait in each
+    // protocol callback beneath the generator's native exception boundary.
+    let fixture = r#"
+        let counts = [0, 0, 0, 0, 0, 0], calls = 0, valueReads = 0;
+        function pause(stage) {
+            counts[stage]++;
+            __rt.effect(1, stage);
+            let held = {n: 7};
+            if (stage === waitingStage && __rt.need(5, 3) !== held.n) throw 'lost local';
+            return held.n;
+        }
+        let fixed = {
+            get done() { pause(4); return false; },
+            get value() { valueReads++; return 1; }
+        };
+        let final = {
+            get done() { pause(4); return true; },
+            get value() { return pause(5) + calls; }
+        };
+        let it = {
+            get next() {
+                pause(3);
+                return function(received) {
+                    __rt.effect(1, 6);
+                    calls++;
+                    if (this !== it || arguments.length !== 1 ||
+                        (calls === 1 && received !== undefined) ||
+                        (calls === 2 && received !== 20)) throw 'next invocation';
+                    return calls === 1 ? fixed : final;
+                };
+            }
+        };
+        Object.defineProperty(it, Symbol.iterator, {get: function() {
+            pause(1);
+            return function() { pause(2); return this; };
+        }});
+        function* outer() { return 10 + (yield* it); }
+        let g = outer(), a = g.next('ignored');
+        if (a !== fixed || valueReads !== 0) throw 'result identity';
+        let b = g.next(20);
+        if (b.value !== 19 || !b.done || calls !== 2 || counts[1] !== 1 ||
+            counts[2] !== 1 || counts[3] !== 1 || counts[4] !== 2 || counts[5] !== 1)
+            throw 'protocol replay';
+        b.value
+    "#;
+    for stage in 1..=5 {
+        let rt = Runtime::new();
+        let source = format!("let waitingStage = {stage};\n{fixture}");
+        let exe = compile_script("yield-star-protocol-wait", &source).unwrap();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        for step in 0..3000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "protocol stage {stage}");
+                    break;
+                }
+            }
+            assert!(step < 2999, "stage {stage} never reached need");
+        }
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let (value, host) = thread::spawn(move || {
+            for step in 0..3000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (number(outcome), host),
+                }
+                assert!(step < 2999, "protocol stage {stage} did not complete");
+            }
+            unreachable!()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(value, 19.0, "protocol stage {stage}");
+        assert_eq!(host.effects, [1.0, 2.0, 3.0, 6.0, 4.0, 6.0, 4.0, 5.0]);
+    }
+}
+
+#[test]
 fn generator_cancellation_runs_finally() {
     // Synthetic fixture, not light-cljs output.
     let rt = Runtime::new();
