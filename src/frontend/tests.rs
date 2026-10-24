@@ -23,6 +23,54 @@ use super::{
 };
 
 #[test]
+fn await_using_declarations() {
+    use super::ast::LexicalKind;
+    let script =
+        parse_script("async function f() { await using x = r; await using\nx = r; await using; }")
+            .unwrap();
+    let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+        panic!()
+    };
+    let StmtKind::Lexical(decl) = &f.body[0].kind else {
+        panic!()
+    };
+    assert_eq!(decl.kind, LexicalKind::AwaitUsing);
+    assert_eq!(decl.declarators[0].name.identifier().unwrap().name, "x");
+    assert_eq!(f.body.len(), 4);
+    for index in [1, 3] {
+        assert!(matches!(
+            &f.body[index].kind,
+            StmtKind::Expr(Expr {
+                kind: ExprKind::Await(_),
+                ..
+            })
+        ));
+    }
+    for source in [
+        "await using x = r;",
+        "{ await using x = r; }",
+        "function f() { await using x = r; }",
+        "async function f() { await using x; }",
+        "async function f() { await using [x] = r; }",
+        "async function f() { await using {x} = r; }",
+        "async function f() { if (true) await using x = r; }",
+        "async function f() { switch (1) { case 1: await using x = r; } }",
+        "async function f() { await\nusing x = r; }",
+        "async function f() { for (await using x of r) {} }",
+    ] {
+        assert!(parse_script(source).is_err(), "{source}");
+    }
+    assert!(super::parse_module("await using x = r;").is_err());
+    for source in [
+        "let f = async () => { await using x = r; };",
+        "({async f() { await using x = r; }})",
+        "class C { async f() { await using x = r; } }",
+    ] {
+        assert!(compile_script("await-using", source).is_ok(), "{source}");
+    }
+}
+
+#[test]
 fn using_declarations() {
     use super::ast::LexicalKind;
     let script = parse_script("{ using x = a, y = b; } function f() { using of = r; }").unwrap();
@@ -1114,6 +1162,7 @@ fn render_lexical(decl: &super::ast::LexicalDecl) -> String {
         super::ast::LexicalKind::Let => "let",
         super::ast::LexicalKind::Const => "const",
         super::ast::LexicalKind::Using => "using",
+        super::ast::LexicalKind::AwaitUsing => "await using",
     };
     render_declarators(keyword, &decl.declarators)
 }
@@ -1223,6 +1272,9 @@ fn render_stmt(s: &Stmt) -> String {
                 super::ast::ForInHead::Var(name) => format!("(var {})", name.name),
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Using, name) => {
                     format!("(using {})", name.name)
+                }
+                super::ast::ForInHead::Lexical(super::ast::LexicalKind::AwaitUsing, name) => {
+                    format!("(await using {})", name.name)
                 }
             };
             format!(

@@ -1,4 +1,4 @@
-//! AddDisposableResource (sync). Getter calls use ordinary VM frames;
+//! AddDisposableResource. Getter calls use ordinary VM frames;
 //! source and progress remain traced across suspension and collection.
 use super::*;
 use crate::vm::builtin::Builtin;
@@ -7,6 +7,8 @@ use crate::vm::builtin::Builtin;
 pub(super) struct State {
     source: Value,
     reading: bool,
+    asynchronous: bool,
+    fallback: bool,
 }
 
 impl Trace for State {
@@ -20,11 +22,33 @@ impl State {
         Self {
             source,
             reading: false,
+            asynchronous: false,
+            fallback: false,
         }
     }
 
-    fn checked(heap: &Heap, method: Value) -> Result<Action, Fault> {
+    pub(super) fn asynchronous(source: Value) -> Self {
+        Self {
+            asynchronous: true,
+            ..Self::new(source)
+        }
+    }
+
+    fn result(&self, method: Value) -> Action {
+        if self.asynchronous {
+            Action::ReturnPair(method, Value::Number(if self.fallback { 2.0 } else { 1.0 }))
+        } else {
+            Action::Return(method)
+        }
+    }
+
+    fn checked(&mut self, heap: &Heap, method: Value) -> Result<Action, Fault> {
         if matches!(method, Value::Undefined | Value::Null) {
+            if self.asynchronous && !self.fallback {
+                self.fallback = true;
+                self.reading = false;
+                return Ok(Action::Continue);
+            }
             return Err(Fault::TypeError("value is not disposable".into()));
         }
         match dispatch::callee(heap, &method) {
@@ -35,7 +59,7 @@ impl State {
                 result?;
             }
         }
-        Ok(Action::Return(method))
+        Ok(self.result(method))
     }
 
     pub(super) fn step(
@@ -48,15 +72,21 @@ impl State {
             let Input::CallResult(method) = input else {
                 return Err(Fault::Internal("dispose check expected getter result"));
             };
-            return Self::checked(heap, method);
+            return self.checked(heap, method);
         }
         if matches!(self.source, Value::Null | Value::Undefined) {
-            return Ok(Action::Return(Value::Undefined));
+            return Ok(self.result(Value::Undefined));
         }
         if !matches!(self.source, Value::Object(_)) {
             return Err(Fault::TypeError("value is not disposable".into()));
         }
-        let key = property::Key::Symbol(crate::value::symbol::well_known("dispose"));
+        let key = property::Key::Symbol(crate::value::symbol::well_known(
+            if self.asynchronous && !self.fallback {
+                "asyncDispose"
+            } else {
+                "dispose"
+            },
+        ));
         self.reading = true;
         match property::read(heap, task, &self.source, &key)? {
             Some(property::Read::Getter(callee)) => Ok(Action::Call {
@@ -64,8 +94,8 @@ impl State {
                 this: self.source.clone(),
                 args: vec![],
             }),
-            Some(property::Read::Value(method)) => Self::checked(heap, method),
-            None => Self::checked(heap, Value::Undefined),
+            Some(property::Read::Value(method)) => self.checked(heap, method),
+            None => self.checked(heap, Value::Undefined),
         }
     }
 }
@@ -83,6 +113,8 @@ pub(super) struct Run {
     changed: bool,
     cancelling: bool,
     calling: bool,
+    // A disposer call must be followed by await; fallback discards its result.
+    await_call: Option<bool>,
     stack: JsString,
 }
 impl Trace for Run {
@@ -112,6 +144,7 @@ impl Run {
             changed: false,
             cancelling,
             calling: false,
+            await_call: None,
             stack,
         }
     }
@@ -121,14 +154,26 @@ impl Run {
     pub(super) fn failed(&mut self, exception: super::super::exception::Exception) {
         self.failure = Some(exception.value);
         self.calling = false;
+        self.await_call = None;
     }
     pub(super) fn step(
         &mut self,
         heap: &Heap,
         task: TaskId,
-        _input: Input,
+        input: Input,
     ) -> Result<Action, Fault> {
         self.calling = false;
+        if let Some(fallback) = self.await_call.take() {
+            let Input::CallResult(value) = input else {
+                return Err(Fault::Internal("async disposer expected call result"));
+            };
+            self.calling = true;
+            return Ok(Action::Await(if fallback {
+                Value::Undefined
+            } else {
+                value
+            }));
+        }
         if let Some(new_error) = self.failure.take() {
             self.error = Some(match self.error.take() {
                 Some(previous) => {
@@ -140,12 +185,23 @@ impl Run {
         }
         if let Some(resource) = self.resources.pop() {
             if matches!(resource.method, Value::Undefined) {
+                if matches!(
+                    resource.hint,
+                    ResourceHint::Async | ResourceHint::AsyncFallback
+                ) {
+                    self.calling = true;
+                    return Ok(Action::Await(Value::Undefined));
+                }
                 return Ok(Action::Continue);
             }
             let (this, args) = match resource.hint {
                 ResourceHint::Sync => (resource.value, vec![]),
                 ResourceHint::Adopt => (Value::Undefined, vec![resource.value]),
                 ResourceHint::Defer => (Value::Undefined, vec![]),
+                ResourceHint::Async | ResourceHint::AsyncFallback => {
+                    self.await_call = Some(matches!(resource.hint, ResourceHint::AsyncFallback));
+                    (resource.value, vec![])
+                }
             };
             self.calling = true;
             return Ok(Action::Call {

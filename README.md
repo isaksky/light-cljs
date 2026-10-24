@@ -3958,12 +3958,21 @@ binding, snapshots the disposer and disposes each value before the next step
 or IteratorClose. Validation and disposal failures close the iterator;
 disposal errors suppress pending body throws with intrinsic `SuppressedError`.
 
-Deferred: `await using`, classic for-using heads and disposal stack built-ins.
+Supported (clj-quickjs-240): `await using` in async functions, arrows and
+methods snapshots `Symbol.asyncDispose`, falling back to `Symbol.dispose`.
+The shared disposal loop awaits each resource in reverse order, including an
+await for null/undefined, and combines errors with intrinsic SuppressedError.
+Sync fallback return values are discarded. Cleanup awaits during consumer
+cancellation end that scope's cleanup under the existing finally rules.
+
+Deferred: classic for-using heads, `for (await using x of iterable)`, module
+top-level await using (top-level await is absent), and AsyncDisposableStack.
 Script top level, switch clauses without a block, single-statement bodies,
 binding patterns and missing initializers are syntax errors.
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test js_source await_using -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_source for_using_of_loops -- --exact --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3

@@ -2763,6 +2763,12 @@ those of ordinary objects; virtual properties introduce no heap edges.
   selection lowers to HasProperty and resumable property bytecode, retaining
   its selected object before evaluating RHS code. No Rust frame is retained
   across a getter or setter call.
+- Await using (clj-quickjs-240): consulted `check_await_using`,
+  `js_op_using_check`, `js_sync_dispose_wrapper` and `js_emit_dispose_scope`
+  in `research/quickjs/quickjs.c`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Validation/fallback tests adapt
+  `research/quickjs/tests/test_language.js::test_await_using`; the MIT notice
+  is retained in `tests/js_source.rs`. Rust code and other cases are original.
 
 - For-using-of heads (clj-quickjs-238): consulted
   `research/quickjs/quickjs.c` `js_parse_for_in_of`, `pop_break_entry` and
@@ -8437,3 +8443,37 @@ QuickJS references and provenance: semantic reference only,
 `research/quickjs/quickjs.c`, `js_function_constructor`, at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Tests are original synthetic
 fixtures; no upstream source or test text was copied.
+
+## Await using (clj-quickjs-240)
+
+The frontend records `LexicalKind::AwaitUsing` in async function, arrow and
+method statement lists. It uses the existing const binding and finally scope
+lowering. `using_check_async` returns the method and a private numeric hint
+(1 async, 2 sync fallback); nullish resources return undefined with hint 1.
+Hidden hint slots start at 0, so a failed or unreached declaration never
+introduces an await. The getter continuation reads asyncDispose first, then
+dispose only for a nullish result, with ordinary VM callback frames.
+
+`using_dispose_async` transfers triples of value/method/hint into the same
+`native::dispose::Run` used by synchronous lexical scopes and DisposableStack.
+Sync entries in a mixed scope use hint 0. After calling an async entry, Run
+requests the ordinary PromiseResolve/await native operation, retaining itself
+and its catch handler inside the detachable activation. A fallback drops the
+method's return value before awaiting undefined. Nullish entries request that
+await directly. Both synchronous callback throws and rejected awaits merge
+into the existing traced error state, then disposal continues in LIFO order.
+Async-boundary lookup skips native frames inside the current JS activation;
+detach/attach already traces and relocates those frames and NativeCatch indices.
+No heap kind, dependency wait, JS wrapper function or second disposal loop is
+introduced. Await during cancellation ends the cleanup and unwinds outer
+finally scopes under the existing cancellation policy.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`
+`check_await_using`, `js_op_using_check`, `js_sync_dispose_wrapper`,
+`js_emit_dispose_scope`, and the async dispose/merge opcode cases at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` are semantic references only.
+The validation/fallback rows in `tests/js_source.rs::await_using_declarations`
+adapt `research/quickjs/tests/test_language.js::test_await_using` at that revision;
+the QuickJS MIT copyright/license notice is retained in that test file.
+AsyncDisposableStack remains clj-quickjs-241; for-await-using and module top-level
+await using are explicitly unsupported (top-level await is absent).

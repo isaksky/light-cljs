@@ -116,7 +116,7 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 ```
 Script              = { Directive } { StatementListItem } EOF
 Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
-StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | UsingDeclaration | Statement
+StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | UsingDeclaration | AwaitUsingDeclaration | Statement
 ClassDeclaration    = "class" BindingIdentifier [ "extends" LeftHandSideExpression ] ClassBody
 ClassExpression     = "class" [ BindingIdentifier ] [ "extends" LeftHandSideExpression ] ClassBody
 SuperCall           = "super" Arguments  (* derived constructors and their lexical arrows/direct eval only *)
@@ -159,6 +159,8 @@ LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
 UsingDeclaration    = "using" [no LineTerminator here] BindingIdentifier "=" AssignmentExpression
                       { "," BindingIdentifier "=" AssignmentExpression } ";"
                       (* only in blocks, function bodies and modules *)
+AwaitUsingDeclaration = "await" [no LineTerminator here] UsingDeclaration
+                        (* only in async function bodies and their blocks *)
 VariableStatement   = "var" Declarator { "," Declarator } ";"
 Declarator          = BindingPattern [ "=" AssignmentExpression ] (* required for array/object patterns *)
 BindingPattern      = BindingIdentifier | ArrayBindingPattern | ObjectBindingPattern
@@ -466,6 +468,10 @@ Notes on the grammar:
   Each resource requires an initializer and a simple binding identifier.
   Bindings have the same temporal dead zone, immutability and redeclaration
   checks as `const`. Validation completes before binding initialization.
+- `AwaitUsingDeclaration` (clj-quickjs-240) applies those binding rules inside
+  async functions, arrows and methods. Neither `await`/`using` nor
+  `using`/binding may have an intervening line terminator. `await using;`
+  awaits the identifier; `await using\nx = r` is two expression statements.
 
 ### Automatic semicolon insertion
 
@@ -521,6 +527,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger` | Unsupported |
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
+| `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
 | static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | private class names (`#x`) | UnknownToken |
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
@@ -554,9 +561,10 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 object, number, string and symbol environments execute (clj-quickjs-110).
 
 Synchronous `using` executes in blocks, function bodies, module top level and
-for-of heads; DisposableStack is supported. `await using` and AsyncDisposableStack
-remain separate features (clj-quickjs-240..-242); classic for-using heads remain
-unsupported.
+for-of heads; DisposableStack and `await using` in async functions are supported.
+AsyncDisposableStack remains separate (clj-quickjs-241). Classic for-using heads,
+`for (await using x of iterable)` and module top-level await using remain
+unsupported; top-level await is absent.
 
 The QuickJS collection fixture cases run with their original source except
 for the documented WeakRef kept-object adaptation (clj-quickjs-178).
@@ -1088,6 +1096,18 @@ initialized resources are disposed in reverse order, with the resource as
 the scope and consumer cancellation all run disposal. A return expression
 is evaluated before disposal. Getters and disposer calls may wait, yield,
 migrate and survive collection without replaying prior effects.
+
+`await using` validates `Symbol.asyncDispose` once at declaration. When it
+is null or undefined, it reads `Symbol.dispose` once instead. Each method
+must be callable. Scope exit uses the same disposal loop and pending finally
+completion as `using`, awaiting each async result before calling the next
+disposer. A sync fallback discards its return value and awaits undefined;
+null/undefined resources also introduce an await. Mixed sync and async
+resources retain reverse declaration order. Await detaches only the async
+function's task-owned activation and resumes through its owner's promise jobs;
+it never becomes a dependency wait. Consumer cancellation uses existing finally
+rules: an await in cleanup ends that cleanup and continues unwinding outer
+scopes, without resuming ordinary code or awaiting remaining resources there.
 
 `for (using x of iterable)` validates and snapshots the current value's
 disposer after each successful iterator step and before initializing `x`.
@@ -1807,6 +1827,10 @@ return values. Engine wrapping uses the intrinsic helper independently of
 the global `SuppressedError` binding and constructor properties. Cancellation
 disposes every initialized resource and drops final errors; existing finally
 cleanup rules govern waits or jumps inside disposers during cancellation.
+Async disposal uses the same intrinsic SuppressedError chaining for synchronous
+throws and awaited rejections, including a pending body throw. Invalid async
+methods raise TypeError without consulting a valid sync fallback; fallback is
+only for nullish async methods. Getter exceptions propagate unchanged.
 
 For-using-of validation failures and disposal errors are consumer failures
 and close the iterator. A disposal error suppresses a pending body throw
@@ -2118,6 +2142,31 @@ let disposed = 0;
 { using a = null, b = { [Symbol.dispose]() { disposed++; } }; }
 disposed === 1;
 function resource() { using of = undefined; return 42; }
+```
+
+Async resources (synthetic fixtures, not light-cljs output):
+
+```js accept
+async function resource() {
+  await using x = { async [Symbol.asyncDispose]() { await null; } };
+  await using empty = null;
+  return 42;
+}
+resource().then(x => __rt.effect(0, x));
+async function expressions(using) { await using; await using
+x = 1; }
+```
+
+```js reject Unsupported 1:1
+await using x = null;
+```
+
+```js module-reject Unsupported 1:1
+await using x = null;
+```
+
+```js reject Invalid 1:32
+async function f() { if (true) await using x = null; }
 ```
 
 ```js accept
@@ -3644,7 +3693,7 @@ including after publication and collection, and are distinct from registry
 symbols with matching descriptions. Their Symbol constructor properties are
 non-writable, non-enumerable and non-configurable. Exceptions: strict assignment
 or deletion throws catchable TypeError. Rejected forms and explicit gaps:
-this adds no syntax; `await using`, AsyncDisposableStack and iterator
+this adds no syntax; AsyncDisposableStack and iterator
 disposal methods remain deferred to their own pellets.
 
 Synthetic fixture, not light-cljs output:
@@ -6019,8 +6068,8 @@ the task's global binding is supported. The user decision to amend acceptance
 preserves this design: the engine test expects TypeError from the attempted
 intrinsic overwrite before replacing the global. The engine wrapping helper
 ignores that global binding and uses the original intrinsic prototype directly;
-synchronous disposal syntax is described under "Execution" above; async
-disposal and AsyncDisposableStack remain separate pellets.
+disposal syntax, including async function resources, is described under
+"Execution" above; AsyncDisposableStack remains separate.
 
 Synthetic fixtures, not light-cljs output:
 
@@ -6270,8 +6319,8 @@ of an intrinsic SuppressedError whose suppressed field holds the previous error.
 The final error is thrown after all callbacks. `using s = new DisposableStack()`
 disposes its registered resources at scope exit through the shared disposal loop.
 Publication rejects these task-owned objects even after disposal or freezing.
-Syntax and rejected forms are unchanged. Explicit gaps: await using and
-AsyncDisposableStack remain clj-quickjs-240/-241; intrinsics remain immutable.
+Syntax and rejected forms are unchanged. Explicit gaps: AsyncDisposableStack
+remains clj-quickjs-241; intrinsics remain immutable.
 
 Synthetic fixtures, not light-cljs output:
 

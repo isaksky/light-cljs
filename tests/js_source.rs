@@ -6,6 +6,123 @@
 /// Synthetic fixtures, not light-cljs output. Intrinsic move cases follow
 /// QuickJS test_language.js::test_using (MIT notice reproduced below).
 #[test]
+fn await_using_declarations() {
+    // Synthetic fixtures, not light-cljs output. Validation/fallback adapt
+    // QuickJS test_language.js::test_await_using (MIT notice below).
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for source in [
+        "let body = false, caught; try { await (async () => { await using x = {}; body = true; })(); } catch(e) { caught = e; } return !body && caught instanceof TypeError;",
+        "let ok = false; await (async () => { await using x = {[Symbol.dispose]() {}}; ok = true; })(); return ok;",
+        "let log = ''; function r(s, t) { return {async [Symbol.asyncDispose]() { log += s; await null; log += t; }}; } await (async () => { await using a = r('a', 'A'), b = r('b', 'B'), c = r('c', 'C'); })(); return log === 'cCbBaA';",
+        "let log = ''; Promise.resolve().then(() => { log += 't'; }).then(() => { log += 'u'; }); await (async () => { { await using x = null; } log += 'b'; })(); return log === 'tbu';",
+        "let log = ''; Promise.resolve().then(() => { log += 't'; }).then(() => { log += 'u'; }); await (async () => { { await using x = undefined; } log += 'b'; })(); return log === 'tbu';",
+        "let caught; try { await (async () => { await using a = {[Symbol.dispose]() { throw 1; }}, b = {[Symbol.asyncDispose]() { return Promise.reject(2); }}; throw 3; })(); } catch(e) { caught = e; } return caught instanceof SuppressedError && caught.error === 1 && caught.suppressed.error === 2 && caught.suppressed.suppressed === 3;",
+        "let log = ''; let v = await (async () => { await using x = {async [Symbol.asyncDispose]() { await null; log += 'd'; }}; return 42; })(); return v === 42 && log === 'd';",
+        "let returned = Promise.reject(99); returned.catch(() => {}); await (async () => { await using x = {[Symbol.dispose]() { return returned; }}; })(); return true;",
+        "let reads = '', calls = '', r = {get [Symbol.asyncDispose]() { reads += 'a'; return null; }, get [Symbol.dispose]() { reads += 's'; return function() { if (this === r && arguments.length === 0) calls += 's'; }; }}; await (async () => { await using x = r; Object.defineProperty(r, Symbol.dispose, {value: 42}); })(); return reads === 'as' && calls === 's';",
+        "let n = 0; for (let r of [42, false, 'x', {}, {[Symbol.asyncDispose]: 42, [Symbol.dispose]() {}}, {[Symbol.asyncDispose]: null, [Symbol.dispose]: 1}]) { try { await (async () => { await using x = r; n += 100; })(); } catch(e) { if (e instanceof TypeError) n++; } } return n === 6;",
+        "let log = ''; await (async () => { using a = {[Symbol.dispose]() { log += 'a'; }}; await using b = {async [Symbol.asyncDispose]() { await null; log += 'b'; }}; using c = {[Symbol.dispose]() { log += 'c'; }}; })(); return log === 'cba';",
+        "let log = ''; await (async () => { for (let i = 0; i < 3; i++) { await using x = {async [Symbol.asyncDispose]() { await null; log += i; }}; if (i === 0) continue; break; } })(); return log === '01';",
+        "let log = ''; await ({async m() { await using x = {[Symbol.asyncDispose]() { log += 'm'; }}; }}).m(); await (async () => { await using x = {[Symbol.asyncDispose]() { log += 'a'; }}; })(); return log === 'ma';",
+        "let log = '', caught; try { await (async () => { await using a = {[Symbol.asyncDispose]() { log += 'a'; }}, b = {get [Symbol.asyncDispose]() { throw 7; }}; })(); } catch(e) { caught = e; } return log === 'a' && caught === 7;",
+    ] {
+        let source = format!(
+            "(async () => {{ {source} }})().then(x => __rt.effect(0, x), e => __rt.effect(0, String(e)));"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Log::default();
+        let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert!(matches!(out, RunOutcome::Complete(_)), "{source}: {out:?}");
+        assert_eq!(host.0, vec![Primitive::Bool(true)], "{source}");
+        assert!(task.suspended_async_activations().is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn await_using_wait_collect_and_migrate() {
+    // Synthetic fixture, not light-cljs output. Native getter, disposer and
+    // thenable frames all suspend; remaining resources and errors stay rooted.
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let source = r#"
+        (async () => {
+            let log = '', caught;
+            try {
+                await (async () => {
+                    await using a = {
+                        get [Symbol.asyncDispose]() {
+                            __rt.need(240, 1);
+                            return function() {
+                                __rt.need(240, 2); log += 'a';
+                                return {then(resolve) { __rt.need(240, 3); log += 't'; resolve(); }};
+                            };
+                        }
+                    }, b = {async [Symbol.asyncDispose]() {
+                        __rt.need(240, 4); log += 'b'; await null;
+                        throw {tag: 'dispose'};
+                    }};
+                    throw {tag: 'body'};
+                })();
+            } catch(e) { caught = e; }
+            return log === 'bat' && caught instanceof SuppressedError &&
+                caught.error.tag === 'dispose' && caught.suppressed.tag === 'body';
+        })().then(x => __rt.effect(0, x));
+    "#;
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut host = Log::default();
+    let mut waits = 0;
+    for _ in 0..5000 {
+        let (next, next_host, out) = std::thread::spawn(move || {
+            let out = task.run_with(Budget::instructions(5), &mut host).unwrap();
+            (task, host, out)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        host = next_host;
+        rt.collect().unwrap();
+        match out {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 4);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Undefined);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(_) => {
+                assert_eq!(waits, 4);
+                assert_eq!(host.0, vec![Primitive::Bool(true)]);
+                assert!(task.suspended_async_activations().is_empty());
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("await using did not finish");
+}
+
+#[test]
 fn disposable_stack() {
     for source in [
         "let saved = DisposableStack, n = 0; let ds = new saved(); ds.use({[Symbol.dispose]() { n++; }}); globalThis.DisposableStack = class Other {}; let moved = ds.move(); let ok = Object.getPrototypeOf(moved) === saved.prototype && ds.disposed && !moved.disposed; moved.dispose(); moved.dispose(); let ds2 = new saved(); ds2.defer(() => n++); delete globalThis.DisposableStack; let moved2 = ds2.move(); moved2.dispose(); ok && Object.getPrototypeOf(moved2) === saved.prototype && n === 2",

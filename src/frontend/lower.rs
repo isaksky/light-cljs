@@ -670,8 +670,8 @@ struct FnCtx {
     child_count: usize,
     /// Constructs `break`/`continue` may leave, innermost last.
     exits: Vec<Exit>,
-    /// Source declarator position, resource and snapshotted method locals.
-    using_resources: Vec<(usize, u16, u16)>,
+    /// Declaration start, value slot, method slot, optional async hint slot.
+    using_resources: Vec<(usize, u16, u16, Option<u16>)>,
     /// The label set of the loop about to be lowered (`L1: L2: while ...`),
     /// taken by [`Lowerer::push_loop`].
     loop_labels: Vec<String>,
@@ -1121,7 +1121,7 @@ impl<'s> Lowerer<'s> {
         let saved_slot = self.enter_scope(&[body], params, top_level, 0)?;
         if body.iter().any(|stmt| {
             matches!(&stmt.kind,
-            StmtKind::Lexical(decl) if decl.kind == LexicalKind::Using)
+            StmtKind::Lexical(decl) if matches!(decl.kind, LexicalKind::Using | LexicalKind::AwaitUsing))
         }) {
             self.disposable_body(body)?;
         } else {
@@ -1144,10 +1144,18 @@ impl<'s> Lowerer<'s> {
         let resources: Vec<_> = body
             .iter()
             .filter_map(|stmt| match &stmt.kind {
-                StmtKind::Lexical(decl) if decl.kind == LexicalKind::Using => Some(decl),
+                StmtKind::Lexical(decl)
+                    if matches!(decl.kind, LexicalKind::Using | LexicalKind::AwaitUsing) =>
+                {
+                    Some(decl)
+                }
                 _ => None,
             })
-            .flat_map(|decl| decl.declarators.iter().map(|d| d.span))
+            .flat_map(|decl| {
+                decl.declarators
+                    .iter()
+                    .map(|d| (d.span, decl.kind == LexicalKind::AwaitUsing))
+            })
             .collect();
         self.disposable_scope(&resources, first.span, |this| {
             for stmt in body {
@@ -1161,22 +1169,32 @@ impl<'s> Lowerer<'s> {
     /// `body` initializes resources through `register_disposable` before use.
     fn disposable_scope(
         &mut self,
-        resources: &[Span],
+        resources: &[(Span, bool)],
         span: Span,
         body: impl FnOnce(&mut Self) -> Result<(), SyntaxError>,
     ) -> Result<(), SyntaxError> {
         let saved_resources = self.cur().using_resources.len();
         let saved_slot = self.cur().next_slot;
-        for &resource in resources {
+        let asynchronous = resources.iter().any(|(_, asynchronous)| *asynchronous);
+        for &(resource, async_resource) in resources {
             let value = self.temp(resource)?;
             let method = self.temp(resource)?;
+            let hint = if async_resource {
+                Some(self.temp(resource)?)
+            } else {
+                None
+            };
             self.out().op(Opcode::Undefined, resource);
             self.out().op_u16(Opcode::SetLocal, value, resource);
             self.out().op(Opcode::Undefined, resource);
             self.out().op_u16(Opcode::SetLocal, method, resource);
+            if let Some(hint) = hint {
+                self.constant(Primitive::Number(0.0), resource)?;
+                self.out().op_u16(Opcode::SetLocal, hint, resource);
+            }
             self.cur_mut()
                 .using_resources
-                .push((resource.start, value, method));
+                .push((resource.start, value, method, hint));
         }
         if self.cur().using_resources.len() == saved_resources {
             return body(self);
@@ -1189,9 +1207,16 @@ impl<'s> Lowerer<'s> {
         self.out().bind(cleanup);
         *self.cur_mut().exits.last_mut().unwrap() = Exit::FinallyBody;
         let resources = self.cur().using_resources[saved_resources..].to_vec();
-        for (_, value, method) in &resources {
+        for (_, value, method, hint) in &resources {
             self.out().op_u16(Opcode::GetLocal, *value, span);
             self.out().op_u16(Opcode::GetLocal, *method, span);
+            if asynchronous {
+                if let Some(hint) = hint {
+                    self.out().op_u16(Opcode::GetLocal, *hint, span);
+                } else {
+                    self.constant(Primitive::Number(0.0), span)?;
+                }
+            }
             self.out().op(Opcode::Undefined, span);
             self.out().op_u16(Opcode::SetLocal, *value, span);
             self.out().op(Opcode::Undefined, span);
@@ -1202,7 +1227,15 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::PendingCancel, span);
         let count = u16::try_from(resources.len())
             .map_err(|_| self.internal(span, "too many using resources"))?;
-        self.out().op_u16(Opcode::UsingDispose, count, span);
+        self.out().op_u16(
+            if asynchronous {
+                Opcode::UsingDisposeAsync
+            } else {
+                Opcode::UsingDispose
+            },
+            count,
+            span,
+        );
         self.out().op(Opcode::Pop, span);
         self.out().op(Opcode::EndFinally, span);
         self.cur_mut().exits.pop();
@@ -1261,7 +1294,9 @@ impl<'s> Lowerer<'s> {
                     StmtKind::Lexical(decl) => {
                         let kind = match decl.kind {
                             LexicalKind::Let => BindingKind::Let,
-                            LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
+                            LexicalKind::Const | LexicalKind::Using | LexicalKind::AwaitUsing => {
+                                BindingKind::Const
+                            }
                         };
                         for d in &decl.declarators {
                             for name in d.name.names() {
@@ -3594,7 +3629,7 @@ impl<'s> Lowerer<'s> {
                 Some(init) => self.pattern_value(init, &d.name)?,
                 None => self.out().op(Opcode::Undefined, d.span),
             }
-            if decl.kind == LexicalKind::Using {
+            if matches!(decl.kind, LexicalKind::Using | LexicalKind::AwaitUsing) {
                 self.register_disposable(d.span)?;
             }
             self.pattern_store(&d.name, true, false)?;
@@ -3604,17 +3639,22 @@ impl<'s> Lowerer<'s> {
 
     /// Snapshot the disposer while retaining the value for binding initialization.
     fn register_disposable(&mut self, span: Span) -> Result<(), SyntaxError> {
-        let (_, value, method) = *self
+        let (_, value, method, hint) = *self
             .cur()
             .using_resources
             .iter()
             .rev()
-            .find(|(start, _, _)| *start == span.start)
+            .find(|(start, _, _, _)| *start == span.start)
             .ok_or_else(|| self.internal(span, "using resource without a scope"))?;
         self.out().op(Opcode::Dup, span);
         self.out().op_u16(Opcode::SetLocal, value, span);
         self.out().op(Opcode::Dup, span);
-        self.out().op(Opcode::UsingCheck, span);
+        if let Some(hint) = hint {
+            self.out().op(Opcode::UsingCheckAsync, span);
+            self.out().op_u16(Opcode::SetLocal, hint, span);
+        } else {
+            self.out().op(Opcode::UsingCheck, span);
+        }
         self.out().op_u16(Opcode::SetLocal, method, span);
         Ok(())
     }
@@ -3666,7 +3706,9 @@ impl<'s> Lowerer<'s> {
             Some(ForInit::Lexical(decl)) => {
                 let kind = match decl.kind {
                     LexicalKind::Let => BindingKind::Let,
-                    LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
+                    LexicalKind::Const | LexicalKind::Using | LexicalKind::AwaitUsing => {
+                        BindingKind::Const
+                    }
                 };
                 for d in &decl.declarators {
                     for name in d.name.names() {
@@ -3769,7 +3811,9 @@ impl<'s> Lowerer<'s> {
         if let ForInHead::Lexical(kind, name) = head {
             let kind = match kind {
                 LexicalKind::Let => BindingKind::Let,
-                LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
+                LexicalKind::Const | LexicalKind::Using | LexicalKind::AwaitUsing => {
+                    BindingKind::Const
+                }
             };
             self.declare(name, kind, false, false)?;
             let b = self.local(name)?;
@@ -3898,7 +3942,7 @@ impl<'s> Lowerer<'s> {
             labels,
         });
         let resources = match head {
-            ForInHead::Lexical(LexicalKind::Using, name) => vec![name.span],
+            ForInHead::Lexical(LexicalKind::Using, name) => vec![(name.span, false)],
             _ => Vec::new(),
         };
         // The per-iteration disposal handler is inside IteratorClose, and

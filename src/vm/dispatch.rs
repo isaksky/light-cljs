@@ -2412,7 +2412,10 @@ fn step_instruction(
             let value = state.suppressed_error(heap, error.clone(), suppressed.clone())?;
             state.replace(2, value)?;
         }
-        Instr::UsingCheck | Instr::UsingDispose(_) => {
+        Instr::UsingCheck
+        | Instr::UsingDispose(_)
+        | Instr::UsingCheckAsync
+        | Instr::UsingDisposeAsync(_) => {
             return Err(Fault::Internal("using_check is resumable"));
         }
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
@@ -3107,6 +3110,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::PendingCancel
         | Instr::UsingCheck
         | Instr::UsingDispose(_)
+        | Instr::UsingCheckAsync
+        | Instr::UsingDisposeAsync(_)
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.

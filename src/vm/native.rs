@@ -337,6 +337,10 @@ pub(crate) enum Action {
     },
     /// Complete with this value.
     Return(Value),
+    /// Async resource validation returns the snapshotted method and hint.
+    ReturnPair(Value, Value),
+    /// Await on the current async activation, retaining this native frame.
+    Await(Value),
     /// The answer to a [`Failure`]: release the frame and let the exception
     /// unwind on to the handler below it. Never the result of a step.
     Unwind,
@@ -818,10 +822,17 @@ pub(crate) fn generator_boundary(state: &VmState) -> Option<ObjectId> {
 }
 
 pub(crate) fn async_id(state: &VmState) -> Option<ObjectId> {
-    state.natives.last().and_then(|n| match &n.state {
-        NativeState::Async(a) if n.depth + 1 == state.depth() => Some(a.id),
-        _ => None,
-    })
+    // An await in shared disposal retains a native frame inside this
+    // activation. Its boundary is the nearest native below the JS frame.
+    state
+        .natives
+        .iter()
+        .rev()
+        .find(|n| n.depth < state.depth())
+        .and_then(|n| match &n.state {
+            NativeState::Async(a) if n.depth + 1 == state.depth() => Some(a.id),
+            _ => None,
+        })
 }
 
 pub(crate) fn async_boundary(
@@ -978,7 +989,8 @@ impl Trace for NativeFrame {
 pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
-        Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) => true,
+        Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) | UsingCheckAsync
+        | UsingDisposeAsync(_) => true,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
@@ -2366,23 +2378,32 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
-        Instr::UsingDispose(count) => {
+        Instr::UsingDispose(count) | Instr::UsingDisposeAsync(count) => {
             use crate::object::disposable_stack::{Hint, Resource};
             let count = usize::from(count);
-            let popped = 2 * count + 3;
+            let width = if matches!(instr, Instr::UsingDisposeAsync(_)) {
+                3
+            } else {
+                2
+            };
+            let popped = width * count + 3;
             let values = dispatch::top_operands(state, popped)?;
-            let resources = values[..2 * count]
-                .chunks_exact(2)
+            let resources = values[..width * count]
+                .chunks_exact(width)
                 .map(|pair| Resource {
                     value: pair[0].clone(),
                     method: pair[1].clone(),
-                    hint: Hint::Sync,
+                    hint: match pair.get(2) {
+                        Some(Value::Number(1.0)) => Hint::Async,
+                        Some(Value::Number(2.0)) => Hint::AsyncFallback,
+                        _ => Hint::Sync,
+                    },
                 })
                 .collect();
-            let error = values[2 * count]
+            let error = values[width * count]
                 .truthy()
-                .then(|| values[2 * count + 1].clone());
-            let cancelling = values[2 * count + 2].truthy();
+                .then(|| values[width * count + 1].clone());
+            let cancelling = values[width * count + 2].truthy();
             let run = dispose::Run::new(
                 resources,
                 error,
@@ -2397,6 +2418,12 @@ pub(crate) fn start(
         Instr::UsingCheck => (
             1,
             NativeState::Dispose(dispose::State::new(operands::<1>(state)?[0].clone())),
+        ),
+        Instr::UsingCheckAsync => (
+            1,
+            NativeState::Dispose(dispose::State::asynchronous(
+                operands::<1>(state)?[0].clone(),
+            )),
         ),
         Instr::GetIterator => (
             1,
@@ -2492,6 +2519,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::Builtin { .. }
             | Action::Need { .. }
             | Action::Return(_)
+            | Action::ReturnPair(..)
+            | Action::Await(_)
             | Action::Resume { .. } => {
                 return Err("a native frame did not unwind from a failure");
             }
@@ -2749,6 +2778,27 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         Action::Need { dependency, kind } => {
             set_awaiting(state, Awaiting::Dependency)?;
             Ok(Flow::Need(dependency, kind))
+        }
+        Action::Await(value) => {
+            if state.activation_cancelling() {
+                return Ok(if state.unwind_cancel(heap) {
+                    Flow::FrameChanged
+                } else {
+                    Flow::CleanupEnded
+                });
+            }
+            state.push_handler(super::exception::HandlerKind::NativeCatch {
+                native: state.natives.len() - 1,
+            })?;
+            set_awaiting(state, Awaiting::CallResult)?;
+            await_promise(state, super::promise::await_state(heap, value)?)?;
+            Ok(Flow::FrameChanged)
+        }
+        Action::ReturnPair(first, second) => {
+            state.natives.pop();
+            state.push(first);
+            state.push(second);
+            Ok(Flow::Next)
         }
         Action::Return(v) => {
             state.natives.pop();

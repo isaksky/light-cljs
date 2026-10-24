@@ -62,7 +62,9 @@ pub(crate) fn module_bindings(
                         name: name.clone(),
                         kind: match decl.kind {
                             LexicalKind::Let => BindingKind::Let,
-                            LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
+                            LexicalKind::Const | LexicalKind::Using | LexicalKind::AwaitUsing => {
+                                BindingKind::Const
+                            }
                         },
                     });
                 }

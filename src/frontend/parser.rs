@@ -521,6 +521,24 @@ impl<'a> Parser<'a> {
 
     /// StatementListItem: a declaration or a statement.
     fn parse_statement_list_item(&mut self) -> PResult<Stmt> {
+        if self.at_await_using() {
+            let start = self.tok.span.start;
+            self.advance()?;
+            if !self.using_allowed {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    self.tok.span,
+                    "an await using declaration requires a statement list",
+                ));
+            }
+            let mut stmt = self.parse_using_decl()?;
+            let StmtKind::Lexical(decl) = &mut stmt.kind else {
+                unreachable!()
+            };
+            decl.kind = LexicalKind::AwaitUsing;
+            stmt.span.start = start;
+            return Ok(stmt);
+        }
         if self.at_using() {
             if !self.using_allowed {
                 return Err(self.error(
@@ -851,7 +869,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn statement_start_error(&self) -> Option<SyntaxError> {
         let span = self.tok.span;
-        if self.at_using() {
+        if self.at_using() || self.at_await_using() {
             return Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
@@ -1577,6 +1595,29 @@ impl<'a> Parser<'a> {
                             .using_array_tail()
                             .is_some_and(|tail| tail.kind == TokenKind::Punct(Punct::Assign))))
             })
+    }
+
+    fn at_await_using(&self) -> bool {
+        if !self.suspension.asynchronous || !self.is_keyword(Keyword::Await) {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        let Ok(using) = lexer.next_token() else {
+            return false;
+        };
+        if using.newline_before
+            || using.span.text(self.src) != "using"
+            || !matches!(&using.kind, TokenKind::Identifier(name) if name == "using")
+        {
+            return false;
+        }
+        lexer.next_token().is_ok_and(|next| {
+            !next.newline_before
+                && matches!(
+                    next.kind,
+                    TokenKind::Identifier(_) | TokenKind::Punct(Punct::LBrace)
+                )
+        })
     }
 
     /// Look past brackets after contextual `using` to distinguish rejected

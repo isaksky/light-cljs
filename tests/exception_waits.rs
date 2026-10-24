@@ -269,6 +269,33 @@ fn disposable_stack_continuation_roots_survive_collection() {
 }
 
 #[test]
+fn cancellation_ends_await_using_at_cleanup_await() {
+    // Synthetic fixture, not light-cljs output. An await during cancellation
+    // ends this cleanup and unwinds outer scopes without reviving the task.
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        try {
+            using outer = {[Symbol.dispose]() { __rt.effect(1, 1); }};
+            (async () => {
+                await using a = {[Symbol.asyncDispose]() { __rt.effect(1, 98); }},
+                    b = {[Symbol.asyncDispose]() { __rt.effect(1, 2); }};
+                __rt.need(5, 3);
+            })();
+        } catch(e) { __rt.effect(1, 99); }
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = cancel_parked(&task);
+    let (outcome, log) = run_elsewhere(task, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [2.0, 1.0]);
+}
+
+#[test]
 fn cancellation_disposes_using_resources() {
     let rt = Runtime::new();
     let task = spawn(

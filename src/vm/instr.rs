@@ -160,6 +160,8 @@
 //! | `IsCell` | 0xAE | – | value → boolean | internal binding environment discriminator |
 //! | `IsObject` | 0xAF | – | value → boolean | JavaScript object test |
 //! | `ToObject` | 0xB0 | – | value → object | object environment boxing, rejecting nullish values |
+//! | `UsingCheckAsync` | 0xB1 | – | resource → method hint | async lookup with sync fallback |
+//! | `UsingDisposeAsync` | 0xB2 | u16 count | (value method hint)* has-error error cancelling → undefined | shared disposal with awaits |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -723,6 +725,10 @@ pub enum Opcode {
     IsCell = 0xAE,
     IsObject = 0xAF,
     ToObject = 0xB0,
+    /// resource → method hint: async method or sync fallback (1 or 2).
+    UsingCheckAsync = 0xB1,
+    /// (value method hint)* has-error error cancelling → undefined.
+    UsingDisposeAsync = 0xB2,
 }
 
 /// Operand encoding of an opcode.
@@ -929,6 +935,8 @@ impl Opcode {
             0xAE => IsCell,
             0xAF => IsObject,
             0xB0 => ToObject,
+            0xB1 => UsingCheckAsync,
+            0xB2 => UsingDisposeAsync,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1115,6 +1123,8 @@ impl Opcode {
             IsCell => "is_cell",
             IsObject => "is_object",
             ToObject => "to_object",
+            UsingCheckAsync => "using_check_async",
+            UsingDisposeAsync => "using_dispose_async",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1209,9 +1219,11 @@ impl Opcode {
             CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuperSpread
             | BindThis | ResolveThis | ForwardArguments | GetSuperBase | GetSuperElem
             | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => OperandKind::None,
-            UsingCheck | PendingException | SuppressedError | PendingCancel => OperandKind::None,
-            UsingDispose => OperandKind::Count,
             IsCell | IsObject | ToObject => OperandKind::None,
+            UsingCheck | UsingCheckAsync | PendingException | SuppressedError | PendingCancel => {
+                OperandKind::None
+            }
+            UsingDispose | UsingDisposeAsync => OperandKind::Count,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1447,6 +1459,8 @@ pub(crate) enum Instr {
     IsCell,
     IsObject,
     ToObject,
+    UsingCheckAsync,
+    UsingDisposeAsync(u16),
 }
 
 impl Instr {
@@ -1625,6 +1639,8 @@ impl Instr {
             Instr::IsCell => Opcode::IsCell,
             Instr::IsObject => Opcode::IsObject,
             Instr::ToObject => Opcode::ToObject,
+            Instr::UsingCheckAsync => Opcode::UsingCheckAsync,
+            Instr::UsingDisposeAsync(_) => Opcode::UsingDisposeAsync,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1702,6 +1718,8 @@ impl Instr {
             UsingCheck => (1, 1),
             IsCell | IsObject | ToObject => (1, 1),
             UsingDispose(n) => (2 * usize::from(n) + 3, 1),
+            UsingCheckAsync => (1, 2),
+            UsingDisposeAsync(n) => (3 * usize::from(n) + 3, 1),
             PendingException => (0, 1),
             PendingCancel => (0, 1),
             SuppressedError => (2, 1),

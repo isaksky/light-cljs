@@ -12,6 +12,8 @@ pub(crate) enum Hint {
     Sync,
     Adopt,
     Defer,
+    Async,
+    AsyncFallback,
 }
 
 #[derive(Debug)]

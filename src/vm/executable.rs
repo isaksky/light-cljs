@@ -681,6 +681,8 @@ impl Executable {
                 Opcode::SuppressedError => Instr::SuppressedError,
                 Opcode::PendingCancel => Instr::PendingCancel,
                 Opcode::UsingDispose => Instr::UsingDispose(operand as u16),
+                Opcode::UsingCheckAsync => Instr::UsingCheckAsync,
+                Opcode::UsingDisposeAsync => Instr::UsingDisposeAsync(operand as u16),
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),

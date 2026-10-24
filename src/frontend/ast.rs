@@ -356,12 +356,14 @@ pub enum LexicalKind {
     Const,
     /// Synchronous explicit resource declaration; immutable like `const`.
     Using,
+    /// Asynchronous explicit resource declaration, restricted to async bodies.
+    AwaitUsing,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LexicalDecl {
     pub kind: LexicalKind,
-    /// At least one. Every `const`/`using` declarator has an initializer.
+    /// At least one. Every `const`/`using`/`await using` has an initializer.
     pub declarators: Vec<Declarator>,
 }
 
