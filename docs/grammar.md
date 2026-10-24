@@ -1033,6 +1033,12 @@ decimal places, choosing the larger magnitude on ties and padding zeros.
 Negative values rounded to zero keep `-`; negative zero itself prints without
 `-`. Magnitudes at least 1e21 and nonfinite numbers use Number ToString.
 
+`quickjs_date_regexp_cases_run_adapted` executes the pinned QuickJS
+`test_date` unchanged in four simulated zones (UTC, +01:00, -05:00 and
+Europe/Paris), and all `test_regexp` assertions with the sole direct-eval
+adaptation listed in the fixture header. Both cases use the original helper
+prologue and bounded VM runs (clj-quickjs-195).
+
 `Intl` is a global ordinary object with `Object.prototype` and a non-writable,
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`

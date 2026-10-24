@@ -23911,3 +23911,85 @@ fn intl_list_format_ownership_and_host_default() {
     assert_eq!(value.view(), ValueView::Bool(true));
     assert!(task.dependency_log().edges().is_empty());
 }
+
+/// Adapted QuickJS text; synthetic fixture, not light-cljs output.
+/// The fixture preserves upstream bytes; Date runs unmodified. The sole
+/// execution adaptation replaces upstream line 744's direct eval with a
+/// RegExp constructor for the same NUL-containing pattern (clj-quickjs-107).
+/// All assertions and expected values remain unchanged.
+#[test]
+fn quickjs_date_regexp_cases_run_adapted() {
+    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+    let fixture = include_str!("fixtures/js/quickjs_test_builtin_date_regexp.js");
+    let (definitions, calls) = fixture.rsplit_once("\ntest_date();\n").unwrap();
+    assert_eq!(calls, "test_regexp();\n");
+    let definitions = &definitions[definitions.find("\"use strict\";").unwrap()..];
+    // Pinned upstream spans contain 71 + 102 + 97 = 270 lines. Review
+    // compared their bytes with research/quickjs at 7d1c13c5d8f8.
+    let upstream = definitions.split_once("\"use strict\";\n").unwrap().1;
+    assert_eq!(upstream.lines().count() + 1, 270);
+    // Compile only the selected case: an unsupported form in the other
+    // function must not prevent the unmodified Date case from running.
+    let (date_definitions, regexp_body) = definitions.split_once("function test_regexp()").unwrap();
+    let (prologue, _) = date_definitions.split_once("function test_date()").unwrap();
+    let regexp_source = format!("{prologue}function test_regexp(){regexp_body}\ntest_regexp();");
+    let original = r#"a = eval("/\0a/");"#;
+    let adapted = r#"a = new RegExp("\0a");"#;
+    assert_eq!(regexp_source.matches(original).count(), 1);
+    // Expected-failure list: direct eval, upstream line 744, is the only gap
+    // hit by these two cases. Assert its precise diagnostic rather than
+    // silently skipping it; remove this adaptation when -107 lands.
+    let error = compile_script("quickjs-test-regexp-unmodified.js", &regexp_source).unwrap_err();
+    assert_eq!(error.kind, SyntaxErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "`eval` is not supported by this JavaScript subset"
+    );
+    assert_eq!(&regexp_source[error.span.start..error.span.end], "eval");
+    let date = compile_script(
+        "quickjs-test-date.js",
+        &format!("{date_definitions}\ntest_date();"),
+    )
+    .unwrap();
+    let regexp = compile_script(
+        "quickjs-test-regexp-adapted.js",
+        &regexp_source.replacen(original, adapted, 1),
+    )
+    .unwrap();
+    for (name, executable, zone) in [
+        ("date UTC", &date, TimeZone::UTC),
+        (
+            "date UTC+01:00",
+            &date,
+            TimeZone::fixed_offset_seconds(3600).unwrap(),
+        ),
+        (
+            "date UTC-05:00",
+            &date,
+            TimeZone::fixed_offset_seconds(-18000).unwrap(),
+        ),
+        (
+            "date Europe/Paris (DST)",
+            &date,
+            TimeZone::named("Europe/Paris").unwrap(),
+        ),
+        ("regexp", &regexp, TimeZone::UTC),
+    ] {
+        let runtime = Runtime::new();
+        let task = runtime.spawn(executable, &[]).unwrap();
+        let mut host = SimTimeHost::new(1506098258091.0, zone);
+        let mut complete = false;
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(100), &mut host).unwrap() {
+                RunOutcome::Complete(_) => {
+                    assert!(task.dependency_log().edges().is_empty());
+                    complete = true;
+                    break;
+                }
+                RunOutcome::Yielded => {}
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(complete, "{name}: exceeded bounded fixture run");
+    }
+}

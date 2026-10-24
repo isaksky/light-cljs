@@ -1098,3 +1098,23 @@ original assertion helpers, retaining all JSON position helpers, and compiles
 once per case. It checks the embedded range lengths without requiring the
 research checkout at test time. The rope case retains both upstream
 100,000-code-unit loops and runs with collection between budgeted slices.
+
+## Complete Date and RegExp upstream fixture (clj-quickjs-195)
+
+`tests/fixtures/js/quickjs_test_builtin_date_regexp.js` preserves lines 1-71,
+612-713 (`test_date`) and 715-811 (`test_regexp`) of
+`research/quickjs/tests/test_builtin.js` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The 270 upstream lines are unchanged; only the descriptive/license header
+and one trailing call per case are added. The full QuickJS MIT notice from
+`research/quickjs/LICENSE`, copyright Fabrice Bellard and Charlie Gordon,
+is retained in the fixture. This is synthetic test input, not light-cljs output.
+
+`tests/js_source.rs::quickjs_date_regexp_cases_run_adapted` selects each case
+independently. Date runs unmodified in UTC, UTC+01:00, UTC-05:00 and
+Europe/Paris (a zone with DST). RegExp's upstream line 744,
+`a = eval("/\0a/");`, is explicitly expected to fail compilation because
+direct eval is deferred (clj-quickjs-107). After asserting that failure,
+the driver replaces that one statement with `a = new RegExp("\0a");`
+and runs every original assertion, with no changed expected values.
+This is adapted RegExp coverage, not a claim of unmodified-case acceptance.

@@ -7313,3 +7313,22 @@ All six cases complete, including String's direct eval (clj-quickjs-107)
 and Math.sumPrecise (clj-quickjs-158). The rope case completes across 204
 yields and collections. No runtime behavior or representation changes are
 introduced here.
+
+## Upstream Date and RegExp fixture driver (clj-quickjs-195)
+
+The source fixture keeps the pinned QuickJS helper prologue and complete
+`test_date` / `test_regexp` bodies. The integration driver compiles only the
+selected case, once for execution, so unsupported syntax in an uncalled
+function cannot mask Date coverage. One compiled Date executable runs in
+four fresh runtimes with `SimTimeHost`: UTC, fixed +01:00, fixed -05:00 and
+Europe/Paris. Each runtime gets its own zone because local-zone selection
+is cached per runtime. A fixed virtual clock is supplied; these upstream
+rows do not read it. Every run has bounded instruction slices and rejects
+unexpected waiting or failures.
+
+The fixture's expected-failure list contains upstream line 744's direct
+eval (clj-quickjs-107). The driver asserts its compilation diagnostic, then
+uses a constructor for the identical NUL-containing pattern and runs the
+complete RegExp assertions. The fixture bytes and expected values remain
+unchanged. No engine behavior, host representation or GC edges change;
+full unmodified RegExp acceptance awaits direct eval.

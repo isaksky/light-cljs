@@ -3743,3 +3743,13 @@ preserved explicitly rather than claiming complete modern CLDR ListFormat.
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-threads=3
 ```
+
+### Upstream Date and RegExp fixtures (clj-quickjs-195)
+
+Supported test coverage: the complete pinned QuickJS `test_date` runs in
+UTC, UTC+01:00, UTC-05:00 and Europe/Paris through simulated hosts. The
+complete `test_regexp` assertions run with one documented adaptation:
+its NUL-pattern direct eval uses `new RegExp` instead. The original eval
+is checked as an expected compilation failure (clj-quickjs-107); full
+unmodified RegExp coverage remains deferred. No expected values change.
+Run `CARGO_BUILD_JOBS=3 cargo test --test js_source quickjs_date_regexp_cases_run_adapted -- --exact --test-threads=3`.
