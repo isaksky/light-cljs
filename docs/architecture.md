@@ -1011,6 +1011,11 @@ may survive the run. The contract is the `src/vm/native.rs` module docs.
   native frame and reclamation after; cancellation inside a fold; `needAll`
   suspending in the native; failure positions; nested folds) and
   `src/vm/native.rs` (leaf versus resumable step accounting).
+- **Exceptions.** Handlers inside a callback catch as usual. Raising stops
+  at a handler of the frame that started a pending native (or of a caller):
+  that exception ends the run uncaught (`native::unwinds_through`, checked
+  in `VmState::raise`), so the native frame is never left half unwound. A
+  failing starting instruction raises before its native frame exists.
 - **Deferred.** Unwinding failures through native frames into JavaScript
   handlers, and the cancellation and migration policy for tasks inside a
   native, are clj-quickjs-28.

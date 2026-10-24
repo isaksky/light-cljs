@@ -120,6 +120,17 @@
 //! terminal for the task. A cancelled task drops its native frames with the
 //! rest of its VM state.
 //!
+//! Exceptions (`crate::vm::exception`): a `try` inside a callback catches
+//! what the callback raises, and the fold continues with the value its
+//! `catch` returns. An exception (a `throw` or a catchable failure) whose
+//! innermost handler belongs to the frame that started a pending native, or
+//! to one of its callers, would have to unwind through that native: it ends
+//! the run uncaught instead, without running that catch or finally block,
+//! as an uncatchable failure does (`unwinds_through`). A failure of the
+//! starting instruction itself (a callee that is not a function, an operand
+//! that is not a vector) happens before the native frame exists and is
+//! caught like any failing instruction's.
+//!
 //! # QuickJS
 //!
 //! QuickJS's `js_call_c_function` (`research/quickjs/quickjs.c`, revision
@@ -307,6 +318,15 @@ pub(crate) fn start(
     };
     state.natives.push(frame);
     Ok(())
+}
+
+/// True when unwinding to a handler of frame index `frame` (0: the entry
+/// frame) would pass a pending native frame: the handler belongs to the
+/// frame that started the innermost native, or to one of its callers. Such
+/// an exception is terminal for now ("Errors" above, clj-quickjs-28).
+pub(crate) fn unwinds_through(state: &VmState, frame: usize) -> bool {
+    // A native started by frame index `i` has depth `i + 1`.
+    state.natives.last().is_some_and(|n| frame < n.depth)
 }
 
 /// The starting instruction of the running native frame, if one is running

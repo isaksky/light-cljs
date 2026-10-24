@@ -69,7 +69,7 @@ use crate::value::Value;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::{Completion, Exception, Handler, HandlerKind};
 use crate::vm::executable::Code;
-use crate::vm::native::NativeFrame;
+use crate::vm::native::{self, NativeFrame};
 
 /// Per-task VM resource policy, fixed when the task is spawned
 /// ([`Runtime::with_limits`](crate::Runtime::with_limits)).
@@ -501,13 +501,20 @@ impl VmState {
     /// Raise `exception`: unwind to the innermost catch or finally handler
     /// (popping the frames above its frame and every pending completion
     /// passed on the way) and continue there, or report that nothing catches
-    /// it. Never recurses, whatever the number of frames.
+    /// it. A handler reached only through a pending native frame does not
+    /// catch (`crate::vm::native`, "Errors"). Never recurses, whatever the
+    /// number of frames.
     pub(crate) fn raise(&mut self, exception: Exception) -> Raised {
         while let Some(h) = self.handlers.pop() {
             let target = match h.kind {
                 HandlerKind::Catch { target } | HandlerKind::Finally { target } => target,
                 HandlerKind::Pending(_) => continue,
             };
+            // Unwinding through a pending native frame is deferred
+            // (clj-quickjs-28): the exception ends the run uncaught.
+            if native::unwinds_through(self, h.frame) {
+                return Raised::Uncaught(exception);
+            }
             // The handler's frame must still be live, and its operands must
             // not have dropped below the handler's height since it was
             // pushed (only hand-assembled code could do either).

@@ -921,6 +921,12 @@ Supported (`src/vm/native.rs` module docs; tests in `tests/native_fold.rs`,
 - Each step counts as one budget unit and is a poll point. Failures in a
   step report the starting call's source position; a failing callback has
   that call in its call chain.
+- Exceptions: a `try` inside a callback catches what the callback throws
+  and the fold continues. A `throw` or catchable failure whose innermost
+  handler is around the fold (in the frame that started it or a caller)
+  ends the task uncaught, running none of those catch or finally blocks;
+  a failure of the `reduce`/`needAll` call itself (bad operands) is caught
+  normally.
 
 Deferred:
 

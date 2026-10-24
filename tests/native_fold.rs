@@ -681,3 +681,77 @@ fn empty_inputs_complete_without_callbacks_or_needs() {
     assert!(task.dependency_log().edges().is_empty());
     assert!(task.take_producer_requests().is_empty());
 }
+
+/// Exceptions and native frames (the merge of clj-quickjs-11 and -12): a
+/// handler inside a callback catches as usual and the fold continues; an
+/// exception that would unwind *through* a pending native frame into a
+/// handler of the frame that started it (or a caller) is terminal for now
+/// (clj-quickjs-28), so neither that catch nor that finally block runs. A
+/// failure of the starting instruction itself, before the native frame
+/// exists, is an ordinary catchable failure.
+#[test]
+fn exceptions_are_caught_inside_callbacks_but_not_through_native_frames() {
+    let rt = Runtime::new();
+    let three = number_vector(&rt, &[1.0, 2.0, 3.0]);
+    let run = |src: &str| {
+        let exe = compile_function(src).unwrap();
+        let task = rt.spawn(&exe, &[&three]).unwrap();
+        let mut host = Recorder::default();
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        (outcome, host.op(1))
+    };
+
+    // Caught inside the callback: the fold goes on with the next element.
+    let (outcome, log) = run("function f(v) {
+  function g(a, x) {
+    try { if (x === 2) { throw 10; } return a + x; }
+    catch (e) { return a + e; }
+    finally { __rt.effect(1, x); }
+  }
+  return __rt.reduce(g, 0, v);
+}");
+    assert_eq!(number(&complete(outcome)), 14.0);
+    assert_eq!(log, vec![1.0, 2.0, 3.0]);
+
+    // A throw and a catchable failure in a callback, with handlers only
+    // around the fold (in its frame and in a caller): terminal, no catch or
+    // finally block runs.
+    for (body, kind, effects) in [
+        (
+            "if (x === 2) { throw 7; } return a + x;",
+            VmErrorKind::Thrown,
+            vec![1.0, 2.0],
+        ),
+        (
+            "return a + x + undefinedName;",
+            VmErrorKind::ReferenceError,
+            vec![1.0],
+        ),
+    ] {
+        let src = format!(
+            "function f(v) {{
+  function g(a, x) {{ __rt.effect(1, x); {body} }}
+  function fold() {{
+    try {{ return __rt.reduce(g, 0, v); }}
+    catch (e) {{ __rt.effect(1, 50); return -1; }}
+    finally {{ __rt.effect(1, 60); }}
+  }}
+  try {{ return fold(); }} catch (e) {{ __rt.effect(1, 70); return -2; }}
+}}"
+        );
+        match run(&src) {
+            (RunOutcome::Failed(e), log) => {
+                assert_eq!(e.kind(), kind, "{e}");
+                assert_eq!(log, effects, "{e}");
+            }
+            (other, _) => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    // The starting instruction fails before any native frame exists.
+    let (outcome, log) = run("function f(v) {
+  try { return __rt.reduce(1, 0, v); } catch (e) { __rt.effect(1, 50); return -1; }
+}");
+    assert_eq!(number(&complete(outcome)), -1.0);
+    assert_eq!(log, vec![50.0]);
+}
