@@ -13247,3 +13247,17 @@ fn json_stringify_inherited_property_reads() {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Symbol values follow the same
+/// omission rules as undefined; symbol-keyed getters are never read.
+#[test]
+fn json_stringify_symbols() {
+    for source in [
+        r#"JSON.stringify(Symbol()) === undefined && JSON.stringify([Symbol(), 1]) === '[null,1]' && JSON.stringify({a: Symbol(), b:1}) === '{"b":1}'"#,
+        r#"let s = Symbol('key'); let o = {a:1}; o[s] = 2; Object.defineProperty(o, Symbol(), {get(){throw 42;}, enumerable:true}); JSON.stringify(o) === '{"a":1}'"#,
+        r#"let o = {toJSON(){return Symbol();}}; JSON.stringify(o) === undefined && JSON.stringify([o]) === '[null]' && JSON.stringify({a:o}) === '{}'"#,
+        r#"let n = new Number(3); n.valueOf = function(){return Symbol();}; let caught = false; try {JSON.stringify(n);} catch(e){caught = true;} caught"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}

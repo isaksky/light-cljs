@@ -592,7 +592,8 @@ impl Stringifier {
             self.append(JsString::from("["))?;
             Members::Array { next: 0, len }
         } else {
-            let keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
+            let mut keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
+            keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
             self.append(JsString::from("{"))?;
             Members::Object {
                 keys: keys.into_iter(),
@@ -673,7 +674,7 @@ impl Stringifier {
                 self.stage = S::Ready;
             }
             S::Ready => {
-                let omitted = matches!(self.value, Value::Undefined)
+                let omitted = matches!(self.value, Value::Undefined | Value::Symbol(_))
                     || dispatch::callee(heap, &self.value).is_ok();
                 if omitted {
                     match self.stack.last().map(|c| &c.members) {
@@ -723,8 +724,8 @@ impl Stringifier {
                 Value::Null => self.append(JsString::from("null"))?,
                 Value::Bool(b) => self.append(JsString::from(if *b { "true" } else { "false" }))?,
                 Value::Object(id) => self.container(heap, task, *id)?,
-                Value::Undefined => {
-                    return Err(Fault::Internal("JSON.stringify emitting undefined"));
+                Value::Undefined | Value::Symbol(_) => {
+                    return Err(Fault::Internal("JSON.stringify emitting omitted value"));
                 }
             },
             S::Next => {
@@ -765,6 +766,9 @@ impl Stringifier {
                 self.key = match &key {
                     property::Key::Index(n) => JsString::from(n.to_string().as_str()),
                     property::Key::Name(name) => name.clone(),
+                    property::Key::Symbol(_) => {
+                        return Err(Fault::Internal("JSON.stringify enumerated a symbol key"));
+                    }
                 };
                 if self.key.len() > MAX_MEMBER_NAME_UNITS {
                     return Err(Fault::RangeError(

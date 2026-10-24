@@ -4283,5 +4283,7 @@ and copying without changing other users of the shared ToNumber path.
 Limits throw catchable RangeError and are independent of native stack size;
 array lengths and quoted string values retain their underlying limits.
 Unsupported replacer and space arguments fail explicitly. Boolean wrappers
-and Symbol primitives remain prerequisites absent from this value model;
-no placeholder values or alternative serialization are introduced for them.
+remain an absent prerequisite. Symbol primitives follow the omission rules;
+enumerated symbol keys are filtered before any value read. The bounded
+property preflight includes stored symbol keys, keeping the shared leaf
+enumeration bounded even when none of those keys contribute JSON members.

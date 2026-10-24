@@ -2700,13 +2700,13 @@ protocol dispatch remain deferred.
 `JSON.stringify(value)` serializes primitives, Number/String wrappers, arrays
 and ordinary objects in ECMAScript key order, with well-formed UTF-16 quoting,
 resumable getters/`toJSON`/wrapper conversion and catchable cycle errors.
-Undefined/functions are omitted in objects, become null in arrays and yield
+Undefined/functions/symbols are omitted in objects, become null in arrays and yield
 undefined at the root. Traversal and string work respect instruction budgets;
 512-container, 4096-stored-property and 4096-unit member-name limits throw
 RangeError. Non-undefined replacer or space arguments fail explicitly.
 Number-wrapper conversion strings are capped at 4096 UTF-16 units before
 leaf numeric parsing; ordinary quoted strings keep their normal length limit.
-Indentation/replacers, Boolean wrappers and Symbol primitives remain deferred
-or prerequisite gaps. See `docs/grammar.md` for precise limits and behavior.
+Indentation/replacers and Boolean wrappers remain deferred or prerequisite
+gaps. See `docs/grammar.md` for precise limits and behavior.
 
 Tests: `cargo test --test js_source json_stringify`.
