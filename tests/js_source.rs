@@ -1862,6 +1862,8 @@ fn runtime_error_positions_follow_operator_tokens() {
     // Intrinsic calls too.
     let (_, _, line, column) = failure_at("let v = 1;\n  __rt.nth ( v, 0 );");
     assert_eq!((line, column), (2, 12));
+    let (kind, _, line, column) = failure_at("\n  __rt.effect ( 0, 1 );");
+    assert_eq!((kind, line, column), (VmErrorKind::HostEffect, 2, 15));
     // A caller frame's call site is its call's `(`.
     let e =
         failure("function g() { return missing; }\nfunction f() {\n  return 1 + g ( );\n}\nf();");

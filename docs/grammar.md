@@ -486,11 +486,37 @@ in operators, and so on):
 | a member access `o.name` (once objects run, clj-quickjs-114) | the `.` (`[` for a computed access) |
 | a reference to, assignment to or update of a binding (ReferenceError, temporal dead zone, `const` TypeError) | the identifier |
 
-For example, `let f = function(){};\n  1 + 2 * f;` fails at 2:9 (the `*`),
-`let n = null;\n 1 + n ( 1234 );` at 2:8 (the `(`), and in
-`function g() { return missing; }\nfunction f() {\n  return 1 + g ( );\n}\nf();`
-the ReferenceError is at 1:23 with the call sites 3:16 and 5:2 in its chain,
-while `\n  1 + not_def` fails at 2:7 and `1 + (not_def = 1)` at 1:6.
+For example (each script compiles; the comment gives where it fails at run
+time, as `tests/js_source.rs` `runtime_error_positions_follow_operator_tokens`
+checks):
+
+```js accept
+let f = function(){};
+  1 + 2 * f;          // UnsupportedOperand at 2:9, the `*`
+```
+
+```js accept
+let n = null;
+ 1 + n ( 1234 );      // TypeError "null is not a function" at 2:8, the `(`
+```
+
+```js accept
+let v = 1;
+  __rt.nth ( v, 0 );  // collection error at 2:12, the `(`
+```
+
+```js accept
+function g() { return missing; }
+function f() {
+  return 1 + g ( );
+}
+f();                  // ReferenceError at 1:23; call chain 3:16, then 5:2
+```
+
+```js accept
+1 + (not_def = 1);    // ReferenceError at 1:6, the identifier
+```
+
 Compile-time errors (`SyntaxError`) keep their own positions, given with each.
 
 ### Exceptions
