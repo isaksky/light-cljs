@@ -9,7 +9,7 @@
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence; natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, natives that declare it | never |
-//! | [`Shareability::ConcurrentReference`] | none yet: reserved for atoms (clj-quickjs-10) and dependency cells (clj-quickjs-6) | always; not descended into |
+//! | [`Shareability::ConcurrentReference`] | none yet: reserved for atoms (clj-quickjs-10) and any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable. Plain objects are the ordinary mutable
 //! JavaScript objects of `design.md` §4: they have no property storage yet,

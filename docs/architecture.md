@@ -214,7 +214,7 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   |----------|-------|-----------|
   | `Persistent` | vector, map, occurrence; natives declaring it | when everything it references is |
   | `TaskOwned` | builders in every state, plain objects, natives declaring it | never |
-  | `ConcurrentReference` | reserved for atoms (clj-quickjs-10) and dependency cells (clj-quickjs-6) | always; not descended into |
+  | `ConcurrentReference` | reserved for atoms (clj-quickjs-10) and any heap-object handle to a dependency cell (cells are runtime-owned, not heap objects) | always; not descended into |
 
   Primitives are shareable. Plain objects are the ordinary mutable
   JavaScript objects of §4 (property storage comes later), so they count as
@@ -268,8 +268,59 @@ the run, and all state needed to continue stays in the task.
   or waiter lock) and calls `run_with` again, on any worker; the instruction
   re-reads the now-ready cell and continues.
 
-Dependency cells, wait registration and race-safe wakeups are pellets
-clj-quickjs-6, -23 and -7; the reference executor is clj-quickjs-8.
+Dependency cells and read-or-subscribe exist (clj-quickjs-6, below); the
+suspending VM operation and race-safe parking are pellets clj-quickjs-23 and
+-7; the reference executor is clj-quickjs-8.
+
+## Dependency cells (clj-quickjs-6)
+
+`src/dep.rs` (protocol, lock and ordering contract in its module docs),
+`src/ids.rs` (identities). Design: `design.md` §§7–9.
+
+- **Identities.** `DependencyKey` = `WorldId` (runtime-allocated:
+  `Runtime::world`, `Runtime::new_world`; a task's world is fixed at
+  `spawn_in`) + `DependencyId` (host-assigned definition/query) +
+  `ResultKind` (host-assigned: discovery, callable, initializer, analysis,
+  ...). `ProducerId` is runtime-allocated per claim. The consumer identity
+  and wake handle is the `TaskId`.
+- **Cells.** One per key in the runtime's dependency table (a private
+  `HashMap` over those numeric ids, created on first need or claim, never
+  removed or reset in this slice). Each cell holds its claimed producer and
+  either `Pending { waiters }` or one immutable terminal outcome:
+  `Ready(value)`, `Failed(error)`, `Cancelled`.
+- **Need** (`RunGuard::need(definition, kind)`, the native protocol behind
+  `__rt.need`; the task supplies its world). In one cell critical section
+  it returns the terminal outcome, or registers the task's id (once) and,
+  if nobody has, claims the producer, returning `Need::Waiting { key,
+  produce: Some(ProducerRequest) }`: scheduler work, not a host call. The
+  key is recorded in the task's `DependencyLog` as an edge either way
+  (ready reads included), and as its unresolved wait while pending; a task
+  with an unresolved wait on another key is refused (`AlreadyWaiting`).
+- **Completion** (`Runtime::complete(key, producer, Completion)`): only the
+  claimed producer may complete (`NotProducer` otherwise, which is what
+  rejects a world-2 result for a world-1 key); exactly once
+  (`AlreadyComplete`); values and errors must pass `share::check`
+  (`NotShareable`, cell left pending with its waiters). It returns the
+  drained wake handles for the caller to enqueue and runs nothing inline.
+  `Runtime::claim` lets a host produce before anyone needs;
+  `Runtime::cell_status` is a snapshot.
+- **No check-then-register window.** Check and registration are one
+  critical section of the cell lock, the same lock completion takes, so a
+  completion is ordered entirely before or after a need.
+- **Locks.** Dependency table → heap `sources` (registering a new cell);
+  cell lock and task log lock are leaves; none is held while rooting,
+  checking publication, or returning. The collector takes cell locks while
+  tracing root sources. Ordering is the mutexes' release/acquire; producer
+  ids use a `Relaxed` counter.
+- **Collection.** Each cell is a `RootSource` (category
+  `DependencyOutcome`): a published value or error survives collection
+  while the cell exists, after the producer drops its handle. Readers get a
+  fresh `Rooted` of the same identity.
+- **Deferred.** The VM instruction and `Waiting(key)` (clj-quickjs-23);
+  the task state machine, parking and an atomic ready fast path
+  (clj-quickjs-7); consumer/cell cancellation beyond a producer completing
+  with `Cancelled`; deadlock reporting over unresolved waits; cell
+  invalidation and removal.
 
 ## QuickJS references and provenance
 

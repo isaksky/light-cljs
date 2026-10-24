@@ -26,6 +26,8 @@ cargo test --test collection_intrinsics   # collection intrinsics and transient 
 cargo test --lib vm::intrinsics:: # cross-task builder rejection
 cargo test --test publication     # publication check: paths, identity, deep/shared graphs
 cargo test --lib value::share::   # categories, known-shareable cache, cycles
+cargo test --test dependency      # dependency cells: need, completion, worlds, GC, races
+cargo test --lib dep::            # cell root category, rejected completion
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -38,7 +40,8 @@ guard, run outcomes), `vm` (instruction format, executable validation,
 task-owned frames, dispatch, test assembler), `heap` (object identity, roots,
 scoped and weak handles, tracing contract, mark/sweep collector), `value`,
 `ids`, `error`, `host` (leaf host effects), `collections` (persistent
-vectors, maps and occurrences). See
+vectors, maps and occurrences), `dep` (dependency keys, single-assignment
+cells, read-or-subscribe, per-task dependency log). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
@@ -96,7 +99,8 @@ Supported:
 
 Deferred:
 
-- `Waiting(key)` and dependency waits (pellets clj-quickjs-6, -23, -7).
+- `Waiting(key)` and dependency waits in the VM (pellets clj-quickjs-23, -7;
+  the cells themselves: clj-quickjs-6 below).
 - Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
   scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
   only, not time or allocation.
@@ -233,3 +237,38 @@ Deferred:
 - No VM intrinsic for the check; dependency results (clj-quickjs-6), atom
   contents (clj-quickjs-10) and closure captures (clj-quickjs-20) will call
   it at their handoffs.
+
+### Dependency cells (clj-quickjs-6)
+
+Supported:
+
+- Typed identities: `DependencyKey` = world (`Runtime::world`,
+  `Runtime::new_world`; each task runs in one world, `Runtime::spawn_in`) +
+  host-assigned `DependencyId` + host-assigned `ResultKind`. Different
+  worlds or result kinds are different cells. `ProducerId` per claim; the
+  consumer and wake handle is the `TaskId`.
+- Single-assignment cells with immutable outcomes `Ready(value)`,
+  `Failed(error)`, `Cancelled`. `Runtime::complete(key, producer, ..)`
+  accepts only the claimed producer, only once (`NotProducer`,
+  `AlreadyComplete`); values and errors must pass the publication check
+  (`NotShareable`). It returns the waiting tasks' ids for the caller to
+  enqueue; nothing runs inline.
+- Read-or-subscribe: `RunGuard::need(definition, kind)` returns the shared
+  value, error or cancellation, or registers the task and returns
+  `Need::Waiting` carrying the key's single `ProducerRequest` for the first
+  asker (`Runtime::claim` for hosts that produce eagerly). Check and
+  registration share one cell critical section: no lost-wakeup window.
+- Per-task `DependencyLog` (`Task::dependency_log`): recorded edges (ready
+  reads included) kept apart from the unresolved wait.
+- Published results and errors are collector roots while their cell
+  exists. Contract: `src/dep.rs` module docs; summary in
+  [`docs/architecture.md`](docs/architecture.md).
+
+Deferred:
+
+- The `__rt.need` VM operation and `RunOutcome::Waiting` (clj-quickjs-23);
+  needs are issued from Rust through a run guard for now.
+- Task parking state machine, deterministic handoff-window tests and an
+  atomic ready fast path (clj-quickjs-7); consumer and cell cancellation
+  other than a producer completing with `Cancelled`; deadlock reporting;
+  invalidation or removal of cells (they live as long as the runtime).
