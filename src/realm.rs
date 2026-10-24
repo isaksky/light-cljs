@@ -993,7 +993,40 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(method, &[])?;
         b.add(shared, method.name(), function, PropertyFlags::METHOD)?;
     }
+    for method in [
+        Builtin::BigIntPrototypeToString,
+        Builtin::BigIntPrototypeValueOf,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(
+            bigint_prototype,
+            method.name(),
+            function,
+            PropertyFlags::METHOD,
+        )?;
     }
+    let promise_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(promise_prototype);
+    let promise = b.function(
+        Builtin::Promise,
+        &[("prototype", promise_prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(
+        promise_prototype,
+        "constructor",
+        promise,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which, target) in [
+        ("resolve", Builtin::PromiseResolve, promise),
+        ("reject", Builtin::PromiseReject, promise),
+        ("then", Builtin::PromiseThen, promise_prototype),
+        ("catch", Builtin::PromiseCatch, promise_prototype),
+    ] {
+        let function = b.function(which, &[])?;
+        b.add(target, name, function, PropertyFlags::METHOD)?;
     }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
