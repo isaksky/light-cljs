@@ -696,17 +696,26 @@ fn function_own_properties_follow_publication_rule() {
     let (h, _) = run("function h() {} h.__proto__ = 1; h");
     rt.publish(&h).unwrap();
 
-    // A written property: rejected at the record.
+    // A written property materializes the constructor's prototype so the
+    // record preserves initial own-key order (clj-quickjs-101). The path
+    // reports that task-owned object within the record.
     let (h, producer) = run("function h() {} h.x = 1; h");
     let err = rt.publish(&h).unwrap_err();
     assert_eq!(
         not_shareable(err.clone()),
-        (vec![PathStep::FunctionProperties], "object", Some(producer))
+        (
+            vec![
+                PathStep::FunctionProperties,
+                PathStep::Property("prototype".to_string())
+            ],
+            "object",
+            Some(producer)
+        )
     );
     assert_eq!(
         err.to_string(),
         format!(
-            "cannot publish: value.properties is a task-owned object (owned by {producer}), \
+            "cannot publish: value.properties.property(prototype) is a task-owned object (owned by {producer}), \
              which is not shareable"
         )
     );

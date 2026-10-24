@@ -194,7 +194,7 @@ pub(crate) fn own_property_keys(
         })
         .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
     if function {
-        let initial = function::initial_keys(heap, task, target)?;
+        let initial = function::initial_keys(heap, target)?;
         if !initial.is_empty() {
             return Ok(if filter == KeyFilter::All {
                 initial
@@ -841,6 +841,19 @@ mod tests {
         let enumerable =
             |t: u64| own_property_keys(&heap, TaskId::from_raw(t), f, KeyFilter::Enumerable);
         assert!(ok(enumerable(1)).is_empty(), "no record, no keys");
+        assert!(
+            ok(enumerable(2)).is_empty(),
+            "immutable keys need no owner access"
+        );
+        assert_eq!(
+            names(&ok(own_property_keys(
+                &heap,
+                TaskId::from_raw(2),
+                f,
+                KeyFilter::All
+            ))),
+            ["length", "name", "prototype"]
+        );
 
         let mut record = OrdinaryObject::new(Some(task));
         let x = heap.keys().intern(&JsString::from("x")).unwrap();

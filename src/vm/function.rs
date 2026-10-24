@@ -393,18 +393,8 @@ fn initial_metadata(
 
 /// Names that exist without a property record. No prototype value is
 /// created by enumeration, so observations preserve publication eligibility.
-pub(crate) fn initial_keys(
-    heap: &Heap,
-    task: TaskId,
-    function: ObjectId,
-) -> Result<Vec<&'static str>, Fault> {
+pub(crate) fn initial_keys(heap: &Heap, function: ObjectId) -> Result<Vec<&'static str>, Fault> {
     let info = info(heap, function)?;
-    if !info.shared && info.owner != task {
-        return Err(Fault::ForeignObject {
-            owner: Some(info.owner),
-            caller: task,
-        });
-    }
     Ok(if info.record.is_some() {
         Vec::new()
     } else if info.constructor {
