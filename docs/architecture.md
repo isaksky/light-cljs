@@ -4399,7 +4399,11 @@ completed. These conversions run before root `toJSON` and use the existing
 VM conversion frames, including the 4096-unit Number conversion bound.
 The resulting gap owns at most 10 UTF-16 units; a saved UnitCursor visits at
 most 256 rope nodes/units per transition and stops after the prefix without
-flattening the original string. Container depth supplies the indentation width without
+flattening the original string. A cleanup stage releases at most 256 pending
+cursor nodes per transition, detaching children before dropping uniquely owned
+rope nodes so their destructors cannot cascade through a deep subtree; shared
+subtrees require no cleanup walk.
+Container depth supplies the indentation width without
 recursive traversal or copying an accumulated indent per level. An explicit
 indentation stage emits at most 256 code units per transition, saving the
 remaining width and the next action (key, value or closing delimiter).

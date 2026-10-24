@@ -16448,7 +16448,7 @@ fn json_stringify_indentation() {
 /// Synthetic fixtures, not light-cljs output. Space coercion precedes
 /// toJSON, and all receivers remain rooted across waits and worker changes.
 #[test]
-fn json_stringify_indentation_wait_collect_and_migrate() {
+fn json_stringify_indentation_roots_temporary_arguments() {
     for (wrapper, method, gap) in [
         ("new Number(1)", "valueOf", "2"),
         ("new String('-')", "toString", "'  '"),
@@ -16457,13 +16457,15 @@ fn json_stringify_indentation_wait_collect_and_migrate() {
         let source = format!(
             r#"
             let log = '';
-            let space = {wrapper};
-            space.{method} = function() {{log += 's'; __rt.need(1,1); return {gap};}};
-            let value = {{keep: {{n: 7}}, get a() {{
+            function makeSpace() {{
+                let space = {wrapper};
+                space.{method} = function() {{log += 's'; __rt.need(1,1); return {gap};}};
+                return space;
+            }}
+            JSON.stringify({{keep: {{n: 7}}, get a() {{
                 log += 'g'; __rt.need(2,1);
                 return {{toJSON(key) {{log += key; __rt.need(3,1); return [8];}}}};
-            }}}};
-            JSON.stringify(value, null, space) === '{{\n  "keep": {{\n    "n": 7\n  }},\n  "a": [\n    8\n  ]\n}}' && log === 'sga'
+            }}}}, null, makeSpace()) === '{{\n  "keep": {{\n    "n": 7\n  }},\n  "a": [\n    8\n  ]\n}}' && log === 'sga'
             "#
         );
         let mut task = rt.spawn(&exe(&source), &[]).unwrap();

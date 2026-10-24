@@ -3301,8 +3301,9 @@ this check. These limits throw catchable RangeError. Arrays stream indices
 and have no corresponding element-count limit. Primitive string values and
 String-wrapper results are quoted in chunks without this conversion limit.
 The same limited ToNumber path applies to Number space wrappers; String
-space wrapper results use a budgeted rope cursor that stops after 10 units
-without flattening or scanning the remainder.
+space wrapper results use a budgeted rope cursor that stops reading after 10
+units without flattening or scanning the remaining units. Pending rope-node
+references are then released in chunks of at most 256 nodes per step.
 
 Explicit gaps: every replacer other than undefined/null throws TypeError
 `"JSON.stringify replacer is not supported"`.

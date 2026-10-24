@@ -479,6 +479,7 @@ enum StringifyStage {
         cursor: UnitCursor,
         units: Vec<u16>,
     },
+    SpaceCleanup(UnitCursor),
     Prepare,
     Method,
     ToJsonResult,
@@ -748,11 +749,20 @@ impl Stringifier {
                     }
                     if units.len() == 10 {
                         self.gap = JsString::from_owned_code_units(units).expect("bounded gap");
-                        self.stage = S::Prepare;
+                        self.stage = S::SpaceCleanup(cursor);
                         return Ok(A::Continue);
                     }
                 }
                 self.stage = S::SpacePrefix { cursor, units };
+            }
+            S::SpaceCleanup(mut cursor) => {
+                for _ in 0..STEP {
+                    if !cursor.discard_step() {
+                        self.stage = S::Prepare;
+                        return Ok(A::Continue);
+                    }
+                }
+                self.stage = S::SpaceCleanup(cursor);
             }
             S::Prepare => {
                 if matches!(self.value, Value::Object(_)) {
@@ -1029,5 +1039,62 @@ impl Stringifier {
             }
         }
         Ok(A::Continue)
+    }
+}
+
+#[cfg(test)]
+mod stringify_budget_tests {
+    use super::*;
+    use crate::value::string::cursor_release_counts;
+
+    #[test]
+    fn json_stringify_space_prefix_cleanup_is_budgeted() {
+        for deep_suffix in [false, true] {
+            let mut text = JsString::from("abcdefghijklmnopqrstuvwxyz0123456789");
+            for _ in 0..10000 {
+                text = text.concat(&JsString::from("x")).unwrap();
+            }
+            if deep_suffix {
+                // After taking ten units, cleanup owns an unvisited deep
+                // subtree, rather than just a list of flat right siblings.
+                text = JsString::from("abcdefghijklmnopqrstuvwxyz0123456789")
+                    .concat(&text)
+                    .unwrap();
+            }
+            let heap = Heap::default();
+            let mut stringify = Stringifier::new(Value::Number(1.0), Value::String(text));
+            let mut cleanup_steps = 0;
+            let mut complete = false;
+            for _ in 0..1000 {
+                let before = cursor_release_counts();
+                if matches!(stringify.stage, StringifyStage::SpaceCleanup(_)) {
+                    cleanup_steps += 1;
+                }
+                let result = stringify
+                    .advance(&heap, TaskId::from_raw(1), None)
+                    .unwrap_or_else(|_| panic!("stringify failed"));
+                let after = cursor_release_counts();
+                assert!(
+                    after.0 - before.0 <= STEP,
+                    "cursor list disposal exceeded budget"
+                );
+                assert!(
+                    after.1 - before.1 <= STEP + 16,
+                    "owned rope disposal exceeded budget"
+                );
+                match result {
+                    StringifyStep::Continue => {}
+                    StringifyStep::Return(Value::String(s)) => {
+                        assert_eq!(s, "1");
+                        assert_eq!(stringify.gap, "abcdefghij");
+                        complete = true;
+                        break;
+                    }
+                    _ => panic!("unexpected callback or result"),
+                }
+            }
+            assert!(complete);
+            assert!(cleanup_steps >= 10000 / STEP, "cleanup must yield");
+        }
     }
 }

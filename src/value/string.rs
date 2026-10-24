@@ -62,6 +62,18 @@ const FLAT_CONCAT_LIMIT: usize = 32;
 
 thread_local! {
     static COPIED_CODE_UNITS: Cell<u64> = const { Cell::new(0) };
+    #[cfg(test)]
+    static CURSOR_NODE_RELEASES: Cell<usize> = const { Cell::new(0) };
+    #[cfg(test)]
+    static STRING_BODY_RELEASES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn cursor_release_counts() -> (usize, usize) {
+    (
+        CURSOR_NODE_RELEASES.with(Cell::get),
+        STRING_BODY_RELEASES.with(Cell::get),
+    )
 }
 
 fn record_copies(units: usize) {
@@ -111,6 +123,8 @@ impl Body {
 
 impl Drop for Body {
     fn drop(&mut self) {
+        #[cfg(test)]
+        STRING_BODY_RELEASES.with(|count| count.set(count.get() + 1));
         // Arc's default recursive destruction would overflow on a long
         // chain. Consume each uniquely owned body with its children removed.
         // into_inner also avoids a recursive last-release race when several
@@ -360,7 +374,7 @@ impl UnitCursor {
         }
     }
     pub(crate) fn step(&mut self) -> CursorStep {
-        let Some((text, offset)) = self.pending.pop_back() else {
+        let Some((text, offset)) = self.pop() else {
             return CursorStep::End;
         };
         match &text.0.storage {
@@ -378,6 +392,40 @@ impl UnitCursor {
             }
             Storage::Rope(None) => unreachable!("live rope has children"),
         }
+    }
+
+    fn pop(&mut self) -> Option<(JsString, usize)> {
+        let entry = self.pending.pop_back();
+        #[cfg(test)]
+        if entry.is_some() {
+            CURSOR_NODE_RELEASES.with(|count| count.set(count.get() + 1));
+        }
+        entry
+    }
+
+    /// Release one pending node without scanning flat units. Move children
+    /// out of uniquely owned ropes before dropping their body, preventing a
+    /// destructor cascade. Shared subtrees need no walk. False means done.
+    pub(crate) fn discard_step(&mut self) -> bool {
+        let Some((text, _)) = self.pop() else {
+            return false;
+        };
+        if let Some(mut body) = Arc::into_inner(text.0)
+            && let Some((left, right)) = body.take_children()
+        {
+            self.pending.push_back((right, 0));
+            self.pending.push_back((left, 0));
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+impl Drop for UnitCursor {
+    fn drop(&mut self) {
+        // Count implicit list disposal too, so a consumer that forgets
+        // incremental cleanup cannot hide its work from budget tests.
+        CURSOR_NODE_RELEASES.with(|count| count.set(count.get() + self.pending.len()));
     }
 }
 
