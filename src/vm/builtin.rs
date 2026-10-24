@@ -375,7 +375,6 @@ pub(crate) enum Builtin {
 
     NumberPrototypeToFixed,
 
-
     WeakMap,
     WeakMapSet,
     WeakMapGet,
