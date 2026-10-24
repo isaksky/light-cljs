@@ -42,8 +42,8 @@
 //! No operation here allocates a heap object or runs JavaScript, so none is
 //! a poll point; each object visited is read or changed under one short
 //! object-table lock (a realm intrinsic is read from the realm's immutable
-//! view instead, with no lock: `crate::realm`, "Lock-free reads"), and the property-key table is consulted before, never
-//! while that lock is held.
+//! view instead, with no lock: `crate::realm`, "Lock-free reads"), and the
+//! property-key table is consulted before, never while that lock is held.
 
 use crate::collections::object_name;
 use crate::heap::{Heap, HeapObject, ObjectId};

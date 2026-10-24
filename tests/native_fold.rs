@@ -755,3 +755,42 @@ fn exceptions_are_caught_inside_callbacks_and_through_native_frames() {
     assert_eq!(number(&complete(outcome)), -1.0);
     assert_eq!(log, vec![50.0]);
 }
+
+/// A built-in function as the fold callback (clj-quickjs-117): `Object`
+/// allocates an object at the first element and returns it unchanged at the
+/// others. Between being delivered and the next step the object is held
+/// only by the native's operand area; one-instruction budgets with a
+/// collection after every yield, each run on a new thread, keep it.
+#[test]
+fn builtin_fold_result_survives_collection() {
+    let rt = Runtime::new();
+    let input = number_vector(&rt, &[1.0, 2.0, 3.0]);
+    let exe = compile_function(
+        "function main(items) { const o = __rt.reduce(Object, undefined, items); \
+           o.y = 3; return o.y + (o.toString() === '[object Object]' ? 10 : 0); }",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[&input]).unwrap();
+    drop(input);
+    let mut yields = 0;
+    let result = loop {
+        let outcome = thread::scope(|t| {
+            t.spawn(|| {
+                task.run_with(Budget::instructions(1), &mut Recorder::default())
+                    .unwrap()
+            })
+            .join()
+            .unwrap()
+        });
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => break v,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert!(yields > 3, "{yields}");
+    assert_eq!(number(&result), 13.0);
+}

@@ -527,3 +527,41 @@ fn a_published_object_keeps_its_identity_through_need() {
         });
     }
 }
+
+/// A method call (clj-quickjs-117) keeps its receiver below the callee
+/// while an argument waits: the receiver is a temporary object only the
+/// suspended frame holds, it survives a collection during the wait, and
+/// after publication the run on another thread passes the very object to
+/// the built-in `valueOf`. A JavaScript method gets its argument the same
+/// way (its receiver is dropped at frame entry). Each `make` ran once.
+#[test]
+fn method_calls_preserve_receiver_across_wait_and_collection() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "method_need",
+        "function make(n) { __rt.effect(1, n); \
+           return {x: 5, m: Object.prototype.valueOf, j: function (a) { return a * 2; }}; } \
+         let r = make(1).m(__rt.need(5, 3)); \
+         let j = make(2).j(__rt.need(5, 3)); \
+         r.x * 100 + j",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let number_key = key(&rt, NUMBER);
+    assert_eq!(waiting(run(&task, &mut host)), number_key);
+    assert_eq!(host.effects, [1.0]);
+    let request = one_request(&task, number_key);
+    // Only the suspended frame holds the receiver.
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+    let (outcome, host) = thread::spawn(move || {
+        let outcome = run(&resumed, &mut host);
+        (outcome, host)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(outcome), 5.0 * 100.0 + 14.0);
+    assert_eq!(host.effects, [1.0, 2.0], "each make ran once");
+}

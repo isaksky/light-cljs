@@ -657,3 +657,32 @@ fn cancellation_inside_need_all_drops_the_native_before_the_finally_block() {
     let woken = publish_number(&rt, &request, 4.0);
     assert_eq!(number(&complete(run(&woken, &mut Log::default()))), 4.0);
 }
+
+/// A built-in fold callback that throws (clj-quickjs-117):
+/// `Object.prototype.valueOf` called with an `undefined` receiver throws a
+/// catchable `TypeError` at the first element; it unwinds the fold into
+/// the caller's catch and finally blocks, and the function continues after
+/// them (element 2 is never visited).
+#[test]
+fn builtin_fold_errors_unwind() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "function main(items) {
+  let r = 'none';
+  try { r = __rt.reduce(Object.prototype.valueOf, 1, items); __rt.effect(1, 99); }
+  catch (e) { __rt.effect(1, 50); r = 'caught'; }
+  finally { __rt.effect(1, 60); }
+  __rt.effect(1, 70);
+  return r;
+}",
+        &[&number_vector(&rt, &[1.0, 2.0]).0],
+    );
+    let mut log = Log::default();
+    let result = complete(run(&task, &mut log));
+    assert_eq!(
+        result.string().map(|s| s.to_string()).as_deref(),
+        Some("caught")
+    );
+    assert_eq!(log.0, [50.0, 60.0, 70.0]);
+}
