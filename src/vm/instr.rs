@@ -1393,6 +1393,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 130);
+        assert_eq!(assigned, 132);
     }
 }

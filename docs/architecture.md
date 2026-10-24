@@ -6703,3 +6703,10 @@ one-instruction budget boundary inside done substitutes for std.gc. A temporary
 reference to the awaited promise makes its activation reachable at that point;
 the host supplies obj to permit a weak-handle lifetime assertion. Dropping that
 reference and completing the task reclaims the activation, closures and promises.
+
+Root inventory addition: the task-owned AsyncState's saved activation and promise
+capability are strong edges, reached through its internal promise reaction or an
+attached native boundary. `test_async_gc_suspended_activation` in `tests/gc.rs`
+checks retention and reclamation, including a host-observed weak object handle;
+`unreachable_async_cycle_can_be_collected_before_task_completion` verifies that
+diagnostic bookkeeping adds no hidden roots.
