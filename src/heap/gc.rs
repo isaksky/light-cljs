@@ -52,7 +52,8 @@
 //! and lazy, separate from heap-internal slots. JavaScript WeakMap uses this
 //! storage (`crate::object::weak_map`); WeakRef uses weak slots and task
 //! job keep-alives (`crate::object::weak_ref`). FinalizationRegistry scheduling
-//! consumes notifications on its owner task (`crate::object::finalization_registry`).
+//! consumes notifications after the pause and queues owner-task jobs
+//! (`crate::object::finalization_registry`).
 //! Dead symbol-slot metadata is retired after the pause,
 //! so keeping a cleared slot does not retain the target's description storage.
 //!
@@ -1328,6 +1329,15 @@ impl Heap {
     /// Give `report` to the live observers, with no heap lock held (the
     /// `observers` lock is released before any observer runs).
     fn notify_observers(&self, report: &CollectionReport) {
+        // Observer unwinding must not strand cells whose slots have already
+        // been cleared (they will never produce another notification).
+        struct FinalizationDelivery<'a>(&'a Heap, &'a CollectionReport);
+        impl Drop for FinalizationDelivery<'_> {
+            fn drop(&mut self) {
+                self.0.deliver_finalization(self.1);
+            }
+        }
+        let _finalization = FinalizationDelivery(self, report);
         let observers: Vec<Arc<dyn CollectionObserver>> = {
             let mut observers = lock(&self.observers);
             observers.retain(|o| o.strong_count() > 0);
@@ -1335,6 +1345,23 @@ impl Heap {
         };
         for observer in observers {
             observer.collected(report);
+        }
+    }
+
+    fn deliver_finalization(&self, report: &CollectionReport) {
+        // Consume registry notifications for the heap's entire lifetime,
+        // including registries rooted after their owner task has vanished.
+        // Reports root owners until transfer; heap access protects extracted
+        // held values. No JavaScript or host code runs under these locks.
+        if !report.cleared_weak_slots.is_empty() {
+            let _access = self.enter_mutator(Access::Op);
+            for notification in &report.cleared_weak_slots {
+                self.with_object_mut(notification.owner(), |object| {
+                    if let HeapObject::FinalizationRegistry(registry) = object {
+                        registry.deliver(notification.owner(), notification.token());
+                    }
+                });
+            }
         }
     }
 

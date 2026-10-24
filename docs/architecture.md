@@ -7337,7 +7337,8 @@ unchanged. No engine behavior, host representation or GC edges change.
 The append-only `FinalizationRegistry` heap kind embeds an ordinary task-owned
 property store, a strong callback and registration cells. Each cell has a
 notifying weak target slot, a strong held value and an optional weak unregister
-token slot. Private monotonically increasing cell IDs identify notifications;
+token slot. Cells live in a BTreeMap indexed by private monotonically increasing
+IDs, so notification removal takes O(log n) without linear scans or shifts;
 cleared/repeated/out-of-order notifications cannot consume another cell.
 Objects and non-registered symbols are eligible targets/tokens; registered
 symbols and SameValue(target, heldValue) are rejected with TypeError. Calling
@@ -7352,10 +7353,14 @@ Removing/cleaning the last cell releases that root; task completion, failure
 and cancellation release all active-registry roots. A registry may still be
 reachable through ordinary JavaScript/host roots after its owner finishes.
 
-Each task is a weakly registered collection observer. After the pause and all
-collector locks end, it consumes only notifications branded with its task ID,
-removes the cleared cell, and transfers callback/held value into an ordinary
-job on its inbox. It holds heap access throughout transfer; notification roots
+The heap's post-pause dispatcher consumes registry notifications for the heap's
+entire lifetime, even after the owner task handle disappears. Each registry
+stores a weak owner-inbox capability, with no strong task/runtime reference.
+After external report observers finish, the dispatcher removes the cleared
+cell and transfers callback/held value into an ordinary job on that inbox,
+dropping the job when the inbox is absent or closed. A guard also consumes
+cells if an external observer unwinds. It holds heap access throughout transfer;
+notification roots
 keep the registry/callback/held values alive until then. Cell mutation and
 retention updates share the object-table lock, followed by the leaf inbox
 lock. No path enters heap access while holding that inbox lock. JavaScript
@@ -7380,4 +7385,8 @@ arguments. Targets and tokens are never marked by registry tracing.
 `finalization_callbacks_run_as_jobs_after_collection` adapts both upstream
 blocks, with an order log proving body/collection, cleanup jobs, then timers.
 Other tests cover unregister, weak symbols/tokens, finished owners and cleanup
-waiting followed by migration. See docs/attribution.md for the upstream notice.
+waiting followed by migration. Delayed-report tests overlap unregister and
+replacement registration with out-of-order collections, and a 4096-cell batch
+checks once-per-cell cleanup mixed with unregister. Dropped-owner tests verify
+held-value reclamation while the host continues rooting the registry.
+See docs/attribution.md for the upstream notice.

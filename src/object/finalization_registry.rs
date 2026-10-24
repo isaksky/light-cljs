@@ -6,10 +6,11 @@ use crate::ids::TaskId;
 use crate::job::Job;
 use crate::object::OrdinaryObject;
 use crate::value::Value;
+use std::collections::BTreeMap;
+use std::sync::Weak;
 
 #[derive(Debug)]
 struct Cell {
-    id: u64,
     target: WeakSlot,
     held: Value,
     token: Option<WeakSlot>,
@@ -19,17 +20,24 @@ struct Cell {
 pub(crate) struct FinalizationRegistryObject {
     object: OrdinaryObject,
     callback: Value,
-    cells: Vec<Cell>,
+    cells: BTreeMap<u64, Cell>,
     next_id: u64,
+    inbox: Weak<crate::job::JobInbox>,
 }
 
 impl FinalizationRegistryObject {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId, callback: Value) -> Self {
+    pub(crate) fn new(
+        owner: TaskId,
+        prototype: ObjectId,
+        callback: Value,
+        inbox: Weak<crate::job::JobInbox>,
+    ) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(owner, prototype),
             callback,
-            cells: Vec::new(),
+            cells: BTreeMap::new(),
             next_id: 0,
+            inbox,
         }
     }
     pub(crate) fn object(&self) -> &OrdinaryObject {
@@ -50,44 +58,57 @@ impl FinalizationRegistryObject {
     ) -> Option<()> {
         let id = self.next_id;
         self.next_id = id.checked_add(1)?;
-        self.cells.push(Cell {
+        self.cells.insert(
             id,
-            target: WeakSlot::notifying(target, id),
-            held,
-            token: token.map(WeakSlot::new),
-        });
+            Cell {
+                target: WeakSlot::notifying(target, id),
+                held,
+                token: token.map(WeakSlot::new),
+            },
+        );
         Some(())
     }
     pub(crate) fn unregister(&mut self, token: TraceEdge) -> bool {
         let before = self.cells.len();
         self.cells
-            .retain(|cell| cell.token.as_ref().and_then(WeakSlot::get) != Some(token));
+            .retain(|_, cell| cell.token.as_ref().and_then(WeakSlot::get) != Some(token));
         self.cells.len() != before
     }
     /// Called after the pause under heap access. Repeated/out-of-order
     /// notifications cannot remove a different (or already removed) cell.
-    pub(crate) fn cleanup(&mut self, token: u64) -> Option<Job> {
-        let index = self
-            .cells
-            .iter()
-            .position(|cell| cell.id == token && cell.target.get().is_none())?;
-        let cell = self.cells.remove(index);
+    fn cleanup(&mut self, token: u64) -> Option<Job> {
+        if self.cells.get(&token)?.target.get().is_some() {
+            return None;
+        }
+        let cell = self.cells.remove(&token)?;
         Some(Job {
             callable: self.callback.clone(),
             args: vec![cell.held],
         })
+    }
+
+    /// Heap-lifetime notification consumption, even after the owner handle
+    /// disappears. The weak inbox is solely a job-admission capability.
+    pub(crate) fn deliver(&mut self, owner: ObjectId, token: u64) {
+        let job = self.cleanup(token);
+        if let Some(inbox) = self.inbox.upgrade() {
+            if let Some(job) = job {
+                let _ = inbox.push(job); // Finished/cancelled owners drop cleanup.
+            }
+            inbox.retain_registry(owner, !self.is_empty());
+        }
     }
 }
 impl Trace for FinalizationRegistryObject {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         self.object.trace(visit);
         self.callback.trace(visit);
-        for cell in &self.cells {
+        for cell in self.cells.values() {
             cell.held.trace(visit);
         }
     }
     fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
-        for cell in &mut self.cells {
+        for cell in self.cells.values_mut() {
             cell.target.trace_conditional(visit);
             if let Some(token) = &mut cell.token {
                 token.trace_conditional(visit);

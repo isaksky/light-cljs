@@ -1627,3 +1627,204 @@ fn finalization_cancelled_owner_releases_registry_roots() {
     assert!(!weak.is_live());
     assert_eq!(rt.heap_usage().objects.finalization_registry, 0);
 }
+
+/// Synthetic fixture, not light-cljs output. Notification consumption must
+/// outlive the task handle when a host still roots the registry.
+#[test]
+fn finalization_dropped_owner_releases_held_values() {
+    let rt = Runtime::new();
+    let target = new_rooted_object(&rt);
+    let held = new_rooted_object(&rt);
+    let weak = held.downgrade();
+    let weak_target = target.downgrade();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(target, held) {
+        const r = new FinalizationRegistry(() => { throw 'dropped owner'; });
+        r.register(target, held); return r;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&target, &held]).unwrap();
+    let registry = complete(task.run().unwrap());
+    drop((task, target, held));
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert!(registry.downgrade().is_live());
+    assert!(!weak_target.is_live());
+    assert!(
+        !weak.is_live(),
+        "cleared cell releases its held value without an owner task"
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. A stale report must neither
+/// consume a replacement cell nor remove its owner-task retention root.
+#[test]
+fn finalization_delayed_notification_preserves_replacement_cell() {
+    use clj_quickjs::{CollectionObserver, CollectionReport};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    struct Gate {
+        first: AtomicBool,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl CollectionObserver for Gate {
+        fn collected(&self, _: &CollectionReport) {
+            if self.first.swap(false, Ordering::SeqCst) {
+                self.entered.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(HANDSHAKE)
+                    .expect("release old report");
+            }
+        }
+    }
+    let rt = Runtime::new();
+    let old = new_rooted_object(&rt);
+    let old_weak = old.downgrade();
+    let token = new_rooted_object(&rt);
+    let target = new_rooted_object(&rt);
+    let held = new_rooted_object(&rt);
+    let weak_held = held.downgrade();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(old, token, target, held) {
+        let r = new FinalizationRegistry(v => { __rt.effect(0, v === 0 ? 0 : 1); });
+        r.register(old, 0, token); old = null;
+        __rt.need(177, 11);
+        if (!r.unregister(token)) throw 'missing old cell';
+        r.register(target, held);
+        r = null; token = null; target = null; held = null;
+        __rt.need(177, 12); return 42;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&old, &token, &target, &held]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        first: AtomicBool::new(true),
+        entered,
+        release: Mutex::new(released),
+    });
+    rt.observe_collections(Arc::downgrade(&gate) as _);
+    drop(old);
+    let resume = || {
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Undefined);
+        rt.complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap()
+    };
+    let mut host = FinalizationEffects::default();
+    thread::scope(|scope| {
+        let (done, completed) = mpsc::channel();
+        let runtime = &rt;
+        let collector = scope.spawn(move || {
+            let result = runtime.collect();
+            done.send(result).unwrap();
+        });
+        observed
+            .recv_timeout(HANDSHAKE)
+            .expect("first report paused after clearing");
+        assert!(!old_weak.is_live());
+        let wakes = resume();
+        assert_eq!(wakes.task_ids(), [task.id()]);
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Waiting(_)
+        ));
+        drop(held);
+        rt.collect().unwrap(); // A newer report completes before the old one.
+        assert!(weak_held.is_live());
+        assert!(host.0.is_empty());
+        release.send(()).unwrap();
+        completed
+            .recv_timeout(HANDSHAKE)
+            .expect("old delivery finished")
+            .unwrap();
+        collector.join().unwrap();
+    });
+    rt.collect().unwrap();
+    assert!(
+        weak_held.is_live(),
+        "replacement retention survives stale delivery"
+    );
+    drop(target);
+    rt.collect().unwrap();
+    let wakes = resume();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()).view(),
+        ValueView::Number(42.)
+    );
+    assert_eq!(
+        host.0,
+        [1.],
+        "only the replacement cell is cleaned, exactly once"
+    );
+    rt.collect().unwrap();
+    assert!(!weak_held.is_live());
+}
+
+/// Synthetic fixture, not light-cljs output. Indexed cleanup removes each
+/// surviving cell once, interleaved with bulk token unregistration.
+#[test]
+fn finalization_bulk_cleanup_preserves_once_per_cell() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_script(
+        "bulk-finalization",
+        r#"
+        let count = 0; let sum = 0; const seen = [];
+        let r = new FinalizationRegistry(v => {
+            if (seen[v]) throw 'duplicate cleanup';
+            seen[v] = true; count++; sum += v;
+        });
+        const token = {};
+        for (let i = 0; i < 4096; i++) r.register({}, i, i % 2 === 0 ? token : undefined);
+        if (!r.unregister(token) || r.unregister(token)) throw 'bulk unregister';
+        r = null;
+        std.gc();
+        os.setTimeout(() => { if (count !== 2048 || sum !== 4194304) throw 'bulk cleanup'; }, 0);
+        42
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    task.install_sim_host_bindings().unwrap();
+    assert_eq!(complete(task.run().unwrap()).view(), ValueView::Number(42.));
+}
+
+/// Synthetic fixture, not light-cljs output. A panicking external observer
+/// must not strand a cell after its target slot was permanently cleared.
+#[test]
+fn finalization_observer_unwind_consumes_cleared_cells() {
+    use clj_quickjs::{CollectionObserver, CollectionReport};
+    use std::sync::Arc;
+    struct Panic;
+    impl CollectionObserver for Panic {
+        fn collected(&self, _: &CollectionReport) {
+            panic!("observer unwind");
+        }
+    }
+    let rt = Runtime::new();
+    let target = new_rooted_object(&rt);
+    let held = new_rooted_object(&rt);
+    let weak = held.downgrade();
+    let code = clj_quickjs::frontend::compile_function("function body(target, held) { const r = new FinalizationRegistry(() => 0); r.register(target, held); return r; }").unwrap();
+    let task = rt.spawn(&code, &[&target, &held]).unwrap();
+    let registry = complete(task.run().unwrap());
+    drop((task, target, held));
+    let observer = Arc::new(Panic);
+    rt.observe_collections(Arc::downgrade(&observer) as _);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.collect())).is_err());
+    drop(observer);
+    rt.collect().unwrap();
+    assert!(registry.downgrade().is_live());
+    assert!(!weak.is_live());
+}

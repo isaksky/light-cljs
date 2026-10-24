@@ -409,7 +409,6 @@ pub(crate) enum Builtin {
     IntlListFormatResolvedOptions,
     IntlListFormatSupportedLocales,
 
-
     FinalizationRegistry,
     FinalizationRegistryRegister,
     FinalizationRegistryUnregister,
@@ -2191,6 +2190,7 @@ pub(crate) fn finalization_registry_constructor(
             state.diag.task,
             prototype,
             callback.clone(),
+            state.jobs.clone(),
         ),
     )))
     .map(Value::Object)

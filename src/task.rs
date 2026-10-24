@@ -523,32 +523,6 @@ impl RootSource for TaskInner {
     }
 }
 
-impl crate::heap::gc::CollectionObserver for TaskInner {
-    fn collected(&self, report: &crate::heap::gc::CollectionReport) {
-        if report.cleared_weak_slots.is_empty() {
-            return;
-        }
-        let _access = self.heap.enter_mutator(Access::Op);
-        for notification in &report.cleared_weak_slots {
-            self.heap.with_object_mut(notification.owner(), |object| {
-                let crate::heap::HeapObject::FinalizationRegistry(registry) = object else {
-                    return;
-                };
-                if registry.object().owner() != Some(self.id) {
-                    return;
-                }
-                // The report roots the registry until transfer completes;
-                // heap access protects the extracted held value meanwhile.
-                if let Some(job) = registry.cleanup(notification.token()) {
-                    let _ = self.jobs.push(job); // Closed owners drop cleanup.
-                }
-                self.jobs
-                    .retain_registry(notification.owner(), !registry.is_empty());
-            });
-        }
-    }
-}
-
 impl TaskInner {
     fn report_suspended_async(&self, vm: &VmState) {
         *self.suspended_async.lock().unwrap() = vm
@@ -702,9 +676,6 @@ impl Task {
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
         inner.heap.register_source(source);
-        inner.heap.observe_collections(
-            Arc::downgrade(&inner) as Weak<dyn crate::heap::gc::CollectionObserver>
-        );
         Task(inner)
     }
 
