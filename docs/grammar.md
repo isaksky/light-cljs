@@ -752,7 +752,11 @@ the notice. For `++`/`--` (clj-quickjs-64): `js_parse_unary` (the
 before a postfix operator), `OP_inc` / `OP_post_inc` and `js_post_inc_slow`
 (the old value converted with ToNumeric); the four identifier groups of
 `test_inc_dec` in `test_language.js` are adapted in `tests/js_source.rs`
-`update_expressions_on_bindings`, with the notice. For Unicode
+`update_expressions_on_bindings`, with the notice. For loose
+equality (clj-quickjs-60): `js_eq_slow` (a boolean operand converted with
+ToNumber); the `null`/`undefined`/boolean cases of `test_eq` in
+`test_language.js` are adapted in `tests/js_source.rs`
+`loose_equality_with_a_boolean_left_operand`, with the notice. For Unicode
 identifiers (clj-quickjs-50): `next_token`'s `lre_js_is_ident_first` /
 `lre_js_is_ident_next` checks and `ident_realloc` (escapes decoded into the
 name, an escaped reserved word never a keyword); the tables here are

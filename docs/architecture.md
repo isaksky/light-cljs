@@ -1422,3 +1422,13 @@ and Charlie Gordon) and is listed here with its source path and revision:
   instead of evaluated (`undefined`, or a SyntaxError for `0.a`), and
   `01.a` is rejected because legacy octal literals are not supported. The
   test carries the full notice. No code was copied.
+- `tests/js_source.rs` `loose_equality_with_a_boolean_left_operand`
+  (clj-quickjs-60): the `null == undefined`, `undefined == null`,
+  `true == 1` and `0 == false` cases of `test_eq` (line 126) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: each
+  `assert(cond)` is a Rust assertion on the expression's value; the string
+  and wrapper-object cases are omitted (they need string values and
+  ToPrimitive). The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_eq_slow` was consulted only. No code
+  was copied.

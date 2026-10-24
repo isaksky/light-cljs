@@ -277,6 +277,55 @@ fn truthiness_and_equality_follow_javascript() {
     }
 }
 
+/// Loose equality with a boolean on the left (clj-quickjs-60). The first
+/// four rows are the `null`/`undefined`/boolean cases of `test_eq` (line
+/// 126) of `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+/// (each `assert(cond)` as a Rust assertion on the expression's value; the
+/// string and wrapper-object cases wait for string values and ToPrimitive);
+/// see `docs/architecture.md`, "QuickJS references and provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn loose_equality_with_a_boolean_left_operand() {
+    for (src, expected) in [
+        // `test_eq`.
+        ("null == undefined", true),
+        ("undefined == null", true),
+        ("true == 1", true),
+        ("0 == false", true),
+        // A boolean on the left compares as a number.
+        ("false == 0", true),
+        ("false == -0", true),
+        ("true == 2", false),
+        ("true != 1", false),
+        ("false != 0", false),
+        ("true == NaN", false),
+        // Booleans against booleans, `null` and `undefined`.
+        ("true == true", true),
+        ("true == false", false),
+        ("false == null", false),
+        ("false == undefined", false),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
+}
+
 #[test]
 fn script_completion_value_follows_javascript() {
     assert_eq!(eval(""), ValueView::Undefined);
