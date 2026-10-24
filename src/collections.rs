@@ -256,6 +256,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Builder(b) => b.kind().name(),
         HeapObject::Function(_) => "function",
         HeapObject::Cell(_) => "binding cell",
+        HeapObject::Atom(_) => "atom",
     }
 }
 

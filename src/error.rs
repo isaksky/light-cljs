@@ -59,6 +59,10 @@ pub enum VmErrorKind {
         /// The task that tried to use it.
         caller: TaskId,
     },
+    /// An atom intrinsic rejected its operands: not an atom, a value to
+    /// install that reaches task-owned mutation, or compare-and-set on a
+    /// single-writer atom (see [`crate::atom`]).
+    Atom(crate::AtomErrorKind),
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

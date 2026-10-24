@@ -399,6 +399,9 @@ impl Executable {
                 Opcode::CellInit => Instr::CellInit,
                 Opcode::CellGet => Instr::CellGet,
                 Opcode::CellSet => Instr::CellSet,
+                Opcode::AtomNew => Instr::AtomNew,
+                Opcode::AtomLoad => Instr::AtomLoad,
+                Opcode::AtomCas => Instr::AtomCas,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.

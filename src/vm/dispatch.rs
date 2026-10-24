@@ -76,6 +76,8 @@ pub(crate) enum Fault {
         owner: TaskId,
         caller: TaskId,
     },
+    /// An atom intrinsic rejected its operands; the message names why.
+    Atom(crate::AtomErrorKind, String),
 }
 
 /// What the loop does after an instruction.
@@ -361,7 +363,10 @@ fn step(
         | Instr::NewMapBuilder
         | Instr::BuilderConj
         | Instr::BuilderAssoc
-        | Instr::Freeze => intrinsics::step(state, heap, instr)?,
+        | Instr::Freeze
+        | Instr::AtomNew
+        | Instr::AtomLoad
+        | Instr::AtomCas => intrinsics::step(state, heap, instr)?,
         Instr::Function(i, n) => {
             let child = code
                 .functions
@@ -505,6 +510,7 @@ pub(crate) fn execute(
                 (VmErrorKind::TypeError, format!("{what} is not a function"))
             }
             Err(Fault::StackOverflow(m)) => (VmErrorKind::StackOverflow, m),
+            Err(Fault::Atom(kind, m)) => (VmErrorKind::Atom(kind), m),
             Err(Fault::ForeignBinding { owner, caller }) => (
                 VmErrorKind::ForeignBinding { owner, caller },
                 format!(

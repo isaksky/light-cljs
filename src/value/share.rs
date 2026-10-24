@@ -9,7 +9,7 @@
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure); natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, binding cells, natives that declare it | never |
-//! | [`Shareability::ConcurrentReference`] | none yet: reserved for atoms (clj-quickjs-10) and any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
+//! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable. Plain objects are the ordinary mutable
 //! JavaScript objects of `design.md` §4: they have no property storage yet,
@@ -115,8 +115,6 @@ pub(crate) enum Shareability {
     /// never shareable.
     TaskOwned,
     /// An explicit concurrent reference: shareable without being immutable.
-    /// Reserved; no kind uses it outside tests yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     ConcurrentReference,
 }
 
@@ -133,6 +131,8 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         // Code and captured values are fixed at creation (`crate::vm::function`).
         HeapObject::Function(_) => Shareability::Persistent,
         HeapObject::Cell(_) => Shareability::TaskOwned,
+        // Every operation that installs a value checks it first (`crate::atom`).
+        HeapObject::Atom(_) => Shareability::ConcurrentReference,
     }
 }
 
@@ -146,7 +146,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
-        | HeapObject::Function(_) => None,
+        | HeapObject::Function(_)
+        | HeapObject::Atom(_) => None,
     }
 }
 

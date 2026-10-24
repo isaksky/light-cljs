@@ -42,6 +42,7 @@
 //! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
 //! | [`frontend`] | JavaScript subset lexer, parser, AST and compiler to bytecode, with positioned diagnostics (`docs/grammar.md`) |
 //! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
+//! | [`atom`] | atomic references: single-writer publication, identity compare-and-set, load-to-root acquisition |
 //!
 //! The module list is append-only per pellet.
 //!
@@ -58,6 +59,7 @@
 //! no task run or foreign scope is active (cooperative safepoints are
 //! deferred; see [`heap::gc`]).
 
+pub mod atom;
 pub mod collections;
 pub mod dep;
 mod error;
@@ -70,6 +72,7 @@ pub mod task;
 mod value;
 pub mod vm;
 
+pub use atom::{AtomError, AtomErrorKind, CasOutcome, Publisher};
 pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
 pub use dep::{
     CellStatus, ClaimError, CompleteError, Completion, DependencyLog, Need, NeedError,

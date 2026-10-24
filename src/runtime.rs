@@ -192,8 +192,7 @@ impl Runtime {
         self.0.deps.status(key)
     }
 
-    /// The shared heap (crate tests).
-    #[cfg(test)]
+    /// The shared heap (crate-internal native operations and tests).
     pub(crate) fn heap(&self) -> &Arc<Heap> {
         &self.0.heap
     }

@@ -37,6 +37,8 @@ cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowerin
 cargo test --test wakeup           # parking and wakeups: many waiters, duplicate wakes, one owner
 cargo test --lib task::           # task state machine and hook-forced handoff windows
 cargo test --test sim_host        # simulated host: worlds, result kinds, producers
+cargo test --test atoms           # atoms: identity CAS, single-writer publication, load-to-root
+cargo test --lib atom::           # SameValue comparison, replaced-box reclamation
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -51,7 +53,8 @@ scoped and weak handles, tracing contract, mark/sweep collector), `value`,
 `ids`, `error`, `host` (leaf host effects; `host::sim`, the simulated
 compiler host), `collections` (persistent
 vectors, maps and occurrences), `dep` (dependency keys, single-assignment
-cells, read-or-subscribe, per-task dependency log). See
+cells, read-or-subscribe, per-task dependency log), `atom` (atomic
+references: single-writer publication, identity compare-and-set). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
@@ -224,9 +227,10 @@ Supported:
 - Three value categories (`design.md` §4), declared by every heap object
   kind: persistent (vectors, maps, occurrences: shareable when their
   contents are), task-owned mutation (transient builders in any state,
-  plain objects: never shareable), and a reserved explicit-concurrent-
-  reference category for atoms and dependency cells (shareable without
-  being immutable; no kind uses it yet). Primitives are shareable.
+  plain objects: never shareable), and an explicit-concurrent-reference
+  category for atoms (clj-quickjs-10) and any future heap handle to a
+  dependency cell (shareable without being immutable). Primitives are
+  shareable.
 - `Runtime::publish(&Rooted)`: the embedder's check before handing a value
   to another task. It walks the graph iteratively (deep, cyclic and heavily
   shared graphs are fine) and fails with `PublishError::NotShareable`,
@@ -473,3 +477,45 @@ Deferred:
   initialize-once immutable cell.
 - Spawning a task directly on closure code (no environment) fails at its
   first `get_capture` with `VmErrorKind::Internal`.
+### Atoms (clj-quickjs-10)
+
+Supported (Rust API and VM intrinsics; VM tests use hand-assembled bytecode,
+`tests/atoms.rs`):
+
+- Atoms are heap objects whose handle is an ordinary value (stable
+  `ObjectId`, never reissued), held as `Rooted`/`Local`, in task frames, or
+  inside persistent collections. They are explicit concurrent references:
+  publishable without being immutable.
+- Two writer contracts, kept apart from dependency completion:
+  multi-writer compare-and-set (`Runtime::new_atom`,
+  `Runtime::atom_compare_and_set`, VM `atom_new` `0x33` / `atom_cas` `0x35`)
+  and single-writer publication (`Runtime::new_single_writer_atom` returns
+  the atom's one `Publisher`; `Publisher::publish` stores any number of
+  times; CAS on such an atom fails with `AtomError::SingleWriter`).
+- CAS compares by identity for objects and SameValue for primitives (`NaN`
+  matches `NaN`, `+0` does not match `-0`), never by structure or user
+  code. A conflict changes nothing and reports the current value
+  (`CasOutcome::Conflict { current }`; VM: `w ok` with `ok = false`); the
+  runtime never retries with user code, so effects computed before the CAS
+  happen once.
+- Every installing operation (creation, CAS, publish, VM `atom_new`/
+  `atom_cas`) runs the publication check: task-owned mutation is rejected
+  with `AtomError::NotShareable` / `VmErrorKind::Atom(NotShareable)`.
+- Load-to-root: `Runtime::atom_load` (a new `Rooted`), `Scope::atom_load`
+  (a `Local`), VM `atom_load` `0x34` (an operand). The loaded value and its
+  graph stay valid until released, whatever replaces the atom and however
+  often the heap is collected; then it is reclaimable.
+- Rust atomics only: an `AtomicPtr` to an immutable boxed value per atom,
+  installed with `AcqRel` and read with `Acquire`. Replaced boxes are freed
+  after the next collection (a grace period: atom operations are registered
+  mutators). Contract, ordering, ABA and the `unsafe` invariants: `src/atom.rs`
+  module docs; summary in [`docs/architecture.md`](docs/architecture.md).
+
+Deferred:
+
+- `swap`-with-function, `reset`, add-watch and validators; atoms from
+  JavaScript source (the frontend does not lower to the atom intrinsics);
+  publishing to a single-writer atom from the VM (the `Publisher` is a Rust
+  capability).
+- Memory held by replaced values until the next collection is bounded by one
+  small box per write; there is no reclamation without a collection.

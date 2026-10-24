@@ -12,9 +12,10 @@
 //!   holds values the collector must treat as roots. Sources register a
 //!   `Weak` with [`Heap::register_source`](super::Heap::register_source) and
 //!   are traced at every collection while alive; dropping the owner
-//!   unregisters it. Tasks and dependency cells are root sources today; atom
-//!   contents, closure environments and pending native states plug in the
-//!   same way (or become heap objects reachable from such a source).
+//!   unregisters it. Tasks and dependency cells are root sources today;
+//!   closure environments and pending native states plug in the same way
+//!   (or become heap objects reachable from such a source). Atoms are heap
+//!   objects: their current value is an edge reported by their `Trace`.
 //! * [`RootCategory`] names every root source kind; each root is reported
 //!   with its category so tests can inspect the root snapshot.
 //!
@@ -153,6 +154,18 @@ pub(crate) struct GcState {
 #[derive(Debug)]
 pub(crate) struct MutatorToken<'h> {
     heap: &'h Heap,
+    /// Collections completed before this registration. Constant for the
+    /// token's lifetime: no collection can run while a mutator is
+    /// registered (the atom module uses it as its reclamation epoch).
+    epoch: u64,
+}
+
+impl MutatorToken<'_> {
+    /// Collections completed before this mutator registered; no collection
+    /// completes while it stays registered.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
 }
 
 impl Drop for MutatorToken<'_> {
@@ -195,8 +208,12 @@ impl std::error::Error for CollectError {}
 impl Heap {
     /// Register a mutator; blocks only while a collection is in progress.
     pub(crate) fn enter_mutator(&self) -> MutatorToken<'_> {
-        lock(&self.gc).mutators += 1;
-        MutatorToken { heap: self }
+        let mut gc = lock(&self.gc);
+        gc.mutators += 1;
+        MutatorToken {
+            heap: self,
+            epoch: gc.collections,
+        }
     }
 
     /// Report every root with its category, holding the root, scope and
@@ -346,6 +363,7 @@ mod tests {
             | HeapObject::Builder(_)
             | HeapObject::Function(_)
             | HeapObject::Cell(_) => panic!("not a native object"),
+            HeapObject::Atom(_) => panic!("not a native object"),
         })
         .expect("live object");
     }

@@ -218,7 +218,7 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   |----------|-------|-----------|
   | `Persistent` | vector, map, occurrence; natives declaring it | when everything it references is |
   | `TaskOwned` | builders in every state, plain objects, natives declaring it | never |
-  | `ConcurrentReference` | reserved for atoms (clj-quickjs-10) and any heap-object handle to a dependency cell (cells are runtime-owned, not heap objects) | always; not descended into |
+  | `ConcurrentReference` | atoms (clj-quickjs-10); reserved for any heap-object handle to a dependency cell (cells are runtime-owned, not heap objects) | always; not descended into |
 
   Primitives are shareable. Plain objects are the ordinary mutable
   JavaScript objects of §4 (property storage comes later), so they count as
@@ -564,6 +564,49 @@ parser, analyzer, namespace or module linking.
   (clj-quickjs-26); cancelling a stalled request (its job stays parked;
   clj-quickjs-24); invalidation.
 
+## Atoms (clj-quickjs-10)
+
+`src/atom.rs` (contract in its module docs). Design: `design.md` §§4–6, 11.
+
+- **Three writer contracts.** Multi-writer compare-and-set on a shared atom
+  (`Runtime::atom_compare_and_set`, VM `atom_cas`); single-writer
+  publication through the one non-`Clone` `Publisher` of a single-writer
+  atom (CAS on it is rejected, so no CAS races the writer); and dependency
+  completion (`crate::dep`), which stays single-assignment. Atoms have no
+  producer, waiters, wakes or watches.
+- **Handle.** An atom is a heap object (`HeapObject::Atom`, category
+  `ConcurrentReference`); its handle is its generation-checked `ObjectId`,
+  so a stale handle never names a later object in the same slot. Every
+  value installed (creation, CAS, publication) passes `share::check` first.
+- **Comparison.** SameValue: objects by identity, `NaN` matches `NaN`,
+  `+0` differs from `-0`, other primitives by value. No structural or user
+  equality. ABA on values is allowed (`A → B → A` matches `A`), as in
+  Clojure; ABA through storage reuse is impossible (`ObjectId`s are never
+  reissued; `expected` is rooted).
+- **Storage and ordering.** The heap object holds an `Arc<AtomCell>`
+  (independently owned storage, like collection bodies); the cell holds an
+  `AtomicPtr` to an immutable `Box<Value>`. Writers install a filled box
+  with `compare_exchange(AcqRel, Acquire)` or `swap(AcqRel)`; readers load
+  with `Acquire`. The release/acquire pair also orders the writer's earlier
+  construction of the value's graph, so readers never see a partially
+  initialized node. Each atom synchronizes alone; no `SeqCst` order across
+  atoms, no volatile access, no lock on the read or compare path (the only
+  lock is the heap's object-table lock used to find the cell).
+- **Reclamation.** Atom operations are registered heap mutators
+  (`Heap::enter_mutator`, nested inside a run's registration in the VM), and
+  collections run only with no mutator registered. A replaced box is
+  retired with the writer's collection epoch and freed by a later write
+  that observes a newer epoch, or when the cell drops. This is the only
+  `unsafe` code in the crate; each block states its invariant.
+- **Load-to-root.** A load roots its result inside its own mutator
+  registration (`Rooted`, scope `Local`, or the task's operand stack), so
+  no collection can separate reading the pointer from rooting the value.
+  The value then lives until its holder releases it, regardless of later
+  replacements and collections. The collector traces only the current box.
+- **Failure contract.** A failed CAS installs nothing and reports the
+  current value (rooted); the runtime has no `swap`-with-callback and never
+  re-runs user code, macros or effects to hide a conflict.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -601,6 +644,12 @@ references only:
   depth failure, and `special_object` with `OP_SPECIAL_OBJECT_THIS_FUNC` for
   `current_function`. Frames here are task-owned indices, not C-stack
   pointers. No code was copied.
+- `research/quickjs/quickjs.c` `js_strict_eq` and `js_same_value`
+  (clj-quickjs-10): JavaScript `===` versus `Object.is`; atom CAS uses the
+  SameValue rule on raw values, not `===`. `JS_DupValue`/`JS_FreeValue`
+  (`quickjs.h`) are reference-count lifetimes, replaced here by rooting and
+  collector grace periods. `quickjs-atom.h` atoms are interned names,
+  unrelated to these atomic references. No code was copied.
 
 No QuickJS source or encodings were copied. Adapted material keeps the notice
 from `research/quickjs/LICENSE` (MIT, Copyright (c) 2017-2021 Fabrice Bellard

@@ -1,4 +1,4 @@
-//! Collection intrinsics and task-owned transient builders
+//! Collection and atom intrinsics, and task-owned transient builders
 //! (`docs/design.md` §§4–5).
 //!
 //! Private VM operations over the persistent collections of
@@ -70,6 +70,23 @@
 //! collections, but they are not shareable values: `Runtime::publish`
 //! rejects any value that reaches one (`crate::value::share`).
 //!
+//! # Atom intrinsics
+//!
+//! Opcodes `0x33`–`0x35` operate on atoms ([`crate::atom`], which documents
+//! the comparison, ordering and lifetime contract):
+//!
+//! | Mnemonic | Stack | Effect | Errors ([`AtomErrorKind`](crate::AtomErrorKind)) |
+//! |----------|-------|--------|--------|
+//! | `atom_new` | v → atom | a new shared (multi-writer) atom holding `v` | `NotShareable` |
+//! | `atom_load` | atom → v | the current value, now rooted by the frame | `NotAnAtom` |
+//! | `atom_cas` | atom e n → w ok | if the current value is SameValue to `e` (objects: identity), install `n`: `w` is `e` and `ok` is `true`; otherwise nothing changes, `w` is the current value and `ok` is `false` | `NotAnAtom`, `SingleWriter`, `NotShareable` (`n`) |
+//!
+//! A failed `atom_cas` is reported, not retried: the instruction never
+//! re-runs code that computed `n`, so effects before it happen once. The
+//! task fails with [`VmErrorKind::Atom`](crate::VmErrorKind::Atom) on an error.
+//! Single-writer atoms are readable here; only their Rust
+//! [`Publisher`](crate::Publisher) can change them.
+//!
 //! # Rooting
 //!
 //! Every intrinsic reads its operands in place and pops them only after its
@@ -80,6 +97,7 @@
 use super::dispatch::Fault;
 use super::frames::VmState;
 use super::instr::Instr;
+use crate::atom::{self, AtomError};
 use crate::collections::builder::{self, BuildFault, BuilderKind};
 use crate::collections::{self as coll, CollectionError};
 use crate::heap::Heap;
@@ -90,6 +108,15 @@ impl From<CollectionError> for Fault {
         match e {
             CollectionError::OutOfMemory => Fault::OutOfMemory("heap object table exhausted"),
             other => Fault::Collection(other),
+        }
+    }
+}
+
+impl From<AtomError> for Fault {
+    fn from(e: AtomError) -> Self {
+        match e {
+            AtomError::OutOfMemory => Fault::OutOfMemory("heap object table exhausted"),
+            other => Fault::Atom(other.kind(), other.to_string()),
         }
     }
 }
@@ -203,6 +230,28 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
             let [b] = top(state.operands())?;
             let frozen = builder::freeze(heap, caller, b)?;
             state.replace(1, frozen)?;
+        }
+        // Operands stay on the stack (rooted) until the result replaces them;
+        // this run is a registered mutator, so the result stays live until
+        // pushed.
+        Instr::AtomNew => {
+            let [v] = top(state.operands())?;
+            let a = atom::new_atom(heap, v, false, |a| a)?;
+            state.replace(1, a)?;
+        }
+        Instr::AtomLoad => {
+            let [a] = top(state.operands())?;
+            let v = atom::load(heap, a, |v| v)?;
+            state.replace(1, v)?;
+        }
+        Instr::AtomCas => {
+            let [a, expected, new] = top(state.operands())?;
+            let (witness, ok) = match atom::compare_and_set(heap, a, expected, new, |v| v)? {
+                Ok(()) => (expected, true),
+                Err(current) => (current, false),
+            };
+            state.replace(3, witness)?;
+            state.push(Value::Bool(ok));
         }
         _ => return Err(Fault::Internal("not a collection intrinsic")),
     }

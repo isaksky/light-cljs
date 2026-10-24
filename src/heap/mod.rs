@@ -41,6 +41,9 @@
 //! bodies are immutable `Arc` trie nodes outside the object table, shared
 //! between versions; the owning object's `Trace` reports every heap edge in
 //! its trie, and reads take the `objects` lock only to clone the body's `Arc`.
+//! Atoms ([`crate::atom`]) likewise hold an `Arc` cell outside the table;
+//! their operations use Rust atomics on it after cloning the `Arc`, and the
+//! atom module (not the heap) contains the crate's only `unsafe` code.
 //!
 //! **Publication.** Each slot also carries a sticky known-shareable bit,
 //! set when a persistent object is allocated from known-shareable parts or
@@ -51,13 +54,14 @@ pub mod roots;
 
 use std::any::Any;
 use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 pub use gc::{CollectError, CollectStats};
 use gc::{GcState, RootSource, SourceRegistry, Trace};
 pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
 
+use crate::atom::AtomCell;
 use crate::collections::{Builder, Occurrence, PMap, PVector};
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
@@ -115,6 +119,8 @@ pub(crate) enum ObjectKind {
     /// A binding cell (`crate::vm::function`): the task-owned storage of a
     /// mutable binding captured by closures.
     Cell,
+    /// An atomic reference to a shareable value (`crate::atom`).
+    Atom,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -163,6 +169,10 @@ pub(crate) enum HeapObject {
     /// A binding cell: mutable, task-owned; only its owning task's run
     /// changes it, in place under the object lock (`crate::vm::function`).
     Cell(BindingCell),
+    /// An atom (`crate::atom`): an explicit concurrent reference. Its cell is
+    /// independently owned `Arc` storage so operations run on Rust atomics
+    /// without holding the object lock; its `Trace` reports the current value.
+    Atom(Arc<AtomCell>),
 }
 
 impl HeapObject {
@@ -177,6 +187,7 @@ impl HeapObject {
             HeapObject::Builder(_) => ObjectKind::Builder,
             HeapObject::Function(_) => ObjectKind::Function,
             HeapObject::Cell(_) => ObjectKind::Cell,
+            HeapObject::Atom(_) => ObjectKind::Atom,
         }
     }
 }
@@ -192,6 +203,7 @@ impl Trace for HeapObject {
             HeapObject::Builder(b) => b.trace(visit),
             HeapObject::Function(f) => f.trace(visit),
             HeapObject::Cell(c) => c.trace(visit),
+            HeapObject::Atom(a) => a.trace(visit),
         }
     }
 }

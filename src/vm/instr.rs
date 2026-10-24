@@ -55,6 +55,9 @@
 //! | `CellInit`      | 0x30 | –                  | cell v →               | initialize (or re-initialize) a cell |
 //! | `CellGet`       | 0x31 | –                  | cell → v               | read a cell; ReferenceError if uninitialized |
 //! | `CellSet`       | 0x32 | –                  | cell v →               | assign a cell; ReferenceError if uninitialized |
+//! | `AtomNew`       | 0x33 | –                  | v → atom               | new shared atom holding `v` |
+//! | `AtomLoad`      | 0x34 | –                  | atom → v               | the atom's current value |
+//! | `AtomCas`       | 0x35 | –                  | atom e n → w ok        | identity compare-and-set; `w` is the value compared |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -112,6 +115,9 @@
 //! captured `let`/`const`. Cell operations on another task's cell fail with
 //! [`VmErrorKind::ForeignBinding`](crate::VmErrorKind::ForeignBinding); on a
 //! value that is not a cell, with `UnsupportedOperand`.
+//!
+//! Opcodes `0x33`–`0x35` are the private atom intrinsics (clj-quickjs-10),
+//! documented in [`crate::vm::intrinsics`] and [`crate::atom`].
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -188,6 +194,9 @@ pub enum Opcode {
     CellInit = 0x30,
     CellGet = 0x31,
     CellSet = 0x32,
+    AtomNew = 0x33,
+    AtomLoad = 0x34,
+    AtomCas = 0x35,
 }
 
 /// Operand encoding of an opcode.
@@ -286,6 +295,9 @@ impl Opcode {
             0x30 => CellInit,
             0x31 => CellGet,
             0x32 => CellSet,
+            0x33 => AtomNew,
+            0x34 => AtomLoad,
+            0x35 => AtomCas,
             _ => return None,
         })
     }
@@ -344,6 +356,9 @@ impl Opcode {
             CellInit => "cell_init",
             CellGet => "cell_get",
             CellSet => "cell_set",
+            AtomNew => "atom_new",
+            AtomLoad => "atom_load",
+            AtomCas => "atom_cas",
         }
     }
 
@@ -363,7 +378,7 @@ impl Opcode {
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
-            | CellGet | CellSet => OperandKind::None,
+            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas => OperandKind::None,
         }
     }
 }
@@ -456,6 +471,9 @@ pub(crate) enum Instr {
     CellInit,
     CellGet,
     CellSet,
+    AtomNew,
+    AtomLoad,
+    AtomCas,
 }
 
 impl Instr {
@@ -511,6 +529,9 @@ impl Instr {
             Instr::CellInit => Opcode::CellInit,
             Instr::CellGet => Opcode::CellGet,
             Instr::CellSet => Opcode::CellSet,
+            Instr::AtomNew => Opcode::AtomNew,
+            Instr::AtomLoad => Opcode::AtomLoad,
+            Instr::AtomCas => Opcode::AtomCas,
         }
     }
 
@@ -527,6 +548,8 @@ impl Instr {
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq => (2, 1),
             ToNumberPair => (2, 2),
+            AtomNew | AtomLoad => (1, 1),
+            AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet => (1, 1),
             Jump(_) => (0, 0),
@@ -552,6 +575,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 50);
+        assert_eq!(assigned, 53);
     }
 }
