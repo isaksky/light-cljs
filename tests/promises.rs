@@ -498,3 +498,17 @@ fn reaction_finally_waits_before_rejecting_the_derived_promise() {
     ));
     assert_eq!(host.0, [1., 2., 3.].map(Primitive::Number));
 }
+
+#[test]
+fn promise_objects_expose_their_intrinsic_prototype() {
+    assert_eq!(
+        run(r#"
+            const p = Promise.resolve();
+            Object.getPrototypeOf(p) === Promise.prototype &&
+            p instanceof Promise && p instanceof Object &&
+            Object.prototype.toString.call(p) === '[object Promise]';
+        "#)
+        .0,
+        ValueView::Bool(true),
+    );
+}
