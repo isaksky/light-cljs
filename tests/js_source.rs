@@ -543,8 +543,11 @@ fn bigint_to_string_with_radix() {
 /// dependency callbacks, collection at yields and execution on new threads.
 #[test]
 fn bigint_to_string_yields_collects_and_migrates() {
+    let digits: String = (0..4000)
+        .map(|i| char::from(b'0' + ((i * 7 + 1) % 10) as u8))
+        .collect();
     for expression in [
-        "value.toString().length === 4000",
+        "value.toString() === expected",
         "String(value).length === 4000",
         "('' + value).length === 4000",
         "`${value}`.length === 4000",
@@ -559,12 +562,12 @@ fn bigint_to_string_yields_collects_and_migrates() {
     ] {
         let rt = Runtime::new();
         let source = format!(
-            "let calls = 0; let value = {{valueOf() {{ calls++; return __rt.need(2021, 1); }}, toString() {{ calls++; return __rt.need(2021, 1); }} }}; {expression}"
+            "let expected = '{digits}'; let calls = 0; let value = {{valueOf() {{ calls++; return __rt.need(2021, 1); }}, toString() {{ calls++; return __rt.need(2021, 1); }} }}; {expression}"
         );
         // Primitive toString needs the BigInt receiver; other expressions
         // exercise ToPrimitive callbacks on the object above.
         let source = if expression.starts_with("value.toString()") {
-            "let value = __rt.need(2021, 1); value.toString().length === 4000".to_owned()
+            format!("let value = __rt.need(2021, 1); value.toString() === '{digits}'")
         } else {
             source
         };
@@ -591,9 +594,7 @@ fn bigint_to_string_yields_collects_and_migrates() {
                     waits += 1;
                     assert_eq!(waits, 1);
                     let request = task.take_producer_requests().pop().unwrap();
-                    let value =
-                        clj_quickjs::JsBigInt::from_digits(&format!("1{}", "0".repeat(3999)), 10)
-                            .unwrap();
+                    let value = clj_quickjs::JsBigInt::from_digits(&digits, 10).unwrap();
                     let value = rt.root(Primitive::BigInt(value));
                     task = rt
                         .complete(request.key(), request.producer(), Completion::Ready(&value))
@@ -614,6 +615,42 @@ fn bigint_to_string_yields_collects_and_migrates() {
         }
         assert!(complete, "{expression}");
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. Locale options apply ToString
+/// before validation and must stop before later option getters on failure.
+#[test]
+fn bigint_to_string_intl_options() {
+    for src in [
+        "new Intl.Locale('en', {region: 419n}).region === '419'",
+        "let calls = 0; let locale = new Intl.Locale('en', {region: {toString() { calls++; return 419n; }}}); locale.region === '419' && calls === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    let rt = Runtime::new();
+    let source = "let later = false; let caught = false; try { new Intl.Locale('en', {region: 10n ** 3999n, get calendar() { later = true; return 'gregory'; }}); } catch(e) { caught = e instanceof RangeError; } caught && !later";
+    let task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut yields = 0;
+    let mut complete = false;
+    for _ in 0..1000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yields > 100, "long option formatting must yield: {yields}");
+                complete = true;
+                break;
+            }
+            other => panic!("unexpected locale option outcome: {other:?}"),
+        }
+    }
+    assert!(complete);
 }
 
 /// Synthetic fixtures, not light-cljs output. Primitive enumeration has no

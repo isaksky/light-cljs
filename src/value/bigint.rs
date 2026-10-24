@@ -1072,6 +1072,53 @@ mod tests {
     }
 
     #[test]
+    fn radix_format_resumes_preserving_digits() {
+        for radix in [3, 10, 36] {
+            // Build the mathematical value independently with arithmetic,
+            // starting from a nonuniform, known representation in each base.
+            let digits: Vec<u32> = (0..2500).map(|i| (i * 17 + 1) % radix).collect();
+            let expected: Vec<u16> = digits
+                .iter()
+                .map(|d| char::from_digit(*d, radix).unwrap() as u16)
+                .collect();
+            let mut value = JsBigInt::from(0);
+            for digit in digits {
+                value = value
+                    .checked_mul(&JsBigInt::from(radix as i64))
+                    .unwrap()
+                    .checked_add(&JsBigInt::from(digit as i64))
+                    .unwrap();
+            }
+            for negative in [false, true] {
+                let value = if negative {
+                    value.negated()
+                } else {
+                    value.clone()
+                };
+                let mut formatter = BigIntToString::new(&value, radix);
+                let mut steps = 0;
+                let text = loop {
+                    steps += 1;
+                    assert!(steps < 2000, "radix {radix}");
+                    if let Some(text) = formatter.advance() {
+                        break text;
+                    }
+                };
+                let mut expected = expected.clone();
+                if negative {
+                    expected.insert(0, b'-' as u16);
+                }
+                assert!(steps > 2, "must resume division and digit copying");
+                assert_eq!(
+                    text.code_units(),
+                    expected,
+                    "radix {radix}, negative {negative}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn radix_format_at_the_size_cap_is_incremental() {
         let value =
             JsBigInt::from_sign_magnitude(true, vec![u32::MAX; MAX_BIGINT_BITS / 32]).unwrap();
