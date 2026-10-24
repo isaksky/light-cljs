@@ -5390,14 +5390,13 @@ No heap representation, native continuation or publication rule changes.
 ## Shareable Promise core (clj-quickjs-246)
 
 `HeapObject::Promise` is an explicit concurrent reference, never a dependency
-cell. It holds a fixed intrinsic prototype, an
-optional fulfilled/rejected result, an `is_handled` bit and an ordered list of
+cell. It holds a fixed intrinsic prototype, an optional fulfilled/rejected result, an `is_handled` bit and an ordered list of
 reaction registrations. These fields are inspected or changed only under the
 heap's short object-table metadata lock. There is no per-Promise Arc/Mutex,
 interpreter lock or JavaScript execution inside that lock. Resolving functions
 are immutable built-in function objects tracing a `PromiseResolving` guard;
-the guard holds the Promise identity and the pair's shared first-call bit. Claiming it
-precedes observable `then` lookup, so reentry cannot resolve twice.
+the guard holds the Promise identity and the pair's shared first-call bit.
+Claiming it precedes observable `then` lookup, so reentry cannot resolve twice.
 
 A Promise can be published while pending or settled. Every settlement runs
 `share::check` before storing its result: shareable results are available to

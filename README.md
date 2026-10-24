@@ -3094,6 +3094,7 @@ Deferred: Promise subclass
 capabilities/species, arbitrary own-property mutation on promises, async/await,
 combinators, finally and unhandled rejection reporting. Test with
 `cargo test --test promises -- --test-threads=3`.
+Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
 
 Date host inputs and local fields (clj-quickjs-182): `Host::current_time_millis`
 supplies `Date.now()` and `new Date()` as unrecorded leaf effects; reruns may see
@@ -3168,5 +3169,3 @@ Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
 Property escapes, v sets, d indices and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
-
-Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
