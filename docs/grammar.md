@@ -412,6 +412,11 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **String code-unit methods** (clj-quickjs-143) support primitive coercion;
+  object receivers or arguments that need ToPrimitive fail explicitly with
+  `UnsupportedOperand`. String construction (`String(v)`, clj-quickjs-72),
+  primitive string `length` and indexing (clj-quickjs-142), and the other
+  string methods remain deferred. See "String code-unit access" below.
 - **Scope errors are checked by the compiler, not the parser.**
   `parse_script` accepts redeclaration (`let a; let a;`), a `let` that
   repeats a parameter name and declarations of the reserved binding `__rt`;
@@ -1188,7 +1193,8 @@ Gaps specific to execution:
   and `++`/`--` operators, in `==` against a number or boolean, and in
   relational comparison against a non-string), ToBoolean and strings as
   map keys execute. Object operands use resumable OrdinaryToPrimitive
-  (clj-quickjs-70). `typeof`, `length` and indexing execute;
+  (clj-quickjs-70). `typeof`, `length`, indexing, the code-unit methods
+  (clj-quickjs-143) and `toString`/`valueOf` (clj-quickjs-73) execute;
   additional string methods remain deferred. Untagged template literals execute (clj-quickjs-57);
   tagged templates and `String.raw` are clj-quickjs-58.
 - **Error objects are opaque.** A caught ReferenceError, TypeError, RangeError or
@@ -2150,3 +2156,42 @@ OrdinaryToPrimitive, preserving overridden conversion methods.
 new Number(1) == 1 && 2 == new Number(2) && new String('abc') == 'abc';
 Number({valueOf: function () { return 7; }}) === 7 && String({toString: function () { return 's'; }}) === 's';
 ```
+
+### String code-unit access (clj-quickjs-143)
+
+`String.prototype.charAt(pos)`, `charCodeAt(pos)` and `codePointAt(pos)`
+require a non-null, non-undefined receiver, convert primitive receivers to
+strings, and use ToIntegerOrInfinity on primitive positions (absent,
+undefined and NaN become zero; fractions truncate toward zero). Positions
+outside the UTF-16 length give `""`, NaN and undefined respectively.
+`charAt` returns exactly one unit, including a lone surrogate; `codePointAt`
+combines a high surrogate with the immediately following low surrogate,
+otherwise it returns the unit. `String.prototype` itself acts as `""`.
+Null/undefined receivers throw catchable TypeError.
+
+`String.fromCharCode(...units)` applies ToNumber and ToUint16 to each
+primitive argument: fractions truncate, integers wrap modulo 65536, and
+NaN/infinities become zero. `String.fromCodePoint(...points)` applies
+ToNumber and requires finite integers in 0..0x10FFFF; otherwise it throws
+catchable RangeError. Astral points produce two units; surrogate code
+points produce single units. Both accept zero arguments (`""`) and work
+through `call`/`apply`. All five functions have `length` 1 and the usual
+non-enumerable method properties on the realm intrinsics. Synthetic
+fixtures, not light-cljs output:
+
+```javascript
+'abc'.charAt(1.9) === 'b' && 'abc'.charAt(-1) === '';
+'\u{10ffff}'.codePointAt(0) === 0x10ffff;
+String.fromCharCode.apply(null, [65, 66, 67]) === 'ABC';
+String.fromCharCode(0xd800).charCodeAt(0) === 0xd800;
+String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00';
+```
+
+Explicit gaps: object conversions fail with `UnsupportedOperand` pending
+resumable ToPrimitive support for these built-ins (clj-quickjs-70). The
+separate string property and constructor prerequisites (clj-quickjs-142,
+clj-quickjs-72) are still explicit unsupported failures; error constructors
+and error-object properties are also deferred. In particular the acceptance
+rows reading `String.fromCharCode(0xd800).length` and
+`String.fromCodePoint(0x41, 0x1f600).length` cannot execute yet, although the
+constructed UTF-16 contents are tested exactly.

@@ -51,3 +51,20 @@ for this runtime, not light-cljs output.
 `js_thisStringValue`, `js_number_valueOf`, `js_number_toString` and
 `js_string_toString` in `research/quickjs/quickjs.c` at that revision were
 read as semantic references. No upstream implementation code was copied.
+
+## String code-unit access (clj-quickjs-143)
+
+`tests/js_source.rs::string_code_unit_access` adapts the charAt,
+charCodeAt, codePointAt, fromCharCode and fromCodePoint assertions from
+`research/quickjs/tests/test_builtin.js`, `test_string`, and the complete
+UTF-16 unit range checked by `rope_concat`, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The latter uses a flat construction through `apply` and per-unit round trips
+instead of a quadratic concatenation loop in this runtime's flat storage.
+The QuickJS MIT copyright and permission notice is retained with the test
+(`research/quickjs/LICENSE`). Other edge cases are synthetic fixtures,
+not light-cljs output. `js_string_charAt`, `js_string_charCodeAt`,
+`js_string_codePointAt`, `js_string_fromCharCode` and
+`js_string_fromCodePoint` in `research/quickjs/quickjs.c` at the same
+revision were consulted for semantics; the Rust implementation was written
+afresh.

@@ -3431,3 +3431,34 @@ QuickJS semantic references: `research/quickjs/quickjs.c` `js_build_arguments`,
 synthetic tests are original; no upstream code or test text was copied. Mapped
 sloppy arguments, the callee accessor, arguments branding, and Symbol.iterator
 (clj-quickjs-127) remain deferred.
+
+## String code-unit built-ins (clj-quickjs-143)
+
+Five appended `Builtin` variants implement `charAt`, `charCodeAt`,
+`codePointAt`, `String.fromCharCode` and `String.fromCodePoint`. The realm
+build appends three own methods on `String.prototype` and two on `String`
+before freezing its views; existing intrinsic tracing and publication cover
+these functions. All use `PropertyFlags::METHOD` and function length 1.
+There are no new heap kinds or mutable string representations.
+
+Access methods use RequireObjectCoercible and primitive ToString, then
+ToIntegerOrInfinity, checking bounds before any Rust index cast. They read
+the flat `JsString::code_units()` slice in O(1); `codePointAt` reads at most
+two units. These generic methods accept number and boolean receivers as
+well as strings, unlike the stricter `this_string_value` used by
+`String.prototype.toString`/`valueOf`. The prototype itself represents the
+empty string. Null/undefined receivers take the existing catchable
+TypeError path.
+
+Static constructors build arbitrary UTF-16 units, including lone
+surrogates. `fromCharCode` truncates and reduces finite numbers modulo
+65536; `fromCodePoint` validates finite integral numbers before encoding a
+point, using the existing catchable `Fault::RangeError` path for invalid
+points. The leaf loop is O(argument count), bounded by the configured VM
+value-stack limit (default 2^20 values, with `apply` checking stack room),
+with at most two output units per argument and `MAX_STRING_LEN` enforced.
+It runs no JavaScript and retains no continuation across a wait. Object
+coercion fails explicitly until these built-ins use resumable ToPrimitive;
+primitive conversion reuses the dispatch helpers. All operands stay rooted
+on the VM stack during a call; strings remain independently owned,
+immutable leaf buffers outside the heap.

@@ -195,6 +195,12 @@ pub(crate) enum Builtin {
     FunctionPrototypeBind,
     /// `Array.prototype.push` (QuickJS `js_array_push`, clj-quickjs-155).
     ArrayPrototypePush,
+    /// UTF-16 access and construction (clj-quickjs-143).
+    StringPrototypeCharAt,
+    StringPrototypeCharCodeAt,
+    StringPrototypeCodePointAt,
+    StringFromCharCode,
+    StringFromCodePoint,
 }
 
 impl Builtin {
@@ -228,6 +234,11 @@ impl Builtin {
             Builtin::Function => "Function",
             Builtin::FunctionPrototypeBind => "bind",
             Builtin::ArrayPrototypePush => "push",
+            Builtin::StringPrototypeCharAt => "charAt",
+            Builtin::StringPrototypeCharCodeAt => "charCodeAt",
+            Builtin::StringPrototypeCodePointAt => "codePointAt",
+            Builtin::StringFromCharCode => "fromCharCode",
+            Builtin::StringFromCodePoint => "fromCodePoint",
         }
     }
 
@@ -258,6 +269,11 @@ impl Builtin {
             Builtin::ReflectApply => 3,
             Builtin::FunctionPrototypeBind => 1,
             Builtin::ArrayPrototypePush => 1,
+            Builtin::StringPrototypeCharAt
+            | Builtin::StringPrototypeCharCodeAt
+            | Builtin::StringPrototypeCodePointAt
+            | Builtin::StringFromCharCode
+            | Builtin::StringFromCodePoint => 1,
         }
     }
 }
@@ -365,7 +381,94 @@ pub(crate) fn call(
         Builtin::StringPrototypeToString | Builtin::StringPrototypeValueOf => {
             this_string_value(heap, task, this, which.name()).map(Value::String)
         }
+        Builtin::StringPrototypeCharAt
+        | Builtin::StringPrototypeCharCodeAt
+        | Builtin::StringPrototypeCodePointAt => string_access(heap, which, this, &arg(0)),
+        Builtin::StringFromCharCode | Builtin::StringFromCodePoint => {
+            string_from_codes(which, args)
+        }
     }
+}
+
+/// RequireObjectCoercible, ToString, then ToIntegerOrInfinity. These methods
+/// accept any primitive receiver; thisStringValue would be too restrictive.
+/// Object conversion needs a resumable ToPrimitive frame and fails explicitly.
+fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fault> {
+    if matches!(this, Value::Undefined | Value::Null) {
+        return Err(Fault::TypeError(format!(
+            "String.prototype.{} called on {}",
+            which.name(),
+            this.type_name()
+        )));
+    }
+    let string = match this {
+        Value::Object(id) if is_intrinsic(heap, *id, |r| r.string_prototype) => JsString::from(""),
+        _ => crate::vm::dispatch::to_js_string(this)?,
+    };
+    let number = crate::vm::dispatch::to_number(pos)?;
+    let index = if number.is_nan() { 0.0 } else { number.trunc() };
+    // Check before casting: infinity and huge indices must not saturate or wrap.
+    let unit = if index >= 0.0 && index < string.len() as f64 {
+        string.code_units().get(index as usize).copied()
+    } else {
+        None
+    };
+    Ok(match (which, unit) {
+        (Builtin::StringPrototypeCharAt, Some(unit)) => {
+            Value::String(JsString::from_code_units(vec![unit]).expect("one code unit fits"))
+        }
+        (Builtin::StringPrototypeCharAt, None) => Value::String(JsString::from("")),
+        (Builtin::StringPrototypeCharCodeAt, None) => Value::Number(f64::NAN),
+        (Builtin::StringPrototypeCodePointAt, Some(high @ 0xd800..=0xdbff)) => {
+            let point = match string.code_units().get(index as usize + 1).copied() {
+                Some(low @ 0xdc00..=0xdfff) => {
+                    0x10000 + ((u32::from(high) - 0xd800) << 10) + u32::from(low) - 0xdc00
+                }
+                _ => u32::from(high),
+            };
+            Value::Number(f64::from(point))
+        }
+        (_, Some(unit)) => Value::Number(f64::from(unit)),
+        (_, None) => Value::Undefined,
+    })
+}
+
+/// Leaf construction: O(args), bounded by the configured VM value-stack
+/// limit (including apply's argument-list check), at most two units per arg.
+/// No JavaScript conversion is attempted on this Rust stack.
+fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
+    let mut units = Vec::new();
+    for arg in args {
+        let n = crate::vm::dispatch::to_number(arg)?;
+        if which == Builtin::StringFromCharCode {
+            // ToUint16: truncate, modulo 2^16, non-finite values become zero.
+            let unit = if n.is_finite() {
+                n.trunc() % 65536.0
+            } else {
+                0.0
+            };
+            let unit = if unit < 0.0 { unit + 65536.0 } else { unit };
+            units.push(unit as u16);
+        } else {
+            if !n.is_finite() || !(0.0..=0x10ffff as f64).contains(&n) || n.trunc() != n {
+                return Err(Fault::RangeError("invalid code point".to_string()));
+            }
+            let point = n as u32;
+            if point <= 0xffff {
+                units.push(point as u16);
+            } else {
+                let offset = point - 0x10000;
+                units.push(0xd800 | (offset >> 10) as u16);
+                units.push(0xdc00 | (offset & 0x3ff) as u16);
+            }
+        }
+        if units.len() > crate::value::string::MAX_STRING_LEN {
+            return Err(Fault::OutOfMemory("string too long"));
+        }
+    }
+    JsString::from_code_units(units)
+        .map(Value::String)
+        .ok_or(Fault::OutOfMemory("string too long"))
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

@@ -40,6 +40,7 @@
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
+//! | String code-unit methods (clj-quickjs-143) | built-in functions | `String.prototype` has `charAt`, `charCodeAt`, `codePointAt`; `String` has `fromCharCode`, `fromCodePoint`; all have `length` (1), `name` |
 //! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
@@ -460,6 +461,23 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             Builtin::StringPrototypeValueOf,
         ],
     )?;
+    for which in [
+        Builtin::StringPrototypeCharAt,
+        Builtin::StringPrototypeCharCodeAt,
+        Builtin::StringPrototypeCodePointAt,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(
+            string_prototype,
+            which.name(),
+            method,
+            PropertyFlags::METHOD,
+        )?;
+    }
+    for which in [Builtin::StringFromCharCode, Builtin::StringFromCodePoint] {
+        let method = b.function(which, &[])?;
+        b.add(string, which.name(), method, PropertyFlags::METHOD)?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -687,7 +705,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 35);
+        assert_eq!(first.all.len(), 40);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

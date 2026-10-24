@@ -13,6 +13,97 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// String access cases adapted from QuickJS tests/test_builtin.js,
+/// test_string and rope_concat, revision 7d1c13c5d8f8.
+/// Synthetic fixtures, not light-cljs output.
+/// Copyright (c) 2017-2021 Fabrice Bellard.
+/// Copyright (c) 2017-2021 Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn string_code_unit_access() {
+    for src in [
+        r#"let a = 'abc'; a.charCodeAt(1) === 0x62 && a.charAt(1) === 'b' && a.charAt(-1) === '' && a.charAt(3) === ''"#,
+        r#"String.fromCharCode(65) === 'A' && String.fromCharCode.apply(null, [65, 66, 67]) === 'ABC'"#,
+        r#"let a = String.fromCharCode(0x20ac); a === '€' && a.charCodeAt(0) === 0x20ac"#,
+        r#"let a = '\u{10ffff}'; a.codePointAt(0) === 0x10ffff && String.fromCodePoint(0x10ffff) === a && a.codePointAt(1) === 0xdfff && a.codePointAt(2) === undefined"#,
+        r#"'abc'.charCodeAt() === 0x61 && Object.is('abc'.charCodeAt(3), NaN) && 'abc'.charAt(NaN) === 'a'"#,
+        r#"String.fromCharCode() === '' && String.fromCodePoint() === '' && String.fromCharCode(0x10041) === 'A'"#,
+        r#"String.fromCharCode(0xd800) === '\ud800' && String.fromCharCode(0xd800).charCodeAt(0) === 0xd800 && String.fromCodePoint(0x41, 0x1f600) === 'A\ud83d\ude00'"#,
+        r#"'abc'.charAt(1.9) === 'b' && 'abc'.charAt(-0.9) === 'a' && 'abc'.charAt('2') === 'c' && 'abc'.charCodeAt(null) === 97 && 'abc'.codePointAt(true) === 98"#,
+        r#"'abc'.charAt(Infinity) === '' && 'abc'.charAt(-Infinity) === '' && Object.is('abc'.charCodeAt(-1), NaN) && 'abc'.codePointAt(-1) === undefined && 'abc'.charAt(4294967296) === ''"#,
+        r#"String.fromCharCode(-1, 65536, 65.9, NaN, Infinity, undefined, null, true, '66') === '\uffff\0A\0\0\0\0\u0001B'"#,
+        r#"String.fromCodePoint('65', null, true, -0, 0xd800) === 'A\0\u0001\0\ud800'"#,
+        r#"'\ud800x'.codePointAt(0) === 0xd800 && '\udc00\ud800'.codePointAt(0) === 0xdc00 && '\ud800'.codePointAt(0) === 0xd800 && '\ud800\udc00'.charAt(0) === '\ud800'"#,
+        r#"String.prototype.charAt.call(123, 1) === '2' && String.prototype.charCodeAt.call(false, 0) === 102 && String.prototype.charAt() === ''"#,
+        r#"String.prototype.charAt.length === 1 && String.prototype.charCodeAt.length === 1 && String.prototype.codePointAt.length === 1 && String.fromCharCode.length === 1 && String.fromCodePoint.length === 1"#,
+        // Exercise every UTF-16 unit without quadratic rope construction.
+        r#"let ok = true; for (let i = 0; i < 65536; i++) { let s = String.fromCharCode(i & 0xffff); if (s.charCodeAt(0) !== i || s.codePointAt(0) !== i || s.charCodeAt(1) === s.charCodeAt(1)) { ok = false; break; } } ok"#,
+        r#"let units = []; for (let i = 0; i < 65536; i++) { units.push(i); } let s = String.fromCharCode.apply(null, units); let ok = true; for (let i = 0; i < 65536; i++) { if (s.charCodeAt(i) !== (i & 0xffff)) { ok = false; break; } } ok"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (src, kind) in [
+        ("String.fromCodePoint(0x110000)", VmErrorKind::RangeError),
+        ("String.fromCodePoint(1.5)", VmErrorKind::RangeError),
+        ("String.fromCodePoint(-1)", VmErrorKind::RangeError),
+        ("String.fromCodePoint(NaN)", VmErrorKind::RangeError),
+        ("String.fromCodePoint(Infinity)", VmErrorKind::RangeError),
+        ("String.fromCodePoint(undefined)", VmErrorKind::RangeError),
+        ("String.prototype.charAt.call(null)", VmErrorKind::TypeError),
+        (
+            "String.prototype.charCodeAt.call(undefined)",
+            VmErrorKind::TypeError,
+        ),
+        (
+            "String.prototype.codePointAt.call(null)",
+            VmErrorKind::TypeError,
+        ),
+    ] {
+        assert_eq!(failure(src).kind(), kind, "{src}");
+        assert_eq!(
+            eval(&format!(
+                "let caught = false; try {{ {src}; }} catch(e) {{ caught = true; }} caught"
+            )),
+            ValueView::Bool(true),
+            "{src}"
+        );
+    }
+}
+
+#[test]
+fn string_code_unit_access_explicit_gaps() {
+    // Missing prerequisites must fail explicitly, never return a wrong value.
+    for src in [
+        "String.fromCharCode(0xd800).length",
+        "String.fromCodePoint(0x41, 0x1f600).length",
+        "String('abc')",
+        "'abc'.charAt({valueOf: () => 1})",
+        "String.fromCharCode({valueOf: () => 65})",
+        "String.fromCodePoint({valueOf: () => 65})",
+        "String.prototype.charAt.call({toString: () => 'abc'}, 0)",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+}
+
 /// A host for budgeted runs of code that performs no host effects.
 struct NoEffects;
 
