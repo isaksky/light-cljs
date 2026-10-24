@@ -887,6 +887,7 @@ fn object_property_reclaims() {
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
     // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188),
     // Intl.NumberFormat.prototype (clj-quickjs-213),
+    // Intl.DateTimeFormat.prototype (clj-quickjs-215),
     // Intl.PluralRules.prototype (clj-quickjs-212), the three iterator
     // prototypes (clj-quickjs-237), Generator.prototype (clj-quickjs-243), and
     // the typed-array prototypes (clj-quickjs-166, clj-quickjs-167),
@@ -897,10 +898,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 42);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 43);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 42);
+    assert_eq!(rt.heap_usage().objects.plain, 43);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1022,6 +1023,11 @@ fn realm_intrinsics_retain() {
         "Array.prototype.sort",
         "Number.prototype.toExponential",
         "Number.prototype.toPrecision",
+        "Intl.DateTimeFormat",
+        "Intl.DateTimeFormat.prototype",
+        "Intl.DateTimeFormat.supportedLocalesOf",
+        "Intl.DateTimeFormat.prototype.resolvedOptions",
+        "Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype, 'format').get",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1033,9 +1039,9 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // Each completed task created its own global binding overlay (-104).
-    // Reclaim those objects, their self-cycles and the fourteen temporary accessor
+    // Reclaim those objects, their self-cycles and the fifteen temporary accessor
     // descriptors; the intrinsic values must survive independently.
-    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 14);
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 15);
     assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
@@ -1091,8 +1097,9 @@ fn realm_intrinsics_retain() {
     // Number.prototype.toFixed adds one built-in function (-150).
     // WeakMap adds one prototype and five built-in functions (-173).
     // Number.prototype.toExponential/toPrecision add two built-ins (-151).
-    assert_eq!(rt.heap_usage().objects.builtin, 226);
-    assert_eq!(rt.heap_usage().objects.plain, 42);
+    // DateTimeFormat adds one prototype and five built-ins (-215).
+    assert_eq!(rt.heap_usage().objects.builtin, 231);
+    assert_eq!(rt.heap_usage().objects.plain, 43);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1291,18 +1298,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's forty-two ordinary objects stay.
+    // go with the function; the realm's forty-three ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 42, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 43, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (42, 0));
+    assert_eq!((usage.plain, usage.function), (43, 0));
 }
 
 #[test]
@@ -1321,11 +1328,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 42, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 43, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (42, 0));
+    assert_eq!((usage.plain, usage.array), (43, 0));
 }
 
 #[test]
@@ -1982,7 +1989,7 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 42);
+        assert_eq!(rt.heap_usage().objects.plain, 43);
     }
 }
 
@@ -2007,7 +2014,7 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 42);
+        assert_eq!(rt.heap_usage().objects.plain, 43);
     }
 }
 
@@ -2063,4 +2070,29 @@ fn weak_map_symbol_keys_survive_running_safepoints() {
     rt.collect().unwrap();
     assert_eq!(map.weak_map_live_entry_count(), Some(0));
     assert!(!weak.is_live(), "dropping the local key releases the value");
+}
+
+/// Synthetic fixture, not light-cljs output. The formatter-to-cache edge keeps
+/// the bound callable alive, and the reverse edge retains a detached receiver.
+#[test]
+fn intl_date_time_format_bound_cache_retains_and_reclaims() {
+    for result in ["n", "n.format"] {
+        let rt = Runtime::new();
+        let source = format!("let n=new Intl.DateTimeFormat('de'); n.format; {result}");
+        let code = clj_quickjs::frontend::compile_script("formatter", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(value) = task.run().unwrap() else {
+            panic!("expected formatter")
+        };
+        let weak = value.downgrade();
+        drop(task);
+        rt.collect().unwrap();
+        assert!(weak.upgrade().is_ok());
+        assert_eq!(rt.heap_usage().objects.bound_function, 1);
+        drop(value);
+        rt.collect().unwrap();
+        assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
+        assert_eq!(rt.heap_usage().objects.bound_function, 0);
+        assert_eq!(rt.heap_usage().objects.plain, 43);
+    }
 }
