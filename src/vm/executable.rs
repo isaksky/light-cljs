@@ -720,12 +720,20 @@ impl Executable {
 
 /// Executable constants are a root edge (QuickJS marks bytecode constant
 /// pools in `mark_children`). They are traced through every live task that
-/// runs the code (`RootCategory::ExecutableConstant`). In this slice they are
-/// primitives, so this visits nothing for loaded code; a later pellet that
-/// allows heap constants must also root code that no live task runs yet.
+/// runs the code (`RootCategory::ExecutableConstant`) and live function objects.
+/// Symbol constants in descendant code are reachable before a closure over
+/// that code is created. Walk the immutable DAG iteratively and visit shared
+/// children once; Rust Executable handles alone are not collector roots.
 impl Trace for Code {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
-        self.constants.trace(visit);
+        let mut pending = vec![self];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(code) = pending.pop() {
+            if seen.insert(std::ptr::from_ref(code)) {
+                code.constants.trace(visit);
+                pending.extend(code.functions.iter().map(AsRef::as_ref));
+            }
+        }
     }
 }
 

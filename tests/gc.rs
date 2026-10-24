@@ -914,3 +914,69 @@ fn weak_map_unreachable_owner_does_not_retain_values() {
     assert!(!weak_map.is_live());
     assert!(!weak.is_live());
 }
+
+/// Synthetic source fixture, not light-cljs output. Replace the innermost
+/// numeric constant through ExecutableSpec to exercise host-loaded symbols.
+#[test]
+fn weak_map_symbol_keys_in_descendant_code_are_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let value = new_rooted_object(&rt);
+    let weak = value.downgrade();
+    let mut owner = compile_function(
+        r#"function run(v) {
+        function factory() { return function() { return 173; }; }
+        const m = new WeakMap(); let key = factory()(); m.set(key, v);
+        key = null; v = null;
+        __rt.need(94, 1);
+        const got = m.get(factory()());
+        if (got === undefined) throw 'lost descendant constant';
+        return __rt.vector(m, got);
+    }"#,
+    )
+    .unwrap()
+    .to_spec();
+    let mut factory = owner.functions[0].to_spec();
+    let mut child = factory.functions[0].to_spec();
+    let index = child
+        .constants
+        .iter()
+        .position(|v| matches!(v, Primitive::Number(173.0)))
+        .unwrap();
+    child.constants[index] = Primitive::Symbol(clj_quickjs::JsSymbol::new(Some("constant".into())));
+    factory.functions[0] = Executable::load(child).unwrap();
+    owner.functions[0] = Executable::load(factory).unwrap();
+    let code = Executable::load(owner).unwrap();
+    let task = rt.spawn(&code, &[&value]).unwrap();
+    drop(value);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    rt.collect().unwrap();
+    assert!(
+        weak.is_live(),
+        "descendant code is the only live symbol-key path"
+    );
+    let requests = task.take_producer_requests();
+    let r = &requests[0];
+    let ready = rt.root(Primitive::Undefined);
+    let wakeups = rt
+        .complete(
+            r.key(),
+            r.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap();
+    assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    let result = complete(task.run().unwrap());
+    let map = rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        assert!(s.same_object(s.nth(result, 1).unwrap(), s.upgrade(&weak).unwrap()));
+        s.persist(s.nth(result, 0).unwrap())
+    });
+    drop((task, result, wakeups));
+    rt.collect().unwrap();
+    assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    assert!(
+        !weak.is_live(),
+        "unrooted Executable handles are not GC roots"
+    );
+}

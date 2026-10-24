@@ -6507,3 +6507,17 @@ property-value, Map-key and closure retention plus symbol self cycles;
 `weak_map_ephemeron_values_activate_symbol_keys` covers mixed-kind fixpoints.
 `weak_map_properties_and_prototype_are_traced` covers independent ordinary
 strong edges and their reclamation.
+
+WeakMap symbol tracing also covers constants in all descendant function code,
+including code whose closure has not been created yet. `Code::trace` walks the
+immutable code DAG iteratively and deduplicates shared children. The
+`weak_map_symbol_keys_in_descendant_code_are_traced` regression injects a
+symbol through `ExecutableSpec`, collects during a dependency wait, then
+retrieves the same symbol through its descendant closure and checks the value.
+`weak_map_symbol_keys_survive_running_safepoints` in `tests/gc_roots.rs`
+keeps the key only in a running worker's local, verifies that worker's
+Safepoint participant state for three rendezvous collections, and reclaims
+the entry/value after the local is released. Instance descriptor reflection,
+accessor invocation and property deletion (including non-configurable
+failures and foreign-task rejection) are covered by
+`weak_map_property_descriptors_and_delete` and the ownership source test.

@@ -20704,6 +20704,10 @@ fn weak_maps_reject_access_from_another_task() {
             "WeakMap.prototype.set.call(m, {}, 3)",
             "WeakMap.prototype.has.call(m, 1)",
             "WeakMap.prototype.delete.call(m, 1)",
+            "Object.defineProperty(m, 'x', {value: 1})",
+            "Object.getOwnPropertyDescriptor(m, 'x')",
+            "delete m.x",
+            "delete m[Symbol()]",
             "m.foo = 3",
             "Object.keys(m)",
             "Object.getPrototypeOf(m)",
@@ -20718,5 +20722,22 @@ fn weak_maps_reject_access_from_another_task() {
                 "{source}: {body}"
             );
         }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Instance property operations
+/// dispatch through WeakMap storage, independently of the ephemeron entries.
+#[test]
+fn weak_map_property_descriptors_and_delete() {
+    for source in [
+        "let m = new WeakMap(); Object.defineProperty(m, 'x', {value: 7, configurable: true}); let d = Object.getOwnPropertyDescriptor(m, 'x'); d.value === 7 && !d.writable && !d.enumerable && d.configurable && m.x === 7 && delete m.x && !('x' in m) && delete m.x",
+        "let m = new WeakMap(); let s = Symbol('property'); Object.defineProperty(m, s, {value: 9, writable: true, enumerable: true, configurable: true}); m[s] = 10; let d = Object.getOwnPropertyDescriptor(m, s); d.value === 10 && d.writable && d.enumerable && d.configurable && delete m[s] && !m.has(s) && m[s] === undefined",
+        "let m = new WeakMap(); let s = Symbol('accessor'); let get = function() { return this.saved; }; let set = function(v) { this.saved = v; }; Object.defineProperty(m, s, {get: get, set: set, configurable: true}); m[s] = 12; let d = Object.getOwnPropertyDescriptor(m, s); d.get === get && d.set === set && m[s] === 12 && delete m[s] && m[s] === undefined && delete m.saved",
+        "let m = new WeakMap(); m.x = 1; let s = Symbol(); m[s] = 2; delete m.x && delete m[s] && Object.keys(m).length === 0 && Object.getOwnPropertyDescriptor(m, s) === undefined && !(s in m)",
+        "let m = new WeakMap(); let s = Symbol(); Object.defineProperty(m, s, {value: 1}); let ok = delete m[s] === false; let caught = false; try { (function() { 'use strict'; delete m[s]; })(); } catch(e) { caught = e instanceof TypeError; } ok && caught && m[s] === 1",
+        "let m = new WeakMap(); Object.defineProperty(m, 'fixed', {value: 3}); let ok = delete m.fixed === false; let caught = false; try { (function() { 'use strict'; delete m.fixed; })(); } catch(e) { caught = e instanceof TypeError; } ok && caught && m.fixed === 3",
+        "let m = new WeakMap(); let k = {}; m.set(k, 8); Object.defineProperty(m, 'get', {value: 1, configurable: true}); m.get === 1 && delete m.get && m.get(k) === 8",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
     }
 }

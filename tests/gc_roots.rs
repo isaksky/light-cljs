@@ -2007,3 +2007,57 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
         assert_eq!(rt.heap_usage().objects.plain, 42);
     }
 }
+
+/// A running task's body is skipped by its RootSource. Only the runner's
+/// safepoint report can retain this symbol key and activate its value.
+#[test]
+fn weak_map_symbol_keys_survive_running_safepoints() {
+    #[derive(Default)]
+    struct Reports(Mutex<Vec<CollectionReport>>);
+    impl CollectionObserver for Reports {
+        fn collected(&self, report: &CollectionReport) {
+            self.0.lock().unwrap().push(report.clone());
+        }
+    }
+    let rt = Runtime::new();
+    let reports = Arc::new(Reports::default());
+    rt.observe_collections(Arc::downgrade(&reports) as Weak<dyn CollectionObserver>);
+    let value = rt.scope(|s| {
+        let v = s.new_object();
+        s.persist(v)
+    });
+    let weak = value.downgrade();
+    let code = compile(
+        "function f(v) { let key = Symbol('live'); const m = new WeakMap(); m.set(key, v); v = null; while (__rt.effect(0, 0)) {} if (m.get(key) === undefined) throw 'lost symbol at safepoint'; key = null; return m; }",
+    );
+    let task = rt.spawn(&code, &[&value]).unwrap();
+    drop(value);
+    let spin = Spin::default();
+    let runner = {
+        let spin = spin.clone();
+        thread::spawn(move || {
+            let mut host = SpinHost::new(&spin);
+            complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap())
+        })
+    };
+    let worker = runner.thread().id();
+    assert!(spin.entered.wait(), "the symbol-key task never started");
+    for _ in 0..3 {
+        rt.request_collection().unwrap();
+        assert!(weak.is_live(), "the symbol local must activate its entry");
+        let reports = reports.0.lock().unwrap();
+        assert!(
+            reports
+                .last()
+                .unwrap()
+                .participants
+                .contains(&(worker, MutatorState::Safepoint))
+        );
+    }
+    spin.stop.store(true, Ordering::Release);
+    let map = runner.join().unwrap();
+    assert_eq!(map.weak_map_live_entry_count(), Some(1));
+    rt.collect().unwrap();
+    assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    assert!(!weak.is_live(), "dropping the local key releases the value");
+}
