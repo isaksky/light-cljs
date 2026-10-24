@@ -24,8 +24,8 @@
 //!   [`crate::module`] loads static graphs; acyclic graphs link and execute through `Runtime::spawn_module`.
 //! * [`lexer::Lexer`]: on-demand tokenizer used by the parser. It never
 //!   decides between division and a regular expression literal; the parser
-//!   requests the regexp lexical goal from grammatical context. Regular
-//!   expressions parse, but compilation requires deferred RegExp objects.
+//!   requests the regexp lexical goal from grammatical context and validates
+//!   pattern syntax, reporting early errors at the literal's opening slash.
 //!
 //! Every AST node carries a byte-offset [`Span`] into the source.
 //! [`line_column`] converts an offset into the 1-based line and column used by

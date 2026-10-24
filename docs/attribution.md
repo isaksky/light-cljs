@@ -50,6 +50,18 @@ Reference revision: `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
 `research/quickjs/quickjs.c` at that revision were consulted as semantic
 references; the Rust scanner and parser changes were written afresh.
 
+## Regular expression pattern early errors (clj-quickjs-56)
+
+`src/frontend/tests.rs::regexp_pattern_early_errors` adapts the `/aaa]/u`
+position case from `research/quickjs/tests/test_builtin.js`,
+`test_line_column_numbers`, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+`docs/grammar.md` repeats that spelling. The QuickJS MIT copyright and
+permission notice is retained with the test; see `research/quickjs/LICENSE`.
+Other cases are synthetic fixtures, not light-cljs output.
+`research/quickjs/quickjs.c::js_parse_regexp` was consulted as a semantic
+reference; validation reuses the existing Rust pattern parser.
+
 ## Array length changes (clj-quickjs-154)
 
 `tests/js_source.rs::array_length_assignment` adapts the truncation,

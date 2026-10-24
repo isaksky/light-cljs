@@ -3845,10 +3845,7 @@ impl<'a> Parser<'a> {
         }
         let span = self.tok.span;
         let kind = match &self.tok.kind {
-            TokenKind::RegExp { pattern, flags } => ExprKind::RegExp {
-                pattern: pattern.clone(),
-                flags: flags.clone(),
-            },
+            TokenKind::RegExp { .. } => return self.parse_regexp_literal(),
             TokenKind::Number(n) => ExprKind::Number(*n),
             TokenKind::BigInt(n) => ExprKind::BigInt(n.clone()),
             TokenKind::String(s) => ExprKind::String(s.clone()),
@@ -3868,6 +3865,31 @@ impl<'a> Parser<'a> {
             TokenKind::Template(part) if part.head => return self.parse_template(None),
             TokenKind::Punct(Punct::LBracket) => return self.parse_array_literal(),
             _ => return Err(self.primary_error()),
+        };
+        self.advance()?;
+        Ok(Expr::new(kind, span))
+    }
+
+    // Keep pattern-parser temporaries off the recursive expression parser's
+    // stack so its nesting budget still fits the documented 2 MiB stack.
+    #[inline(never)]
+    fn parse_regexp_literal(&mut self) -> PResult<Expr> {
+        let span = self.tok.span;
+        let TokenKind::RegExp { pattern, flags } = &self.tok.kind else {
+            unreachable!("regexp literal token")
+        };
+        crate::regexp::parse::parse(&pattern.as_str().into(), &flags.as_str().into()).map_err(
+            |e| {
+                self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    format!("invalid regular expression pattern: {}", e.message),
+                )
+            },
+        )?;
+        let kind = ExprKind::RegExp {
+            pattern: pattern.clone(),
+            flags: flags.clone(),
         };
         self.advance()?;
         Ok(Expr::new(kind, span))

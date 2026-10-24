@@ -669,7 +669,8 @@ checks left to later stages:
 - **Regular expressions** (clj-quickjs-55): literals produce positioned
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
-  Pattern early errors remain clj-quickjs-56. RegExp objects and methods
+  Pattern syntax is validated at parse time; errors name the pattern problem
+  and point to the opening slash (clj-quickjs-56). RegExp objects and methods
   execute with bounded matching, including u mode (clj-quickjs-188/-190).
   String replacement and iu folding execute (clj-quickjs-189/-191).
   Property escapes and match indices execute (clj-quickjs-192/-193);
@@ -2614,6 +2615,39 @@ throw /x/;
 /a/uv;
 ```
 
+```js accept
+/aaa]/; /(?<n>a)\k<n>/u; /[\]]/u; /[\]]/v;
+```
+
+```js reject Invalid 2:3
+
+  /aaa]/u
+```
+
+```js reject Invalid 1:1
+/aaa]/v
+```
+
+```js reject Invalid 1:1
+/(/
+```
+
+```js reject Invalid 1:1
+/a{2,1}/
+```
+
+```js reject Invalid 1:1
+/[b-a]/
+```
+
+```js reject Invalid 1:1
+/\u{110000}/u
+```
+
+```js reject Invalid 1:1
+/(?<n>a)(?<n>b)/
+```
+
 ```js reject UnexpectedEnd 1:1
 /abc
 ```
@@ -3905,8 +3939,13 @@ Quantifier counts above u64::MAX fail explicitly.
 
 Explicit gaps: v patterns and Script/Script_Extensions property escapes remain
 deferred. Binary and General_Category property escapes execute in u mode
-(clj-quickjs-192). Pattern validation at literal sites remains
-clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects and methods execute (clj-quickjs-188);
+(clj-quickjs-192). Literal sites reuse this parser for early errors
+(clj-quickjs-56): non-Unicode Annex B forms are accepted, while u/v modes
+apply strict pattern syntax. Invalid patterns produce `SyntaxError` kind
+`Invalid` at the literal's opening slash with a message naming the problem,
+including in unevaluated expressions and function bodies. The AST preserves
+the raw pattern and flags; matcher compilation and its deferred feature
+limits remain in the runtime. RegExp objects and methods execute (clj-quickjs-188);
 Unicode matching executes (clj-quickjs-190); case-insensitive matching remains deferred.
 
 ### BigInt values and literals (clj-quickjs-196)

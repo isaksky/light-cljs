@@ -484,7 +484,7 @@ impl<'a> Lexer<'a> {
 
     /// Rescan a current `/` or `/=` punctuator with the regexp lexical
     /// goal. No token in its body has been consumed, so template state is
-    /// unchanged. Pattern syntax is deliberately left to clj-quickjs-56.
+    /// unchanged. The parser validates pattern syntax after rescanning.
     pub(crate) fn rescan_regexp(&mut self, slash: &Token) -> Result<Token, SyntaxError> {
         debug_assert!(matches!(
             slash.kind,

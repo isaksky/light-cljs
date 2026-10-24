@@ -2,7 +2,8 @@
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start`, three scripts in
 //! `arrow_functions_and_asi` and four in `generator_and_async_syntax`, one in `break_and_continue`, two in
-//! `labelled_statements`, the assignments in `regexp_literals`, and six in
+//! `labelled_statements`, the assignments in `regexp_literals`, one case in
+//! `regexp_pattern_early_errors`, and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
 //! notice), the keys and shorthands of `object_literals`, the `${a, b}`
 //! and nested-template forms of `template_literals` (notice in
@@ -4243,6 +4244,66 @@ fn regexp_literals() {
     }
 }
 
+/// The first case adapts QuickJS `test_line_column_numbers` (test_builtin.js).
+/// Other cases are synthetic fixtures, not light-cljs output.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn regexp_pattern_early_errors() {
+    rejects_with("\n  /aaa]/u", SyntaxErrorKind::Invalid, 2, 3, "unexpected");
+    for (literal, problem) in [
+        ("/(/", "unterminated group"),
+        ("/a{2,1}/", "quantifier range out of order"),
+        ("/[b-a]/", "class range out of order"),
+        (r"/\u{110000}/u", "invalid Unicode escape"),
+        ("/(?<n>a)(?<n>b)/", "duplicate group name"),
+        ("/aaa]/v", "unexpected"),
+    ] {
+        let source = format!("\n  {literal}");
+        rejects_with(&source, SyntaxErrorKind::Invalid, 2, 3, problem);
+        let e = compile_script("regexp", &source).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Invalid, "{literal}");
+        assert_eq!((e.line, e.column), (2, 3), "{literal}");
+        assert!(e.message.contains(problem), "{e}");
+    }
+    // Validation is an early error even when the literal would never execute.
+    rejects_with(
+        "false && /(/;",
+        SyntaxErrorKind::Invalid,
+        1,
+        10,
+        "unterminated group",
+    );
+    rejects_with(
+        "function f() { return /(/; }",
+        SyntaxErrorKind::Invalid,
+        1,
+        23,
+        "unterminated group",
+    );
+    for literal in [r"/aaa]/", r"/(?<n>a)\k<n>/u", r"/[\]]/u", r"/[\]]/v"] {
+        parse_script(literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
+        compile_script("regexp", literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
+    }
+    // Syntax validation does not apply the runtime's deferred feature limits.
+    parse_script("/a/i").unwrap();
+}
+
 #[test]
 fn rejects_lexically_ambiguous_input() {
     use SyntaxErrorKind::*;
@@ -5305,6 +5366,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
     ];
     let makers: &[(&str, Make)] = &[
+        ("nested regexp literal", |n| {
+            format!(r"{} /(?<n>a)\k<n>/u;", "!".repeat(n))
+        }),
         ("array binding patterns", |n| {
             format!("let {}a{} = [];", "[".repeat(n), "]".repeat(n))
         }),
