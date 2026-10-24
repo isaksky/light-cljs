@@ -2726,6 +2726,11 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- Disposal symbols (clj-quickjs-235) use `research/quickjs/quickjs.c`
+  `js_symbol_funcs` and `research/quickjs/quickjs-atom.h` entries
+  `Symbol_dispose` / `Symbol_asyncDispose` as semantic references at revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No source or test text was adapted.
+
 - `tests/fixtures/modules/{test_cyclic_import,fixture_cyclic_import,assert,
   hello_module,fib_module}.js` (clj-quickjs-251) are complete parse-only copies of
   `research/quickjs/tests/{test_cyclic_import,fixture_cyclic_import,assert}.js`
@@ -4452,6 +4457,16 @@ Further well-known symbols
 and well-known protocol dispatch are deferred to their own pellets. This change
 exposes the three identities without changing iteration, instanceof or
 OrdinaryToPrimitive protocol lookup.
+
+Disposal symbols (clj-quickjs-235) extend the same private well-known table with
+`dispose` and `asyncDispose`, each backed by its own process-wide OnceLock.
+Engine code retrieves their stable identities through
+`value::symbol::well_known("dispose")` / `well_known("asyncDispose")`, without
+looking up a JavaScript global. Realm construction exposes both with FIXED
+property flags. Descriptions match QuickJS (`Symbol.dispose` and
+`Symbol.asyncDispose`); these immutable leaves retain the existing publication,
+GC and property-key representation. No disposal callbacks, iterator disposal
+methods, syntax or stack types are introduced.
 
 Numeric binary conversions complete ToNumber of the left primitive before
 converting the right object. This matters when the left operand is a symbol,

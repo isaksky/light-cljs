@@ -17605,6 +17605,36 @@ fn symbol_values() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn dispose_well_known_symbols() {
+    for src in [
+        "typeof Symbol.dispose === 'symbol' && typeof Symbol.asyncDispose === 'symbol' && Symbol.dispose !== Symbol.asyncDispose",
+        "Symbol.dispose.description === 'Symbol.dispose' && String(Symbol.dispose) === 'Symbol(Symbol.dispose)' && Symbol.dispose.toString() === 'Symbol(Symbol.dispose)'",
+        "Symbol.asyncDispose.description === 'Symbol.asyncDispose' && String(Symbol.asyncDispose) === 'Symbol(Symbol.asyncDispose)' && Symbol.asyncDispose.toString() === 'Symbol(Symbol.asyncDispose)'",
+        "Symbol.for('Symbol.dispose') !== Symbol.dispose && Symbol.for('Symbol.asyncDispose') !== Symbol.asyncDispose && Symbol.keyFor(Symbol.dispose) === undefined && Symbol.keyFor(Symbol.asyncDispose) === undefined",
+        "let o = {}; let f = function() { return 7; }; o[Symbol.dispose] = f; o[Symbol.asyncDispose] = f; o[Symbol.dispose] === f && o[Symbol.asyncDispose] === f && o[Symbol.dispose]() === 7",
+        "let o = {}; Object.defineProperty(o, Symbol.dispose, {get() { return 7; }}); Object.defineProperty(o, Symbol.asyncDispose, {value: 8}); o[Symbol.dispose] === 7 && o[Symbol.asyncDispose] === 8",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for name in ["dispose", "asyncDispose"] {
+        for src in [
+            format!(
+                "let d = Object.getOwnPropertyDescriptor(Symbol, '{name}'); d.value === Symbol.{name} && !d.writable && !d.enumerable && !d.configurable"
+            ),
+            format!(
+                "'use strict'; let s = Symbol.{name}; let caught = false; try {{ Symbol.{name} = 1; }} catch (e) {{ caught = e instanceof TypeError; }} caught && Symbol.{name} === s"
+            ),
+            format!(
+                "'use strict'; let caught = false; try {{ delete Symbol.{name}; }} catch (e) {{ caught = e instanceof TypeError; }} caught && typeof Symbol.{name} === 'symbol'"
+            ),
+        ] {
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first row adapts
 /// QuickJS test_builtin.js::test_symbol at 7d1c13c5d8f8; its full MIT notice
 /// is retained at string_code_unit_access in this file.

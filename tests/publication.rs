@@ -1183,6 +1183,54 @@ fn symbols_publish_with_identity() {
     rt.publish(&a).unwrap();
 }
 
+/// Synthetic fixtures, not light-cljs output. Publication through an atom
+/// preserves well-known identities across worlds, collection and executors.
+#[test]
+fn dispose_symbols_publish_with_identity() {
+    let rt = Runtime::new();
+    for name in ["dispose", "asyncDispose"] {
+        let make = compile_script("disposal-symbol", &format!("Symbol.{name}")).unwrap();
+        let symbol = complete(rt.spawn(&make, &[]).unwrap().run().unwrap());
+        rt.publish(&symbol).unwrap();
+        let atom = rt.new_atom(&symbol).unwrap();
+        let world = rt.new_world();
+        let other = thread::scope(|t| {
+            t.spawn(|| complete(rt.spawn_in(world, &make, &[]).unwrap().run().unwrap()))
+                .join()
+                .unwrap()
+        });
+        assert!(symbol.strict_equals(&other).unwrap());
+        drop(symbol);
+        drop(other);
+        rt.collect().unwrap();
+        let probe = compile_function(&format!(
+            "function f(s) {{ return s === Symbol.{name} && typeof s === 'symbol'; }}"
+        ))
+        .unwrap();
+        // Early VM instructions supply atom loading; equality runs source code.
+        let reader = program(1, |asm| {
+            asm.function(&probe)
+                .get_local(0)
+                .op(Opcode::AtomLoad)
+                .call(1)
+                .op(Opcode::Return);
+        });
+        let good = thread::scope(|t| {
+            t.spawn(|| {
+                complete(
+                    rt.spawn_in(world, &reader, &[&atom])
+                        .unwrap()
+                        .run()
+                        .unwrap(),
+                )
+            })
+            .join()
+            .unwrap()
+        });
+        assert_eq!(good.view(), ValueView::Bool(true), "{name}");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output: even an empty or frozen Map
 /// is task-owned, so atom creation and replacement must reject it.
 #[test]

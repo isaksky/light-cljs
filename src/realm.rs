@@ -1091,7 +1091,14 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(symbol, "for", symbol_for, PropertyFlags::METHOD)?;
     let symbol_key_for = b.function(Builtin::SymbolKeyFor, &[])?;
     b.add(symbol, "keyFor", symbol_key_for, PropertyFlags::METHOD)?;
-    for name in ["iterator", "toPrimitive", "hasInstance", "toStringTag"] {
+    for name in [
+        "iterator",
+        "toPrimitive",
+        "hasInstance",
+        "toStringTag",
+        "dispose",
+        "asyncDispose",
+    ] {
         b.add_value(
             symbol,
             name,

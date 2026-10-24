@@ -3391,8 +3391,9 @@ descriptors, prototype lookup and accessors accept symbols on objects, arrays
 and functions. Internal key order places symbols last in creation order;
 Object.keys, Object.getOwnPropertyNames and for-in exclude them. Persistent
 map keys and publication through atoms preserve identity. Symbol.iterator,
-Symbol.toPrimitive and Symbol.hasInstance are fixed non-enumerable properties,
-with identical values in every task. String(symbol) returns
+Symbol.toPrimitive, Symbol.hasInstance, Symbol.toStringTag, Symbol.dispose and
+Symbol.asyncDispose are fixed non-enumerable properties, with identical values
+in every task and world. String(symbol) returns
 "Symbol(description)" (empty text for an absent description). Implicit
 ToString (including templates and concatenation) and ToNumber throw catchable
 TypeError. Source positions use the existing operator-token convention.
@@ -3425,6 +3426,32 @@ conversion callbacks on the right, so a symbol on the left immediately throws.
 Plus and relational comparisons first obtain both primitive operands.
 Inherited symbol-keyed setters run as ordinary resumable calls and retain the
 receiver, assigned value and assignment-expression result through waits and GC.
+
+### Disposal symbols (clj-quickjs-235)
+
+Syntax: `Symbol.dispose` and `Symbol.asyncDispose` use existing property access.
+Execution: these distinct well-known primitives have descriptions `Symbol.dispose`
+and `Symbol.asyncDispose`; String conversion returns `Symbol(Symbol.dispose)`
+and `Symbol(Symbol.asyncDispose)`. They are shared across tasks and worlds,
+including after publication and collection, and are distinct from registry
+symbols with matching descriptions. Their Symbol constructor properties are
+non-writable, non-enumerable and non-configurable. Exceptions: strict assignment
+or deletion throws catchable TypeError. Rejected forms and explicit gaps:
+this adds no syntax; `using`, `await using`, disposal stacks and iterator
+disposal methods remain deferred to their own pellets.
+
+Synthetic fixture, not light-cljs output:
+
+```js accept
+typeof Symbol.dispose === 'symbol' && Symbol.dispose !== Symbol.asyncDispose;
+Symbol.dispose.description === 'Symbol.dispose';
+String(Symbol.asyncDispose) === 'Symbol(Symbol.asyncDispose)';
+Symbol.for('Symbol.dispose') !== Symbol.dispose;
+let resource = {};
+let cleanup = function() { return 7; };
+resource[Symbol.dispose] = cleanup;
+resource[Symbol.dispose] === cleanup && resource[Symbol.dispose]() === 7;
+```
 
 ### JSON.stringify (clj-quickjs-160/-161)
 
