@@ -313,6 +313,22 @@ impl Decimal {
             }));
         }
         let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+        // Validate before checking resource limits or allocating coefficient
+        // storage: malformed numeric strings must format as NaN at any size.
+        let mut dot = false;
+        let mut has_digit = false;
+        for c in mantissa.bytes() {
+            if c == b'.' && !dot {
+                dot = true;
+            } else if c.is_ascii_digit() {
+                has_digit = true;
+            } else {
+                return Ok(None);
+            }
+        }
+        if !has_digit {
+            return Ok(None);
+        }
         let negative_exponent = exponent.starts_with('-');
         let magnitude = exponent.strip_prefix(['-', '+']).unwrap_or(exponent);
         // Check the entire syntax before detecting the resource limit, so a
@@ -335,20 +351,7 @@ impl Decimal {
             magnitude as i32
         };
         let mut point = mantissa.find('.').unwrap_or(mantissa.len()) as i32 + exponent;
-        let mut dot = false;
-        let mut digits = Vec::new();
-        for c in mantissa.bytes() {
-            if c == b'.' && !dot {
-                dot = true;
-            } else if c.is_ascii_digit() {
-                digits.push(c);
-            } else {
-                return Ok(None);
-            }
-        }
-        if digits.is_empty() {
-            return Ok(None);
-        }
+        let mut digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
         let leading = digits
             .iter()
             .position(|&c| c != b'0')

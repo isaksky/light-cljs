@@ -17645,6 +17645,13 @@ fn intl_number_format_decimal_resource_limits() {
         "1ex",
         "1e999999999999999999999x",
         "1e-10001x",
+        "xe10001",
+        "1..0e-10001",
+        "e10001",
+        ".e10001",
+        "xE+10001",
+        "1x0e999999999999999999999",
+        ".e-999999999999999999999",
     ] {
         assert_eq!(
             eval(&format!(
@@ -17654,6 +17661,35 @@ fn intl_number_format_decimal_resource_limits() {
             "{text}"
         );
     }
+    for mantissa in [
+        "1".repeat(100_000) + "x",
+        "1".repeat(100_000) + "..",
+        ".".repeat(100_001),
+    ] {
+        for exponent in ["", "e10001", "e-10001"] {
+            assert_eq!(
+                eval(&format!(
+                    "new Intl.NumberFormat('en').format('{mantissa}{exponent}') === 'NaN'"
+                )),
+                ValueView::Bool(true)
+            );
+        }
+    }
+    let oversized = "1".repeat(100_001);
+    assert_eq!(
+        failure(&format!(
+            "new Intl.NumberFormat('en').format('{oversized}')"
+        ))
+        .kind(),
+        VmErrorKind::RangeError
+    );
+    let boundary = "0".repeat(99_999) + "1";
+    assert_eq!(
+        eval(&format!(
+            "new Intl.NumberFormat('en').format('{boundary}') === '1'"
+        )),
+        ValueView::Bool(true)
+    );
     assert_eq!(
         eval(
             "let f=new Intl.NumberFormat('en',{useGrouping:false}).format; let s=f('1e10000'); s.length === 10001 && s[0] === '1' && s[10000] === '0' && f('1e-10000') === '0' && f('1e+00000000000000000000001') === '10'"
