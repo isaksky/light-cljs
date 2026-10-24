@@ -5196,6 +5196,9 @@ The append-only global/Builtin registries install callable, nonconstructible
 inherits from Object.prototype. Both are rooted and copied into the existing
 immutable realm views. BigInt primitive property lookup and prototype reflection
 use that prototype without allocating a wrapper or introducing a heap kind.
+Reads of deferred `toString` and `valueOf` stop at BigInt.prototype with
+UnsupportedOperand before reaching Object's methods; presence checks report
+those standard names without retrieving them. Own overrides are found first.
 
 `JsBigInt::from_integral_number` validates finiteness/integrality and decodes the
 binary64 significand and exponent directly into canonical limbs (at most 1024

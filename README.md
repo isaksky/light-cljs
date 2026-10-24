@@ -2997,7 +2997,8 @@ use that prototype for property lookup and `Object.getPrototypeOf`.
 Objects use resumable ToPrimitive with hint number. String comparison shares
 the parser. Scans and decimal limb work are budgeted, with a 1 Mbit cap and
 catchable RangeError for oversized valid input. Rope flattening may first take
-linear time. Prototype conversion methods and wrappers remain deferred.
+linear time. Prototype conversion methods and wrappers remain deferred;
+reads of BigInt's deferred `toString`/`valueOf` fail explicitly.
 
 Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.

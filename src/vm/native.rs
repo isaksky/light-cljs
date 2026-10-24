@@ -830,8 +830,12 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         instr,
         CompareLt | CompareGt | CompareLe | CompareGe | LooseEq
     ) {
-        let pair = operands::<2>(state)?.to_vec();
-        if let Some(parser) = bigint_comparison(instr, pair) {
+        let ops = state.operands();
+        let at = ops
+            .len()
+            .checked_sub(2)
+            .ok_or(Fault::Internal("operand stack underflow"))?;
+        if let Some(parser) = bigint_comparison(instr, &ops[at..]) {
             state.pop()?;
             state.pop()?;
             push_native(state, parser)?;
@@ -1807,14 +1811,14 @@ pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), F
 
 /// Parse a string only after both operands have passed through ToPrimitive.
 /// Invalid strings become NaN, which is unequal/unordered for these operations.
-fn bigint_comparison(instr: Instr, operands: Vec<Value>) -> Option<NativeState> {
+fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
     if !matches!(
         instr,
         Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe | Instr::LooseEq
     ) {
         return None;
     }
-    let index = match operands.as_slice() {
+    let index = match operands {
         [Value::String(_), Value::BigInt(_)] => 0,
         [Value::BigInt(_), Value::String(_)] => 1,
         _ => return None,
@@ -1825,7 +1829,7 @@ fn bigint_comparison(instr: Instr, operands: Vec<Value>) -> Option<NativeState> 
     Some(NativeState::BigIntParse {
         parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
         instr: Some(instr),
-        operands,
+        operands: operands.to_vec(),
         index,
     })
 }
@@ -2577,7 +2581,7 @@ impl NativeState {
                         builtin::math(which, operands).map(Action::Return)
                     }
                     ConvertTarget::Instruction(instr) => {
-                        if let Some(parser) = bigint_comparison(instr, operands.clone()) {
+                        if let Some(parser) = bigint_comparison(instr, operands) {
                             *self = parser;
                             return Ok(Action::Continue);
                         }

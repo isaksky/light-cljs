@@ -416,6 +416,11 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
+        "BigInt.prototype.toString()",
+        "BigInt.prototype.valueOf()",
+        "String(BigInt.prototype)",
+        "(1n).toString()",
+        "(1n).valueOf()",
         "String(1n)",
         "Number(1n)",
         "new Number(1n)",
@@ -16231,4 +16236,46 @@ fn bigint_string_conversion_waits_yields_collects_and_migrates() {
         }
         assert!(complete, "{expression}");
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. Every primitive result takes
+/// the same constructor completion path after object coercion, exactly once.
+#[test]
+fn bigint_object_coercion_completes_with_each_primitive_kind() {
+    for (primitive, expected) in [
+        ("42", "42n"),
+        ("-0", "0n"),
+        ("1e21", "1000000000000000000000n"),
+        ("true", "1n"),
+        ("false", "0n"),
+        ("18446744073709551616n", "18446744073709551616n"),
+    ] {
+        let source = format!(
+            "let calls = 0; let x = {{valueOf() {{ calls++; return {primitive}; }}, toString() {{ throw 99; }} }}; BigInt(x) === {expected} && calls === 1"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{primitive}");
+    }
+    for (primitive, kind) in [
+        ("1.5", "RangeError"),
+        ("NaN", "RangeError"),
+        ("Infinity", "RangeError"),
+        ("undefined", "TypeError"),
+        ("null", "TypeError"),
+        ("Symbol()", "TypeError"),
+    ] {
+        let source = format!(
+            "let calls = 0; let x = {{valueOf() {{ calls++; return {primitive}; }}, toString() {{ throw 99; }} }}; let caught = false; try {{ BigInt(x); }} catch (e) {{ caught = e instanceof {kind}; }} caught && calls === 1"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{primitive}");
+    }
+    assert_eq!(
+        eval(
+            "let token = {}; let calls = 0; let caught = false; try { BigInt({valueOf() { calls++; throw token; }}); } catch(e) { caught = e === token; } caught && calls === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("('toString' in BigInt.prototype) && ('valueOf' in BigInt.prototype)"),
+        ValueView::Bool(true)
+    );
 }

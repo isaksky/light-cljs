@@ -3539,3 +3539,5 @@ rope may first flatten in linear time.
 
 Explicit gaps: BigInt wrapper objects, prototype conversion methods/ToString,
 `Number(bigint)` and `asIntN`/`asUintN` remain with their sibling pellets.
+Reads of deferred BigInt `toString`/`valueOf` fail with UnsupportedOperand,
+including reads during ToPrimitive on BigInt.prototype.
