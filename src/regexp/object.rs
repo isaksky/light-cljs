@@ -36,7 +36,7 @@ pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compile
         parse::Flags::parse(flags).map_err(|e| CompileError::Syntax(e.to_string()))?;
     for (flag, set) in [
         ('d', parsed_flags.has_indices),
-        ('i', parsed_flags.ignore_case),
+        ('i', parsed_flags.ignore_case && !parsed_flags.unicode),
         ('v', parsed_flags.unicode_sets),
     ] {
         if set {

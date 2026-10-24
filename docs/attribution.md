@@ -667,3 +667,25 @@ references for local/UTC text, minute-offset truncation, the UTC alias, and
 function-call behavior. The Rust formatter is independently written; the new
 source fixtures are synthetic, not light-cljs output, and do not copy upstream
 test text. No additional data or dependencies were imported.
+
+## Unicode RegExp simple folding (clj-quickjs-191)
+
+`tests/fixtures/js/regexp_case_fold.js` adapts the two complemented-class
+replacement rows from `research/quickjs/tests/test_builtin.js::test_regexp`
+(lines 775–776), revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The fixture retains the QuickJS MIT notice. `libregexp.c::lre_canonicalize`
+usage and class closure were consulted for semantics.
+
+`src/regexp/case_fold_data.rs` and `src/frontend/unicode_ident.rs` derive from
+`research/quickjs/libunicode-table.h`, expanded offline using the pinned
+`libunicode.c`/`libunicode.h` decoder at that revision through the existing
+`scripts/quickjs-data/` exporter and `repack-unicode.pl`. Copyright (c)
+2017–2018 Fabrice Bellard; the full MIT notice is retained in
+`src/intl/data/QUICKJS-LICENSE`. The runtime matcher is in-tree Rust.
+
+The outputs are checked across the complete code-point domain against Unicode
+17.0.0 [CaseFolding.txt](https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt)
+and [DerivedCoreProperties.txt](https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt),
+with hashes in the repacker and `src/regexp/case_fold_provenance.txt`.
+The QuickJS FB05/FB06 representative is reversed to the normative C/S target.
+The Unicode License v3 notice is reproduced in `docs/UNICODE-LICENSE`.

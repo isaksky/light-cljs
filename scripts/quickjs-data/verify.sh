@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# != 2 ]]; then
-    echo "usage: bash $0 QUICKJS_SOURCE NEW_OUTPUT_DIRECTORY" >&2
+if [[ $# != 2 && $# != 3 ]]; then
+    echo "usage: bash $0 QUICKJS_SOURCE NEW_OUTPUT_DIRECTORY [UCD_17_DIRECTORY]" >&2
     exit 2
 fi
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -46,3 +46,28 @@ if bash "$script_dir/generate.sh" "$output_dir/drift" "$output_dir/drift-result"
 fi
 test ! -e "$output_dir/drift-result/export.c"
 echo 'PASS: repeatable generation, edge cases, mutation detection, and input pinning'
+
+if [[ $# == 3 ]]; then
+    perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$3" "$output_dir/unicode-first"
+    perl "$script_dir/repack-unicode.pl" "$output_dir/second" "$source_dir" "$3" "$output_dir/unicode-second"
+    for file in case_fold_data.rs unicode_ident.rs provenance.txt reference.bin; do
+        cmp "$output_dir/unicode-first/$file" "$output_dir/unicode-second/$file"
+    done
+    rustc --edition=2024 -D warnings "$output_dir/unicode-first/verify.rs" -o "$output_dir/unicode-first/verify"
+    "$output_dir/unicode-first/verify" "$output_dir/unicode-first/reference.bin"
+    # A wrong decoded value must fail the runtime differential comparison.
+    perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 65 * 5, 4) = pack("V", 65); print $s' \
+        "$output_dir/unicode-first/reference.bin" > "$output_dir/unicode-first/corrupt.bin"
+    if "$output_dir/unicode-first/verify" "$output_dir/unicode-first/corrupt.bin" > "$output_dir/unicode-corruption.log" 2>&1; then
+        echo 'incorrect decoded Unicode value escaped comparison' >&2; exit 1
+    fi
+    mkdir "$output_dir/ucd-drift"
+    cp "$3/CaseFolding.txt" "$3/DerivedCoreProperties.txt" "$output_dir/ucd-drift/"
+    echo '# unexpected input version' >> "$output_dir/ucd-drift/CaseFolding.txt"
+    if perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$output_dir/ucd-drift" "$output_dir/ucd-drift-result" \
+        > "$output_dir/ucd-drift.log" 2>&1; then
+        echo 'unpinned UCD accepted' >&2; exit 1
+    fi
+    test ! -e "$output_dir/ucd-drift-result/export.c"
+    echo 'PASS: Unicode repeatability, full-domain runtime comparison, corruption and version guards'
+fi

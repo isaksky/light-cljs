@@ -199,3 +199,51 @@ are evaluated by C, including zero entries for algorithmic systems. No Intl
 service code is linked or executed. The repacker includes the three immutable
 statics in `numbers.rs`. Verification includes numbering indices, non-BMP digit
 blocks, algorithmic zero slots and Han decimal digits.
+
+## Unicode identifiers and RegExp simple folding
+
+`repack-unicode.pl` uses the verified import's `case_conv_*` and ID table
+snapshot as the starting data. It checks the input hashes again and compiles
+the pinned `libunicode.c` solely as an offline reference decoder. It emits
+safe immutable Rust mappings/ranges, not a linked C runtime. The extra decoder
+and UCD hashes are pinned in the repacker and recorded in the generated
+`src/regexp/case_fold_provenance.txt`. Unicode and QuickJS notices remain in
+`docs/UNICODE-LICENSE` and `src/intl/data/QUICKJS-LICENSE`.
+
+Unicode 17.0.0 is verified independently: every code point's folding agrees
+with CaseFolding.txt C/S entries, and both identifier properties agree with
+DerivedCoreProperties.txt. The pinned QuickJS reference chooses FB05 as the
+representative of the FB05/FB06 equivalence class; the repacker checks that
+exact exception and reverses it to the normative C/S representative FB06.
+No other difference is permitted. Identifiers replace the old host-Perl
+Unicode 16.0.0 tables; regeneration no longer depends on Perl's UCD version.
+The shared policy for -191/-192/-209 is Unicode 17.0.0, with each additional
+property, normalization, collation or segmentation consumer verifying its own
+data. The locale snapshot does not identify a separately verified CLDR release.
+
+Acquire the versioned inputs once (the repacker rejects a wrong version or
+hash), then regenerate inside the worktree. C, Perl, rustc and the UCD files
+are needed only for this explicit maintenance command:
+
+```sh
+mkdir -p target/ucd-17
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt \
+  -o target/ucd-17/CaseFolding.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt \
+  -o target/ucd-17/DerivedCoreProperties.txt
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/unicode-import
+nix develop --command bash scripts/gen-unicode-ident.sh \
+  target/unicode-import/first /home/dev/projects/clj-quickjs/research/quickjs \
+  target/ucd-17 target/unicode-repacked-new
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/unicode-check-new target/ucd-17
+```
+
+The optional third verification argument also checks byte-identical repeated
+expansion and provenance, compares the actual installed Rust folding and
+identifier consumers across all 1,114,112 code points against the reference,
+and rejects deliberately corrupted decoded values and changed UCD inputs.
+It must be run after installing regenerated data. RegExp semantics are covered
+separately by `cargo test --lib regexp::` and
+`cargo test --test js_source regexp_case_insensitive_unicode -- --exact`.

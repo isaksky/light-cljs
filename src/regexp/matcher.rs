@@ -7,6 +7,7 @@
 
 use std::{fmt, ops::Range};
 
+use super::case_fold::{SIMPLE_FOLD, canonicalize};
 use super::ir::*;
 
 /// Work allowance for one complete search, including all candidate positions,
@@ -56,11 +57,11 @@ pub struct Program {
 
 #[derive(Clone, Debug)]
 enum Instruction {
-    Char(u32),
+    Char(u32, bool),
     Dot(bool),
-    Class(CharacterClass),
-    Assert(Assertion, bool),
-    Backreference(Vec<usize>),
+    Class(CharacterClass, bool),
+    Assert(Assertion, bool, bool),
+    Backreference(Vec<usize>, bool),
     Start(usize),
     End(usize),
     Clear(usize, usize),
@@ -116,12 +117,12 @@ fn merge_span(a: CaptureSpan, b: CaptureSpan) -> CaptureSpan {
 }
 
 /// Compile validated parser IR without recursive traversal. Lookbehind
-/// and ignore-case matching are explicitly deferred, including scoped i.
+/// and non-Unicode ignore-case matching are explicitly deferred.
 /// The public arena is checked for invalid edges/indices before indexing it.
 pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
     let unicode = pattern.flags.unicode || pattern.flags.unicode_sets;
     let max_character = if unicode { 0x10ffff } else { 0xffff };
-    if pattern.flags.ignore_case {
+    if pattern.flags.ignore_case && !unicode {
         return Err(MatchError::Unsupported("ignore-case matching"));
     }
     if pattern.root.0 >= pattern.nodes.len() {
@@ -175,10 +176,13 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                 enable,
                 disable,
             } => {
-                if enable.ignore_case {
+                if enable.ignore_case && !unicode {
                     return Err(MatchError::Unsupported("ignore-case matching"));
                 }
-                if enable.multiline && disable.multiline || enable.dot_all && disable.dot_all {
+                if enable.multiline && disable.multiline
+                    || enable.dot_all && disable.dot_all
+                    || enable.ignore_case && disable.ignore_case
+                {
                     return Err(MatchError::InvalidPattern);
                 }
                 child(*body)?
@@ -218,7 +222,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
     let modifiers = Modifiers {
         multiline: pattern.flags.multiline,
         dot_all: pattern.flags.dot_all,
-        ignore_case: false,
+        ignore_case: pattern.flags.ignore_case,
     };
     let mut tasks = vec![
         Build::Emit(Instruction::Accept),
@@ -278,7 +282,8 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                             multiline: (modifiers.multiline || enable.multiline)
                                 && !disable.multiline,
                             dot_all: (modifiers.dot_all || enable.dot_all) && !disable.dot_all,
-                            ignore_case: false,
+                            ignore_case: (modifiers.ignore_case || enable.ignore_case)
+                                && !disable.ignore_case,
                         },
                     )),
                     Node::Repeat {
@@ -333,18 +338,53 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                             Build::Label(end),
                         ]);
                     }
-                    Node::Literal(c) => sequence.push(Build::Emit(Instruction::Char(*c))),
+                    Node::Literal(c) => sequence.push(Build::Emit(Instruction::Char(
+                        canonicalize(*c, modifiers.ignore_case),
+                        modifiers.ignore_case,
+                    ))),
                     Node::Dot => sequence.push(Build::Emit(Instruction::Dot(modifiers.dot_all))),
-                    Node::Assertion(a) => {
-                        sequence.push(Build::Emit(Instruction::Assert(*a, modifiers.multiline)))
-                    }
+                    Node::Assertion(a) => sequence.push(Build::Emit(Instruction::Assert(
+                        *a,
+                        modifiers.multiline,
+                        modifiers.ignore_case,
+                    ))),
                     Node::Backreference(ids) => {
                         budget.charge(ids.len())?;
-                        sequence.push(Build::Emit(Instruction::Backreference(ids.clone())));
+                        sequence.push(Build::Emit(Instruction::Backreference(
+                            ids.clone(),
+                            modifiers.ignore_case,
+                        )));
                     }
                     Node::Class(class) => {
                         budget.charge(class.members.len())?;
-                        sequence.push(Build::Emit(Instruction::Class(class.clone())));
+                        let mut closed = class.clone();
+                        if modifiers.ignore_case {
+                            // Represent the image under Canonicalize. Keep ranges
+                            // plus the folded targets of their nonidentity entries;
+                            // runtime inputs are canonicalized before membership.
+                            // Negation remains outside this operation.
+                            for member in &mut closed.members {
+                                if let ClassMember::Literal(cp) = member {
+                                    *cp = canonicalize(*cp, true);
+                                }
+                            }
+                            for member in &class.members {
+                                if let ClassMember::Range(a, b) = member {
+                                    let start = SIMPLE_FOLD.partition_point(|&(cp, _)| cp < *a);
+                                    let end = SIMPLE_FOLD.partition_point(|&(cp, _)| cp <= *b);
+                                    budget.charge(end - start)?;
+                                    closed.members.extend(
+                                        SIMPLE_FOLD[start..end]
+                                            .iter()
+                                            .map(|&(_, target)| ClassMember::Literal(target)),
+                                    );
+                                }
+                            }
+                        }
+                        sequence.push(Build::Emit(Instruction::Class(
+                            closed,
+                            modifiers.ignore_case,
+                        )));
                     }
                 }
                 tasks.extend(sequence.into_iter().rev());
@@ -473,9 +513,9 @@ impl Machine {
             self.pc += 1;
             let success = match instruction {
                 Instruction::Accept => return Ok(true),
-                Instruction::Char(c) => {
+                Instruction::Char(c, ignore_case) => {
                     if let Some((actual, width)) = read_character(input, self.pos, program.unicode)
-                        && actual == *c
+                        && canonicalize(actual, *ignore_case) == *c
                     {
                         self.pos += width;
                         true
@@ -493,8 +533,9 @@ impl Machine {
                         false
                     }
                 }
-                Instruction::Class(class) => {
+                Instruction::Class(class, ignore_case) => {
                     if let Some((c, width)) = read_character(input, self.pos, program.unicode) {
+                        let c = canonicalize(c, *ignore_case);
                         let mut found = false;
                         for member in &class.members {
                             self.budget.charge(1)?;
@@ -517,15 +558,17 @@ impl Machine {
                         false
                     }
                 }
-                Instruction::Assert(assertion, multiline) => {
+                Instruction::Assert(assertion, multiline, ignore_case) => {
                     // Line terminators and word characters are all BMP code
                     // points; either surrogate half has the same classification.
                     let previous = self
                         .pos
                         .checked_sub(1)
                         .and_then(|i| input.get(i))
-                        .map(|&c| u32::from(c));
-                    let next = input.get(self.pos).map(|&c| u32::from(c));
+                        .map(|&c| canonicalize(u32::from(c), *ignore_case));
+                    let next = input
+                        .get(self.pos)
+                        .map(|&c| canonicalize(u32::from(c), *ignore_case));
                     match assertion {
                         Assertion::Start => {
                             self.pos == 0 || *multiline && previous.is_some_and(line)
@@ -541,7 +584,7 @@ impl Machine {
                         }
                     }
                 }
-                Instruction::Backreference(indices) => {
+                Instruction::Backreference(indices, ignore_case) => {
                     let mut range = None;
                     for &index in indices {
                         self.budget.charge(1)?;
@@ -557,13 +600,19 @@ impl Machine {
                             self.budget.charge(1)?;
                             let (expected, width) = read_character(input, index, program.unicode)
                                 .expect("capture is within input");
-                            if read_character(input, self.pos, program.unicode)
-                                != Some((expected, width))
+                            let Some((actual, actual_width)) =
+                                read_character(input, self.pos, program.unicode)
+                            else {
+                                equal = false;
+                                break;
+                            };
+                            if canonicalize(actual, *ignore_case)
+                                != canonicalize(expected, *ignore_case)
                             {
                                 equal = false;
                                 break;
                             }
-                            self.pos += width;
+                            self.pos += actual_width;
                             index += width;
                         }
                     }

@@ -1219,9 +1219,9 @@ clj-quickjs-57.
 Supported:
 
 - Identifiers made of Unicode `ID_Start` / `ID_Continue` code points (plus
-  `$`, `_`, ZWNJ, ZWJ), from Unicode 16.0 tables in
-  `src/frontend/unicode_ident.rs` (regenerate with
-  `scripts/gen-unicode-ident.sh`, which needs perl), and identifier escapes
+  `$`, `_`, ZWNJ, ZWJ), from verified Unicode 17.0.0 tables in
+  `src/frontend/unicode_ident.rs` (regeneration commands and pinned inputs:
+  `scripts/quickjs-data/README.md`), and identifier escapes
   `\uHHHH` / `\u{H...}`. Names are code point sequences compared without
   normalization everywhere (binding resolution, the reserved `__rt`
   binding). A reserved word written with escapes is rejected except as a
@@ -1231,8 +1231,7 @@ Supported:
 Deferred:
 
 - Diagnostics quote a name as written in the source (an escaped name is
-  quoted with its escapes), and the identifier tables follow Unicode 16.0
-  until regenerated.
+  quoted with its escapes).
 
 ### Bitwise and shift operators (clj-quickjs-62)
 
@@ -2875,8 +2874,9 @@ Each search is bounded by `MAX_MATCH_STEPS = 1_000_000` across all candidate
 positions, assertions and backtracks. Exhaustion returns `LimitExceeded`
 (the RegExp object layer must throw a catchable RangeError). Native stack
 depth is independent of pattern depth and input length. Compilation has its
-own allowance of the same size. Lookbehind and ignore-case (including scoped i)
-fail explicitly. Unicode mode executes by code point (clj-quickjs-190).
+own allowance of the same size. Lookbehind and non-Unicode ignore-case
+fail explicitly. Unicode mode executes by code point (clj-quickjs-190), with
+simple folding for iu and scoped i (clj-quickjs-191).
 JavaScript RegExp objects/methods,
 literals and global lastIndex are supplied by clj-quickjs-188.
 
@@ -2989,11 +2989,11 @@ ToLength and global/sticky updates. Match arrays include `index`, `input`,
 use a null-prototype object. Programs are immutable; objects are task-owned
 and cannot be published. Argument coercions and getters may suspend.
 
-Matching supports g/m/s/u/y. The 1,000,000-step search/compilation bounds throw
-catchable RangeError; invalid patterns and deferred i/v/d flags throw
-catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `gmsuy`
+Matching supports g/m/s/u/y and i with u. The 1,000,000-step search/compilation bounds throw
+catchable RangeError; invalid patterns, plain i and deferred v/d flags throw
+catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `gimsuy`
 for currently constructible patterns. Deferred: literal pattern early errors,
-lookbehind, scoped i, case folding, Unicode sets, indices, Symbol.match recognition,
+lookbehind, non-Unicode case folding, Unicode sets, indices, Symbol.match recognition,
 and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
@@ -3069,7 +3069,7 @@ themselves, never half a pair. Braced escapes and astral ranges execute.
 Match/capture indices and lastIndex remain UTF-16 offsets; an initial lastIndex
 inside a pair starts at its lead surrogate. Global replacement advances empty
 matches by code point, while plain `exec` leaves empty matches at their end.
-The existing catchable step limit applies. Deferred: i/iu folding, property
+The existing catchable step limit applies. Deferred: non-Unicode i folding, property
 escapes, v sets, d indices and lookbehind. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.
 
@@ -3153,3 +3153,13 @@ host clock it raises RangeError. Explicit `String(date)` uses `toString`.
 Parsing, default Date coercion, `toJSON`, and locale variants remain deferred.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`.
+
+### Unicode RegExp case folding (clj-quickjs-191)
+
+Supported: iu simple case folding for literals, ranges, class escapes, word
+boundaries, backreferences and scoped i. Classes close under folding before
+negation: `"aAbBcC".replace(/[^b]/gui, "X")` returns `"XXbBXX"`.
+Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
+normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
+Property escapes, v sets, d indices and lookbehind remain deferred. Test:
+`CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.

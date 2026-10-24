@@ -286,6 +286,52 @@ fn offsets_search_and_code_units() {
 }
 
 #[test]
+fn unicode_folding_closes_classes_before_complement() {
+    for (pattern, input) in [
+        ("[A-Z]", "K"),
+        ("[a-z]", "ſ"),
+        ("[\\uFB05-\\uFB05]", "ﬆ"),
+        ("[\\u{16EA0}-\\u{16EB8}]", "\u{16EBB}"),
+        ("(Σ)\\1", "Σς"),
+        ("(?i:k)(?-i:k)", "Kk"),
+    ] {
+        assert!(
+            exec(
+                &program(pattern, "iu").unwrap(),
+                &input.encode_utf16().collect::<Vec<_>>(),
+                0
+            )
+            .unwrap()
+            .is_some(),
+            "{pattern}: {input}"
+        );
+    }
+    for (pattern, input) in [
+        ("[^A-Z]", "K"),
+        ("[\\W]", "ſ"),
+        ("[^\\W]", "!"),
+        ("[İ]", "i"),
+    ] {
+        assert!(
+            exec(
+                &program(pattern, "iu").unwrap(),
+                &input.encode_utf16().collect::<Vec<_>>(),
+                0
+            )
+            .unwrap()
+            .is_none(),
+            "{pattern}: {input}"
+        );
+    }
+    // The expanded class representation shares the compilation budget.
+    let pattern = format!("[{}]", r"\u0000-\u{10FFFF}".repeat(700));
+    assert!(matches!(
+        program(&pattern, "iu"),
+        Err(MatchError::LimitExceeded)
+    ));
+}
+
+#[test]
 fn unsupported_features_fail_explicitly() {
     for pattern in ["(?<=a)b", "(?<!a)b"] {
         assert!(matches!(

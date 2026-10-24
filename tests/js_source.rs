@@ -16159,6 +16159,16 @@ fn bigint_bitwise_and_shift_size_limits() {
 }
 
 #[test]
+fn regexp_case_insensitive_unicode() {
+    // Synthetic fixture, not light-cljs output. The two replacement rows are
+    // adapted from QuickJS; see the fixture's copyright and attribution.
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_case_fold.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_unicode_mode() {
     assert_eq!(
         eval(include_str!("fixtures/js/regexp_unicode.js")),

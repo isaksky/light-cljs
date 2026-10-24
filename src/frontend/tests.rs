@@ -2800,6 +2800,9 @@ fn unicode_identifiers() {
     assert_eq!(name("℮"), "℮"); // U+212E, Other_ID_Start
     assert_eq!(name("𝒜"), "\u{1D49C}"); // outside the BMP
     assert_eq!(name("é"), "é");
+    // Unicode 17.0.0 additions: Beria Erfe letters and Tai Yo combining marks.
+    assert_eq!(name("\u{16EA0}"), "\u{16EA0}");
+    assert_eq!(name("x\u{1E6E3}"), "x\u{1E6E3}");
     assert_eq!(name("x·"), "x\u{B7}"); // U+00B7, Other_ID_Continue
     assert_eq!(name("e\u{301}"), "e\u{301}"); // combining mark, not normalized
     assert_eq!(name("a\u{200C}b\u{200D}c"), "a\u{200C}b\u{200D}c");

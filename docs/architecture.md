@@ -2766,8 +2766,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   appears in `src/frontend/tests.rs` `unicode_identifiers`.
   `research/quickjs/quickjs.c` `next_token` (`lre_js_is_ident_first` /
   `lre_js_is_ident_next`) and `ident_realloc` were consulted only; the
-  identifier tables are generated from perl's Unicode database, not from
-  `libunicode-table.h`. No code was copied.
+  identifier tables now come from the pinned QuickJS tables, verified against
+  Unicode 17.0.0 (clj-quickjs-191), replacing the initial Perl Unicode 16 data.
 - `tests/js_source.rs` `bitwise_operators_follow_to_int32` (clj-quickjs-62):
   the bitwise and shift cases of `test_op1` (line 39) and the numeric cases
   of `test_cvt` (line 108) of `research/quickjs/tests/test_language.js`,
@@ -4477,7 +4477,7 @@ Non-Unicode parsing implements Annex B identity, control and octal escapes,
 literal malformed braces, class-escape range endpoints, and quantified
 lookahead. Unicode parsing enforces strict escapes and syntax characters,
 combines raw or fixed-width escaped surrogate pairs, and preserves lone
-surrogates. Capture names reuse the frontend's Unicode 16.0.0 identifier
+surrogates. Capture names reuse the frontend's Unicode 17.0.0 identifier
 predicates, including escaped names. Duplicate names are allowed only in
 disjoint alternatives; named references retain every candidate capture index
 for the matcher. This follows ECMAScript's
@@ -4682,10 +4682,12 @@ dates use Arabic-Indic digits. This is deliberate compatibility, not a claim
 of current ICU/CLDR conformance; no existing expected rows were changed here.
 
 Unicode consumers start with the pinned export's compressed Unicode tables and
-share safe readers/offline expansion with clj-quickjs-191/-192. The download
-script targets Unicode 17.0.0; the existing identifier generator uses Unicode
-16.0.0. These are explicit separate versions pending -191 reconciliation,
-not an implicit upgrade of identifiers. Importing compressed normalization and
+share safe readers/offline expansion with clj-quickjs-191/-192. The coordinated
+policy for -209/-191/-192 is Unicode 17.0.0: -191 verifies folding and identifier
+data across the complete domain against hash-pinned UCD 17 inputs and upgrades
+the previous Unicode 16 identifiers. New properties, normalization, collation
+and segmentation consumers must verify their own data against that version;
+the download script's target alone is not evidence. Importing compressed normalization and
 property arrays does not establish complete collation or segmentation semantics.
 No separately pinned UCA/UAX #29 inputs are used by this pellet.
 
@@ -4811,7 +4813,7 @@ timers drain, rather than after each job; this pellet adds no rejection check.
 
 The in-tree matcher compiles the arena with an explicit build stack into
 immutable Rust bytecode. `regexp::matcher::compile` rejects lookbehind
-and ignore-case execution explicitly. Backreferences
+and non-Unicode ignore-case execution explicitly. Backreferences
 are supported, with an undefined/forward capture matching the empty string.
 Scoped m/s modifiers are compiled into the consuming/assertion instructions.
 The compiler checks arena edges/indices and computes each atom's capture span
@@ -5182,11 +5184,11 @@ catchable RangeError and never becomes a failed match. Parsing, source
 escaping, capture copying and string flattening are synchronous, bounded by
 the runtime's string length limit, like existing string leaf operations.
 
-Objects support the code-unit and Unicode matcher, g/m/s/u/y, named captures with a
+Objects support the code-unit and Unicode matcher, g/m/s/u/y and iu, named captures with a
 null-prototype groups object, and explicit undefined elements for unmatched
-captures. i/v/d constructors and literals throw SyntaxError naming the
-unsupported flag; scoped i and lookbehind also fail explicitly. Symbol.match
-recognition, symbol-based string consumers, case folding, Unicode sets and indices
+captures. Plain i and v/d constructors and literals throw SyntaxError naming the
+unsupported flag; lookbehind also fails explicitly. Symbol.match
+recognition, symbol-based string consumers, non-Unicode folding, Unicode sets and indices
 remain later work. Direct and indirect eval are unavailable, so the raw NUL
 upstream case is exercised through the constructor and a literal containing
 an actual NUL instead.
@@ -5380,8 +5382,8 @@ QuickJS `lre_exec`; this applies to both exec/test and sticky replacement.
 All machine positions, undo trails and captures remain UTF-16 offsets, so
 result extraction and lastIndex updates need no conversion tables or copies.
 Backreferences compare code points so a captured lone surrogate cannot match
-half of a later pair. Assertions retain BMP word/line classification; i/iu
-folding and lookbehind stay deferred. The existing single search step budget
+half of a later pair. Assertions include Unicode ignore-case word classification
+(clj-quickjs-191); lookbehind stays deferred. The existing single search step budget
 covers candidate scans and comparisons, with catchable RangeError on exhaustion.
 No heap representation, native continuation or publication rule changes.
 
@@ -5634,3 +5636,36 @@ and `date_string_named_zone_formats` cover fixed/named zones, DST, minute
 truncation, invalid dates, calendar endpoints, alias identity, metadata, argument
 ignoring, and clock reads. One-instruction yields with collection check the
 native frame's receiver roots. Existing intrinsic/GC counts grow by four.
+
+## Unicode simple folding and version policy (clj-quickjs-191)
+
+The shared Unicode version is 17.0.0 for identifiers and folding; properties
+(-192), normalization, collation and segmentation (-209 and their consumers)
+must use the same version with service-specific verification. Locale/CLDR
+snapshot provenance remains separate; this establishes no CLDR release claim.
+The former Perl Unicode 16.0.0 identifier generator is replaced by the same
+pinned export/repack pipeline as folding. Complete-domain comparison verifies
+both ID properties and all C/S folding mappings against hash-pinned Unicode
+17.0.0 CaseFolding.txt and DerivedCoreProperties.txt, including new Beria Erfe
+letters. Regeneration rejects unexpected hashes or version headers.
+
+`scripts/quickjs-data/repack-unicode.pl` expands the imported `case_conv_*`
+and identifier tables using the hash-pinned QuickJS decoder only offline.
+The snapshot chooses FB05 rather than FB06 as its ligature representative;
+the repacker asserts exactly that exception and emits the normative C/S
+representative with unchanged equivalence. Runtime Rust uses an immutable
+sorted 1,512-entry mapping and binary search, preserving lone surrogates and
+excluding full/Turkic folds. Verification compares the actual Rust folding
+and identifier consumers against the pinned reference at all 1,114,112 code
+points. Commands, input hashes and notices are in the data pipeline README
+and `src/regexp/case_fold_provenance.txt`. No runtime C, network or dependencies.
+
+iu (and scoped i in u mode) canonicalizes literals, input and backreferences.
+Class compilation retains each range and adds the folded targets of mapping
+sources inside it; literals are folded directly. Runtime membership uses a
+folded input, then applies class inversion. Word escapes and boundaries thus
+include long s and Kelvin sign; negative escapes complement that membership.
+All added expansion work and members share the existing compilation/search
+budgets. Table lookups have a fixed logarithmic bound. Plain i remains rejected
+with catchable SyntaxError, including scoped i outside Unicode mode; the
+canonicalize helper's false mode is identity and is not a legacy-i operation.

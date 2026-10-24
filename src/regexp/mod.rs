@@ -7,4 +7,5 @@ pub mod ir;
 pub mod matcher;
 pub mod parse;
 
+pub mod case_fold;
 pub(crate) mod object;
