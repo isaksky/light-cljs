@@ -42,6 +42,8 @@ pub struct ObjectCounts {
     pub cell: usize,
     /// Atoms.
     pub atom: usize,
+    /// Built-in functions of the realm (`Object`, `Object.is`, ...).
+    pub builtin: usize,
 }
 
 impl ObjectCounts {
@@ -56,6 +58,7 @@ impl ObjectCounts {
             + self.function
             + self.cell
             + self.atom
+            + self.builtin
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -69,6 +72,7 @@ impl ObjectCounts {
             HeapObject::Function(_) => &mut self.function,
             HeapObject::Cell(_) => &mut self.cell,
             HeapObject::Atom(_) => &mut self.atom,
+            HeapObject::Builtin(_) => &mut self.builtin,
         };
         *n += 1;
     }

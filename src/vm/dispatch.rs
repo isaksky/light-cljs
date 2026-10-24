@@ -15,6 +15,10 @@
 //! **Calls.** `Call` and `Return` push and pop task-owned frames
 //! (`crate::vm::frames`); the loop continues in the new frame instead of
 //! recursing, so call depth never consumes Rust stack.
+//! `CallMethod` is `Call` with the receiver below the callee. A built-in
+//! function callee (`crate::vm::builtin`, clj-quickjs-117) pushes no frame:
+//! it runs to completion inside the instruction and its result replaces
+//! the operands.
 //!
 //! The loop never panics on its inputs: validation rules out bad indices and
 //! stack underflow, and the loop still re-checks them, failing the task with
@@ -74,12 +78,15 @@ use std::sync::Arc;
 
 use crate::collections::{BuilderError, CollectionError, object_name};
 use crate::error::{VmError, VmErrorKind};
+use crate::heap::ObjectId;
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::object::OrdinaryObject;
+use crate::realm::{self, Global};
 use crate::value::string::{number_to_string, string_to_number};
 use crate::value::{JsString, Value};
+use crate::vm::builtin::{self, Builtin};
 use crate::vm::exception::{
     Completion, ErrorObject, Exception, HandlerKind, describe_thrown, error_object,
 };
@@ -300,9 +307,9 @@ fn is_less_than(opcode: Opcode, x: &Value, y: &Value) -> Result<Option<bool>, Fa
 }
 
 /// JavaScript `typeof v` (ECMAScript TypeofOperator, QuickJS
-/// `js_operator_typeof`): a function object, the only callable kind, is
-/// `"function"`; every other heap object is `"object"` (no other kind is
-/// callable, and none emulates `undefined`). It inspects the object only
+/// `js_operator_typeof`): a function object or a built-in function, the
+/// callable kinds, is `"function"`; every other heap object is `"object"`
+/// (no other kind is callable, and none emulates `undefined`). It inspects the object only
 /// under the heap read lock and calls no JavaScript.
 fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
     Ok(match v {
@@ -313,7 +320,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::String(_) => "string",
         Value::Object(id) => heap
             .read(*id, |object| match object {
-                HeapObject::Function(_) => "function",
+                HeapObject::Function(_) | HeapObject::Builtin(_) => "function",
                 HeapObject::Plain(_)
                 | HeapObject::Native(_)
                 | HeapObject::Vector(_)
@@ -386,18 +393,60 @@ fn name_constant(code: &Code, i: u16) -> Result<JsString, Fault> {
     }
 }
 
-/// The callee of a `Call` (or of a native's callback): the code of a function
-/// object, or the name of what was found instead.
-pub(crate) fn callee_code(heap: &Heap, callee: &Value) -> Result<Arc<Code>, Fault> {
+/// What a callable value runs.
+pub(crate) enum Callee {
+    /// A function object: its code runs in a new VM frame.
+    Code(ObjectId, Arc<Code>),
+    /// A built-in function: Rust code run inside the call instruction
+    /// (`crate::vm::builtin`).
+    Builtin(Builtin),
+}
+
+/// The callee of a `Call`/`CallMethod` (or of a native's callback): what it
+/// runs, or the name of what was found instead.
+pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
     let Value::Object(id) = *callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
     heap.read(id, |object| match object {
-        HeapObject::Function(f) => Ok(Arc::clone(&f.code)),
+        HeapObject::Function(f) => Ok(Callee::Code(id, Arc::clone(&f.code))),
+        HeapObject::Builtin(f) => Ok(Callee::Builtin(f.which)),
         other => Err(Fault::NotCallable(object_name(other))),
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
     .unwrap_or(Err(Fault::Internal("callee was reclaimed")))
+}
+
+/// `Call argc` (`method`: false) or `CallMethod argc` (true): the receiver
+/// (method calls only), the callee and the arguments are the top operands.
+/// A function object enters a new frame (the receiver is dropped: no
+/// JavaScript code observes `this` yet, clj-quickjs-116); a built-in runs
+/// to completion and its result replaces the operands.
+fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flow, Fault> {
+    let argc = usize::from(argc);
+    let task = state.diag.task;
+    let operands = top_operands(state, argc + 1 + usize::from(method))?;
+    let (this, rest) = match operands.split_first() {
+        Some((this, rest)) if method => (this.clone(), rest),
+        _ => (Value::Undefined, operands),
+    };
+    let [f, args @ ..] = rest else {
+        return Err(Fault::Internal("operand stack underflow"));
+    };
+    match callee(heap, f)? {
+        Callee::Code(id, code) => {
+            if method {
+                state.remove_operand(argc + 1)?;
+            }
+            state.enter(code, id, argc)?;
+            Ok(Flow::FrameChanged)
+        }
+        Callee::Builtin(which) => {
+            let result = builtin::call(heap, task, which, &this, args)?;
+            state.replace(argc + 1 + usize::from(method), result)?;
+            Ok(Flow::Next)
+        }
+    }
 }
 
 /// The top `n` operands of the running frame, oldest first.
@@ -843,12 +892,19 @@ fn step(
         Instr::NewObject => {
             // The new object is pushed in the same instruction; no collection
             // can run in between because this run holds a mutator guard. It
-            // is owned by the running task (`crate::object`).
+            // is owned by the running task (`crate::object`); its prototype
+            // is null.
             let object = OrdinaryObject::new(Some(state.diag.task));
             let id = heap
                 .alloc(HeapObject::Plain(object))
                 .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
             state.push(Value::Object(id));
+        }
+        Instr::NewObjectLiteral => {
+            // As `NewObject`, but inheriting from `Object.prototype`
+            // (`crate::realm`, built on first use).
+            let object = builtin::new_object(heap, state.diag.task)?;
+            state.push(object);
         }
         Instr::HostEffect(op) => {
             let v = state.pop()?;
@@ -979,20 +1035,15 @@ fn step(
             let (dependency, kind) = need_operands(&dependency, &kind)?;
             return Ok(Flow::Need(dependency, kind));
         }
-        Instr::Call(argc) => {
-            let argc = usize::from(argc);
-            let operands = state.operands();
-            let callee = operands
-                .len()
-                .checked_sub(argc + 1)
-                .map(|i| &operands[i])
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let callee_code = callee_code(heap, callee)?;
-            let Value::Object(id) = *callee else {
-                return Err(Fault::Internal("callee is not an object"));
-            };
-            state.enter(callee_code, id, argc)?;
-            return Ok(Flow::FrameChanged);
+        Instr::Call(argc) => return call(state, heap, argc, false),
+        Instr::CallMethod(argc) => return call(state, heap, argc, true),
+        Instr::GetBuiltinGlobal(i) => {
+            // Validation checked the operand. Builds the realm on first use
+            // (a poll point); its objects are roots from then on.
+            let global = Global::from_u16(i).ok_or(Fault::Internal("unknown built-in global"))?;
+            let intrinsics =
+                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            state.push(intrinsics.global(global));
         }
     }
     Ok(Flow::Next)
@@ -1008,8 +1059,11 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.
-        Instr::Call(_) | Instr::Return | Instr::CallFinally => true,
+        Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally => true,
+        // Builds the realm on first use (`crate::realm`).
+        Instr::GetBuiltinGlobal(_) => true,
         Instr::NewObject
+        | Instr::NewObjectLiteral
         | Instr::NewVector(_)
         | Instr::NewMap(_)
         | Instr::Assoc
@@ -1451,6 +1505,13 @@ mod tests {
         let child = asm.finish("child", 0, 0).unwrap();
         let mut asm = Assembler::new();
         asm.function(&child);
+        assert_eq!(type_of_result(&mut asm), "function");
+        // A built-in function (clj-quickjs-117).
+        let mut asm = Assembler::new();
+        let object = crate::realm::Global::Object as u16;
+        asm.op(Opcode::GetBuiltinGlobal)
+            .raw(object.to_le_bytes()[0])
+            .raw(object.to_le_bytes()[1]);
         assert_eq!(type_of_result(&mut asm), "function");
         type Produce = fn(&mut Assembler);
         let producers: [(&str, Produce); 8] = [

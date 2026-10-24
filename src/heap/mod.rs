@@ -78,8 +78,10 @@ pub use stats::{HeapUsage, ObjectCounts};
 use crate::atom::AtomCell;
 use crate::collections::{Builder, Occurrence, PMap, PVector};
 use crate::object::{OrdinaryObject, PropertyKeys};
+use crate::realm::Realm;
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
+use crate::vm::builtin::BuiltinFunction;
 use crate::vm::function::{BindingCell, FunctionObject};
 
 /// Stable identity of a heap object: slot index plus the slot's generation
@@ -136,6 +138,9 @@ pub(crate) enum ObjectKind {
     Cell,
     /// An atomic reference to a shareable value (`crate::atom`).
     Atom,
+    /// A built-in function of the realm (`crate::vm::builtin`): callable
+    /// Rust code with an immutable property store, shared by every task.
+    Builtin,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -164,7 +169,8 @@ pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
 #[derive(Debug)]
 pub(crate) enum HeapObject {
     /// An ordinary JavaScript object: task-owned and mutable by its owning
-    /// task's run only, in place under the object lock (`crate::object`).
+    /// task's run only, in place under the object lock (`crate::object`),
+    /// or a realm intrinsic (`Object.prototype`), immutable once installed.
     Plain(OrdinaryObject),
     /// Constructed by tests today; resumable native continuations
     /// (clj-quickjs-12) and later native kinds construct it.
@@ -190,6 +196,9 @@ pub(crate) enum HeapObject {
     /// independently owned `Arc` storage so operations run on Rust atomics
     /// without holding the object lock; its `Trace` reports the current value.
     Atom(Arc<AtomCell>),
+    /// A built-in function (`crate::vm::builtin`): a realm intrinsic,
+    /// immutable after the realm is built and shared by every task.
+    Builtin(BuiltinFunction),
 }
 
 impl HeapObject {
@@ -211,6 +220,7 @@ impl HeapObject {
             HeapObject::Function(_) => ObjectKind::Function,
             HeapObject::Cell(_) => ObjectKind::Cell,
             HeapObject::Atom(_) => ObjectKind::Atom,
+            HeapObject::Builtin(_) => ObjectKind::Builtin,
         }
     }
 }
@@ -227,6 +237,7 @@ impl Trace for HeapObject {
             HeapObject::Function(f) => f.trace(visit),
             HeapObject::Cell(c) => c.trace(visit),
             HeapObject::Atom(a) => a.trace(visit),
+            HeapObject::Builtin(f) => f.trace(visit),
         }
     }
 }
@@ -411,6 +422,10 @@ pub(crate) struct Heap {
     /// Collection observers ([`gc::CollectionObserver`]). A leaf lock: never
     /// held with another heap lock or while an observer runs.
     observers: Mutex<Vec<Weak<dyn gc::CollectionObserver>>>,
+    /// The realm's intrinsic objects (`crate::realm`), built on first use;
+    /// their identities are roots of category `Intrinsic`. Its build lock
+    /// is a leaf taken only before the realm exists.
+    realm: Realm,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is
@@ -513,9 +528,10 @@ impl Heap {
 
     /// Run `f` on a live object under the object lock; `None` if `id` is
     /// stale. `f` must not touch the heap (it would deadlock). Only mutable
-    /// kinds may be changed: transient builders and binding cells (each by
-    /// its owning task's run) and, in tests, native payloads. Persistent
-    /// kinds never change.
+    /// kinds may be changed: transient builders, binding cells and ordinary
+    /// objects (each by its owning task's run), a realm intrinsic while its
+    /// realm is being built, before anything can reach it (`crate::realm`),
+    /// and, in tests, native payloads. Persistent kinds never change.
     pub(crate) fn with_object_mut<R>(
         &self,
         id: ObjectId,
@@ -548,6 +564,18 @@ impl Heap {
     /// The runtime-wide property-key table (`crate::object`).
     pub(crate) fn keys(&self) -> &PropertyKeys {
         &self.keys
+    }
+
+    /// The realm slot (`crate::realm`); use `realm::intrinsics` to build
+    /// or read it.
+    pub(crate) fn realm(&self) -> &Realm {
+        &self.realm
+    }
+
+    /// The realm slot, to drop the realm (tests).
+    #[cfg(test)]
+    pub(crate) fn realm_mut(&mut self) -> &mut Realm {
+        &mut self.realm
     }
 
     pub(crate) fn roots(&self) -> MutexGuard<'_, RootTable> {

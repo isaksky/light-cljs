@@ -25,10 +25,17 @@
 //!   (a [`Value`] and its `writable` / `enumerable` / `configurable`
 //!   [`PropertyFlags`]); accessor properties (clj-quickjs-120) replace the
 //!   value with a getter/setter pair in the same entry.
-//! * **`[[Prototype]]`**, an object or null. No operation of this slice sets
-//!   it, so it is always null: `Object.prototype` and the other realm
-//!   intrinsics are clj-quickjs-117, `Object.setPrototypeOf` and
-//!   `__proto__` clj-quickjs-121. Property reads already walk it.
+//! * **`[[Prototype]]`**, an object or null: `Object.prototype` for an
+//!   object literal or an `Object()` result (clj-quickjs-117,
+//!   [`crate::realm`]), null for an embedder-created object and for
+//!   `Object.prototype` itself. `Object.setPrototypeOf` and `__proto__` are
+//!   clj-quickjs-121. Reads walk it; a write of a property the object does
+//!   not have itself consults it (`crate::vm::property`).
+//! * **Intrinsic**: true only for the realm's shared, immutable intrinsic
+//!   objects ([`crate::realm`]): `Object.prototype` and the property storage
+//!   of built-in functions. An intrinsic object has no owner, every task
+//!   reads it, nothing changes it after the realm is built, and it is
+//!   classified [`Shareability::Persistent`](crate::value::share::Shareability).
 //! * **`[[Extensible]]`**: true until `Object.preventExtensions`
 //!   (clj-quickjs-122); adding a property to a non-extensible object fails.
 //!
@@ -136,6 +143,29 @@ impl PropertyFlags {
         enumerable: true,
         configurable: true,
     };
+
+    /// The attributes of a built-in method (ECMAScript §18, "ECMAScript
+    /// Standard Built-in Objects"): writable, not enumerable, configurable.
+    pub(crate) const METHOD: PropertyFlags = PropertyFlags {
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    };
+
+    /// The attributes of a built-in function's `length` and `name`: not
+    /// writable, not enumerable, configurable.
+    pub(crate) const FUNCTION_INFO: PropertyFlags = PropertyFlags {
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    };
+
+    /// The attributes of a constructor's `prototype`: none.
+    pub(crate) const FIXED: PropertyFlags = PropertyFlags {
+        writable: false,
+        enumerable: false,
+        configurable: false,
+    };
 }
 
 /// One own property.
@@ -160,8 +190,9 @@ pub(crate) enum SetOutcome {
     /// The property is absent and the object is not extensible.
     NotExtensible,
     /// The property is absent and the object has a prototype: the
-    /// prototype chain decides (setters, read-only inherited properties),
-    /// which is not implemented while no prototype can be set.
+    /// prototype chain decides (an inherited read-only property forbids the
+    /// write, otherwise [`OrdinaryObject::add`] adds an own property; see
+    /// `crate::vm::property`).
     Inherited,
 }
 
@@ -169,6 +200,8 @@ pub(crate) enum SetOutcome {
 #[derive(Debug)]
 pub(crate) struct OrdinaryObject {
     owner: Option<TaskId>,
+    /// A realm intrinsic (module docs): ownerless, shared and immutable.
+    intrinsic: bool,
     prototype: Option<ObjectId>,
     extensible: bool,
     entries: Vec<(PropertyKey, Property)>,
@@ -183,6 +216,7 @@ impl OrdinaryObject {
     pub(crate) fn new(owner: Option<TaskId>) -> OrdinaryObject {
         OrdinaryObject {
             owner,
+            intrinsic: false,
             prototype: None,
             extensible: true,
             entries: Vec::new(),
@@ -190,9 +224,35 @@ impl OrdinaryObject {
         }
     }
 
-    /// The task that owns the object; `None` if the embedder created it.
+    /// An empty, extensible object owned by `owner` whose prototype is
+    /// `prototype` (`Object.prototype` for literals and `Object()`).
+    pub(crate) fn with_prototype(owner: TaskId, prototype: ObjectId) -> OrdinaryObject {
+        OrdinaryObject {
+            prototype: Some(prototype),
+            ..OrdinaryObject::new(Some(owner))
+        }
+    }
+
+    /// An empty realm intrinsic with `prototype` (`crate::realm`). The realm
+    /// defines its properties with [`OrdinaryObject::define_with`] before
+    /// any task can reach it; nothing changes it afterwards.
+    pub(crate) fn intrinsic(prototype: Option<ObjectId>) -> OrdinaryObject {
+        OrdinaryObject {
+            intrinsic: true,
+            prototype,
+            ..OrdinaryObject::new(None)
+        }
+    }
+
+    /// The task that owns the object; `None` if the embedder created it or
+    /// it is a realm intrinsic.
     pub(crate) fn owner(&self) -> Option<TaskId> {
         self.owner
+    }
+
+    /// True for a realm intrinsic (module docs).
+    pub(crate) fn is_intrinsic(&self) -> bool {
+        self.intrinsic
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.
@@ -240,10 +300,18 @@ impl OrdinaryObject {
     /// false (nothing changed) if `key` is new and the object is not
     /// extensible.
     pub(crate) fn define(&mut self, key: PropertyKey, value: Value) -> bool {
-        let property = Property {
-            value,
-            flags: PropertyFlags::DATA,
-        };
+        self.define_with(key, value, PropertyFlags::DATA)
+    }
+
+    /// [`OrdinaryObject::define`] with the attributes `flags` (the realm
+    /// builds intrinsics with it).
+    pub(crate) fn define_with(
+        &mut self,
+        key: PropertyKey,
+        value: Value,
+        flags: PropertyFlags,
+    ) -> bool {
+        let property = Property { value, flags };
         match self.position(key) {
             Some(i) => self.entries[i].1 = property,
             None if self.extensible => self.push(key, property),
@@ -277,6 +345,23 @@ impl OrdinaryObject {
                 SetOutcome::Done
             }
         }
+    }
+
+    /// The end of OrdinarySet once the prototype chain allowed the write of
+    /// a property this object does not have (`SetOutcome::Inherited`): add
+    /// it as a writable, enumerable, configurable data property. False
+    /// (nothing changed) if the object is not extensible.
+    pub(crate) fn add(&mut self, key: PropertyKey, value: Value) -> bool {
+        if !self.extensible {
+            return false;
+        }
+        debug_assert!(self.position(key).is_none(), "add of an own property");
+        let property = Property {
+            value,
+            flags: PropertyFlags::DATA,
+        };
+        self.push(key, property);
+        true
     }
 }
 

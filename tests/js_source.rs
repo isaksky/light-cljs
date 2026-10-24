@@ -91,7 +91,9 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::GetCapture
             | Opcode::GetField
             | Opcode::PutField
-            | Opcode::DefineField => 2,
+            | Opcode::DefineField
+            | Opcode::GetBuiltinGlobal
+            | Opcode::CallMethod => 2,
             _ => 0,
         };
     }
@@ -2292,8 +2294,9 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
 
     // Valid syntax that cannot execute yet is rejected where it starts.
     // (Functions and calls execute since clj-quickjs-21, property reads
-    // since clj-quickjs-114; method calls are clj-quickjs-116.)
-    assert_eq!(compile_err("let o = 1;\no.p(1);"), (Unsupported, 2, 1));
+    // since clj-quickjs-114, method calls since clj-quickjs-117; assigning
+    // a built-in global waits for the global object, clj-quickjs-104.)
+    assert_eq!(compile_err("let o = 1;\nObject = o;"), (Unsupported, 2, 1));
     // Syntax errors pass through from the parser.
     assert_eq!(compile_err("let if = 1;").0, SyntaxErrorKind::ReservedWord);
 }
@@ -3990,4 +3993,226 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
     // answer.
     let (kind, ..) = failure_at("let r; try { (1).x; } catch (e) { r = 1; } r");
     assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+}
+
+/// `Object.prototype`, the `Object` constructor and `Object.is` as realm
+/// intrinsics, and method calls passing their receiver (clj-quickjs-117;
+/// `docs/architecture.md`, "Realm intrinsics"). The `a = {};
+/// a.toString()` row follows `test` (line 124) of
+/// `research/quickjs/tests/test_builtin.js`, and the `Object.is` rows the
+/// `assert` helper (line 1) of `research/quickjs/tests/test_language.js`,
+/// revision 7d1c13c5d8f8 (restated as Rust assertions); the QuickJS MIT
+/// notice on `object_literals_and_named_properties` covers them. The rest
+/// are synthetic fixtures, not light-cljs output.
+#[test]
+fn object_intrinsics() {
+    // The pellet's acceptance rows.
+    assert_eq!(string("({}).toString()"), "[object Object]");
+    assert_eq!(string("let a = {}; a.toString()"), "[object Object]");
+    assert_eq!(eval("let o = {}; o.valueOf() === o"), ValueView::Bool(true));
+    assert_eq!(
+        eval("({}).toString === Object.prototype.toString"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(num("({toString: 1}).toString"), 1.0);
+    for (src, expected) in [
+        ("Object.is(NaN, NaN)", true),
+        ("Object.is(0, -0)", false),
+        ("let o = {}; Object.is(o, o)", true),
+        ("let o = {}; Object.is(o, {})", false),
+        ("Object() !== Object()", true),
+        ("let o = {}; Object(o) === o", true),
+        // SameValue on the other value kinds; missing arguments are
+        // undefined.
+        ("Object.is('ab', 'a' + 'b')", true),
+        ("Object.is(null, undefined)", false),
+        ("Object.is()", true),
+        ("Object.is(-0, -0)", true),
+        ("Object.is(1, '1')", false),
+        // `Object()` of undefined, null, or any object.
+        ("Object(undefined) !== Object(undefined)", true),
+        ("let f = () => 1; Object(f) === f", true),
+        ("let v = __rt.vector(); Object(v) === v", true),
+        ("Object(Object) === Object", true),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#"({}).toString() === "[object Object]" && ({}).toString === Object.prototype.toString;"#,
+        r#"Object.is(NaN, NaN) && !Object.is(0, -0) && Object() !== Object() && typeof Object === "function";"#,
+        r#"let o = {toString: () => "own"}; o.toString() === "own" && Object(o) === o && o.valueOf() === o;"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(string("Object(null).toString()"), "[object Object]");
+    assert_eq!(string("Object().toString()"), "[object Object]");
+    // clj-quickjs-69 has landed.
+    assert_eq!(string("typeof Object"), "function");
+    assert_eq!(string("typeof Object.is"), "function");
+    assert_eq!(string("typeof Object.prototype"), "object");
+    assert_eq!(string("typeof Object.prototype.toString"), "function");
+
+    // The intrinsics' own properties.
+    assert_eq!(num("Object.length"), 1.0);
+    assert_eq!(num("Object.is.length"), 2.0);
+    assert_eq!(num("Object.prototype.toString.length"), 0.0);
+    assert_eq!(string("Object.name"), "Object");
+    assert_eq!(string("Object.prototype.valueOf.name"), "valueOf");
+    assert_eq!(
+        eval("Object.prototype.constructor === Object"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(eval("({}).constructor === Object"), ValueView::Bool(true));
+    assert_eq!(
+        eval("Object(null).valueOf === Object.prototype.valueOf"),
+        ValueView::Bool(true)
+    );
+    // `Object.prototype` itself has a null prototype.
+    assert_eq!(eval("Object.prototype.missing"), ValueView::Undefined);
+    assert_eq!(eval("({}).missing"), ValueView::Undefined);
+    // Lexical bindings shadow the built-in global.
+    assert_eq!(num("let Object = 1; Object"), 1.0);
+    assert_eq!(num("function f(Object) { return Object; } f(2)"), 2.0);
+    assert_eq!(string("{ const Object = 'c'; } typeof Object"), "function");
+
+    // An own property shadows an inherited one; a write adds an own
+    // property (the inherited one is writable) and leaves
+    // `Object.prototype` alone.
+    assert_eq!(
+        string("let o = {}; o.toString = function () { return 'mine'; }; o.toString()"),
+        "mine"
+    );
+    assert_eq!(
+        string("let o = {}; o.toString = 1; let p = {}; p.toString() + ':' + typeof o.toString"),
+        "[object Object]:number"
+    );
+    assert_eq!(num("let o = Object(); o.x = 2; o.x"), 2.0);
+    assert_eq!(
+        string("let o = {}; o.constructor = 'c'; o.constructor"),
+        "c"
+    );
+
+    // The receiver: a plain call passes `undefined` (strict mode); a method
+    // call passes its base, evaluated once; a parenthesized member callee
+    // keeps it, a comma expression does not.
+    assert_eq!(
+        string("let f = Object.prototype.toString; f()"),
+        "[object Undefined]"
+    );
+    assert_eq!(string("let o = {}; (o.toString)()"), "[object Object]");
+    assert_eq!(
+        string("let o = {}; (0, o.toString)()"),
+        "[object Undefined]"
+    );
+    assert_eq!(string("Object.prototype.toString()"), "[object Object]");
+    assert_eq!(
+        string("let o = {f: function () {}}; Object.prototype.toString === o.f ? 'same' : 'other'"),
+        "other"
+    );
+    assert_eq!(
+        num("let n = 0; function g() { n = n + 1; return {}; } g().toString(); n"),
+        1.0
+    );
+    assert_eq!(string("({inner: {}}).inner.toString()"), "[object Object]");
+    assert_eq!(
+        string("let o = {f: Object.prototype.valueOf}; o.f() === o ? 'same' : 'other'"),
+        "same"
+    );
+    assert_eq!(
+        string("let o = {f: Object.prototype.toString}; o.f()"),
+        "[object Object]"
+    );
+    // A method that is a JavaScript function gets its arguments (it cannot
+    // observe `this` until clj-quickjs-116).
+    assert_eq!(
+        num("let o = {m: function (a, b) { return a - b; }}; o.m(5, 2)"),
+        3.0
+    );
+    assert_eq!(num("let o = {m: (x) => x * 2}; o.m(21)"), 42.0);
+    // A built-in as the callback of a resumable native.
+    assert_eq!(
+        eval("__rt.reduce(Object.is, 1, __rt.vector(1))"),
+        ValueView::Bool(true)
+    );
+    // The instructions: a literal inherits through `new_object_literal`,
+    // `Object` is `get_builtin_global`, a method call is `call_method`.
+    let ops = opcodes(&exe("let o = {}; o.toString() + Object.is(o, o)"));
+    for op in [
+        Opcode::NewObjectLiteral,
+        Opcode::CallMethod,
+        Opcode::GetBuiltinGlobal,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    assert!(!ops.contains(&Opcode::NewObject), "{ops:?}");
+}
+
+/// What the intrinsics reject (clj-quickjs-117): writes to built-in objects
+/// are catchable `TypeError`s (they are shared and immutable), assignment
+/// to a built-in global is a compile-time `Unsupported` error until the
+/// global object exists (clj-quickjs-104), and what needs a later pellet
+/// fails with `UnsupportedOperand` instead of a wrong value.
+#[test]
+fn object_intrinsics_reject_what_they_do_not_support() {
+    for src in [
+        "Object.prototype.x = 1;",
+        "Object.prototype.toString = 1;",
+        "Object.is = 1;",
+        "Object.prototype.toString.x = 1;",
+        "Object.prototype = {};",
+    ] {
+        let caught = format!("let r = 'none'; try {{ {src} }} catch (e) {{ r = 'caught'; }} r");
+        assert_eq!(string(&caught), "caught", "{src}");
+        let (kind, message, ..) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::TypeError, "{src}: {message}");
+        assert!(message.contains("built-in objects are shared"), "{message}");
+    }
+    // Nothing changed.
+    assert_eq!(
+        eval("try { Object.prototype.x = 1; } catch (e) {} ({}).x"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        failure_at("let o = {};\nObject.prototype.y = o;"),
+        (
+            VmErrorKind::TypeError,
+            "cannot set property 'y' of a built-in object: built-in objects are shared by all tasks and immutable".to_string(),
+            2,
+            17
+        )
+    );
+    // `undefined`/`null` receivers of valueOf.
+    let (kind, message, ..) = failure_at("let f = Object.prototype.valueOf; f()");
+    assert_eq!(
+        (kind, message.as_str()),
+        (VmErrorKind::TypeError, "cannot convert undefined to object")
+    );
+    assert_eq!(
+        string(
+            "let f = Object.prototype.valueOf; let r = 'none'; try { f(); } catch (e) { r = 'caught'; } r"
+        ),
+        "caught"
+    );
+    // Wrapper objects (clj-quickjs-72), Function.prototype
+    // (clj-quickjs-102) and the error tag (clj-quickjs-230).
+    for (src, needle) in [
+        ("Object(1)", "wrapper object"),
+        ("Object('s')", "wrapper object"),
+        ("Object(true)", "wrapper object"),
+        ("Object.call", "Function.prototype"),
+        ("Object.is.toString()", "Function.prototype"),
+        ("Object.prototype.toString.call", "Function.prototype"),
+    ] {
+        let (kind, message, ..) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    }
+    // Assigning a built-in global waits for the global object.
+    for src in ["Object = 1;", "Object += 1;", "Object++;"] {
+        let e = compile_script("test", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+        assert!(e.message.contains("`Object`"), "{src}: {e}");
+    }
+    assert_eq!(num("let Object = 1; Object = 2; Object"), 2.0);
 }

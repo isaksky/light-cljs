@@ -159,6 +159,7 @@ use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
 use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
+use crate::realm::Global;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Primitive};
 use crate::vm::executable::{Executable, ExecutableSpec};
@@ -327,6 +328,9 @@ enum Access {
     },
     /// The reserved intrinsic binding `__rt`.
     Intrinsic,
+    /// A built-in global of the realm (`crate::realm`, clj-quickjs-117): a
+    /// free name resolved after every lexical scope.
+    Global(Global),
     Unresolvable,
     /// A sloppy-mode reference to `eval` or `arguments` that denotes
     /// something the subset lacks (clj-quickjs-95,
@@ -1076,6 +1080,8 @@ impl<'s> Lowerer<'s> {
         if level == 0 {
             return if name == RESERVED_BINDING {
                 Access::Intrinsic
+            } else if let Some(global) = Global::from_name(name) {
+                Access::Global(global)
             } else {
                 Access::Unresolvable
             };
@@ -1167,6 +1173,10 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::CellGet, at);
                 }
             }
+            Access::Global(global) => {
+                self.out()
+                    .op_u16(Opcode::GetBuiltinGlobal, global as u16, at);
+            }
             Access::Intrinsic => return Err(self.not_a_value(at)),
             Access::Unresolvable => self.throw(ThrowKind::Unresolvable, at),
             Access::Unsupported(message) => {
@@ -1209,6 +1219,14 @@ impl<'s> Lowerer<'s> {
             Access::Unresolvable => {
                 self.out().op(Opcode::Pop, at);
                 self.throw(ThrowKind::Unresolvable, at);
+            }
+            Access::Global(global) => {
+                // Built-in globals become global-object properties with
+                // clj-quickjs-104; until then they cannot be assigned.
+                return Err(self.unsupported(
+                    at,
+                    &format!("assignment to the built-in global `{}`", global.name()),
+                ));
             }
             Access::Found {
                 target: Target::SelfFn(SelfKind::Entry),
@@ -2133,6 +2151,29 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// The callee of a method call `object.property(...)`: the base once,
+    /// kept below the property's value as the receiver (`CallMethod`). A
+    /// parenthesized member callee is the same AST node, so `(o.m)()` keeps
+    /// its receiver; `(0, o.m)()` and `(f = o.m)()` are not member
+    /// callees and call with `this` undefined. Out of line, so the
+    /// recursive [`Self::expr`] frame stays small.
+    #[inline(never)]
+    fn method_callee(&mut self, callee: &Expr) -> Result<(), SyntaxError> {
+        let ExprKind::Member {
+            object,
+            property,
+            op_span,
+        } = &callee.kind
+        else {
+            return Err(self.internal(callee.span, "not a member callee"));
+        };
+        self.expr(object)?;
+        self.out().op(Opcode::Dup, *op_span);
+        let index = self.name_index(&property.name, property.span)?;
+        self.out().op_u16(Opcode::GetField, index, *op_span);
+        Ok(())
+    }
+
     /// `object.property = value`: the base, then the value, then
     /// `PutField`, which leaves the value. Run-time failures are reported
     /// at the `.` (the operator-token convention of clj-quickjs-52).
@@ -2151,7 +2192,7 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// An object literal: `NewObject`, then each value in source order
+    /// An object literal: `NewObjectLiteral`, then each value in source order
     /// followed by a `DefineField` of its key (a later duplicate redefines
     /// the property in place, so the last value wins at the position of the
     /// first). Out of line, like [`Self::get_field`].
@@ -2161,7 +2202,7 @@ impl<'s> Lowerer<'s> {
         properties: &[PropertyDef],
         span: Span,
     ) -> Result<(), SyntaxError> {
-        self.out().op(Opcode::NewObject, span);
+        self.out().op(Opcode::NewObjectLiteral, span);
         for property in properties {
             self.expr(&property.value)?;
             let index = match &property.name {
@@ -2316,6 +2357,7 @@ impl<'s> Lowerer<'s> {
                 args,
                 op_span,
             } => {
+                let mut method = false;
                 if let ExprKind::Member {
                     object, property, ..
                 } = &callee.kind
@@ -2323,8 +2365,7 @@ impl<'s> Lowerer<'s> {
                     if self.is_intrinsic_binding(object) {
                         return self.intrinsic(property, args, span, *op_span);
                     }
-                    // A method call passes its base as `this` (clj-quickjs-116).
-                    return Err(self.unsupported(callee.span, "calling a property (a method call)"));
+                    method = true;
                 }
                 if args.len() > MAX_COUNT {
                     return Err(self.error(
@@ -2333,11 +2374,20 @@ impl<'s> Lowerer<'s> {
                         "more than 65,535 call arguments",
                     ));
                 }
-                self.expr(callee)?;
+                if method {
+                    self.method_callee(callee)?;
+                } else {
+                    self.expr(callee)?;
+                }
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.out().op_u16(Opcode::Call, args.len() as u16, *op_span);
+                let call = if method {
+                    Opcode::CallMethod
+                } else {
+                    Opcode::Call
+                };
+                self.out().op_u16(call, args.len() as u16, *op_span);
             }
             ExprKind::Member { .. } | ExprKind::Object(_) | ExprKind::AssignMember { .. } => {
                 self.property_expr(e)?;

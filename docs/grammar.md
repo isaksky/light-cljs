@@ -11,8 +11,8 @@ compile that way (`frontend::tests::grammar_doc_examples`). Examples marked
 `js sloppy-accept` / `js sloppy-reject` are parsed as non-strict code
 (`ScriptOptions::SLOPPY`); all others are strict.
 
-Status: everything below parses. Everything except method calls
-(`o.f()`) also compiles to VM bytecode and executes (`frontend::compile_script`; see
+Status: everything below parses and also compiles to VM bytecode and
+executes (`frontend::compile_script`; see
 "Execution" below): literals (string values since clj-quickjs-65), bindings,
 operators, assignment, blocks, `if`/`else`, `while`, `do`-`while`
 (clj-quickjs-80), `for` with an empty, expression or `let`/`const` head
@@ -21,8 +21,10 @@ and expressions, calls, closures (clj-quickjs-21), arrow functions
 (clj-quickjs-53), and the
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). Object literals with literal keys, `o.name` reads and
-`o.name = v` assignments (clj-quickjs-114) parse and execute; a method
-call `o.f()` parses but is rejected by the compiler.
+`o.name = v` assignments (clj-quickjs-114) parse and execute; method
+calls `o.f()` pass their base as the receiver of a built-in function, and
+the built-in global `Object` with `Object.prototype` and `Object.is`
+exists (clj-quickjs-117; see "Built-in globals" under "Execution").
 `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
@@ -259,8 +261,8 @@ Notes on the grammar:
   named property, and `a.b = v` (the only property assignment; the target
   may be parenthesized) writes one (clj-quickjs-114); `__rt.name(...)` is
   the compiler-reserved intrinsic binding instead (see "Reserved intrinsic
-  binding"). A call of a property, `a.b(...)`, parses but is rejected by
-  the compiler (method calls pass `this`, clj-quickjs-116). Computed access to `__rt`
+  binding"). A call of a property, `a.b(...)`, is a method call: `a` is
+  evaluated once and passed as the receiver (clj-quickjs-117). Computed access to `__rt`
   (`__rt[x]`) and assignment to one of its intrinsics (`__rt.count = f`)
   are rejected by the parser as `ReservedWord`.
 - `const` requires an initializer.
@@ -367,13 +369,37 @@ checks left to later stages:
   root-to-leaf path, counted by each node's `height`), which also catches
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
   passes can rely on that bound.
-- **Objects have a null prototype and only data properties**
-  (clj-quickjs-114). Until `Object.prototype` exists (clj-quickjs-117) an
-  object literal inherits nothing, so `o.toString` and `o.hasOwnProperty`
-  read `undefined`. Getters, setters, methods, computed keys and
-  `__proto__: v` in literals, `o[k]`, `delete`, `++`/`--` and compound
-  assignment on properties, and method calls are rejected explicitly
-  (their pellets: -115, -116, -120, -121, -124, -126, -76).
+- **Objects have only data properties** (clj-quickjs-114). Getters,
+  setters, methods, computed keys and `__proto__: v` in literals, `o[k]`,
+  `delete`, and `++`/`--` and compound assignment on properties are
+  rejected explicitly (their pellets: -115, -120, -121, -124, -126, -76).
+  An object literal inherits from `Object.prototype` (clj-quickjs-117);
+  an embedder-made object (`Scope::new_object`) has a null prototype.
+- **Built-in objects are shared and immutable** (clj-quickjs-117,
+  `docs/architecture.md`, "Realm intrinsics"). `Object`,
+  `Object.prototype` and their methods are one set of objects shared by
+  every task of a runtime; any write to one (`Object.prototype.x = 1`,
+  `Object.is = f`) throws a catchable `TypeError` ("built-in objects are
+  shared by all tasks and immutable"), although their properties report
+  the standard writable attributes. Programs therefore cannot extend
+  built-in prototypes. An ordinary object may still shadow an inherited
+  method with its own property (`o.toString = f`).
+- **Built-in globals cannot be assigned** until the global object exists
+  (clj-quickjs-104): `Object = x` (also compound and `++`/`--`) is a
+  compile-time `Unsupported` error. A lexical binding named `Object`
+  shadows the built-in as usual.
+- **`this` is not observable in JavaScript functions** (clj-quickjs-116):
+  a method call `o.m()` passes `o` only to built-in functions; a
+  JavaScript method gets its arguments and cannot refer to `this` (the
+  `this` keyword is still rejected).
+- **Built-in functions have no `Function.prototype` yet**
+  (clj-quickjs-102): their own `length`, `name` (and for `Object`,
+  `prototype` and `is`) read normally, any other property read
+  (`Object.call`, `Object.is.toString`) fails with `UnsupportedOperand`.
+  `Object(v)` of a number, string or boolean and
+  `Object.prototype.toString`/`valueOf` of such a receiver need wrapper
+  objects (clj-quickjs-72, -73) and fail the same way; `new Object()` is
+  clj-quickjs-71.
 - **Objects are task-owned.** An object belongs to the task that created
   it: only that task reads or writes its properties (another task fails
   with `ForeignObject`), and publishing a value that reaches one to
@@ -599,13 +625,13 @@ Executed, with JavaScript semantics:
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
-| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures; the only callable values); `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
+| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
-| `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), with null prototype (until `Object.prototype` exists, clj-quickjs-117): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
-| `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else (along its prototype chain) `undefined`; persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; function objects, caught error objects, numbers, booleans and strings fail with `UnsupportedOperand` until their properties exist (clj-quickjs-101, -230, -73); an object owned by another task fails with `ForeignObject` |
-| `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes (strict mode): an ordinary object's own writable property is updated or a new data property added; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; the other bases fail as for a read. The expression's value is `v` |
+| `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
+| `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property and fails with `UnsupportedOperand` for any other name (no `Function.prototype` yet, clj-quickjs-102); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; function objects, caught error objects, numbers, booleans and strings fail with `UnsupportedOperand` until their properties exist (clj-quickjs-101, -230, -73); an object owned by another task fails with `ForeignObject` |
+| `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes (strict mode): an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only (a `TypeError`), a new own data property is added, so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; the other bases fail as for a read. The expression's value is `v` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
@@ -620,6 +646,11 @@ Executed, with JavaScript semantics:
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
+| `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`; a JavaScript function cannot refer to `this` yet (clj-quickjs-116). A plain call passes `undefined` as a built-in's receiver |
+| `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (today only `Object`) is the runtime's shared, immutable intrinsic (`get_builtin_global`), the same object in every task; a `let`/`const`/`var`/parameter of that name shadows it |
+| `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
+| `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
+| `Object.prototype.toString()`, `.valueOf()` (clj-quickjs-117) | inherited by every literal: `toString` gives `"[object Object]"` for an ordinary object and the runtime's other non-function heap values, `"[object Function]"` for a function, `"[object Undefined]"`/`"[object Null]"` for those receivers (a plain call); `valueOf` gives the receiver itself, and throws a catchable `TypeError` for `undefined`/`null`; primitive receivers and error objects fail with `UnsupportedOperand` (clj-quickjs-72/-73, -230) |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
@@ -683,7 +714,7 @@ Errors:
 |-----------|------|-------------|
 | A name declared twice in one block, script, function body or `switch` case block (including a `let`/`const` that repeats a parameter, also with default values, and a function declaration that clashes with a `let`/`const` or repeats one in a block), other than the var-scoped repetitions above | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A `var` whose name a `let`, `const` or block-level function declaration binds in the same body (`let a; var a;`) or in a block enclosing the `var` within the same function (`{ let a; { var a; } }`), or a `for` head binding of an enclosing loop | compile time | `SyntaxError`, kind `Invalid`, at the `var`'s name |
-| A method call `o.f(...)` (other than `__rt.name(...)`), and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| Assigning a built-in global (`Object = x`, `Object += 1`, `Object++`; clj-quickjs-104 makes them global-object properties), and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object, so sloppy code fails the same way until clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
@@ -1116,6 +1147,15 @@ o.y = o.x + o.if;
 ({a: {b: o}}).a.b.y
 ```
 
+The built-in global `Object`, `Object.prototype` and method calls
+(clj-quickjs-117); each line below evaluates to `true`:
+
+```js accept
+({}).toString() === "[object Object]" && ({}).toString === Object.prototype.toString;
+Object.is(NaN, NaN) && !Object.is(0, -0) && Object() !== Object() && typeof Object === "function";
+let o = {toString: () => "own"}; o.toString() === "own" && Object(o) === o && o.valueOf() === o;
+```
+
 Rejected (`kind line:column` of the reported position):
 
 ```js reject ReservedWord 1:3
@@ -1132,7 +1172,7 @@ Rejected (`kind line:column` of the reported position):
 
 ```js compile-reject Unsupported 2:1
 let o = {f: function () { return 1; }};
-o.f();
+Object = o.f;
 ```
 
 ```js reject Unsupported 1:9

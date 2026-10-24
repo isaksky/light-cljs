@@ -83,6 +83,9 @@
 //! | `CompareLe`     | 0x4C | –                  | a b → a<=b             | JavaScript `<=` on primitives |
 //! | `CompareGe`     | 0x4D | –                  | a b → a>=b             | JavaScript `>=` on primitives |
 //! | `Typeof`        | 0x4E | –                  | v → type               | JavaScript `typeof`: the type name of v as a string |
+//! | `GetBuiltinGlobal` | 0x52 | u16 built-in global | → v                  | push the realm's value of a built-in global name (`crate::realm::Global`: 0 is `Object`) |
+//! | `CallMethod`    | 0x53 | u16 argument count | this f a1 … an → r     | call `f` with receiver `this` (a method call) |
+//! | `NewObjectLiteral` | 0x54 | –               | → obj                  | allocate a fresh ordinary object inheriting from `Object.prototype` (an object literal) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -249,8 +252,9 @@
 //! revision 7d1c13c5d8f8). It replaces the value with its type name, a
 //! string: `undefined` is `"undefined"`, `null` is `"object"`, a boolean
 //! `"boolean"`, a number `"number"`, a string `"string"`. Of the heap
-//! objects, a function object (the one callable kind, `Call` accepts
-//! nothing else) is `"function"`; every other kind is `"object"`: plain
+//! objects, a function object and a built-in function (clj-quickjs-117; the
+//! callable kinds, `Call` accepts nothing else) are `"function"`; every
+//! other kind is `"object"`: plain
 //! objects, native payload objects (error objects among them), persistent
 //! vectors, maps and syntax occurrences, transient builders, atoms and
 //! binding cells (which JavaScript code never holds as values). It never
@@ -258,6 +262,27 @@
 //! the heap, so it allocates nothing there and is not a poll point. The
 //! compiler lowers `typeof name` for a name with no binding to `Undefined`
 //! and `Typeof` instead of the ReferenceError a plain read throws.
+//!
+//! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
+//! a built-in global name of the runtime's realm (`crate::realm`), building
+//! the realm on first use, so it may allocate and is a poll point. Its
+//! operand is checked at load time against the built-in global table. The
+//! compiler emits it for a free name that is a built-in global, after every
+//! lexical scope and instead of the ReferenceError.
+//!
+//! Opcode `0x53`, `CallMethod` (clj-quickjs-117), is `Call` with a receiver
+//! below the callee: the compiler emits it for a call whose callee is a
+//! property reference `o.m(…)`, evaluating `o` once. A built-in function
+//! callee (`crate::vm::builtin`) receives `this`; a JavaScript function
+//! callee does not observe it yet (`this` expressions are clj-quickjs-116),
+//! so the receiver is dropped when its frame is entered. Plain `Call`
+//! passes `undefined` as the receiver of a built-in. Both are poll points.
+//!
+//! Opcode `0x54`, `NewObjectLiteral` (clj-quickjs-117), is `NewObject` with
+//! the realm's `Object.prototype` as the new object's prototype (QuickJS
+//! `object`): the compiler emits it for object literals. `NewObject` keeps
+//! a null prototype (OrdinaryObjectCreate(null), as `Object.create(null)`
+//! will need), and allocating with it never builds the realm.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -365,6 +390,9 @@ pub enum Opcode {
     GetField = 0x4F,
     PutField = 0x50,
     DefineField = 0x51,
+    GetBuiltinGlobal = 0x52,
+    CallMethod = 0x53,
+    NewObjectLiteral = 0x54,
 }
 
 /// Operand encoding of an opcode.
@@ -392,6 +420,8 @@ pub(crate) enum OperandKind {
     /// u16 index into the constant pool naming a string constant: a
     /// property name.
     Name,
+    /// u16 built-in global name (`crate::realm::Global`).
+    BuiltinGlobal,
 }
 
 impl OperandKind {
@@ -406,7 +436,8 @@ impl OperandKind {
             | OperandKind::Function
             | OperandKind::ArgCount
             | OperandKind::Capture
-            | OperandKind::Name => 2,
+            | OperandKind::Name
+            | OperandKind::BuiltinGlobal => 2,
             OperandKind::Target => 4,
         }
     }
@@ -498,6 +529,9 @@ impl Opcode {
             0x4F => GetField,
             0x50 => PutField,
             0x51 => DefineField,
+            0x52 => GetBuiltinGlobal,
+            0x53 => CallMethod,
+            0x54 => NewObjectLiteral,
             _ => return None,
         })
     }
@@ -587,6 +621,9 @@ impl Opcode {
             GetField => "get_field",
             PutField => "put_field",
             DefineField => "define_field",
+            GetBuiltinGlobal => "get_builtin_global",
+            CallMethod => "call_method",
+            NewObjectLiteral => "new_object_literal",
         }
     }
 
@@ -600,7 +637,8 @@ impl Opcode {
             NewVector | NewMap => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
             Function => OperandKind::Function,
-            Call => OperandKind::ArgCount,
+            Call | CallMethod => OperandKind::ArgCount,
+            GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
             GetField | PutField | DefineField => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
@@ -610,7 +648,7 @@ impl Opcode {
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe | Typeof => OperandKind::None,
+            | CompareLe | CompareGe | Typeof | NewObjectLiteral => OperandKind::None,
         }
     }
 }
@@ -739,6 +777,11 @@ pub(crate) enum Instr {
     PutField(u16),
     /// Constant index of the property name (a string).
     DefineField(u16),
+    /// Built-in global operand (checked at load time).
+    GetBuiltinGlobal(u16),
+    /// Argument count (the receiver and callee are below the arguments).
+    CallMethod(u16),
+    NewObjectLiteral,
 }
 
 impl Instr {
@@ -825,6 +868,9 @@ impl Instr {
             Instr::GetField(_) => Opcode::GetField,
             Instr::PutField(_) => Opcode::PutField,
             Instr::DefineField(_) => Opcode::DefineField,
+            Instr::GetBuiltinGlobal(_) => Opcode::GetBuiltinGlobal,
+            Instr::CallMethod(_) => Opcode::CallMethod,
+            Instr::NewObjectLiteral => Opcode::NewObjectLiteral,
         }
     }
 
@@ -834,7 +880,8 @@ impl Instr {
         use Instr::*;
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
-            | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell => (0, 1),
+            | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
+            | NewObjectLiteral => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
@@ -853,6 +900,7 @@ impl Instr {
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
+            CallMethod(n) => (usize::from(n) + 2, 1),
             Function(_, captures) => (usize::from(captures), 1),
         }
     }
@@ -872,6 +920,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 81);
+        assert_eq!(assigned, 84);
     }
 }

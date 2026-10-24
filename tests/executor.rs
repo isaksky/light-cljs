@@ -901,3 +901,70 @@ fn a_panicking_driver_does_not_stop_its_worker() {
         .collect();
     assert_eq!(workers, HashSet::from([Some(w(0))]));
 }
+
+fn complete_string(outcome: Option<RunOutcome>) -> String {
+    match outcome {
+        Some(RunOutcome::Complete(v)) => v
+            .string()
+            .unwrap_or_else(|| panic!("expected a string, got {:?}", v.view()))
+            .to_string(),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+}
+
+/// The realm intrinsics are shared by tasks on both workers
+/// (clj-quickjs-117). Two source tasks (synthetic fixtures) each make
+/// objects (the first `{}` of either builds the realm) and meet inside a
+/// host effect, so both are mid-run on distinct workers at once. Then one
+/// tries to write `Object.prototype`, which throws the documented
+/// catchable `TypeError`, and completes; only then does the test open the
+/// gate the other waits at, and the other still sees `Object.prototype`
+/// unchanged.
+#[test]
+fn two_workers_share_the_realm_intrinsics() {
+    let rt = Runtime::new();
+    let hosts = Hosts::default();
+    let writer = source_task(
+        &rt,
+        "writer",
+        "let o = {x: 1}; let before = o.toString(); \
+         __rt.effect(2, 1); \
+         let r = 'none'; \
+         try { Object.prototype.x = 2; } catch (e) { r = 'caught'; } \
+         try { Object.prototype.toString = 3; } catch (e) { r = r + '+caught'; } \
+         before + ':' + ({}).toString() + ':' + r + ':' + typeof ({}).x",
+    );
+    let reader = source_task(
+        &rt,
+        "reader",
+        "let p = {y: 2}; let before = p.toString(); \
+         __rt.effect(2, 2); \
+         __rt.effect(3, 2); \
+         before + ':' + ({}).toString() + ':' + typeof ({}).x + ':' + \
+         (p.toString === Object.prototype.toString)",
+    );
+    let exec = ExecutorConfig::new()
+        .host(hosts.factory())
+        .start(&rt)
+        .unwrap();
+    exec.submit(writer.clone()).unwrap();
+    exec.submit(reader.clone()).unwrap();
+    assert_eq!(
+        complete_string(exec.take_outcome(writer.id(), TIMEOUT)),
+        "[object Object]:[object Object]:caught+caught:undefined"
+    );
+    hosts.gate.open();
+    assert_eq!(
+        complete_string(exec.take_outcome(reader.id(), TIMEOUT)),
+        "[object Object]:[object Object]:undefined:true"
+    );
+    // They met mid-run on two workers.
+    let (ew, er) = (
+        &hosts.effects_of(writer.id())[0],
+        &hosts.effects_of(reader.id())[0],
+    );
+    assert_eq!((ew.op, er.op), (MEET, MEET));
+    assert_ne!(ew.worker, er.worker);
+    assert_single_owner(&exec.events());
+    exec.shutdown(TIMEOUT).unwrap();
+}

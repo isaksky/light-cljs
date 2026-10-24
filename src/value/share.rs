@@ -7,8 +7,8 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure); natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects, binding cells, natives that declare it | never |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`); natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings included: a string
@@ -17,7 +17,12 @@
 //! category and the walk never descends into it. Ordinary objects
 //! (`crate::object`, clj-quickjs-114) are the mutable JavaScript objects of
 //! `design.md` §4: task-owned mutation, never shareable, whatever their
-//! properties hold (an object literal is rejected like a builder). A builder
+//! properties hold (an object literal is rejected like a builder). The
+//! exception is the realm's intrinsic objects (`Object.prototype`, and the
+//! property stores of built-in functions; `crate::realm`, clj-quickjs-117):
+//! ownerless and never changed once the realm is installed, they are
+//! persistent, so an object that inherits from one is rejected at the
+//! object, never at its prototype. A builder
 //! stays task-owned after `freeze` or release: the persistent result of a
 //! freeze is a separate object, the builder handle itself never becomes
 //! shareable. A concurrent reference is shareable without being immutable
@@ -143,6 +148,9 @@ pub(crate) enum Shareability {
 /// declare one (module docs, "What a later object kind must declare").
 pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
+        // Realm intrinsics never change after the realm is built
+        // (`crate::realm`); every other ordinary object is task-owned.
+        HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,
         HeapObject::Native(payload) => payload.shareability(),
         HeapObject::Vector(_) | HeapObject::Map(_) | HeapObject::Occurrence(_) => {
@@ -154,6 +162,8 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Cell(_) => Shareability::TaskOwned,
         // Every operation that installs a value checks it first (`crate::atom`).
         HeapObject::Atom(_) => Shareability::ConcurrentReference,
+        // A realm intrinsic: immutable once built (`crate::vm::builtin`).
+        HeapObject::Builtin(_) => Shareability::Persistent,
     }
 }
 
@@ -168,7 +178,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
         | HeapObject::Function(_)
-        | HeapObject::Atom(_) => None,
+        | HeapObject::Atom(_)
+        | HeapObject::Builtin(_) => None,
     }
 }
 

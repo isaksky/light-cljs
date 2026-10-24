@@ -486,7 +486,7 @@ fn closures_over_immutable_bindings_capture_values_and_are_publishable() {
 
 #[test]
 fn reserved_binding_misuse_is_a_compile_error() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord};
     let cases = [
         // Shadowing: no declaration may bind the reserved name.
         ("let __rt = 1;", ReservedWord, 1, 5),
@@ -513,7 +513,9 @@ fn reserved_binding_misuse_is_a_compile_error() {
             1,
             32,
         ),
-        ("__rt.vector.call(1);", Unsupported, 1, 1),
+        // Since method calls compile (clj-quickjs-117) the uncalled
+        // intrinsic is the error.
+        ("__rt.vector.call(1);", ReservedWord, 1, 1),
         // Unknown intrinsics and wrong arguments.
         ("__rt.toString();", Invalid, 1, 6),
         ("__rt.nth(__rt.vector());", Invalid, 1, 1),

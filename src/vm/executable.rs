@@ -219,6 +219,10 @@ pub enum ValidationErrorKind {
     NameNotString {
         index: u16,
     },
+    /// A `GetBuiltinGlobal` operand that names no built-in global.
+    UnknownBuiltinGlobal {
+        index: u16,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -333,6 +337,12 @@ impl Executable {
                     let code = operand as u16;
                     return Err(err(offset, UnknownThrowKind { code }));
                 }
+                OperandKind::BuiltinGlobal
+                    if crate::realm::Global::from_u16(operand as u16).is_none() =>
+                {
+                    let index = operand as u16;
+                    return Err(err(offset, UnknownBuiltinGlobal { index }));
+                }
                 OperandKind::Capture if operand >= u32::from(captures) => {
                     let index = operand as u16;
                     let count = captures;
@@ -441,6 +451,9 @@ impl Executable {
                 Opcode::GetField => Instr::GetField(operand as u16),
                 Opcode::PutField => Instr::PutField(operand as u16),
                 Opcode::DefineField => Instr::DefineField(operand as u16),
+                Opcode::GetBuiltinGlobal => Instr::GetBuiltinGlobal(operand as u16),
+                Opcode::CallMethod => Instr::CallMethod(operand as u16),
+                Opcode::NewObjectLiteral => Instr::NewObjectLiteral,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -781,6 +794,16 @@ mod tests {
             kind(load(vec![j, 0xFF, 0xFF, 0xFF, 0xFF, UNDEF, RET], vec![], 0)),
             BadBranchTarget { target: u32::MAX }
         );
+    }
+
+    #[test]
+    fn builtin_global_operands_are_validated() {
+        let g = Opcode::GetBuiltinGlobal as u8;
+        assert_eq!(
+            kind(load(vec![g, 1, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 1 }
+        );
+        assert!(load(vec![g, 0, 0, RET], vec![], 0).is_ok());
     }
 
     #[test]

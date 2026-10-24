@@ -39,7 +39,10 @@
 //!   operand area and enters a new task-owned VM frame for it, exactly as a
 //!   `Call` instruction does; the loop then runs the callback's
 //!   instructions. Its `Return` delivers the result into the native's
-//!   operand area and the loop resumes the native with `CallResult`.
+//!   operand area and the loop resumes the native with `CallResult`. A
+//!   built-in function callee (`crate::vm::builtin`, clj-quickjs-117) runs
+//!   to completion instead and its result is delivered the same way, with
+//!   `this` undefined.
 //! * `Need { dependency, kind }`: demand result `kind` of `dependency` in
 //!   the task's world. The loop leaves with `Exit::Need`, like a `Need`
 //!   instruction, and the run guard performs the dependency protocol
@@ -199,7 +202,8 @@
 
 use std::marker::PhantomData;
 
-use super::dispatch::{Fault, Flow, callee_code, dependency_id, describe, result_kind};
+use super::builtin;
+use super::dispatch::{self, Callee, Fault, Flow, dependency_id, describe, result_kind};
 use super::frames::VmState;
 use super::instr::Instr;
 use crate::collections as coll;
@@ -333,7 +337,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
         | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
         | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
-        | DefineField(_) => false,
+        | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral => false,
     }
 }
 
@@ -360,7 +364,7 @@ pub(crate) fn start(
             let [f, init, vec] = operands::<3>(state)?;
             let len = coll::vector_count(heap, vec.clone())?;
             // Checked once, up front, even for an empty vector.
-            callee_code(heap, &f)?;
+            dispatch::callee(heap, &f)?;
             let native = NativeState::Reduce {
                 f,
                 vec,
@@ -491,9 +495,18 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
     state.truncate_operands(base)?;
     match action {
         Action::Call { callee, args } => {
-            let code = callee_code(heap, &callee)?;
-            let Value::Object(id) = callee else {
-                return Err(Fault::Internal("callee is not an object"));
+            let (id, code) = match dispatch::callee(heap, &callee)? {
+                Callee::Code(id, code) => (id, code),
+                Callee::Builtin(which) => {
+                    // Runs to completion (`crate::vm::builtin`); no safepoint
+                    // falls between here and the push that roots its result.
+                    // The next step receives it like a callback's return.
+                    let result =
+                        builtin::call(heap, state.diag.task, which, &Value::Undefined, &args)?;
+                    set_awaiting(state, Awaiting::CallResult)?;
+                    state.push(result);
+                    return Ok(Flow::Next);
+                }
             };
             set_awaiting(state, Awaiting::CallResult)?;
             state.push(callee);

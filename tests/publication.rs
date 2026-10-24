@@ -504,3 +504,63 @@ fn objects_are_read_and_written_only_by_their_owner() {
         other => panic!("expected ForeignObject, got {other:?}"),
     }
 }
+
+/// Built-in globals and the realm intrinsics (clj-quickjs-117): a closure
+/// that reads `Object` and calls `Object.is` captures nothing (the name is
+/// resolved through the runtime's realm when it runs), publishes, and runs
+/// in another task on another thread. The intrinsics are shared persistent
+/// values, so a closure that captured one by value publishes too, and so
+/// do the intrinsics themselves.
+#[test]
+fn closures_using_builtin_globals_publish() {
+    let rt = Runtime::new();
+    let produce_value = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("make", src).unwrap(), &[])
+            .unwrap();
+        (complete(task.run().unwrap()), task.id())
+    };
+    let call = compile_function("function call(g) { return g(NaN); }").unwrap();
+    for src in [
+        // Captures nothing.
+        "function make() { return function (x) { \
+           return Object.is(x, x) && typeof Object === 'function' ? ({}).toString() : 'no'; }; } \
+         make()",
+        // Captures the intrinsics by value.
+        "function make() { const O = Object, p = O.prototype; \
+           return function (x) { return O.is(x, x) && p === Object.prototype \
+             ? O().toString() : 'no'; }; } \
+         make()",
+    ] {
+        let (closure, _) = produce_value(src);
+        assert_eq!(closure.view(), ValueView::Object);
+        rt.publish(&closure)
+            .unwrap_or_else(|e| panic!("{src}: {e}"));
+        let task = rt.spawn(&call, &[&closure]).unwrap();
+        let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
+        assert_eq!(
+            result.string().map(|s| s.to_string()).as_deref(),
+            Some("[object Object]"),
+            "{src}"
+        );
+    }
+    // The intrinsics themselves are shareable; an object that inherits from
+    // one is still task-owned.
+    for src in [
+        "Object",
+        "Object.prototype",
+        "Object.prototype.toString",
+        "Object.is",
+    ] {
+        let (value, _) = produce_value(src);
+        rt.publish(&value).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    for src in ["({})", "Object()"] {
+        let (object, producer) = produce_value(src);
+        assert_eq!(
+            not_shareable(rt.publish(&object).unwrap_err()),
+            (vec![], "object", Some(producer)),
+            "{src}"
+        );
+    }
+}

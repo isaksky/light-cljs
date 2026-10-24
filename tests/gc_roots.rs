@@ -679,16 +679,63 @@ fn object_property_reclaims() {
     let held = object_property(&rt);
     assert_retained(&rt, &held);
     // The argument, the inner object and the outer object go together: no
-    // ordinary object is left once the task is gone.
+    // ordinary object is left once the task is gone but `Object.prototype`
+    // (the realm intrinsic the literals inherit from, clj-quickjs-117),
+    // which the realm keeps for the runtime's lifetime.
     let Held {
         weak,
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 1);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 0);
+    assert_eq!(rt.heap_usage().objects.plain, 1);
+}
+
+/// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
+/// once a task has used them they survive collections with no task
+/// running, keep their identities, and serve later tasks. The realm lives
+/// as long as the runtime; the reclamation side is the crate-internal
+/// `realm_intrinsics_reclaim_with_their_heap`.
+#[test]
+fn realm_intrinsics_retain() {
+    let rt = Runtime::new();
+    let exprs = [
+        "Object",
+        "Object.prototype",
+        "Object.is",
+        "Object.prototype.toString",
+        "Object.prototype.valueOf",
+    ];
+    let weak: Vec<WeakHandle> = exprs
+        .iter()
+        .map(|e| {
+            let task = rt
+                .spawn(&compile(&format!("function f() {{ return {e}; }}")), &[])
+                .unwrap();
+            run_to_end(&task).downgrade()
+        })
+        .collect();
+    // No task, root or scope is left: only the realm holds them.
+    assert_eq!(rt.heap_usage().objects.builtin, 4);
+    assert_eq!(rt.heap_usage().objects.plain, 1);
+    for _ in 0..2 {
+        assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
+        assert_live(&weak);
+    }
+    // A later task sees the very same objects and can use them.
+    let object = weak[0].upgrade().unwrap();
+    let prototype = weak[1].upgrade().unwrap();
+    let check = compile(
+        "function f(o, p) { return o === Object && p === Object.prototype \
+         && ({}).toString() === '[object Object]' && Object.is(o, o); }",
+    );
+    let task = rt.spawn(&check, &[&object, &prototype]).unwrap();
+    assert_eq!(run_to_end(&task).view(), ValueView::Bool(true));
+    drop((object, prototype, task));
+    rt.request_collection().unwrap();
+    assert_live(&weak);
 }
 
 #[test]

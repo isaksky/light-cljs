@@ -157,6 +157,10 @@ pub(crate) enum RootCategory {
     /// The `Ready` value or `Failed` error of a completed dependency cell
     /// (`crate::dep`), while the cell exists.
     DependencyOutcome,
+    /// The realm's intrinsic objects (`crate::realm`): `Object.prototype`
+    /// and the built-in functions, from the realm's creation until the
+    /// heap is dropped.
+    Intrinsic,
 }
 
 /// Report every heap reference held by `self`.
@@ -713,11 +717,15 @@ impl Heap {
         scopes: &super::ScopeTable,
         sources: &[Arc<dyn RootSource>],
         parked: impl Iterator<Item = ObjectId>,
+        realm: &crate::realm::Realm,
         visit: &mut dyn FnMut(RootCategory, ObjectId),
     ) {
         roots.trace(&mut |id| visit(RootCategory::PersistentHandle, id));
         scopes.trace(&mut |id| visit(RootCategory::ScopeLocal, id));
         parked.for_each(|id| visit(RootCategory::TaskFrame, id));
+        if let Some(intrinsics) = realm.get() {
+            intrinsics.trace(&mut |id| visit(RootCategory::Intrinsic, id));
+        }
         for source in sources {
             source.trace_roots(visit);
         }
@@ -753,6 +761,7 @@ impl Heap {
             &scopes,
             &sources,
             world.gc.parked_roots(),
+            &self.realm,
             &mut |_, id| {
                 root_count += 1;
                 grey.push(id);
@@ -831,6 +840,7 @@ impl Heap {
             &scopes,
             &sources,
             world.gc.parked_roots(),
+            &self.realm,
             &mut |c, id| out.push((c, id)),
         );
         drop((scopes, roots, world));
@@ -913,6 +923,7 @@ mod tests {
             | HeapObject::Function(_)
             | HeapObject::Cell(_) => panic!("not a native object"),
             HeapObject::Atom(_) => panic!("not a native object"),
+            HeapObject::Builtin(_) => panic!("not a native object"),
         })
         .expect("live object");
     }

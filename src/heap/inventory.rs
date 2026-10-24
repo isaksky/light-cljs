@@ -66,11 +66,14 @@ enum Holder {
     NativePayloadEdges,
     /// Property values (and the prototype) of an ordinary object.
     ObjectProperty,
+    /// The realm's intrinsic objects (`crate::realm`) and the property
+    /// values of built-in functions.
+    Intrinsic,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 20] = [
+const HOLDERS: [Holder; 21] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -91,21 +94,23 @@ const HOLDERS: [Holder; 20] = [
     Holder::ExecutableConstant,
     Holder::NativePayloadEdges,
     Holder::ObjectProperty,
+    Holder::Intrinsic,
 ];
 
 /// Every root category; a new one fails to compile in
 /// [`holders_of_category`] until it is mapped, and must be listed here.
-const CATEGORIES: [RootCategory; 5] = [
+const CATEGORIES: [RootCategory; 6] = [
     RootCategory::PersistentHandle,
     RootCategory::ScopeLocal,
     RootCategory::TaskFrame,
     RootCategory::ExecutableConstant,
     RootCategory::DependencyOutcome,
+    RootCategory::Intrinsic,
 ];
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 9] = [
+const KINDS: [ObjectKind; 10] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -115,6 +120,7 @@ const KINDS: [ObjectKind; 9] = [
     ObjectKind::Function,
     ObjectKind::Cell,
     ObjectKind::Atom,
+    ObjectKind::Builtin,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -145,6 +151,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
+        RootCategory::Intrinsic => &[Intrinsic],
     }
 }
 
@@ -162,6 +169,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Function => &[ClosureEnvironment, BindingCell],
         ObjectKind::Cell => &[BindingCell],
         ObjectKind::Atom => &[AtomCurrent],
+        ObjectKind::Builtin => &[Intrinsic],
     }
 }
 
@@ -236,6 +244,10 @@ fn coverage(holder: Holder) -> Coverage {
             reclaims: (Inventory, "native_payload_edges_reclaim"),
         },
         Holder::ObjectProperty => public("object_property_retains", "object_property_reclaims"),
+        Holder::Intrinsic => Coverage {
+            retains: (GcRoots, "realm_intrinsics_retain"),
+            reclaims: (Inventory, "realm_intrinsics_reclaim_with_their_heap"),
+        },
     }
 }
 
@@ -471,6 +483,35 @@ fn dependency_outcome_reclaims_with_its_cell() {
     heap.request_collection().unwrap();
     assert!(ids.iter().all(|&id| heap.is_live(id)), "held by the cells");
     drop(table);
+    assert_eq!(heap.request_collection().unwrap().reclaimed, ids.len());
+    assert_stale(&heap, &ids);
+}
+
+/// The realm lives as long as its heap, so a runtime never releases it;
+/// dropping the realm slot directly shows that it is the intrinsics' only
+/// holder (with a task-made object that inherits from `Object.prototype`
+/// already gone).
+#[test]
+fn realm_intrinsics_reclaim_with_their_heap() {
+    let mut heap = Heap::default();
+    let mut ids = Vec::new();
+    let prototype = {
+        let intrinsics = crate::realm::intrinsics(&heap).unwrap();
+        intrinsics.trace(&mut |id| ids.push(id));
+        intrinsics.object_prototype
+    };
+    assert_eq!(ids.len(), 5);
+    let task = crate::ids::TaskId::from_raw(1);
+    let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
+    let child = heap.alloc(HeapObject::Plain(object)).unwrap();
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 1);
+    assert!(!heap.is_live(child), "an inheriting object does not stay");
+    assert!(ids.iter().all(|&id| heap.is_live(id)), "held by the realm");
+    let snapshot = heap.root_snapshot().unwrap();
+    assert!(snapshot.iter().all(|(c, _)| *c == RootCategory::Intrinsic));
+    assert_eq!(snapshot.len(), ids.len());
+    assert!(heap.realm_mut().take().is_some());
+    let heap = Arc::new(heap);
     assert_eq!(heap.request_collection().unwrap().reclaimed, ids.len());
     assert_stale(&heap, &ids);
 }

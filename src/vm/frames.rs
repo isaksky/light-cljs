@@ -304,6 +304,19 @@ impl VmState {
         self.stack.get(self.top().floor()..).unwrap_or(&[])
     }
 
+    /// Remove the running frame's operand that has `above` operands on top
+    /// of it (0: the top), shifting those down.
+    pub(crate) fn remove_operand(&mut self, above: usize) -> Result<Value, Fault> {
+        let at = self
+            .stack
+            .len()
+            .checked_sub(above + 1)
+            .filter(|&at| at >= self.top().floor())
+            .ok_or(Fault::Internal("operand stack underflow"))?;
+        native::assert_no_borrow("removing an operand (moving the value stack)");
+        Ok(self.stack.remove(at))
+    }
+
     /// Replace the top `popped` operands of the running frame with `result`.
     pub(crate) fn replace(&mut self, popped: usize, result: Value) -> Result<(), Fault> {
         let keep = self

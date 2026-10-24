@@ -211,6 +211,7 @@ public API cannot reach.
 | executable object constants | `ExecutableConstant` | `executable_constant_retains` *(lib)* | `executable_constant_reclaims` *(lib)* |
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
+| realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -227,7 +228,9 @@ public API cannot reach.
   *(lib)* does the same for object constants and native payload edges.
 - **Not reclaimable while the runtime lives.** A dependency cell is never
   removed, so a published outcome stays rooted until the runtime and every
-  task are gone; the reclamation test drops a cell table directly.
+  task are gone; the reclamation test drops a cell table directly. Likewise
+  the realm (clj-quickjs-117) lives as long as its heap; its reclamation
+  test drops the realm slot directly.
 
 ## Persistent collections (clj-quickjs-3)
 
@@ -1497,9 +1500,145 @@ for a write the right-hand side is evaluated first (PutValue).
   rebuilds the index (clj-quickjs-124); function objects, which are
   persistent today, need a separate task-owned property store for their
   own properties (clj-quickjs-125).
-- A literal's `[[Prototype]]` is null until `Object.prototype` exists
-  (clj-quickjs-117), so inherited methods such as `o.toString` read
-  `undefined` today.
+- Since clj-quickjs-117 a literal's `[[Prototype]]` is `Object.prototype`
+  ("Realm intrinsics" below) and a write of a property the object does not
+  have walks the chain (`SetOutcome::Inherited` is decided there); objects
+  made by `NewObject` and by the embedder keep a null prototype.
+
+## Realm intrinsics (clj-quickjs-117)
+
+Contract: `src/realm.rs` (the realm, its intrinsic objects, built-in global
+names), `src/vm/builtin.rs` (the built-in function kind and the `Object`
+functions), `src/vm/property.rs` (prototype-chain reads and writes),
+`src/vm/instr.rs` (`GetBuiltinGlobal` 0x52, `CallMethod` 0x53,
+`NewObjectLiteral` 0x54). Design: `design.md` §§4, 5, 11.
+
+The question: intrinsics (`Object.prototype`, `Object`, later
+`Function.prototype`, `Array.prototype`, ...) must be reachable from every
+task, while ordinary objects are task-owned (above) and persistent
+functions must stay publishable, with no lock on ordinary property reads,
+no per-worker imports, and the intrinsics as collector roots.
+
+**Decision: one shared, immutable realm per runtime.** The heap owns at
+most one realm (`Heap::realm`, a `OnceLock`), built by the first
+instruction that needs it (`NewObjectLiteral`, `GetBuiltinGlobal`) and kept
+until the heap is dropped. Its objects are:
+
+- `Object.prototype`: an ordinary object (`HeapObject::Plain`) marked
+  *intrinsic*: no owner, null prototype, own `constructor`, `toString`,
+  `valueOf`;
+- built-in functions (`Object`, `Object.is`, `Object.prototype.toString`,
+  `Object.prototype.valueOf`): a new heap kind, `HeapObject::Builtin`
+  (`ObjectKind::Builtin`, appended), holding a `Builtin` id naming Rust code
+  and an intrinsic `OrdinaryObject` as its property store (`length`,
+  `name`; `Object` also `prototype` and `is`).
+
+Every task reads them with the ordinary property path (the one short
+object-table lock per object visited, no other lock) and gets the same
+identities; no task changes them: any write to an intrinsic, of any
+property, is a catchable `TypeError` ("built-in objects are shared by all
+tasks and immutable", `docs/grammar.md` "Explicit gaps"). The property
+attributes are still the standard ones (methods writable, non-enumerable,
+configurable; `length`/`name` read-only; `Object.prototype` fixed), so an
+ordinary object that inherits `toString` can be given its own:
+immutability comes from sharing, not from the descriptors, which avoids
+the "override mistake" a frozen prototype would cause (`o.toString = f`
+and `C.prototype.toString = f` would both throw). The realm is built
+completely (allocations and property definitions while the building thread
+is a registered mutator between safepoints, so no collection intervenes),
+marked known-shareable, then installed; later reads are one atomic load.
+Concurrent first uses serialize on a build lock that exists only for that
+moment (a leaf lock, never taken by the collector).
+
+- **Publication.** Intrinsics never change once installed, so they are
+  `Shareability::Persistent` (`classify`: `Builtin`, and `Plain` when
+  intrinsic) and known shareable from creation. A closure that reads
+  `Object` captures nothing (the name compiles to `get_builtin_global 0`,
+  resolved through the running task's runtime); one that captured
+  `Object` or `Object.prototype` by value still publishes. Objects that
+  inherit from `Object.prototype` stay task-owned: an edge from a
+  task-owned object to an intrinsic is allowed, the reverse never exists.
+- **Migration.** Nothing is per worker or per task: a task that moves
+  between workers keeps reading the same realm.
+- **Roots.** The realm's objects are roots of the new category
+  `RootCategory::Intrinsic` while the heap lives (root inventory above);
+  their property values are reached through them.
+- **Names.** A free identifier that is a built-in global (`Global`:
+  `Object` today) resolves after every lexical scope and before the
+  `ReferenceError` (`frontend::lower`, `Access::Global`), so `let Object`
+  shadows it. `typeof Object` is `"function"`. Assigning one is a
+  compile-time `Unsupported` error until the global object makes these
+  its properties (clj-quickjs-104).
+- **Calls.** `Call` and `CallMethod` accept a built-in function: it runs to
+  completion inside the instruction (a poll point; it may allocate, as
+  `Object()` does, and its result replaces the operands at once), and so
+  does a built-in passed as a native callback (`__rt.reduce`). A later
+  built-in that must run JavaScript (a getter, a user `toString`, a
+  callback) is started as a resumable native (`crate::vm::native`), so that
+  JavaScript runs in ordinary VM frames across which the task can yield,
+  wait or migrate; the `Builtin` dispatch is where that choice is made.
+- **Method calls.** A call whose callee is `o.m` evaluates `o` once and
+  emits `CallMethod`, which passes `o` as the receiver: built-ins see it
+  as `this`; a JavaScript function callee does not observe it yet (the
+  receiver is dropped when its frame is entered; `this` expressions and
+  the frame's `this` slot are clj-quickjs-116). A plain call passes
+  `undefined` (strict mode), so `let f = o.toString; f()` is
+  `"[object Undefined]"`.
+- **Literals.** Object literals compile to `NewObjectLiteral`, which
+  allocates an owned object whose prototype is `Object.prototype`, like
+  `Object()`; `NewObject` keeps a null prototype (OrdinaryObjectCreate(null),
+  what `Object.create(null)` will need) and never builds the realm, so
+  hand-assembled programs that only allocate objects do not pay for it.
+
+**Alternatives considered.**
+
+- *Per-task realms*: each task lazily materializes task-owned intrinsics,
+  and objects and functions refer to intrinsic prototypes by a
+  realm-relative reference resolved through the running task. Built-ins
+  would be fully mutable per task (monkey-patching works), but every task
+  that touches an object would allocate and initialize its own realm
+  (thousands of short tasks), `Object` would be a different object in
+  every task (a published closure that captured it would carry another
+  task's object, which publication must then reject), every prototype edge
+  of a persistent value (a function's `Function.prototype`) would need the
+  indirection, and a change one task made (for example load-time code
+  extending a built-in prototype) would be invisible to the others.
+  Rejected.
+- *Shared mutable intrinsics* behind a lock or with a writer protocol:
+  every ordinary property read that reaches a prototype would pay for the
+  synchronization, and `design.md` §4 excludes general shared mutable
+  object graphs. Rejected.
+- *Frozen intrinsics* (non-writable descriptors): the same immutability,
+  but the override mistake above. Rejected in favour of immutability by
+  sharing.
+- *Eager creation in `Runtime::new`*: simpler to reason about, but every
+  runtime and every collection pays for objects most early VM programs
+  never use, and heap counts in every test would include them. The lazy,
+  build-once realm gives the same identities.
+
+**Consequences.**
+
+- Programs cannot add or change properties of built-in objects. Code that
+  patches built-in prototypes (ClojureScript's `extend-type` on a native
+  type writes `Date.prototype.…`) needs the compiler to lower such
+  extension differently (`design.md` §5 allows private lowering), or a
+  later per-task overlay; this is listed under "Explicit gaps".
+- Later intrinsics follow the same pattern: `Function.prototype`
+  (clj-quickjs-102), `Array.prototype` and `Array` (clj-quickjs-153),
+  `Symbol.prototype` (clj-quickjs-129) and the error prototypes and
+  constructors (clj-quickjs-230) are added to `realm::build` as intrinsic
+  ordinary objects and `Builtin` functions, their constructors to `Global`
+  (append-only, the operand values are part of the instruction format), and
+  their methods as `Builtin` variants. Function objects, which are
+  persistent, then get `Function.prototype` as an implicit prototype read
+  through the realm; built-in functions get it as their `[[Prototype]]`.
+  Until it exists, reading a property a built-in function does not have
+  itself fails with `UnsupportedOperand` instead of reading `undefined`.
+- The realm's five objects (and its interned names) live as long as the
+  runtime: the first object literal adds them to the heap counts.
+- Embedder-made objects keep a null prototype (`Scope::new_object`); an
+  object that should inherit from `Object.prototype` is made by a task (a
+  literal or `Object()`).
 
 ## QuickJS references and provenance
 
@@ -1875,3 +2014,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   (`has_parameter_expressions`: an argument scope of `let`-like
   parameters, each default under `OP_get_arg`/`OP_strict_eq undefined`)
   was consulted only. No code was copied.
+- `tests/js_source.rs` `object_intrinsics` (clj-quickjs-117): the
+  `a = {}; a.toString() === "[object Object]"` case of `test` (line 124) in
+  `research/quickjs/tests/test_builtin.js` and the `Object.is(actual,
+  expected)` comparison of the `assert` helper (line 1) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: each `assert` is a Rust assertion on the expression's value;
+  `new Object()` waits for clj-quickjs-71 and `Object.getPrototypeOf` for
+  the reflection pellet. The notice on `object_literals_and_named_properties`
+  covers them. `research/quickjs/quickjs.c` `js_object_constructor`,
+  `js_object_toString`, `js_object_valueOf`, `js_object_is`, `JS_ToObject`,
+  `JS_GetPropertyInternal` (prototype walk), `JS_SetPropertyInternal`
+  (inherited read-only check) and `CASE(OP_call_method)` were consulted
+  only, for semantics. No code was copied.

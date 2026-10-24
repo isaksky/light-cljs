@@ -1592,9 +1592,9 @@ Supported (`cargo test --test js_source typeof_operator`,
 
 Deferred:
 
-- `typeof Object` waits for a global `Object` (clj-quickjs-77); once a
-  global object exists, an unbound name must be looked up at run time
-  rather than decided by the compiler.
+- `typeof Object` is `"function"` since clj-quickjs-117. Once a global
+  object exists (clj-quickjs-104), an unbound name must be looked up at run
+  time rather than decided by the compiler.
 
 ### `var` declarations and var-scoped function declarations (clj-quickjs-94)
 
@@ -1646,8 +1646,8 @@ Supported (`cargo test --lib frontend::tests::object_literals`,
 
 Deferred:
 
-- `Object.prototype` (literals have a null prototype), getters/setters,
-  methods and method calls, computed keys and `o[k]`, `delete`,
+- (`Object.prototype` and method calls: clj-quickjs-117, below.)
+  Getters/setters, methods, computed keys and `o[k]`, `delete`,
   `__proto__`, property `++`/`--` and compound assignment; properties of
   functions, error objects and primitives fail with `UnsupportedOperand`.
 
@@ -1721,3 +1721,44 @@ Supported (`cargo test --lib frontend::tests::legacy_octal_escapes_in_sloppy_mod
   `0`) and `\8` `\9` (the characters `8`, `9`). They stay `InvalidToken` in strict code, including
   the string right after a `"use strict"` directive (`"use strict"; "\07"`) and the directives
   before it in the same prologue (`"\07"; "use strict";`).
+
+### `Object`, `Object.prototype`, `Object.is` and method calls (clj-quickjs-117)
+
+Supported (`cargo test --test js_source object_intrinsics`,
+`cargo test --test publication closures_using_builtin_globals_publish`,
+`cargo test --test executor two_workers_share_the_realm_intrinsics`,
+`cargo test --test gc_roots realm_intrinsics_retain`,
+`cargo test --lib realm::`):
+
+- One realm per runtime (decision record in `docs/architecture.md`, "Realm
+  intrinsics"): `Object.prototype` and the built-in functions `Object`,
+  `Object.is`, `Object.prototype.toString` and `Object.prototype.valueOf`
+  are shared, immutable intrinsics, built on first use, the same objects in
+  every task and on every worker, publishable, and collector roots
+  (`RootCategory::Intrinsic`) while the runtime lives.
+- Object literals and `Object()` results inherit from `Object.prototype`;
+  reads walk the prototype chain, and a write of an inherited (writable)
+  property adds an own one (`o.toString = f`).
+- The free name `Object` resolves after lexical scopes (shadowable);
+  `typeof Object` is `"function"`.
+- `Object(v)` (`undefined`/`null`: a new object; an object: itself),
+  `Object.is` (SameValue), `toString` (`"[object Object]"`, and
+  `"[object Undefined]"`/`"[object Null]"` for a plain call), `valueOf`.
+- Method calls `o.m(...)` evaluate `o` once and pass it as the receiver of
+  a built-in function (`call_method`); JavaScript methods are called with
+  their arguments.
+- New opcodes `get_builtin_global` (`0x52`), `call_method` (`0x53`) and
+  `new_object_literal` (`0x54`); new heap kind `Builtin`
+  (`ObjectCounts::builtin`).
+
+Deferred:
+
+- Writing any property of a built-in object throws a catchable
+  `TypeError` (built-ins are shared and immutable; listed in
+  `docs/grammar.md`, "Explicit gaps"); assigning `Object` is a compile-time
+  `Unsupported` error until the global object (clj-quickjs-104).
+- `this` inside JavaScript functions (clj-quickjs-116), `new Object()`
+  (clj-quickjs-71), `Function.prototype` (built-in functions' inherited
+  properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
+  objects for `Object(1)` and primitive receivers (clj-quickjs-72/-73),
+  `Object.getPrototypeOf` and the other reflection functions.
