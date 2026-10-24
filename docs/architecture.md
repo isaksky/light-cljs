@@ -784,9 +784,9 @@ Design: `design.md` §§8, 10, 15.
   parking consumers, settlement and a canceller with barriers; its
   consumers run the synthetic source fixture
   `tests/fixtures/js/cancel_consumer.js`.
-- **Deferred.** Polling between VM instructions; cancellation through
-  native frames (clj-quickjs-28). The language-level policy (finally
-  blocks run, not catchable) is clj-quickjs-27, below.
+- **Deferred.** Polling between VM instructions. The language-level policy
+  (finally blocks run, not catchable) is clj-quickjs-27, below; inside
+  native frames, clj-quickjs-28.
 
 ## Dependency graph and wait cycles (clj-quickjs-26)
 
@@ -1063,14 +1063,10 @@ may survive the run. The contract is the `src/vm/native.rs` module docs.
   native frame and reclamation after; cancellation inside a fold; `needAll`
   suspending in the native; failure positions; nested folds) and
   `src/vm/native.rs` (leaf versus resumable step accounting).
-- **Exceptions.** Handlers inside a callback catch as usual. Raising stops
-  at a handler of the frame that started a pending native (or of a caller):
-  that exception ends the run uncaught (`native::unwinds_through`, checked
-  in `VmState::raise`), so the native frame is never left half unwound. A
-  failing starting instruction raises before its native frame exists.
-- **Deferred.** Unwinding failures through native frames into JavaScript
-  handlers, and the cancellation and migration policy for tasks inside a
-  native, are clj-quickjs-28.
+- **Exceptions.** Handlers inside a callback catch as usual. A handler of
+  the frame that started a pending native (or of a caller) is reached by
+  unwinding through the native (clj-quickjs-28, below). A failing starting
+  instruction raises before its native frame exists.
 
 ## Exceptions across waits and cancellation cleanup (clj-quickjs-27)
 
@@ -1139,6 +1135,49 @@ resumable natives, and adds no runtime hooks.
   executor's real `Waiting` releases (the executor has no producer
   bindings); the settlement policy is the simulated host's: fail the
   newest demand's own result.
+
+## Failures and cancellation through native continuations (clj-quickjs-28)
+
+Contract: `src/vm/native.rs` ("The protocol", "Errors", "Safepoint contract
+and debug borrow checks") and `src/task.rs` ("Cancellation and finally
+blocks", native frames). Design: `design.md` §§10–11, 13.
+
+- **Failure actions.** `VmState::raise` validates the innermost handler,
+  then calls `native::unwind(natives, handler_frame)`: every native frame
+  with `depth > handler_frame` (started by the handler's frame or above;
+  depths strictly increase along the stack), innermost first, receives a
+  `Failure` chosen by what it awaited (`Callback`, `Dependency`, `Step`)
+  through `NativeState::fail` and answers an action; `Unwind` pops it.
+  Any other answer makes the raise `Broken` (an internal failure), so no
+  native resumes from a half-unwound state. Then the call frames above the
+  handler's frame are popped and the value stack is cut to the handler's
+  height, which lies below every passed native's operand area. Both
+  current natives answer `Unwind`.
+- **Producer failures in `needAll`.** The run guard's `vm_need` clears the
+  pending need and raises at the native's starting instruction through
+  `raise_failure`, now caught around the native; the same holds when the
+  failure is delivered by the run that resumes a parked task, on any thread.
+- **Cancellation.** `VmState::unwind_cancel` calls `native::discard`,
+  which truncates the passed natives without running native code; the
+  waiter entry was already withdrawn by `RunGuard::begin_cleanup`, so no
+  cell lock or producer is held or blocked by the cleanup. With no
+  finally block left the whole VM state (natives included) is dropped.
+- **Debug borrow checks.** A per-thread counter (debug builds only)
+  counts `ScopedBorrow`s; the trampoline holds one around each
+  `NativeState::step` and `fail`. `native::assert_no_borrow` panics in
+  `dispatch::execute` entry, `dispatch::poll` (every VM safepoint), the
+  `Flow::Need` exit, `VmState::push`, `VmState::enter`, `native::start`,
+  `Task::try_begin_run` and `RunGuard::park`. Release builds have no
+  counter and the checks are empty.
+- **Tests.** `tests/native_unwind.rs` (callback exception and producer
+  failure, both via `needAll` and via a callback's `need`, caught in the
+  caller after resuming on another thread; release of what only the native
+  held while the task is still alive; nested natives; migration to the
+  other executor worker with a task-owned builder; cancellation inside a
+  callback and inside `needAll` with finally blocks, budgeted cleanup and
+  another consumer of the same producer), `src/vm/native.rs` (borrow
+  check rejections, unwind/discard selection), and the updated pinned
+  tests in `tests/native_fold.rs` and `tests/exception_waits.rs`.
 
 ## QuickJS references and provenance
 

@@ -471,27 +471,32 @@ fn an_unhandled_dependency_failure_reports_key_world_and_source() {
     }
 }
 
-/// A dependency failure inside a resumable native (`__rt.needAll`) would
-/// have to unwind through the native's frame to reach the enclosing catch
-/// block: that stays terminal until clj-quickjs-28 (`crate::vm::native`,
-/// "Errors"), so the run fails at the starting instruction and neither the
-/// catch nor the finally block runs.
+/// A dependency failure inside a resumable native (`__rt.needAll`) unwinds
+/// through the native's frame into the enclosing catch block
+/// (clj-quickjs-28, `crate::vm::native`, "Errors"; until then it was
+/// terminal and neither block ran): the catch block gets the error object,
+/// whose cause is the published error value, and the finally block runs.
 #[test]
-fn a_dependency_failure_inside_a_native_stays_terminal() {
+fn a_dependency_failure_inside_a_native_is_caught_around_it() {
     let rt = Runtime::new();
     let task = spawn(
         &rt,
-        "try { __rt.needAll(__rt.vector(5), 3); }
-         catch (e) { __rt.effect(1, 1); }
-         finally { __rt.effect(1, 2); }",
+        "let caught;
+         try { __rt.needAll(__rt.vector(5), 3); }
+         catch (e) { __rt.effect(1, 1); caught = e; }
+         finally { __rt.effect(1, 2); }
+         caught",
     );
     let mut log = Log::default();
     run_to_wait(&rt, &task, &mut log, A);
     let error_value = rt.root(Primitive::Number(13.0));
     let resumed = fail(&rt, &task, &error_value);
-    let error = failed(run(&resumed, &mut log));
+    let caught = complete(run(&resumed, &mut log));
+    let error = caught.error().expect("an error object");
     assert_eq!(error.kind(), VmErrorKind::DependencyFailed(key(&rt, A)));
-    assert!(log.0.is_empty(), "{:?}", log.0);
+    let cause = caught.error_cause().expect("a cause");
+    assert_eq!(cause.view(), ValueView::Number(13.0));
+    assert_eq!(log.0, [1.0, 2.0]);
 }
 
 // ---------------------------------------------------------------------------

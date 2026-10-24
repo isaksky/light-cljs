@@ -52,6 +52,8 @@
 //! its arguments, progress and intermediate values, traced with the frames,
 //! and its operand area on the value stack just above the frame that started
 //! it, where a callback it calls is entered like any other callee.
+//! Raising and cancellation unwinding pop the native frames they pass with
+//! the call frames (`native::unwind`, `native::discard`).
 //!
 //! **Dynamic context.** The task and world in [`DiagnosticContext`] belong to
 //! the task, so every frame runs in the world its task was spawned in; a call
@@ -257,6 +259,7 @@ impl VmState {
 
     /// Push an operand onto the running frame.
     pub(crate) fn push(&mut self, v: Value) {
+        native::assert_no_borrow("pushing a value (growing the value stack)");
         self.stack.push(v);
     }
 
@@ -337,6 +340,7 @@ impl VmState {
         callee: ObjectId,
         argc: usize,
     ) -> Result<(), Fault> {
+        native::assert_no_borrow("entering a call frame (reentering JavaScript)");
         let base = self
             .stack
             .len()
@@ -512,11 +516,11 @@ impl VmState {
     }
 
     /// Raise `exception`: unwind to the innermost catch or finally handler
-    /// (popping the frames above its frame and every pending completion
-    /// passed on the way) and continue there, or report that nothing catches
-    /// it. A handler reached only through a pending native frame does not
-    /// catch (`crate::vm::native`, "Errors"). Never recurses, whatever the
-    /// number of frames.
+    /// (popping the frames above its frame, every pending native frame
+    /// started by its frame or above, which receives the failure first, and
+    /// every pending completion passed on the way) and continue there, or
+    /// report that nothing catches it (`crate::vm::native`, "Errors"). Never
+    /// recurses, whatever the number of frames.
     pub(crate) fn raise(&mut self, exception: Exception) -> Raised {
         while let Some(h) = self.handlers.pop() {
             let target = match h.kind {
@@ -524,11 +528,6 @@ impl VmState {
                 HandlerKind::Pending(Completion::Cancel) => return Raised::Cancelled,
                 HandlerKind::Pending(_) => continue,
             };
-            // Unwinding through a pending native frame is deferred
-            // (clj-quickjs-28): the exception ends the run uncaught.
-            if native::unwinds_through(self, h.frame) {
-                return Raised::Uncaught(exception);
-            }
             // The handler's frame must still be live, and its operands must
             // not have dropped below the handler's height since it was
             // pushed (only hand-assembled code could do either).
@@ -538,6 +537,12 @@ impl VmState {
             };
             if h.frame > self.calls.len() || above < h.height {
                 return Raised::Broken("operand stack below a handler's height");
+            }
+            // The natives this exception passes receive the failure and are
+            // released; their operand areas lie above the handler's height
+            // (the handler was pushed before they started).
+            if let Err(message) = native::unwind(&mut self.natives, h.frame) {
+                return Raised::Broken(message);
             }
             self.calls.truncate(h.frame);
             if h.height < self.top().floor() {
@@ -569,11 +574,11 @@ impl VmState {
     /// handler (`crate::task`, "Cancellation and finally blocks"): like
     /// [`Self::raise`], but catch handlers are skipped, and the finally
     /// handler becomes a pending [`Completion::Cancel`]. Pending completions
-    /// passed on the way are discarded (the cancellation overrides them).
-    /// Returns true if a finally block runs next; false when none is left,
-    /// or the next one could only be reached through a pending native frame
-    /// (deferred, clj-quickjs-28) or contradicts the frames: the cleanup is
-    /// over.
+    /// passed on the way are discarded (the cancellation overrides them), and
+    /// so are pending native frames, without running native code
+    /// (`crate::vm::native`, "Errors"). Returns true if a finally block runs
+    /// next; false when none is left or the next one contradicts the
+    /// frames: the cleanup is over.
     pub(crate) fn unwind_cancel(&mut self) -> bool {
         while let Some(h) = self.handlers.pop() {
             let HandlerKind::Finally { target } = h.kind else {
@@ -583,12 +588,10 @@ impl VmState {
                 Some(callee) => callee.base,
                 None => self.stack.len(),
             };
-            if native::unwinds_through(self, h.frame)
-                || h.frame > self.calls.len()
-                || above < h.height
-            {
+            if h.frame > self.calls.len() || above < h.height {
                 return false;
             }
+            native::discard(&mut self.natives, h.frame);
             self.calls.truncate(h.frame);
             if h.height < self.top().floor() {
                 return false;

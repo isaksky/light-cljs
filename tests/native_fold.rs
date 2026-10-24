@@ -682,15 +682,15 @@ fn empty_inputs_complete_without_callbacks_or_needs() {
     assert!(task.take_producer_requests().is_empty());
 }
 
-/// Exceptions and native frames (the merge of clj-quickjs-11 and -12): a
-/// handler inside a callback catches as usual and the fold continues; an
-/// exception that would unwind *through* a pending native frame into a
-/// handler of the frame that started it (or a caller) is terminal for now
-/// (clj-quickjs-28), so neither that catch nor that finally block runs. A
+/// Exceptions and native frames: a handler inside a callback catches as
+/// usual and the fold continues; an exception unwinds *through* a pending
+/// native frame into a handler of the frame that started it, whose catch
+/// and finally blocks run (clj-quickjs-28; under clj-quickjs-12 this was
+/// terminal and neither ran), and the caller's catch is not involved. A
 /// failure of the starting instruction itself, before the native frame
 /// exists, is an ordinary catchable failure.
 #[test]
-fn exceptions_are_caught_inside_callbacks_but_not_through_native_frames() {
+fn exceptions_are_caught_inside_callbacks_and_through_native_frames() {
     let rt = Runtime::new();
     let three = number_vector(&rt, &[1.0, 2.0, 3.0]);
     let run = |src: &str| {
@@ -714,19 +714,15 @@ fn exceptions_are_caught_inside_callbacks_but_not_through_native_frames() {
     assert_eq!(log, vec![1.0, 2.0, 3.0]);
 
     // A throw and a catchable failure in a callback, with handlers only
-    // around the fold (in its frame and in a caller): terminal, no catch or
-    // finally block runs.
-    for (body, kind, effects) in [
+    // around the fold (in its frame and in a caller): the fold's own catch
+    // and finally blocks run, the fold is abandoned, and the caller's catch
+    // does not run.
+    for (body, effects) in [
         (
             "if (x === 2) { throw 7; } return a + x;",
-            VmErrorKind::Thrown,
-            vec![1.0, 2.0],
+            vec![1.0, 2.0, 50.0, 60.0],
         ),
-        (
-            "return a + x + undefinedName;",
-            VmErrorKind::ReferenceError,
-            vec![1.0],
-        ),
+        ("return a + x + undefinedName;", vec![1.0, 50.0, 60.0]),
     ] {
         let src = format!(
             "function f(v) {{
@@ -739,13 +735,9 @@ fn exceptions_are_caught_inside_callbacks_but_not_through_native_frames() {
   try {{ return fold(); }} catch (e) {{ __rt.effect(1, 70); return -2; }}
 }}"
         );
-        match run(&src) {
-            (RunOutcome::Failed(e), log) => {
-                assert_eq!(e.kind(), kind, "{e}");
-                assert_eq!(log, effects, "{e}");
-            }
-            (other, _) => panic!("expected Failed, got {other:?}"),
-        }
+        let (outcome, log) = run(&src);
+        assert_eq!(number(&complete(outcome)), -1.0, "{body}");
+        assert_eq!(log, effects, "{body}");
     }
 
     // The starting instruction fails before any native frame exists.

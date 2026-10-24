@@ -51,6 +51,17 @@
 //!   pushed onto the calling frame's operands, as the instruction's result;
 //!   the calling frame continues after the instruction.
 //!
+//! Failures are delivered too (clj-quickjs-28, "Errors" below): when an
+//! exception unwinds through a pending native, the native receives
+//! `Failure::Callback` (the callback it called raised, and nothing inside the
+//! callback caught it), `Failure::Dependency` (the dependency it demanded
+//! failed or was cancelled: the producer's failure) or `Failure::Step` (its own
+//! step failed), and answers with the action `Unwind`: release the frame
+//! and let the exception go on to the handler below it. Neither current
+//! native recovers from a failure; any other answer is refused as an
+//! internal error, so a native can never resume after its frame was
+//! partially unwound.
+//!
 //! No Rust frame represents a pending native: between steps everything it
 //! needs is in its `NativeFrame` (a trampoline, not a callback stack), so a
 //! callback that suspends the task, or a budget that runs out between two
@@ -87,9 +98,10 @@
 //! through the task's root source while it is suspended or yielded, and
 //! from the runner at a VM safepoint while it runs. A value held only by a
 //! pending native (the collection being folded, its unvisited elements, the
-//! accumulator) stays alive; when the task finishes (completes, fails or is
-//! cancelled) its VM state, native frames included, is dropped and those
-//! values become garbage unless something else holds them.
+//! accumulator) stays alive; when the native returns, an exception or a
+//! cancellation unwinds through it ("Errors" below), or the task finishes
+//! (completes, fails or is cancelled), its frame is dropped and those values
+//! become garbage unless something else holds them.
 //!
 //! The loop polls for a requested collection before every step, at which
 //! point every value the native holds is in its frame. Within a step,
@@ -109,27 +121,72 @@
 //! whose callbacks are cheap still yields. The starting instruction is one
 //! more.
 //!
-//! # Errors
+//! # Errors (clj-quickjs-28)
 //!
-//! A failure in a step (a callback that is not a function, an invalid
-//! definition id, a failed or cancelled dependency) fails the task at the
-//! starting instruction; a failure inside a callback fails it there, with
-//! the calling frame in its call chain at the starting instruction. Unwinding
-//! a callback or dependency failure *through* a native frame into a
-//! JavaScript handler is deferred (clj-quickjs-28): for now every failure is
-//! terminal for the task. A cancelled task drops its native frames with the
-//! rest of its VM state.
+//! A failure in a step (an invalid definition id, a failed or cancelled
+//! dependency) is reported at the starting instruction; a failure inside a
+//! callback is reported there, with the calling frame in its call chain at
+//! the starting instruction. Whether it is an exception follows the usual
+//! rule (`crate::vm::exception`): a `throw`, a catchable run-time error or a
+//! failed or cancelled dependency is; anything else ends the run at once.
 //!
-//! Exceptions (`crate::vm::exception`): a `try` inside a callback catches
-//! what the callback raises, and the fold continues with the value its
-//! `catch` returns. An exception (a `throw` or a catchable failure) whose
-//! innermost handler belongs to the frame that started a pending native, or
-//! to one of its callers, would have to unwind through that native: it ends
-//! the run uncaught instead, without running that catch or finally block,
-//! as an uncatchable failure does (`unwinds_through`). A failure of the
-//! starting instruction itself (a callee that is not a function, an operand
-//! that is not a vector) happens before the native frame exists and is
-//! caught like any failing instruction's.
+//! An exception unwinds through native frames like through call frames
+//! ([`VmState::raise`](super::frames::VmState::raise)):
+//!
+//! * a `try` inside a callback catches what the callback raises, and the
+//!   fold continues with the value its `catch` returns;
+//! * otherwise, when the innermost handler belongs to the frame that started
+//!   a pending native or to one of its callers, the exception passes that
+//!   native: the callback frames above it are popped with their operands,
+//!   the native receives the failure (`Failure::Callback`, `Failure::Dependency` or
+//!   `Failure::Step`, by what it was waiting for), answers `Unwind`, and its
+//!   frame is popped ([`unwind`]): the collection, the callback, the
+//!   accumulator or results so far, and the operand area are released, so
+//!   nothing the native held is a root any more. Nested natives are passed
+//!   innermost first. The handler then runs as for any exception: a catch
+//!   block sees the exception value (for a dependency, the error object
+//!   whose cause is the producer's published value), a finally block runs
+//!   with the exception pending;
+//! * a failure of the starting instruction itself (a callee that is not a
+//!   function, an operand that is not a vector) happens before the native
+//!   frame exists and is caught like any failing instruction's.
+//!
+//! A dependency demanded by `needAll` that fails after the task suspended
+//! is delivered by the resuming run at the starting instruction (the
+//! pending need is cleared first), so a task that waited inside a native
+//! and resumes on another thread or worker unwinds exactly as one that
+//! found the failure at once.
+//!
+//! **Cancellation** ([`crate::Task::cancel`], `crate::task`, "Cancellation
+//! and finally blocks") is not an exception and gives a native no step: the
+//! observing run leaves the cell the task waits on (so the producer and its
+//! other consumers are unaffected), and unwinding to the next finally
+//! handler drops every native frame it passes without delivering anything
+//! ([`discard`]): no native code runs for a cancelled task, and nothing it
+//! held stays a root. A finally block inside a callback runs without
+//! popping the native below it; when that block ends, the cancellation goes
+//! on to the next handler, dropping the native then. If no finally block is
+//! left, terminal cleanup drops the whole VM state, native frames included.
+//!
+//! # Safepoint contract and debug borrow checks
+//!
+//! `docs/design.md` §10: "Do not hold Rust references into mutable VM
+//! storage across operations that may reenter, collect, grow storage, or
+//! suspend." A step and a failure delivery run while holding a **scoped
+//! borrow** ([`ScopedBorrow`], taken by the trampoline): a `&mut` into the
+//! task's native frame, and possibly heap object reads. The operations that
+//! reenter, collect, grow storage or suspend check that the running thread
+//! holds no scoped borrow ([`assert_no_borrow`]): entering the dispatch loop
+//! or starting a task run (reentry), a VM safepoint (collection), pushing a
+//! value, a call frame or a native frame (storage growth), and leaving the
+//! loop for a dependency or parking (suspension). A native that does any of
+//! them from inside its step, instead of returning the corresponding action
+//! to the trampoline, violates the contract: debug builds reject it with a
+//! panic naming the operation; release builds compile the checks away (the
+//! counter does not exist), so the contract is then upheld by construction
+//! only: a step receives `&mut self` and `&Heap`, never the `VmState`.
+//! Native code that needs its own scoped borrow takes one with
+//! [`scoped_borrow`].
 //!
 //! # QuickJS
 //!
@@ -139,6 +196,8 @@
 //! replaces. Its `JSAsyncFunctionState` (saved frame, arguments, locals,
 //! and resume position) is the inventory of state a pending native must
 //! keep, but no promise or job is involved here.
+
+use std::marker::PhantomData;
 
 use super::dispatch::{Fault, Flow, callee_code, dependency_id, describe, result_kind};
 use super::frames::VmState;
@@ -168,6 +227,20 @@ enum Input {
     Dependency(Value),
 }
 
+/// A failure delivered to a native frame an exception unwinds through
+/// (module docs, "Errors"), named by what the native was waiting for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// The callback its last step called raised an exception that nothing
+    /// inside the callback caught (or calling it failed).
+    Callback,
+    /// The dependency its last step demanded failed or was cancelled: the
+    /// exception is the error object for the producer's failure.
+    Dependency,
+    /// Its own step raised a catchable failure.
+    Step,
+}
+
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
 enum Action {
@@ -180,6 +253,9 @@ enum Action {
     },
     /// Complete with this value.
     Return(Value),
+    /// The answer to a [`Failure`]: release the frame and let the exception
+    /// unwind on to the handler below it. Never the result of a step.
+    Unwind,
 }
 
 /// The operation-specific state of a native frame.
@@ -309,6 +385,7 @@ pub(crate) fn start(
     for _ in 0..popped {
         state.pop()?;
     }
+    assert_no_borrow("starting a native frame (growing native storage)");
     let frame = NativeFrame {
         depth: state.depth(),
         base: state.stack_len(),
@@ -320,13 +397,43 @@ pub(crate) fn start(
     Ok(())
 }
 
-/// True when unwinding to a handler of frame index `frame` (0: the entry
-/// frame) would pass a pending native frame: the handler belongs to the
-/// frame that started the innermost native, or to one of its callers. Such
-/// an exception is terminal for now ("Errors" above, clj-quickjs-28).
-pub(crate) fn unwinds_through(state: &VmState, frame: usize) -> bool {
-    // A native started by frame index `i` has depth `i + 1`.
-    state.natives.last().is_some_and(|n| frame < n.depth)
+/// An exception unwinds to a handler of frame index `frame` (0: the entry
+/// frame): deliver the failure to every pending native it passes, innermost
+/// first (the natives started by `frame` or by a frame above it), and pop
+/// each one that answers `Unwind`, releasing what it held (module docs,
+/// "Errors"). An `Err` names a native that refused; the natives not yet
+/// passed are left as they were.
+pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(), &'static str> {
+    // A native started by frame index `i` has depth `i + 1`; depths strictly
+    // increase along the stack (at most one native runs per call depth).
+    while let Some(native) = natives.last_mut().filter(|n| frame < n.depth) {
+        let failure = match native.awaiting {
+            Awaiting::CallResult => Failure::Callback,
+            Awaiting::Dependency => Failure::Dependency,
+            Awaiting::Nothing => Failure::Step,
+        };
+        let action = {
+            let _borrow = scoped_borrow();
+            native.state.fail(failure)
+        };
+        match action {
+            Action::Unwind => {
+                natives.pop();
+            }
+            Action::Call { .. } | Action::Need { .. } | Action::Return(_) => {
+                return Err("a native frame did not unwind from a failure");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cancellation unwinds to a finally handler of frame index `frame`: drop
+/// every pending native it passes without running any native code (module
+/// docs, "Errors", cancellation).
+pub(crate) fn discard(natives: &mut Vec<NativeFrame>, frame: usize) {
+    let kept = natives.partition_point(|n| n.depth <= frame);
+    natives.truncate(kept);
 }
 
 /// The starting instruction of the running native frame, if one is running
@@ -369,7 +476,10 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
         .last_mut()
         .ok_or(Fault::Internal("no running native frame"))?;
     frame.awaiting = Awaiting::Nothing;
-    let action = frame.state.step(heap, input)?;
+    let action = {
+        let _borrow = scoped_borrow();
+        frame.state.step(heap, input)?
+    };
     state.truncate_operands(base)?;
     match action {
         Action::Call { callee, args } => {
@@ -392,6 +502,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
             state.push(v);
             Ok(Flow::Next)
         }
+        Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
 }
 
@@ -469,6 +580,71 @@ impl NativeState {
             }
         }
     }
+
+    /// Receive a failure an exception carries through this native and
+    /// answer it (module docs, "Errors"). Neither operation recovers: the
+    /// fold's accumulator and `needAll`'s results so far are abandoned with
+    /// the frame, and the exception goes on to the caller's handler, which
+    /// is what JavaScript's `Array.prototype.reduce` does with a throwing
+    /// callback. Allocates nothing and touches no heap object.
+    fn fail(&mut self, failure: Failure) -> Action {
+        match (self, failure) {
+            (
+                NativeState::Reduce { .. } | NativeState::NeedAll { .. },
+                Failure::Callback | Failure::Dependency | Failure::Step,
+            ) => Action::Unwind,
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Scoped borrows held by native code on this thread (debug builds).
+    static BORROWS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A scoped borrow held by native code (module docs, "Safepoint contract
+/// and debug borrow checks"): while one is alive on a thread, every
+/// operation that may reenter, collect, grow storage or suspend panics in
+/// debug builds. Bound to its thread; released on drop, also on unwind.
+#[must_use = "a scoped borrow is released when dropped"]
+pub(crate) struct ScopedBorrow {
+    _thread_bound: PhantomData<*const ()>,
+}
+
+/// Take a scoped borrow for the current thread (counted in debug builds).
+pub(crate) fn scoped_borrow() -> ScopedBorrow {
+    #[cfg(debug_assertions)]
+    BORROWS.with(|b| b.set(b.get() + 1));
+    ScopedBorrow {
+        _thread_bound: PhantomData,
+    }
+}
+
+impl Drop for ScopedBorrow {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        BORROWS.with(|b| b.set(b.get().saturating_sub(1)));
+    }
+}
+
+/// Reject (debug builds: panic) `operation`, one that may reenter, collect,
+/// grow storage or suspend, if the current thread holds a scoped borrow: a
+/// violation of the native safepoint contract. Free in release builds.
+#[inline]
+#[track_caller]
+pub(crate) fn assert_no_borrow(operation: &'static str) {
+    #[cfg(debug_assertions)]
+    {
+        let held = BORROWS.with(std::cell::Cell::get);
+        assert!(
+            held == 0,
+            "native safepoint contract violated: {operation} while holding {held} scoped \
+             borrow(s) (crate::vm::native, \"Safepoint contract and debug borrow checks\")"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = operation;
 }
 
 /// Early VM tests (hand-assembled bytecode, not JavaScript source support)
@@ -582,5 +758,173 @@ mod tests {
             panic!("a vector is an object")
         };
         assert!(traced.contains(&v), "{traced:?}");
+    }
+
+    /// Run `f` and return its panic message (it must panic).
+    #[cfg(debug_assertions)]
+    fn violation(f: impl FnOnce()) -> String {
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .expect_err("the operation is rejected");
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    }
+
+    /// The safepoint contract is enforced in debug builds: while native code
+    /// holds a scoped borrow, reentering the VM, growing VM storage, a
+    /// safepoint and suspending are each rejected with a panic naming the
+    /// violation; the borrow is released on unwind, and the trampoline's own
+    /// borrows never leak past a step.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn scoped_borrows_reject_reentry_growth_and_suspension_in_debug_builds() {
+        let heap = Heap::default();
+        let code = Assembler::new()
+            .get_local(0)
+            .op(Opcode::Return)
+            .finish("id", 1, 1)
+            .unwrap();
+        let vec = vector(&heap, 2);
+        let diag = DiagnosticContext {
+            task: TaskId::from_raw(1),
+            world: WorldId::INITIAL,
+        };
+        let fresh = || VmState::new(&code.0, &[vec], diag, VmLimits::DEFAULT);
+        let expect = |message: String, operation: &str| {
+            assert!(
+                message.contains("native safepoint contract violated")
+                    && message.contains(operation),
+                "{message}"
+            );
+        };
+
+        // Reentry: the dispatch loop, and a call frame.
+        let mut s = fresh();
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                execute(&mut s, &heap, &mut NoHost, None);
+            }),
+            "reentering the dispatch loop",
+        );
+        let mut s = fresh();
+        let callee = coll::new_vector(&heap, &[]).unwrap();
+        let Value::Object(id) = callee else {
+            panic!("a vector is an object")
+        };
+        s.push(callee);
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                let _ = s.enter(std::sync::Arc::clone(&code.0), id, 0);
+            }),
+            "entering a call frame",
+        );
+        // Storage growth.
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                s.push(Value::Null);
+            }),
+            "pushing a value",
+        );
+        // Released on unwind: the loop runs normally again.
+        assert_no_borrow("after the violations");
+        let mut s = fresh();
+        assert!(matches!(
+            execute(&mut s, &heap, &mut NoHost, None),
+            Exit::Return(_)
+        ));
+
+        // Suspension and reentry through the embedding API.
+        let rt = crate::Runtime::new();
+        let exe =
+            crate::frontend::compile_function("function f() { return __rt.need(1, 1); }").unwrap();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        let mut guard = task.try_begin_run().unwrap();
+        let pending = guard.need(DependencyId::new(1), ResultKind::new(1));
+        assert!(
+            matches!(pending, Ok(crate::Need::Waiting { .. })),
+            "{pending:?}"
+        );
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                guard.park();
+            }),
+            "parking the task",
+        );
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                let _ = task.try_begin_run();
+            }),
+            "starting a task run",
+        );
+
+        // A fold's steps and failure deliveries take and release borrows.
+        let add = Assembler::new()
+            .get_local(0)
+            .get_local(1)
+            .op(Opcode::Add)
+            .op(Opcode::Return)
+            .finish("add", 2, 2)
+            .unwrap();
+        let mut asm = Assembler::new();
+        asm.function(&add)
+            .constant(Primitive::Number(0.0))
+            .get_local(0)
+            .op(Opcode::Reduce)
+            .op(Opcode::Return);
+        let sum = asm.finish("sum", 1, 1).unwrap();
+        assert_eq!(run(&sum, &heap, vec, 100).0, Some(Value::Number(3.0)));
+        assert_no_borrow("after a fold");
+    }
+
+    /// A failure is delivered to each native it passes, innermost first, and
+    /// each answers `Unwind`; natives started below the handler's frame are
+    /// kept. Cancellation drops the same natives without delivering anything.
+    #[test]
+    fn unwinding_delivers_failures_and_pops_only_the_natives_passed() {
+        let native = |depth, awaiting| NativeFrame {
+            depth,
+            base: 0,
+            pc: 0,
+            awaiting,
+            state: NativeState::Reduce {
+                f: Value::Undefined,
+                vec: Value::Undefined,
+                acc: Value::Undefined,
+                next: 0,
+                len: 0,
+            },
+        };
+        let stack = || {
+            vec![
+                native(1, Awaiting::CallResult),
+                native(3, Awaiting::CallResult),
+                native(4, Awaiting::Dependency),
+            ]
+        };
+        let depths = |n: &[NativeFrame]| n.iter().map(|n| n.depth).collect::<Vec<_>>();
+        for (frame, kept) in [
+            (4, vec![1, 3, 4]),
+            (3, vec![1, 3]),
+            (1, vec![1]),
+            (0, vec![]),
+        ] {
+            let mut natives = stack();
+            unwind(&mut natives, frame).unwrap();
+            assert_eq!(depths(&natives), kept, "raise to frame {frame}");
+            let mut natives = stack();
+            discard(&mut natives, frame);
+            assert_eq!(depths(&natives), kept, "cancel to frame {frame}");
+        }
+        let mut reduce = stack().pop().unwrap().state;
+        for failure in [Failure::Callback, Failure::Dependency, Failure::Step] {
+            assert!(matches!(reduce.fail(failure), Action::Unwind));
+        }
     }
 }

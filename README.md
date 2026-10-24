@@ -573,9 +573,9 @@ Supported:
 Deferred:
 
 - Polling between VM instructions (a run with an unlimited budget and no
-  need observes a cancellation only if it would yield); cancellation
-  through native continuations (clj-quickjs-28; `finally` cleanup on
-  cancellation is clj-quickjs-27, below); cancelling a producer
+  need observes a cancellation only if it would yield; `finally` cleanup
+  on cancellation is clj-quickjs-27 and inside native continuations
+  clj-quickjs-28, below); cancelling a producer
   automatically when its last consumer is cancelled (not done by design:
   the embedder decides, with `Runtime::cancel_cell`).
 
@@ -925,18 +925,12 @@ Supported (`src/vm/native.rs` module docs; tests in `tests/native_fold.rs`,
   that call in its call chain.
 - Exceptions: a `try` inside a callback catches what the callback throws
   and the fold continues. A `throw` or catchable failure whose innermost
-  handler is around the fold (in the frame that started it or a caller)
-  ends the task uncaught, running none of those catch or finally blocks;
-  a failure of the `reduce`/`needAll` call itself (bad operands) is caught
+  handler is around the fold unwinds through it (clj-quickjs-28, below); a
+  failure of the `reduce`/`needAll` call itself (bad operands) is caught
   normally.
 
 Deferred:
 
-- Unwinding callback and dependency failures through native frames into a
-  JavaScript handler, the documented cancellation policy and executor
-  migration tests for tasks inside a native, and debug-build enforcement of
-  the no-borrow-across-steps rule (clj-quickjs-28). Every failure inside a
-  native is terminal for the task for now; cancellation releases its frame.
 - Other resumable natives (map/filter, map traversal) and natives callable
   as JavaScript function values; callbacks receive `(acc, x)` only.
 
@@ -973,9 +967,6 @@ Supported:
 
 Deferred:
 
-- Dependency failures and cancellation unwinding *through* a pending
-  resumable native (`__rt.reduce`/`__rt.needAll`) into a handler around it:
-  terminal for now (clj-quickjs-28).
 - Error objects still have no properties (`message`, `cause` are not
   readable from JavaScript); a cancellation cleanup that ends early reports
   only `Cancelled`, not why.
@@ -1053,3 +1044,43 @@ Deferred:
   are never removed); its reclamation is tested on a dropped cell table.
   Executable object constants exist only in crate tests (loaded code has
   primitive constants).
+
+### Failures, cancellation and migration inside native continuations (clj-quickjs-28)
+
+Supported (contract: `src/vm/native.rs`, "Errors" and "Safepoint contract
+and debug borrow checks"; `src/task.rs`, "Cancellation and finally blocks"):
+
+- An exception whose handler is around a pending `__rt.reduce` or
+  `__rt.needAll` (in the frame that called it or a caller) unwinds through
+  it: a callback's `throw` or catchable error, a dependency failure seen
+  in a callback, and a failed or cancelled dependency `needAll` demanded
+  (also when the failure arrives while the task is parked and it resumes
+  on another thread). The native receives the failure (callback,
+  dependency or own step), answers `Unwind`, and its frame is popped:
+  what it held (collection, callback, accumulator, results so far) is no
+  longer a root. Catch and finally blocks run as for any exception; nested
+  natives unwind innermost first.
+- Consumer cancellation of a task suspended inside a native follows the
+  clj-quickjs-27 policy: the cell is left (the producer and its other
+  consumers are unaffected), finally blocks inside the callback run, then
+  the native frame is dropped without running native code and the finally
+  blocks below it run; the run ends `Cancelled`.
+- A task waiting inside a fold's callback resumes on the other executor
+  worker and completes; a transient builder the task created before the
+  fold is still usable from the callback after the migration.
+- Debug builds enforce the safepoint contract: holding a scoped borrow
+  (as a native step does) while entering the dispatch loop, starting a
+  task run, entering a call frame, pushing a value or native frame,
+  reaching a VM safepoint, leaving for a dependency or parking panics with
+  "native safepoint contract violated". Release builds compile the checks
+  out.
+- Tests: `cargo test --test native_unwind`, `cargo test --lib vm::native::`,
+  and the updated `native_fold` / `exception_waits` tests.
+
+Deferred:
+
+- No native recovers from a failure (every one answers `Unwind`); natives
+  with their own cleanup or recovery actions, and error properties
+  describing which native element failed.
+- Heap object reads (`Heap::read` closures) are not counted as scoped
+  borrows; only native steps are.

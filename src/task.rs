@@ -237,10 +237,17 @@
 //!   [`RunGuard::park`] after the run released the task body (the park's
 //!   window) also yields, with the waiter entry removed, and the next run
 //!   starts the cleanup.
-//! * **Native frames.** Unwinding through a pending resumable native
-//!   (`crate::vm::native`) is deferred (clj-quickjs-28): a finally block that
-//!   could only be reached through one does not run, and the cleanup ends
-//!   there.
+//! * **Native frames** (clj-quickjs-28). A task suspended inside a pending
+//!   resumable native (`crate::vm::native`: in a callback of
+//!   `__rt.reduce`, or at a dependency `__rt.needAll` demanded) is
+//!   cancelled the same way: the run leaves the cell (the waiter entry is
+//!   removed; a producer request it claimed stays with the embedder, so
+//!   other consumers of that producer are served as before; no lock is held
+//!   across the cleanup), finally blocks inside the callback run first, and
+//!   unwinding to a finally block at or below the frame that started the
+//!   native drops the native frame without running native code. With no
+//!   finally block left, terminal cleanup drops the whole VM state, native
+//!   frames included. Either way nothing the native held stays a root.
 //!
 //! The cleanup's finally blocks, pending completions and their values live
 //! in the task's VM state like any other, so they survive yields, collection
@@ -733,6 +740,7 @@ impl Task {
         if crate::host::inside_effect() {
             return Err(RunError::InsideHostEffect);
         }
+        crate::vm::native::assert_no_borrow("starting a task run (reentering the VM)");
         // Register as a mutator before claiming and taking the body, so a
         // collector that sees this thread stopped never sees an executing
         // task whose frames nobody reported. On the error paths
@@ -994,6 +1002,7 @@ impl RunGuard<'_> {
     /// [`RunOutcome::Yielded`], with the task runnable: its next run starts
     /// the cleanup.
     pub fn park(mut self) -> RunOutcome {
+        crate::vm::native::assert_no_borrow("parking the task (suspending)");
         if self.task.exec.snapshot().cancelled {
             if has_cleanup(&self.body) {
                 // Leave the cell now; the next run starts the cleanup.
