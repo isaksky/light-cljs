@@ -3497,8 +3497,8 @@ host zone per runtime; UTC, fixed minute offsets and the host's selected named
 zone (with recorded aliases) work. Named identifiers match without ASCII case. `format()` reads the unrecorded host clock;
 without a clock it throws RangeError. Invalid time values also throw RangeError.
 
-Explicit gaps: time zone names, `dateStyle` and `timeStyle` validate
-then throw RangeError pending -217. Calendars other than `gregory` and
+Explicit gaps: explicit time zone name components validate
+then throw RangeError. Calendars other than `gregory` and
 named zones other than the host-selected zone throw RangeError. The snapshot's
 59 transition records do not imply support for its 598-name inventory. Numeric
 and named components reproduce QuickJS strings, including its English field
@@ -3515,7 +3515,22 @@ hour field. Locale defaults come from the generated short time patterns.
 Manual time fields use QuickJS's colon layout and trailing day periods, including
 Japanese `6:00 午前` and Spanish `6:00 a. m.`. Date plus time uses `, `.
 Fractional seconds truncate milliseconds and also work alone. `timeZoneName`
-remains an explicit RangeError gap; styles belong to -217.
+remains an explicit RangeError gap; styles are described below.
+
+### Intl.DateTimeFormat styles (clj-quickjs-217)
+
+`dateStyle` and `timeStyle` support full/long/medium/short using the generated
+QuickJS locale date, time and combined patterns. Pattern widths, quoted text,
+localized names/digits and resolved hour cycles reproduce snapshot strings.
+Styles suppress default date components; mixing either style with an explicit
+component throws TypeError. `resolvedOptions()` reports the styles and omits
+components, adding hourCycle/hour12 for time styles.
+
+Full/long time styles render zone names for UTC, fixed offsets and the runtime's
+host-selected named zone. Snapshot output uses English UTC and Vienna long
+names, raw fixed-offset identifiers, and GMT offsets for other named zones,
+with offsets selected at the formatted instant. Explicit `timeZoneName`
+components remain a RangeError gap. No generated table changes were needed.
 
 ### Async functions and await (clj-quickjs-248)
 

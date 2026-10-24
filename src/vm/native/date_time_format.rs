@@ -209,30 +209,32 @@ impl State {
             "formatMatcher" => {
                 service::string_option(&value, &["basic", "best fit"])?;
             }
-            _ => {
-                match name {
-                    "timeZoneName" => {
-                        service::string_option(
-                            &value,
-                            &[
-                                "short",
-                                "long",
-                                "shortOffset",
-                                "longOffset",
-                                "shortGeneric",
-                                "longGeneric",
-                            ],
-                        )?;
-                    }
-                    "dateStyle" | "timeStyle" => {
-                        service::string_option(&value, &["full", "long", "medium", "short"])?;
-                    }
-                    _ => unreachable!(),
-                }
-                return Err(Fault::RangeError(format!(
-                    "DateTimeFormat {name} formatting is not supported yet"
-                )));
+            "timeZoneName" => {
+                self.slots.as_mut().unwrap().time_zone_name = Some(service::string_option(
+                    &value,
+                    &[
+                        "short",
+                        "long",
+                        "shortOffset",
+                        "longOffset",
+                        "shortGeneric",
+                        "longGeneric",
+                    ],
+                )?);
             }
+            "dateStyle" => {
+                self.slots.as_mut().unwrap().date_style = Some(service::string_option(
+                    &value,
+                    &["full", "long", "medium", "short"],
+                )?)
+            }
+            "timeStyle" => {
+                self.slots.as_mut().unwrap().time_style = Some(service::string_option(
+                    &value,
+                    &["full", "long", "medium", "short"],
+                )?)
+            }
+            _ => unreachable!(),
         }
         Ok(self.advance())
     }
@@ -378,7 +380,7 @@ impl State {
                         .map(Action::Return);
                 }
                 let mut slots = self.slots.take().unwrap();
-                slots.finish();
+                slots.finish()?;
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_date_time_format_prototype;

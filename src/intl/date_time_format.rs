@@ -1,5 +1,4 @@
-//! Gregorian component formatting using the pinned QuickJS name pools and
-//! component layout. Style pattern pools remain in data::dates for -217.
+//! Gregorian component and style formatting using the pinned QuickJS pools.
 use super::{LocaleData, data::dates, number_format, pool_string, service};
 use crate::{
     heap::{Heap, HeapObject},
@@ -48,6 +47,9 @@ pub(crate) struct DateTimeFormat {
     pub fractional_second_digits: Option<u8>,
     pub day_period: Option<&'static str>,
     pub hour_cycle: &'static str,
+    pub date_style: Option<&'static str>,
+    pub time_style: Option<&'static str>,
+    pub time_zone_name: Option<&'static str>,
     pub pattern: Vec<PatternItem>,
 }
 impl DateTimeFormat {
@@ -100,10 +102,41 @@ impl DateTimeFormat {
             fractional_second_digits: None,
             day_period: None,
             hour_cycle,
+            date_style: None,
+            time_style: None,
+            time_zone_name: None,
             pattern: vec![],
         }
     }
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> Result<(), Fault> {
+        if self.date_style.is_some() || self.time_style.is_some() {
+            if [
+                self.weekday,
+                self.era,
+                self.year,
+                self.month,
+                self.day,
+                self.day_period,
+                self.hour,
+                self.minute,
+                self.second,
+                self.time_zone_name,
+            ]
+            .iter()
+            .any(Option::is_some)
+                || self.fractional_second_digits.is_some()
+            {
+                return Err(Fault::TypeError(
+                    "DateTimeFormat styles cannot be combined with component fields".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if self.time_zone_name.is_some() {
+            return Err(Fault::RangeError(
+                "DateTimeFormat timeZoneName formatting is not supported yet".into(),
+            ));
+        }
         // Era alone does not suppress ToDateTimeOptions' numeric date defaults.
         if self.weekday.is_none()
             && self.year.is_none()
@@ -188,14 +221,255 @@ impl DateTimeFormat {
             p.push(F(DayPeriod));
         }
         self.pattern = p;
+        Ok(())
     }
     fn is_12_hour(&self) -> bool {
         matches!(self.hour_cycle, "h11" | "h12")
     }
-    fn name(&self, field: Field, fields: &date::UtcFields) -> Option<&'static str> {
+    fn style_pattern(&self, style: &str, kind: &str) -> &'static str {
+        let d = self.data;
+        let (table, indices) = match kind {
+            "date" => (
+                dates::date_pattern_tab,
+                [
+                    d.datePatternFull_idx,
+                    d.datePatternLong_idx,
+                    d.datePatternMedium_idx,
+                    d.datePatternShort_idx,
+                ]
+                .map(usize::from),
+            ),
+            "time" => (
+                dates::time_pattern_tab,
+                [
+                    d.timePatternFull_idx,
+                    d.timePatternLong_idx,
+                    d.timePatternMedium_idx,
+                    d.timePatternShort_idx,
+                ]
+                .map(usize::from),
+            ),
+            _ => (
+                dates::combined_pattern_tab,
+                [
+                    d.combinedPatternFull_idx,
+                    d.combinedPatternLong_idx,
+                    d.combinedPatternMedium_idx,
+                    d.combinedPatternShort_idx,
+                ]
+                .map(usize::from),
+            ),
+        };
+        let index = match style {
+            "full" => 0,
+            "long" => 1,
+            "medium" => 2,
+            _ => 3,
+        };
+        super::table_string(table, indices[index]).expect("validated snapshot pattern")
+    }
+    fn format_styles(&self, fields: &date::UtcFields, time: f64) -> String {
+        let date = self.date_style.map(|style| {
+            self.format_cldr(self.style_pattern(style, "date"), fields, time, ["", ""])
+        });
+        let clock = self.time_style.map(|style| {
+            self.format_cldr(self.style_pattern(style, "time"), fields, time, ["", ""])
+        });
+        match (date, clock) {
+            (Some(date), Some(clock)) => self.format_cldr(
+                self.style_pattern(self.date_style.unwrap(), "combined"),
+                fields,
+                time,
+                [&clock, &date],
+            ),
+            (Some(text), None) | (None, Some(text)) => text,
+            _ => unreachable!("style format requires a style"),
+        }
+    }
+    /// Interpret only trusted, bounded snapshot patterns. Widths and literal
+    /// handling follow QuickJS's pattern path, independently of manual fields.
+    fn format_cldr(
+        &self,
+        pattern: &str,
+        fields: &date::UtcFields,
+        time: f64,
+        subformats: [&str; 2],
+    ) -> String {
+        let mut result = String::new();
+        let mut chars = pattern.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    result.push('\'');
+                } else {
+                    for literal in chars.by_ref() {
+                        if literal == '\'' {
+                            break;
+                        }
+                        result.push(literal);
+                    }
+                }
+                continue;
+            }
+            if c == '{' {
+                let mut lookahead = chars.clone();
+                if let Some(digit @ ('0' | '1')) = lookahead.next()
+                    && lookahead.next() == Some('}')
+                {
+                    result.push_str(subformats[usize::from(digit == '1')]);
+                    chars = lookahead;
+                    continue;
+                }
+            }
+            if !c.is_ascii_alphabetic() {
+                result.push(c);
+                continue;
+            }
+            let mut width = 1;
+            while chars.peek() == Some(&c) {
+                chars.next();
+                width += 1;
+            }
+            let value = match c {
+                'y' => {
+                    let year = if fields.year > 0 {
+                        fields.year
+                    } else {
+                        1 - fields.year
+                    };
+                    if width == 2 { year % 100 } else { year }
+                }
+                'M' if width <= 2 => i32::from(fields.month) + 1,
+                'd' => i32::from(fields.date),
+                'h' | 'H' | 'K' | 'k' => {
+                    let hour = i32::from(fields.hours);
+                    match self.hour_cycle {
+                        "h11" => hour % 12,
+                        "h12" => (hour + 11) % 12 + 1,
+                        "h24" if hour == 0 => 24,
+                        _ => hour,
+                    }
+                }
+                'm' => i32::from(fields.minutes),
+                's' => i32::from(fields.seconds),
+                'M' | 'E' | 'G' => {
+                    let (field, name_width) = match c {
+                        'M' => (Field::Month, if width == 3 { "short" } else { "long" }),
+                        'E' => (
+                            Field::Weekday,
+                            if width <= 3 {
+                                "short"
+                            } else if width == 4 {
+                                "long"
+                            } else {
+                                "narrow"
+                            },
+                        ),
+                        _ => (
+                            Field::Era,
+                            if width <= 3 {
+                                "short"
+                            } else if width == 4 {
+                                "long"
+                            } else {
+                                "narrow"
+                            },
+                        ),
+                    };
+                    result.push_str(
+                        self.name(field, fields, Some(name_width))
+                            .expect("snapshot field name"),
+                    );
+                    continue;
+                }
+                'a' | 'b' | 'B' => {
+                    if self.is_12_hour() {
+                        let name = if c == 'B' {
+                            let item = match fields.hours {
+                                6..=11 => 0,
+                                12 => 1,
+                                13..=17 => 2,
+                                18..=20 => 3,
+                                _ => 4,
+                            };
+                            pool_string(
+                                dates::dayperiod_tab[usize::from(self.data.dayperiod_idx)].unwrap(),
+                                item,
+                            )
+                        } else {
+                            self.name(Field::DayPeriod, fields, None)
+                        };
+                        result.push_str(name.expect("snapshot day period"));
+                    } else if result.ends_with([' ', '\u{202f}']) {
+                        // QuickJS removes one preceding separator, including
+                        // its narrow no-break space, when suppressing AM/PM.
+                        result.pop();
+                    }
+                    continue;
+                }
+                'z' | 'Z' | 'v' | 'V' => {
+                    result.push_str(&self.style_zone_name(time, width >= 4));
+                    continue;
+                }
+                _ => {
+                    result.extend(std::iter::repeat_n(c, width));
+                    continue;
+                }
+            };
+            let text = if width == 2 {
+                format!("{value:02}")
+            } else {
+                value.to_string()
+            };
+            result.push_str(&number_format::map_digits(self.numbering, &text));
+        }
+        result
+    }
+    fn style_zone_name(&self, time: f64, long: bool) -> String {
+        // Snapshot style patterns use English UTC/Vienna names, raw explicit
+        // offsets, and GMT offsets for the remaining embedded named zones.
+        if self.time_zone == "UTC" {
+            return if long {
+                "Coordinated Universal Time"
+            } else {
+                "UTC"
+            }
+            .into();
+        }
+        if self.time_zone.starts_with(['+', '-']) {
+            return self.time_zone.clone();
+        }
+        let offset = self.zone.offset_seconds(date::time_clip(time));
+        if long && self.time_zone == "Europe/Vienna" {
+            match offset {
+                3600 => return "Central European Standard Time".into(),
+                7200 => return "Central European Summer Time".into(),
+                _ => {}
+            }
+        }
+        // The reference truncates offset seconds for named-zone display.
+        let minutes = offset.abs() / 60;
+        let sign = if offset < 0 { '-' } else { '+' };
+        if minutes == 0 {
+            "GMT".into()
+        } else if long {
+            format!("GMT{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        } else if minutes % 60 == 0 {
+            format!("GMT{sign}{}", minutes / 60)
+        } else {
+            format!("GMT{sign}{}:{:02}", minutes / 60, minutes % 60)
+        }
+    }
+    fn name(
+        &self,
+        field: Field,
+        fields: &date::UtcFields,
+        width: Option<&str>,
+    ) -> Option<&'static str> {
         let d = self.data;
         let (table, index, item) = match field {
-            Field::Month => match self.month? {
+            Field::Month => match width.or(self.month)? {
                 "long" => (
                     dates::month_long_tab,
                     d.month_long_idx,
@@ -213,7 +487,7 @@ impl DateTimeFormat {
                 ),
                 _ => return None,
             },
-            Field::Weekday => match self.weekday? {
+            Field::Weekday => match width.or(self.weekday)? {
                 "long" => (
                     dates::weekday_long_tab,
                     d.weekday_long_idx,
@@ -233,7 +507,7 @@ impl DateTimeFormat {
             Field::Era => (
                 dates::era_tab,
                 d.era_idx,
-                match self.era? {
+                match width.or(self.era)? {
                     "long" => 0,
                     "short" => 2,
                     _ => 4,
@@ -269,12 +543,17 @@ impl DateTimeFormat {
     }
     pub fn format(&self, time: f64) -> Result<Value, Fault> {
         let fields = fields_from_time_value(time, self.zone)?;
+        if self.date_style.is_some() || self.time_style.is_some() {
+            return Ok(Value::String(JsString::from(
+                self.format_styles(&fields, time).as_str(),
+            )));
+        }
         let mut result = String::new();
         for item in &self.pattern {
             match item {
                 PatternItem::Literal(text) => result.push_str(text),
                 PatternItem::Field(field) => {
-                    if let Some(name) = self.name(*field, &fields) {
+                    if let Some(name) = self.name(*field, &fields, None) {
                         result.push_str(name);
                         continue;
                     }
@@ -355,9 +634,20 @@ impl DateTimeFormat {
             ("numberingSystem", string(self.numbering)),
             ("timeZone", string(&self.time_zone)),
         ];
-        if self.hour.is_some() {
+        if self.hour.is_some() || self.time_style.is_some() {
             fields.push(("hourCycle", string(self.hour_cycle)));
             fields.push(("hour12", Value::Bool(self.is_12_hour())));
+        }
+        if self.date_style.is_some() || self.time_style.is_some() {
+            for (name, style) in [
+                ("dateStyle", self.date_style),
+                ("timeStyle", self.time_style),
+            ] {
+                if let Some(style) = style {
+                    fields.push((name, string(style)));
+                }
+            }
+            return service::resolved_options(heap, task, fields);
         }
         for (name, value) in [
             ("weekday", self.weekday),
@@ -504,6 +794,43 @@ pub(crate) fn get_format(heap: &Heap, task: TaskId, this: &Value) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cldr_date_pattern_formatter() {
+        let fields = fields_from_time_value(1673740800000.0, TimeZone::UTC)
+            .ok()
+            .unwrap();
+        for (locale, pattern, expected) in [
+            ("en", "M/d/yy", "1/15/23"),
+            ("de", "dd.MM.yy", "15.01.23"),
+            ("de", "d. MMMM y", "15. Januar 2023"),
+            ("de", "EEEE, d. MMMM y", "Sonntag, 15. Januar 2023"),
+            ("en", "EEEE, MMM d, y", "Sunday, Jan 15, 2023"),
+            ("en", "'day' d '' 'month' MM", "day 15 ' month 01"),
+        ] {
+            let format = DateTimeFormat::new(locale.into(), super::super::lookup(locale).unwrap());
+            assert_eq!(
+                format.format_cldr(pattern, &fields, 1673740800000.0, ["", ""]),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cldr_patterns_cover_every_supported_locale_and_style() {
+        for locale in super::super::LOCALES {
+            for style in ["full", "long", "medium", "short"] {
+                let mut format =
+                    DateTimeFormat::new((*locale).into(), super::super::lookup(locale).unwrap());
+                format.date_style = Some(style);
+                format.time_style = Some(style);
+                assert!(format.finish().is_ok());
+                let Value::String(text) = format.format(1673740800000.0).ok().unwrap() else {
+                    panic!("string expected")
+                };
+                assert!(!text.is_empty(), "{locale} {style}");
+            }
+        }
+    }
     #[test]
     fn dtf_fields_from_time_value() {
         let local = date::make_date(

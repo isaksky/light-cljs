@@ -1003,3 +1003,15 @@ The first row of `tests/js_source.rs::math_sum_precise` adapts
 rows are synthetic fixtures, not light-cljs output. The copyright/MIT notice
 is retained in that test file, with the complete license also available at
 `src/intl/data/QUICKJS-LICENSE`.
+
+### Intl.DateTimeFormat styles (clj-quickjs-217)
+
+Semantic reference: `research/quickjs/intl/datetimeformat.c` (style pattern
+selection, field widths, quotes, combined substitution and zone display),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The ten date-style rows in
+`tests/sim_host.rs::intl_date_time_format_date_style` adapt
+`research/quickjs/tests/test_intl.js::test_dateTimeFormat`; the copyright and MIT
+notice above the date-field test covers these rows. Native Rust interprets the
+existing generated date/time/combined pools, preserving their Unicode/QuickJS
+notices and provenance. No table bytes, importer or generated representation
+changed, and no C engine is linked.

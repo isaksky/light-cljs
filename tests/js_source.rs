@@ -22300,8 +22300,8 @@ fn intl_date_time_format_options_and_brands() {
         "{fractionalSecondDigits:NaN}",
         "{fractionalSecondDigits:Infinity}",
         "{timeZoneName:'short'}",
-        "{dateStyle:'short'}",
-        "{timeStyle:'long'}",
+        "{dateStyle:'tiny'}",
+        "{timeStyle:'tiny'}",
         "{timeZone:'America/New_York'}",
         "{timeZone:'Africa/Accra'}",
         "{timeZone:'+24:00'}",
@@ -22412,6 +22412,121 @@ fn intl_date_time_format_ownership() {
             );
         }
     }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_date_time_format_style_component_conflicts() {
+    for style in ["dateStyle", "timeStyle"] {
+        for field in [
+            "weekday:'long'",
+            "era:'short'",
+            "year:'numeric'",
+            "month:'long'",
+            "day:'numeric'",
+            "dayPeriod:'long'",
+            "hour:'numeric'",
+            "minute:'numeric'",
+            "second:'numeric'",
+            "fractionalSecondDigits:3",
+            "timeZoneName:'short'",
+        ] {
+            assert_eq!(
+                eval(&format!(
+                    "let caught=false;try {{new Intl.DateTimeFormat('en',{{{style}:'short',{field}}});}}catch(e){{caught=e instanceof TypeError;}}caught"
+                )),
+                ValueView::Bool(true),
+                "{style}: {field}"
+            );
+        }
+    }
+    // All option values are read and converted before the combination check.
+    assert_eq!(
+        eval(
+            "let log='';let caught=false;try {new Intl.DateTimeFormat('en',{year:'numeric',get dateStyle(){log+='d';return 'short';},get timeStyle(){log+='t';return 'tiny';}});}catch(e){caught=e instanceof RangeError;}caught && log === 'dt'"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Style option callbacks and bound
+/// argument conversion survive waits, collection and executor migration.
+#[test]
+fn intl_date_time_format_style_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let d = new Intl.DateTimeFormat('en', {
+            timeZone:'UTC',
+            get dateStyle(){log+='d';__rt.need(1,1);return {toString(){log+='D';__rt.need(2,1);return 'short';}};},
+            get timeStyle(){log+='t';__rt.need(3,1);return {toString(){log+='T';__rt.need(4,1);return 'short';}};}
+        });
+        let f = d.format; d = null;
+        f({valueOf(){log+='n';__rt.need(5,1);return Date.UTC(2023,0,15,18,5);}}) === '1/15/23, 6:05 PM' && log === 'dDtTn'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 5);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 5);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("DateTimeFormat style continuation did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_date_time_format_style_hour_cycles() {
+    for (cycle, expected) in [
+        ("h11", "0:05 AM"),
+        ("h12", "12:05 AM"),
+        ("h23", "0:05"),
+        ("h24", "24:05"),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "new Intl.DateTimeFormat('en',{{timeStyle:'short',hourCycle:'{cycle}',timeZone:'UTC'}}).format(Date.UTC(2023,0,15,0,5)) === '{expected}'"
+            )),
+            ValueView::Bool(true),
+            "{cycle}"
+        );
+    }
+    assert_eq!(
+        eval(
+            "new Intl.DateTimeFormat('en-u-hc-h24',{timeStyle:'short',hour12:true,timeZone:'UTC'}).format(0) === '12:00 AM'"
+        ),
+        ValueView::Bool(true)
+    );
 }
 
 /// Synthetic fixtures, not light-cljs output. Jobs drain after the script.

@@ -1369,3 +1369,129 @@ fn intl_date_time_format_time_fields() {
         assert!(task.dependency_log().edges().is_empty());
     }
 }
+
+// Date style rows adapted from QuickJS tests/test_intl.js at 7d1c13c5d8f8;
+// covered by the QuickJS copyright and MIT notice above the date-field test.
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_date_time_format_date_style() {
+    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
+        let rt = Runtime::new();
+        let mut host = clj_quickjs::host::sim::SimTimeHost::new(0.0, zone);
+        let source = r#"
+            let d = new Date(2023, 0, 15);
+            if (new Intl.DateTimeFormat('en-US', {dateStyle:'short'}).format(d) !== '1/15/23') throw 'en-US short';
+            if (new Intl.DateTimeFormat('en-GB', {dateStyle:'short'}).format(d) !== '15/01/2023') throw 'en-GB short';
+            if (new Intl.DateTimeFormat('de', {dateStyle:'short'}).format(d) !== '15.01.23') throw 'de short';
+            if (new Intl.DateTimeFormat('fr', {dateStyle:'short'}).format(d) !== '15/01/2023') throw 'fr short';
+            if (new Intl.DateTimeFormat('ja', {dateStyle:'short'}).format(d) !== '2023/01/15') throw 'ja short';
+            if (new Intl.DateTimeFormat('zh', {dateStyle:'short'}).format(d) !== '2023/1/15') throw 'zh short';
+            if (new Intl.DateTimeFormat('es', {dateStyle:'short'}).format(d) !== '15/1/23') throw 'es short';
+            if (new Intl.DateTimeFormat('de', {dateStyle:'medium'}).format(d) !== '15.01.2023') throw 'de medium';
+            if (new Intl.DateTimeFormat('de', {dateStyle:'long'}).format(d) !== '15. Januar 2023') throw 'de long';
+            if (new Intl.DateTimeFormat('de', {dateStyle:'full'}).format(d) !== 'Sonntag, 15. Januar 2023') throw 'de full';
+            let caught = false;
+            try { new Intl.DateTimeFormat('en', {dateStyle:'short', year:'numeric'}); }
+            catch(e) { caught = e instanceof TypeError; }
+            if (!caught) throw 'mixed fields';
+            caught = false;
+            try { new Intl.DateTimeFormat('en', {dateStyle:'tiny'}); }
+            catch(e) { caught = e instanceof RangeError; }
+            if (!caught) throw 'invalid style';
+            let r = new Intl.DateTimeFormat('de', {dateStyle:'long'}).resolvedOptions();
+            if (r.dateStyle !== 'long' || r.year !== undefined || r.month !== undefined || r.day !== undefined || r.hourCycle !== undefined) throw 'resolved style';
+            true
+        "#;
+        let code = clj_quickjs::frontend::compile_script("dtf-date-style", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{zone:?}: {other:?}"),
+        }
+        assert!(task.dependency_log().edges().is_empty());
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output; snapshot style patterns preserve
+/// their literal spaces, punctuation and position of the day period.
+#[test]
+fn intl_date_time_format_time_style() {
+    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
+        let rt = Runtime::new();
+        let mut host = clj_quickjs::host::sim::SimTimeHost::new(0.0, zone);
+        let source = r#"
+            let d = new Date(2023, 0, 15, 18, 5, 9);
+            if (new Intl.DateTimeFormat('en', {timeStyle:'short'}).format(d) !== '6:05 PM') throw 'en short';
+            if (new Intl.DateTimeFormat('de', {timeStyle:'medium'}).format(d) !== '18:05:09') throw 'de medium';
+            if (new Intl.DateTimeFormat('ja', {timeStyle:'short'}).format(d) !== '18:05') throw 'ja short';
+            if (new Intl.DateTimeFormat('zh', {timeStyle:'short'}).format(d) !== '18:05') throw 'zh short';
+            if (new Intl.DateTimeFormat('en', {dateStyle:'short', timeStyle:'short'}).format(d) !== '1/15/23, 6:05 PM') throw 'combined';
+            if (new Intl.DateTimeFormat('pt-BR', {dateStyle:'long'}).format(d) !== '15 de janeiro de 2023') throw 'quoted literals';
+            if (new Intl.DateTimeFormat('ar', {timeStyle:'short'}).format(d) !== '٦:٠٥ م') throw 'digits';
+            if (new Intl.DateTimeFormat('en', {timeStyle:'short', hourCycle:'h23'}).format(d) !== '18:05') throw 'suppressed period';
+            if (new Intl.DateTimeFormat('de', {timeStyle:'short', hour12:true}).format(d) !== '06:05') throw 'snapshot hour width';
+            let r = new Intl.DateTimeFormat('en', {timeStyle:'full'}).resolvedOptions();
+            if (r.timeStyle !== 'full' || r.hourCycle !== 'h12' || !r.hour12 || r.hour !== undefined || r.minute !== undefined || r.second !== undefined || r.timeZoneName !== undefined) throw 'resolved time';
+            if (new Intl.DateTimeFormat('en', {timeStyle:'long',timeZone:'UTC'}).format(0) !== '12:00:00 AM UTC') throw 'UTC long';
+            if (new Intl.DateTimeFormat('en', {timeStyle:'full',timeZone:'UTC'}).format(0) !== '12:00:00 AM Coordinated Universal Time') throw 'UTC full';
+            if (new Intl.DateTimeFormat('en', {timeStyle:'full',timeZone:'+01:30'}).format(0) !== '1:30:00 AM +01:30') throw 'offset full';
+            true
+        "#;
+        let code = clj_quickjs::frontend::compile_script("dtf-time-style", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{zone:?}: {other:?}"),
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Full and long time styles use
+/// the host zone's offset at the formatted instant, including DST boundaries.
+#[test]
+fn intl_date_time_format_style_zone_names() {
+    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    for (name, source) in [
+        (
+            "America/New_York",
+            r#"
+            let f = new Intl.DateTimeFormat('en-GB', {timeStyle:'long'});
+            if (f.format(Date.UTC(2017,2,12,6,59,59)) !== '01:59:59 GMT-5') throw 'before DST';
+            if (f.format(Date.UTC(2017,2,12,7)) !== '03:00:00 GMT-4') throw 'after DST';
+            let full = new Intl.DateTimeFormat('en-GB', {timeStyle:'full'});
+            if (full.format(Date.UTC(2017,2,12,7)) !== '03:00:00 GMT-04:00') throw 'full offset';
+            true
+        "#,
+        ),
+        (
+            "Europe/Vienna",
+            r#"
+            let f = new Intl.DateTimeFormat('de', {timeStyle:'full'});
+            if (f.format(Date.UTC(2023,0,15,12)) !== '13:00:00 Central European Standard Time') throw 'winter';
+            if (f.format(Date.UTC(2023,6,15,12)) !== '14:00:00 Central European Summer Time') throw 'summer';
+            true
+        "#,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut host =
+            clj_quickjs::host::sim::SimTimeHost::new(0.0, TimeZone::named(name).unwrap());
+        let code = clj_quickjs::frontend::compile_script("dtf-style-zone", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}

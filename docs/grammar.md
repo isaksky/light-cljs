@@ -4685,11 +4685,11 @@ The service shares Date's cached host zone and accepts UTC, fixed minute offsets
 and the host's named zone/aliases (matched without ASCII case). Date names and numeric digits reproduce the
 pinned QuickJS snapshot, including its manual component layout.
 
-Explicit gaps: calendars other than `gregory`, `timeZoneName` and
-`dateStyle`/`timeStyle` throw RangeError when supplied, after value validation.
+Explicit gaps: calendars other than `gregory` and explicit `timeZoneName`
+components throw RangeError when supplied, after value validation.
 Named zones outside the host selection throw RangeError. No host clock means
 `format()` throws RangeError; NaN, infinities and out-of-TimeClip values do too.
-Style formatting belongs to -217; formatToParts and ranges are deferred.
+Style formatting is described under -217; formatToParts and ranges are deferred.
 
 ### Intl.DateTimeFormat time fields (clj-quickjs-216)
 
@@ -4710,7 +4710,27 @@ short/long sharing a pool. en-US uses U+202F before the period; other locale
 tags use a space. Fractions truncate milliseconds, use Arabic decimal U+066B
 with arab digits and a period otherwise, and support standalone formatting.
 Time components use Date's existing host zone and transition rules.
-`timeZoneName`, `dateStyle`, `timeStyle`, formatToParts and ranges remain gaps.
+Explicit `timeZoneName`, formatToParts and ranges remain gaps.
+
+### Intl.DateTimeFormat styles (clj-quickjs-217)
+
+Execution: `dateStyle`/`timeStyle` each accept full/long/medium/short. Snapshot
+date/time patterns and the date style's combined template determine ordering,
+padding, punctuation and quoted literals. Names and numeric digits use the
+locale pools. Time styles apply the resolved hour cycle to pattern hours;
+24-hour cycles suppress pattern day periods and their preceding separator.
+Styles suppress numeric date defaults. Either style with any explicit weekday,
+era, year, month, day, dayPeriod, hour, minute, second, fractionalSecondDigits
+or timeZoneName throws TypeError after option validation/conversion.
+`resolvedOptions()` reports styles, omits component fields, and includes
+hourCycle/hour12 when timeStyle is present.
+
+Full/long time styles include snapshot zone output: UTC's short/English long
+names, raw fixed-offset identifiers, Vienna's English standard/summer names,
+and GMT offsets for other host-selected named zones. DST uses the instant's
+offset. Explicit gaps: independent `timeZoneName` components still throw
+RangeError; non-Gregorian calendars, other named zones, parts and ranges remain
+unsupported as above. Styles use the existing generated pools unchanged.
 
 ## Async execution (clj-quickjs-248)
 

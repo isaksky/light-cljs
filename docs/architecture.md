@@ -6684,7 +6684,7 @@ name fields use the original month, weekday and era pools, including the
 Russian genitive month forms and all long/short/narrow widths. No importer or
 emitted table representation changes are needed. Component layouts are stored
 as literal/field pattern items; the existing locale date/time/combined pattern
-pools remain available for -217; time components extend these pattern items in -216.
+pools supply styles in -217; time components extend these pattern items in -216.
 
 The service TimeClips the argument before using Date's existing local calendar
 conversion, including offsets across TimeClip endpoints. UTC, ±HH, ±HHMM and
@@ -6700,8 +6700,8 @@ are guarded, unrecorded host leaf effects; a missing host clock throws RangeErro
 
 Compatibility follows the recorded QuickJS-output policy: manual date fields
 use weekday, month, day, year, era ordering with QuickJS separators even where
-CLDR style patterns differ. Unsupported calendars, time zone names
-and styles fail with explicit RangeError. Non-Gregorian components,
+CLDR style patterns differ. Unsupported calendars and explicit time zone name
+components fail with RangeError. Non-Gregorian components,
 formatToParts and range methods remain deferred.
 
 ### Intl.DateTimeFormat time fields (clj-quickjs-216)
@@ -6725,7 +6725,30 @@ keeps the reference's colon layout, two-digit neighboring fields, Japanese
 trailing period, Spanish U+202F inside am/pm, en-US U+202F before the period,
 and five shared day-period hour buckets. Fraction precision truncates
 milliseconds and also formats without a second field (the reference's manual
-formatter omits that case). Styles and time zone names remain explicit gaps.
+formatter omits that case). Explicit timeZoneName components remain a gap.
+
+### Intl.DateTimeFormat styles (clj-quickjs-217)
+
+The immutable service payload stores optional date/time styles. After the
+saved native stages read and convert every option, construction checks style
+versus component conflicts before selecting date defaults. Style formatting
+reads `date_pattern_tab`, `time_pattern_tab` and `combined_pattern_tab` through
+the existing checked pool readers. These tables and per-locale indices were
+already emitted and verified by `scripts/quickjs-data/repack-intl.pl`; there is
+no generated-data or representation change. A bounded interpreter handles
+field runs, quoted literals, Unicode punctuation and combined {0}/{1}
+substitution. Style widths are independent of the manual-component layout.
+No new heap edges, publication rules, host effects or dependencies are added.
+
+The interpreter uses resolved hour cycles, names and digit maps, and TimeClips
+before local calendar conversion. Full/long time styles implement the pinned
+reference's zone pattern semantics: English UTC names, raw fixed identifiers,
+Vienna's English standard/summer names and GMT offset fallback for other named
+host zones. Named-zone offsets use the formatted instant's transition; their
+display truncates seconds to minutes as the reference does. Explicit
+timeZoneName components keep their documented RangeError gap, but combining
+one with a style throws TypeError. Resolved style options omit all components,
+and time styles expose the resolved hour cycle and boolean hour12.
 
 ### Async activations and task completion (clj-quickjs-248)
 
