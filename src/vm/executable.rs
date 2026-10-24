@@ -99,6 +99,8 @@ pub struct EvalBinding {
     pub source: EvalSource,
     pub kind: EvalBindingKind,
     pub cell: bool,
+    /// Number of nearer dynamic variable environments to consult first.
+    pub environments: u16,
 }
 
 /// The lexical scope at a syntactic `eval(...)` call. Offsets refer to the
@@ -115,6 +117,15 @@ pub struct EvalSite {
     /// None at script scope; arrows and eval inherit the enclosing function's
     /// binding, whose value can itself be undefined on an ordinary call.
     pub new_target: Option<EvalSource>,
+    /// Dynamic variable environments, nearest first. Each source holds a
+    /// task-owned cell containing a private null-prototype binding object.
+    pub environments: Vec<EvalSource>,
+    /// None denotes the global variable environment.
+    pub variable_environment: Option<EvalSource>,
+    /// Statically allocated bindings in the caller's variable environment.
+    pub variable_bindings: Vec<String>,
+    /// All intervening lexical declarations, including shadowed ones.
+    pub lexical_conflicts: Vec<String>,
 }
 
 /// Input to [`Executable::load`].
@@ -711,14 +722,26 @@ impl Executable {
             // Runtime compilation imports the receiver and optional new.target
             // after the named bindings; the complete capture count is u16.
             if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
-                || site.bindings.len()
+                || site.bindings.len() + site.environments.len()
                     > usize::from(u16::MAX) - 1 - usize::from(site.new_target.is_some())
                 || !valid_source(site.receiver)
                 || site.new_target.is_some_and(|source| !valid_source(source))
+                || site.environments.iter().any(|s| !valid_source(*s))
+                || site.variable_environment.is_some_and(|s| !valid_source(s))
+                || site
+                    .variable_environment
+                    .is_some_and(|s| !site.environments.contains(&s))
+                || site.variable_bindings.iter().any(|name| {
+                    !site
+                        .bindings
+                        .iter()
+                        .any(|b| b.name == *name && b.kind == EvalBindingKind::Mutable && b.cell)
+                })
                 || site.bindings.iter().any(|b| {
                     !valid_source(b.source)
                         || !names.insert(&b.name)
                         || (b.kind == EvalBindingKind::Mutable && !b.cell)
+                        || usize::from(b.environments) > site.environments.len()
                 })
                 || sites.contains_key(&index)
             {
@@ -1025,11 +1048,16 @@ mod tests {
                         source: EvalSource::This,
                         kind: EvalBindingKind::Const,
                         cell: false,
+                        environments: 0,
                     })
                     .collect(),
                 receiver: EvalSource::This,
                 receiver_strict: true,
                 new_target,
+                environments: Vec::new(),
+                variable_environment: None,
+                variable_bindings: Vec::new(),
+                lexical_conflicts: Vec::new(),
             });
             let result = Executable::load(spec);
             if valid {

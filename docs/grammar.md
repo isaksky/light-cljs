@@ -530,7 +530,7 @@ They do not cover iterable Map/WeakMap construction, which remains rejected.
 
 The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
-sloppy declaration hoisting deferred to clj-quickjs-108.
+sloppy declaration hoisting into the caller's variable environment (clj-quickjs-108).
 
 Module source parses into static records (see "Modules"). The embedding API
 loads complete static graphs, including cycles, before task execution. Linking,
@@ -815,11 +815,12 @@ checks left to later stages:
   legacy octal and `\8` `\9` string escapes (clj-quickjs-258), and
   assignments that `[[Set]]` rejects (`o.k = v` of a read-only property or
   on a non-extensible object), which sloppy code ignores instead of
-  throwing a `TypeError` (clj-quickjs-119). Every other
+  throwing a `TypeError` (clj-quickjs-119), ignored stores to a function
+  expression's own name, and direct-eval declaration hoisting (clj-quickjs-108).
+  Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
-  named for it: sloppy direct-eval var/function hoisting (-108) remains
-  rejected during runtime compilation (see "Direct eval"); silently
-  ignored stores to a function expression's own name (clj-quickjs-96);
+  named for it: eval in parameter expressions (-109) remains
+  rejected during source compilation (see "Direct eval");
   `with`
   (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
   explicitly unless its receiver is an object, see above) and the mapped
@@ -5132,15 +5133,29 @@ originating receiver mode even when its source or an intervening arrow has
 a strict directive. Reading a primitive/undefined sloppy receiver keeps the
 existing explicit UnsupportedOperand gap for sloppy substitution.
 Const writes throw TypeError, uninitialized reads/writes throw ReferenceError,
-and a named function expression's immutable name rejects writes with TypeError.
+and a named function expression's immutable name rejects strict writes with
+TypeError; sloppy writes to that name are ignored.
 Strict eval's own `var` and function declarations stay in the eval frame;
 lexical declarations always do. Its result is the script completion value.
+
+Sloppy direct eval (clj-quickjs-108) adds `var` and top-level function
+declarations to the caller's variable environment, reusing existing variable
+and simple-parameter bindings. New bindings are deletable and visible to
+closures created before or after eval, even after the caller returns. At script
+level they are configurable global properties. Any `let`, `const`, or block
+function declaration of the same name between eval and its variable environment causes a
+catchable SyntaxError before declarations or body effects. A body with parameter
+expressions has its own variable environment: default expressions and closures
+created by them continue to see the parameter and outer environments.
 
 Each call site carries a validated scope descriptor in its executable.
 Bindings exposed to eval use task-owned cells, including those only used in
 runtime source and those belonging to enclosing functions. Closures over these
 cells cannot be published, including closures created by eval. Functions with
 no direct eval in their lexical subtree retain the existing capture optimizations.
+Only sloppy functions containing direct eval allocate a dynamic variable
+environment. Closures in their scope consult the captured environment; functions
+outside affected scopes keep their existing name lookup path.
 Descriptors contain no heap references and survive executable spec round trips.
 The native compiler continuation traces its captured environment; eval executes
 in a fresh task-owned frame and can yield, wait, collect, and migrate, including
@@ -5149,10 +5164,7 @@ on 64 KiB worker stacks. Source preparation and limits match indirect eval.
 Rejected forms and explicit gaps: unshadowed direct eval in parameter
 expressions is rejected by the compiler with Unsupported (-109). A shadowed
 callee named `eval` remains an ordinary call there; passing intrinsic eval
-to that call is rejected at runtime before argument evaluation. Sloppy eval
-with `var` or top-level function declarations is rejected during runtime
-compilation with a catchable SyntaxError until caller hoisting lands (-108);
-sloppy eval without those declarations works. Direct eval inherits the
+to that call is rejected at runtime before argument evaluation. Direct eval inherits the
 enclosing function's `new.target` binding (-99), also through arrows and
 nested eval; at script scope and in indirect eval it is an early SyntaxError.
 Super property access remains unsupported. Runtime eval source does not inherit the
@@ -5167,6 +5179,22 @@ receiver.call(5) === 5;
 let readers=[];
 for (let i=0; i<3; i++) readers.push(eval('() => i'));
 readers[0]() === 0 && readers[1]() === 1 && readers[2]() === 2;
+```
+
+```js sloppy-accept
+function caller() {
+  const read = () => injected;
+  eval('var injected = 2; function twice() { return injected * 2; }');
+  return read() === 2 && twice() === 4 && delete injected;
+}
+caller();
+eval('var configurable = 1');
+delete configurable;
+function conflict() {
+  let blocked;
+  try { eval('var blocked = 1'); } catch (e) { return e instanceof SyntaxError; }
+}
+conflict();
 ```
 
 ```js compile-reject Unsupported 1:16

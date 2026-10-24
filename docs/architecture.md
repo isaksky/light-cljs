@@ -7243,7 +7243,7 @@ the existing intrinsic rejection guard until parameter eval is supported.
 
 Strict eval declarations use a private variable environment; lexical
 declarations always remain private. Sloppy var/function declaration injection
-is explicitly rejected until -108; parameter-expression eval remains -109.
+is supported by clj-quickjs-108 below; parameter-expression eval remains -109.
 `new.target` (-99) is transported with the receiver; `super` (-112) remains
 a frontend gap.
 
@@ -7255,6 +7255,41 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `research/quickjs/tests/test_closure.js::test_eval_closure/test_eval_const` at
 that revision and retains their MIT copyright/license notice. The implementation
 and the publication, serialization, and migration tests are written fresh.
+
+### Sloppy eval variable environments (clj-quickjs-108)
+
+Analysis marks sloppy functions containing direct eval. Only those functions
+allocate a private null-prototype object held by a task-owned binding cell at
+body entry. Its properties hold cells for dynamically introduced names. The
+existing precise collector traces this graph, and the enclosing cell prevents
+publication even when the variable object is empty. No heap kind or opcode is
+added. Functions without direct eval retain their existing lookup bytecode.
+
+Resolution inserts that environment between body bindings and outer scopes
+(before parameters for bodies with parameter expressions). Closures capture the
+environment itself, so a closure created before eval sees later additions and
+deletions. Default expressions run before the body environment exists. Scope
+descriptors retain the ordered environments and the number nearer than each
+static binding, together with the variable target, reusable static cells, and
+all intervening lexical names. Imported descriptors preserve that ordering
+through nested eval and nested functions.
+
+Runtime compilation checks every declared name against intervening lexicals
+before running declaration bytecode or source effects. Sloppy declaration
+instantiation reuses caller var/parameter cells or creates configurable entries
+in its variable object; script targets use the existing global preflight and
+configurable global declarations. Strict eval and lexical declarations keep
+private bindings. All execution remains in resumable task-owned frames.
+
+QuickJS references and provenance: semantic references are
+`research/quickjs/quickjs.c::add_eval_variables/JS_CheckDefineGlobalVar` and
+`research/quickjs/tests/test_closure.js::test_with` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The parameter-body eval and
+immutable function-name rows in
+`tests/js_source.rs::sloppy_eval_declares_vars_in_the_caller` adapt
+`research/quickjs/tests/test_language.js::test_argument_scope/test_function_expr_name`
+at that revision and retain the nearby MIT copyright/license notice. Other
+fixtures are synthetic, not light-cljs output; the implementation is original.
 
 ## Base class construction (clj-quickjs-136)
 

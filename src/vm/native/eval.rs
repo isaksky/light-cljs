@@ -6,15 +6,12 @@ use super::{Action, Fault};
 use crate::heap::gc::Trace;
 use crate::value::Value;
 use crate::value::{JsString, string::StringFlatten};
-use crate::vm::executable::EvalBinding;
+use crate::vm::executable::EvalSite;
 
 #[derive(Debug)]
 pub(super) struct Caller {
-    pub(super) strict: bool,
-    pub(super) bindings: Vec<EvalBinding>,
+    pub(super) site: EvalSite,
     pub(super) captures: Vec<Value>,
-    pub(super) receiver_strict: bool,
-    pub(super) new_target_allowed: bool,
 }
 
 pub(crate) const MAX_SOURCE_UNITS: usize = 16_384;
@@ -83,28 +80,12 @@ impl State {
         // compilation (including AST teardown on errors) on a bounded helper
         // stack; no JavaScript or task continuation runs on this thread.
         let source = std::mem::take(&mut self.source);
-        let scope = self.caller.as_ref().map(|c| {
-            (
-                c.strict,
-                c.bindings.clone(),
-                c.receiver_strict,
-                c.new_target_allowed,
-            )
-        });
+        let scope = self.caller.as_ref().map(|c| c.site.clone());
         let executable = std::thread::Builder::new()
             .name("eval-compiler".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || match scope {
-                Some((strict, bindings, receiver_strict, new_target_allowed)) => {
-                    crate::frontend::compile_direct_eval(
-                        "<eval>",
-                        &source,
-                        strict,
-                        &bindings,
-                        receiver_strict,
-                        new_target_allowed,
-                    )
-                }
+                Some(site) => crate::frontend::compile_direct_eval("<eval>", &source, &site),
                 None => crate::frontend::compile_eval("<eval>", &source),
             })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?

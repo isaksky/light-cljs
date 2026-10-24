@@ -1213,13 +1213,10 @@ pub(crate) fn start_direct_eval(
     if let Some(source) = site.new_target {
         captures.push(eval_source(heap, state, source)?);
     }
-    native.caller = Some(eval::Caller {
-        strict: site.strict,
-        bindings: site.bindings,
-        captures,
-        receiver_strict: site.receiver_strict,
-        new_target_allowed: site.new_target.is_some(),
-    });
+    for source in &site.environments {
+        captures.push(eval_source(heap, state, *source)?);
+    }
+    native.caller = Some(eval::Caller { site, captures });
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Eval(Box::new(native)))?;
     Ok(())

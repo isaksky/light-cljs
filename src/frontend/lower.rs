@@ -192,7 +192,7 @@ pub(crate) fn lower_script(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, false, None, true, false)
+    lower_script_kind(name, source, script, false, None)
 }
 
 pub(crate) fn lower_eval(
@@ -200,26 +200,16 @@ pub(crate) fn lower_eval(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, None, true, false)
+    lower_script_kind(name, source, script, true, None)
 }
 
 pub(crate) fn lower_direct_eval(
     name: &str,
     source: &str,
     script: &Script,
-    bindings: &[EvalBinding],
-    receiver_strict: bool,
-    new_target_allowed: bool,
+    site: &EvalSite,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(
-        name,
-        source,
-        script,
-        true,
-        Some(bindings),
-        receiver_strict,
-        new_target_allowed,
-    )
+    lower_script_kind(name, source, script, true, Some(site))
 }
 
 fn lower_script_kind(
@@ -227,38 +217,55 @@ fn lower_script_kind(
     source: &str,
     script: &Script,
     eval: bool,
-    bindings: Option<&[EvalBinding]>,
-    receiver_strict: bool,
-    new_target_allowed: bool,
+    site: Option<&EvalSite>,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
-        if let Some(bindings) = bindings {
-            lower.import_eval_bindings(bindings);
-            lower.eval_new_target = new_target_allowed.then_some((bindings.len() + 1) as u16);
-            // Sloppy declaration injection belongs to -108. Reject it before
-            // running any code, rather than accidentally declaring globals.
+        if let Some(site) = site {
+            lower.import_eval_bindings(site);
             if !script.strict {
                 let mut vars = Vec::new();
                 var_names(&script.body, &mut vars);
-                if !vars.is_empty()
-                    || script
-                        .body
-                        .iter()
-                        .any(|s| matches!(s.kind, StmtKind::FunctionDecl(_)))
-                {
-                    return Err(lower
-                        .unsupported(script.span, "sloppy direct eval var/function declarations"));
+                for stmt in &script.body {
+                    if let StmtKind::FunctionDecl(f) = &stmt.kind {
+                        vars.push(lower.declaration_name(f)?);
+                    }
                 }
+                for name in vars {
+                    if site.lexical_conflicts.contains(&name.name) {
+                        return Err(lower.error(
+                            SyntaxErrorKind::Invalid,
+                            name.span,
+                            format!(
+                                "eval variable '{}' conflicts with a lexical binding",
+                                name.name
+                            ),
+                        ));
+                    }
+                }
+                lower.eval_variable_bindings = site.variable_bindings.clone();
+                lower.eval_variable_environment = site.variable_environment.and_then(|s| {
+                    site.environments
+                        .iter()
+                        .position(|e| *e == s)
+                        .map(|i| lower.eval_environments[i].0)
+                });
+                lower.sloppy_eval = true;
             }
         }
         lower.enter_function(None, true, script.strict);
-        if let Some(bindings) = bindings {
-            lower.cur_mut().captures =
-                vec![Place::This; bindings.len() + 1 + usize::from(new_target_allowed)];
-            lower.cur_mut().this_strict = receiver_strict;
+        if let Some(site) = site {
+            lower.cur_mut().captures = vec![
+                Place::This;
+                site.bindings.len()
+                    + 1
+                    + usize::from(site.new_target.is_some())
+                    + site.environments.len()
+            ];
+            lower.cur_mut().this_strict = site.receiver_strict;
         }
-        lower.cur_mut().global_declarations = !eval || (!script.strict && bindings.is_none());
+        lower.cur_mut().global_declarations =
+            !eval || (!script.strict && lower.eval_variable_environment.is_none());
         lower.cur_mut().script_lexicals = !eval;
         lower.statement_list(&script.body, &[], true)?;
         let end = Span::new(script.span.end, script.span.end);
@@ -378,6 +385,8 @@ type Scope = HashMap<String, Binding>;
 /// [`Binding::key`]).
 #[derive(Clone, Copy, Default)]
 struct Facts {
+    /// This activation contains a potentially sloppy direct eval.
+    has_eval: bool,
     /// Direct eval can read, assign and retain this binding dynamically.
     eval_visible: bool,
     /// A reference resolves to this binding (including through an arrow).
@@ -452,6 +461,11 @@ fn eval_source(place: Place) -> EvalSource {
 
 #[derive(Clone, Copy, Debug)]
 enum Access {
+    /// Index in Lowerer::dynamic_accesses; retained as a small Copy handle.
+    Dynamic(usize),
+    /// A dynamic reference selected before evaluating an assignment RHS or
+    /// numeric conversion. A missing cell retains its static fallback.
+    Prepared { slot: u16, fallback: usize },
     Found {
         place: Place,
         target: Target,
@@ -551,6 +565,8 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    dynamic_env: Option<(Place, usize)>,
+    environment_key: usize,
     eval_sites: Vec<EvalSite>,
     in_parameters: bool,
     /// Only the original script registers lexicals; eval and functions use
@@ -672,6 +688,13 @@ struct Sealed {
 }
 
 struct Lowerer<'s> {
+    prepared_accesses: Vec<Access>,
+    dynamic_accesses: Vec<(Place, usize, String, Access)>,
+    eval_environments: Vec<(Place, usize)>,
+    eval_variable_environment: Option<Place>,
+    eval_variable_bindings: Vec<String>,
+    eval_lexical_conflicts: Vec<String>,
+    sloppy_eval: bool,
     eval_bindings: HashMap<String, Access>,
     eval_this: Option<u16>,
     eval_new_target: Option<u16>,
@@ -693,6 +716,13 @@ struct Lowerer<'s> {
 impl<'s> Lowerer<'s> {
     fn new(source: &'s str, facts: Option<HashMap<usize, Facts>>) -> Lowerer<'s> {
         Lowerer {
+            prepared_accesses: Vec::new(),
+            dynamic_accesses: Vec::new(),
+            eval_environments: Vec::new(),
+            eval_variable_environment: None,
+            eval_variable_bindings: Vec::new(),
+            eval_lexical_conflicts: Vec::new(),
+            sloppy_eval: false,
             eval_bindings: HashMap::new(),
             eval_this: None,
             eval_new_target: None,
@@ -711,24 +741,42 @@ impl<'s> Lowerer<'s> {
         self.emit.is_none()
     }
 
-    fn import_eval_bindings(&mut self, bindings: &[EvalBinding]) {
+    fn import_eval_bindings(&mut self, site: &EvalSite) {
+        self.eval_lexical_conflicts = site.lexical_conflicts.clone();
+        let bindings = &site.bindings;
+        self.eval_new_target = site.new_target.map(|_| (bindings.len() + 1) as u16);
+        for i in 0..site.environments.len() {
+            let key = self.next_self_key;
+            self.next_self_key -= 1;
+            self.eval_environments.push((
+                Place::Capture(
+                    (bindings.len() + 1 + usize::from(site.new_target.is_some()) + i) as u16,
+                ),
+                key,
+            ));
+        }
         for (i, b) in bindings.iter().enumerate() {
             let key = self.next_self_key;
             self.next_self_key -= 1;
-            self.eval_bindings.insert(
-                b.name.clone(),
-                Access::Found {
-                    place: Place::Capture(i as u16),
-                    target: match b.kind {
-                        EvalBindingKind::Mutable => Target::Binding(BindingKind::Let),
-                        EvalBindingKind::Const => Target::Binding(BindingKind::Const),
-                        EvalBindingKind::FunctionName => Target::SelfFn(SelfKind::Expression),
-                    },
-                    repr: if b.cell { Repr::Cell } else { Repr::Value },
-                    initialized: true,
-                    key,
+            let mut access = Access::Found {
+                place: Place::Capture(i as u16),
+                target: match b.kind {
+                    EvalBindingKind::Mutable => Target::Binding(BindingKind::Let),
+                    EvalBindingKind::Const => Target::Binding(BindingKind::Const),
+                    EvalBindingKind::FunctionName => Target::SelfFn(SelfKind::Expression),
                 },
-            );
+                repr: if b.cell { Repr::Cell } else { Repr::Value },
+                initialized: true,
+                key,
+            };
+            for &(env, key) in self.eval_environments[..usize::from(b.environments)]
+                .to_vec()
+                .iter()
+                .rev()
+            {
+                access = self.dynamic_access(env, key, &b.name, access);
+            }
+            self.eval_bindings.insert(b.name.clone(), access);
         }
         self.eval_this = Some(bindings.len() as u16);
     }
@@ -783,7 +831,11 @@ impl<'s> Lowerer<'s> {
         self.next_self_key -= 1;
         let arguments_key = self.next_self_key;
         self.next_self_key -= 1;
+        let environment_key = self.next_self_key;
+        self.next_self_key -= 1;
         self.fns.push(FnCtx {
+            dynamic_env: None,
+            environment_key,
             eval_sites: Vec::new(),
             in_parameters: false,
             script_lexicals: false,
@@ -1012,6 +1064,26 @@ impl<'s> Lowerer<'s> {
             self.declare(p, BindingKind::Param, top_level, false)?;
             declared.push(p);
         }
+        // Analysis resolves the static fallbacks and marks direct eval sites;
+        // emission inserts an environment only in the affected activations.
+        // Allocate after argument slots and after parameter expressions, so
+        // closures created by defaults never capture the body's environment.
+        if top_level
+            && self.cur().completion.is_none()
+            && !self.cur().strict
+            && !self.analyzing()
+            && self.facts_of(self.cur().self_key).has_eval
+        {
+            let slot = self.temp(Span::new(0, 0))?;
+            let key = self.cur().environment_key;
+            self.cur_mut().dynamic_env = Some((Place::Local(slot), key));
+            let at = Span::new(0, 0);
+            self.out().op(Opcode::NewCell, at);
+            self.out().op(Opcode::Dup, at);
+            self.out().op(Opcode::NewObject, at);
+            self.out().op(Opcode::CellInit, at);
+            self.out().op_u16(Opcode::SetLocal, slot, at);
+        }
         for (i, clause) in clauses.iter().enumerate() {
             for stmt in clause.iter() {
                 match &stmt.kind {
@@ -1128,6 +1200,26 @@ impl<'s> Lowerer<'s> {
                 }
                 continue;
             }
+            if self.sloppy_eval
+                && self.fns.len() == 1
+                && top_level
+                && matches!(b.kind, BindingKind::Var | BindingKind::Function)
+            {
+                if self.eval_variable_bindings.contains(&name.name) {
+                    let mut access = self.eval_bindings[&name.name];
+                    while let Access::Dynamic(i) = access {
+                        access = self.dynamic_accesses[i].3;
+                    }
+                    let Access::Found { place, .. } = access else {
+                        return Err(self.internal(name.span, "eval variable binding is missing"));
+                    };
+                    self.out().load(place, name.span);
+                } else {
+                    self.eval_var_cell(&name.name, name.span)?;
+                }
+                self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                continue;
+            }
             if top_level && b.kind == BindingKind::Var && self.cur().var_scope > 0 {
                 self.init_body_var(name, b);
                 continue;
@@ -1160,8 +1252,11 @@ impl<'s> Lowerer<'s> {
                 let name = self.declaration_name(f)?;
                 let b = self.local(name)?;
                 let facts = self.facts_of(b.key);
-                let self_name = (!b.global && (self.analyzing() || !facts.assigned))
-                    .then(|| (name.name.clone(), SelfKind::Declaration { key: b.key }));
+                let mutable = b.global
+                    || (self.sloppy_eval && self.fns.len() == 1 && top_level)
+                    || (!self.analyzing() && facts.assigned);
+                let self_name =
+                    (!mutable).then(|| (name.name.clone(), SelfKind::Declaration { key: b.key }));
                 if b.global {
                     self.closure(f, None, None)?;
                     let access = self.resolve(&name.name);
@@ -1270,7 +1365,13 @@ impl<'s> Lowerer<'s> {
             kind,
             slot: ctx.next_slot as u16,
             initialized: matches!(kind, BindingKind::Param | BindingKind::Var),
-            repr: if checked || (global_lexical && kind == BindingKind::Let) {
+            repr: if checked
+                || (global_lexical && kind == BindingKind::Let)
+                || (self.sloppy_eval
+                    && self.fns.len() == 1
+                    && top_level
+                    && matches!(kind, BindingKind::Var | BindingKind::Function))
+            {
                 Repr::Cell
             } else {
                 self.facts_of(key).repr()
@@ -1320,8 +1421,13 @@ impl<'s> Lowerer<'s> {
                 self.check_var_not_shadowed(name)?;
             }
             if let Some(init) = &d.init {
-                self.pattern_value(init, &d.name)?;
-                self.pattern_store(&d.name, false, false)?;
+                if let Some(name) = d.name.identifier() {
+                    self.assign(name, init)?;
+                    self.out().op(Opcode::Pop, name.span);
+                } else {
+                    self.pattern_value(init, &d.name)?;
+                    self.pattern_store(&d.name, false, false)?;
+                }
             }
         }
         Ok(())
@@ -1354,6 +1460,9 @@ impl<'s> Lowerer<'s> {
     }
 
     fn resolve(&mut self, name: &str) -> Access {
+        if name == RESERVED_BINDING {
+            return Access::Intrinsic;
+        }
         self.resolve_in(self.fns.len() - 1, name)
     }
 
@@ -1455,10 +1564,25 @@ impl<'s> Lowerer<'s> {
         if let Some(b) = ctx
             .scopes
             .iter()
+            .skip(if ctx.dynamic_env.is_some() {
+                ctx.var_scope
+            } else {
+                0
+            })
             .rev()
             .find_map(|scope| scope.get(name))
             .copied()
         {
+            if level == 0
+                && self.sloppy_eval
+                && matches!(b.kind, BindingKind::Var | BindingKind::Function)
+                && !b.global
+                && self.fns[level].scopes[self.fns[level].var_scope]
+                    .get(name)
+                    .is_some_and(|body| body.key == b.key)
+            {
+                return self.resolve_outside_body(level, name);
+            }
             if self.analyzing() {
                 self.fact(b.key).referenced = true;
             }
@@ -1473,6 +1597,33 @@ impl<'s> Lowerer<'s> {
                 key: b.key,
             };
         }
+        let env = self.fns[level].dynamic_env;
+        let fallback = self.resolve_outside_body(level, name);
+        if let Some((env, key)) = env {
+            self.dynamic_access(env, key, name, fallback)
+        } else {
+            fallback
+        }
+    }
+
+    fn resolve_outside_body(&mut self, level: usize, name: &str) -> Access {
+        let ctx = &self.fns[level];
+        if ctx.dynamic_env.is_some()
+            && ctx.var_scope > 0
+            && let Some(b) = ctx.scopes[0].get(name).copied()
+        {
+            if self.analyzing() {
+                self.fact(b.key).referenced = true;
+            }
+            return Access::Found {
+                place: Place::Local(b.slot),
+                target: Target::Binding(b.kind),
+                repr: b.repr,
+                initialized: b.initialized,
+                key: b.key,
+            };
+        }
+        let ctx = &self.fns[level];
         if let Some((self_name, kind)) = &ctx.self_name
             && self_name == name
         {
@@ -1492,13 +1643,28 @@ impl<'s> Lowerer<'s> {
             if let Some(access) = self.eval_bindings.get(name) {
                 return *access;
             }
-            return if name == RESERVED_BINDING {
+            let mut access = if name == RESERVED_BINDING {
                 Access::Intrinsic
             } else {
                 self.global_access(name)
             };
+            for &(env, key) in self.eval_environments.clone().iter().rev() {
+                access = self.dynamic_access(env, key, name, access);
+            }
+            return access;
         }
-        match self.resolve_in(level - 1, name) {
+        let access = self.resolve_in(level - 1, name);
+        self.capture_access(level, access)
+    }
+
+    fn capture_access(&mut self, level: usize, access: Access) -> Access {
+        match access {
+            Access::Dynamic(i) => {
+                let (env, key, name, fallback) = self.dynamic_accesses[i].clone();
+                let env = self.capture_place(level, env, key);
+                let fallback = self.capture_access(level, fallback);
+                self.dynamic_access(env, key, &name, fallback)
+            }
             Access::Found {
                 place,
                 target,
@@ -1518,20 +1684,9 @@ impl<'s> Lowerer<'s> {
                         facts.captured_uninitialized = true;
                     }
                 }
-                let ctx = &mut self.fns[level];
-                let index = match ctx.capture_index.get(&key) {
-                    Some(&index) => index,
-                    None => {
-                        // Over-long capture lists are reported when the
-                        // closure is created.
-                        let index = ctx.captures.len().min(MAX_COUNT) as u16;
-                        ctx.captures.push(place);
-                        ctx.capture_index.insert(key, index);
-                        index
-                    }
-                };
+                let place = self.capture_place(level, place, key);
                 Access::Found {
-                    place: Place::Capture(index),
+                    place,
                     target,
                     repr,
                     initialized: true,
@@ -1540,6 +1695,111 @@ impl<'s> Lowerer<'s> {
             }
             other => other,
         }
+    }
+
+    fn capture_place(&mut self, level: usize, place: Place, key: usize) -> Place {
+        let ctx = &mut self.fns[level];
+        let index = *ctx.capture_index.entry(key).or_insert_with(|| {
+            let index = ctx.captures.len().min(MAX_COUNT) as u16;
+            ctx.captures.push(place);
+            index
+        });
+        Place::Capture(index)
+    }
+
+    fn dynamic_access(&mut self, env: Place, key: usize, name: &str, fallback: Access) -> Access {
+        let index = self.dynamic_accesses.len();
+        self.dynamic_accesses
+            .push((env, key, name.into(), fallback));
+        Access::Dynamic(index)
+    }
+
+    fn environment_lookup(&mut self, env: Place, name: &str, at: Span) -> Result<(), SyntaxError> {
+        let index = self.name_index(name, at)?;
+        self.out().load(env, at);
+        self.out().op(Opcode::CellGet, at);
+        self.out().op_u16(Opcode::GetField, index, at);
+        Ok(())
+    }
+
+    fn lookup_reference(&mut self, access: Access, at: Span) -> Result<Access, SyntaxError> {
+        match access {
+            Access::Dynamic(i) => {
+                let (env, _, name, fallback) = self.dynamic_accesses[i].clone();
+                self.environment_lookup(env, &name, at)?;
+                Ok(fallback)
+            }
+            Access::Prepared { slot, fallback } => {
+                self.out().op_u16(Opcode::GetLocal, slot, at);
+                Ok(self.prepared_accesses[fallback])
+            }
+            _ => Err(self.internal(at, "expected a dynamic reference")),
+        }
+    }
+
+    /// Select the first dynamic cell without reading its binding. Resolving
+    /// a reference precedes the RHS; TDZ/const checks still happen at GetValue
+    /// or PutValue, and deletion during the RHS cannot retarget the store.
+    fn select_reference(&mut self, access: Access, at: Span) -> Result<Access, SyntaxError> {
+        if !matches!(access, Access::Dynamic(_)) {
+            self.out().op(Opcode::Undefined, at);
+            return Ok(access);
+        }
+        let fallback = self.lookup_reference(access, at)?;
+        let missing = self.out().label();
+        let done = self.out().label();
+        self.out().op(Opcode::Dup, at);
+        self.out().branch(Opcode::JumpIfFalse, missing, at);
+        self.out().branch(Opcode::Jump, done, at);
+        self.out().bind(missing);
+        self.out().op(Opcode::Pop, at);
+        let fallback = self.select_reference(fallback, at)?;
+        self.out().bind(done);
+        Ok(fallback)
+    }
+
+    fn prepare_reference(&mut self, access: Access, at: Span) -> Result<Access, SyntaxError> {
+        if !matches!(access, Access::Dynamic(_)) {
+            return Ok(access);
+        }
+        let slot = self.temp(at)?;
+        let fallback = self.select_reference(access, at)?;
+        self.out().op_u16(Opcode::SetLocal, slot, at);
+        let index = self.prepared_accesses.len();
+        self.prepared_accesses.push(fallback);
+        Ok(Access::Prepared {
+            slot,
+            fallback: index,
+        })
+    }
+
+    /// Create a deletable binding if absent; repeated evals reuse its cell.
+    fn eval_var_cell(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
+        let env = self
+            .eval_variable_environment
+            .ok_or_else(|| self.internal(at, "missing eval environment"))?;
+        let done = self.out().label();
+        self.environment_lookup(env, name, at)?;
+        self.out().op(Opcode::Dup, at);
+        self.out().op(Opcode::Not, at);
+        self.out().branch(Opcode::JumpIfFalse, done, at);
+        self.out().op(Opcode::Pop, at);
+        self.out().op(Opcode::NewCell, at);
+        self.out().op(Opcode::Dup, at);
+        self.out().op(Opcode::Undefined, at);
+        self.out().op(Opcode::CellInit, at);
+        let tmp = self.temp(at)?;
+        self.out().op(Opcode::Dup, at);
+        self.out().op_u16(Opcode::SetLocal, tmp, at);
+        self.out().load(env, at);
+        self.out().op(Opcode::CellGet, at);
+        self.out().op_u16(Opcode::GetLocal, tmp, at);
+        let index = self.name_index(name, at)?;
+        self.out().op_u16(Opcode::DefineField, index, at);
+        self.out().op(Opcode::Pop, at);
+        self.cur_mut().next_slot -= 1;
+        self.out().bind(done);
+        Ok(())
     }
 
     /// Capture `this` through each intervening arrow, stopping at an
@@ -1674,7 +1934,29 @@ impl<'s> Lowerer<'s> {
 
     /// Push the value of a resolved name.
     fn load(&mut self, access: Access, at: Span) -> Result<(), SyntaxError> {
+        self.load_reference(access, at, false)
+    }
+
+    fn load_reference(
+        &mut self,
+        access: Access,
+        at: Span,
+        typeof_name: bool,
+    ) -> Result<(), SyntaxError> {
         match access {
+            Access::Dynamic(_) | Access::Prepared { .. } => {
+                let missing = self.out().label();
+                let done = self.out().label();
+                let fallback = self.lookup_reference(access, at)?;
+                self.out().op(Opcode::Dup, at);
+                self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.out().op(Opcode::CellGet, at);
+                self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(missing);
+                self.out().op(Opcode::Pop, at);
+                self.load_reference(fallback, at, typeof_name)?;
+                self.out().bind(done);
+            }
             Access::Found {
                 initialized: false, ..
             } => self.throw(ThrowKind::Uninitialized, at),
@@ -1684,7 +1966,15 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::CellGet, at);
                 }
             }
-            Access::Global(global) => self.global_op(Opcode::GetGlobal, global, at)?,
+            Access::Global(global) => self.global_op(
+                if typeof_name {
+                    Opcode::GetGlobalOrUndefined
+                } else {
+                    Opcode::GetGlobal
+                },
+                global,
+                at,
+            )?,
             Access::Intrinsic => return Err(self.not_a_value(at)),
         }
         Ok(())
@@ -1708,6 +1998,25 @@ impl<'s> Lowerer<'s> {
             }
         }
         match access {
+            Access::Dynamic(_) | Access::Prepared { .. } => {
+                let tmp = self.temp(at)?;
+                self.out().op_u16(Opcode::SetLocal, tmp, at);
+                let missing = self.out().label();
+                let done = self.out().label();
+                let fallback = self.lookup_reference(access, at)?;
+                self.out().op(Opcode::Dup, at);
+                self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.out().op(Opcode::CellSet, at);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(missing);
+                self.out().op(Opcode::Pop, at);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.store(fallback, at)?;
+                self.out().bind(done);
+                self.cur_mut().next_slot -= 1;
+            }
             Access::Intrinsic => {
                 return Err(self.error(
                     SyntaxErrorKind::ReservedWord,
@@ -1732,6 +2041,10 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Pop, at);
                 self.throw(ThrowKind::Uninitialized, at);
             }
+            Access::Found {
+                target: Target::SelfFn(SelfKind::Expression),
+                ..
+            } if !self.cur().strict && !self.cur().strict_expression => {}
             Access::Found {
                 target: Target::Binding(BindingKind::Const) | Target::SelfFn(SelfKind::Expression),
                 place,
@@ -1810,6 +2123,73 @@ impl<'s> Lowerer<'s> {
         if self.fns.iter().any(|f| f.in_parameters) {
             return Err(self.unsupported(span, "direct eval in parameter expressions"));
         }
+        if self.analyzing() && !self.cur().strict {
+            let key = self.cur().self_key;
+            self.fact(key).has_eval = true;
+        }
+        let level = self.fns.len() - 1;
+        let mut environments = Vec::new();
+        for owner in (0..=level).rev() {
+            if let Some((mut place, key)) = self.fns[owner].dynamic_env {
+                for child in owner + 1..=level {
+                    place = self.capture_place(child, place, key);
+                }
+                environments.push(eval_source(place));
+            }
+        }
+        for (mut place, key) in self.eval_environments.clone() {
+            for child in 1..=level {
+                place = self.capture_place(child, place, key);
+            }
+            environments.push(eval_source(place));
+        }
+        let variable_environment =
+            self.cur()
+                .dynamic_env
+                .map(|(p, _)| eval_source(p))
+                .or_else(|| {
+                    (level == 0)
+                        .then_some(self.eval_variable_environment)
+                        .flatten()
+                        .map(eval_source)
+                });
+        let mut lexical_conflicts = if self.cur().completion.is_some() {
+            self.eval_lexical_conflicts.clone()
+        } else {
+            Vec::new()
+        };
+        let mut variable_bindings = if self.cur().completion.is_some() {
+            self.eval_variable_bindings.clone()
+        } else {
+            Vec::new()
+        };
+        for (i, scope) in self
+            .cur()
+            .scopes
+            .iter()
+            .enumerate()
+            .skip(self.cur().var_scope)
+        {
+            for (name, b) in scope {
+                if i == self.cur().var_scope
+                    && matches!(
+                        b.kind,
+                        BindingKind::Var | BindingKind::Function | BindingKind::Param
+                    )
+                {
+                    if !(b.global || self.sloppy_eval && level == 0) {
+                        variable_bindings.push(name.clone());
+                    }
+                } else if b.kind != BindingKind::Param {
+                    lexical_conflicts.push(name.clone());
+                }
+            }
+        }
+        variable_bindings.sort();
+        variable_bindings.dedup();
+        lexical_conflicts.sort();
+        lexical_conflicts.dedup();
+        variable_bindings.retain(|name| !lexical_conflicts.contains(name));
         let mut names: Vec<String> = self.eval_bindings.keys().cloned().collect();
         for ctx in &self.fns {
             for scope in &ctx.scopes {
@@ -1823,13 +2203,19 @@ impl<'s> Lowerer<'s> {
         names.dedup();
         let mut bindings = Vec::new();
         for name in names {
+            let mut access = self.resolve(&name);
+            let mut count = 0;
+            while let Access::Dynamic(i) = access {
+                count += 1;
+                access = self.dynamic_accesses[i].3;
+            }
             if let Access::Found {
                 place,
                 target,
                 repr,
                 key,
                 ..
-            } = self.resolve(&name)
+            } = access
             {
                 if self.analyzing() {
                     let facts = self.fact(key);
@@ -1850,12 +2236,12 @@ impl<'s> Lowerer<'s> {
                         _ => EvalBindingKind::Mutable,
                     },
                     cell: repr == Repr::Cell,
+                    environments: count,
                 });
             }
         }
         let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
-        // Reserve the receiver and optional new.target capture.
-        if bindings.len() > MAX_COUNT - 1 - usize::from(new_target.is_some()) {
+        if bindings.len() + environments.len() > MAX_COUNT - 1 - usize::from(new_target.is_some()) {
             return Err(self.error(
                 SyntaxErrorKind::TooLarge,
                 span,
@@ -1870,6 +2256,10 @@ impl<'s> Lowerer<'s> {
             receiver,
             receiver_strict: self.cur().this_strict,
             new_target,
+            environments,
+            variable_environment,
+            variable_bindings,
+            lexical_conflicts,
         })
     }
 
@@ -2320,6 +2710,15 @@ impl<'s> Lowerer<'s> {
     /// a default. The reference stays on the traced operand stack across calls.
     fn pattern_reference(&mut self, pattern: &Pattern) -> Result<bool, SyntaxError> {
         match &pattern.kind {
+            PatternKind::Identifier(name) => {
+                let access = self.resolve_reference(&name.name);
+                if matches!(access, Access::Dynamic(_)) {
+                    self.select_reference(access, name.span)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
             PatternKind::Target(target) => {
                 // Assignment references retain the unconverted computed key.
                 // PutElem performs ToPropertyKey after stepping/defaults, as
@@ -2375,9 +2774,24 @@ impl<'s> Lowerer<'s> {
                     }
                 } else {
                     let at = self.name_span(&name.name, name.span);
-                    let access = self.resolve_reference(&name.name);
+                    let mut access = self.resolve_reference(&name.name);
+                    let saved = self.cur().next_slot;
+                    if prepared {
+                        let value = self.temp(at)?;
+                        let slot = self.temp(at)?;
+                        self.out().op_u16(Opcode::SetLocal, value, at);
+                        self.out().op_u16(Opcode::SetLocal, slot, at);
+                        self.out().op_u16(Opcode::GetLocal, value, at);
+                        while let Access::Dynamic(i) = access {
+                            access = self.dynamic_accesses[i].3;
+                        }
+                        let fallback = self.prepared_accesses.len();
+                        self.prepared_accesses.push(access);
+                        access = Access::Prepared { slot, fallback };
+                    }
                     self.store(access, at)?;
                     self.out().op(Opcode::Pop, span);
+                    self.cur_mut().next_slot = saved;
                 }
             }
             PatternKind::Default { target, value } => {
@@ -4308,7 +4722,31 @@ impl<'s> Lowerer<'s> {
 
     #[inline(never)]
     fn delete_identifier(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
-        match self.resolve(name) {
+        let access = self.resolve(name);
+        self.delete_access(access, at)
+    }
+
+    fn delete_access(&mut self, access: Access, at: Span) -> Result<(), SyntaxError> {
+        match access {
+            Access::Prepared { .. } => {
+                Err(self.internal(at, "cannot delete a prepared assignment"))
+            }
+            Access::Dynamic(i) => {
+                let (env, _, name, fallback) = self.dynamic_accesses[i].clone();
+                let missing = self.out().label();
+                let done = self.out().label();
+                self.environment_lookup(env, &name, at)?;
+                self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.out().load(env, at);
+                self.out().op(Opcode::CellGet, at);
+                self.constant(Primitive::String(JsString::from(name.as_str())), at)?;
+                self.out().op(Opcode::Delete, at);
+                self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(missing);
+                self.delete_access(fallback, at)?;
+                self.out().bind(done);
+                Ok(())
+            }
             Access::Global(global) => {
                 self.global_op(Opcode::DeleteGlobal, global, at)?;
                 Ok(())
@@ -4413,10 +4851,14 @@ impl<'s> Lowerer<'s> {
     /// `target = value` for a binding: the value, then the store.
     #[inline(never)]
     fn assign(&mut self, target: &Ident, value: &Expr) -> Result<(), SyntaxError> {
-        self.named_expr(value, JsString::from(target.name.as_str()))?;
+        let saved = self.cur().next_slot;
         let at = self.name_span(&target.name, target.span);
         let access = self.resolve_reference(&target.name);
-        self.store(access, at)
+        let access = self.prepare_reference(access, at)?;
+        self.named_expr(value, JsString::from(target.name.as_str()))?;
+        self.store(access, at)?;
+        self.cur_mut().next_slot = saved;
+        Ok(())
     }
 
     /// `target op= value` for a binding: read the binding (with the same
@@ -4431,16 +4873,20 @@ impl<'s> Lowerer<'s> {
         value: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
         let at = self.name_span(&target.name, target.span);
         let access = self.resolve_reference(&target.name);
         if matches!(access, Access::Intrinsic) {
             // The error of `__rt = x`, not of reading `__rt`.
             return self.store(access, at);
         }
+        let access = self.prepare_reference(access, at)?;
         self.load(access, at)?;
         self.expr(value)?;
         self.binary(op, false, is_number(value), op_span);
-        self.store(access, at)
+        self.store(access, at)?;
+        self.cur_mut().next_slot = saved;
+        Ok(())
     }
 
     /// `++target`, `target--`, ... for a binding: read the binding (with
@@ -4455,8 +4901,10 @@ impl<'s> Lowerer<'s> {
         target: &Ident,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
         let at = self.name_span(&target.name, target.span);
         let access = self.resolve_reference(&target.name);
+        let access = self.prepare_reference(access, at)?;
         self.load(access, at)?;
         self.out().op(Opcode::ToNumeric, op_span);
         if !prefix {
@@ -4471,6 +4919,7 @@ impl<'s> Lowerer<'s> {
         if !prefix {
             self.out().op(Opcode::Pop, op_span);
         }
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 
@@ -5052,10 +5501,8 @@ impl<'s> Lowerer<'s> {
             return Err(self.internal(operand.span, "typeof operand is not a name"));
         };
         let at = self.name_span(name, operand.span);
-        match self.resolve_reference(name) {
-            Access::Global(global) => self.global_op(Opcode::GetGlobalOrUndefined, global, at)?,
-            access => self.load(access, at)?,
-        }
+        let access = self.resolve_reference(name);
+        self.load_reference(access, at, true)?;
         self.out().op(Opcode::Typeof, span);
         Ok(())
     }

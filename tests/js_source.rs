@@ -1008,7 +1008,8 @@ fn object_destructuring() {
 /// Synthetic fixtures, not light-cljs output. Exercise caller environments
 /// through runtime compilation rather than statically visible references.
 /// The basic eval rows adapt QuickJS tests/test_builtin.js::test_eval and
-/// tests/test_closure.js::test_eval_closure/test_eval_const, revision
+/// tests/test_closure.js::test_eval_closure/test_eval_const and the sloppy
+/// body-eval/name rows of tests/test_language.js, revision
 /// 7d1c13c5d8f8. QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and
 /// Charlie Gordon, released under the MIT license:
 /// Permission is hereby granted, free of charge, to any person obtaining a
@@ -1026,6 +1027,149 @@ fn object_destructuring() {
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 /// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 /// DEALINGS IN THE SOFTWARE.
+#[test]
+fn sloppy_eval_declares_vars_in_the_caller() {
+    // Synthetic fixtures, not light-cljs output. The parameter and function
+    // name rows follow test_argument_scope/test_function_expr_name in QuickJS
+    // tests/test_language.js; the MIT notice above strict_direct_eval applies.
+    for source in [
+        r#"function f() { eval("var z = 1"); return z; } f() === 1"#,
+        r#"function f() { eval("var z = 1"); return (function () { return z; })(); } f() === 1"#,
+        r#"function f() { const g = () => z; eval("var z = 2"); return g(); } f() === 2"#,
+        r#"var c = 'global'; let f = function f(a, b = c, probe = () => c) { eval('var c = 1'); return c === 1 && b === 'global' && probe() === 'global'; }; f() && c === 'global'"#,
+        r#"function f() { let z; { eval('var z = 1'); } } let ok=false; try { f(); } catch(e) { ok=e instanceof SyntaxError; } ok"#,
+        r#"function f() { 'use strict'; eval('var z = 1'); return z; } let ok=false; try { f(); } catch(e) { ok=e instanceof ReferenceError; } ok"#,
+        r#"eval('var g2 = 1'); delete g2"#,
+        r#"let f = function myfunc() { eval('myfunc = 1'); return myfunc; }; f() === f"#,
+        r#"function f() { let g=()=>z; eval('function z() { return 7; }'); return g()() === 7; } f()"#,
+        r#"function f(x) { var y=2; eval('var x=3; var y=4'); return x+y; } f(1) === 7"#,
+        r#"let z=8; function f() { let g=()=>z; eval('var z=2'); return g()===2 && delete z && g()===8; } f() && z===8"#,
+        r#"function f() { eval('var z=1'); eval('z+=2'); return eval('()=>z'); } f()() === 3"#,
+        r#"function f() { let x=0; { let z; try { eval('x=1; var z=2; var y=3'); } catch(e) { return e instanceof SyntaxError && x===0 && typeof y==='undefined'; } } } f()"#,
+        r#"function f() { eval('var z=1; var z;'); eval('var z;'); return z === 1; } f()"#,
+        r#"function f() { return eval('var z=1; delete z') && typeof z === 'undefined'; } f()"#,
+        r#"let z=8; function f() { return eval('var z=1; delete z; z') === 8; } f()"#,
+        r#"function f() { var x=1; eval('var x;'); return x === 1 && !delete x; } f()"#,
+        r#"let z=9; function f() { let read=()=>()=>z; eval('var z=2'); return read()() === 2; } f()"#,
+        r#"let z=9; function f() { let read=()=>{ 'use strict'; return z; }; eval('var z=2'); return read() === 2; } f()"#,
+        r#"function f() { eval('eval(\"var z=3\")'); return z === 3; } f()"#,
+        r#"function f() { eval('var z=1'); return eval('eval(\"z=3\")') === 3 && z === 3; } f()"#,
+        r#"let z=8; function f() { eval('var z=1'); function g() { let read=()=>z; eval('var z=2'); return read() === 2; } return g() && z === 1; } f() && z === 8"#,
+        r#"function f() { eval('var z=2'); return (function() { let z=3; return eval('z'); })() === 3; } f()"#,
+        r#"let z=8; function f() { { let z=2; let caught=false; try { eval('var z'); } catch(e) { caught=e instanceof SyntaxError; } return caught && z === 2; } } f() && z===8"#,
+        r#"let z=8; function f() { eval('let z=2; (()=>{ try { eval(\"var z=3\"); return z === 3; } catch(e) { return false; } })()'); return typeof z === 'number'; } f()"#,
+        r#"let f=function myfunc() { eval('var myfunc=1'); return myfunc; }; f() === 1"#,
+        r#"function f() { eval('var arguments=3'); return arguments === 3 && !delete arguments; } f()"#,
+        r#"let caught=false; try { { let z; eval('var z=1'); } } catch(e) { caught=e instanceof SyntaxError; } caught"#,
+        r#"function f() { return eval('function z() { return z; } var saved=z; z=3; saved')() === 3; } f()"#,
+        r#"function f() { var x=1; { const x=2; return eval('x') === 2; } } f()"#,
+        r#"function f() { eval('var z=1; eval(\"var z=3\")'); return z === 3; } f()"#,
+        r#"function f() { return eval('{ function z() { return 4; } z() }') === 4 && typeof z === 'undefined'; } f()"#,
+        r#"var z=0; function f() { z=eval('var z=1; 2'); return z===1; } f() && z===2"#,
+        r#"var z=4; function f() { z+=eval('var z=1; 2'); return z===1; } f() && z===6"#,
+        r#"function f() { eval('var z=1'); z=eval('delete z; var other=1; 2'); return typeof z==='undefined'; } f()"#,
+        r#"function f() { return eval('var z=(delete z,2); typeof z') === 'undefined'; } f()"#,
+        r#"var z=0; function f() { [z=eval('var z=1; 2')]=[undefined]; return z===1; } f() && z===2"#,
+        r#"function f() { return eval('var [z=(delete z,2)]=[undefined]; typeof z') === 'undefined'; } f()"#,
+        r#"function F() { const read=()=>z; eval('var z=new.target'); return read; } new F()() === F"#,
+        r#"function F() { eval('var z=1'); return eval('eval(\"new.target\")') === F && z === 1; } new F()"#,
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn sloppy_eval_environment_lifetime_and_validation() {
+    // Synthetic fixtures, not light-cljs output. The returned closure is the
+    // only owner of the environment after f returns; collections occur even
+    // between creation of an injected cell and insertion into that environment.
+    let source = r#"function f() { const g=()=>z; eval('var z={value:7}; __rt.need(108,1); z={value:9}'); return g; } const g=f(); __rt.need(108,2); g().value === 9"#;
+    let code = compile_script_with("sloppy-eval-lifetime", source, ScriptOptions::SLOPPY).unwrap();
+    let code = Executable::load(code.to_spec()).unwrap();
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut waits = 0;
+    let mut complete = false;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 2);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waits, 2);
+
+    let code = compile_script_with(
+        "sloppy-eval-capture",
+        "function f() { const g=()=>injected; eval('var injected=2'); return g; } f()",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    let RunOutcome::Complete(value) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        rt.publish(&value),
+        Err(clj_quickjs::PublishError::NotShareable {
+            found: "binding cell",
+            ..
+        })
+    ));
+
+    let spec = code.to_spec().functions[0].to_spec();
+    assert_eq!(spec.eval_sites[0].environments.len(), 1);
+    let mut bad = spec.clone();
+    bad.eval_sites[0].environments[0] = clj_quickjs::vm::executable::EvalSource::Local(u16::MAX);
+    assert_eq!(
+        Executable::load(bad).unwrap_err().kind,
+        ValidationErrorKind::InvalidEvalSite
+    );
+    let mut bad = spec;
+    bad.eval_sites[0].bindings[0].environments = u16::MAX;
+    assert_eq!(
+        Executable::load(bad).unwrap_err().kind,
+        ValidationErrorKind::InvalidEvalSite
+    );
+
+    let plain = compile_script_with(
+        "no-eval",
+        "function f() { return () => absent; } f()",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    assert!(!opcodes(&plain.to_spec().functions[0]).contains(&Opcode::NewCell));
+}
+
 #[test]
 fn strict_direct_eval() {
     for source in [
@@ -1075,7 +1219,7 @@ fn strict_direct_eval() {
     );
     assert_eq!(
         sloppy_eval(
-            r#"let x=0; let caught=false; try { eval('x=1; var injected107=2'); } catch(e) { caught=e instanceof SyntaxError; } caught && x === 0 && typeof injected107 === 'undefined'"#
+            r#"let x=0; eval('x=1; var injected107=2'); x === 1 && injected107 === 2 && delete injected107"#
         ),
         ValueView::Bool(true)
     );
