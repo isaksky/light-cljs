@@ -8656,6 +8656,7 @@ fn array_length_assignment() {
         "let a = [1,2,3]; a.length = 0; a.length === 0 && a[0] === undefined",
         "let a = [1,2,3]; let v = (a['length'] = '2'); a.length === 2 && v === '2' && a[2] === undefined",
         "let a = []; a[4294967294] = 1; a.length = 0; a.length === 0 && a[4294967294] === undefined",
+        "let a = []; a[4000] = 4; a[5000] = 5; a[6000] = 6; a.length = 5000; a.length === 5000 && a[4000] === 4 && Object.getOwnPropertyDescriptor(a, 5000) === undefined && Object.getOwnPropertyDescriptor(a, 6000) === undefined",
         "let a = [1]; a.length = 4294967295; a.length === 4294967295 && a[4294967294] === undefined && Object.keys(a).length === 1",
         "let a = [1,2]; a.length = -0; a.length === 0 && 1/a.length === 1/0",
         "let a = [1,2]; a.length = true; let n = a.length; a.length = null; n === 1 && a.length === 0 && a[0] === undefined",
@@ -8743,6 +8744,7 @@ fn array_length_assignment() {
 fn array_length_define_property() {
     for src in [
         "let a = [1,2,3]; Object.defineProperty(a, 'length', {value:'2'}); a.length === 2 && a[2] === undefined",
+        "let a = []; a[4000] = 4; a[5000] = 5; a[6000] = 6; Object.defineProperty(a, 'length', {value:5000}); a.length === 5000 && a[4000] === 4 && Object.getOwnPropertyDescriptor(a, 5000) === undefined && Object.getOwnPropertyDescriptor(a, 6000) === undefined",
         "let a = [1]; Object.defineProperty(a, 'length', {value:5, writable:false}); let d = Object.getOwnPropertyDescriptor(a, 'length'); d.value === 5 && !d.writable && !d.enumerable && !d.configurable && a[4] === undefined",
         "let a = [1,2,3,4,5]; Object.defineProperty(a, 3, {configurable:false}); let caught = false; try { Object.defineProperty(a, 'length', {value:1, writable:false}); } catch(e) { caught = true; } let d = Object.getOwnPropertyDescriptor(a, 'length'); caught && a.length === 4 && a[4] === undefined && a[3] === 4 && !d.writable",
         "let a = []; a[4294967294] = 1; Object.defineProperty(a, 4000, {value:2, configurable:false}); a[5000] = 3; let caught = false; try { Object.defineProperty(a, 'length', {value:0}); } catch(e) { caught = true; } caught && a.length === 4001 && a[4000] === 2 && a[5000] === undefined && a[4294967294] === undefined && Object.getOwnPropertyDescriptor(a, 'length').writable",
