@@ -824,7 +824,7 @@ pub fn number_to_string(x: f64) -> String {
 /// the round-trip interval is narrower below `x` than above, so the closest
 /// candidate can fall outside it); then the round-trip candidates all lie on
 /// the wide side and `{:e}`'s choice stands.
-fn shortest_digits(x: f64) -> (String, i32) {
+pub(crate) fn shortest_digits(x: f64) -> (String, i32) {
     let parse = |sci: &str| -> (String, i32) {
         let (mantissa, exponent) = sci
             .split_once('e')

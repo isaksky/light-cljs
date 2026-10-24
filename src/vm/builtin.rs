@@ -79,6 +79,7 @@
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); `Object.prototype` lists its stored `__proto__` accessor (clj-quickjs-261) |
 //! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; radixes 2..36 (clj-quickjs-149) produce exact integer and shortest round-trip fractional digits; object radixes use resumable ToNumber; an invalid radix throws catchable `RangeError`; any other receiver: catchable `TypeError` |
+//! | `Number.prototype.toExponential(f)`, `.toPrecision(p)` (clj-quickjs-151) | thisNumberValue precedes resumable count coercion; exact binary64 significant rounding, ties away from zero; omitted exponential count uses shortest digits, omitted precision uses ToString; nonfinite values bypass range checks after conversion; counts f=0..100 / p=1..100, with a 4096-unit count-string resource limit |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
 //! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
 //! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
@@ -380,6 +381,8 @@ pub(crate) enum Builtin {
     WeakMapGet,
     WeakMapHas,
     WeakMapDelete,
+    NumberPrototypeToExponential,
+    NumberPrototypeToPrecision,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -422,6 +425,8 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::NumberPrototypeToExponential => "toExponential",
+            Builtin::NumberPrototypeToPrecision => "toPrecision",
             Builtin::NumberPrototypeToFixed => "toFixed",
             Builtin::ArrayFrom => "from",
             Builtin::ArrayPrototypeSort => "sort",
@@ -692,6 +697,8 @@ impl Builtin {
             Builtin::Number
             | Builtin::String
             | Builtin::NumberPrototypeToString
+            | Builtin::NumberPrototypeToExponential
+            | Builtin::NumberPrototypeToPrecision
             | Builtin::NumberPrototypeToFixed => 1,
             Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeToString
@@ -1041,6 +1048,10 @@ pub(crate) fn call(
             let n = this_number_value(heap, task, this, "toFixed")?;
             number_to_fixed(n, &arg(0))
         }
+        Builtin::NumberPrototypeToExponential | Builtin::NumberPrototypeToPrecision => {
+            let n = this_number_value(heap, task, this, which.name())?;
+            number_to_precision_format(which, n, &arg(0), matches!(arg(0), Value::Undefined))
+        }
         Builtin::NumberPrototypeValueOf => {
             this_number_value(heap, task, this, "valueOf").map(Value::Number)
         }
@@ -1372,7 +1383,7 @@ pub(crate) fn to_radix(radix: &Value) -> Result<u32, Fault> {
     Ok(radix as u32)
 }
 
-pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Fault> {
+fn number_digit_count(digits: &Value, method: &str) -> Result<f64, Fault> {
     // Bound StringToNumber before it flattens or scans, including a string
     // produced by resumable ToPrimitive. Generic budgeted parsing is -265.
     const MAX_DIGIT_CONVERSION_UNITS: usize = 4096;
@@ -1380,18 +1391,56 @@ pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Faul
         && text.len() > MAX_DIGIT_CONVERSION_UNITS
     {
         return Err(Fault::RangeError(format!(
-            "toFixed digit conversion limit of {MAX_DIGIT_CONVERSION_UNITS} UTF-16 units exceeded"
+            "{method} digit conversion limit of {MAX_DIGIT_CONVERSION_UNITS} UTF-16 units exceeded"
         )));
     }
     let digits = to_number(digits)?;
     // ToIntegerOrInfinity maps NaN to zero and truncates finite fractions.
-    let digits = if digits.is_nan() { 0.0 } else { digits.trunc() };
+    Ok(if digits.is_nan() { 0.0 } else { digits.trunc() })
+}
+
+pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Fault> {
+    let digits = number_digit_count(digits, "toFixed")?;
     if !(0.0..=100.0).contains(&digits) {
         return Err(Fault::RangeError("invalid number of digits".into()));
     }
     Ok(Value::String(JsString::from(
         crate::number::to_fixed(number, digits as usize).as_str(),
     )))
+}
+
+pub(crate) fn number_to_precision_format(
+    which: Builtin,
+    number: f64,
+    digits: &Value,
+    originally_undefined: bool,
+) -> Result<Value, Fault> {
+    // ToPrecision(undefined) returns ToString directly. Otherwise conversion
+    // happens even for a nonfinite receiver, before skipping the range check.
+    let precision = which == Builtin::NumberPrototypeToPrecision;
+    let count = if precision && originally_undefined {
+        0.0
+    } else {
+        number_digit_count(digits, which.name())?
+    };
+    let text = if !number.is_finite() || (precision && originally_undefined) {
+        crate::value::string::number_to_string(number)
+    } else {
+        let count = if originally_undefined {
+            None
+        } else {
+            if !(if precision { 1.0 } else { 0.0 }..=100.0).contains(&count) {
+                return Err(Fault::RangeError("invalid number of digits".into()));
+            }
+            Some(count as usize)
+        };
+        if precision {
+            crate::number::to_precision(number, count)
+        } else {
+            crate::number::to_exponential(number, count)
+        }
+    };
+    Ok(Value::String(JsString::from(text.as_str())))
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

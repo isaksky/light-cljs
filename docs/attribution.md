@@ -900,3 +900,19 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## Number exponential and precision formatting (clj-quickjs-151)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_number_toExponential`,
+`js_number_toPrecision`) and `research/quickjs/dtoa.c` (`js_dtoa`,
+`JS_DTOA_FORMAT_FIXED`, `JS_DTOA_FORMAT_FREE`, `JS_DTOA_EXP_ENABLED`), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (2026-06-04).
+The Rust implementation uses the existing exact Decimal generator and shared
+shortest-digit conversion; no C implementation is copied. Five rounding rows
+from `research/quickjs/tests/test_builtin.js::test_number` are adapted in
+`src/number.rs::tests::exponential_and_precision_exact_rounding` and
+`tests/js_source.rs::number_to_exponential_and_precision`. The QuickJS copyright
+and MIT notice is retained in `src/number.rs` and the existing
+`string_code_unit_access` notice in the source tests, with a full copy in
+`src/intl/data/QUICKJS-LICENSE`. Additional fixtures are synthetic, not light-cljs
+output.

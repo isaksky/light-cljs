@@ -3625,6 +3625,203 @@ fn number_to_fixed() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Five upstream rounding rows adapt
+/// QuickJS tests/test_builtin.js::test_number, revision 7d1c13c5d8f8;
+/// the copyright and MIT notice is retained on string_code_unit_access below.
+#[test]
+fn number_to_exponential_and_precision() {
+    for src in [
+        "(25).toExponential(0) === '3e+1' && (-25).toExponential(0) === '-3e+1'",
+        "(2.5).toPrecision(1) === '3' && (-2.5).toPrecision(1) === '-3' && (25).toPrecision(1) === '3e+1'",
+        "(0).toExponential() === '0e+0' && (-0).toExponential(2) === '0.00e+0'",
+        "(1.5).toExponential() === '1.5e+0' && (123456).toExponential(2) === '1.23e+5' && (1e-7).toExponential() === '1e-7'",
+        "(0).toPrecision(3) === '0.00' && (-0).toPrecision(3) === '0.00' && (123.456).toPrecision(4) === '123.5'",
+        "(0.000123).toPrecision(2) === '0.00012' && (1e-7).toPrecision(1) === '1e-7'",
+        "(123456).toPrecision(2) === '1.2e+5' && (1e21).toPrecision(3) === '1.00e+21'",
+        "(1.5).toPrecision() === '1.5' && (1e21).toPrecision(undefined) === '1e+21'",
+        "(1000000000000000.25).toExponential() === '1.0000000000000002e+15'",
+        "(9.99).toExponential(1) === '1.0e+1' && (9.99).toPrecision(2) === '10' && (99.9).toPrecision(2) === '1.0e+2'",
+        "(0.000000999).toPrecision(1) === '0.000001' && (0.000000999).toPrecision(2) === '0.0000010'",
+        "(5e-324).toExponential() === '5e-324' && (5e-324).toPrecision(3) === '4.94e-324'",
+        "(1.005).toExponential(2) === '1.00e+0' && (1.005).toPrecision(3) === '1.00'",
+        "(1.25).toExponential(1.9) === '1.3e+0' && (1.25).toPrecision('2') === '1.3'",
+        "(1.5).toExponential(NaN) === '2e+0' && (1.5).toExponential(null) === '2e+0' && (1.5).toExponential(-0.9) === '2e+0'",
+        "(new Number(1.25)).toExponential(1) === '1.3e+0' && (new Number(1.25)).toPrecision(2) === '1.3'",
+        "Number.prototype.toExponential(2) === '0.00e+0' && Number.prototype.toPrecision(2) === '0.0'",
+        "(1.5).toExponential({valueOf() {return undefined;}}) === '2e+0'",
+        "(1).toExponential(100.9).length === 105 && (1).toPrecision(100.9).length === 101",
+        "(1).toPrecision(true) === '1' && (1).toExponential(false) === '1e+0'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (method, invalid) in [
+        ("toExponential", vec!["-1", "101", "Infinity", "-Infinity"]),
+        (
+            "toPrecision",
+            vec![
+                "0",
+                "101",
+                "Infinity",
+                "-Infinity",
+                "NaN",
+                "null",
+                "{valueOf() {return undefined;}}",
+            ],
+        ),
+    ] {
+        for digits in invalid {
+            let src = format!(
+                "let caught = false; try {{(1).{method}({digits});}} catch(e) {{caught = e instanceof RangeError;}} caught"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        for (receiver, expected) in [
+            ("NaN", "NaN"),
+            ("Infinity", "Infinity"),
+            ("-Infinity", "-Infinity"),
+        ] {
+            for digits in ["1000", "-1", "Infinity", "{valueOf() {return 1000;}}"] {
+                let src = format!("({receiver}).{method}({digits}) === '{expected}'");
+                assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+            }
+        }
+        for src in [
+            format!(
+                "Number.prototype.{method}.name === '{method}' && Number.prototype.{method}.length === 1"
+            ),
+            format!(
+                "let d = Object.getOwnPropertyDescriptor(Number.prototype, '{method}'); d.writable && !d.enumerable && d.configurable"
+            ),
+            format!(
+                "let log = ''; let digits = {{valueOf() {{log += 'v'; return {{}};}}, toString() {{log += 's'; return '2';}}}}; (1.25).{method}(digits); log === 'vs'"
+            ),
+            format!(
+                "let touched = false; let caught = false; try {{Number.prototype.{method}.call({{}}, {{valueOf() {{touched = true; return 2;}}}});}} catch(e) {{caught = e instanceof TypeError;}} caught && !touched"
+            ),
+            format!(
+                "let caught = false; try {{Infinity.{method}({{valueOf() {{throw 42;}}}});}} catch(e) {{caught = e === 42;}} caught"
+            ),
+        ] {
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        for receiver in ["{}", "'1'", "1n", "true", "null", "undefined"] {
+            let src = format!("Number.prototype.{method}.call({receiver}, 2)");
+            assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+        }
+        for receiver in ["1", "Infinity"] {
+            for digits in ["1n", "Symbol()", "{valueOf() {return 1n;}}"] {
+                let src = format!("({receiver}).{method}({digits})");
+                assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+            }
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Count coercion remains bounded
+/// for direct strings and strings returned by resumable callbacks.
+#[test]
+fn number_exponential_and_precision_digit_conversion_is_bounded() {
+    for method in ["toExponential", "toPrecision"] {
+        for expression in ["text", "{valueOf() {return text;}}"] {
+            for length in [4096, 4097] {
+                let code = compile_function(&format!(
+                    "function format(text) {{ try {{ let result = (1).{method}({expression}); return {} && result === '{}'; }} catch(e) {{ return {} && e instanceof RangeError && e.message.indexOf('{method} digit conversion limit of 4096') >= 0; }} }}",
+                    length == 4096,
+                    if method == "toExponential" { "1.00e+0" } else { "1.0" },
+                    length > 4096,
+                )).unwrap();
+                let rt = Runtime::new();
+                let text = "0".repeat(length - 1) + "2";
+                let root = rt.root(Primitive::String(text.as_str().into()));
+                let task = rt.spawn(&code, &[&root]).unwrap();
+                match task
+                    .run_with(Budget::instructions(500), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Complete(value) => assert_eq!(
+                        value.view(),
+                        ValueView::Bool(true),
+                        "{method}, {expression}, {length}"
+                    ),
+                    other => panic!("{method}, {expression}, {length}: {other:?}"),
+                }
+            }
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Digit-count callbacks and getters
+/// can wait, yield, collect and migrate without repeating observable work.
+#[test]
+fn number_exponential_and_precision_coercion_waits_yields_collects_and_migrates() {
+    for (method, expected) in [("toExponential", "1.13e+0"), ("toPrecision", "1.1")] {
+        for expression in [
+            format!("n.{method}(d) === '{expected}'"),
+            format!("Number.prototype.{method}.call(n, d) === '{expected}'"),
+            format!("Number.prototype.{method}.apply(n, [d]) === '{expected}'"),
+            format!("Number.prototype.{method}.bind(n)(d) === '{expected}'"),
+            format!("Reflect.apply(Number.prototype.{method}, n, [d]) === '{expected}'"),
+            format!(
+                "n.{method}({{get valueOf() {{count++; __rt.need(151, 1); return () => 2;}}}}) === '{expected}'"
+            ),
+            format!(
+                "n.{method}({{valueOf() {{return {{}};}}, get toString() {{count++; __rt.need(151, 1); return () => '2';}}}}) === '{expected}'"
+            ),
+            format!(
+                "(() => {{try {{n.{method}({{valueOf() {{count++; __rt.need(151, 1); throw 42;}}}});}} catch(e) {{return e === 42;}} return false;}})()"
+            ),
+            if method == "toExponential" {
+                "n.toExponential({valueOf() {count++; __rt.need(151, 1); return undefined;}}) === '1e+0'".into()
+            } else {
+                "(() => {try {n.toPrecision({valueOf() {count++; __rt.need(151, 1); return undefined;}});} catch(e) {return e instanceof RangeError;} return false;})()".into()
+            },
+        ] {
+            let rt = Runtime::new();
+            let src = format!(
+                "let count = 0; let n = new Number(1.125); let d = {{valueOf() {{count++; __rt.need(151, 1); return 2;}}}}; ({expression}) && count === 1"
+            );
+            let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+            let mut waits = 0;
+            let mut complete = false;
+            for _ in 0..500 {
+                let (next, outcome) = std::thread::spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .join()
+                .unwrap();
+                task = next;
+                rt.collect().unwrap();
+                match outcome {
+                    RunOutcome::Yielded => {}
+                    RunOutcome::Waiting(_) => {
+                        waits += 1;
+                        assert_eq!(waits, 1);
+                        let request = task.take_producer_requests().pop().unwrap();
+                        let value = rt.root(Primitive::Number(0.0));
+                        task = rt
+                            .complete(request.key(), request.producer(), Completion::Ready(&value))
+                            .unwrap()
+                            .into_runnable()
+                            .pop()
+                            .unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+                        complete = true;
+                        break;
+                    }
+                    other => panic!("{src}: {other:?}"),
+                }
+            }
+            assert!(complete, "instruction bound exceeded: {src}");
+            assert_eq!(waits, 1);
+        }
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Bound leaf StringToNumber before
 /// it can flatten or scan direct strings or results of observable ToPrimitive.
 #[test]

@@ -491,8 +491,10 @@ are still covered by the computed-key rejection below.
 
 ## Explicit gaps
 
-Number `toExponential` and `toPrecision` remain deferred (clj-quickjs-151).
-`Number.prototype.toFixed` is supported (clj-quickjs-150).
+Number `toFixed`, `toExponential` and `toPrecision` are supported
+(clj-quickjs-150/-151). Digit-count strings longer than 4096 UTF-16 units
+remain an explicit RangeError resource limit; budgeted generic numeric
+conversion remains deferred (clj-quickjs-265).
 
 Generator `return(value)` and `throw(error)` are deferred.
 `return` and `throw` methods are absent from the generator prototype, so yield*
@@ -923,6 +925,21 @@ delete a[o];
 ```
 
 ## Execution
+
+`Number.prototype.toExponential(fractionDigits)` and `toPrecision(precision)`
+(clj-quickjs-151) accept Number primitives and wrappers. Both round the exact
+binary64 value, choosing the larger magnitude on ties, and pad the requested
+digits. `toExponential` accepts 0..100 fractional digits and always prints an
+exponent with a sign; missing/undefined digits use the shortest round-trip
+representation. `toPrecision` accepts 1..100 significant digits, using an
+exponent when the rounded exponent is below -6 or at least the precision;
+missing/undefined precision returns Number ToString. Negative zero prints
+without a minus sign. Receiver validation precedes count conversion, and
+nonfinite receivers return ToString after count conversion but before range
+validation. Invalid receivers throw TypeError; invalid counts throw RangeError.
+Object counts use resumable ToNumber, including getters and callbacks. An
+object returning undefined converts to NaN (integer zero), rather than using
+the missing-count behavior. Both share toFixed's 4096-unit count-string limit.
 
 `Number.prototype.toFixed(fractionDigits)` (clj-quickjs-150) accepts Number
 primitives and wrappers, including `Number.prototype`. It converts the digit

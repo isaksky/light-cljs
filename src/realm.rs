@@ -791,6 +791,18 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     )?;
     let to_fixed = b.function(Builtin::NumberPrototypeToFixed, &[])?;
     b.add(number_prototype, "toFixed", to_fixed, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::NumberPrototypeToExponential,
+        Builtin::NumberPrototypeToPrecision,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(
+            number_prototype,
+            which.name(),
+            method,
+            PropertyFlags::METHOD,
+        )?;
+    }
     let (string_prototype, string) = primitive_prototype(
         &mut b,
         object_prototype,
@@ -2089,7 +2101,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 266); // Includes Collator, toFixed and six WeakMap intrinsics.
+        assert_eq!(first.all.len(), 268); // Includes WeakMap and the three Number decimal formatters.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

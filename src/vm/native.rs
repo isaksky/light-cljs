@@ -371,6 +371,10 @@ enum ConvertTarget {
     NumberToFixed {
         number: f64,
     },
+    NumberToPrecisionFormat {
+        number: f64,
+        which: builtin::Builtin,
+    },
     NumberParse {
         integer: bool,
     },
@@ -1526,6 +1530,19 @@ pub(crate) fn start_builtin(
             };
             (
                 ConvertTarget::NumberToFixed { number },
+                vec![digits.clone()],
+                Hint::Number,
+            )
+        }
+        Builtin::NumberPrototypeToExponential | Builtin::NumberPrototypeToPrecision
+            if !construct =>
+        {
+            let number = builtin::this_number_value(heap, state.diag.task, this, which.name())?;
+            let Some(digits @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::NumberToPrecisionFormat { number, which },
                 vec![digits.clone()],
                 Hint::Number,
             )
@@ -3339,6 +3356,12 @@ impl NativeState {
                     }
                     ConvertTarget::NumberToFixed { number } => {
                         builtin::number_to_fixed(number, &operands[0]).map(Action::Return)
+                    }
+                    ConvertTarget::NumberToPrecisionFormat { number, which } => {
+                        // Undefined returned by an object is converted to NaN;
+                        // it does not mean the optional count was omitted.
+                        builtin::number_to_precision_format(which, number, &operands[0], false)
+                            .map(Action::Return)
                     }
                     ConvertTarget::BigIntAsN { signed } => {
                         let bits = dispatch::to_index(&operands[0])?;

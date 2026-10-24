@@ -6521,3 +6521,30 @@ the entry/value after the local is released. Instance descriptor reflection,
 accessor invocation and property deletion (including non-configurable
 failures and foreign-task rejection) are covered by
 `weak_map_property_descriptors_and_delete` and the ownership source test.
+
+## Exponential and significant decimal formatting (clj-quickjs-151)
+
+`number::to_exponential` and `number::to_precision` reuse `Decimal::from_number`
+and its exact `halfExpand` rounding, with no new arithmetic representation or
+dependency. Rounding to p significant digits keeps p coefficient digits;
+carry updates the decimal point before layout chooses plain or exponential
+form. The coefficient is then padded or truncated to p digits. Exponential
+format uses one leading digit and an explicit signed decimal exponent.
+Precision format uses exponential notation when the rounded exponent is below
+-6 or at least p. This also covers carries across either notation boundary.
+The existing binary64 generator bound applies: at most 767 coefficient digits,
+with requested output bounded to 101 significant digits for toExponential and
+100 for toPrecision. Omitted toExponential digits reuse
+`value::string::shortest_digits`, including its ties-to-even rule for equally
+close shortest round-trip candidates. Specified counts use ties away from zero.
+
+The realm installs both length-1 methods with ordinary method descriptors;
+the Builtin variants are appended. `native::ConvertTarget::NumberToPrecisionFormat`
+saves the receiver f64 and operation while existing traced ToPrimitive operands
+and frames handle count coercion. This preserves waits, GC, yields and migration
+without replaying callbacks. An object-produced undefined count is distinct
+from an originally undefined argument. Both methods share toFixed's bounded
+digit-count conversion helper (4096 UTF-16 units before parsing/flattening).
+Unlike toFixed, these methods handle nonfinite values after count conversion
+but before range validation. Tests cover coercion exceptions, receiver ordering,
+one-instruction budgets, collection, waits and thread migration.

@@ -223,6 +223,75 @@ pub(crate) fn to_fixed(number: f64, fraction_digits: usize) -> String {
     result
 }
 
+/// Round the exact magnitude to significant digits. A carry can grow the
+/// coefficient by one digit; its new point is retained and the extra zero is
+/// removed before padding. Binary64 and the methods' digit limits bound this.
+fn significant_decimal(number: f64, precision: usize) -> Decimal {
+    let mut decimal = Decimal::from_number(number.abs());
+    decimal.round(precision as i32 - decimal.point, "halfExpand", number < 0.0);
+    decimal.digits.resize(precision, b'0');
+    decimal
+}
+
+fn exponential(decimal: &Decimal, negative: bool) -> String {
+    let digits = std::str::from_utf8(&decimal.digits).unwrap();
+    let mut out = if negative { "-".into() } else { String::new() };
+    out.push_str(&digits[..1]);
+    if digits.len() > 1 {
+        out.push('.');
+        out.push_str(&digits[1..]);
+    }
+    let exponent = decimal.point - 1;
+    out.push('e');
+    out.push(if exponent >= 0 { '+' } else { '-' });
+    out.push_str(&exponent.unsigned_abs().to_string());
+    out
+}
+
+/// Number.prototype.toExponential after count conversion/range validation.
+/// An absent count uses Number::toString's shortest round-trip digits (ties
+/// to even); an explicit count rounds the exact binary64 (ties away from zero).
+pub(crate) fn to_exponential(number: f64, fraction_digits: Option<usize>) -> String {
+    if !number.is_finite() {
+        return crate::value::string::number_to_string(number);
+    }
+    assert!(fraction_digits.is_none_or(|digits| digits <= 100));
+    let decimal = if let Some(digits) = fraction_digits {
+        significant_decimal(number, digits + 1)
+    } else {
+        let (digits, point) = crate::value::string::shortest_digits(number.abs());
+        Decimal {
+            digits: digits.into_bytes(),
+            point,
+        }
+    };
+    exponential(&decimal, number < 0.0)
+}
+
+/// Number.prototype.toPrecision after count conversion/range validation.
+pub(crate) fn to_precision(number: f64, precision: Option<usize>) -> String {
+    let Some(precision) = precision.filter(|_| number.is_finite()) else {
+        return crate::value::string::number_to_string(number);
+    };
+    assert!((1..=100).contains(&precision));
+    let decimal = significant_decimal(number, precision);
+    if decimal.point <= -6 || decimal.point > precision as i32 {
+        return exponential(&decimal, number < 0.0);
+    }
+    let (integer, fraction) = decimal.parts();
+    let mut out = if number < 0.0 {
+        "-".into()
+    } else {
+        String::new()
+    };
+    out.push_str(&integer);
+    if !fraction.is_empty() {
+        out.push('.');
+        out.push_str(&fraction);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     // Adapted QuickJS test cases:
@@ -247,6 +316,101 @@ mod tests {
     // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
     // THE SOFTWARE.
     use super::*;
+
+    // Five upstream rows adapt QuickJS tests/test_builtin.js::test_number,
+    // revision 7d1c13c5d8f8; copyright and MIT notice above.
+    #[test]
+    fn exponential_and_precision_exact_rounding() {
+        let shortest_tie = 1e15 + 0.25;
+        for (number, digits, expected) in [
+            (25.0, Some(0), "3e+1"),
+            (-25.0, Some(0), "-3e+1"),
+            (0.0, None, "0e+0"),
+            (-0.0, Some(2), "0.00e+0"),
+            (1.5, None, "1.5e+0"),
+            (123456.0, Some(2), "1.23e+5"),
+            (1e-7, None, "1e-7"),
+            (f64::INFINITY, Some(1000), "Infinity"),
+            (f64::NEG_INFINITY, None, "-Infinity"),
+            (f64::NAN, Some(0), "NaN"),
+            (5e-324, None, "5e-324"),
+            (5e-324, Some(2), "4.94e-324"),
+            (f64::MAX, None, "1.7976931348623157e+308"),
+            (f64::MIN_POSITIVE, None, "2.2250738585072014e-308"),
+            (shortest_tie, None, "1.0000000000000002e+15"),
+            (shortest_tie, Some(16), "1.0000000000000003e+15"),
+            (1.005, Some(2), "1.00e+0"),
+            (9.99, Some(1), "1.0e+1"),
+        ] {
+            assert_eq!(
+                to_exponential(number, digits),
+                expected,
+                "{number:?}, {digits:?}"
+            );
+        }
+        for (number, digits, expected) in [
+            (2.5, Some(1), "3"),
+            (-2.5, Some(1), "-3"),
+            (25.0, Some(1), "3e+1"),
+            (0.0, Some(3), "0.00"),
+            (-0.0, Some(3), "0.00"),
+            (123.456, Some(4), "123.5"),
+            (0.000123, Some(2), "0.00012"),
+            (1e-7, Some(1), "1e-7"),
+            (123456.0, Some(2), "1.2e+5"),
+            (1e21, Some(3), "1.00e+21"),
+            (1.5, None, "1.5"),
+            (9.99, Some(2), "10"),
+            (99.9, Some(2), "1.0e+2"),
+            (0.000000999, Some(2), "0.0000010"),
+            (0.000001, Some(1), "0.000001"),
+            (5e-324, Some(3), "4.94e-324"),
+            (f64::MAX, Some(3), "1.80e+308"),
+            (f64::MIN_POSITIVE, Some(3), "2.23e-308"),
+            (f64::NAN, Some(1), "NaN"),
+            (f64::INFINITY, Some(1000), "Infinity"),
+            (f64::NEG_INFINITY, None, "-Infinity"),
+        ] {
+            assert_eq!(
+                to_precision(number, digits),
+                expected,
+                "{number:?}, {digits:?}"
+            );
+        }
+        assert_eq!(
+            to_exponential(1.0, Some(100)),
+            "1.".to_owned() + &"0".repeat(100) + "e+0"
+        );
+        assert_eq!(
+            to_precision(1.0, Some(100)),
+            "1.".to_owned() + &"0".repeat(99)
+        );
+        assert_eq!(
+            to_exponential(f64::from_bits(1.25f64.to_bits() - 1), Some(1)),
+            "1.2e+0"
+        );
+        assert_eq!(
+            to_exponential(f64::from_bits(1.25f64.to_bits() + 1), Some(1)),
+            "1.3e+0"
+        );
+        assert_eq!(
+            to_precision(f64::from_bits(1.25f64.to_bits() - 1), Some(2)),
+            "1.2"
+        );
+        assert_eq!(
+            to_precision(f64::from_bits(1.25f64.to_bits() + 1), Some(2)),
+            "1.3"
+        );
+        let tenth = "1000000000000000055511151231257827021181583404541015625";
+        assert_eq!(
+            to_exponential(0.1, Some(100)),
+            format!("1.{}{}e-1", &tenth[1..], "0".repeat(101 - tenth.len()))
+        );
+        assert_eq!(
+            to_precision(0.1, Some(100)),
+            format!("0.{tenth}{}", "0".repeat(100 - tenth.len()))
+        );
+    }
 
     // Six upstream rows adapt QuickJS tests/test_builtin.js::test_number,
     // revision 7d1c13c5d8f8; full notice: src/intl/data/QUICKJS-LICENSE.
