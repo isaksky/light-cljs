@@ -839,6 +839,7 @@ fn realm_intrinsics_retain() {
         "String.prototype.codePointAt",
         "String.fromCharCode",
         "String.fromCodePoint",
+        "String.raw",
         "String.prototype.indexOf",
         "String.prototype.lastIndexOf",
         "String.prototype.substring",
@@ -919,8 +920,9 @@ fn realm_intrinsics_retain() {
     // String.prototype.split, clj-quickjs-157, Array.isArray, clj-quickjs-153,
     // seven NativeError constructors and prototypes, clj-quickjs-229,
     // Math.pow, clj-quickjs-164, and JSON with parse, clj-quickjs-159.
-    // Two unary Math functions were added by clj-quickjs-205.
-    assert_eq!(rt.heap_usage().objects.builtin, 74);
+    // Two unary Math functions were added by clj-quickjs-205,
+    // and String.raw by clj-quickjs-58.
+    assert_eq!(rt.heap_usage().objects.builtin, 75);
     assert_eq!(rt.heap_usage().objects.plain, 15);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
