@@ -1066,38 +1066,50 @@ impl<'s> Lowerer<'s> {
     /// declared after an abrupt initializer are therefore never disposed.
     #[inline(never)]
     fn disposable_body(&mut self, body: &[Stmt]) -> Result<(), SyntaxError> {
+        let resources: Vec<_> = body
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                StmtKind::Lexical(decl) if decl.kind == LexicalKind::Using => Some(decl),
+                _ => None,
+            })
+            .flat_map(|decl| decl.declarators.iter().map(|d| d.span))
+            .collect();
+        self.disposable_scope(&resources, body[0].span, |this| {
+            for stmt in body {
+                this.statement(stmt)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Shared disposal scope for statement lists and for-using-of iterations.
+    /// `body` initializes resources through `register_disposable` before use.
+    fn disposable_scope(
+        &mut self,
+        resources: &[Span],
+        span: Span,
+        body: impl FnOnce(&mut Self) -> Result<(), SyntaxError>,
+    ) -> Result<(), SyntaxError> {
         let saved_resources = self.cur().using_resources.len();
         let saved_slot = self.cur().next_slot;
-        for stmt in body {
-            if let StmtKind::Lexical(decl) = &stmt.kind
-                && decl.kind == LexicalKind::Using
-            {
-                for d in &decl.declarators {
-                    let value = self.temp(d.span)?;
-                    let method = self.temp(d.span)?;
-                    self.out().op(Opcode::Undefined, d.span);
-                    self.out().op_u16(Opcode::SetLocal, value, d.span);
-                    self.out().op(Opcode::Undefined, d.span);
-                    self.out().op_u16(Opcode::SetLocal, method, d.span);
-                    self.cur_mut()
-                        .using_resources
-                        .push((d.span.start, value, method));
-                }
-            }
+        for &resource in resources {
+            let value = self.temp(resource)?;
+            let method = self.temp(resource)?;
+            self.out().op(Opcode::Undefined, resource);
+            self.out().op_u16(Opcode::SetLocal, value, resource);
+            self.out().op(Opcode::Undefined, resource);
+            self.out().op_u16(Opcode::SetLocal, method, resource);
+            self.cur_mut()
+                .using_resources
+                .push((resource.start, value, method));
         }
         if self.cur().using_resources.len() == saved_resources {
-            for stmt in body {
-                self.statement(stmt)?;
-            }
-            return Ok(());
+            return body(self);
         }
-        let span = body[0].span;
         let cleanup = self.out().label();
         self.out().branch(Opcode::PushFinally, cleanup, span);
         self.cur_mut().exits.push(Exit::Finally);
-        for stmt in body {
-            self.statement(stmt)?;
-        }
+        body(self)?;
         self.out().op(Opcode::PopFinally, span);
         self.out().bind(cleanup);
         *self.cur_mut().exits.last_mut().unwrap() = Exit::FinallyBody;
@@ -3281,21 +3293,27 @@ impl<'s> Lowerer<'s> {
                 None => self.out().op(Opcode::Undefined, d.span),
             }
             if decl.kind == LexicalKind::Using {
-                let (_, value, method) = *self
-                    .cur()
-                    .using_resources
-                    .iter()
-                    .rev()
-                    .find(|(start, _, _)| *start == d.span.start)
-                    .ok_or_else(|| self.internal(d.span, "using resource without a scope"))?;
-                self.out().op(Opcode::Dup, d.span);
-                self.out().op_u16(Opcode::SetLocal, value, d.span);
-                self.out().op(Opcode::Dup, d.span);
-                self.out().op(Opcode::UsingCheck, d.span);
-                self.out().op_u16(Opcode::SetLocal, method, d.span);
+                self.register_disposable(d.span)?;
             }
             self.pattern_store(&d.name, true, false)?;
         }
+        Ok(())
+    }
+
+    /// Snapshot the disposer while retaining the value for binding initialization.
+    fn register_disposable(&mut self, span: Span) -> Result<(), SyntaxError> {
+        let (_, value, method) = *self
+            .cur()
+            .using_resources
+            .iter()
+            .rev()
+            .find(|(start, _, _)| *start == span.start)
+            .ok_or_else(|| self.internal(span, "using resource without a scope"))?;
+        self.out().op(Opcode::Dup, span);
+        self.out().op_u16(Opcode::SetLocal, value, span);
+        self.out().op(Opcode::Dup, span);
+        self.out().op(Opcode::UsingCheck, span);
+        self.out().op_u16(Opcode::SetLocal, method, span);
         Ok(())
     }
 
@@ -3571,33 +3589,46 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::SetLocal, result, span);
         self.constant(Primitive::Bool(true), span)?;
         self.out().op_u16(Opcode::SetLocal, in_body, span);
-        if let Some(slot) = cell {
-            self.out().op(Opcode::NewCell, span);
-            self.out().op(Opcode::Dup, span);
-            self.out().op_u16(Opcode::SetLocal, slot, span);
-        }
-        self.out().op_u16(Opcode::GetLocal, result, span);
-        match head {
-            ForInHead::Lexical(_, name) => {
-                let b = self.initialize(name)?;
-                match b.repr {
-                    Repr::Cell => self.out().op(Opcode::CellInit, name.span),
-                    Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, name.span),
-                }
-            }
-            ForInHead::Binding(name) | ForInHead::Var(name) => {
-                let access = self.resolve_reference(&name.name);
-                self.store(access, name.span)?;
-                self.out().op(Opcode::Pop, name.span);
-            }
-        }
         let labels = std::mem::take(&mut self.cur_mut().loop_labels);
         self.cur_mut().exits.push(Exit::IteratorLoop {
             brk: end,
             cont: start,
             labels,
         });
-        self.statement(body)?;
+        let resources = match head {
+            ForInHead::Lexical(LexicalKind::Using, name) => vec![name.span],
+            _ => Vec::new(),
+        };
+        // The per-iteration disposal handler is inside IteratorClose, and
+        // outside the body's scopes. A continue unwinds only disposal; other
+        // exits dispose before closing the iterator. Validation failures are
+        // already consumer failures (`in_body` is true).
+        self.disposable_scope(&resources, span, |this| {
+            if let Some(slot) = cell {
+                this.out().op(Opcode::NewCell, span);
+                this.out().op(Opcode::Dup, span);
+                this.out().op_u16(Opcode::SetLocal, slot, span);
+            }
+            this.out().op_u16(Opcode::GetLocal, result, span);
+            match head {
+                ForInHead::Lexical(kind, name) => {
+                    if *kind == LexicalKind::Using {
+                        this.register_disposable(name.span)?;
+                    }
+                    let b = this.initialize(name)?;
+                    match b.repr {
+                        Repr::Cell => this.out().op(Opcode::CellInit, name.span),
+                        Repr::Value => this.out().op_u16(Opcode::SetLocal, b.slot, name.span),
+                    }
+                }
+                ForInHead::Binding(name) | ForInHead::Var(name) => {
+                    let access = this.resolve_reference(&name.name);
+                    this.store(access, name.span)?;
+                    this.out().op(Opcode::Pop, name.span);
+                }
+            }
+            this.statement(body)
+        })?;
         self.cur_mut().exits.pop();
         self.out().branch(Opcode::Jump, start, span);
         self.out().bind(exhausted);

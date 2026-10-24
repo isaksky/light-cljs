@@ -140,7 +140,7 @@ ForInit             = Expression[~In] | ( "let" | "const" | "var" ) Declarator[~
                       (* "var": clj-quickjs-89 *)
                       (* [~In]: a top-level `in` ends it, ECMAScript's [In] parameter *)
 ForInStatement      = "for" "(" ForInHead "in" Expression ")" Statement   (* clj-quickjs-85 *)
-ForOfStatement      = "for" "(" ForInHead "of" AssignmentExpression ")" Statement (* clj-quickjs-237 *)
+ForOfStatement      = "for" "(" (ForInHead | "using" [no LineTerminator here] BindingIdentifier) "of" AssignmentExpression ")" Statement (* clj-quickjs-237, -238 *)
 ForInHead           = LeftHandSideExpression   (* an identifier, possibly parenthesized *)
                     | ( "let" | "const" | "var" ) BindingIdentifier
 SwitchStatement     = "switch" "(" Expression ")" "{" { CaseClause } "}"   (* at most one "default" *)
@@ -448,7 +448,10 @@ Notes on the grammar:
   `for (x of (a, b))` is accepted. `of` is contextual (`for (let of of a)`
   declares `of`); `for (let of a)` and `for (async of a)` are syntax errors.
   Parenthesized `(async)` is an ordinary assignment target. Property and
-  destructuring heads remain unsupported; using declarations are clj-quickjs-238.
+  destructuring heads remain unsupported. `for (using x of a)` declares a
+  const binding per iteration (clj-quickjs-238); `using` must be followed on
+  the same line by an identifier other than `of`. `for (using of a)` assigns
+  to the identifier `using`; `for (using of of a)` is a syntax error.
 - `UsingDeclaration` (clj-quickjs-236): `using` remains contextual;
   `using of = resource` declares `of`, while `using = 1`, `using.x`,
   `using[0]`, `using(1)` and `let using` retain their expression/binding
@@ -510,6 +513,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | Form | Kind |
 |------|------|
 | `using` declarations at script top level (strict or sloppy), directly in a `case`/`default` clause, as a single-statement body, with binding patterns or without initializers (clj-quickjs-236) | Invalid at `using` |
+| `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
+| classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | class fields, static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | module `export * as ns from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
@@ -540,9 +545,9 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 
 ## Explicit gaps
 
-Synchronous `using` executes in blocks, function bodies and module top level.
-`for (using ... of ...)`, `await using` and disposal stack built-ins remain
-separate features (clj-quickjs-238..-242).
+Synchronous `using` executes in blocks, function bodies, module top level and
+for-of heads. `await using` and disposal stack built-ins remain separate
+features (clj-quickjs-239..-242); classic for-using heads remain unsupported.
 
 The QuickJS collection fixture cases run with their original source except
 for the documented WeakRef kept-object adaptation (clj-quickjs-178).
@@ -607,7 +612,7 @@ Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
 - **Synchronous iteration** (clj-quickjs-237): plain for-of, array/typed-array
-  `values` and string iteration execute. Async iteration, `for (using ...)`,
+  `values`, string iteration and `for (using x of iterable)` execute. Async iteration,
   destructuring/property heads and other iterable consumers remain
   separate features. Iterator prototypes expose their `Symbol.toStringTag`;
   generic `Object.prototype.toString` symbol-tag dispatch remains deferred.
@@ -1031,6 +1036,14 @@ initialized resources are disposed in reverse order, with the resource as
 the scope and consumer cancellation all run disposal. A return expression
 is evaluated before disposal. Getters and disposer calls may wait, yield,
 migrate and survive collection without replaying prior effects.
+
+`for (using x of iterable)` validates and snapshots the current value's
+disposer after each successful iterator step and before initializing `x`.
+Each iteration has a fresh const binding, including for captured closures.
+Its disposal scope encloses the body and runs before the next iterator step,
+on continue, and before IteratorClose on break, return, throw or cancellation.
+Body-local resources dispose before the head resource. Null and undefined
+iteration values require no disposer.
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work. After loading, `Runtime::spawn_module`
@@ -1743,6 +1756,12 @@ the global `SuppressedError` binding and constructor properties. Cancellation
 disposes every initialized resource and drops final errors; existing finally
 cleanup rules govern waits or jumps inside disposers during cancellation.
 
+For-using-of validation failures and disposal errors are consumer failures
+and close the iterator. A disposal error suppresses a pending body throw
+through the same intrinsic `SuppressedError` chain before IteratorClose;
+iterator-close errors cannot replace that pending throw. Successful disposal
+preserves normal completion and all pending exits.
+
 For-of uses IteratorClose on body failures, returns, breaks and jumps leaving
 the loop. An exception from the iterator's `return` getter/call, or its
 non-object result, preserves a pending throw; otherwise it replaces the
@@ -2047,6 +2066,32 @@ let disposed = 0;
 { using a = null, b = { [Symbol.dispose]() { disposed++; } }; }
 disposed === 1;
 function resource() { using of = undefined; return 42; }
+```
+
+```js accept
+let disposed = 0, fs = [];
+for (using x of [{n: 1, [Symbol.dispose]() { disposed++; }}]) {
+  fs.push(() => x.n);
+}
+disposed === 1 && fs[0]() === 1;
+let using;
+for (using of [1, 2]) {}
+```
+
+```js reject Invalid 1:6
+for (using x in o) {}
+```
+
+```js reject Invalid 1:6
+for (using [x] of a) {}
+```
+
+```js reject Unsupported 1:6
+for (using x = r; ;) {}
+```
+
+```js reject Unsupported 1:6
+for (await using x of a) {}
 ```
 
 ```js module-accept

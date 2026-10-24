@@ -46,6 +46,60 @@ fn using_declarations() {
 }
 
 #[test]
+fn for_using_of_loops() {
+    // Synthetic fixtures, not light-cljs output. The validation and normal
+    // completion cases adapt QuickJS test_language.js::test_using (MIT notice
+    // reproduced below); the remaining cases are original.
+    for source in [
+        "let iters = 0, caught; try { for (using x of [{[Symbol.dispose]() {}}, 42]) iters++; } catch(e) { caught = e; } iters === 1 && caught instanceof TypeError",
+        "let log = []; for (using x of [{tag: 'a', [Symbol.dispose]() { log.push(this.tag); }}, {tag: 'b', [Symbol.dispose]() { log.push(this.tag); }}, {tag: 'c', [Symbol.dispose]() { log.push(this.tag); }}]) log.push('iter'); log.length === 6 && log.join(',') === 'iter,a,iter,b,iter,c'",
+        "let fs = [], caught; for (using x of [{n: 1, [Symbol.dispose]() {}}, {n: 2, [Symbol.dispose]() {}}]) { fs.push(() => x.n); try { x = null; } catch(e) { caught = e; } } caught instanceof TypeError && fs[0]() === 1 && fs[1]() === 2",
+        "let using, sum = 0; for (using of [1, 2]) sum += using; sum === 3 && using === 2",
+        "let reads = 0, calls = 0; let r = {get [Symbol.dispose]() { reads++; return function() { if (this === r) calls++; }; }}; for (using x of [r, r]) { Object.defineProperty(r, Symbol.dispose, {value: function() { calls += 10; }}); } reads === 1 && calls === 11",
+        "let n = 0; for (using x of [null, undefined]) n++; n === 2",
+        "let caught; try { for (using x of x) {} } catch(e) { caught = e; } caught instanceof ReferenceError",
+        r#"
+        let log = '', steps = 0, closed = 0, fail = false, original = {}, disposal = {};
+        let it = {
+            next() { steps++; log += 'n'; return {value: {n: steps, [Symbol.dispose]() { log += this.n; if (fail) throw disposal; }}, done: false}; },
+            return() { closed++; log += 'r'; return {}; }
+        };
+        it[Symbol.iterator] = function() { return this; };
+        for (using x of it) { log += 'b'; if (x.n === 2) break; }
+        let broken = log === 'nb1nb2r' && closed === 1;
+        log = ''; steps = 0; closed = 0; fail = true;
+        let caught;
+        try { for (using x of it) log += 'b'; } catch(e) { caught = e; }
+        let failed = caught === disposal && log === 'nb1r' && steps === 1 && closed === 1;
+        log = ''; steps = 0; closed = 0;
+        try { for (using x of it) throw original; } catch(e) { caught = e; }
+        broken && failed && caught instanceof SuppressedError && caught.error === disposal && caught.suppressed === original && log === 'n1r' && closed === 1
+        "#,
+        r#"
+        let log = '', n = 0;
+        let it = {next() { n++; log += 'n'; return {value: {[Symbol.dispose]() { log += 'd'; }}, done: n > 2}; }, return() { log += 'r'; return {}; }};
+        it[Symbol.iterator] = function() { return this; };
+        for (using x of it) { log += 'b'; continue; }
+        let continued = log === 'nbdnbdn';
+        n = 0; log = '';
+        function f() { for (using x of it) return (log += 'v', 42); }
+        continued && f() === 42 && log === 'nvdr'
+        "#,
+        r#"
+        let closed = 0, caught, body = 0;
+        let it = {next() { return {value: 42, done: false}; }, return() { closed++; throw 99; }};
+        it[Symbol.iterator] = function() { return this; };
+        try { for (using x of it) body++; } catch(e) { caught = e; }
+        caught instanceof TypeError && body === 0 && closed === 1
+        "#,
+        "let log = ''; outer: for (using x of [{[Symbol.dispose]() { log += 'o'; }}]) { for (using y of [{[Symbol.dispose]() { log += 'i'; }}]) continue outer; } log === 'io'",
+        "let log = ''; for (using x of [{[Symbol.dispose]() { log += 'h'; }}]) { using y = {[Symbol.dispose]() { log += 'b'; }}; break; } log === 'bh'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
 fn using_disposal_errors_override_returns_and_jumps() {
     for source in [
         "let log = '', sentinel = {}, caught; function f() { using a = {[Symbol.dispose]() { log += 'a'; }}, b = {[Symbol.dispose]() { log += 'b'; throw sentinel; }}; return 42; } try { f(); log += 'returned'; } catch(e) { caught = e; } caught === sentinel && log === 'ba'",

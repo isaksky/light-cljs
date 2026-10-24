@@ -2745,6 +2745,14 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- For-using-of heads (clj-quickjs-238): consulted
+  `research/quickjs/quickjs.c` `js_parse_for_in_of`, `pop_break_entry` and
+  `emit_break`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+  The validation and normal-completion cases in
+  `tests/js_source.rs::for_using_of_loops` adapt
+  `research/quickjs/tests/test_language.js::test_using`; its MIT notice is
+  retained in that file. Lowering and remaining fixtures are original.
+
 - Synchronous `using` (clj-quickjs-236): consulted
   `research/quickjs/quickjs.c` `is_using`, `js_parse_var`,
   `js_emit_dispose_scope`, `js_op_using_check` and `OP_using_dispose`,
@@ -5580,6 +5588,18 @@ Typed-array construction now uses the general Array iterator intrinsic
 null/undefined iterator overrides still select array-like behavior.
 
 ## Synchronous iterators and for-of (clj-quickjs-237)
+
+For-using-of heads (clj-quickjs-238) reuse `disposable_scope`, the same
+finally-based lowering used by statement-list `using` declarations. After
+each step produces a value, lowering enters a fresh disposal scope inside
+the loop's IteratorClose handler, validates/snapshots its method with
+`using_check`, then initializes the fresh const binding. The loop exit entry
+surrounds the disposal entry: same-loop continue disposes without closing;
+break, return, throw, outer jumps and cancellation dispose before closing.
+The body's scopes nest inside the head resource scope. A validation or
+disposal failure occurs with the consumer flag set, so IteratorClose runs.
+All resource, method and error state uses the existing traced frame locals;
+no new opcode, heap kind or native suspension mechanism is introduced.
 
 `src/vm/native/iterator.rs` exposes reusable resumable GetIterator state to
 native consumers. `get_iterator` (`0x74`) returns a hidden task-owned record

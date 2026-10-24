@@ -3085,7 +3085,7 @@ wait, migrate and survive GC. Arrays and Number typed arrays expose
 can reuse `vm::native::iterator::State::get_iterator`; typed-array construction
 now uses the general Array iterator instead of its local fallback.
 
-Deferred: using and async heads, destructuring/property heads and other
+Deferred: async heads, destructuring/property heads and other
 iterable consumers. Validation: `cargo test --test js_source for_of_`,
 `cargo test --test exception_waits for_of_`, `cargo test --lib frontend::`.
 
@@ -3950,12 +3950,18 @@ with intrinsic `SuppressedError` instances. Getters and cleanup calls retain
 their task state through waits, collection and migration; cancellation runs
 cleanup without reviving the task. Bindings follow `const` rules.
 
-Deferred: `for (using ... of ...)`, `await using` and disposal stack built-ins.
+Supported (clj-quickjs-238): `for (using x of iterable)` creates a fresh const
+binding, snapshots the disposer and disposes each value before the next step
+or IteratorClose. Validation and disposal failures close the iterator;
+disposal errors suppress pending body throws with intrinsic `SuppressedError`.
+
+Deferred: `await using`, classic for-using heads and disposal stack built-ins.
 Script top level, switch clauses without a block, single-statement bodies,
 binding patterns and missing initializers are syntax errors.
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test js_source for_using_of_loops -- --exact --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3
 ```

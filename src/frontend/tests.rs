@@ -1842,6 +1842,27 @@ fn for_statements() {
 }
 
 #[test]
+fn for_using_of_heads() {
+    assert_eq!(ast("for (using x of a) {}"), "(for-of (using x) a (block))");
+    assert_eq!(ast("for (using of a) {}"), "(for-of using a (block))");
+    assert_eq!(ast("for (using\nof a) {}"), "(for-of using a (block))");
+    for source in [
+        "for (using x in o) {}",
+        "for (using [a] of b) {}",
+        "for (using {a} of b) {}",
+        "for (using of of b) {}",
+        "for (using\nx of b) {}",
+        "for (using x, y of b) {}",
+    ] {
+        assert!(parse_script(source).is_err(), "{source}");
+    }
+    for source in ["for (using x = r; ;) {}", "for (await using x of a) {}"] {
+        let error = parse_script(source).expect_err(source);
+        assert_eq!(error.kind, SyntaxErrorKind::Unsupported, "{source}");
+    }
+}
+
+#[test]
 fn for_of_statements() {
     assert_eq!(ast("for (let x of a) {}"), "(for-of (let x) a (block))");
     assert_eq!(ast("for (const x of a) ;"), "(for-of (const x) a (empty))");

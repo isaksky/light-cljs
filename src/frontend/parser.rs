@@ -1072,6 +1072,47 @@ impl<'a> Parser<'a> {
     fn parse_for_head(&mut self) -> PResult<ForHead> {
         let keyword = self.advance()?.span;
         self.expect_punct(Punct::LParen)?;
+        if self.is_keyword(Keyword::Await)
+            && self.peek_next().is_some_and(
+                |next| matches!(&next.kind, TokenKind::Identifier(name) if name == "using"),
+            )
+        {
+            return Err(self.unsupported(self.tok.span, "`for (await using ...)` heads are"));
+        }
+        // `of` immediately after contextual `using` is the separator of an
+        // assignment head. A declaration requires a same-line binding name.
+        if matches!(&self.tok.kind, TokenKind::Identifier(name) if name == "using")
+            && self.tok.span.text(self.src) == "using"
+            && self.peek_next().is_some_and(|next| {
+                !next.newline_before
+                    && (matches!(&next.kind, TokenKind::Identifier(name) if name != "of")
+                        || matches!(next.kind, TokenKind::Punct(Punct::LBracket | Punct::LBrace)))
+            })
+        {
+            let start = self.advance()?.span;
+            if matches!(
+                self.tok.kind,
+                TokenKind::Punct(Punct::LBracket | Punct::LBrace)
+            ) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    start,
+                    "using iteration declarations require a binding identifier",
+                ));
+            }
+            let name = self.parse_binding_identifier("a using binding name")?;
+            if self.is_of() {
+                return self.parse_for_of_rest(ForInHead::Lexical(LexicalKind::Using, name));
+            }
+            if self.is_keyword(Keyword::In) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    start,
+                    "using declarations are not allowed in for-in heads",
+                ));
+            }
+            return Err(self.unsupported(start, "classic `for (using ...)` heads are"));
+        }
         let init = match &self.tok.kind {
             TokenKind::Punct(Punct::Semicolon) => None,
             TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => {

@@ -310,6 +310,80 @@ fn line_column(e: &VmError) -> (u32, u32) {
 /// Synthetic fixture, not light-cljs output. Every protocol callback parks;
 /// all retained iterator state must survive collection and thread migration.
 #[test]
+fn for_using_of_waits_dispose_before_next_and_close() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let n = 0;
+        let it = {
+            next() {
+                n++; __rt.effect(1, 10 + n); __rt.need(10 + n, 3);
+                return {value: {n: n, get [Symbol.dispose]() {
+                    __rt.effect(1, 20 + this.n); __rt.need(20 + this.n, 3);
+                    return function() { __rt.effect(1, 40 + this.n); __rt.need(40 + this.n, 3); };
+                }}, done: false};
+            },
+            return() { __rt.effect(1, 50); __rt.need(50, 3); return {}; }
+        };
+        it[Symbol.iterator] = function() { return this; };
+        let fs = [];
+        for (using x of it) {
+            fs.push(() => x.n);
+            __rt.effect(1, 30 + x.n); __rt.need(30 + x.n, 3);
+            if (x.n === 2) break;
+        }
+        fs[0]() + fs[1]() === 3 ? 42 : 0
+        "#,
+    );
+    let dependencies = [11, 21, 31, 41, 12, 22, 32, 42, 50];
+    let mut log = Log::default();
+    let mut current = task;
+    for (index, dependency) in dependencies.into_iter().enumerate() {
+        let (outcome, next_log) = run_elsewhere(current.clone(), log);
+        log = next_log;
+        assert_eq!(
+            waiting(outcome),
+            key(&rt, (DependencyId::new(dependency), ResultKind::new(3)))
+        );
+        assert_eq!(log.0.len(), index + 1);
+        rt.collect().unwrap();
+        current = publish(&rt, &current, 0.0);
+        rt.collect().unwrap();
+    }
+    let (outcome, log) = run_elsewhere(current, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, dependencies.map(|dependency| dependency as f64));
+}
+
+#[test]
+fn for_using_of_cancellation_disposes_before_close() {
+    for cleanup in ["", "throw 42;"] {
+        let rt = Runtime::new();
+        let task = spawn(
+            &rt,
+            &format!(
+                r#"
+                let it = {{
+                    next() {{ return {{value: {{[Symbol.dispose]() {{ __rt.effect(1, 2); {cleanup} }}}}, done: false}}; }},
+                    return() {{ __rt.effect(1, 3); return {{}}; }}
+                }};
+                it[Symbol.iterator] = function() {{ return this; }};
+                try {{ for (using x of it) {{ try {{ __rt.need(5, 3); }} finally {{ __rt.effect(1, 1); }} }} }}
+                catch(e) {{ __rt.effect(1, 99); }}
+                "#
+            ),
+        );
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, A);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(cancel_parked(&task), log);
+        cancelled(outcome);
+        assert_eq!(log.0, [1.0, 2.0, 3.0]);
+    }
+}
+
+#[test]
 fn for_of_waits_resume_iteration_and_close() {
     let rt = Runtime::new();
     let task = spawn(
