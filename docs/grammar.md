@@ -434,8 +434,9 @@ checks left to later stages:
   with `Unsupported` naming RegExp objects.
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
-  at 512 with a catchable SyntaxError; callable revivers fail explicitly
-  with TypeError. Stringify and reviver traversal remain deferred.
+  at 512 and decoded member names at 4096 UTF-16 units, with catchable
+  SyntaxErrors; callable revivers fail explicitly with TypeError.
+  Stringify and reviver traversal remain deferred.
 - **Error instances** (clj-quickjs-228/-229): `Error` and all seven NativeError
   constructors are callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
@@ -2702,6 +2703,11 @@ results, and uses an explicit stack with a limit of 512 open containers.
 Exceeding the limit throws a catchable SyntaxError, including 100,000 `[`;
 no input nesting uses the Rust call stack. Whitespace, string scanning and
 decoding, and numeric scanning/conversion yield during long inputs.
+Object member names are limited to 4096 decoded UTF-16 units so the shared
+leaf property-key interner's hashing and equality have a bounded name size.
+The limit is checked incrementally before decoding/interning, with a
+catchable SyntaxError on the first over-limit unit. Escaped and raw names
+count equally; string values retain the normal `2^30 - 1` code-unit limit.
 
 Explicit gaps: a callable reviver throws a catchable TypeError after parsing;
 a non-callable second argument is ignored. Reviver traversal, stringify,

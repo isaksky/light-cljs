@@ -12,6 +12,9 @@ use crate::value::{JsString, Value};
 
 // A catchable, documented resource limit, independent of the native stack.
 const MAX_DEPTH: usize = 512;
+// The shared leaf key interner hashes/compares the complete decoded name.
+// Cap that work independently of the resumable string-value decoder.
+const MAX_MEMBER_NAME_UNITS: usize = 4096;
 const STEP: usize = 256;
 
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +42,7 @@ enum Token {
     StringScan {
         start: usize,
         key: bool,
+        decoded: usize,
     },
     StringDecode {
         next: usize,
@@ -178,6 +182,7 @@ impl Parser {
                 self.token = Token::StringScan {
                     start: self.next,
                     key: false,
+                    decoded: 0,
                 };
             }
             Some(45 | 48..=57) => {
@@ -248,6 +253,7 @@ impl Parser {
                             self.token = Token::StringScan {
                                 start: self.next,
                                 key: true,
+                                decoded: 0,
                             };
                         }
                         Some(Expect::ObjectColon) => {
@@ -268,7 +274,14 @@ impl Parser {
                         _ => self.value(heap, task)?,
                     }
                 }
-                Token::StringScan { start, key } => {
+                Token::StringScan {
+                    start,
+                    key,
+                    decoded,
+                } => {
+                    if key && decoded == MAX_MEMBER_NAME_UNITS && self.peek() != Some(34) {
+                        return Err(self.error("member name limit of 4096 UTF-16 units exceeded"));
+                    }
                     match self.peek() {
                         Some(34) => {
                             let end = self.next;
@@ -308,7 +321,11 @@ impl Parser {
                         None => return Err(self.error("unterminated string")),
                         Some(_) => self.consume(),
                     }
-                    self.token = Token::StringScan { start, key };
+                    self.token = Token::StringScan {
+                        start,
+                        key,
+                        decoded: decoded + 1,
+                    };
                 }
                 Token::StringDecode {
                     mut next,

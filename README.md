@@ -2654,8 +2654,9 @@ ToString may wait and migrate; long scans and decoding yield and preserve
 partial results across GC. Duplicate keys retain their first position;
 `__proto__` is an ordinary own property. Malformed input uses the catchable
 engine SyntaxError path, with input line/UTF-16 column/offset in its message.
-The explicit parser stack permits 512 open containers and throws on deeper
-input. Callable revivers explicitly throw TypeError; reviver traversal and
+The explicit parser stack permits 512 open containers; object member names
+permit 4096 decoded UTF-16 units. Exceeding either limit throws SyntaxError.
+Callable revivers explicitly throw TypeError; reviver traversal and
 JSON.stringify remain deferred. See `docs/grammar.md` for details.
 
 Tests: `cargo test --test js_source json_parse`.

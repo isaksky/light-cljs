@@ -1606,6 +1606,18 @@ fn json_parse_depth_and_error_positions() {
         matches!(run(&code, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
     );
     let code = compile_function("function parse(text) { return JSON.parse(text); }").unwrap();
+    let deep = format!("{}7{}", "[".repeat(513), "]".repeat(513));
+    match run(&code, &[Primitive::String(deep.as_str().into())]) {
+        RunOutcome::Failed(e) => {
+            assert_eq!(e.kind(), VmErrorKind::SyntaxError);
+            assert!(e.message().contains("nesting limit of 512 exceeded"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let caught = compile_function("function parse(text) { try { JSON.parse(text); } catch (e) { return true; } return false; }").unwrap();
+    assert!(
+        matches!(run(&caught, &[Primitive::String(deep.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
     for (text, position) in [
         ("\r\n{\"a\":x}", "line 2 column 6 (UTF-16 offset 7)"),
         ("[\"😀\",x]", "line 1 column 7 (UTF-16 offset 6)"),
@@ -1618,6 +1630,96 @@ fn json_parse_depth_and_error_positions() {
             }
             other => panic!("{other:?}"),
         }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Isolate each token category:
+/// another token's continuation boundaries cannot satisfy its yield count.
+#[test]
+fn json_parse_token_scans_are_budgeted() {
+    let units = 65536;
+    let code = compile_function("function parse(text) { let a = JSON.parse(text); return typeof a === 'string' ? a.length : a; }").unwrap();
+    for (name, text, expected, minimum) in [
+        (
+            "whitespace",
+            format!("{}true", " ".repeat(units)),
+            ValueView::Bool(true),
+            units / 256,
+        ),
+        (
+            "raw string",
+            format!("\"{}\"", "x".repeat(units)),
+            ValueView::Number(units as f64),
+            units * 2 / 256,
+        ),
+        (
+            "escaped string",
+            format!("\"{}\"", "\\ud800".repeat(units)),
+            ValueView::Number(units as f64),
+            units * 2 / 256,
+        ),
+        (
+            "number",
+            format!("1{}e-{units}", "0".repeat(units)),
+            ValueView::Number(1.0),
+            units * 2 / 256,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let root = rt.root(Primitive::String(text.as_str().into()));
+        let task = rt.spawn(&code, &[&root]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..4096 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => yields += 1,
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), expected, "{name}");
+                    assert!(
+                        yields >= minimum,
+                        "{name}: {yields} yields, expected at least {minimum}"
+                    );
+                    complete = true;
+                    break;
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(complete, "{name} did not finish");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The limit counts decoded
+/// UTF-16 units, so different spellings of a boundary key still duplicate.
+#[test]
+fn json_parse_member_name_limit() {
+    let key = "x".repeat(4096);
+    let escaped = "\\u0078".repeat(4096);
+    let text = format!("{{\"{key}\":1,\"{escaped}\":2}}");
+    let code = compile_function("function parse(text) { let a = JSON.parse(text); let keys = Object.keys(a); return keys.length === 1 && keys[0].length === 4096 && a[keys[0]] === 2; }").unwrap();
+    assert!(
+        matches!(run(&code, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    let code = compile_function("function parse(text) { return JSON.parse(text); }").unwrap();
+    let caught = compile_function("function parse(text) { try { JSON.parse(text); } catch (e) { return true; } return false; }").unwrap();
+    for key in ["x".repeat(4097), "\\u0078".repeat(4097)] {
+        let text = format!("{{\"{key}\":1}}");
+        match run(&code, &[Primitive::String(text.as_str().into())]) {
+            RunOutcome::Failed(e) => {
+                assert_eq!(e.kind(), VmErrorKind::SyntaxError);
+                assert!(
+                    e.message()
+                        .contains("member name limit of 4096 UTF-16 units exceeded")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            matches!(run(&caught, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
     }
 }
 

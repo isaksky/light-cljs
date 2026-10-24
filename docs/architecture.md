@@ -4121,8 +4121,11 @@ into immutable JsString storage without shrinking or copying. Numbers use
 clj-quickjs-148's correctly rounded NumberParse over a delimited range of the
 original immutable input, with no token copy and at most 1100 retained
 significant digits plus sticky rounding. Allocations and ordinary property
-insertion remain leaf operations: property interning hashes/compares a
-complete key and object/array storage may grow, as in source literals.
+insertion remain leaf operations. Member names are limited to 4096 decoded
+UTF-16 units, checked incrementally while scanning, so the shared key
+interner hashes/compares a bounded key. Exceeding that resource limit throws
+SyntaxError; string values are unaffected. Object/array storage and the key
+table may grow, as in source literals.
 SyntaxError messages retain JSON input line/UTF-16 column/offset independently
 of the VM call diagnostic. The engine's existing catchable error path is
 used; NativeError constructors and engine-error prototypes are separate work.
