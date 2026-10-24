@@ -23,6 +23,8 @@ fn string_builders_too_long_are_internal_errors() {
         "s.concat(s, {toString() { later++; return ''; }})",
         "`${s}${s}`",
         "[s, s].join('')",
+        "new Intl.ListFormat('en').format([s, s])",
+        "new Intl.ListFormat('en').format([max, ''])",
         "String.raw({raw: [s, s]})",
         "''.padStart(1073741824, 'x')",
         "''.padEnd(Infinity, 'x')",

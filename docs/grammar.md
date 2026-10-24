@@ -3385,7 +3385,8 @@ ToLength length once, then each raw entry and available substitution in order,
 using resumable ToString. Missing substitutions add no text; extra ones are
 ignored. Null/undefined callSite or raw throw TypeError. Primitive property
 reads follow the existing wrapper model (Boolean wrappers remain unsupported).
-Output uses budgeted 256-unit copying and throws RangeError above 2^30 - 1 units.
+Output uses budgeted 256-unit copying and throws catchable InternalError
+"string too long" above 2^30 - 1 units (clj-quickjs-231).
 
 ### Symbol primitive values (clj-quickjs-127)
 
