@@ -233,6 +233,8 @@ pub(crate) struct OrdinaryObject {
     index: Option<HashMap<PropertyKey, u32>>,
     /// `[[NumberData]]` / `[[StringData]]`, initialized before allocation.
     primitive_data: Option<PrimitiveData>,
+    /// `[[ErrorData]]`: independent of properties and prototype changes.
+    error_data: bool,
 }
 
 impl OrdinaryObject {
@@ -247,6 +249,7 @@ impl OrdinaryObject {
             entries: Vec::new(),
             index: None,
             primitive_data: None,
+            error_data: false,
         }
     }
 
@@ -290,6 +293,15 @@ impl OrdinaryObject {
     /// A wrapper's internal data, independent of its JavaScript prototype.
     pub(crate) fn primitive_data(&self) -> Option<&PrimitiveData> {
         self.primitive_data.as_ref()
+    }
+
+    pub(crate) fn with_error_data(mut self) -> Self {
+        self.error_data = true;
+        self
+    }
+
+    pub(crate) fn is_error(&self) -> bool {
+        self.error_data
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.

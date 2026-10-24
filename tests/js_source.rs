@@ -11439,3 +11439,164 @@ fn array_join_yields_and_collects() {
         );
     }
 }
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-228).
+#[test]
+fn error_constructor() {
+    for src in [
+        "Error('hello').message === 'hello'",
+        "new Error('a').message === 'a'",
+        "Error().message === '' && Object.getOwnPropertyDescriptor(Error(undefined), 'message') === undefined",
+        "Error(12).message === '12'",
+        "new Error('m', {cause: 0}).cause === 0",
+        "new Error('m', {}).cause === undefined && new Error('m', 5).cause === undefined",
+        "Error.prototype.name === 'Error' && Error.prototype.message === '' && Error.prototype.constructor === Error",
+        "Error.length === 1 && Error.name === 'Error' && Error.prototype.toString.length === 0 && Error.prototype.toString.name === 'toString'",
+        "Object.getPrototypeOf(Error('x')) === Error.prototype && Error('x') instanceof Error",
+        "Error('x').toString() === 'Error: x' && Error().toString() === 'Error' && '' + Error('x') === 'Error: x'",
+        "Error.prototype.toString.call({name: '', message: 'm'}) === 'm'",
+        "Error.prototype.toString.call({}) === 'Error' && Error.prototype.toString.call({name: '', message: ''}) === ''",
+        "Error.prototype.toString.call({name: 'N', message: ''}) === 'N'",
+        "let caught = false; try { Error.prototype.toString.call(1); } catch (e) { caught = true; } caught",
+        "let c; try { throw new Error('getter'); } catch (e) { c = e; } c.message === 'getter' && c instanceof Error",
+        "let e = Error('m', {cause: undefined}); let m = Object.getOwnPropertyDescriptor(e, 'message'); let c = Object.getOwnPropertyDescriptor(e, 'cause'); m.value === 'm' && m.writable && m.configurable && !m.enumerable && c.value === undefined && c.writable && c.configurable && !c.enumerable && Object.keys(e).length === 0",
+        "let p = {cause: 42}; Error('m', Object.create(p)).cause === 42",
+        "let log = ''; let options = {get cause() { log += 'c'; return this.n; }, n: 9}; let e = Error({toString() { log += 'm'; return 'text'; }}, options); log === 'mc' && e.message === 'text' && e.cause === 9",
+        "let log = ''; let o = {get name() { log += 'n'; return {toString() { log += 'N'; return 'custom'; }}; }, get message() { log += 'm'; return {toString() { log += 'M'; return 'text'; }}; }}; Error.prototype.toString.call(o) === 'custom: text' && log === 'nNmM'",
+        "let caught = false; try { Error({toString() { throw 42; }}, {get cause() { throw 43; }}); } catch (e) { caught = e === 42; } caught",
+        "let caught = false; try { Error('m', {get cause() { throw 43; }}); } catch (e) { caught = e === 43; } caught",
+        "let caught = false; try { Error.prototype.toString.call({get name() { throw 44; }, get message() { throw 45; }}); } catch (e) { caught = e === 44; } caught",
+        "let E = Error.bind(null, 'bound'); new E().message === 'bound' && new E() instanceof Error",
+        "let e = Error('m', {cause: 1}); e.message = 'n'; e.cause = 2; delete e.message; e.message === '' && e.cause === 2",
+        "globalThis.Error === Error && Object.getPrototypeOf(Error.prototype) === Object.prototype",
+        "Object.prototype.toString.call(Error()) === '[object Error]' && Object.prototype.toString.call(Object.create(Error.prototype)) === '[object Object]' && Object.prototype.toString.call(Error.prototype) === '[object Object]'",
+        "let e = Error('x'); Object.setPrototypeOf(e, null); Object.prototype.toString.call(e) === '[object Error]'",
+        "Error.call(null, 'x').message === 'x' && Error.apply(null, ['y']).message === 'y' && Reflect.apply(Error, null, ['z']).message === 'z'",
+        "__rt.reduce(Error, 'first', __rt.vector(1, 2)).message === 'Error: first'",
+        "let caught = false; try { Error.prototype.toString.call({name: {toString() { throw 42; }}, get message() { throw 43; }}); } catch (e) { caught = e === 42; } caught",
+        "let caught = false; try { Error.prototype.toString.call({name: 'N', message: {toString() { throw 43; }}}); } catch (e) { caught = e === 43; } caught",
+        "let caught = false; try { Error.prototype.message = 'changed'; } catch (e) { caught = true; } caught && Error().message === ''",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("Error.prototype.toString.call(1)").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixture, not light-cljs output: each callback can suspend,
+/// yield, be collected and move threads, including nested ToString calls.
+#[test]
+fn error_callbacks_wait_yield_collect_and_migrate() {
+    let rt = Runtime::new();
+    let src = r"
+        let log = '';
+        let e = new Error({get toString() {
+            log += 'g'; __rt.need(1, 1);
+            return function() { log += 's'; __rt.need(2, 1); return 'text'; };
+        }}, Object.create({get cause() {
+            log += 'c'; __rt.need(3, 1); return {n: 42};
+        }}));
+        let message = e.message;
+        let cause = e.cause;
+        Object.defineProperty(e, 'name', {get() {
+            log += 'n'; __rt.need(4, 1);
+            return {toString() { log += 'N'; __rt.need(5, 1); return 'Custom'; }};
+        }});
+        Object.defineProperty(e, 'message', {get() {
+            log += 'm'; __rt.need(6, 1);
+            return {toString() { log += 'M'; __rt.need(7, 1); return message; }};
+        }});
+        e.toString() === 'Custom: text' && log === 'gscnNmM'
+            && cause.n === 42 && e instanceof Error
+    ";
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut waited = 0;
+    let mut complete = false;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 7);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waited, 7);
+}
+
+/// Synthetic fixture, not light-cljs output: Error instances retain the
+/// ordinary-object publication policy, including dependency failures.
+#[test]
+fn error_objects_are_task_owned_and_cannot_be_published_as_failures() {
+    use clj_quickjs::{CompleteError, PublishError};
+    let rt = Runtime::new();
+    let owner = rt
+        .spawn(&exe("Error('owned', {cause: {n: 42}})"), &[])
+        .unwrap();
+    let RunOutcome::Complete(error) = owner.run().unwrap() else {
+        panic!("expected Error");
+    };
+    assert!(matches!(
+        rt.publish(&error),
+        Err(PublishError::NotShareable { .. })
+    ));
+    let consumer = rt.spawn(&exe("__rt.need(228, 1)"), &[]).unwrap();
+    assert!(matches!(consumer.run().unwrap(), RunOutcome::Waiting(_)));
+    let request = consumer.take_producer_requests().pop().unwrap();
+    assert!(matches!(
+        rt.complete(
+            request.key(),
+            request.producer(),
+            Completion::Failed(&error)
+        ),
+        Err(CompleteError::NotShareable(
+            PublishError::NotShareable { .. }
+        ))
+    ));
+    // Rejection leaves the cell pending, so a permitted failure can still
+    // complete it and wake the original waiter.
+    let safe = rt.root(Primitive::Number(9.0));
+    let wakes = rt
+        .complete(request.key(), request.producer(), Completion::Failed(&safe))
+        .unwrap();
+    assert_eq!(wakes.into_runnable().len(), 1);
+    let reader = compile_function("function reader(e) { return e.message; }").unwrap();
+    let intruder = rt.spawn(&reader, &[&error]).unwrap();
+    assert!(matches!(intruder.run().unwrap(), RunOutcome::Failed(e)
+        if matches!(e.kind(), VmErrorKind::ForeignObject { .. })));
+    let weak = error.downgrade();
+    rt.collect().unwrap();
+    assert!(weak.upgrade().is_ok());
+    drop((error, owner, intruder));
+    rt.collect().unwrap();
+    assert!(weak.upgrade().is_err());
+}

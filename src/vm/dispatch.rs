@@ -571,7 +571,7 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
-        Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String))) => {
+        Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String | Builtin::Error))) => {
             if super::native::start_builtin(
                 heap,
                 state,
@@ -816,7 +816,9 @@ fn thrown_error(state: &VmState, heap: &Heap, v: &Value, pc: usize) -> VmError {
     match error_object(heap, v) {
         Some((original, _)) => original,
         None => {
-            let message = format!("uncaught exception: {}", describe_thrown(v));
+            let description = super::native::error::diagnostic(heap, state.diag.task, v)
+                .unwrap_or_else(|| describe_thrown(v));
+            let message = format!("uncaught exception: {description}");
             state.failure(VmErrorKind::Thrown, message, pc)
         }
     }

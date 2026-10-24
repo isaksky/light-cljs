@@ -234,6 +234,10 @@ pub(crate) enum Builtin {
 
     /// Generic resumable array-like joining (clj-quickjs-156).
     ArrayPrototypeJoin,
+
+    /// Error construction and generic stringification (clj-quickjs-228).
+    Error,
+    ErrorPrototypeToString,
 }
 
 impl Builtin {
@@ -296,6 +300,8 @@ impl Builtin {
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
+            Builtin::Error => "Error",
+            Builtin::ErrorPrototypeToString => "toString",
         }
     }
 
@@ -352,6 +358,8 @@ impl Builtin {
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
+            Builtin::Error => 1,
+            Builtin::ErrorPrototypeToString => 0,
         }
     }
 }
@@ -381,6 +389,9 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::Error | Builtin::ErrorPrototypeToString => {
+            Err(Fault::Internal("Error built-ins require a resumable frame"))
+        }
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
             v @ Value::Object(_) => Ok(v),
@@ -980,6 +991,7 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
                         Ok("Object")
                     }
                 }
+                HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",

@@ -419,6 +419,10 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **Error instances** (clj-quickjs-228): `Error` is callable and constructible,
+  with resumable message conversion, inherited/accessor `options.cause`, and
+  generic `Error.prototype.toString`. Engine-raised errors remain opaque
+  (clj-quickjs-230); NativeError constructors and stacks remain deferred.
 - **Number prefix parsing** (clj-quickjs-148): global `parseInt` and
   `parseFloat`, and their identical `Number` aliases, execute with resumable
   object coercion and budgeted scans. Their global bindings are writable
@@ -858,9 +862,9 @@ Executed, with JavaScript semantics:
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
 | `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: the compiler emits a run-time global lookup allowing a missing property; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
-| `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey uses hint string for an object key, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (deleting initial `length`/`name` creates the record first, clj-quickjs-101); an error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
-| `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, which inherits no `prototype` from `Function.prototype` or `Object.prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function's chain runs through `Function.prototype` (clj-quickjs-102: `F instanceof Function && F instanceof Object`); an error object on the left (a caught error) fails with `UnsupportedOperand` until `Error.prototype` (clj-quickjs-230) exists; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) is not consulted. Bound functions delegate to their targets; a `prototype` accessor runs resumably (clj-quickjs-120) |
-| `k in o` (clj-quickjs-74) | evaluates `k`, then `o`, then the `in` opcode (`0x61`) at the operator token (ECMAScript `in` and HasProperty; QuickJS `js_operator_in`, `OP_in`): an `o` that is not an object is a catchable TypeError "cannot use 'in' operator to search for 'k' in o" (`'x' in 1`, `'x' in null`, `'length' in 'abc'`), checked before `k` is converted; then ToPropertyKey(`k`) as for `o[k]` (`1 in {1: 0}` and `'1' in {1: 0}` are the same key) and the result is whether `o` or an object on its prototype chain has the property, whatever its value (`'x' in {x: undefined}` and `'toString' in {}` are true; `Object.create(null)` has nothing inherited; `'__proto__' in {}` is true through `Object.prototype`'s accessor, which is not run). Arrays have their elements (not holes) and `length`; a function has its own properties, its lazy `prototype` (reported without being created, so the function stays publishable) and those of `Function.prototype` (`'call' in f`, clj-quickjs-102) and `Object.prototype`. Persistent vectors, maps, occurrences, builders, atoms and cells have no JavaScript properties: `false`. Relational precedence, left-associative. A name `Function.prototype` does not have yet (`'bind' in Object`, `'toString' in f`, clj-quickjs-103 and later), and an error object's properties (clj-quickjs-230) fail with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist. Object key conversion may call JavaScript |
+| `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey uses hint string for an object key, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (deleting initial `length`/`name` creates the record first, clj-quickjs-101); an engine-raised error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
+| `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, which inherits no `prototype` from `Function.prototype` or `Object.prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function's chain runs through `Function.prototype` (clj-quickjs-102: `F instanceof Function && F instanceof Object`); an engine-raised error object on the left fails with `UnsupportedOperand` (clj-quickjs-230); JavaScript-created Error instances support `instanceof Error`. `Symbol.hasInstance` (no symbols yet) is not consulted. Bound functions delegate to their targets; a `prototype` accessor runs resumably (clj-quickjs-120) |
+| `k in o` (clj-quickjs-74) | evaluates `k`, then `o`, then the `in` opcode (`0x61`) at the operator token (ECMAScript `in` and HasProperty; QuickJS `js_operator_in`, `OP_in`): an `o` that is not an object is a catchable TypeError "cannot use 'in' operator to search for 'k' in o" (`'x' in 1`, `'x' in null`, `'length' in 'abc'`), checked before `k` is converted; then ToPropertyKey(`k`) as for `o[k]` (`1 in {1: 0}` and `'1' in {1: 0}` are the same key) and the result is whether `o` or an object on its prototype chain has the property, whatever its value (`'x' in {x: undefined}` and `'toString' in {}` are true; `Object.create(null)` has nothing inherited; `'__proto__' in {}` is true through `Object.prototype`'s accessor, which is not run). Arrays have their elements (not holes) and `length`; a function has its own properties, its lazy `prototype` (reported without being created, so the function stays publishable) and those of `Function.prototype` (`'call' in f`, clj-quickjs-102) and `Object.prototype`. Persistent vectors, maps, occurrences, builders, atoms and cells have no JavaScript properties: `false`. Relational precedence, left-associative. A name `Function.prototype` does not have yet (`'bind' in Object`, `'toString' in f`, clj-quickjs-103 and later), and an engine-raised error object's properties (clj-quickjs-230) fail with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist. Object key conversion may call JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
@@ -1244,6 +1248,7 @@ try { f(); } catch (e) { throw e; } finally {}
 | Thrown | Value seen by `catch` | Reported if uncaught |
 |--------|-----------------------|----------------------|
 | `throw v` (any value) | `v` itself, by identity | `VmErrorKind::Thrown`, "uncaught exception: v", at the last `throw` of it |
+| `throw Error("boom")` or `throw new Error("boom")` (clj-quickjs-228) | the task-owned Error instance with ordinary properties | `VmErrorKind::Thrown`, "uncaught exception: Error: boom", at the last `throw`; name/message are read from data properties only, with no user code; accessors or object-valued fields fall back to "an object" |
 | ReferenceError, TypeError, RangeError (invalid array length), StackOverflow above | a fresh immutable error object (no properties yet) | the original error, at the failing instruction, also when the object is rethrown |
 | a failed or cancelled cell read by `__rt.need` (clj-quickjs-27) | a fresh immutable error object whose cause is the producer's published error value (`undefined` for a cancelled cell) | `DependencyFailed(key)` / `DependencyCancelled(key)` at the `need`, also when rethrown |
 | any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory) | not catchable: the task fails at once without running catch or finally blocks | that failure |
@@ -1270,11 +1275,13 @@ Gaps specific to execution:
   (clj-quickjs-143) and `toString`/`valueOf` (clj-quickjs-73) execute;
   additional string methods remain deferred. Untagged template literals execute (clj-quickjs-57);
   tagged templates and `String.raw` are clj-quickjs-58.
-- **Error objects are opaque.** A caught ReferenceError, TypeError, RangeError or
+- **Engine-raised error objects are opaque.** A caught ReferenceError, TypeError, RangeError or
   StackOverflow is an object without properties (`e.message`, `e.name`,
-  and the `Error` constructors do not exist yet, and `e instanceof C`
+  and `e instanceof C`
   fails with `UnsupportedOperand`); it can be compared, passed around and
-  rethrown.
+  rethrown. JavaScript-created `Error` instances have ordinary properties;
+  NativeError constructors (clj-quickjs-229), engine errors as instances
+  (clj-quickjs-230) and stacks (clj-quickjs-59) remain deferred.
 - **Conversion gaps.** Symbols and `Symbol.toPrimitive` (clj-quickjs-127
   and -128) remain deferred.
   Number radix formatting supports every radix 2..36, including fractions
@@ -2324,7 +2331,7 @@ hint, validating each code point before converting the next argument.
 Callbacks may yield, wait, be collected around and migrate without replay.
 String and Number wrappers use their observable conversion methods too.
 
-Explicit gaps: error constructors and error-object properties remain deferred;
+Explicit gaps: NativeError constructors and engine-raised error properties remain deferred;
 the thrown values are the existing catchable TypeError and RangeError objects.
 
 Bulk primitive-string coercion in the static constructors currently runs
@@ -2357,7 +2364,7 @@ new String('abc').indexOf({toString: () => 'b'}, {valueOf: () => 1}) === 1;
 
 Explicit gaps: other string search methods remain deferred. Bulk primitive
 coercion may delay yielding (clj-quickjs-265); substring scanning itself is
-budgeted. Error constructors/properties remain deferred as documented above.
+budgeted. NativeError constructors and engine-raised error properties remain deferred.
 
 ### String extraction and combination (clj-quickjs-145)
 
@@ -2406,7 +2413,7 @@ The constants' descriptors have all three flags false; strict writes throw
 catchable TypeError.
 
 The two globals are task-owned global-object properties (clj-quickjs-104),
-and lexical declarations shadow them. Error constructors remain
+and lexical declarations shadow them. NativeError constructors remain
 deferred; tests assert caught failures and the runtime's TypeError kind.
 `Number.parseInt` and `Number.parseFloat` belong to the parsing pellet.
 
@@ -2456,7 +2463,7 @@ Explicit gaps: Math constants and other Math methods remain deferred to
 their pellets. Global-object integration remains clj-quickjs-104; lexical
 bindings shadow `Math`. Like every realm intrinsic, Math is shared and
 immutable despite its methods' writable/configurable descriptor flags.
-`Math()` and `new Math()` throw catchable TypeErrors; error constructors
+`Math()` and `new Math()` throw catchable TypeErrors; NativeError constructors
 remain deferred, so tests verify caught failures and the runtime error kind.
 
 ### Global object bindings (clj-quickjs-104)
@@ -2496,3 +2503,48 @@ lexical capture follows the usual value/cell publication rule. A script
 arrow capturing `this` captures the task-owned object and cannot publish.
 There is one script per task. Indirect eval (-106) and sloppy non-object
 receiver substitution are still deferred.
+
+### Error constructor and stringification (clj-quickjs-228)
+
+`Error(message, options)` and `new Error(message, options)` create distinct
+ordinary task-owned objects with an internal error marker and
+`Error.prototype` as prototype. Bound calls and bound construction use the
+same intrinsic prototype; subclass syntax and `Reflect.construct` are not
+supported. The global binding is a writable task-owned global-object property.
+`Error.name` is `"Error"`, its length is 1, and
+`Error.prototype.constructor === Error`. The prototype inherits from
+`Object.prototype`, has name `"Error"` and message `""`, and is shared and
+immutable like the other realm intrinsics.
+
+A non-undefined message undergoes resumable ToString, then becomes an own
+writable, configurable, non-enumerable data property. An omitted or undefined
+message creates no own property. When options is an object, HasProperty
+checks for `cause` (including inherited properties); if present, its value
+is read, possibly through a resumable getter, and becomes an own data
+property with the same flags. Primitive options are ignored.
+
+`Error.prototype.toString` is generic for object receivers and throws a
+catchable TypeError for primitives. It reads and converts `name` before
+reading and converting `message`; undefined defaults to `"Error"` and `""`
+respectively. It returns the nonempty string if either is empty, otherwise
+`name + ": " + message`. All getters and conversions use task-owned native
+continuations and ordinary VM calls across yields, waits, GC and migration.
+`Object.prototype.toString.call(Error())` returns `"[object Error]"` using
+the internal marker, even after a prototype change; inheriting from
+`Error.prototype` alone does not confer the marker.
+
+Error instances follow ordinary-object publication rules (`docs/design.md`
+§4): `Runtime::publish` rejects them, and publishing one as a dependency
+failure via `Completion::Failed` returns `CompleteError::NotShareable`,
+leaving the cell pending and its waiters registered. Engine-raised errors
+retain their existing immutable native representation.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let error = new Error('text', {cause: 0});
+error.message === 'text' && error.cause === 0 && error instanceof Error;
+Error(undefined).message === '' && Error(12).message === '12';
+Error.prototype.toString.call({name: '', message: 'm'}) === 'm';
+try { throw Error('getter'); } catch (caught) { caught.message === 'getter'; }
+```

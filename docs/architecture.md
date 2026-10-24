@@ -3952,3 +3952,24 @@ Semantic references: `research/quickjs/quickjs.c`, `OP_put_var`,
 `OP_delete_var`, and `JS_DeleteGlobalVar`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No upstream code or tests
 are copied into this pellet.
+
+### Error instances (clj-quickjs-228)
+
+The realm appends `Error`, `Error.prototype` and its `toString` method to
+its immutable intrinsic table. Error instances use the ordinary object's
+internal `error_data` marker, independent of their mutable properties and
+prototype. No new heap kind or publication category is introduced: instance
+properties and prototype edges are traced by the ordinary object tracer,
+and instances remain task-owned, rejected as dependency failure values.
+`src/vm/native/error.rs` retains the partially constructed instance, options,
+receiver and converted name across ordinary VM callback frames. ToString
+uses the existing conversion continuation with string hint; cause uses
+HasProperty followed by a resumable property read. Uncaught diagnostics
+inspect data properties without invoking getters or object conversions.
+Native engine error payloads remain separate until clj-quickjs-230.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_error_constructor`,
+`js_error_toString`, `js_error_proto_funcs` and `JS_NewCConstructor` were
+consulted for semantics. Implementation and synthetic source tests were
+written fresh; no QuickJS source or test text was copied.

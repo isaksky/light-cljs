@@ -225,6 +225,8 @@ use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value};
 use crate::vm::{descriptor, property, prototype};
 
+pub(crate) mod error;
+
 /// What a native frame is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Awaiting {
@@ -340,6 +342,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Error(error::ErrorState),
     Bind {
         target: Value,
         args: Vec<Value>,
@@ -595,6 +598,7 @@ impl Trace for NativeFrame {
                 join.separator.trace(visit);
             }
             NativeState::ArrayToString { this, .. } => this.trace(visit),
+            NativeState::Error(error) => error.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
                     v.trace(visit);
@@ -796,6 +800,16 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::Error || (which == Builtin::ErrorPrototypeToString && !construct) {
+        let native = if which == Builtin::Error {
+            error::ErrorState::constructor(heap, state.diag.task, args)?
+        } else {
+            error::ErrorState::to_string(this)?
+        };
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Error(native))?;
+        return Ok(true);
+    }
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
@@ -1492,6 +1506,7 @@ impl NativeState {
                     Err(error) => Err(error),
                 }
             }
+            NativeState::Error(error) => error.step(heap, task, input),
             NativeState::Bind {
                 target,
                 args,
@@ -2099,6 +2114,7 @@ impl NativeState {
         match (self, failure) {
             (
                 NativeState::Reduce { .. }
+                | NativeState::Error(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
                 | NativeState::Instanceof { .. }

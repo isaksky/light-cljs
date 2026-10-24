@@ -848,3 +848,35 @@ fn a_jump_through_finally_survives_yields_migration_and_collection() {
     assert_eq!(log.0, expected_log);
     assert!(yields > 50, "only {yields} yields");
 }
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-228).
+#[test]
+fn uncaught_error_objects_report_name_and_message() {
+    for (src, text) in [
+        ("throw Error('boom')", "Error: boom"),
+        (
+            "let e = Error('boom'); e.name = 'Custom'; throw e",
+            "Custom: boom",
+        ),
+        ("let e = Error('boom'); e.name = ''; throw e", "boom"),
+        ("throw Error()", "Error"),
+        (
+            "let e = Error('boom'); Object.defineProperty(e, 'name', {get() { throw 99; }}); throw e",
+            "an object",
+        ),
+        (
+            "let e = Error('boom'); e.message = {toString() { throw 99; }}; throw e",
+            "an object",
+        ),
+    ] {
+        let (e, _) = failure(src);
+        assert_eq!(e.kind(), VmErrorKind::Thrown, "{src}");
+        assert_eq!(e.message(), format!("uncaught exception: {text}"), "{src}");
+        let at = e.diagnostic().source.unwrap();
+        assert_eq!(at.line, 1);
+        assert_eq!(
+            at.column as usize,
+            src.rfind("throw e").or_else(|| src.find("throw")).unwrap() + 1
+        );
+    }
+}

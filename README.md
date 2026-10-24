@@ -859,8 +859,9 @@ Deferred:
   catchable and skip catch and finally blocks. Failed or cancelled
   dependencies became catchable, and cancellation runs finally blocks, in
   clj-quickjs-27 (below).
-- Error objects have no properties (`message`, `name`), no `Error`
-  constructors or `instanceof`. (Strings can be thrown since clj-quickjs-65.)
+- Engine-raised errors still have no JavaScript properties or `instanceof`
+  support (clj-quickjs-230). JavaScript-created Error instances are supported
+  (clj-quickjs-228, below); NativeError constructors remain deferred.
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
@@ -1017,7 +1018,7 @@ Supported:
 
 Deferred:
 
-- Error objects still have no properties (`message`, `cause` are not
+- Engine-raised error objects still have no properties (`message`, `cause` are not
   readable from JavaScript); a cancellation cleanup that ends early reports
   only `Cancelled`, not why.
 
@@ -2078,7 +2079,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 
 Deferred:
 
-- Error objects (clj-quickjs-230) fail with `UnsupportedOperand`.
+- Engine-raised error objects (clj-quickjs-230) fail with `UnsupportedOperand`.
   Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`.
 
@@ -2095,11 +2096,9 @@ Supported (`cargo test --test js_source instanceof_operator`,
 
 Deferred:
 
-- An error object as `v` fails with `UnsupportedOperand` until `Error.prototype`
-  (clj-quickjs-230) exists (functions inherit from `Function.prototype` since
-  clj-quickjs-102: `f instanceof Function`); `String` and the Error constructors are not globals yet
-  (clj-quickjs-72, the upstream corpus pellets). `Symbol.hasInstance` (symbols) and bound
-  functions (clj-quickjs-103) are not consulted.
+- An engine-raised error as `v` fails with `UnsupportedOperand` until
+  clj-quickjs-230. JavaScript-created errors support `instanceof Error`.
+  `Symbol.hasInstance` remains deferred.
 
 ### The `delete` operator (clj-quickjs-124)
 
@@ -2557,3 +2556,20 @@ Supported (`cargo test --test js_source sloppy_implicit_globals_and_delete`,
   remains an early `Invalid` SyntaxError.
 - Property writes use the existing resumable accessor path. Sloppy `this`
   substitution and eval remain deferred.
+
+### Error constructor (clj-quickjs-228)
+
+`Error(message, options)` and `new Error(message, options)` create task-owned
+ordinary Error instances. Message conversion and inherited/accessor cause
+reads can yield, wait, survive GC and migrate. Message and cause are own
+writable, configurable, non-enumerable properties when supplied; the
+prototype supplies name `"Error"`, message `""`, constructor and generic
+`toString`. `Error('text').toString()` and `'' + Error('text')` give
+`"Error: text"`. Uncaught instances report their data-property name/message
+at the throw without running user code. Publishing an instance, including
+as a dependency failure, is rejected as task-owned mutation.
+
+Tests: `cargo test --test js_source error_` and
+`cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
+NativeError constructors, engine-raised errors as instances, stacks,
+subclasses and `Reflect.construct` remain deferred.

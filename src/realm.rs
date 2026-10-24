@@ -52,6 +52,7 @@
 //! | `Reflect.apply` | built-in function | `length` (3), `name` |
 //! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
 //! | `Math` (clj-quickjs-152) | ordinary object, prototype `Object.prototype` | `floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot` (length 2); each function has `name` |
+//! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //!
 //! Every built-in function inherits from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -110,7 +111,7 @@
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect`
-//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, and `Array` (clj-quickjs-155). They initialize writable
+//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, `Array` (clj-quickjs-155) and `Error` (clj-quickjs-228). They initialize writable
 //! properties of each task's mutable global object (clj-quickjs-104,
 //! [`new_global_object`]). Source references always look up those properties;
 //! `get_builtin_global` remains an instruction for hand-assembled code.
@@ -154,11 +155,12 @@ pub(crate) enum Global {
     ParseFloat = 9,
     /// The ordinary Math namespace (clj-quickjs-152).
     Math = 10,
+    Error = 11,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 11] = [
+    const ALL: [Global; 12] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -170,6 +172,7 @@ impl Global {
         Global::ParseInt,
         Global::ParseFloat,
         Global::Math,
+        Global::Error,
     ];
 
     /// The JavaScript name.
@@ -187,6 +190,7 @@ impl Global {
             Global::ParseInt => "parseInt",
             Global::ParseFloat => "parseFloat",
             Global::Math => "Math",
+            Global::Error => "Error",
         }
     }
 
@@ -245,6 +249,8 @@ pub(crate) struct Intrinsics {
     parse_float: ObjectId,
     /// Ordinary, non-callable Math namespace.
     math: ObjectId,
+    pub(crate) error_prototype: ObjectId,
+    error: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -317,6 +323,7 @@ impl Intrinsics {
             Global::ParseInt => Value::Object(self.parse_int),
             Global::ParseFloat => Value::Object(self.parse_float),
             Global::Math => Value::Object(self.math),
+            Global::Error => Value::Object(self.error),
         }
     }
 }
@@ -647,6 +654,30 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let method = b.function(which, &[])?;
         b.add(math, which.name(), method, PropertyFlags::METHOD)?;
     }
+    let error_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(error_prototype);
+    let error = b.function(
+        Builtin::Error,
+        &[("prototype", error_prototype, PropertyFlags::FIXED)],
+    )?;
+    let error_to_string = b.function(Builtin::ErrorPrototypeToString, &[])?;
+    b.add(error_prototype, "constructor", error, PropertyFlags::METHOD)?;
+    b.add(
+        error_prototype,
+        "toString",
+        error_to_string,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, text) in [("name", "Error"), ("message", "")] {
+        b.add_value(
+            error_prototype,
+            name,
+            Value::String(JsString::from(text)),
+            PropertyFlags::METHOD,
+        )?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -689,6 +720,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         parse_int,
         parse_float,
         math,
+        error_prototype,
+        error,
     })
 }
 
@@ -993,7 +1026,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 65);
+        assert_eq!(first.all.len(), 68);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1022,7 +1055,9 @@ mod tests {
         assert_eq!(Global::from_u16(9), Some(Global::ParseFloat));
         assert_eq!(Global::from_name("Math"), Some(Global::Math));
         assert_eq!(Global::from_u16(10), Some(Global::Math));
-        assert_eq!(Global::from_u16(11), None);
+        assert_eq!(Global::from_name("Error"), Some(Global::Error));
+        assert_eq!(Global::from_u16(11), Some(Global::Error));
+        assert_eq!(Global::from_u16(12), None);
     }
 
     /// Every built-in function inherits from `Function.prototype`, which
