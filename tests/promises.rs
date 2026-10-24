@@ -625,3 +625,111 @@ fn promise_inherited_setters_follow_the_prototype_chain() {
         }
     }
 }
+
+#[test]
+fn promise_executor_rejects_first_and_ignores_later_completions() {
+    let (result, effects) = run(r#"
+        new Promise((resolve, reject) => {
+            reject(7); reject(8); resolve(9); throw 10;
+        }).then(
+            value => __rt.effect(0, 'fulfilled'),
+            reason => __rt.effect(0, reason)
+        );
+        __rt.effect(0, 0);
+        42;
+    "#);
+    assert_eq!(result, ValueView::Number(42.));
+    assert_eq!(effects, [0., 7.].map(Primitive::Number));
+}
+
+#[test]
+fn promise_runtime_errors_reject() {
+    for expression in [
+        "new Promise(() => null.x)",
+        "Promise.resolve().then(() => null.x)",
+        "Promise.resolve({get then() { return null.x; }})",
+    ] {
+        let (result, effects) = run(&format!(
+            r#"
+                let caught = 0;
+                {expression}.then(() => __rt.effect(0, 'fulfilled')).catch(error => {{
+                    __rt.effect(0, error instanceof TypeError);
+                    caught++;
+                }}).then(() => __rt.effect(0, caught));
+                __rt.effect(0, 'body');
+                42;
+            "#
+        ));
+        assert_eq!(result, ValueView::Number(42.), "{expression}");
+        assert_eq!(
+            effects,
+            [
+                Primitive::String("body".into()),
+                Primitive::Bool(true),
+                Primitive::Number(1.),
+            ],
+            "{expression}",
+        );
+    }
+}
+
+#[test]
+fn promise_dependency_failure_rejects_after_resume() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+            Promise.resolve().then(() => {
+                __rt.effect(0, 1);
+                __rt.need(246, 1);
+                __rt.effect(0, 'unreachable');
+            }).catch(error => {
+                __rt.effect(0, error instanceof Error && error.cause === 7);
+            }).then(() => __rt.effect(0, 4));
+            Promise.resolve().then(() => __rt.effect(0, 2));
+            __rt.effect(0, 0);
+            return 42;
+        }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.0, [0., 1.].map(Primitive::Number));
+    rt.collect().unwrap();
+    let request = task.take_producer_requests().pop().unwrap();
+    let failure = rt.root(Primitive::Number(7.));
+    let wakes = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Failed(&failure),
+        )
+        .unwrap();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let resumed = task.clone();
+    let thread = std::thread::spawn(move || {
+        let outcome = resumed.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        tx.send((outcome, host)).unwrap();
+    });
+    let (outcome, host) = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    thread.join().unwrap();
+    let RunOutcome::Complete(value) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(value.view(), ValueView::Number(42.));
+    assert_eq!(
+        host.0,
+        [
+            Primitive::Number(0.),
+            Primitive::Number(1.),
+            Primitive::Number(2.),
+            Primitive::Bool(true),
+            Primitive::Number(4.),
+        ],
+    );
+    assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+}
