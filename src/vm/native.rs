@@ -1249,15 +1249,7 @@ pub(crate) fn start_builtin(
             | Builtin::PromiseReaction(_)
             | Builtin::PromiseResolveThenable(_)
     ) {
-        let native = super::promise::start(
-            heap,
-            state.diag.task,
-            &state.jobs,
-            which,
-            this,
-            args,
-            construct,
-        )?;
+        let native = super::promise::start(heap, state, which, this, args, construct)?;
         state.truncate_operands(state.stack_len() - popped)?;
         if let Some(native) = native {
             push_native(state, NativeState::Promise(native))?;

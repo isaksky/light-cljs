@@ -1148,3 +1148,17 @@ fn async_cancellation_unwinds_attached_finally_and_discards_resumes() {
     assert!(!weak.is_live());
     assert_eq!(rt.heap_usage().objects.async_state, 0);
 }
+
+#[test]
+fn async_settlement_overflow_rejects_instead_of_stalling() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 2,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let task=rt.spawn(&compile_script("async-overflow", "Promise.resolve().then(async () => 1).then(x => __rt.effect(0,x), e => __rt.effect(0,e instanceof Error ? 99 : 98)); 42;").unwrap(),&[]).unwrap();
+    let mut host = Effects::default();
+    let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+    assert!(matches!(out,RunOutcome::Complete(v) if v.view()==ValueView::Number(42.)));
+    assert_eq!(host.0, [Primitive::Number(99.)]);
+    assert!(task.suspended_async_activations().is_empty());
+}

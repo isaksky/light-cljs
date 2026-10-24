@@ -159,11 +159,28 @@ fn resolving_functions(heap: &Heap, promise: ObjectId) -> Result<(ObjectId, Valu
     Ok((guard, resolve, reject))
 }
 fn claim(heap: &Heap, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    claim_with_capacity(heap, id, true)
+}
+
+fn claim_with_capacity(
+    heap: &Heap,
+    id: ObjectId,
+    capacity: bool,
+) -> Result<Option<ObjectId>, Fault> {
     heap.with_object_mut(id, |o| match o {
         HeapObject::PromiseResolving(p) => {
-            let first = !p.resolved;
+            if p.resolved {
+                return Ok(None);
+            }
+            // Check before the first-call guard is consumed. Native entry
+            // cannot change between here and push_native on this task.
+            if !capacity {
+                return Err(Fault::StackOverflow(
+                    "maximum native call depth exceeded".into(),
+                ));
+            }
             p.resolved = true;
-            Ok(first.then_some(p.promise))
+            Ok(Some(p.promise))
         }
         _ => Err(Fault::Internal("promise changed kind")),
     })
@@ -699,13 +716,15 @@ impl PromiseState {
 
 pub(crate) fn start(
     heap: &Heap,
-    task: TaskId,
-    inbox: &Weak<JobInbox>,
+    vm: &super::frames::VmState,
     which: Builtin,
     this: &Value,
     args: &[Value],
     construct: bool,
 ) -> Result<Option<PromiseState>, Fault> {
+    let task = vm.diag.task;
+    let inbox = &vm.jobs;
+    let native_capacity = vm.natives.len() < vm.forward_limits(vm.stack_len()).1;
     let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
     Ok(Some(match which {
         Builtin::PromiseResolve if !construct => {
@@ -748,7 +767,7 @@ pub(crate) fn start(
         }
         Builtin::Promise => return Err(Fault::TypeError("Promise requires new".into())),
         Builtin::PromiseResolver(guard, reject) if !construct => {
-            let Some(promise) = claim(heap, guard)? else {
+            let Some(promise) = claim_with_capacity(heap, guard, reject || native_capacity)? else {
                 return Ok(None);
             };
             if reject {

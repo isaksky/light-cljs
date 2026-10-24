@@ -31,6 +31,7 @@ pub(crate) struct Boundary {
     pub(crate) id: ObjectId,
     pub(crate) failed: Option<Value>,
     settling: bool,
+    rejecting: bool,
     initial: bool,
 }
 impl Trace for Boundary {
@@ -52,18 +53,28 @@ impl Boundary {
                 _ => unreachable!(),
             })
             .ok_or(Fault::Internal("async activation reclaimed"))?;
+        if let Some(value) = self.failed.take() {
+            // Resolver entry itself can fail (e.g. the native-frame limit).
+            // Reject the still-unclaimed capability rather than silently
+            // returning a pending promise. A failed reject must propagate.
+            if self.rejecting {
+                return Err(Fault::Thrown(value));
+            }
+            self.settling = true;
+            self.rejecting = true;
+            return Ok(Action::Call {
+                callee: reject,
+                this: Value::Undefined,
+                args: vec![value],
+            });
+        }
         if !suspended && !self.settling {
-            let (callee, value) = if let Some(value) = self.failed.take() {
-                (reject, value)
-            } else {
-                let Input::CallResult(value) = input else {
-                    return Err(Fault::Internal("async completion missing"));
-                };
-                (resolve, value)
+            let Input::CallResult(value) = input else {
+                return Err(Fault::Internal("async completion missing"));
             };
             self.settling = true;
             return Ok(Action::Call {
-                callee,
+                callee: resolve,
                 this: Value::Undefined,
                 args: vec![value],
             });
@@ -94,6 +105,7 @@ pub(crate) fn start(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> {
             id,
             failed: None,
             settling: false,
+            rejecting: false,
             initial: true,
         },
     )?;
@@ -160,6 +172,7 @@ pub(crate) fn resume(
             id,
             failed: None,
             settling: false,
+            rejecting: false,
             initial: false,
         },
     )?;

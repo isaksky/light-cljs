@@ -21610,3 +21610,57 @@ fn async_functions_and_await() {
         assert!(task.suspended_async_activations().is_empty(), "{source}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn async_functions_are_not_constructors() {
+    assert_eq!(
+        eval(
+            r#"
+        let calls=0;
+        async function declaration() { calls++; }
+        let expression=async function() { calls++; };
+        let arrow=async () => { calls++; };
+        let method={async m() { calls++; }}.m;
+        let rejected=0;
+        for (let f of [declaration,expression,arrow,method]) {
+            if (f.prototype !== undefined || Object.getOwnPropertyDescriptor(f,'prototype') !== undefined) throw 'prototype';
+            try { new f(); } catch(e) { if (e instanceof TypeError) rejected++; }
+        }
+        rejected === 4 && calls === 0;
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let rt = Runtime::new();
+    let code =
+        compile_function("async function direct() { __rt.effect(0,0); return direct; }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut host = Log::default();
+    let RunOutcome::Complete(promise) = task.run_with(Budget::UNLIMITED, &mut host).unwrap() else {
+        panic!("complete")
+    };
+    assert_eq!(host.0, [Primitive::Number(0.)]);
+    let code=compile_function(r#"function inspect(p) {
+        p.then(f => {
+            let caught=false;
+            try { new f(); } catch(e) { caught=e instanceof TypeError; }
+            __rt.effect(0,caught && f.prototype === undefined && Object.getOwnPropertyDescriptor(f,'prototype') === undefined);
+        });
+    }"#).unwrap();
+    let inspector = rt.spawn(&code, &[&promise]).unwrap();
+    host.0.clear();
+    assert!(matches!(
+        inspector.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [Primitive::Bool(true)]);
+}

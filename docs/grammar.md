@@ -352,7 +352,8 @@ Notes on the grammar:
   When done becomes truthy, its value becomes the yield* expression result.
   Protocol getters/calls can wait, be collected around and migrate like any
   other VM call; non-iterables and non-object next results throw TypeError.
-  Async functions still fail compilation at the function's first token.
+  Async functions and await execute through promise jobs (clj-quickjs-248);
+  async generators still fail compilation at the function's first token.
 - The comma operator (clj-quickjs-61) appears only where the grammar has
   Expression: expression statements, parentheses, `if`/`while`/`do`-`while` tests,
   the parts of a `for` head (other than a declaration list) and
