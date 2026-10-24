@@ -3560,7 +3560,11 @@ configurable; eval lexical bindings and strict eval declarations stay local.
 Compile errors are catchable SyntaxErrors. Execution uses ordinary resumable
 VM frames, including waits and GC. Runtime compilation accepts up to 16,384
 UTF-16 units, with budgeted rope flattening and source preparation; larger
-input throws RangeError. Direct eval remains explicitly unsupported. Script
-lexical bindings are not dynamically exposed to eval, and raw unpaired
+input throws RangeError. Compilation uses a temporary 2 MiB stack so workers
+can execute eval on 64 KiB stacks. Indirect eval reads and writes script
+lexical bindings with const/TDZ checks; declaration conflicts are checked
+before creating global properties (clj-quickjs-278). Immutable const captures
+remain publishable under the existing rules. Direct eval remains explicitly
+unsupported. Raw unpaired
 surrogates in source require Unicode escapes. See `docs/grammar.md`, "Indirect
 eval", for limits. Verification: `cargo test --test js_source indirect_eval`.

@@ -380,6 +380,52 @@ fn indirect_eval() {
     assert_eq!(error.diagnostic().source.unwrap().line, 2);
 }
 
+/// Synthetic fixtures, not light-cljs output. The script declarative
+/// environment is distinct from global object properties and eval locals.
+#[test]
+fn indirect_eval_global_lexicals() {
+    for source in [
+        "let outer = 7; (0, eval)('outer') === 7 && Object.getOwnPropertyDescriptor(globalThis, 'outer') === undefined",
+        "let outer = 7; (0, eval)('outer = 9'); outer === 9",
+        "let outer = 7; globalThis.outer = 3; (0, eval)('outer += 2'); outer === 9 && globalThis.outer === 3",
+        "let outer = 7; let f = () => outer; (0, eval)('outer = 9'); f() === 9",
+        "let outer = 7; let f = (0, eval)('() => ++outer'); f() === 8 && outer === 8",
+        "const outer = 7; (0, eval)('outer') === 7",
+        "const outer = 7; let caught = false; try { (0, eval)('outer = 9'); } catch(e) { caught = e instanceof TypeError; } caught && outer === 7",
+        "let caught = false; try { (0, eval)('outer'); } catch(e) { caught = e instanceof ReferenceError; } const outer = 7; caught",
+        "let caught = false; try { (0, eval)('typeof outer'); } catch(e) { caught = e instanceof ReferenceError; } let outer; caught",
+        "let caught = false; try { (0, eval)('outer = 9'); } catch(e) { caught = e instanceof ReferenceError; } const outer = 7; caught",
+        "let outer = 7; (0, eval)('let outer = 9; outer') === 9 && outer === 7",
+        "let outer = 7; (0, eval)('\"use strict\"; var outer = 9; outer') === 9 && outer === 7",
+        "let outer = 7; function f() { let outer = 9; return (0, eval)('outer'); } f() === 7",
+        "let outer = 7; { let outer = 9; if ((0, eval)('outer') !== 7) throw 1; } outer === 7",
+        "let outer = 7; (0, eval)('delete outer') === false && outer === 7",
+        "let {a: outer} = {a: 7}; (0, eval)('outer = 9'); outer === 9",
+        "const [outer] = [7]; (0, eval)('outer') === 7",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for declaration in ["var outer", "function outer() {}"] {
+        let source = format!(
+            "let outer = 7; let caught = false; try {{ (0, eval)('var fresh; {declaration}'); }} catch(e) {{ caught = e instanceof SyntaxError; }} caught && outer === 7 && Object.getOwnPropertyDescriptor(globalThis, 'outer') === undefined && Object.getOwnPropertyDescriptor(globalThis, 'fresh') === undefined"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for prefix in ["", "globalThis.fresh = 17;"] {
+        let source = format!(
+            "{prefix} Object.defineProperty(globalThis, 'blocked', {{value: 7}}); let caught = false; try {{ (0, eval)('function fresh() {{}} function blocked() {{}}'); }} catch(e) {{ caught = e instanceof TypeError; }} caught && globalThis.fresh === {} && globalThis.blocked === 7",
+            if prefix.is_empty() { "undefined" } else { "17" }
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(
+        eval(
+            "let calls = 0; Object.defineProperty(globalThis, 'blocked', {get() { calls++; }, enumerable: true}); let caught = false; try { (0, eval)('var fresh; function blocked() {}'); } catch(e) { caught = e instanceof TypeError; } caught && calls === 0 && Object.getOwnPropertyDescriptor(globalThis, 'fresh') === undefined"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
 /// Synthetic fixtures, not light-cljs output. Compile callers and initialize
 /// intrinsics on the host, then compile eval source on 64 KiB VM workers.
 #[test]
@@ -449,6 +495,8 @@ fn indirect_eval_on_small_worker_stacks() {
 #[test]
 fn indirect_eval_waits_collects_and_migrates() {
     for source in [
+        r#"let outer = {value: 7}; let read = (0, eval)('() => outer'); __rt.need(106, 1); (0, eval)('outer = {value: 9}'); read().value === 9 && outer.value === 9"#,
+        r#"let outer = {value: 7}; (0, eval)('let f = () => outer; __rt.need(106, 1); outer = {value: 9}; f().value') === 9 && outer.value === 9"#,
         r#"(0, eval)('let x = 7; __rt.need(106, 1); () => x')() === 7"#,
         r#"let caught = false; try { globalThis.eval('try { __rt.need(106, 1); throw 17; } finally { var finished = true; }'); } catch(e) { caught = e === 17; } caught && finished"#,
         r#"let s = ''; for (let i = 0; i < 128; i++) s += ' '; s += '__rt.need(106, 1); 42'; eval.call(null, s) === 42"#,
@@ -5969,6 +6017,13 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::PutGlobal
             | Opcode::DeclareGlobalVar
             | Opcode::DeclareGlobalFunction
+            | Opcode::DeclareGlobalLet
+            | Opcode::DeclareGlobalConst
+            | Opcode::InitGlobalLexical
+            | Opcode::CheckGlobalVar
+            | Opcode::CheckGlobalFunction
+            | Opcode::DeleteGlobal
+            | Opcode::DeclareGlobalConstValue
             | Opcode::Construct => 2,
             _ => 0,
         };
@@ -9726,7 +9781,9 @@ fn void_operator() {
 
 #[test]
 fn corrupted_compiled_bytecode_is_rejected_by_the_validator() {
-    let exe = exe("let i = 0;\nwhile (i < 3) { i = i + 1; }\ni");
+    // Block locals isolate the instruction/stack checks from the script's
+    // global declaration prelude.
+    let exe = exe("{ let i = 0;\nwhile (i < 3) { i = i + 1; }\ni }");
     let spec = exe.to_spec();
     // The re-encoded spec loads and runs unchanged.
     let reloaded = Executable::load(spec.clone()).unwrap();
@@ -11082,13 +11139,24 @@ fn compiler_local_limit() {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let fits = format!("let {}; a65533", names(65_534, "a"));
+    // Block bindings isolate the local limit from the additional global
+    // lexical name constants; the constant-pool limit has its own test.
+    let fits = format!("{{ let {}; a65533 }}", names(65_534, "a"));
     assert_eq!(exe(&fits).to_spec().locals, u16::MAX);
     assert_eq!(num(&fits), 65_533.0);
-    let over = format!("let {};", names(65_535, "a"));
+    let over = format!("{{ let {}; }}", names(65_535, "a"));
     let e = compile_script("t", &over).unwrap_err();
     assert_eq!(e.kind, SyntaxErrorKind::TooLarge);
     assert_eq!(e.span.text(&over), "a65534");
+    // Script lexicals also fit every local slot. Reuse the initializer
+    // constant so the name constants do not hit the independent pool limit.
+    let globals = (0..65_534)
+        .map(|i| format!("g{i}=0"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let globals = format!("let {globals}; g65533");
+    assert_eq!(exe(&globals).to_spec().locals, u16::MAX);
+    assert_eq!(num(&globals), 0.0);
     // Sibling blocks reuse slots: two blocks of 40,000 bindings each fit.
     let siblings = format!(
         "{{ let {}; }} {{ let {}; b39999 }}",
@@ -14865,9 +14933,16 @@ fn methods_on_primitive_bases_allocate_no_wrappers() {
     ));
     rt.collect().unwrap();
     let before = rt.heap_stats().objects;
-    let src = "let r = 0; for (let i = 0; i < 200; i++) { r = r + i.valueOf(); \
-               if (('' + i).toString() === i.toString()) { r = r + 1; } } r";
-    match rt.spawn(&exe(src), &[]).unwrap().run().unwrap() {
+    // Function locals exclude global lexical cell allocations from this
+    // wrapper-allocation measurement.
+    let src = "function read() { let r = 0; for (let i = 0; i < 200; i++) { r = r + i.valueOf(); \
+               if (('' + i).toString() === i.toString()) { r = r + 1; } } return r; }";
+    match rt
+        .spawn(&compile_function(src).unwrap(), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(19900.0 + 200.0)),
         other => panic!("expected Complete, got {other:?}"),
     }
@@ -15866,9 +15941,16 @@ fn string_index_reads_allocate_no_wrappers() {
     ));
     rt.collect().unwrap();
     let before = rt.heap_stats().objects;
-    let src = "let s = 'abcdefghij'; let r = 0; \
-               for (let i = 0; i < 200; i++) { if (s[i % s.length] === 'c') { r = r + 1; } } r";
-    match rt.spawn(&exe(src), &[]).unwrap().run().unwrap() {
+    // Function locals exclude global lexical cell allocations from this
+    // wrapper-allocation measurement.
+    let src = "function read() { let s = 'abcdefghij'; let r = 0; \
+               for (let i = 0; i < 200; i++) { if (s[i % s.length] === 'c') { r = r + 1; } } return r; }";
+    match rt
+        .spawn(&compile_function(src).unwrap(), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(20.0)),
         other => panic!("expected Complete, got {other:?}"),
     }

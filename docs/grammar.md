@@ -1114,7 +1114,7 @@ Executed, with JavaScript semantics:
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
-| `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `get_global_object`, a name constant and `delete`, or constant `false` for a declarative binding; failures are reported at `delete` |
+| `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `delete_global` for dynamic global names, or constant `false` for a declarative binding; failures are reported at `delete` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
 | `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super` remains deferred; generator methods execute through detachable activations (clj-quickjs-243); async methods execute (clj-quickjs-248). |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
@@ -1715,6 +1715,9 @@ Gaps specific to execution:
   hoisted declaration). A closure in a default parameter value that
   captures its own or a later parameter (`function f(g = () => b, b)`)
   holds a cell (clj-quickjs-100).
+  Script-level `let` bindings use cells even without a statically visible
+  assignment: indirect eval can update them dynamically (clj-quickjs-278).
+  Immutable `const` captures and function-local bindings retain the rules above.
 - **Function properties are partial** (clj-quickjs-125). Functions take
   own properties, a lazy `prototype` and `Function.prototype`'s `call`
   and `apply` (clj-quickjs-102), and `bind` (clj-quickjs-103), but ordinary
@@ -4774,7 +4777,8 @@ Compilation errors become catchable `SyntaxError` instances with positioned
 `<eval>` messages; runtime diagnostics use the eval code's source map.
 
 The native continuation prepares UTF-16 source and flattens ropes in budgeted
-steps. The existing synchronous frontend runs with no heap or waiter lock;
+steps. The synchronous frontend runs on a temporary 2 MiB compiler thread
+with no heap or waiter lock, so VM workers can use 64 KiB stacks;
 eval input is limited to 16,384 UTF-16 code units (catchable `RangeError` above
 that limit), bounding that final compilation step. Raw unpaired surrogates in
 source currently throw `SyntaxError`; Unicode escapes within source literals
@@ -4782,16 +4786,26 @@ remain supported. Compiled code crosses the existing immutable `Arc` boundary
 and runs in a fresh task-owned VM frame, so instruction yields, dependency
 waits, collection and worker migration follow the ordinary VM protocol.
 
+Indirect eval shares the task's global declarative environment: it reads and
+writes script `let` bindings, reads `const` bindings, and enforces their TDZ
+and const-assignment errors. A non-strict eval `var` or function declaration
+conflicting with a script lexical throws SyntaxError. All global declaration
+checks precede property creation, function replacement and body effects.
+Refused eval object declarations throw TypeError. Eval-local lexical
+declarations never become global properties or escape into that environment.
+Global lexical bindings cannot be deleted. Immutable const captures retain
+their publication behavior; script let captures share mutable binding cells.
+
 Explicit gaps: direct eval and parameter-environment eval remain -107/-108/-109.
-Script `let`/`const` bindings still live in the initial script frame: dynamic
-lookup from eval and conflicts between those names and eval global declarations
-remain unavailable. Eval lexical declarations never become global properties.
 
 ```js accept
 const e = eval;
 e('1 + 1') === 2 && (0, eval)('if (0) 2; else 3;') === 3;
 (0, eval)('var q = 1');
 Object.getOwnPropertyDescriptor(globalThis, 'q').configurable;
+let outer = 7;
+(0, eval)('outer = 9');
+outer === 9 && (0, eval)('outer') === 9;
 ```
 
 ```js compile-reject Unsupported 1:1

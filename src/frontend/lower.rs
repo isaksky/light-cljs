@@ -206,6 +206,7 @@ fn lower_script_kind(
         let mut lower = Lowerer::new(source, facts);
         lower.enter_function(None, true, script.strict);
         lower.cur_mut().global_declarations = !eval || !script.strict;
+        lower.cur_mut().script_lexicals = !eval;
         lower.statement_list(&script.body, &[], true)?;
         let end = Span::new(script.span.end, script.span.end);
         lower.out().op_u16(Opcode::GetLocal, 0, end);
@@ -286,6 +287,8 @@ enum Repr {
 struct Binding {
     /// A script object binding, resolved dynamically rather than captured.
     global: bool,
+    /// A top-level script lexical, also retained in the task environment.
+    global_lexical: bool,
     kind: BindingKind,
     slot: u16,
     initialized: bool,
@@ -455,6 +458,9 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    /// Only the original script registers lexicals; eval and functions use
+    /// ordinary scope-local bindings for their own lexical declarations.
+    script_lexicals: bool,
     /// Script declarations use global properties; strict eval declarations
     /// use locals while still producing a script completion value.
     global_declarations: bool,
@@ -645,6 +651,7 @@ impl<'s> Lowerer<'s> {
         let arguments_key = self.next_self_key;
         self.next_self_key -= 1;
         self.fns.push(FnCtx {
+            script_lexicals: false,
             global_declarations: script,
             out: Emitter::default(),
             scopes: Vec::new(),
@@ -906,6 +913,24 @@ impl<'s> Lowerer<'s> {
         } else {
             None
         };
+        // Validate every object declaration before creating any properties
+        // or initializing hoisted functions. Eval may collide with the
+        // script's declarative environment or a restricted object property.
+        for name in &declared {
+            let b = self.local(name)?;
+            if b.global {
+                let index = self.string_index(JsString::from(name.name.as_str()), name.span)?;
+                self.out().op_u16(
+                    if b.kind == BindingKind::Function {
+                        Opcode::CheckGlobalFunction
+                    } else {
+                        Opcode::CheckGlobalVar
+                    },
+                    index,
+                    name.span,
+                );
+            }
+        }
         // Cells first, so hoisted closures can capture any of them. A
         // parameter's cell holds its argument and a `var`'s `undefined`;
         // the others start uninitialized.
@@ -922,6 +947,26 @@ impl<'s> Lowerer<'s> {
                     Opcode::DeclareGlobalVar
                 };
                 self.out().op_u16(op, index, name.span);
+                continue;
+            }
+            if b.global_lexical {
+                let index = self.string_index(JsString::from(name.name.as_str()), name.span)?;
+                if b.repr == Repr::Cell {
+                    self.out().op(Opcode::NewCell, name.span);
+                    self.out().op_u16(
+                        if b.kind == BindingKind::Const {
+                            Opcode::DeclareGlobalConst
+                        } else {
+                            Opcode::DeclareGlobalLet
+                        },
+                        index,
+                        name.span,
+                    );
+                    self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                } else {
+                    self.out()
+                        .op_u16(Opcode::DeclareGlobalConstValue, index, name.span);
+                }
                 continue;
             }
             if top_level && b.kind == BindingKind::Var && self.cur().var_scope > 0 {
@@ -1055,14 +1100,18 @@ impl<'s> Lowerer<'s> {
             ));
         }
         let key = name.span.start;
+        let global_lexical = ctx.script_lexicals
+            && top_level
+            && matches!(kind, BindingKind::Let | BindingKind::Const);
         let binding = Binding {
+            global_lexical,
             global: ctx.global_declarations
                 && top_level
                 && matches!(kind, BindingKind::Var | BindingKind::Function),
             kind,
             slot: ctx.next_slot as u16,
             initialized: matches!(kind, BindingKind::Param | BindingKind::Var),
-            repr: if checked {
+            repr: if checked || (global_lexical && kind == BindingKind::Let) {
                 Repr::Cell
             } else {
                 self.facts_of(key).repr()
@@ -1203,6 +1252,7 @@ impl<'s> Lowerer<'s> {
             Some(b) => b,
             None => {
                 let b = Binding {
+                    global_lexical: false,
                     global: false,
                     kind: BindingKind::Var,
                     // Analysis bytecode is discarded. A symbolic slot keeps
@@ -1974,7 +2024,18 @@ impl<'s> Lowerer<'s> {
             PatternKind::Identifier(name) => {
                 if initialize {
                     let b = self.initialize(name)?;
-                    if b.repr == Repr::Cell {
+                    if b.global_lexical {
+                        // No scratch local is needed to initialize the
+                        // registered cell, even at the u16 local limit.
+                        if b.repr == Repr::Value {
+                            self.out().op(Opcode::Dup, span);
+                        }
+                        let index = self.string_index(JsString::from(name.name.as_str()), span)?;
+                        self.out().op_u16(Opcode::InitGlobalLexical, index, span);
+                        if b.repr == Repr::Value {
+                            self.out().op_u16(Opcode::SetLocal, b.slot, span);
+                        }
+                    } else if b.repr == Repr::Cell {
                         let saved = self.cur().next_slot;
                         let tmp = self.temp(span)?;
                         self.out().op_u16(Opcode::SetLocal, tmp, span);
@@ -3775,9 +3836,7 @@ impl<'s> Lowerer<'s> {
     fn delete_identifier(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
         match self.resolve(name) {
             Access::Global(global) => {
-                self.out().op(Opcode::GetGlobalObject, at);
-                self.global_op(Opcode::Const, global, at)?;
-                self.out().op(Opcode::Delete, at);
+                self.global_op(Opcode::DeleteGlobal, global, at)?;
                 Ok(())
             }
             Access::Found { .. } => self.constant(Primitive::Bool(false), at),

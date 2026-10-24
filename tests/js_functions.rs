@@ -693,6 +693,13 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
             | Opcode::PutGlobal
             | Opcode::DeclareGlobalVar
             | Opcode::DeclareGlobalFunction
+            | Opcode::DeclareGlobalLet
+            | Opcode::DeclareGlobalConst
+            | Opcode::InitGlobalLexical
+            | Opcode::CheckGlobalVar
+            | Opcode::CheckGlobalFunction
+            | Opcode::DeleteGlobal
+            | Opcode::DeclareGlobalConstValue
             | Opcode::DefineField => 2,
             _ => 0,
         };

@@ -259,6 +259,7 @@ public API cannot reach.
 | running frames (run parked at a VM safepoint) | `TaskFrame`, reported by the runner | `running_frame_retains` | `running_frame_reclaims` |
 | suspended (yielded) frames | `TaskFrame`, task root source | `suspended_frame_retains` | `suspended_frame_reclaims` |
 | task global object and its properties | `TaskFrame` (`PlainObject`) | `task_global_object_retains_and_reclaims` | `finished_task_releases_global_object` |
+| task global declarative environment | `TaskFrame` (`Cell`) | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* |
 | frames suspended at a pending `__rt.need` | `TaskFrame` | `pending_need_frame_retains` | `pending_need_frame_reclaims` |
 | executor ready queue | `TaskFrame` (queued task) | `ready_queue_retains` | `ready_queue_reclaims` |
 | executor parked set | `TaskFrame` (parked task) | `executor_parked_task_retains` | `executor_parked_task_reclaims` |
@@ -6863,14 +6864,28 @@ cleanup on failure. This is the frontend's tested stack bound; VM workers
 can use 64 KiB stacks. The helper receives source text only and runs no
 JavaScript or heap operations. Global lookup, calls and eval native steps
 avoid the large general dispatch frames before using deeper helpers.
-The compiler parses an
-initially sloppy script and lets directives select strictness. It uses script
+Directives select strictness. Compilation uses script
 completion lowering while keeping strict eval declarations local. The result
 is the usual shared immutable `Executable`; a trampoline action releases the
 native borrow and enters a fresh ordinary VM frame. No Rust interpreter loop
 or stack is retained across a yield or wait. The frame records eval origin so
 sloppy declarations use configurable global properties. Existing task roots,
 frame tracing and native cancellation/unwinding cover the whole path.
+
+The task also owns a traced name-to-cell global declarative environment
+(clj-quickjs-278), retained across job activation changes. Script lexical
+declarations register their TDZ cells before any initializer or hoisted
+function runs. Mutable script `let` bindings always share these cells with
+ordinary closures; eval resolves global names through the environment before
+consulting object properties. Immutable `const` bindings keep the existing
+capture-by-value optimization when initialized before closure creation;
+their environment cell is initialized alongside the frame value. Function
+locals and eval-local lexicals keep their existing capture rules. Eval
+closures resolve global lexicals dynamically and can yield, wait and migrate.
+All global var/function declarations have a separate read-only validation
+pass before any global property is created or reset. Lexical conflicts throw
+SyntaxError; refused eval object declarations throw TypeError. Global lexical
+bindings are never object properties and cannot be deleted through eval.
 
 QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 (`js_global_eval`, `JS_EvalObject`, `__JS_EvalInternal`),

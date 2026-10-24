@@ -127,6 +127,13 @@
 //! | `DefineSetterElem` | 0x86 | – | object key function → object | define own enumerable/configurable setter, merging an existing getter |
 //! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
 //! | `CheckDirectEval` | 0x88 | – | callee → callee | reject the intrinsic eval through a shadowed direct-call candidate until direct eval is implemented |
+//! | `DeclareGlobalLet` | 0x89 | u16 name | cell → cell | register a script lexical binding in the task environment |
+//! | `DeclareGlobalConst` | 0x8A | u16 name | cell → cell | register an immutable script lexical binding |
+//! | `InitGlobalLexical` | 0x8B | u16 name | value → – | initialize a registered script lexical cell |
+//! | `CheckGlobalVar` | 0x8C | u16 name | – | validate a global var before declaration effects |
+//! | `CheckGlobalFunction` | 0x8D | u16 name | – | validate a global function before declaration effects |
+//! | `DeleteGlobal` | 0x8E | u16 name | – → boolean | false for lexical bindings, otherwise delete global property |
+//! | `DeclareGlobalConstValue` | 0x8F | u16 name | – | create the environment copy of a value-represented const |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -625,6 +632,13 @@ pub enum Opcode {
     DefineSetterElem = 0x86,
     SetComputedName = 0x87,
     CheckDirectEval = 0x88,
+    DeclareGlobalLet = 0x89,
+    DeclareGlobalConst = 0x8A,
+    InitGlobalLexical = 0x8B,
+    CheckGlobalVar = 0x8C,
+    CheckGlobalFunction = 0x8D,
+    DeleteGlobal = 0x8E,
+    DeclareGlobalConstValue = 0x8F,
 }
 
 /// Operand encoding of an opcode.
@@ -796,6 +810,13 @@ impl Opcode {
             0x83 => AsyncStart,
             0x84 => Await,
             0x88 => CheckDirectEval,
+            0x89 => DeclareGlobalLet,
+            0x8A => DeclareGlobalConst,
+            0x8B => InitGlobalLexical,
+            0x8C => CheckGlobalVar,
+            0x8D => CheckGlobalFunction,
+            0x8E => DeleteGlobal,
+            0x8F => DeclareGlobalConstValue,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -941,6 +962,13 @@ impl Opcode {
             AsyncStart => "async_start",
             Await => "await",
             CheckDirectEval => "check_direct_eval",
+            DeclareGlobalLet => "declare_global_let",
+            DeclareGlobalConst => "declare_global_const",
+            InitGlobalLexical => "init_global_lexical",
+            CheckGlobalVar => "check_global_var",
+            CheckGlobalFunction => "check_global_function",
+            DeleteGlobal => "delete_global",
+            DeclareGlobalConstValue => "declare_global_const_value",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -984,6 +1012,13 @@ impl Opcode {
             | PutGlobal
             | DeclareGlobalVar
             | DeclareGlobalFunction
+            | DeclareGlobalLet
+            | DeclareGlobalConst
+            | InitGlobalLexical
+            | CheckGlobalVar
+            | CheckGlobalFunction
+            | DeleteGlobal
+            | DeclareGlobalConstValue
             | GetField
             | PutField
             | DefineField
@@ -1208,6 +1243,13 @@ pub(crate) enum Instr {
     DefineSetterElem,
     SetComputedName(u16),
     CheckDirectEval,
+    DeclareGlobalLet(u16),
+    DeclareGlobalConst(u16),
+    InitGlobalLexical(u16),
+    CheckGlobalVar(u16),
+    CheckGlobalFunction(u16),
+    DeleteGlobal(u16),
+    DeclareGlobalConstValue(u16),
 }
 
 impl Instr {
@@ -1329,6 +1371,13 @@ impl Instr {
             Instr::AsyncStart => Opcode::AsyncStart,
             Instr::Await => Opcode::Await,
             Instr::CheckDirectEval => Opcode::CheckDirectEval,
+            Instr::DeclareGlobalLet(_) => Opcode::DeclareGlobalLet,
+            Instr::DeclareGlobalConst(_) => Opcode::DeclareGlobalConst,
+            Instr::InitGlobalLexical(_) => Opcode::InitGlobalLexical,
+            Instr::CheckGlobalVar(_) => Opcode::CheckGlobalVar,
+            Instr::CheckGlobalFunction(_) => Opcode::CheckGlobalFunction,
+            Instr::DeleteGlobal(_) => Opcode::DeleteGlobal,
+            Instr::DeclareGlobalConstValue(_) => Opcode::DeclareGlobalConstValue,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1362,11 +1411,15 @@ impl Instr {
             | NewVectorBuilder | NewMapBuilder | ThrowError(_) | CurrentFunction
             | GetCapture(_) | NewCell | GetBuiltinGlobal(_) | NewObjectLiteral | GetThis
             | NewArray | NewArguments => (0, 1),
-            GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) => (0, 1),
-            SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
+            GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) | DeleteGlobal(_) => (0, 1),
+            DeclareGlobalLet(_) | DeclareGlobalConst(_) => (1, 1),
+            SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw | InitGlobalLexical(_) => (1, 0),
             PutGlobal(_) => (1, 1),
             DeclareGlobalVar(_)
             | DeclareGlobalFunction(_)
+            | CheckGlobalVar(_)
+            | CheckGlobalFunction(_)
+            | DeclareGlobalConstValue(_)
             | GeneratorStart
             | GeneratorInitialYield
             | AsyncStart => (0, 0),
@@ -1425,6 +1478,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 136);
+        assert_eq!(assigned, 143);
     }
 }

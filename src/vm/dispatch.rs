@@ -1032,7 +1032,7 @@ type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> R
 fn instruction_step(instr: Instr) -> InstructionStep {
     match instr {
         Instr::Call(_) | Instr::CallMethod(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => call_step,
-        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) => global_step,
+        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) => global_step,
         Instr::RequireCoercible
         | Instr::OwnKeys
         | Instr::IsEnumerable
@@ -2180,7 +2180,14 @@ fn step_instruction(
         | Instr::GetGlobalOrUndefined(_)
         | Instr::PutGlobal(_)
         | Instr::DeclareGlobalVar(_)
-        | Instr::DeclareGlobalFunction(_) => return global_step(state, code, heap, host, instr),
+        | Instr::DeclareGlobalFunction(_)
+        | Instr::DeclareGlobalLet(_)
+        | Instr::DeclareGlobalConst(_)
+        | Instr::InitGlobalLexical(_)
+        | Instr::CheckGlobalVar(_)
+        | Instr::CheckGlobalFunction(_)
+        | Instr::DeleteGlobal(_)
+        | Instr::DeclareGlobalConstValue(_) => return global_step(state, code, heap, host, instr),
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
             // (a poll point); its objects are roots from then on.
@@ -2209,6 +2216,13 @@ fn global_step(
         }
         Instr::GetGlobal(i) | Instr::GetGlobalOrUndefined(i) => {
             let name = name_constant(code, i)?;
+            if let Some(binding) = state.global_lexicals.get(&name) {
+                let value = with_cell(heap, &binding.cell, state.diag.task, |v| {
+                    v.clone().ok_or(Fault::Throw(ThrowKind::Uninitialized))
+                })?;
+                state.push(value);
+                return Ok(Flow::Next);
+            }
             let global = global_object(state, heap)?;
             let found = property::read(
                 heap,
@@ -2223,6 +2237,24 @@ fn global_step(
         }
         Instr::PutGlobal(i) => {
             let name = name_constant(code, i)?;
+            if let Some(binding) = state.global_lexicals.get(&name) {
+                let value = state
+                    .operands()
+                    .last()
+                    .ok_or(Fault::Internal("missing global assignment value"))?
+                    .clone();
+                with_cell(heap, &binding.cell, state.diag.task, |v| {
+                    if v.is_none() {
+                        return Err(Fault::Throw(ThrowKind::Uninitialized));
+                    }
+                    if !binding.mutable {
+                        return Err(Fault::Throw(ThrowKind::ConstAssignment));
+                    }
+                    *v = Some(value);
+                    Ok(())
+                })?;
+                return Ok(Flow::Next);
+            }
             let global = global_object(state, heap)?;
             if code.strict
                 && !property::has_property(
@@ -2254,6 +2286,91 @@ fn global_step(
                 matches!(instr, Instr::DeclareGlobalFunction(_)),
             );
         }
+        Instr::DeclareGlobalLet(i)
+        | Instr::DeclareGlobalConst(i)
+        | Instr::DeclareGlobalConstValue(i) => {
+            let name = name_constant(code, i)?;
+            if state.global_lexicals.contains_key(&name) {
+                return Err(Fault::SyntaxError(format!(
+                    "global lexical '{name}' is already declared"
+                )));
+            }
+            let cell = if matches!(instr, Instr::DeclareGlobalConstValue(_)) {
+                Value::Object(
+                    heap.alloc(HeapObject::Cell(BindingCell {
+                        owner: state.diag.task,
+                        value: None,
+                    }))
+                    .ok_or(Fault::OutOfMemory("global lexical binding"))?,
+                )
+            } else {
+                let cell = state
+                    .operands()
+                    .last()
+                    .ok_or(Fault::Internal("missing lexical cell"))?
+                    .clone();
+                with_cell(heap, &cell, state.diag.task, |_| Ok(()))?;
+                cell
+            };
+            state.global_lexicals.insert(
+                name,
+                super::frames::GlobalLexical {
+                    cell: cell.clone(),
+                    mutable: matches!(instr, Instr::DeclareGlobalLet(_)),
+                },
+            );
+        }
+        Instr::InitGlobalLexical(i) => {
+            let name = name_constant(code, i)?;
+            let binding = state
+                .global_lexicals
+                .get(&name)
+                .ok_or(Fault::Internal("missing global lexical"))?;
+            let value = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("missing lexical initializer"))?
+                .clone();
+            with_cell(heap, &binding.cell, state.diag.task, |v| {
+                *v = Some(value);
+                Ok(())
+            })?;
+            state.pop()?;
+        }
+        Instr::CheckGlobalVar(i) | Instr::CheckGlobalFunction(i) => {
+            let name = name_constant(code, i)?;
+            if state.global_lexicals.contains_key(&name) {
+                return Err(Fault::SyntaxError(format!(
+                    "global declaration conflicts with lexical '{name}'"
+                )));
+            }
+            let Value::Object(id) = global_object(state, heap)? else {
+                return Err(Fault::Internal("missing global object"));
+            };
+            realm::check_global_declaration(
+                heap,
+                id,
+                &name,
+                matches!(instr, Instr::CheckGlobalFunction(_)),
+                state.top().eval,
+            )?;
+        }
+        Instr::DeleteGlobal(i) => {
+            let name = name_constant(code, i)?;
+            let deleted = if state.global_lexicals.contains_key(&name) {
+                false
+            } else {
+                let global = global_object(state, heap)?;
+                property::delete(
+                    heap,
+                    state.diag.task,
+                    &global,
+                    &Value::String(name),
+                    code.strict,
+                )?
+            };
+            state.push(Value::Bool(deleted));
+        }
         _ => return Err(Fault::Internal("non-global instruction on global path")),
     }
     Ok(Flow::Next)
@@ -2275,7 +2392,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_)
-        | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) => true,
+        | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) => true,
         // On a function object these may allocate its property record and
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).

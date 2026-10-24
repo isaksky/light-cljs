@@ -218,6 +218,13 @@ pub(crate) enum Raised {
     Cancelled,
 }
 
+/// A script binding retained independently of activation replacement.
+#[derive(Debug)]
+pub(crate) struct GlobalLexical {
+    pub(crate) cell: Value,
+    pub(crate) mutable: bool,
+}
+
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
@@ -228,6 +235,9 @@ pub(crate) struct VmState {
     pub(crate) suspended_async: Vec<(ObjectId, String)>,
     /// Mutable global state belongs to the task, independently of workers.
     pub(crate) global_object: Option<ObjectId>,
+    /// Script lexical bindings, including TDZ cells. Eval-local lexicals
+    /// are ordinary frame bindings and never enter this environment.
+    pub(crate) global_lexicals: std::collections::HashMap<crate::value::JsString, GlobalLexical>,
     /// The frame the task started in.
     entry: Frame,
     /// Frames called from the entry frame, innermost last.
@@ -382,6 +392,7 @@ impl VmState {
             script_result: None,
             suspended_async: Vec::new(),
             global_object: None,
+            global_lexicals: std::collections::HashMap::new(),
             entry: Frame {
                 eval: false,
                 code: Arc::clone(code),
@@ -464,6 +475,7 @@ impl VmState {
     fn replace_activation(&mut self, mut next: Self) {
         next.jobs = self.jobs.clone();
         next.global_object = self.global_object.take();
+        next.global_lexicals = std::mem::take(&mut self.global_lexicals);
         next.script_result = self.script_result.take();
         next.suspended_async = std::mem::take(&mut self.suspended_async);
         next.builders = std::mem::take(&mut self.builders);
@@ -1109,6 +1121,9 @@ impl Trace for VmState {
         if let Some(id) = self.global_object {
             visit(id.into());
         }
+        self.global_lexicals
+            .values()
+            .for_each(|b| b.cell.trace(visit));
         self.stack.iter().for_each(|v| v.trace(visit));
         for frame in std::iter::once(&self.entry).chain(&self.calls) {
             if let Some(id) = frame.callee {

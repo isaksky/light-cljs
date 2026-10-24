@@ -533,6 +533,13 @@ impl Executable {
                 Opcode::AsyncStart => Instr::AsyncStart,
                 Opcode::Await => Instr::Await,
                 Opcode::CheckDirectEval => Instr::CheckDirectEval,
+                Opcode::DeclareGlobalLet => Instr::DeclareGlobalLet(operand as u16),
+                Opcode::DeclareGlobalConst => Instr::DeclareGlobalConst(operand as u16),
+                Opcode::InitGlobalLexical => Instr::InitGlobalLexical(operand as u16),
+                Opcode::CheckGlobalVar => Instr::CheckGlobalVar(operand as u16),
+                Opcode::CheckGlobalFunction => Instr::CheckGlobalFunction(operand as u16),
+                Opcode::DeleteGlobal => Instr::DeleteGlobal(operand as u16),
+                Opcode::DeclareGlobalConstValue => Instr::DeclareGlobalConstValue(operand as u16),
 
                 Opcode::DefineElem => Instr::DefineElem,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
@@ -692,6 +699,13 @@ impl Executable {
                 | Instr::PutGlobal(v)
                 | Instr::DeclareGlobalVar(v)
                 | Instr::DeclareGlobalFunction(v)
+                | Instr::DeclareGlobalLet(v)
+                | Instr::DeclareGlobalConst(v)
+                | Instr::InitGlobalLexical(v)
+                | Instr::CheckGlobalVar(v)
+                | Instr::CheckGlobalFunction(v)
+                | Instr::DeleteGlobal(v)
+                | Instr::DeclareGlobalConstValue(v)
                 | Instr::TemplateObject(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)

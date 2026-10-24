@@ -101,11 +101,12 @@ enum Holder {
     WeakMapEntries,
     SuspendedAsync,
     UnhandledRejection,
+    TaskGlobalLexicals,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 41] = [
+const HOLDERS: [Holder; 42] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -147,6 +148,7 @@ const HOLDERS: [Holder; 41] = [
     Holder::WeakMapEntries,
     Holder::SuspendedAsync,
     Holder::UnhandledRejection,
+    Holder::TaskGlobalLexicals,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -230,6 +232,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ArrayElement,
             TaskGlobalObject,
             ArrayBufferProperty,
+            TaskGlobalLexicals,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -266,7 +269,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             FunctionProperties,
             MethodHomeObject,
         ],
-        ObjectKind::Cell => &[BindingCell],
+        ObjectKind::Cell => &[BindingCell, TaskGlobalLexicals],
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
         ObjectKind::Array => &[ArrayElement],
@@ -363,6 +366,16 @@ fn coverage(holder: Holder) -> Coverage {
             "task_global_object_retains_and_reclaims",
             "finished_task_releases_global_object",
         ),
+        Holder::TaskGlobalLexicals => Coverage {
+            retains: (
+                Inventory,
+                "task_global_lexicals_survive_job_replacement_and_reclaim",
+            ),
+            reclaims: (
+                Inventory,
+                "task_global_lexicals_survive_job_replacement_and_reclaim",
+            ),
+        },
         Holder::BoundFunction => public("bound_function_retains", "bound_function_reclaims"),
         Holder::PersistentHandle => {
             public("persistent_handle_retains", "persistent_handle_reclaims")
@@ -615,6 +628,84 @@ fn executable_constant_reclaims() {
     drop(task);
     assert_eq!(rt.request_collection().unwrap().reclaimed, 1);
     assert_stale(heap, &[constant]);
+}
+
+/// Synthetic fixture, not light-cljs output. After the script's activation
+/// is replaced by a promise job, only the task declarative environment
+/// retains `held`; the job accesses it through independently compiled eval.
+#[test]
+fn task_global_lexicals_survive_job_replacement_and_reclaim() {
+    struct Effects(Vec<f64>);
+    impl crate::Host for Effects {
+        fn effect(&mut self, call: crate::HostCall) -> Result<crate::Primitive, String> {
+            let crate::Primitive::Number(value) = call.arg else {
+                panic!("expected number");
+            };
+            self.0.push(value);
+            Ok(crate::Primitive::Undefined)
+        }
+    }
+    let rt = crate::Runtime::new();
+    let code = crate::frontend::compile_script("lexical-roots", "const held = {value: 7}; Promise.resolve().then(() => { __rt.need(278, 1); __rt.effect(278, (0, eval)('held.value')); }); __rt.effect(278, -1); 42").unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut host = Effects(vec![]);
+    for _ in 0..2000 {
+        assert!(matches!(
+            task.run_with(crate::Budget::instructions(1), &mut host)
+                .unwrap(),
+            crate::RunOutcome::Yielded
+        ));
+        if host.0 == [-1.0] {
+            break;
+        }
+    }
+    assert_eq!(host.0, [-1.0]);
+    let (_, _, locals) = task.saved_state().unwrap();
+    let Value::Object(held) = locals[1] else {
+        panic!("expected held object");
+    };
+    let mut waiting = false;
+    for _ in 0..2000 {
+        let next = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(crate::Budget::instructions(1), &mut host)
+                .unwrap();
+            (task, host, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next.0;
+        host = next.1;
+        rt.collect().unwrap();
+        if matches!(next.2, crate::RunOutcome::Waiting(_)) {
+            waiting = true;
+            break;
+        }
+        assert!(matches!(next.2, crate::RunOutcome::Yielded));
+    }
+    assert!(waiting);
+    rt.collect().unwrap();
+    assert!(rt.heap().is_live(held));
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = rt.root(crate::Primitive::Undefined);
+    task = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            crate::Completion::Ready(&ready),
+        )
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    assert!(matches!(
+        task.run_with(crate::Budget::UNLIMITED, &mut host).unwrap(),
+        crate::RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [-1.0, 7.0]);
+    // Even retaining the finished task cannot retain the environment.
+    rt.collect().unwrap();
+    assert_stale(rt.heap(), &[held]);
 }
 
 /// Native payload with a fixed list of edges.

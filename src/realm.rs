@@ -688,6 +688,45 @@ pub(crate) fn declare_global_with(
     .ok_or(Fault::Internal("global object was collected"))?
 }
 
+/// Declaration preflight performs no property mutation and invokes no user
+/// code. Eval checks all names before any declaration creates or resets one.
+pub(crate) fn check_global_declaration(
+    heap: &Heap,
+    id: ObjectId,
+    name: &JsString,
+    function: bool,
+    eval: bool,
+) -> Result<(), crate::vm::dispatch::Fault> {
+    use crate::vm::dispatch::Fault;
+    let key = heap
+        .keys()
+        .intern(name)
+        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+    heap.read(id, |object| {
+        let HeapObject::Plain(object) = object else {
+            return Err(Fault::Internal("global object is not ordinary"));
+        };
+        let allowed = if let Some(prior) = object.get_own(key) {
+            !function
+                || prior.flags.configurable
+                || (prior.flags.writable && prior.flags.enumerable && prior.accessor.is_none())
+        } else {
+            object.extensible()
+        };
+        if allowed {
+            Ok(())
+        } else {
+            let message = format!("cannot declare global '{name}'");
+            Err(if eval {
+                Fault::TypeError(message)
+            } else {
+                Fault::SyntaxError(message)
+            })
+        }
+    })
+    .ok_or(Fault::Internal("global object was collected"))?
+}
+
 /// Allocate and connect the intrinsics (module docs, table).
 ///
 /// The order follows the prototype edges: `Object.prototype` first (its

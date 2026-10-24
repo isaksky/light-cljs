@@ -945,7 +945,14 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | GetGlobalOrUndefined(_)
         | PutGlobal(_)
         | DeclareGlobalVar(_)
-        | DeclareGlobalFunction(_) => false,
+        | DeclareGlobalFunction(_)
+        | DeclareGlobalLet(_)
+        | DeclareGlobalConst(_)
+        | InitGlobalLexical(_)
+        | CheckGlobalVar(_)
+        | CheckGlobalFunction(_)
+        | DeleteGlobal(_)
+        | DeclareGlobalConstValue(_) => false,
     }
 }
 
