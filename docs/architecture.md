@@ -2146,22 +2146,15 @@ so they run inside their call instruction.
   `Function.prototype`'s own (`call`, `apply`) are inherited. The `__proto__`
   setter always receives the original base, not the record a function's
   write is redirected to.
-- **`Object.prototype.__proto__` without stored accessors.** Accessor
-  properties are clj-quickjs-120, so the accessor is not a property entry:
-  the realm interns `__proto__` once and `Intrinsics::is_proto_accessor`
-  recognizes it, and the property walk applies the getter (`find`) or the
-  setter (`check_inherited` answering `Chain::ProtoSetter`) when an access
-  of `__proto__` reaches `Object.prototype` without meeting an own
-  `__proto__` on the way, which is exactly when the real accessor would
-  run. A write of `__proto__` first walks the chain read-only
-  (`reaches_proto_accessor`) and, when it meets the accessor, runs the
-  setter before any data-property rule: an intrinsic receiver may make
-  the no-op `Object.prototype.__proto__ = null`, and a function gets no
-  property record for an ignored assignment. Both are Rust and call no
-  JavaScript. Reads and writes are
-  therefore exact; only reflection on `Object.prototype` itself differs,
-  and it fails explicitly (`getOwnPropertyDescriptor`) instead of
-  answering `undefined`.
+- **`Object.prototype.__proto__` is a stored accessor (clj-quickjs-261).**
+  The realm stores built-in `get __proto__` and `set __proto__` functions
+  through the accessor representation of clj-quickjs-120. The generic
+  property walk selects them, preserving the original receiver, and
+  descriptor reflection and own-name enumeration expose the property.
+  Setter lookup on an intrinsic or function precedes data-write rules:
+  an intrinsic receiver may make the no-op `Object.prototype.__proto__ = null`,
+  and an ignored function assignment creates no property record. Neither
+  built-in runs JavaScript. See "Stored prototype accessor" below.
 
 **Alternatives considered.**
 
@@ -2169,8 +2162,8 @@ so they run inside their call instruction.
   data/accessor enum with a Rust getter/setter variant ahead of
   clj-quickjs-120, which designs that enum for JavaScript accessors and
   their resumable calls. Two designs of one entry would conflict; the walk
-  hook is a few lines that clj-quickjs-261 deletes once the accessor can
-  be stored with built-in getter and setter functions.
+  hook was temporary; clj-quickjs-261 replaces it with the generic accessor
+  path and built-in getter and setter functions.
 - *Lowering `__proto__: p` to a call of `Object.setPrototypeOf`*: needs
   the realm's function on the stack and has the wrong semantics (a
   non-object value must be ignored, not a `TypeError`). A one-byte opcode
@@ -2182,7 +2175,7 @@ so they run inside their call instruction.
 
 **Consequences.**
 
-- clj-quickjs-120 adds the accessor storage; clj-quickjs-261 then stores
+- clj-quickjs-120 adds the accessor storage; clj-quickjs-261 stores
   `__proto__` as an accessor with built-in getter and setter and removes
   `is_proto_accessor`, `reaches_proto_accessor` and `Chain::ProtoSetter`.
 - clj-quickjs-122 (`preventExtensions`) only has to clear the flag:
@@ -2328,10 +2321,9 @@ result, a fresh array owned by the running task, last.
 **Consequences.**
 
 - `Object.getOwnPropertyNames` of a function includes metadata and its
-  constructor's lazy `prototype` (clj-quickjs-101). It fails with
-  `UnsupportedOperand` for `Object.prototype` until `__proto__` is stored
-  (clj-quickjs-261); `Object.keys` of either is exact, since none of the
-  missing properties is enumerable. Error objects fail until their
+  constructor's lazy `prototype` (clj-quickjs-101); of `Object.prototype`,
+  its stored `__proto__` accessor (clj-quickjs-261). `Object.keys` of either
+  lists no non-enumerable properties. Error objects fail until their
   properties exist (clj-quickjs-230).
 - The `delete` operator (clj-quickjs-124) only has to remove the entry
   (and fix up the key index): a re-added key is pushed at the end, so it
@@ -3696,8 +3688,8 @@ cannot encounter a user accessor in the current object model.
 
 No new heap kind, sharing category or dependency is introduced. Ordinary
 objects/arrays remain task-owned, and accessor functions retain their home
-object, preventing publication exactly as concise methods do. The unstored
-built-in `Object.prototype.__proto__` hook remains for clj-quickjs-261.
+object, preventing publication exactly as concise methods do. The built-in
+`Object.prototype.__proto__` accessor also uses this storage (clj-quickjs-261).
 
 Verification: frontend accessor AST/error cases; source descriptor validation,
 inheritance, integrity, enumeration, function metadata and native-call cases;
@@ -3869,3 +3861,38 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`,
 of indirect eval; Rust assertions check script completion values. The
 identifier-delete group is deferred. The test carries the QuickJS MIT notice.
 No upstream implementation code is copied.
+
+## Stored prototype accessor (clj-quickjs-261)
+
+The shared immutable realm stores `Object.prototype.__proto__` in the ordinary
+accessor representation, with two appended `Builtin` variants for `get __proto__`
+and `set __proto__`. Both functions are intrinsic GC roots, inherit from
+`Function.prototype`, and appear in the immutable realm views. Getter/setter
+slots in those views are checked to contain only intrinsic references.
+
+The generic accessor call path handles inherited access and extracted calls.
+There is no name-based hook in property reads, setter lookup, descriptor
+reflection, deletion or enumeration. Before creating a function property record
+or rejecting an intrinsic data write, setter lookup inspects the receiver and
+its chain; this preserves ignored assignments without mutation or lost
+publishability. An ordinary object's own data property still shadows the
+accessor, and a chain ending before `Object.prototype` has no inherited accessor.
+
+The getter uses `[[GetPrototypeOf]]`; number/string primitives return the fixed
+prototype of their wrapper without allocating it. Boolean getter receivers
+remain unsupported until `Boolean.prototype` exists. For primitive writes,
+Boolean's supported inherited setters can be found from `Object.prototype`,
+since Boolean's standard own prototype properties are data properties. The
+setter requires a coercible receiver, ignores a non-object/non-null value or
+primitive receiver, and otherwise calls the existing ownership/cycle/immutability
+checked `set_prototype_of`. Neither built-in invokes JavaScript. Literal
+`__proto__: value` continues to use `SetProto` separately.
+
+The descriptor's configurable flag does not grant permission to mutate shared
+intrinsics. Redefinition and deletion still throw TypeError. Tests cover stored
+reflection, aliases, extracted calls, primitive receivers, unchanged prototype
+reflection, cross-task link rejection, and publication/collection/migration of
+the built-in functions. QuickJS `js_object_get___proto__`,
+`js_object_set___proto__` and `js_object_proto_funcs` in
+`research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`, were consulted for semantics;
+no source or tests were copied.

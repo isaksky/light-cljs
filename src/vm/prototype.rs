@@ -53,18 +53,16 @@
 //! property of `Object.prototype` whose getter is `[[GetPrototypeOf]]` of
 //! ToObject(this) and whose setter is `[[SetPrototypeOf]]` of `this`,
 //! ignoring a value that is neither an object nor `null` (and a primitive
-//! `this`). Until accessor properties exist (clj-quickjs-120) it is not a
-//! stored property: the property walk (`crate::vm::property`) applies the
-//! getter or setter when a read or write of `__proto__` reaches
-//! `Object.prototype` without finding an own `__proto__` first, which is
-//! exactly when the accessor would run. An object that does not inherit
+//! `this`). It is stored in the shared immutable realm (clj-quickjs-261)
+//! with built-in `get __proto__` / `set __proto__` functions. The generic
+//! accessor path calls them when an access reaches the property.
+//! An object that does not inherit
 //! from `Object.prototype` (`Object.create(null)`) therefore has a plain
 //! `__proto__` property, and an own `__proto__` data property (shorthand
-//! `{__proto__}`, `defineProperty`) shadows the accessor. Neither runs
-//! JavaScript. `Object.getOwnPropertyDescriptor(Object.prototype,
-//! "__proto__")` fails with `UnsupportedOperand` until the property is
-//! stored as an accessor with built-in getter and setter functions
-//! (clj-quickjs-261, after clj-quickjs-120).
+//! `{__proto__}`, `defineProperty`) shadows the accessor. Neither built-in
+//! runs JavaScript. Descriptor reflection and own-name enumeration expose
+//! the property without calling its getter. Its descriptor is configurable,
+//! but intrinsic mutation remains forbidden by the realm's sharing policy.
 
 use crate::collections::object_name;
 use crate::heap::{Heap, HeapObject, ObjectId};
@@ -312,24 +310,48 @@ pub(crate) fn object_create(heap: &Heap, task: TaskId, args: &[Value]) -> Result
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
-/// The `__proto__` getter (module docs) with the object `receiver` as
-/// `this`.
-pub(crate) fn proto_getter(heap: &Heap, task: TaskId, receiver: ObjectId) -> Result<Value, Fault> {
-    get_prototype_of(heap, task, receiver).map(prototype_value)
+/// The `__proto__` getter: ToObject(this), then `[[GetPrototypeOf]]`.
+/// A supported primitive's wrapper has the realm's primitive prototype;
+/// no wrapper allocation is needed to return that fixed link.
+pub(crate) fn proto_getter(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {
+    match this {
+        Value::Object(receiver) => get_prototype_of(heap, task, *receiver).map(prototype_value),
+        Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
+            "cannot convert {} to object",
+            this.type_name()
+        ))),
+        _ => {
+            let realm = crate::realm::intrinsics(heap)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            realm.primitive_prototype(this).map(Value::Object).ok_or_else(|| {
+                Fault::Unsupported(format!(
+                    "__proto__ getter on a {} needs a wrapper prototype, which is not supported",
+                    this.type_name()
+                ))
+            })
+        }
+    }
 }
 
-/// The `__proto__` setter (module docs) with the object `receiver` as
-/// `this`: a value that is neither an object nor `null` is ignored.
+/// The `__proto__` setter: RequireObjectCoercible(this), ignore a
+/// non-object/non-null prototype or primitive receiver, otherwise
+/// `[[SetPrototypeOf]]`. It always returns `undefined`.
 pub(crate) fn proto_setter(
     heap: &Heap,
     task: TaskId,
-    receiver: ObjectId,
+    this: &Value,
     value: &Value,
-) -> Result<(), Fault> {
-    match as_prototype(value) {
-        Some(proto) => set_prototype_of(heap, task, receiver, proto),
-        None => Ok(()),
+) -> Result<Value, Fault> {
+    if matches!(this, Value::Undefined | Value::Null) {
+        return Err(Fault::TypeError(format!(
+            "__proto__ setter called on {}",
+            this.type_name()
+        )));
     }
+    if let (Value::Object(receiver), Some(proto)) = (this, as_prototype(value)) {
+        set_prototype_of(heap, task, *receiver, proto)?;
+    }
+    Ok(Value::Undefined)
 }
 
 /// `SetProto` (QuickJS `OP_set_proto`): a literal's `__proto__: value` sets
@@ -347,7 +369,10 @@ pub(crate) fn set_literal_proto(
             object.type_name()
         )));
     };
-    proto_setter(heap, task, id, value)
+    match as_prototype(value) {
+        Some(proto) => set_prototype_of(heap, task, id, proto),
+        None => Ok(()),
+    }
 }
 
 /// `v instanceof target` (`Instanceof`, clj-quickjs-75): ECMAScript
@@ -449,6 +474,55 @@ mod tests {
             set_prototype_of(&heap, t1, proto, Some(mine)),
             Err(Fault::TypeError(_))
         ));
+    }
+
+    /// The stored built-ins retain the same ownership boundary as the
+    /// property-access path, even when explicitly called with a receiver.
+    #[test]
+    fn proto_accessors_reject_cross_task_links() {
+        use crate::vm::builtin::{self, Builtin};
+
+        let heap = Heap::default();
+        let (owner, caller) = (TaskId::from_raw(1), TaskId::from_raw(2));
+        let mine = Value::Object(plain(&heap, Some(caller)));
+        let theirs = Value::Object(plain(&heap, Some(owner)));
+        let get = |receiver| {
+            builtin::call(
+                &heap,
+                caller,
+                Builtin::ObjectPrototypeProtoGetter,
+                receiver,
+                &[],
+            )
+        };
+        let set = |receiver, value| {
+            builtin::call(
+                &heap,
+                caller,
+                Builtin::ObjectPrototypeProtoSetter,
+                receiver,
+                &[value],
+            )
+        };
+        assert!(matches!(get(&theirs), Err(Fault::ForeignObject { .. })));
+        assert!(matches!(
+            set(&mine, theirs.clone()),
+            Err(Fault::ForeignObject { .. })
+        ));
+        assert!(matches!(
+            set(&theirs, Value::Null),
+            Err(Fault::ForeignObject { .. })
+        ));
+        // An ignored value does not read or mutate the receiver or prototype.
+        assert_eq!(
+            set(&theirs, Value::Number(1.0)).ok(),
+            Some(Value::Undefined)
+        );
+        assert_eq!(
+            set(&Value::Number(1.0), theirs.clone()).ok(),
+            Some(Value::Undefined)
+        );
+        assert_eq!(get(&mine).ok(), Some(Value::Null));
     }
 
     /// A non-extensible object rejects a new prototype (from source:

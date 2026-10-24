@@ -2025,10 +2025,7 @@ Supported (`cargo test --test js_source prototype_reflection`, `cargo test --lib
 
 Deferred:
 
-- `Object.prototype.__proto__` is applied by the property walk, not stored:
-  `Object.getOwnPropertyDescriptor(Object.prototype, "__proto__")` fails with
-  `UnsupportedOperand` until it becomes a stored accessor (clj-quickjs-120, then clj-quickjs-261);
-  so do the prototypes of primitives (wrappers, clj-quickjs-72) and error objects
+- `Object.getPrototypeOf` on primitives and error objects
   (clj-quickjs-230), changing a function's prototype, and
   `Object.create`'s second argument (`Object.defineProperties`). Extensibility (clj-quickjs-122) and
   `Object.getOwnPropertyNames` (clj-quickjs-123) have their own sections below.
@@ -2076,9 +2073,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 
 Deferred:
 
-- Primitive arguments (wrapper objects, clj-quickjs-72), error objects (clj-quickjs-230), and
-  `getOwnPropertyNames` of `Object.prototype` (unstored `__proto__`, clj-quickjs-261)
-  fail with `UnsupportedOperand`.
+- Error objects (clj-quickjs-230) fail with `UnsupportedOperand`.
   Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`.
 
@@ -2487,8 +2482,7 @@ Getters/setters, descriptor-field reads, conversion-method lookup,
 length/index operations run through traced native continuations and ordinary
 VM frames. They can yield, wait, migrate and unwind on cancellation; apply
 and push also support object-valued lengths through resumable ToPrimitive.
-Computed literal keys, super, async/generator methods and the stored built-in
-`Object.prototype.__proto__` accessor (clj-quickjs-261) remain deferred.
+Computed literal keys, super and async/generator methods remain deferred.
 
 Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
 `cargo test --test js_source accessor`, `cargo test --test need getter_waits_on_dependency_and_resumes -- --exact`,
@@ -2525,3 +2519,23 @@ Supported (`cargo test --test js_source global_object_bindings`,
 Deferred: implicit globals/identifier deletion (-105),
 indirect eval (-106), multiple scripts in one task, and sloppy `this`
 substitution keep their existing gaps.
+
+### Stored `Object.prototype.__proto__` accessor (clj-quickjs-261)
+
+`Object.prototype` stores a non-enumerable, configurable accessor with built-in
+`get __proto__` / `set __proto__` functions (lengths 0 / 1). Descriptor reflection
+returns these functions, and `Object.getOwnPropertyNames(Object.prototype)` lists
+`__proto__`. Extracted functions support `call`, `apply`, `bind` and installation
+as another object's accessor. The getter returns the receiver's prototype;
+number/string primitives use their wrapper prototype without allocation. The
+setter rejects null/undefined receivers, ignores other primitive receivers and
+non-object/non-null arguments, and otherwise uses the existing prototype rules.
+Both functions inherit from `Function.prototype` and can be shared across tasks.
+
+Intrinsic objects remain immutable even though the descriptor is configurable:
+deleting or redefining the intrinsic property throws TypeError. Boolean getter
+receivers still need `Boolean.prototype`; literal `__proto__: value` retains its
+separate prototype-setting semantics. Checks: `cargo test --test js_source
+stored_proto_accessor`, `cargo test --test js_source prototype_reflection`,
+`cargo test --test publication built_in_proto_accessors_are_shared_across_tasks`,
+`cargo test --lib vm::prototype::`.

@@ -20,7 +20,8 @@
 //!
 //! | Object | Kind | Own properties |
 //! |--------|------|----------------|
-//! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf`; the `__proto__` accessor is applied by the property walk, not stored (clj-quickjs-121, `crate::vm::prototype`) |
+//! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf`, `__proto__` (stored non-enumerable, configurable accessor, clj-quickjs-261) |
+//! | `get __proto__`, `set __proto__` | built-in accessor functions | `length` (0, 1), `name`; inherit from `Function.prototype` |
 //! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119), `getPrototypeOf`, `setPrototypeOf`, `create` (clj-quickjs-121), `preventExtensions`, `isExtensible`, `freeze`, `isFrozen` (clj-quickjs-122), `keys`, `getOwnPropertyNames` (clj-quickjs-123) |
 //! | `Object.is` | built-in function | `length` (2), `name` |
 //! | `Object.defineProperty` | built-in function | `length` (3), `name` |
@@ -117,7 +118,10 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
-use crate::object::{OrdinaryObject, PrimitiveData, Property, PropertyFlags, PropertyKey};
+use crate::object::{
+    DefineOutcome, OrdinaryObject, PrimitiveData, Property, PropertyDescriptor, PropertyFlags,
+    PropertyKey,
+};
 use crate::value::{JsString, Value};
 use crate::vm::builtin::{Builtin, BuiltinFunction};
 
@@ -222,10 +226,6 @@ pub(crate) struct Intrinsics {
     /// instead of the object table, so they take no lock (module docs,
     /// "Lock-free reads").
     views: Vec<IntrinsicView>,
-    /// The interned key `__proto__`: the name of `Object.prototype`'s
-    /// `__proto__` accessor, which the property walk applies
-    /// (clj-quickjs-121, `crate::vm::prototype`).
-    proto_key: PropertyKey,
     /// `Number.prototype`: a property read on a number primitive starts
     /// here (clj-quickjs-73, [`Intrinsics::primitive_prototype`]).
     pub(crate) number_prototype: ObjectId,
@@ -285,18 +285,6 @@ impl Intrinsics {
     /// intrinsic identities, no lock.
     pub(crate) fn view(&self, id: ObjectId) -> Option<&IntrinsicView> {
         self.views.iter().find(|v| v.id == id)
-    }
-
-    /// True when a property access of `key` that reached the intrinsic `id`
-    /// without finding an own property first meets `Object.prototype`'s
-    /// `__proto__` accessor (`crate::vm::prototype`, "`Object.prototype.__proto__`").
-    pub(crate) fn is_proto_accessor(&self, id: ObjectId, key: PropertyKey) -> bool {
-        id == self.object_prototype && key == self.proto_key
-    }
-
-    /// True when `key` is the interned name `__proto__`.
-    pub(crate) fn is_proto_key(&self, key: PropertyKey) -> bool {
-        key == self.proto_key
     }
 
     /// The prototype a property access on the primitive `v` starts at, as
@@ -527,6 +515,23 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     ] {
         b.add(object_prototype, name, value, PropertyFlags::METHOD)?;
     }
+    let proto_getter = b.function(Builtin::ObjectPrototypeProtoGetter, &[])?;
+    let proto_setter = b.function(Builtin::ObjectPrototypeProtoSetter, &[])?;
+    let proto_key = heap.keys().intern(&JsString::from("__proto__"))?;
+    let accessor = PropertyDescriptor {
+        get: Some(Value::Object(proto_getter)),
+        set: Some(Value::Object(proto_setter)),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    let defined = heap.with_object_mut(object_prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_own_property(proto_key, &accessor),
+        _ => unreachable!("Object.prototype is an ordinary intrinsic"),
+    })?;
+    if defined != DefineOutcome::Done {
+        return None;
+    }
 
     // `Function.prototype.call` and `apply`, and the `Function` stub
     // (`Function.prototype.constructor`, clj-quickjs-102).
@@ -663,7 +668,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             .flatten()
         })
         .collect::<Option<Vec<_>>>()?;
-    let proto_key = heap.keys().intern(&JsString::from("__proto__"))?;
     Some(Intrinsics {
         object_prototype,
         object,
@@ -674,7 +678,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         reflect,
         all,
         views,
-        proto_key,
         number_prototype,
         string_prototype,
         number,
@@ -989,7 +992,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 62);
+        assert_eq!(first.all.len(), 64);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1054,6 +1057,13 @@ mod tests {
             for (_, property) in &view.properties {
                 if let Value::Object(id) = property.value {
                     assert!(intrinsics.all.contains(&id), "{view:?}");
+                }
+                if let Some((get, set)) = &property.accessor {
+                    for value in [get, set] {
+                        if let Value::Object(id) = value {
+                            assert!(intrinsics.all.contains(id), "{view:?}");
+                        }
+                    }
                 }
             }
             // The view equals the object's own properties.

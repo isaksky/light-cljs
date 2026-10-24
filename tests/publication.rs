@@ -882,6 +882,39 @@ fn accessor_home_object_prevents_publication() {
     }
 }
 
+#[test]
+fn built_in_proto_accessors_are_shared_across_tasks() {
+    // Synthetic fixtures, not light-cljs output (clj-quickjs-261).
+    let rt = Runtime::new();
+    for (half, body) in [
+        ("get", "return f.call([]) === Array.prototype;"),
+        (
+            "set",
+            "let o = {}; let p = {}; return f.call(o, p) === undefined && Object.getPrototypeOf(o) === p;",
+        ),
+    ] {
+        let source =
+            format!("Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').{half}");
+        let producer = rt
+            .spawn(&compile_script("proto-accessor", &source).unwrap(), &[])
+            .unwrap();
+        let accessor = complete(producer.run().unwrap());
+        rt.publish(&accessor).unwrap();
+        drop(producer);
+        rt.collect().unwrap();
+        let source = format!("function useAccessor(f) {{ {body} }}");
+        let consumer = rt
+            .spawn(&compile_function(&source).unwrap(), &[&accessor])
+            .unwrap();
+        let result = thread::scope(|s| {
+            s.spawn(|| complete(consumer.run().unwrap()))
+                .join()
+                .unwrap()
+        });
+        assert_eq!(result.view(), ValueView::Bool(true), "{half}");
+    }
+}
+
 /// `'prototype' in f` (clj-quickjs-74) reports a constructor's lazy
 /// `prototype` without creating it, as QuickJS `JS_HasProperty` leaves
 /// autoinit properties alone: the function stays publishable, and a

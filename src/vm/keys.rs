@@ -35,7 +35,7 @@
 //! | Target | Keys |
 //! |--------|------|
 //! | ordinary object or array of the running task, embedder object, realm intrinsic | its own properties as above |
-//! | `Object.prototype` | enumerable keys: none (all its properties are non-enumerable); all keys: `UnsupportedOperand`, because its `__proto__` accessor is applied by the property walk, not stored (clj-quickjs-261) |
+//! | `Object.prototype` | enumerable keys: none; all keys include the stored non-enumerable `__proto__` accessor (clj-quickjs-261) |
 //! | built-in function | its own `length`, `name`, `prototype` and methods |
 //! | function object (clj-quickjs-125) | enumerable keys: the enumerable properties of its property record (none without one); all keys: initial `length`, `name`, and a constructor's `prototype` without allocation, or the complete property record |
 //! | object or array of another task | `ForeignObject` |
@@ -101,9 +101,8 @@
 //!   without any lock, and every walk that reaches `Object.prototype` ends
 //!   there with no lock taken for it. (Were an intrinsic's property
 //!   enumerable, its keys would be named from the view under the key
-//!   table's leaf lock, still not the object table's.) The view of
-//!   `Object.prototype` omits the `__proto__` accessor, which is
-//!   non-enumerable and would hide nothing: nothing is above it;
+//!   table's leaf lock, still not the object table's.) The view includes
+//!   the non-enumerable `__proto__` accessor;
 //! - after a function or built-in function: its prototype is
 //!   `Function.prototype` (clj-quickjs-102), an immutable intrinsic with no
 //!   enumerable property on its chain, so nothing above could be visited.
@@ -211,17 +210,6 @@ pub(crate) fn own_property_keys(
                 Vec::new()
             });
         }
-    }
-    if filter == KeyFilter::All
-        && heap
-            .realm()
-            .get()
-            .is_some_and(|r| r.object_prototype == target)
-    {
-        return Err(Fault::Unsupported(
-            "the own property names of Object.prototype include its __proto__ accessor, which is not stored"
-                .to_string(),
-        ));
     }
     let Some(store) = key_store(heap, target)? else {
         return Ok(Vec::new());

@@ -398,6 +398,51 @@ fn number_predicates_and_constants() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-261).
+#[test]
+fn stored_proto_accessor() {
+    let descriptor = "let d = Object.getOwnPropertyDescriptor(Object.prototype, '__proto__');";
+    for src in [
+        "d.get.length === 0 && d.set.length === 1 && !('prototype' in d.get) && !('prototype' in d.set) && Object.getPrototypeOf(d.get) === Function.prototype && d.get === Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
+        "d.get.call([]) === Array.prototype && d.get.call({}) === Object.prototype && d.get.call(Object.create(null)) === null && d.get.call(Object.prototype) === null",
+        "d.get.call(1) === Number.prototype && d.get.call('abc') === String.prototype && d.get.call(new Number(2)) === Number.prototype && d.get.call(new String('a')) === String.prototype",
+        "d.get.apply([], []) === Array.prototype && d.get.bind(1)() === Number.prototype && Reflect.apply(d.get, Object.prototype, []) === null",
+        "let b = true; b.__proto__ = {}; (1).__proto__ = null; 'a'.__proto__ = {}; b === true",
+        "let o = {}; let p = {x: 7}; d.set.call(o, p) === undefined && o.x === 7 && d.get.call(o) === p && d.set.call(o, null) === undefined && d.get.call(o) === null",
+        "let o = {}; let p = d.get.call(o); let v = {valueOf() { throw 7; }, toString() { throw 8; }}; d.set.call(o) === undefined && d.set.call(o, 1) === undefined && d.set.call(1, v) === undefined && d.set.call('a', null) === undefined && d.set.call(true, v) === undefined && d.get.call(o) === p",
+        "let o = {}; Object.defineProperty(o, 'link', d); let p = {}; (o.link = p) === p && o.link === p && Object.getPrototypeOf(o) === p",
+        "let p = {}; Object.defineProperty(p, 'link', d); let o = Object.create(p); let q = {}; (o.link = q) === q && Object.getPrototypeOf(o) === q && Object.getOwnPropertyDescriptor(o, 'link') === undefined && Object.getPrototypeOf(p) === Object.prototype",
+        "let a = {x: 3, __proto__: null}; let o = {__proto__: a}; !('__proto__' in o) && Object.getOwnPropertyDescriptor(o, '__proto__') === undefined && o.x === 3",
+        "Object.keys(Object.prototype).length === 0 && '__proto__' in {} && !('__proto__' in Object.create(null))",
+    ] {
+        let src = format!("{descriptor} {src}");
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "d.get.call(null)",
+        "d.get.call(undefined)",
+        "d.set.call(null, 1)",
+        "d.set.call(undefined)",
+        "d.set.call(Object.prototype, {})",
+        "d.set.call(Object.preventExtensions({}), {})",
+        "let o = {}; d.set.call(o, o)",
+        "new d.get()",
+        "new d.set({})",
+        "Object.defineProperty(Object.prototype, '__proto__', {get: d.get})",
+        "delete Object.prototype.__proto__",
+    ] {
+        let src = format!("{descriptor} {src}");
+        assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+        assert_eq!(
+            sloppy_eval(&format!(
+                "let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught"
+            )),
+            ValueView::Bool(true),
+            "{src}"
+        );
+    }
+}
+
 #[test]
 fn accessor_properties() {
     // Synthetic fixtures, not light-cljs output.
@@ -8896,11 +8941,12 @@ fn prototype_reflection() {
         "let o = {}; Object.defineProperty(o, '__proto__', {value: 7, writable: true}); \
          o.__proto__ = 8; o.__proto__ === 8 && Object.getPrototypeOf(o) === Object.prototype",
     );
-    // The accessor is not a stored property until clj-quickjs-120.
-    fails(
-        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__')",
-        VmErrorKind::UnsupportedOperand,
-        "accessor",
+    // The shared intrinsic stores the built-in accessor (clj-quickjs-261).
+    truth(
+        "let d = Object.getOwnPropertyDescriptor(Object.prototype, '__proto__'); \
+         typeof d.get === 'function' && typeof d.set === 'function' && \
+         d.get.name === 'get __proto__' && d.set.name === 'set __proto__' && \
+         !d.enumerable && d.configurable && !('value' in d) && !('writable' in d)",
     );
 
     // `__proto__: value` in a literal; its own names list no `__proto__`
@@ -9403,10 +9449,9 @@ fn own_property_key_order() {
          for (let i = 0; i < n.length; i++) { if (n[i] === 'keys') has = true; } \
          n[0] === 'length' && n[1] === 'name' && n[2] === 'prototype' && has",
     );
-    fails(
-        "Object.getOwnPropertyNames(Object.prototype)",
-        VmErrorKind::UnsupportedOperand,
-        "__proto__",
+    assert_eq!(
+        listed("", "Object.getOwnPropertyNames(Object.prototype)"),
+        "4:toString,valueOf,constructor,__proto__,"
     );
     // Function objects: their record's enumerable properties.
     assert_eq!(

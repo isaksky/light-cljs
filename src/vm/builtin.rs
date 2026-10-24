@@ -76,7 +76,7 @@
 //! | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task with prototype `proto` (an object or `null`, else a catchable `TypeError`); a second argument other than `undefined`: `UnsupportedOperand` (`Object.defineProperties`) |
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
-//! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); `getOwnPropertyNames` of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-261) |
+//! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); `Object.prototype` lists its stored `__proto__` accessor (clj-quickjs-261) |
 //! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; radixes 2..36 (clj-quickjs-149) produce exact integer and shortest round-trip fractional digits; object radixes use resumable ToNumber; an invalid radix throws catchable `RangeError`; any other receiver: catchable `TypeError` |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
 //! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
@@ -228,6 +228,10 @@ pub(crate) enum Builtin {
     MathImul,
     MathFround,
     MathHypot,
+
+    /// `Object.prototype.__proto__` accessor functions (clj-quickjs-261).
+    ObjectPrototypeProtoGetter,
+    ObjectPrototypeProtoSetter,
 }
 
 impl Builtin {
@@ -286,6 +290,9 @@ impl Builtin {
             Builtin::MathImul => "imul",
             Builtin::MathFround => "fround",
             Builtin::MathHypot => "hypot",
+
+            Builtin::ObjectPrototypeProtoGetter => "get __proto__",
+            Builtin::ObjectPrototypeProtoSetter => "set __proto__",
         }
     }
 
@@ -338,6 +345,9 @@ impl Builtin {
             Builtin::ParseFloat => 1,
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot => 2,
+
+            Builtin::ObjectPrototypeProtoGetter => 0,
+            Builtin::ObjectPrototypeProtoSetter => 1,
         }
     }
 }
@@ -416,6 +426,8 @@ pub(crate) fn call(
         }
         Builtin::ObjectGetPrototypeOf => prototype::object_get_prototype_of(heap, task, args),
         Builtin::ObjectSetPrototypeOf => prototype::object_set_prototype_of(heap, task, args),
+        Builtin::ObjectPrototypeProtoGetter => prototype::proto_getter(heap, task, this),
+        Builtin::ObjectPrototypeProtoSetter => prototype::proto_setter(heap, task, this, &arg(0)),
         Builtin::ObjectCreate => prototype::object_create(heap, task, args),
         Builtin::ObjectPreventExtensions => integrity::prevent_extensions(heap, task, &arg(0)),
         Builtin::ObjectIsExtensible => integrity::is_extensible(heap, task, &arg(0)),
