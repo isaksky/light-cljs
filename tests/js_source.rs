@@ -5442,6 +5442,23 @@ fn object_literal_methods() {
     );
 }
 
+/// Synthetic fixture, not light-cljs output: method strictness is independent
+/// of the script's selected mode.
+#[test]
+fn object_literal_methods_in_sloppy_scripts() {
+    let source = "let f = ({m() { return this; }}).m; f()";
+    let exe = compile_script_with("sloppy-method", source, ScriptOptions::SLOPPY).unwrap();
+    assert!(!exe.is_strict());
+    let spec = exe.to_spec();
+    assert_eq!(spec.functions.len(), 1);
+    assert!(spec.functions[0].is_strict());
+    assert!(!spec.functions[0].to_spec().constructor);
+    let RunOutcome::Complete(value) = run(&exe, &[]) else {
+        panic!("method must complete")
+    };
+    assert_eq!(value.view(), ValueView::Undefined);
+}
+
 /// Corrupted bytecode must account for a method's extra home-object operand.
 #[test]
 fn method_bytecode_requires_a_home_object() {
