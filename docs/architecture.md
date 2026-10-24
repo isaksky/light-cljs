@@ -1306,3 +1306,10 @@ and Charlie Gordon) and is listed here with its source path and revision:
   and a finally block's reason is an explicit completion record, not a
   catch offset or `gosub` return address on the C value stack. No code was
   copied.
+- `src/frontend/tests.rs` `hashbang_comment_only_at_start` (clj-quickjs-49):
+  the hashbang line `#! (shebang test)` of
+  `research/quickjs/tests/test_std.js` (line 1), revision 7d1c13c5d8f8, as
+  JavaScript source parsed by this frontend. Modified: followed by `x` to
+  check the next line's position. The test carries the full notice.
+  `research/quickjs/quickjs.c` `skip_shebang` was consulted only (where a
+  hashbang may start and which characters end it); no code was copied.

@@ -500,7 +500,9 @@ are outside the subset). For functions and closures (clj-quickjs-21):
 `get_closure_var` / `add_closure_var` (resolving a name through enclosing
 functions and threading it down as captured variables) and
 `instantiate_hoisted_definitions` (function declarations created on scope
-entry). The tests in `src/frontend/tests.rs` are written for this project
-and are not adapted from QuickJS; `tests/fixtures/js/quickjs_closure.js` is
-adapted from `research/quickjs/tests/test_closure.js` and carries its
-notice (`docs/architecture.md`, "QuickJS references and provenance").
+entry). For hashbang comments (clj-quickjs-49): `skip_shebang`. The tests
+in `src/frontend/tests.rs` are written for this project and are not adapted
+from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
+in `hashbang_comment_only_at_start`, which carries its notice;
+`tests/fixtures/js/quickjs_closure.js` is adapted from
+`research/quickjs/tests/test_closure.js` and carries its notice (`docs/architecture.md`, "QuickJS references and provenance").

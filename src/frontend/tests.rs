@@ -1,5 +1,6 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
-//! light-cljs output and not adapted from QuickJS.
+//! light-cljs output and not adapted from QuickJS, except one line in
+//! `hashbang_comment_only_at_start` (see its notice).
 
 use super::ast::{BinaryOp, Expr, ExprKind, Function, LogicalOp, Stmt, StmtKind, UnaryOp};
 use super::lexer::{Lexer, Punct, TokenKind};
@@ -529,10 +530,32 @@ fn line_column_counts_lines_and_scalar_values() {
 #[test]
 fn hashbang_comment_only_at_start() {
     use SyntaxErrorKind::UnknownToken;
-    // ECMAScript HashbangComment, skipped as QuickJS `skip_shebang` does
-    // (case: the first line of `research/quickjs/tests/test_std.js` at
-    // 7d1c13c5d8f8): only at byte 0, ending before the first line
-    // terminator, which still separates lines.
+    // ECMAScript HashbangComment, skipped as QuickJS `skip_shebang` does:
+    // only at byte 0, ending before the first line terminator, which still
+    // separates lines.
+    //
+    // The hashbang line below is adapted from line 1 of
+    // `research/quickjs/tests/test_std.js`, revision 7d1c13c5d8f8 (followed
+    // here by `x`); see `docs/architecture.md`, "QuickJS references and
+    // provenance".
+    //
+    // QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+    // released under the MIT license: Permission is hereby granted, free of
+    // charge, to any person obtaining a copy of this software and associated
+    // documentation files (the "Software"), to deal in the Software without
+    // restriction, including without limitation the rights to use, copy,
+    // modify, merge, publish, distribute, sublicense, and/or sell copies of
+    // the Software, and to permit persons to whom the Software is furnished
+    // to do so, subject to the following conditions: The above copyright
+    // notice and this permission notice shall be included in all copies or
+    // substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+    // WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+    // LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+    // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+    // HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+    // AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+    // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    // SOFTWARE.
     let src = "#! (shebang test)\nx";
     assert_eq!(ast(src), "x");
     let script = parse_script(src).unwrap();
@@ -540,8 +563,22 @@ fn hashbang_comment_only_at_start() {
     assert_eq!(line_column(src, script.body[0].span.start), (2, 1));
     assert!(parse_script("#!x").unwrap().body.is_empty());
     assert!(parse_script("#!").unwrap().body.is_empty());
-    assert_eq!(ast("#!a\u{2028}b"), "b");
-    assert_eq!(ast("#!a\r\nb"), "b");
+    // Every line terminator ends it, and the next line is line 2.
+    for src in [
+        "#!a\nb",
+        "#!a\rb",
+        "#!a\r\nb",
+        "#!a\u{2028}b",
+        "#!a\u{2029}b",
+    ] {
+        let script = parse_script(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+        assert_eq!(ast(src), "b", "{src:?}");
+        assert_eq!(
+            line_column(src, script.body[0].span.start),
+            (2, 1),
+            "{src:?}"
+        );
+    }
     // The comment runs to the line end; `/*` inside it opens nothing.
     assert_eq!(ast("#! /* \nb"), "b");
     // Anywhere else `#` is not a token.
