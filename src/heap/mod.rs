@@ -328,7 +328,6 @@ impl ObjectTable {
             .filter(|s| s.generation == id.generation && s.object.is_some())
     }
 
-    #[cfg(test)]
     fn get(&self, id: ObjectId) -> Option<&HeapObject> {
         self.slot(id)?.object.as_deref()
     }
@@ -515,6 +514,53 @@ impl Heap {
                 slot.shareable = true;
             }
         }
+    }
+
+    /// [`Heap::mark_shareable`] for the result of a publication walk, unless
+    /// one of the objects changed since the walk read it: in one object-table
+    /// critical section, if `changed` holds for any live object in
+    /// `ids`, nothing is marked and the result is false (the caller walks
+    /// again); otherwise every live object in `ids` is marked and the result
+    /// is true. The one change it guards against is a function object
+    /// gaining its own-property record (`crate::vm::function`, "Own
+    /// properties"), which takes the same lock and refuses a known function.
+    pub(crate) fn mark_shareable_unless(
+        &self,
+        ids: &[ObjectId],
+        changed: impl Fn(&HeapObject) -> bool,
+    ) -> bool {
+        let mut table = lock(&self.objects);
+        if ids.iter().any(|&id| table.get(id).is_some_and(&changed)) {
+            return false;
+        }
+        for &id in ids {
+            let Some(slot) = table.slots.get_mut(id.index as usize) else {
+                continue;
+            };
+            if slot.generation == id.generation && slot.object.is_some() {
+                slot.shareable = true;
+            }
+        }
+        true
+    }
+
+    /// Run `f` on a live object and its known-shareable bit under the object
+    /// lock, with mutable access; `None` if `id` is stale. Same rules as
+    /// [`Heap::with_object_mut`]; used to attach a function's own-property
+    /// record only while the function is not known shareable
+    /// (`crate::vm::function`).
+    pub(crate) fn with_object_mut_known<R>(
+        &self,
+        id: ObjectId,
+        f: impl FnOnce(&mut HeapObject, bool) -> R,
+    ) -> Option<R> {
+        let mut table = lock(&self.objects);
+        let slot = table.slots.get_mut(id.index as usize)?;
+        if slot.generation != id.generation {
+            return None;
+        }
+        let known = slot.shareable;
+        slot.object.as_deref_mut().map(|o| f(o, known))
     }
 
     /// The known-shareable bit of a live object (tests).

@@ -175,12 +175,19 @@ pub(crate) enum Flow {
     CleanupEnded,
 }
 
-/// Allocate a function object for `code` with its captured values. Known
-/// shareable at allocation when every captured value is (its code constants
-/// are primitives): see `crate::vm::function`.
-fn new_function(heap: &Heap, code: Arc<Code>, captures: Box<[Value]>) -> Result<Value, Fault> {
-    let object = HeapObject::Function(FunctionObject { code, captures });
-    heap.alloc_persistent(object, None)
+/// Allocate a function object for `code` with its captured values, created
+/// by `owner`. Never known shareable at allocation, even when every captured
+/// value is: until a publication check proves it shareable (which makes it
+/// immutable), its creator may still give it own properties
+/// (`crate::vm::function`, "Own properties").
+fn new_function(
+    heap: &Heap,
+    code: Arc<Code>,
+    captures: Box<[Value]>,
+    owner: TaskId,
+) -> Result<Value, Fault> {
+    let object = HeapObject::Function(FunctionObject::new(code, captures, owner));
+    heap.alloc(object)
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
@@ -1011,7 +1018,7 @@ fn step(
             // and under this run's mutator guard.
             let n = usize::from(n);
             let captures: Box<[Value]> = top_operands(state, n)?.into();
-            let f = new_function(heap, child, captures)?;
+            let f = new_function(heap, child, captures, state.diag.task)?;
             state.replace(n, f)?;
         }
         Instr::GetCapture(i) => {
@@ -1072,7 +1079,12 @@ fn step(
                 None => {
                     // The entry frame has no function object until asked for
                     // one; it is kept in the frame (a root) from now on.
-                    let f = new_function(heap, Arc::clone(&state.top().code), Box::new([]))?;
+                    let f = new_function(
+                        heap,
+                        Arc::clone(&state.top().code),
+                        Box::new([]),
+                        state.diag.task,
+                    )?;
                     if let Value::Object(id) = f {
                         state.top_mut().callee = Some(id);
                     }
@@ -1121,6 +1133,10 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally => true,
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) => true,
+        // On a function object these may allocate its property record and
+        // its lazy `prototype` object, and build the realm
+        // (`crate::vm::function`, clj-quickjs-125).
+        Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem => true,
         Instr::NewObject
         | Instr::NewObjectLiteral
         | Instr::NewArray
@@ -1186,13 +1202,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::ToString
         // Property storage grows outside the object table: no heap object
         // is allocated, so no poll (`crate::vm::property`).
-        | Instr::GetField(_)
-        | Instr::PutField(_)
         | Instr::DefineField(_)
         | Instr::AppendElement
         | Instr::AppendHole
-        | Instr::GetElem
-        | Instr::PutElem
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit
@@ -1538,6 +1550,7 @@ mod tests {
                 functions: functions.into(),
                 captures: 0,
                 strict: true,
+                constructor: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

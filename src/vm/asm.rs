@@ -215,6 +215,7 @@ impl Assembler {
             functions: self.functions,
             captures: self.captures,
             strict: true,
+            constructor: false,
         }
     }
 

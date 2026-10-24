@@ -71,11 +71,14 @@ enum Holder {
     Intrinsic,
     /// Elements of an array object.
     ArrayElement,
+    /// A function object's own-property record and its values (the lazy
+    /// `prototype` object among them).
+    FunctionProperties,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 22] = [
+const HOLDERS: [Holder; 23] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -98,6 +101,7 @@ const HOLDERS: [Holder; 22] = [
     Holder::ObjectProperty,
     Holder::Intrinsic,
     Holder::ArrayElement,
+    Holder::FunctionProperties,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -140,6 +144,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             BindingCell,
             PersistentCollectionEdges,
             NativePayloadEdges,
+            FunctionProperties,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -171,7 +176,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             &[PersistentCollectionEdges, DependencyOutcome]
         }
         ObjectKind::Builder => &[TransientBuilder],
-        ObjectKind::Function => &[ClosureEnvironment, BindingCell],
+        ObjectKind::Function => &[ClosureEnvironment, BindingCell, FunctionProperties],
         ObjectKind::Cell => &[BindingCell],
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
@@ -255,6 +260,9 @@ fn coverage(holder: Holder) -> Coverage {
             reclaims: (Inventory, "realm_intrinsics_reclaim_with_their_heap"),
         },
         Holder::ArrayElement => public("array_element_retains", "array_element_reclaims"),
+        Holder::FunctionProperties => {
+            public("function_properties_retain", "function_properties_reclaim")
+        }
     }
 }
 
@@ -352,6 +360,7 @@ fn spawn_with_constant(rt: &crate::Runtime, constant: ObjectId) -> crate::Task {
         functions: Box::new([]),
         captures: 0,
         strict: true,
+        constructor: false,
         offsets: Box::new([0, 3]),
         instrs: Box::new([Instr::Const(0), Instr::Return]),
         max_stack: 1,

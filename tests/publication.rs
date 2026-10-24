@@ -662,3 +662,137 @@ fn closures_using_builtin_globals_publish() {
         );
     }
 }
+
+/// Function own properties (clj-quickjs-125; `docs/architecture.md`,
+/// "Function own properties"): an untouched function publishes; one whose
+/// properties were written, or whose lazy `prototype` was read, is rejected
+/// at its task-owned property record (`.properties`), and the path goes on
+/// into the record's property values. A published function is shared and
+/// immutable: no task can give it properties or a prototype any more.
+/// JavaScript source is a synthetic fixture, not light-cljs output.
+#[test]
+fn function_own_properties_follow_publication_rule() {
+    let rt = Runtime::new();
+    let run = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("functions", src).unwrap(), &[])
+            .unwrap();
+        (complete(task.run().unwrap()), task.id())
+    };
+    // Untouched: publishes, and runs in another task on another thread.
+    let (h, _) = run("function h() { return 7; } h");
+    rt.publish(&h).unwrap();
+    let call = compile_function("function call(g) { return g(); }").unwrap();
+    let task = rt.spawn(&call, &[&h]).unwrap();
+    let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
+    assert_eq!(result.view(), ValueView::Number(7.0));
+
+    // A written property: rejected at the record.
+    let (h, producer) = run("function h() {} h.x = 1; h");
+    let err = rt.publish(&h).unwrap_err();
+    assert_eq!(
+        not_shareable(err.clone()),
+        (vec![PathStep::FunctionProperties], "object", Some(producer))
+    );
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "cannot publish: value.properties is a task-owned object (owned by {producer}), \
+             which is not shareable"
+        )
+    );
+    // A read `prototype`: rejected at the prototype object in the record.
+    let (h, producer) = run("function h() {} h.prototype; __rt.vector(1, h)");
+    assert_eq!(
+        not_shareable(rt.publish(&h).unwrap_err()),
+        (
+            vec![
+                PathStep::Index(1),
+                PathStep::FunctionProperties,
+                PathStep::Property("prototype".to_string()),
+            ],
+            "object",
+            Some(producer)
+        )
+    );
+    // A property holding a shareable value still makes the function
+    // task-owned: the record itself is mutable.
+    let (h, _) = run("const h = () => 1; h.n = __rt.vector(1); h");
+    assert_eq!(
+        not_shareable(rt.publish(&h).unwrap_err()).0,
+        vec![PathStep::FunctionProperties]
+    );
+    // An arrow has no `prototype`, so reading it (or any absent property)
+    // creates nothing.
+    let (h, _) = run("const h = () => 1; h.prototype; h.y; h");
+    rt.publish(&h).unwrap();
+
+    // Once published, a function is immutable: a write is a catchable
+    // TypeError, and creating its prototype object fails explicitly; reads
+    // of absent properties still answer.
+    let (h, _) = run("function h() {} h");
+    rt.publish(&h).unwrap();
+    let probe = compile_function(
+        "function probe(h) { let r = h.y === undefined ? 1 : 0; \
+         try { h.x = 1; } catch (e) { r = r + 10; } return r + (h.x === undefined ? 100 : 0); }",
+    )
+    .unwrap();
+    let task = rt.spawn(&probe, &[&h]).unwrap();
+    assert_eq!(
+        complete(task.run().unwrap()).view(),
+        ValueView::Number(111.0)
+    );
+    let prototype = compile_function("function p(h) { return h.prototype; }").unwrap();
+    match rt.spawn(&prototype, &[&h]).unwrap().run().unwrap() {
+        RunOutcome::Failed(e) => {
+            assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{e}");
+            assert!(e.message().contains("published function"), "{e}");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    // Assigning `prototype` is a write like any other: a catchable
+    // TypeError on a published function or arrow.
+    let assign = compile_function(
+        "function assign(h) { try { h.prototype = 3; } catch (e) { return 1; } return 0; }",
+    )
+    .unwrap();
+    for src in ["function h() {} h", "const h = () => 1; h"] {
+        let (h, _) = run(src);
+        rt.publish(&h).unwrap();
+        let task = rt.spawn(&assign, &[&h]).unwrap();
+        assert_eq!(
+            complete(task.run().unwrap()).view(),
+            ValueView::Number(1.0),
+            "{src}"
+        );
+    }
+    // Installing a function in an atom publishes it too.
+    let (h, _) = run("function h() {} h");
+    let _atom = rt.new_atom(&h).unwrap();
+    let task = rt.spawn(&probe, &[&h]).unwrap();
+    assert_eq!(
+        complete(task.run().unwrap()).view(),
+        ValueView::Number(111.0)
+    );
+
+    // Not published but handed over unchecked (`spawn` does not check its
+    // arguments): only the creating task may write it or create its
+    // prototype.
+    let (h, producer) = run("function h() {} h");
+    for exe in [&probe, &prototype] {
+        let task = rt.spawn(exe, &[&h]).unwrap();
+        match task.run().unwrap() {
+            RunOutcome::Failed(e) => assert_eq!(
+                e.kind(),
+                VmErrorKind::ForeignObject {
+                    owner: Some(producer),
+                    caller: task.id()
+                },
+                "{e}"
+            ),
+            other => panic!("expected ForeignObject, got {other:?}"),
+        }
+    }
+    // Nothing was attached, so it still publishes.
+    rt.publish(&h).unwrap();
+}

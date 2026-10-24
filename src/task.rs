@@ -1662,6 +1662,7 @@ mod tests {
                 functions: Box::new([]),
                 captures: 0,
                 strict: true,
+                constructor: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

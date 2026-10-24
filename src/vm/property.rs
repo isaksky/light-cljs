@@ -20,7 +20,7 @@
 //! | realm intrinsic `Object.prototype`, `Array.prototype` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property; any other name `UnsupportedOperand` (inherited from `Function.prototype`, clj-quickjs-102) | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
-//! | function object | `UnsupportedOperand` (its own properties are clj-quickjs-101/-125) | `UnsupportedOperand` |
+//! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; a name `Function.prototype` will own `UnsupportedOperand`; any other name continues at `Object.prototype` | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, boolean, string | `UnsupportedOperand` (primitive wrappers are clj-quickjs-73) | `UnsupportedOperand` |
@@ -77,11 +77,14 @@
 //! ordinary object (or the chain behind a hole) looks it up by its
 //! canonical name.
 //!
-//! No operation here except `NewArray` allocates a heap object or runs
-//! JavaScript; each object visited is read or changed under one short
-//! object-table lock (a realm intrinsic is read from the realm's immutable
-//! view instead, with no lock: `crate::realm`, "Lock-free reads"), and the
-//! property-key table is consulted before, never while that lock is held.
+//! No operation here allocates a heap object or runs JavaScript, except
+//! `NewArray` and an access to a function object, which may allocate its
+//! property record and lazy `prototype` (`crate::vm::function`), so
+//! `GetField`, `PutField`, `GetElem` and `PutElem` are poll points. Each
+//! object visited is read or changed under one short object-table lock (a
+//! realm intrinsic is read from the realm's immutable view instead, with no
+//! lock: `crate::realm`, "Lock-free reads"), and the property-key table is
+//! consulted before, never while that lock is held.
 
 use std::fmt;
 
@@ -97,6 +100,7 @@ use crate::value::string::number_to_string;
 use crate::value::{JsString, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
+use crate::vm::function::{self, FunctionRead};
 
 /// A property key after ToPropertyKey: an array index, or any other name.
 #[derive(Clone, Debug, PartialEq)]
@@ -219,7 +223,6 @@ fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault>
         )))
     };
     match object {
-        HeapObject::Function(_) => unsupported("a function"),
         HeapObject::Native(payload) => {
             let any: &dyn std::any::Any = &**payload;
             if any.is::<ErrorObject>() {
@@ -319,6 +322,9 @@ enum Lookup {
     /// An index key reached an ordinary store: look its name up in the key
     /// table (outside the object lock) and visit the object again.
     NeedsName,
+    /// A function object: its own properties decide
+    /// (`crate::vm::function::read`).
+    Function,
 }
 
 /// The own named property of the store `o` (a built-in function's when
@@ -364,7 +370,7 @@ pub(crate) fn find(
         Key::Name(name) => Some(heap.keys().lookup(name)),
         Key::Index(_) => None,
     };
-    let realm = heap.realm().get();
+    let mut realm = heap.realm().get();
     loop {
         // An intrinsic is read from the realm's immutable view, without the
         // object-table lock (`crate::realm`, "Lock-free reads").
@@ -396,6 +402,7 @@ pub(crate) fn find(
                     _ if key.is_length() => Ok(Lookup::Found(Value::Number(f64::from(a.length())))),
                     Key::Name(_) => read_store(a.object(), false, key, interned),
                 },
+                Visit::Other(HeapObject::Function(_)) => Ok(Lookup::Function),
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
                     None => Ok(Lookup::Next(None)),
@@ -409,6 +416,18 @@ pub(crate) fn find(
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(None),
             Lookup::NeedsName => interned = Some(heap.keys().lookup(&key.to_name())),
+            Lookup::Function => match function::read(heap, task, id, key)? {
+                FunctionRead::Found(v) => return Ok(Some(v)),
+                FunctionRead::Continue(next) => {
+                    id = next;
+                    // The read may have built the realm (and interned its
+                    // names) to continue at `Object.prototype`.
+                    realm = heap.realm().get();
+                    if let Key::Name(name) = key {
+                        interned = Some(heap.keys().lookup(name));
+                    }
+                }
+            },
         }
     }
 }
@@ -435,6 +454,9 @@ enum Stored {
     /// `[[Set]]` returned false (a read-only property, a non-extensible
     /// receiver): the strict-mode TypeError (module docs).
     Rejected(Fault),
+    /// A function object: the write goes to its property record
+    /// (`crate::vm::function::write_target`).
+    Function,
 }
 
 /// The receiver's outcome of OrdinarySet.
@@ -467,6 +489,7 @@ fn store(
     match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable(key)),
         HeapObject::Builtin(_) => Err(immutable(key)),
+        HeapObject::Function(_) => Ok(Stored::Function),
         HeapObject::Plain(o) => {
             check_write(o, task)?;
             named(o)
@@ -510,7 +533,7 @@ pub(crate) fn put(
     value: Value,
     strict: bool,
 ) -> Result<(), Fault> {
-    let Value::Object(id) = *base else {
+    let Value::Object(mut id) = *base else {
         return Err(primitive_base(base, key, Access::Write));
     };
     let mut interned = match key {
@@ -528,6 +551,7 @@ pub(crate) fn put(
             Stored::NeedsName => interned = Some(intern(heap, &key.to_name())?),
             Stored::Inherited(prototype) => break prototype,
             Stored::Rejected(fault) => return rejected(fault),
+            Stored::Function => id = function::write_target(heap, task, id, key)?,
         }
     };
     // An index name that was never interned is on no object of the chain.
@@ -683,8 +707,10 @@ pub(crate) fn define_field(
 /// define that would change `length` is `UnsupportedOperand`,
 /// clj-quickjs-39); a realm intrinsic
 /// is a TypeError (immutable); another task's object is `ForeignObject`; a
-/// function or error object is `UnsupportedOperand`; the other heap kinds
-/// have no properties and are not extensible (TypeError).
+/// function's property goes to its property record
+/// (`crate::vm::function::define_target`, clj-quickjs-125); an error object
+/// is `UnsupportedOperand`; the other heap kinds have no properties and are
+/// not extensible (TypeError).
 pub(crate) fn define_own_property(
     heap: &Heap,
     task: TaskId,
@@ -692,6 +718,10 @@ pub(crate) fn define_own_property(
     key: &Key,
     desc: &PropertyDescriptor,
 ) -> Result<(), Fault> {
+    let target = match is_function(heap, target) {
+        true => function::define_target(heap, task, target, key)?,
+        false => target,
+    };
     // An array index of an array needs no name; every other key does.
     let element = matches!(key, Key::Index(_))
         && heap
@@ -760,14 +790,23 @@ fn defined(outcome: DefineOutcome, key: &Key) -> Result<(), Fault> {
 /// `task` (`[[GetOwnProperty]]`, as `Object.getOwnPropertyDescriptor` uses
 /// it; clj-quickjs-119): `None` if absent. Ordinary objects (realm
 /// intrinsics included), arrays and built-in functions report their own
-/// properties; another task's object is `ForeignObject`; a function or
-/// error object is `UnsupportedOperand`; the other heap kinds have none.
+/// properties; another task's object is `ForeignObject`; a function reports
+/// those in its property record (`crate::vm::function::own_store`,
+/// clj-quickjs-125); an error object is `UnsupportedOperand`; the other heap
+/// kinds have none.
 pub(crate) fn get_own_property(
     heap: &Heap,
     task: TaskId,
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    let target = match is_function(heap, target) {
+        true => match function::own_store(heap, task, target, key)? {
+            Some(record) => record,
+            None => return Ok(None),
+        },
+        false => target,
+    };
     let k = heap.keys().lookup(&key.to_name());
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
@@ -783,6 +822,13 @@ pub(crate) fn get_own_property(
         },
     })
     .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+}
+
+/// True for a function object, whose properties live in a separate record
+/// (`crate::vm::function`).
+fn is_function(heap: &Heap, id: ObjectId) -> bool {
+    heap.read(id, |o| matches!(o, HeapObject::Function(_)))
+        .unwrap_or(false)
 }
 
 /// The failure of a define on a realm intrinsic (`crate::realm`).

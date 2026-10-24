@@ -7,7 +7,7 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`); natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`); natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
@@ -39,6 +39,32 @@
 //! publishes its code: code is immutable `Arc` storage outside the heap,
 //! shared by every task whether or not any closure over it is published.
 //!
+//! ## Functions with own properties (clj-quickjs-125)
+//!
+//! A function's JavaScript own properties (`f.x = 1`, its lazy `prototype`)
+//! live in a separate task-owned ordinary object, its property record,
+//! created on first write or first `prototype` read
+//! (`crate::vm::function`, "Own properties"; decision record:
+//! `docs/architecture.md`, "Function own properties"). The function stays
+//! `Persistent`; its record is one more edge, which the walk follows like a
+//! capture, so a function with a record is rejected at it, with a path step
+//! `.properties` ([`PathStep::FunctionProperties`]; the record is a
+//! task-owned `object`, and the description continues into its property
+//! values: `value.properties.property(prototype)` once `prototype` was
+//! read). An untouched function publishes as before.
+//!
+//! That edge is the one exception to "a persistent object's edges never
+//! change": it is written at most once, and never on a function whose
+//! known-shareable bit is set. Both the attach and the setting of the bit
+//! happen under the object-table lock: the attach refuses a known function
+//! (the write is then the `TypeError` of a shared, immutable function), and
+//! [`check`] sets bits with [`Heap::mark_shareable_unless`], which marks
+//! nothing and makes the check walk again if a function it expanded gained
+//! a record meanwhile. So the sticky-bit invariant below holds for
+//! functions too, and a function is never known shareable at allocation
+//! (its creator may still give it properties): it becomes known when a
+//! check proves it, and from then on it is immutable.
+//!
 //! The classification is the exhaustive match in [`classify`]: adding a
 //! heap object kind does not compile until it declares a category.
 //!
@@ -50,7 +76,9 @@
 //!   direct reference reported by its `Trace` is part of its value), and it
 //!   should be allocated with [`Heap::alloc_persistent`] so the cache below
 //!   stays effective. (Closures are `Persistent` objects whose mutable
-//!   bindings live in separate `TaskOwned` binding cells; see above.)
+//!   bindings live in separate `TaskOwned` binding cells, and whose own
+//!   properties live in a separate `TaskOwned` record attached at most once
+//!   before the function is known shareable; see above.)
 //! * If `ConcurrentReference`: every operation that installs a value in it
 //!   calls [`check`] on that value first and rejects it on failure.
 //! * Otherwise `TaskOwned`.
@@ -110,7 +138,8 @@
 //!
 //! Invariant: the bit is set only on objects whose whole reachable graph is
 //! shareable, and stays true while the object lives, because a persistent
-//! object's edges never change and no object's category ever changes. The
+//! object's edges never change (a function's one write-once edge is attached
+//! only while its bit is clear, above) and no object's category ever changes. The
 //! walk stops at known objects, so publishing the same value again, or any
 //! version derived from it with known parts, is O(1). The bit is rewritten
 //! whenever a slot is reused, so it never describes a reclaimed object.
@@ -238,6 +267,11 @@ pub enum PathStep {
     /// a vector element. Only in the description of a rejected array (see
     /// [`PublishError::NotShareable`]).
     Element(u32),
+    /// A function object's own-property record (clj-quickjs-125,
+    /// `crate::vm::function`): an ordinary object, so always where a path
+    /// is rejected (or continues with `.property(name)` steps). Displayed
+    /// `.properties`.
+    FunctionProperties,
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -265,6 +299,7 @@ impl fmt::Display for ValuePath {
                 PathStep::Capture(n) => write!(f, ".capture({n})")?,
                 PathStep::Property(name) => write!(f, ".property({name})")?,
                 PathStep::Element(i) => write!(f, "[{i}]")?,
+                PathStep::FunctionProperties => f.write_str(".properties")?,
             }
         }
         Ok(())
@@ -318,6 +353,7 @@ enum Step {
     OccurrenceValue,
     NativeEdge(usize),
     Capture(usize),
+    FunctionProperties,
 }
 
 /// What one object contributes to the walk.
@@ -339,9 +375,13 @@ enum Children {
     Map(PMap),
     Occurrence(Value),
     Native(Vec<ObjectId>),
-    /// A closure's captured values. Its code's constants are primitives by
-    /// construction (`ExecutableSpec::constants`), so they add no edges.
-    Captures(Box<[Value]>),
+    /// A closure's captured values and its own-property record, if it has
+    /// one. Its code's constants are primitives by construction
+    /// (`ExecutableSpec::constants`), so they add no edges.
+    Function {
+        captures: Box<[Value]>,
+        properties: Option<ObjectId>,
+    },
 }
 
 impl Children {
@@ -364,9 +404,15 @@ impl Children {
                     f(Step::NativeEdge(n), &Value::Object(id));
                 }
             }
-            Children::Captures(values) => {
-                for (n, v) in values.iter().enumerate() {
+            Children::Function {
+                captures,
+                properties,
+            } => {
+                for (n, v) in captures.iter().enumerate() {
                     f(Step::Capture(n), v);
+                }
+                if let Some(record) = properties {
+                    f(Step::FunctionProperties, &Value::Object(*record));
                 }
             }
         }
@@ -389,7 +435,10 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
             HeapObject::Occurrence(occ) => Children::Occurrence(occ.value.clone()),
-            HeapObject::Function(func) => Children::Captures(func.captures.clone()),
+            HeapObject::Function(func) => Children::Function {
+                captures: func.captures.clone(),
+                properties: func.properties,
+            },
             other => {
                 let mut edges = Vec::new();
                 crate::heap::gc::Trace::trace(other, &mut |id| edges.push(id));
@@ -414,6 +463,23 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     let Value::Object(root) = *value else {
         return Ok(());
     };
+    // A function that gained its own-property record after the walk read
+    // it voids the walk: nothing is marked and the value is walked again
+    // (module docs, "Functions with own properties"). Each function gains a
+    // record at most once, so this ends.
+    loop {
+        let proven = walk(heap, root, expanded)?;
+        let gained_properties =
+            |o: &HeapObject| matches!(o, HeapObject::Function(f) if f.properties.is_some());
+        if heap.mark_shareable_unless(&proven, gained_properties) {
+            return Ok(());
+        }
+    }
+}
+
+/// One breadth-first walk of [`check`] from `root`: the persistent objects
+/// it expanded, or the rejection.
+fn walk(heap: &Heap, root: ObjectId, expanded: &mut usize) -> Result<Vec<ObjectId>, PublishError> {
     // Each discovered object maps to the step that first reached it.
     let mut parents: HashMap<ObjectId, Option<(ObjectId, Step)>> = HashMap::new();
     parents.insert(root, None);
@@ -447,8 +513,7 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
             }
         }
     }
-    heap.mark_shareable(&proven);
-    Ok(())
+    Ok(proven)
 }
 
 /// How [`into_properties`] reaches a child: an array element or a named
@@ -556,6 +621,7 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::OccurrenceValue => PathStep::OccurrenceValue,
         Step::NativeEdge(n) => PathStep::NativeEdge(n),
         Step::Capture(n) => PathStep::Capture(n),
+        Step::FunctionProperties => PathStep::FunctionProperties,
     }
 }
 
@@ -860,6 +926,63 @@ mod tests {
         assert_eq!(path.to_string(), "value{\"k\"}");
         assert_eq!(check(&heap, &key), Ok(()));
         assert_eq!(check(&heap, &n(1.0)), Ok(()), "primitives are shareable");
+    }
+
+    /// A function whose property record is attached between the walk that
+    /// read it and the marking of the walk's result (clj-quickjs-125): the
+    /// marking refuses, nothing is cached, and the check walks again and
+    /// rejects the function at its record. Conversely a known function
+    /// cannot gain a record (`crate::vm::function`).
+    #[test]
+    fn a_function_gaining_properties_during_a_check_is_not_cached() {
+        use crate::vm::function::FunctionObject;
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let code = crate::frontend::compile_script("f", "1").unwrap().0;
+        let function = |heap: &Heap| {
+            let f = FunctionObject::new(Arc::clone(&code), Box::new([]), OWNER);
+            Value::Object(heap.alloc(HeapObject::Function(f)).unwrap())
+        };
+        let f = function(&heap);
+        assert!(!known(&heap, &f), "never known at allocation");
+        let holder = coll::new_vector(&heap, std::slice::from_ref(&f)).unwrap();
+        assert!(!known(&heap, &holder));
+
+        // The walk reads `f` without a record ...
+        let proven = walk(&heap, id(&holder), &mut 0).unwrap();
+        assert_eq!(proven.len(), 2);
+        // ... then its owner attaches one ...
+        let record = plain(&heap);
+        let attached = heap.with_object_mut_known(id(&f), |o, known| match o {
+            HeapObject::Function(func) if !known => {
+                func.properties = Some(id(&record));
+                true
+            }
+            _ => false,
+        });
+        assert_eq!(attached, Some(true));
+        // ... so the walk's result is not marked, and the check rejects.
+        let gained =
+            |o: &HeapObject| matches!(o, HeapObject::Function(f) if f.properties.is_some());
+        assert!(!heap.mark_shareable_unless(&proven, gained));
+        assert!(!known(&heap, &f) && !known(&heap, &holder));
+        let (path, found) = match check(&heap, &holder) {
+            Err(PublishError::NotShareable { path, found, .. }) => (path, found),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            path.steps(),
+            [PathStep::Index(0), PathStep::FunctionProperties]
+        );
+        assert_eq!(path.to_string(), "value[0].properties");
+        assert_eq!(found, "object");
+
+        // A function proved shareable is known, and a record is refused.
+        let g = function(&heap);
+        assert_eq!(check(&heap, &g), Ok(()));
+        assert!(known(&heap, &g));
+        let refused = heap.with_object_mut_known(id(&g), |_, known| known);
+        assert_eq!(refused, Some(true));
     }
 
     #[test]

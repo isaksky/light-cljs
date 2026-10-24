@@ -478,6 +478,8 @@ struct Sealed {
     locals: u16,
     captures: u16,
     strict: bool,
+    /// `ExecutableSpec::constructor`: a `function` declaration or expression.
+    constructor: bool,
     code: Vec<u8>,
     spans: Vec<Span>,
     constants: Vec<Primitive>,
@@ -598,6 +600,7 @@ impl<'s> Lowerer<'s> {
             max_slots,
             captures,
             strict,
+            own_arguments,
             children,
             ..
         } = ctx;
@@ -622,6 +625,7 @@ impl<'s> Lowerer<'s> {
             locals: max_slots as u16,
             captures: captures.len() as u16,
             strict,
+            constructor: own_arguments,
             code: out.code,
             spans: out.spans,
             constants: out.constants,
@@ -671,6 +675,7 @@ impl<'s> Lowerer<'s> {
                 functions,
                 captures: f.captures,
                 strict: f.strict,
+                constructor: f.constructor,
             };
             let shared = Arc::clone(&self.shared_source);
             let exe = Executable::load_compiled(spec, shared, locations).map_err(|e| {

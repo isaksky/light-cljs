@@ -361,6 +361,21 @@ fn array_element(rt: &Runtime) -> Held {
     Held::new(vec![weak], move || drop(task))
 }
 
+/// A function's own properties (clj-quickjs-125): the argument is
+/// reachable only through the property record of a returned function (an
+/// object in its `x`, and its lazy `prototype` object), which captures
+/// nothing. Once the result is released, all of them are garbage.
+fn function_properties(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(
+        rt,
+        "function f(o) { const g = function () {}; g.x = {p: o}; g.prototype.q = o; return g; }",
+    );
+    let function = run_to_end(&task);
+    drop(task);
+    let weak = vec![weak, function.downgrade()];
+    Held::new(weak, move || drop(function))
+}
+
 /// A pending `return` completion of a running `finally` block (handler
 /// stack). The argument is overwritten, so only the completion holds it.
 fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
@@ -822,6 +837,32 @@ fn array_element_retains() {
 }
 
 #[test]
+fn function_properties_retain() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &function_properties(&rt));
+}
+
+#[test]
+fn function_properties_reclaim() {
+    let rt = Runtime::new();
+    let held = function_properties(&rt);
+    assert_retained(&rt, &held);
+    // The argument, the record, the object in `x` and the prototype object
+    // go with the function; the realm's two prototypes stay.
+    let Held {
+        weak,
+        release,
+        keep,
+    } = held;
+    let usage = rt.heap_usage().objects;
+    assert_eq!((usage.plain, usage.function), (4 + 2, 1));
+    assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
+    rt.request_collection().unwrap();
+    let usage = rt.heap_usage().objects;
+    assert_eq!((usage.plain, usage.function), (2, 0));
+}
+
+#[test]
 fn array_element_reclaims() {
     let rt = Runtime::new();
     let held = array_element(&rt);
@@ -1065,6 +1106,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         transient_builder(&rt),
         object_property(&rt),
         array_element(&rt),
+        function_properties(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),
         handler_completion(&rt, finally_return_across_wait),

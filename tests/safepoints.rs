@@ -455,3 +455,65 @@ fn collections_requested_while_two_tasks_run_keep_every_reachable_object() {
     let stats = rt.collect().unwrap();
     assert_eq!(stats.live, results.len() + elements, "results and elements");
 }
+
+/// Host for [`function_property_allocations_poll_for_collection`]: effect
+/// 0 reports itself and returns only once a collection is requested;
+/// effect 1 answers the number of completed collections.
+struct PollHost {
+    rt: Runtime,
+    at_effect: mpsc::Sender<()>,
+}
+
+impl Host for PollHost {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        match call.op {
+            0 => {
+                self.at_effect.send(()).unwrap();
+                wait_until("the collection request", || self.rt.collection_requested());
+                Ok(Primitive::Null)
+            }
+            _ => Ok(Primitive::Number(self.rt.heap_stats().collections as f64)),
+        }
+    }
+}
+
+/// Property instructions may allocate a function's property record and
+/// lazy `prototype` (clj-quickjs-125), so each is a poll point: a
+/// collection requested just before one completes before the next host
+/// effect, in straight-line code with no other poll point between them.
+/// JavaScript source is a synthetic fixture, not light-cljs output.
+#[test]
+fn function_property_allocations_poll_for_collection() {
+    let src = "let f = function () {}; let r = 0;\n\
+               __rt.effect(0, null); f.prototype; r = r + __rt.effect(1, null);\n\
+               __rt.effect(0, null); f.x = 1; r = r + __rt.effect(1, null);\n\
+               __rt.effect(0, null); f['y']; r = r + __rt.effect(1, null);\n\
+               __rt.effect(0, null); f['z'] = 2; r = r + __rt.effect(1, null);\n\
+               r";
+    let exe = clj_quickjs::frontend::compile_script("polls", src).unwrap();
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let (at_tx, at_rx) = mpsc::channel();
+    let worker = {
+        let rt = rt.clone();
+        thread::spawn(move || {
+            let mut host = PollHost {
+                rt,
+                at_effect: at_tx,
+            };
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap()
+        })
+    };
+    for round in 1..=4 {
+        at_rx.recv_timeout(HANDSHAKE).unwrap();
+        let requester = {
+            let rt = rt.clone();
+            thread::spawn(move || rt.request_collection().unwrap())
+        };
+        requester.join().unwrap();
+        assert_eq!(rt.heap_stats().collections, round);
+    }
+    // Each effect 1 saw its round's collection already complete: 1+2+3+4.
+    let result = complete(worker.join().unwrap());
+    assert_eq!(result.view(), ValueView::Number(10.0));
+}

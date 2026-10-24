@@ -4282,8 +4282,8 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
         )
     );
     for (src, needle) in [
-        ("let f = function () {};\nf.x;", "of a function"),
-        ("let f = function () {};\nf.x = 1;", "of a function"),
+        ("let f = function () {};\nf.call;", "of a function"),
+        ("let f = function () {};\nf.length = 1;", "of a function"),
         ("let n = 1;\nn.x;", "of a number"),
         ("let s = 'a';\ns.length;", "of a string"),
         ("let b = true;\nb.x = 1;", "of a boolean"),
@@ -4662,6 +4662,158 @@ fn computed_member_access() {
         let e = compile_script("t", src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
     }
+}
+
+/// Function own properties and the lazy `prototype` object
+/// (clj-quickjs-125; `docs/architecture.md`, "Function own properties").
+/// The `f.prototype.constructor === f` row and the `g` rows (the lazy
+/// prototype bug note) follow `test_prototype` (line 260) of
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+/// (restated as Rust assertions); the QuickJS MIT notice on
+/// `loose_equality_with_a_boolean_left_operand` covers them. The rest are
+/// synthetic fixtures, not light-cljs output.
+#[test]
+fn function_own_properties() {
+    let t = ValueView::Bool(true);
+    for src in [
+        // Upstream `test_prototype`.
+        "let f = function f() {}; f.prototype.constructor === f",
+        "let f = function f() {}; f.prototype === f.prototype",
+        // Declarations too; a read inside the function sees the same object.
+        "function h() {} h.prototype.constructor === h",
+        "function g() { return g.prototype; } g() === g.prototype",
+        // Each evaluation of a function expression has its own prototype.
+        "function mk() { return function () {}; } let a = mk(), b = mk(); \
+         a.prototype !== b.prototype && a.prototype.constructor === a",
+        // The prototype object is an ordinary object inheriting from
+        // Object.prototype, owned by the task, so it takes methods.
+        "let f = function () {}; f.prototype.toString() === '[object Object]'",
+        "let f = function () {}; f.prototype.m = function () { return this === f.prototype; }; \
+         f.prototype.m()",
+        // Ordinary properties: absent until assigned, then own and writable;
+        // a method call on a function passes it as the receiver.
+        "let f = function () {}; f.y === undefined",
+        "let f = function () {}; f.m = function () { return this === f; }; f.m()",
+        // Names other than Function.prototype's continue at Object.prototype,
+        // also before anything else built the realm.
+        "let f = function () {}; typeof f.valueOf === 'function'",
+        "let f = function () {}; f.valueOf === Object.prototype.valueOf",
+        // Arrow functions have no `prototype` but take properties.
+        "(() => 1).prototype === undefined",
+        "let a = () => 1; a.prototype = 3; a.x = 4; a.prototype + a.x === 7",
+    ] {
+        assert_eq!(eval(src), t, "{src}");
+    }
+    assert_eq!(num("let f = function f() {}; f.x = 1; f.x"), 1.0);
+    assert_eq!(
+        num("let f = function () {}; f.x = 1; f.x = f.x + 1; f.x"),
+        2.0
+    );
+    // `prototype` is writable, before or after it was first read.
+    assert_eq!(
+        num("let f = function () {}; f.prototype = 5; f.prototype"),
+        5.0
+    );
+    assert_eq!(
+        num("let f = function () {}; let p = f.prototype; f.prototype = 5; f.prototype"),
+        5.0
+    );
+    assert_eq!(
+        eval("let f = function () {}; let p = f.prototype; f.prototype = 5; p.constructor === f"),
+        t
+    );
+    // Properties survive budget yields between their writes and reads.
+    let src = "let f = function () {}; f.prototype.n = 0; let i = 0;\n\
+               while (i < 50) { f.prototype.n = f.prototype.n + i; i = i + 1; }\n\
+               f.prototype.n + (f.prototype.constructor === f ? 1000 : 0)";
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(5), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Number(2225.0));
+    assert!(yields > 10, "only {yields} yields");
+
+    // Function.prototype (clj-quickjs-102) and `length`/`name`
+    // (clj-quickjs-101) do not exist yet: their names fail explicitly, not
+    // with a wrong `undefined`, and the failure is not catchable.
+    for src in [
+        "let f = function () {};\nf.call;",
+        "let f = function () {};\nf.apply;",
+        "let f = function () {};\nf.bind;",
+        "let f = function () {};\nf.toString();",
+        "let f = function () {};\nf.length;",
+        "let f = function f() {};\nf.name;",
+        "let f = function () {};\nf.constructor;",
+        "let f = function () {};\nf.length = 1;",
+        "let f = () => 1;\nf.call;",
+        "let r; try {\n(function () {}).call; } catch (e) { r = 1; } r",
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains("Function.prototype"), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+
+    // Attributes (with clj-quickjs-119). The upstream `g` rows: a
+    // definition materializes `prototype` first, so the partial descriptor
+    // keeps its value; afterwards an assignment is a TypeError.
+    for src in [
+        "function g() {} Object.defineProperty(g, 'prototype', { writable: false }); \
+         g.prototype.constructor === g",
+        "function g() {} Object.defineProperty(g, 'prototype', { writable: false }); \
+         let r = false; try { g.prototype = {}; } catch (e) { r = true; } r",
+        "let f = function f() {}; \
+         Object.getOwnPropertyDescriptor(f, 'prototype').enumerable === false",
+        // `prototype`: writable, not enumerable, not configurable, created
+        // by the descriptor read itself.
+        "let f = function () {}; let d = Object.getOwnPropertyDescriptor(f, 'prototype'); \
+         d.writable && !d.enumerable && !d.configurable && d.value === f.prototype",
+        // `constructor`: writable, not enumerable, configurable.
+        "let f = function () {}; \
+         let d = Object.getOwnPropertyDescriptor(f.prototype, 'constructor'); \
+         d.writable && !d.enumerable && d.configurable && d.value === f",
+        // Not configurable: redefining it otherwise is a TypeError.
+        "let f = function () {}; let r = false; \
+         try { Object.defineProperty(f, 'prototype', { enumerable: true }); } \
+         catch (e) { r = true; } r",
+        // Assigned properties are ordinary data properties; defined ones
+        // follow their descriptor; arrows have no own `prototype`.
+        "let f = function () {}; f.x = 1; let d = Object.getOwnPropertyDescriptor(f, 'x'); \
+         d.writable && d.enumerable && d.configurable",
+        "let f = () => 1; Object.defineProperty(f, 'k', { value: 2 }) === f && f.k === 2 \
+         && !Object.getOwnPropertyDescriptor(f, 'k').writable",
+        "Object.getOwnPropertyDescriptor(() => 1, 'prototype') === undefined",
+        "Object.getOwnPropertyDescriptor(function () {}, 'x') === undefined",
+    ] {
+        assert_eq!(eval(src), t, "{src}");
+    }
+    // The caught failures above are TypeErrors.
+    for src in [
+        "function g() {} Object.defineProperty(g, 'prototype', { writable: false });\n\
+         g.prototype = {};",
+        "let f = function () {};\nObject.defineProperty(f, 'prototype', { enumerable: true });",
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(
+            (kind, line),
+            (VmErrorKind::TypeError, 2),
+            "{src}: {message}"
+        );
+    }
+    // `Object.getPrototypeOf` and `Function` (clj-quickjs-121, -102) fail
+    // explicitly until they land.
+    let src = "let f = function f() {}; Object.getPrototypeOf(f) === Function.prototype";
+    let e = failure(src);
+    assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{src}: {e}");
 }
 
 /// Array literals and array objects (clj-quickjs-118): elisions are holes
@@ -5204,11 +5356,11 @@ fn define_property_validation_and_targets() {
         ("Object.getOwnPropertyDescriptor(1, 'k')", "wrapper object"),
         ("Object.defineProperty({}, {}, {value: 1})", "ToPrimitive"),
         (
-            "Object.defineProperty(() => 1, 'k', {value: 1})",
+            "Object.defineProperty(() => 1, 'length', {value: 1})",
             "a function",
         ),
         (
-            "Object.getOwnPropertyDescriptor(() => 1, 'k')",
+            "Object.getOwnPropertyDescriptor(() => 1, 'name')",
             "a function",
         ),
     ] {

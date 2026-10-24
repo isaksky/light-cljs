@@ -1661,7 +1661,8 @@ Deferred:
   Getters/setters, methods, computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below), `delete`,
   `__proto__`, property `++`/`--` and compound assignment; properties of
-  functions, error objects and primitives fail with `UnsupportedOperand`.
+  error objects and primitives fail with `UnsupportedOperand` (function
+  properties: clj-quickjs-125, below).
 
 ### Computed member access (clj-quickjs-115)
 
@@ -1898,7 +1899,37 @@ Deferred:
 
 - Accessor descriptors (`get`/`set`) fail with `UnsupportedOperand` (clj-quickjs-120); so do
   primitive targets of `getOwnPropertyDescriptor` (wrapper objects, clj-quickjs-72), object keys
-  (ToPrimitive, clj-quickjs-70) and function targets (clj-quickjs-101/-125). `Object.create`,
+  (ToPrimitive, clj-quickjs-70) and functions' `length`/`name` (clj-quickjs-101; other function
+  properties: clj-quickjs-125). `Object.create`,
   needed to inherit a read-only property from source, is clj-quickjs-121.
   `length` changes on arrays fail explicitly (ArraySetLength, clj-quickjs-39). Built-in objects stay immutable: `defineProperty` on one
   is a `TypeError`.
+
+### Function own properties and lazy `prototype` (clj-quickjs-125)
+
+Supported (`cargo test --test js_source function_own_properties`,
+`cargo test --test publication function_own_properties_follow_publication_rule`,
+`cargo test --lib value::share::tests::a_function_gaining_properties_during_a_check_is_not_cached`,
+`cargo test --test gc_roots function_properties`):
+
+- `f.x = v` / `f.x` on function objects; `F.prototype` of a `function`
+  declaration or expression, created on first use (an ordinary object
+  with `constructor` = `F`, the same object on every read, writable);
+  arrows have no `prototype`. A name a function lacks that is not one of
+  `Function.prototype`'s continues at `Object.prototype` (`f.y` is
+  `undefined`).
+- Representation (decision record in `docs/architecture.md`, "Function
+  own properties"): a task-owned property record attached to the
+  persistent function on its first property write or `prototype` read. An
+  untouched function publishes; one with a record is rejected at
+  `value.properties`; a published function is immutable (a write throws a
+  catchable `TypeError`).
+
+Deferred:
+
+- `length`/`name` (clj-quickjs-101) and `Function.prototype` with
+  `call`/`apply`/`bind`/`toString` (clj-quickjs-102/-103): those names fail
+  with `UnsupportedOperand`, also in `Object.defineProperty` /
+  `getOwnPropertyDescriptor` (which otherwise work on functions, through
+  the record). `Object.getPrototypeOf(f)` (clj-quickjs-121), `new` (clj-quickjs-71). Creating the `prototype` of a
+  published function fails with `UnsupportedOperand`.

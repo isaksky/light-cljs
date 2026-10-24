@@ -213,6 +213,7 @@ public API cannot reach.
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
 | array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
+| function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -343,8 +344,9 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   every object a successful check expanded gets it afterwards. The walk
   stops at known objects, so values built bottom-up from shareable parts,
   republished values, and versions derived from them are accepted in O(1).
-  This is valid because persistent edges never change and no object's
-  category changes; the bit is rewritten when a slot is reused.
+  This is valid because persistent edges never change (a function's
+  write-once property-record edge is attached only while its bit is clear,
+  clj-quickjs-125) and no object's category changes; the bit is rewritten when a slot is reused.
 - **Entry point.** `Runtime::publish(&Rooted)` is what the embedder calls
   before handing a value from one task to another. Nothing is copied, so
   the receiving task sees the same identities. `Runtime::spawn` does not
@@ -352,7 +354,9 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   builders and binding cells stay protected by their owner checks
   regardless. Later runtime handoffs (dependency results, atom contents)
   call `share::check` themselves; closure captures are function-object
-  edges, which the walk follows (`.capture(i)` in a path).
+  edges, which the walk follows (`.capture(i)` in a path). A
+  function's own-property record is one more edge (`.properties`;
+  clj-quickjs-125, "Function own properties" below).
 - **What later kinds declare.** A category. If `Persistent`: edges that
   never change after allocation (a closure's captured values never do; its
   mutable bindings are separate task-owned cells) and allocation through
@@ -547,7 +551,8 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   by all tasks; closure environments are heap objects under the publication
   rules. Function objects are `Persistent` (code and captures never change),
   cells are `TaskOwned` with an owner `TaskId`. A closure over immutable
-  shareable values is known shareable at allocation and publishable; one
+  shareable values is publishable (since clj-quickjs-125 it is known
+  shareable only once a check proved it, not at allocation); one
   that reaches a cell is rejected at it. Cell instructions from another task
   fail with `VmErrorKind::ForeignBinding`, so an unchecked `spawn` argument
   cannot reach another task's mutable bindings either.
@@ -1888,6 +1893,129 @@ their call instruction like every built-in so far.
 - `enumerable` is stored and reported but nothing enumerates yet
   (`for`-`in`, `Object.keys`: clj-quickjs-85, -123).
 
+## Function own properties (clj-quickjs-125)
+
+Contract: `src/vm/function.rs` ("Own properties": `FunctionObject::owner`,
+`FunctionObject::properties`, `read`, `write_target`, `define_target`,
+`own_store`), `src/vm/property.rs`
+(function bases), `src/value/share.rs` ("Functions with own properties"),
+`src/vm/executable.rs` (`ExecutableSpec::constructor`). Design: `design.md`
+§4.
+
+The question: JavaScript functions are objects (`f.x = 1`, `F.prototype`
+for `new`, class statics), but function objects are `Persistent` (code plus
+captured values, never changed) so that an untouched closure can be
+published; ordinary objects are `TaskOwned` ("Ordinary objects"), and the
+realm's intrinsics are shared and immutable ("Realm intrinsics"). A heap
+object's category is fixed for its lifetime, so a function cannot turn
+task-owned when it is first written.
+
+**Decision: a lazily attached, task-owned property record.**
+
+- A `FunctionObject` records its creating task (`owner`) and an optional
+  **property record**: an ordinary object (`HeapObject::Plain`) owned by
+  that task, never itself a JavaScript value, whose `[[Prototype]]` is
+  `Object.prototype` (standing in for `Function.prototype`). It is
+  allocated and attached by the first write of a property or the first
+  observation of the lazy `prototype`, and never replaced. Every property
+  operation on the function is the ordinary-object operation on the record
+  (reads continue at `Object.prototype` when there is none), so attributes,
+  extensibility, the owner check (`ForeignObject` for another task) and the
+  prototype-chain write check come from `crate::object` unchanged, and the
+  later define, delete and enumeration pellets inherit them.
+- **`prototype`.** Code compiled from a `function` declaration or
+  expression has `ExecutableSpec::constructor` set (not arrows, scripts or
+  hand-assembled code). Its function objects have an own `prototype`
+  (writable, not enumerable, not configurable) created on first
+  observation (a read, or a write of `prototype`), as QuickJS's
+  `js_instantiate_prototype` does: a new ordinary object owned by the same
+  task, inheriting from `Object.prototype`, with a non-enumerable
+  `constructor` pointing back. It is stored in the record, so repeated
+  reads give one object. `Object.defineProperty` and
+  `Object.getOwnPropertyDescriptor` (clj-quickjs-119) on a function work on
+  its record (`define_target`, `own_store`), materializing `prototype`
+  first, so a partial descriptor is validated against it (the upstream
+  `defineProperty(g, "prototype", {writable: false})` row) and its
+  descriptor is reported; `length`/`name` fail until clj-quickjs-101.
+- **Publication.** The function stays `Persistent` and its category never
+  changes; the record is one more edge, which the publication walk follows
+  like a capture, so a function with a record is rejected there:
+  `value.properties` (a task-owned `object` owned by the creator), or
+  `value.properties.property(prototype)` once `prototype` was read. An
+  untouched function publishes as before. The edge is the one exception to
+  "persistent edges never change", and the known-shareable bit stays sound
+  because the two refuse each other under the object-table lock: a record
+  is attached only while the function's bit is clear
+  (`Heap::with_object_mut_known`), and a check sets bits only if no
+  function it expanded has gained a record since it read it
+  (`Heap::mark_shareable_unless`; otherwise it walks again). Hence a
+  function is never known shareable at allocation any more: it becomes
+  known when a check proves it (`Runtime::publish`, an atom install, a
+  dependency result), and from then on it is **shared and immutable**, like
+  a realm intrinsic: writing a property is a catchable `TypeError`, and
+  creating its `prototype` fails with `UnsupportedOperand`.
+- **Fit with the neighbours.** `length` and `name` (clj-quickjs-101) are
+  derived from immutable code metadata and answered before the record
+  (configurable, so a later `delete f.length` or redefinition writes a
+  shadowing entry, or a deletion marker, into the record); until then they
+  fail explicitly. `Function.prototype` (clj-quickjs-102) becomes a realm
+  intrinsic and replaces `Object.prototype` as the record's prototype and as
+  where a record-less function's reads continue; until then the names it
+  will own (`call`, `apply`, `bind`, `toString`, `constructor`,
+  `arguments`, `caller`, `length`, `name`) fail with `UnsupportedOperand`
+  unless the function has its own, and every other name continues at
+  `Object.prototype`. Class statics (`static m() {}`) and `F.prototype.m =
+  ...` are record writes, so a class or constructor that has been set up is
+  task-owned, like the objects it creates. Bound functions (clj-quickjs-103)
+  can use the same record. Built-in functions keep their immutable
+  intrinsic property store.
+
+**Alternatives considered.**
+
+- *Functions task-owned from creation* (or a function object holding its
+  properties inline): simple, but no closure could ever be published,
+  which `design.md` §4 (and every published callback) relies on.
+  Rejected.
+- *Category decided at creation* (a function that "will be" mutated is
+  task-owned): the compiler cannot know, since any reference may write a
+  property. Rejected.
+- *Per-task side tables* (function identity → properties, kept by each
+  task): functions stay persistent and every task may annotate a shared
+  function, but each task sees different properties of one object, and
+  publishing a function silently drops the properties its creator gave it.
+  Rejected: identity semantics would differ from JavaScript without an
+  error.
+- *Never caching functions as known shareable* (re-walk them on every
+  publication) instead of freezing them once proven: keeps published
+  functions writable by their creator, but every publication of any value
+  containing a function would walk it again, and a function written after
+  it was handed over would be seen by the receiver as another task's
+  object (`ForeignObject`) rather than rejected at publication. Rejected in
+  favour of "shared means immutable", which matches the realm.
+- *Eager `prototype`*: every ordinary function would get a task-owned
+  record at creation and none could be published. Rejected; the lazy
+  object is also what QuickJS does.
+
+**Consequences.**
+
+- A function's first property write (or `prototype` read) costs two or
+  three small allocations and makes it unpublishable; reads of absent
+  properties allocate nothing. Property accesses on a function take one
+  extra short object-table lock (to read its state) before the ordinary
+  access on its record.
+- Publishing a function freezes it: its creator can no longer give it
+  properties, and `new` on it (clj-quickjs-71) fails if its `prototype` was
+  never created. Code that sets up constructors (`F.prototype.m = ...`,
+  ClojureScript's `deftype` and protocol extension) must do so before any
+  value reaching `F` is published, or the compiler must lower that set-up
+  to shareable data (`design.md` §5).
+- Function objects are no longer known shareable at allocation, so the
+  first publication of a value containing a closure walks it once; later
+  ones stop at the cached bit as before.
+- The record is a `PlainObject` in heap counts (`heap_usage().objects`) and
+  a new root-inventory holder (`function_properties_retain` /
+  `function_properties_reclaim`).
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -2297,3 +2425,13 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `JS_DefineProperty`, `js_update_property_flags`, `js_obj_to_desc` and
   `js_object_getOwnPropertyDescriptor` were consulted only, for semantics.
   No code was copied.
+- `tests/js_source.rs` `function_own_properties` (clj-quickjs-125): the
+  `f.prototype.constructor === f` case and the `g` rows
+  (`Object.defineProperty(g, "prototype", { writable: false })`, then
+  `g.prototype.constructor === g`) of `test_prototype` (line 260) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: each `assert` is a Rust assertion on the expression's value;
+  the `g` rows are asserted to fail explicitly until clj-quickjs-119. The
+  notice on `loose_equality_with_a_boolean_left_operand` covers them.
+  `research/quickjs/quickjs.c` `js_instantiate_prototype`, `js_closure2`
+  and `js_closure` were consulted only, for semantics. No code was copied.

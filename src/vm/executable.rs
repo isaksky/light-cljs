@@ -66,6 +66,12 @@ pub struct ExecutableSpec {
     /// semantics differ by mode branch on [`Executable::is_strict`] of the
     /// running code, or are chosen by the compiler from it.
     pub strict: bool,
+    /// An ordinary function: code compiled from a `function` declaration or
+    /// expression (not an arrow function or a script). Its function objects
+    /// have an own `prototype` property, created on first use
+    /// (clj-quickjs-125, `crate::vm::function`), and are the constructors
+    /// `new` accepts (clj-quickjs-71). Hand-assembled code sets it false.
+    pub constructor: bool,
 }
 
 /// Validated code shared by every task that runs it.
@@ -81,6 +87,8 @@ pub(crate) struct Code {
     pub(crate) captures: u16,
     /// Strict-mode code ([`ExecutableSpec::strict`]).
     pub(crate) strict: bool,
+    /// An ordinary function ([`ExecutableSpec::constructor`]).
+    pub(crate) constructor: bool,
     pub(crate) instrs: Box<[Instr]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
@@ -279,6 +287,7 @@ impl Executable {
             functions,
             captures,
             strict,
+            constructor,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -511,6 +520,7 @@ impl Executable {
             functions: functions.into_iter().map(|f| f.0).collect(),
             captures,
             strict,
+            constructor,
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
@@ -605,6 +615,7 @@ impl Executable {
             functions: code.functions.iter().cloned().map(Executable).collect(),
             captures: code.captures,
             strict: code.strict,
+            constructor: code.constructor,
         }
     }
 }
@@ -697,6 +708,7 @@ mod tests {
             functions: Vec::new(),
             captures: 0,
             strict: true,
+            constructor: false,
         })
     }
 
@@ -778,6 +790,7 @@ mod tests {
             functions: vec![],
             captures: 0,
             strict: true,
+            constructor: false,
         });
         assert_eq!(
             kind(e),
@@ -870,6 +883,7 @@ mod tests {
             functions: vec![],
             captures: 0,
             strict: true,
+            constructor: false,
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
@@ -921,6 +935,7 @@ mod tests {
             functions,
             captures: 0,
             strict: true,
+            constructor: false,
         }
     }
 
