@@ -5801,7 +5801,8 @@ the task's global binding is supported. The user decision to amend acceptance
 preserves this design: the engine test expects TypeError from the attempted
 intrinsic overwrite before replacing the global. The engine wrapping helper
 ignores that global binding and uses the original intrinsic prototype directly;
-disposal syntax and stacks are separate pellets.
+synchronous disposal syntax is described under "Execution" above; async
+disposal and stacks remain separate pellets.
 
 Synthetic fixtures, not light-cljs output:
 

@@ -7962,7 +7962,7 @@ Error marker, ownership, precise tracing and publication policy; no heap
 kind or root category is added.
 
 `VmState::suppressed_error(heap, error, suppressed)` is the crate-internal
-engine entry point for future disposal continuations. It takes the
+engine entry point used by disposal lowering. It takes the
 prototype directly from `realm::Intrinsics`, builds own `error`,
 `suppressed` and `stack` properties, and allocates an ordinary Error without
 consulting globals, properties, getters or JavaScript constructors. It uses
