@@ -168,7 +168,7 @@ use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Primitive};
-use crate::vm::executable::{Executable, ExecutableSpec};
+use crate::vm::executable::{ConstructorKind, Executable, ExecutableSpec};
 use crate::vm::instr::{Opcode, ThrowKind};
 
 /// Locals are counted by a u16.
@@ -237,7 +237,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         };
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
-        lower.cur_mut().constructor = !function.generator && !function.asynchronous;
+        lower.cur_mut().constructor_kind = constructor_kind(function);
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -256,6 +256,14 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         function_length(function),
         JsString::from(function.name.as_ref().map_or("", |n| n.name.as_str())),
     )
+}
+
+fn constructor_kind(f: &Function) -> ConstructorKind {
+    if f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous {
+        ConstructorKind::Ordinary
+    } else {
+        ConstructorKind::None
+    }
 }
 
 fn function_length(f: &Function) -> u16 {
@@ -411,6 +419,8 @@ enum ConstKey {
 struct Emitter {
     code: Vec<u8>,
     spans: Vec<Span>,
+    /// Source labels for `new` errors, keyed by instruction index.
+    construct_callees: HashMap<usize, Span>,
     constants: Vec<Primitive>,
     const_index: HashMap<ConstKey, u16>,
     labels: Vec<Option<usize>>,
@@ -483,7 +493,7 @@ struct FnCtx {
     /// ([`Lowerer::arguments_binding`]).
     own_arguments: bool,
     /// Only ordinary functions can be constructed; methods own arguments too.
-    constructor: bool,
+    constructor_kind: ConstructorKind,
     /// Arrows inherit their nearest ordinary function's receiver.
     lexical_this: bool,
     /// Capture index for that receiver, shared by all its uses and any
@@ -558,10 +568,11 @@ struct Sealed {
     locals: u16,
     captures: u16,
     strict: bool,
-    /// `ExecutableSpec::constructor`: a `function` declaration or expression.
-    constructor: bool,
+    /// `ExecutableSpec::constructor_kind`: a `function` declaration or expression.
+    constructor_kind: ConstructorKind,
     code: Vec<u8>,
     spans: Vec<Span>,
+    construct_callees: HashMap<usize, Span>,
     constants: Vec<Primitive>,
     children: Vec<usize>,
 }
@@ -660,7 +671,7 @@ impl<'s> Lowerer<'s> {
             completion: script.then_some(0),
             strict,
             own_arguments: false,
-            constructor: false,
+            constructor_kind: ConstructorKind::None,
             lexical_this: false,
             this_capture: None,
 
@@ -706,7 +717,7 @@ impl<'s> Lowerer<'s> {
             max_slots,
             captures,
             strict,
-            constructor,
+            constructor_kind,
             children,
             ..
         } = ctx;
@@ -733,9 +744,10 @@ impl<'s> Lowerer<'s> {
             locals: max_slots as u16,
             captures: captures.len() as u16,
             strict,
-            constructor,
+            constructor_kind,
             code: out.code,
             spans: out.spans,
+            construct_callees: out.construct_callees,
             constants: out.constants,
             children,
         });
@@ -786,17 +798,23 @@ impl<'s> Lowerer<'s> {
                 functions,
                 captures: f.captures,
                 strict: f.strict,
-                constructor: f.constructor,
+                constructor_kind: f.constructor_kind,
             };
             let shared = Arc::clone(&self.shared_source);
-            let exe = Executable::load_compiled(spec, Arc::clone(&filename), shared, locations)
-                .map_err(|e| {
-                    self.error(
-                        SyntaxErrorKind::Internal,
-                        Span::new(0, source.len()),
-                        format!("compiler produced invalid bytecode: {e}"),
-                    )
-                })?;
+            let exe = Executable::load_compiled(
+                spec,
+                Arc::clone(&filename),
+                shared,
+                locations,
+                f.construct_callees,
+            )
+            .map_err(|e| {
+                self.error(
+                    SyntaxErrorKind::Internal,
+                    Span::new(0, source.len()),
+                    format!("compiler produced invalid bytecode: {e}"),
+                )
+            })?;
             loaded.push(Some(exe));
         }
         loaded
@@ -1801,8 +1819,7 @@ impl<'s> Lowerer<'s> {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
         self.enter_function(self_name, false, f.strict);
-        self.cur_mut().constructor =
-            f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous;
+        self.cur_mut().constructor_kind = constructor_kind(f);
         self.cur_mut().own_arguments = matches!(
             f.kind,
             FunctionKind::Ordinary
@@ -4148,15 +4165,27 @@ impl<'s> Lowerer<'s> {
         self.expr(callee)?;
         if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
             self.spread_arguments(args, span)?;
+            self.construct_callee(callee);
             self.out().op(Opcode::ConstructSpread, op_span);
             return Ok(());
         }
         for arg in args {
             self.expr(arg)?;
         }
+        self.construct_callee(callee);
         self.out()
             .op_u16(Opcode::Construct, args.len() as u16, op_span);
         Ok(())
+    }
+
+    fn construct_callee(&mut self, callee: &Expr) {
+        if matches!(
+            callee.kind,
+            ExprKind::Identifier(_) | ExprKind::Member { .. } | ExprKind::Index { .. }
+        ) {
+            let out = self.out();
+            out.construct_callees.insert(out.spans.len(), callee.span);
+        }
     }
 
     /// An untagged template literal (clj-quickjs-57; ECMAScript

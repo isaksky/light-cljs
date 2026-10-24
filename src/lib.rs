@@ -122,8 +122,8 @@ pub use task::{
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{BigIntError, JsBigInt, JsString, JsSymbol, MAX_BIGINT_BITS, Primitive, ValueView};
 pub use vm::{
-    Assembler, Executable, ExecutableSpec, Label, Opcode, ThrowKind, ValidationError,
-    ValidationErrorKind, VmLimits,
+    Assembler, ConstructorKind, Executable, ExecutableSpec, Label, Opcode, ThrowKind,
+    ValidationError, ValidationErrorKind, VmLimits,
 };
 
 pub mod intl;

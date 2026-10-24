@@ -217,7 +217,7 @@ impl Assembler {
             functions: self.functions,
             captures: self.captures,
             strict: true,
-            constructor: false,
+            constructor_kind: crate::vm::ConstructorKind::None,
         }
     }
 

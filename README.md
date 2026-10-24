@@ -89,6 +89,15 @@ the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
 
+### Non-constructor functions (clj-quickjs-135)
+
+`new` accepts ordinary function declarations/expressions and rejects generators,
+async functions, concise methods, accessors and arrows with a catchable TypeError.
+Messages label identifier/member callees (`G is not a constructor`,
+`o.m is not a constructor`); other expressions use the value kind. Constructor
+capability is shared immutable code metadata. Class constructors and class
+methods remain deferred to clj-quickjs-136.
+
 ### VM core (clj-quickjs-1)
 
 Supported:
@@ -2021,7 +2030,7 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 Deferred:
 
 - `new.target` (clj-quickjs-99, `Unsupported`), classes and `super`
-  (clj-quickjs-135..-139), built-in constructors such as `new Object()`,
+  (clj-quickjs-136..-139), built-in constructors such as `new Object()`,
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
 - `new` on a published function whose `prototype` was never created fails

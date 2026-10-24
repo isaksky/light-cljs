@@ -13,6 +13,107 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+// The generator rejection row adapts test_language.js::test_constructor.
+// QuickJS Javascript Engine
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-135).
+#[test]
+fn non_constructors_reject_new() {
+    for (source, expected) in [
+        ("function* G() {} new G()", "G"),
+        ("let G = function*() {}; new G()", "G"),
+        ("async function A() {} new A()", "A"),
+        ("let A = async function() {}; new A()", "A"),
+        ("new (() => 1)", "function"),
+        ("let a = () => {}; new a()", "a"),
+        ("let a = async () => 1; new a()", "a"),
+        ("new ({m() {}}).m()", "({m() {}}).m"),
+        ("let o = {m() {}}; new o.m()", "o.m"),
+        ("let o = {*g() {}}; new o.g()", "o.g"),
+        ("let o = {async m() {}}; new o.m()", "o.m"),
+        ("let o = {['m']() {}}; new o['m']()", "o['m']"),
+        (
+            "let o = {get x() {}, set x(v) {}}; let d = Object.getOwnPropertyDescriptor(o, 'x'); new d.get()",
+            "d.get",
+        ),
+        (
+            "let o = {set x(v) {}}; let d = Object.getOwnPropertyDescriptor(o, 'x'); new d.set()",
+            "d.set",
+        ),
+        ("new Object.is()", "Object.is"),
+        ("new Symbol.for()", "Symbol.for"),
+        ("let a = (() => 1).bind(null); new a()", "a"),
+        ("let a = () => 1; new a(...[1, 2])", "a"),
+    ] {
+        let source = format!(
+            "let caught = false; try {{ {source}; }} catch(e) {{ caught = e instanceof TypeError && e.message === \"{expected} is not a constructor\"; }} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "function F() { this.x = 7; } new F().x === 7",
+        "let F = function() { this.x = 7; }; new F().x === 7",
+        "let o = {m: function() { this.x = 7; }}; new o.m().x === 7",
+        "function F() { this.x = 7; } let B = F.bind(null); new B().x === 7",
+        "let called = false, a = () => { called = true; }; let n = 0; try { new a(++n); } catch(e) {} !called && n === 1",
+        "let reads = 0, args = 0; let o = {get m() { reads++; return () => 1; }}; try { new o.m(++args); } catch(e) {} reads === 1 && args === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn constructor_kind_survives_code_round_trip() {
+    use clj_quickjs::ConstructorKind;
+    for (source, expected) in [
+        ("function F() {}", ConstructorKind::Ordinary),
+        ("function* G() {}", ConstructorKind::None),
+        ("async function A() {}", ConstructorKind::None),
+    ] {
+        let code = compile_function(source).unwrap();
+        assert_eq!(code.to_spec().constructor_kind, expected, "{source}");
+        let loaded = Executable::load(code.to_spec()).unwrap();
+        assert_eq!(loaded.to_spec().constructor_kind, expected, "{source}");
+    }
+    let code = exe(
+        "let f = function() {}; let a = () => 1; let o = {m() {}, get x() {}, set x(v) {}, async a() {}, *g() {}};",
+    );
+    assert_eq!(code.to_spec().constructor_kind, ConstructorKind::None);
+    assert_eq!(code.to_spec().functions.len(), 7);
+    for (i, child) in code.to_spec().functions.iter().enumerate() {
+        let loaded = Executable::load(child.to_spec()).unwrap();
+        assert_eq!(loaded.to_spec().constructor_kind.is_constructor(), i == 0);
+        assert!(Executable::same_code(child, &code.function(i).unwrap()));
+    }
+    let code = exe(
+        "let a = () => 1; let caught = false; try { new a(); } catch(e) { caught = e instanceof TypeError && e.message === 'function is not a constructor'; } caught",
+    );
+    let loaded = Executable::load(code.to_spec()).unwrap();
+    let RunOutcome::Complete(value) = run(&loaded, &[]) else {
+        panic!("reloaded code must still reject arrow construction")
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn computed_property_names() {
@@ -11469,7 +11570,12 @@ fn object_literal_methods_in_sloppy_scripts() {
     let spec = exe.to_spec();
     assert_eq!(spec.functions.len(), 1);
     assert!(!spec.functions[0].is_strict());
-    assert!(!spec.functions[0].to_spec().constructor);
+    assert!(
+        !spec.functions[0]
+            .to_spec()
+            .constructor_kind
+            .is_constructor()
+    );
     // Global-object substitution is explicitly unsupported (clj-quickjs-104).
     for source in [source, "({m() { return this; }}).m.call(undefined)"] {
         let exe = compile_script_with("sloppy-method", source, ScriptOptions::SLOPPY).unwrap();
@@ -11803,17 +11909,11 @@ fn new_operator_constructs_objects() {
     // Not constructors: catchable TypeErrors, reported at the `new` token.
     for (src, message) in [
         ("new 1", "1 is not a constructor"),
-        (
-            "const v = __rt.vector(); new v",
-            "vector is not a constructor",
-        ),
+        ("const v = __rt.vector(); new v", "v is not a constructor"),
         ("new undefined", "undefined is not a constructor"),
-        (
-            "const a = () => 1; new a()",
-            "function is not a constructor",
-        ),
-        ("new Object()", "function is not a constructor"),
-        ("const o = {}; new o()", "object is not a constructor"),
+        ("const a = () => 1; new a()", "a is not a constructor"),
+        ("new Object()", "Object is not a constructor"),
+        ("const o = {}; new o()", "o is not a constructor"),
     ] {
         assert_eq!(
             string(&format!(

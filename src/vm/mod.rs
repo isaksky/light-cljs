@@ -49,6 +49,8 @@ pub(crate) mod property;
 pub(crate) mod prototype;
 
 pub use asm::{Assembler, Label};
-pub use executable::{Executable, ExecutableSpec, ValidationError, ValidationErrorKind};
+pub use executable::{
+    ConstructorKind, Executable, ExecutableSpec, ValidationError, ValidationErrorKind,
+};
 pub use frames::VmLimits;
 pub use instr::{Opcode, ThrowKind};

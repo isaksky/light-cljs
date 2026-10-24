@@ -98,7 +98,7 @@
 //! prototype-chain write check are those of `crate::object`.
 //!
 //! * **`prototype`.** Code from a `function` declaration or expression
-//!   ([`Code::constructor`]) has an own `prototype` (writable, not
+//!   ([`Code::constructor_kind`]) has an own `prototype` (writable, not
 //!   enumerable, not configurable) whose value is created on first
 //!   observation: a read, or a write of `prototype` itself (QuickJS
 //!   `js_instantiate_prototype`, revision 7d1c13c5d8f8, does the same on
@@ -353,7 +353,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
         HeapObject::Function(f) => Ok(Info {
             owner: f.owner,
             record: f.properties,
-            constructor: f.code.constructor || f.code.is_generator(),
+            constructor: f.code.constructor_kind.is_constructor() || f.code.is_generator(),
             shared: known,
             defaults: None,
             code: Some(f.code.clone()),

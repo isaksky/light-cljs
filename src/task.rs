@@ -1797,7 +1797,7 @@ mod tests {
                 functions: Box::new([]),
                 captures: 0,
                 strict: true,
-                constructor: false,
+                constructor_kind: crate::vm::ConstructorKind::None,
                 uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),

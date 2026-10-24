@@ -1,5 +1,17 @@
 # Attribution
 
+## Non-constructor function rejection (clj-quickjs-135)
+
+The generator row in `tests/js_source.rs::non_constructors_reject_new` adapts
+`research/quickjs/tests/test_language.js::test_constructor` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS MIT copyright and permission notice accompanies the test.
+`research/quickjs/quickjs.c`, `JS_IsConstructor`, `JS_CallConstructorInternal`
+and `JS_ThrowTypeErrorNotAConstructor` were semantic references; the Rust code
+was written afresh. The source-label diagnostic policy, documented in
+`grammar.md`, intentionally differs from QuickJS's function-name lookup.
+Other new test cases are synthetic fixtures, not light-cljs output.
+
 ## Generator and async syntax (clj-quickjs-54)
 
 `src/frontend/tests.rs::generator_and_async_syntax` adapts the two function

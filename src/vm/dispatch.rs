@@ -782,7 +782,7 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             }
             return Ok(Flow::Next);
         }
-        Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(Callee::Code(id, code)) if code.constructor_kind.is_constructor() => (id, code),
         Ok(Callee::Builtin(Builtin::WeakMap)) => {
             let result = builtin::weak_map_constructor(heap, task, &args)?;
             state.replace(argc + 1, result)?;
@@ -828,8 +828,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }
-        Ok(_) => return Err(not_a_constructor(&f, "function")),
-        Err(Fault::NotCallable(what)) => return Err(not_a_constructor(&f, what)),
+        Ok(_) => return Err(not_a_constructor(state, &f, "function")),
+        Err(Fault::NotCallable(what)) => return Err(not_a_constructor(state, &f, what)),
         Err(fault) => return Err(fault),
     };
     // Reading `prototype` may create the lazy prototype object and build
@@ -861,7 +861,14 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
 
 /// The TypeError of `new v` for a `v` that is not a constructor; `what`
 /// names a non-number value's kind.
-fn not_a_constructor(v: &Value, what: &str) -> Fault {
+fn not_a_constructor(state: &VmState, v: &Value, what: &str) -> Fault {
+    let frame = state.top();
+    if let Some(debug) = &frame.code.debug
+        && let Some(span) = debug.construct_callees.get(&frame.pc.saturating_sub(1))
+        && let Some(name) = debug.source.get(span.start..span.end)
+    {
+        return Fault::TypeError(format!("{name} is not a constructor"));
+    }
     let what = match v {
         Value::Number(_) => describe(v),
         _ => what.to_string(),
@@ -3025,7 +3032,7 @@ mod tests {
                 functions: functions.into(),
                 captures: 0,
                 strict: true,
-                constructor: false,
+                constructor_kind: crate::vm::ConstructorKind::None,
                 uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),

@@ -454,7 +454,7 @@
 //! Opcode `0x5E`, `Construct` (clj-quickjs-71), is `new f(args)` (QuickJS
 //! `OP_call_constructor`, `JS_CallConstructorInternal`, revision
 //! 7d1c13c5d8f8). It checks that `f` is a constructor: a function object
-//! whose code is an ordinary function (`ExecutableSpec::constructor`, a
+//! whose code is an ordinary function (`ExecutableSpec::constructor_kind`, a
 //! `function` declaration or expression). Anything else (a primitive, a
 //! built-in, an arrow function, a collection) fails with a catchable
 //! `TypeError` "… is not a constructor". It then reads `f.prototype`

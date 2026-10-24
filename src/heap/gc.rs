@@ -1699,7 +1699,7 @@ mod tests {
             functions: Box::new([]),
             captures: 0,
             strict: true,
-            constructor: false,
+            constructor_kind: crate::vm::ConstructorKind::None,
             uses_arguments: false,
             offsets: Box::new([0, 3]),
             instrs: Box::new([Instr::Const(0), Instr::Return]),

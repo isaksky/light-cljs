@@ -38,6 +38,25 @@ use crate::error::SourceLocation;
 use crate::heap::gc::Trace;
 use crate::value::{JsString, Primitive, Value};
 
+/// The shared code's `[[Construct]]` capability. Further constructor kinds
+/// (such as class constructors) can extend this independently of closures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConstructorKind {
+    /// Script code or a callable without `[[Construct]]`.
+    #[default]
+    None,
+    /// An ordinary function declaration or expression.
+    Ordinary,
+}
+
+impl ConstructorKind {
+    /// Whether this kind provides `[[Construct]]`.
+    pub fn is_constructor(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// Input to [`Executable::load`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutableSpec {
@@ -73,12 +92,11 @@ pub struct ExecutableSpec {
     /// semantics differ by mode branch on [`Executable::is_strict`] of the
     /// running code, or are chosen by the compiler from it.
     pub strict: bool,
-    /// An ordinary function: code compiled from a `function` declaration or
-    /// expression (not an arrow function or a script). Its function objects
-    /// have an own `prototype` property, created on first use
-    /// (clj-quickjs-125, `crate::vm::function`), and are the constructors
-    /// `new` accepts (clj-quickjs-71). Hand-assembled code sets it false.
-    pub constructor: bool,
+    /// Constructor capability. Ordinary, non-generator, non-async function
+    /// declarations/expressions use `Ordinary`; scripts, methods, accessors,
+    /// arrows and hand-assembled code use `None`. Generator code also uses
+    /// `None` despite having an own `prototype` (see `crate::vm::function`).
+    pub constructor_kind: ConstructorKind,
 }
 
 /// Validated code shared by every task that runs it.
@@ -100,8 +118,8 @@ pub(crate) struct Code {
     pub(crate) captures: u16,
     /// Strict-mode code ([`ExecutableSpec::strict`]).
     pub(crate) strict: bool,
-    /// An ordinary function ([`ExecutableSpec::constructor`]).
-    pub(crate) constructor: bool,
+    /// An ordinary function ([`ExecutableSpec::constructor_kind`]).
+    pub(crate) constructor_kind: ConstructorKind,
     /// Derived from the bytecode when loaded, including spec round trips.
     pub(crate) uses_arguments: bool,
     pub(crate) instrs: Box<[Instr]>,
@@ -144,6 +162,8 @@ pub(crate) struct DebugInfo {
     pub(crate) source: Arc<str>,
     /// One location per instruction, in instruction order.
     pub(crate) locations: Box<[SourceLocation]>,
+    /// Callee spans are independent of the `new` operator's error position.
+    pub(crate) construct_callees: std::collections::HashMap<usize, crate::frontend::Span>,
 }
 
 impl Code {
@@ -293,6 +313,7 @@ impl Executable {
         filename: Arc<str>,
         source: Arc<str>,
         locations: Vec<SourceLocation>,
+        construct_callees: std::collections::HashMap<usize, crate::frontend::Span>,
     ) -> Result<Executable, ValidationError> {
         Executable::load_with(
             spec,
@@ -300,6 +321,7 @@ impl Executable {
                 filename,
                 source,
                 locations: locations.into(),
+                construct_callees,
             }),
         )
     }
@@ -320,7 +342,7 @@ impl Executable {
             functions,
             captures,
             strict,
-            constructor,
+            constructor_kind,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -623,7 +645,7 @@ impl Executable {
             functions: functions.into_iter().map(|f| f.0).collect(),
             captures,
             strict,
-            constructor,
+            constructor_kind,
             uses_arguments: instrs.iter().any(|i| matches!(i, Instr::NewArguments)),
             instrs: instrs.into(),
             offsets: offsets.into(),
@@ -743,7 +765,7 @@ impl Executable {
             functions: code.functions.iter().cloned().map(Executable).collect(),
             captures: code.captures,
             strict: code.strict,
-            constructor: code.constructor,
+            constructor_kind: code.constructor_kind,
         }
     }
 }
@@ -846,7 +868,7 @@ mod tests {
             functions: Vec::new(),
             captures: 0,
             strict: true,
-            constructor: false,
+            constructor_kind: ConstructorKind::None,
         })
     }
 
@@ -947,7 +969,7 @@ mod tests {
             functions: vec![],
             captures: 0,
             strict: true,
-            constructor: false,
+            constructor_kind: ConstructorKind::None,
         });
         assert_eq!(
             kind(e),
@@ -1044,15 +1066,21 @@ mod tests {
             functions: vec![],
             captures: 0,
             strict: true,
-            constructor: false,
+            constructor_kind: ConstructorKind::None,
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
             line: 1,
             column: 1,
         };
-        let e = Executable::load_compiled(spec.clone(), "file".into(), "x".into(), vec![at])
-            .unwrap_err();
+        let e = Executable::load_compiled(
+            spec.clone(),
+            "file".into(),
+            "x".into(),
+            vec![at],
+            Default::default(),
+        )
+        .unwrap_err();
         assert_eq!(
             e.kind,
             SourceMapMismatch {
@@ -1060,7 +1088,14 @@ mod tests {
                 locations: 1
             }
         );
-        let exe = Executable::load_compiled(spec, "file".into(), "x".into(), vec![at, at]).unwrap();
+        let exe = Executable::load_compiled(
+            spec,
+            "file".into(),
+            "x".into(),
+            vec![at, at],
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(exe.source_location(1), Some(at));
         assert_eq!(exe.source_location(2), None);
     }
@@ -1099,7 +1134,7 @@ mod tests {
             functions,
             captures: 0,
             strict: true,
-            constructor: false,
+            constructor_kind: ConstructorKind::None,
         }
     }
 

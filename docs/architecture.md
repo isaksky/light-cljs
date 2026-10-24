@@ -593,8 +593,20 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `get_global_object` (clj-quickjs-104); arrows capture either by value (-98).
 - **`new` (clj-quickjs-71).** `construct n` (`0x5E`) is `call n` for a
   constructor: the callee must be a function object whose code is an
-  ordinary function (`ExecutableSpec::constructor`; arrows, built-ins and
+  ordinary function (`ExecutableSpec::constructor_kind`; arrows, built-ins and
   everything else are a catchable `TypeError` "… is not a constructor").
+  `ConstructorKind::{None, Ordinary}` (clj-quickjs-135) lives in the immutable
+  executable spec and shared `Code`, survives spec round trips, and leaves room
+  for class constructor kinds. Only ordinary function declarations/expressions
+  receive `Ordinary`; generators, async functions, concise methods, accessors
+  and arrows receive `None`. Bound functions check their unwrapped target.
+  Generator prototype ownership remains separate from constructor capability.
+  Compiler debug metadata maps each construct instruction to its identifier
+  or member callee's source span, including computed members and spread calls.
+  A rejection quotes that span without evaluating it again or reading `name`;
+  its error position still uses the independent `new` token location. Other
+  expressions and code loaded without source diagnostics use the value kind
+  (or numeric value). No constructor flag or source label is stored per closure.
   It reads `F.prototype` (creating the lazy prototype object), allocates
   an ordinary object owned by the running task that inherits from it, or
   from `Object.prototype` when it is not an object, and enters `F` like a
@@ -2016,7 +2028,7 @@ Contract: `src/vm/function.rs` ("Own properties": `FunctionObject::owner`,
 `FunctionObject::properties`, `read`, `write_target`, `define_target`,
 `own_store`), `src/vm/property.rs`
 (function bases), `src/value/share.rs` ("Functions with own properties"),
-`src/vm/executable.rs` (`ExecutableSpec::constructor`). Design: `design.md`
+`src/vm/executable.rs` (`ExecutableSpec::constructor_kind`). Design: `design.md`
 §4.
 
 The question: JavaScript functions are objects (`f.x = 1`, `F.prototype`
@@ -2040,9 +2052,9 @@ task-owned when it is first written.
   extensibility, the owner check (`ForeignObject` for another task) and the
   prototype-chain write check come from `crate::object` unchanged, and the
   later define, delete and enumeration pellets inherit them.
-- **`prototype`.** Code compiled from a `function` declaration or
-  expression has `ExecutableSpec::constructor` set (not arrows, scripts or
-  hand-assembled code). Its function objects have an own `prototype`
+- **`prototype`.** Ordinary function declarations/expressions have
+  `ExecutableSpec::constructor_kind == ConstructorKind::Ordinary` (not arrows,
+  methods, async functions, scripts or hand-assembled code). Their function objects have an own `prototype`
   (writable, not enumerable, not configurable) created on first
   observation (a read, or the first creation of a property record), as QuickJS's
   `js_instantiate_prototype` does: a new ordinary object owned by the same
