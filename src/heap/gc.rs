@@ -583,9 +583,12 @@ impl Heap {
     /// running task's VM state) and park until a pending request has been served. The
     /// caller is at an instruction boundary and holds no value outside
     /// `frames`. Returns at once when no request is pending, or when the
-    /// thread cannot stop here (module docs).
+    /// thread cannot stop here (module docs). Debug builds reject a call
+    /// while native code holds a scoped borrow (`crate::vm::native`,
+    /// "Safepoint contract and debug borrow checks").
     #[inline]
     pub(crate) fn safepoint(&self, frames: &dyn Trace) {
+        crate::vm::native::assert_no_borrow("reaching a VM safepoint (a collection may run)");
         if self.collection_requested() {
             self.park_at_safepoint(frames);
         }

@@ -342,6 +342,48 @@ fn a_producer_failure_inside_a_callback_unwinds_through_the_fold() {
     assert_eq!(error.kind(), VmErrorKind::DependencyFailed(key(&rt, 2, 1)));
 }
 
+/// A callback call the native's step cannot make (entering the callback
+/// would exceed the task's call-depth limit) raises a catchable
+/// `StackOverflow` at the `reduce` call before any callback frame exists:
+/// the native frame, still awaiting the call's result with the callee and
+/// arguments in its operand area, is unwound into the caller's catch, the
+/// finally block runs once, and the task can still wait and resume after.
+#[test]
+fn a_refused_callback_call_unwinds_the_native_into_the_callers_catch() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 1,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let task = spawn(
+        &rt,
+        "function main(items) {
+  function step(acc, x) { __rt.effect(1, 99); return acc + x; }
+  let r;
+  try { r = __rt.reduce(step, 0, items); }
+  catch (e) { __rt.effect(1, 50); r = e; }
+  finally { __rt.effect(1, 60); }
+  return __rt.vector(r, __rt.need(63, 1));
+}",
+        &[&number_vector(&rt, &[1.0, 2.0]).0],
+    );
+    let mut log = Log::default();
+    assert_eq!(waiting(run(&task, &mut log)), key(&rt, 63, 1));
+    assert_eq!(log.0, [50.0, 60.0], "the callback never ran");
+    let request = one_request(&task, key(&rt, 63, 1));
+    let (outcome, log) = run_elsewhere(publish_number(&rt, &request, 3.0), log);
+    let result = complete(outcome);
+    assert_eq!(log.0, [50.0, 60.0]);
+    let caught = rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        let items = s.items(v).unwrap();
+        assert_eq!(s.view(items[1]), ValueView::Number(3.0));
+        s.persist(items[0])
+    });
+    let error = caught.error().expect("an error object");
+    assert_eq!(error.kind(), VmErrorKind::StackOverflow, "{error}");
+    assert_eq!(line(&error), 4, "reported at the reduce call: {error}");
+}
+
 /// Nested natives: an exception raised in the inner fold's callback passes
 /// both natives (innermost first) into the outermost caller's catch; a
 /// finally block of the outer callback, between the two natives, runs on

@@ -811,15 +811,6 @@ fn polls(instr: Instr, pc: usize) -> bool {
     }
 }
 
-/// A VM poll point (`Heap::safepoint`): a collection may run here, so no
-/// scoped borrow may be held (`crate::vm::native`, "Safepoint contract and
-/// debug borrow checks").
-#[inline]
-fn poll(heap: &Heap, state: &VmState) {
-    native::assert_no_borrow("reaching a VM safepoint (a collection may run)");
-    heap.safepoint(state);
-}
-
 /// Run until the task returns or fails, or until `budget` instructions have
 /// executed (`None`: unlimited).
 pub(crate) fn execute(
@@ -831,7 +822,7 @@ pub(crate) fn execute(
     native::assert_no_borrow("reentering the dispatch loop");
     let mut code = Arc::clone(&state.top().code);
     // Run entry is a poll point.
-    poll(heap, state);
+    heap.safepoint(state);
     loop {
         if let Some(left) = &mut budget {
             if *left == 0 {
@@ -846,14 +837,14 @@ pub(crate) fn execute(
             Some(pc) => {
                 // Every step is a poll point: the native's values are in its
                 // frame.
-                poll(heap, state);
+                heap.safepoint(state);
                 (pc, native::step(state, heap))
             }
             None => {
                 let pc = state.top().pc;
                 let instr = code.instrs.get(pc).copied();
                 if instr.is_some_and(|i| polls(i, pc)) {
-                    poll(heap, state);
+                    heap.safepoint(state);
                 }
                 let result = match instr {
                     Some(instr) => {
@@ -901,7 +892,7 @@ pub(crate) fn execute(
                 code = Arc::clone(&state.top().code);
                 // Every value is back in task-owned state: a poll point, so
                 // a loop through handlers cannot starve a collection.
-                poll(heap, state);
+                heap.safepoint(state);
             }
             Some(exit) => return exit,
         }

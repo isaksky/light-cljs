@@ -1165,7 +1165,7 @@ blocks", native frames). Design: `design.md` §§10–11, 13.
 - **Debug borrow checks.** A per-thread counter (debug builds only)
   counts `ScopedBorrow`s; the trampoline holds one around each
   `NativeState::step` and `fail`. `native::assert_no_borrow` panics in
-  `dispatch::execute` entry, `dispatch::poll` (every VM safepoint), the
+  `dispatch::execute` entry, `Heap::safepoint` (every VM poll), the
   `Flow::Need` exit, `VmState::push`, `VmState::enter`, `native::start`,
   `Task::try_begin_run` and `RunGuard::park`. Release builds have no
   counter and the checks are empty.

@@ -830,6 +830,15 @@ mod tests {
             }),
             "pushing a value",
         );
+        // A safepoint reached directly through the heap (as a step holding
+        // `&Heap` could), whether or not a collection is requested.
+        expect(
+            violation(|| {
+                let _b = scoped_borrow();
+                heap.safepoint(&Value::Undefined);
+            }),
+            "reaching a VM safepoint",
+        );
         // Released on unwind: the loop runs normally again.
         assert_no_borrow("after the violations");
         let mut s = fresh();
