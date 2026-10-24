@@ -716,7 +716,7 @@ fn module_need_waits_collects_and_migrates_without_replaying() {
     host.add("entry.js", "import {n} from './dep.js'; __rt.effect(0, n);");
     host.add(
         "dep.js",
-        "export let n = 5; __rt.effect(0, n); n += __rt.need(71, 0); __rt.effect(0, n);",
+        "export let n = 5; function update() { let x = {value:n}; const g=eval('() => x.value'); eval('x.value += __rt.need(71, 0)'); return g(); } __rt.effect(0, n); n = update(); __rt.effect(0, n);",
     );
     let graph = ModuleLoader::new()
         .load(world, &"entry.js".into(), &mut host)
@@ -727,12 +727,15 @@ fn module_need_waits_collects_and_migrates_without_replaying() {
     let mut yields = 0;
     let mut done = false;
     for _ in 0..2000 {
-        let (next_task, next_host, outcome) = std::thread::spawn(move || {
-            let outcome = task.run_with(Budget::instructions(3), &mut host).unwrap();
-            (task, host, outcome)
-        })
-        .join()
-        .unwrap();
+        let (next_task, next_host, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task.run_with(Budget::instructions(3), &mut host).unwrap();
+                (task, host, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
         task = next_task;
         host = next_host;
         runtime.collect().unwrap();

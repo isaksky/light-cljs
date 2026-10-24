@@ -7879,6 +7879,12 @@ stops the driver, failing its task before later bodies run. Completion is
 undefined. A finished task cannot be run again; a fresh spawn creates fresh
 instances, including after failure. Imports create no dependency-log edges.
 
+The task driver selects linking steps or the ordinary interpreter, returning
+from the linking driver before entering a module frame. First-use global,
+closure and object/arguments allocation use small opcode handlers, keeping
+realm initialization within a 64 KiB worker stack. The module wait/migration
+test also performs direct eval and forced GC on workers of that size.
+
 QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 `js_create_module_function`, `js_resolve_export`, `js_inner_module_linking`,
 `js_inner_module_evaluation`, `js_execute_sync_module`, and

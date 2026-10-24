@@ -1342,8 +1342,20 @@ impl RunGuard<'_> {
                         pc,
                         budget,
                     },
-                    None => execute_budgeted(vm, &task.heap, host, &mut budget),
+                    None => {
+                        let execute = if !vm.cancelling
+                            && vm.module_link.as_ref().is_some_and(|link| !link.running)
+                        {
+                            crate::vm::dispatch::execute_module_budgeted
+                        } else {
+                            execute_budgeted
+                        };
+                        execute(vm, &task.heap, host, &mut budget)
+                    }
                 };
+                if matches!(exit, Exit::ModuleFrame) {
+                    continue;
+                }
                 if matches!(exit, Exit::CollectionPoint) {
                     // Keep exclusive execution ownership while exposing the
                     // complete saved VM state to the collector. No body or
@@ -1365,6 +1377,10 @@ impl RunGuard<'_> {
                         return self.end_cancelled();
                     }
                     let vm = self.vm().expect("live activation");
+                    if let Some(link) = &mut vm.module_link {
+                        link.running = false;
+                        continue;
+                    }
                     if vm.script_result.is_none() {
                         vm.script_result = Some(value);
                     }
@@ -1482,6 +1498,7 @@ impl RunGuard<'_> {
                     pc,
                 )),
                 Exit::CollectionPoint => unreachable!("collection point handled by driver"),
+                Exit::ModuleFrame => unreachable!("module frame selected by driver"),
             }
         };
         // Completion or failure releases the task's frames and its open

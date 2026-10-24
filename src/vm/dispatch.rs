@@ -127,6 +127,8 @@ pub(crate) enum Exit {
     /// overridden the cancellation (`crate::task`, "Cancellation and finally
     /// blocks").
     CleanupEnded,
+    /// A module frame was selected; the task driver enters it directly.
+    ModuleFrame,
 }
 
 /// A failure before diagnostic context is attached.
@@ -1140,6 +1142,46 @@ fn property_step(
     Ok(Flow::Next)
 }
 
+// A module's first allocation may also build the realm. Select small leaf
+// frames before entry so that first use fits a 64 KiB execution worker.
+#[inline(never)]
+fn closure_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let (Instr::Function(i, n) | Instr::Method(i, n)) = instr else {
+        return Err(Fault::Internal("non-closure on closure path"));
+    };
+    let child = code
+        .functions
+        .get(usize::from(i))
+        .cloned()
+        .ok_or(Fault::Internal("function index out of range"))?;
+    if child.captures != n {
+        return Err(Fault::Internal("capture count differs from the child code"));
+    }
+    // The captured values stay on the operand stack (rooted) until
+    // the closure holding them replaces them, in the same instruction
+    // and under this run's mutator guard.
+    let n = usize::from(n);
+    let home = if matches!(instr, Instr::Method(..)) {
+        let operands = top_operands(state, n + 1)?;
+        let Value::Object(home) = operands[0] else {
+            return Err(Fault::Internal("method home object is not an object"));
+        };
+        Some(home)
+    } else {
+        None
+    };
+    let captures: Box<[Value]> = top_operands(state, n)?.into();
+    let f = new_function(heap, child, captures, state.diag.task, home)?;
+    state.replace(n, f)?;
+    Ok(Flow::Next)
+}
+
 type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> Result<Flow, Fault>;
 
 fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Fault> {
@@ -1286,6 +1328,23 @@ fn class_step(
     Ok(Flow::Next)
 }
 
+#[inline(never)]
+fn allocation_step(
+    state: &mut VmState,
+    _: &Code,
+    heap: &Heap,
+    _: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let object = match instr {
+        Instr::NewArguments => new_arguments(state, heap)?,
+        Instr::NewObjectLiteral => builtin::new_object(heap, state.diag.task)?,
+        _ => return Err(Fault::Internal("non-allocation on allocation path")),
+    };
+    state.push(object);
+    Ok(Flow::Next)
+}
+
 /// Select the leaf before entering its frame, including native-conversion
 /// resumes. Large descriptor/conversion paths must fit 64 KiB workers.
 fn instruction_step(instr: Instr) -> InstructionStep {
@@ -1305,18 +1364,19 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::CallSpread
         | Instr::CallMethodSpread
         | Instr::ConstructSpread => call_step,
-        Instr::GetGlobalObject
-        | Instr::GetGlobal(_)
-        | Instr::GetGlobalOrUndefined(_)
-        | Instr::PutGlobal(_)
+        Instr::Function(..) | Instr::Method(..) => closure_step,
+        Instr::NewObjectLiteral | Instr::NewArguments => allocation_step,
+        Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) => global_check_step,
+        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) => {
+            global_read_step
+        }
+        Instr::PutGlobal(_)
         | Instr::PutGlobalStrict(_)
         | Instr::DeclareGlobalVar(_)
         | Instr::DeclareGlobalFunction(_)
         | Instr::DeclareGlobalLet(_)
         | Instr::DeclareGlobalConst(_)
         | Instr::InitGlobalLexical(_)
-        | Instr::CheckGlobalVar(_)
-        | Instr::CheckGlobalFunction(_)
         | Instr::DeleteGlobal(_)
         | Instr::DeclareGlobalConstValue(_)
         | Instr::CheckGlobalLexicalConflict(_) => global_step,
@@ -2349,15 +2409,8 @@ fn step_instruction(
             let object = new_null_object(heap, state.diag.task)?;
             state.push(object);
         }
-        Instr::NewObjectLiteral => {
-            // As `NewObject`, but inheriting from `Object.prototype`
-            // (`crate::realm`, built on first use).
-            let object = builtin::new_object(heap, state.diag.task)?;
-            state.push(object);
-        }
-        Instr::NewArguments => {
-            let object = new_arguments(state, heap)?;
-            state.push(object);
+        Instr::NewObjectLiteral | Instr::NewArguments => {
+            return allocation_step(state, code, heap, host, instr);
         }
         Instr::HostEffect(op) => {
             let v = state.pop()?;
@@ -2398,31 +2451,8 @@ fn step_instruction(
         Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
             return define_class_element(state, heap, instr);
         }
-        Instr::Function(i, n) | Instr::Method(i, n) => {
-            let child = code
-                .functions
-                .get(usize::from(i))
-                .cloned()
-                .ok_or(Fault::Internal("function index out of range"))?;
-            if child.captures != n {
-                return Err(Fault::Internal("capture count differs from the child code"));
-            }
-            // The captured values stay on the operand stack (rooted) until
-            // the closure holding them replaces them, in the same instruction
-            // and under this run's mutator guard.
-            let n = usize::from(n);
-            let home = if matches!(instr, Instr::Method(..)) {
-                let operands = top_operands(state, n + 1)?;
-                let Value::Object(home) = operands[0] else {
-                    return Err(Fault::Internal("method home object is not an object"));
-                };
-                Some(home)
-            } else {
-                None
-            };
-            let captures: Box<[Value]> = top_operands(state, n)?.into();
-            let f = new_function(heap, child, captures, state.diag.task, home)?;
-            state.replace(n, f)?;
+        Instr::Function(..) | Instr::Method(..) => {
+            return closure_step(state, code, heap, host, instr);
         }
         Instr::GetCapture(i) => {
             let captured = state.top().callee.and_then(|id| {
@@ -2556,7 +2586,35 @@ fn step_instruction(
 
 /// Global environment operations can perform property lookup and allocate
 /// their object. Keep those stacks outside the general opcode dispatcher.
-fn global_step(
+#[inline(never)]
+fn global_check_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let (Instr::CheckGlobalVar(i) | Instr::CheckGlobalFunction(i)) = instr else {
+        return Err(Fault::Internal(
+            "non-declaration check on global check path",
+        ));
+    };
+    let name = name_constant(code, i)?;
+    let Value::Object(id) = global_object(state, heap)? else {
+        return Err(Fault::Internal("missing global object"));
+    };
+    realm::check_global_declaration(
+        heap,
+        id,
+        &name,
+        matches!(instr, Instr::CheckGlobalFunction(_)),
+        state.top().eval,
+    )?;
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn global_read_step(
     state: &mut VmState,
     code: &Code,
     heap: &Heap,
@@ -2588,6 +2646,22 @@ fn global_step(
                 return Err(Fault::Throw(ThrowKind::Unresolvable));
             }
             native::read_result(state, found, global)?;
+        }
+        _ => return Err(Fault::Internal("non-read on global read path")),
+    }
+    Ok(Flow::Next)
+}
+
+fn global_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    match instr {
+        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) => {
+            return global_read_step(state, code, heap, host, instr);
         }
         Instr::PutGlobal(i) | Instr::PutGlobalStrict(i) => {
             let name = name_constant(code, i)?;
@@ -2699,18 +2773,8 @@ fn global_step(
                 )));
             }
         }
-        Instr::CheckGlobalVar(i) | Instr::CheckGlobalFunction(i) => {
-            let name = name_constant(code, i)?;
-            let Value::Object(id) = global_object(state, heap)? else {
-                return Err(Fault::Internal("missing global object"));
-            };
-            realm::check_global_declaration(
-                heap,
-                id,
-                &name,
-                matches!(instr, Instr::CheckGlobalFunction(_)),
-                state.top().eval,
-            )?;
+        Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) => {
+            return global_check_step(state, code, heap, host, instr);
         }
         Instr::DeleteGlobal(i) => {
             let name = name_constant(code, i)?;
@@ -2897,6 +2961,60 @@ pub(crate) fn execute(
     execute_budgeted(state, heap, host, &mut budget)
 }
 
+// Keep module-only temporaries off the interpreter's stack frame. Eval and
+// native callbacks also run on 64 KiB workers; scripts never enter this helper.
+#[inline(never)]
+fn module_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+    // No safepoint may run while the cells are moved out of traced VM state.
+    let mut linker = state.module_link.take().expect("module continuation");
+    let action = linker.step(heap, state.diag.task);
+    state.module_link = Some(linker);
+    match action? {
+        crate::module::LinkAction::Continue => Ok(Flow::Next),
+        crate::module::LinkAction::Complete => {
+            state.module_link = None;
+            Ok(Flow::Complete(Value::Undefined))
+        }
+        crate::module::LinkAction::Run(code, args) => {
+            state.start_module(&code, &args)?;
+            Ok(Flow::FrameChanged)
+        }
+    }
+}
+
+/// Linking-only driver. Return to RunGuard before entering a module frame,
+/// keeping its execution stack identical to script execution on 64 KiB workers.
+pub(crate) fn execute_module_budgeted(
+    state: &mut VmState,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    budget: &mut Option<u64>,
+) -> Exit {
+    loop {
+        if std::mem::take(&mut state.collection_point) {
+            return Exit::CollectionPoint;
+        }
+        if let Some(left) = budget {
+            if *left == 0 {
+                return Exit::Yield;
+            }
+            *left -= 1;
+        }
+        heap.safepoint(state);
+        match module_step(state, heap) {
+            Ok(Flow::Next) => {}
+            Ok(Flow::FrameChanged) => return Exit::ModuleFrame,
+            Ok(Flow::Complete(value)) => return Exit::Return(value),
+            Err(fault) => {
+                let pc = state.top().pc;
+                let (kind, message) = fault_error(fault, &state.top().code, pc);
+                return Exit::Fail(state.failure(kind, message, pc));
+            }
+            _ => unreachable!("module linking does not execute instructions"),
+        }
+    }
+}
+
 /// Preserve the remaining run budget across activation boundaries.
 pub(crate) fn execute_budgeted(
     state: &mut VmState,
@@ -2917,30 +3035,6 @@ pub(crate) fn execute_budgeted(
                 return Exit::Yield;
             }
             *left -= 1;
-        }
-        if state.module_link.as_ref().is_some_and(|link| !link.running) && !state.cancelling {
-            heap.safepoint(state);
-            // The linker is root-free while moved out except for its cells.
-            // Its step never polls/collects; restore it before the next poll.
-            let mut linker = state.module_link.take().expect("module continuation");
-            let action = linker.step(heap, state.diag.task);
-            state.module_link = Some(linker);
-            let result = match action {
-                Ok(crate::module::LinkAction::Continue) => continue,
-                Ok(crate::module::LinkAction::Complete) => {
-                    state.module_link = None;
-                    return Exit::Return(Value::Undefined);
-                }
-                Ok(crate::module::LinkAction::Run(next, args)) => state.start_module(&next, &args),
-                Err(fault) => Err(fault),
-            };
-            if let Err(fault) = result {
-                let pc = state.top().pc;
-                let (kind, message) = fault_error(fault, &code, pc);
-                return Exit::Fail(state.failure(kind, message, pc));
-            }
-            code = Arc::clone(&state.top().code);
-            continue;
         }
         // A running native frame (no call frame above it) takes the next
         // step instead of the running frame's next instruction; `pc` is then
@@ -2980,15 +3074,7 @@ pub(crate) fn execute_budgeted(
                 code = Arc::clone(&state.top().code);
                 continue;
             }
-            Ok(Flow::Complete(value)) => {
-                if !state.cancelling
-                    && let Some(link) = &mut state.module_link
-                {
-                    link.running = false;
-                    continue;
-                }
-                return Exit::Return(value);
-            }
+            Ok(Flow::Complete(value)) => return Exit::Return(value),
             Ok(Flow::CleanupEnded) => return Exit::CleanupEnded,
             Ok(Flow::Need(dependency, kind)) => {
                 native::assert_no_borrow("leaving the loop for a dependency (may suspend)");
