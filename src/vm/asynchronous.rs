@@ -4,7 +4,7 @@
 use super::dispatch::{Fault, Flow};
 use super::frames::{DetachedActivation, VmState};
 use super::native::{Action, Input};
-use crate::heap::gc::Trace;
+use crate::heap::gc::{Trace, TraceEdge};
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::value::Value;
@@ -18,9 +18,9 @@ pub(crate) struct AsyncState {
     reject: Value,
 }
 impl Trace for AsyncState {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         self.activation.iter().for_each(|a| a.trace(visit));
-        visit(self.promise);
+        visit(self.promise.into());
         self.resolve.trace(visit);
         self.reject.trace(visit);
     }
@@ -34,8 +34,8 @@ pub(crate) struct Boundary {
     initial: bool,
 }
 impl Trace for Boundary {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        visit(self.id);
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        visit(self.id.into());
         self.failed.iter().for_each(|v| v.trace(visit));
     }
 }

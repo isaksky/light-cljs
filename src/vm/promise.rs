@@ -94,7 +94,7 @@ impl Trace for Reaction {
             visit((guard).into());
         }
         if let Some(id) = self.async_state {
-            visit(id);
+            visit(id.into());
         }
     }
 }
@@ -290,14 +290,14 @@ pub(crate) enum PromiseState {
 impl Trace for PromiseState {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
-            Self::AsyncRejectTypeError { id, .. } => visit(*id),
+            Self::AsyncRejectTypeError { id, .. } => visit((*id).into()),
             Self::Await {
                 promise,
                 resolve,
                 value,
                 ..
             } => {
-                visit(*promise);
+                visit((*promise).into());
                 resolve.trace(visit);
                 value.trace(visit);
             }
