@@ -165,6 +165,10 @@ pub(crate) struct DependencyTable {
     heap: Arc<Heap>,
     cells: Mutex<HashMap<DependencyKey, Arc<Cell>>>,
     next_producer: AtomicU64,
+    /// Test hook run by `complete` between its unlocked publication check
+    /// and its final cell lock, to force interleavings there.
+    #[cfg(test)]
+    before_install: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl fmt::Debug for DependencyTable {
@@ -181,6 +185,8 @@ impl DependencyTable {
             heap,
             cells: Mutex::new(HashMap::new()),
             next_producer: AtomicU64::new(1),
+            #[cfg(test)]
+            before_install: Mutex::new(None),
         }
     }
 
@@ -286,6 +292,14 @@ impl DependencyTable {
         // caller and its shareability cannot change.
         if let Some(value) = outcome.value() {
             share::check(&self.heap, value).map_err(CompleteError::NotShareable)?;
+        }
+        #[cfg(test)]
+        {
+            // Cloned first, so the hook runs with no lock held.
+            let hook = lock(&self.before_install).clone();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
         let mut state = lock(&cell.state);
         // Recheck: a concurrent completion by the same producer may have won.
@@ -695,5 +709,55 @@ mod tests {
             table.complete(key(1), req.producer(), Terminal::Cancelled),
             Ok(vec![TaskId::from_raw(1)])
         );
+    }
+
+    /// Two completions by the same producer both pass the first validation
+    /// and the unlocked publication check before either installs (forced by
+    /// a barrier in the hook). The recheck under the cell lock lets exactly
+    /// one install and wake; the other is `AlreadyComplete` and the winning
+    /// outcome stays.
+    #[test]
+    fn concurrent_completions_publish_once_and_wake_once() {
+        let heap = Arc::new(Heap::default());
+        let table = DependencyTable::new(Arc::clone(&heap));
+        let waiter = TaskId::from_raw(1);
+        let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(waiter, key(1)) else {
+            panic!("first need claims the producer");
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let hook_barrier = Arc::clone(&barrier);
+        *lock(&table.before_install) = Some(Arc::new(move || {
+            hook_barrier.wait();
+        }));
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = [1.0, 2.0]
+                .map(|n| {
+                    let table = &table;
+                    let producer = req.producer();
+                    s.spawn(move || {
+                        let r = table.complete(key(1), producer, Terminal::Ready(Value::Number(n)));
+                        (n, r)
+                    })
+                })
+                .into_iter()
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let winners: Vec<f64> = results
+            .iter()
+            .filter(|(_, r)| r.as_ref().is_ok_and(|w| w == &[waiter]))
+            .map(|&(n, _)| n)
+            .collect();
+        let losers = results
+            .iter()
+            .filter(|(_, r)| *r == Err(CompleteError::AlreadyComplete { key: key(1) }))
+            .count();
+        assert_eq!((winners.len(), losers), (1, 1), "{results:?}");
+        let Read::Terminal(Terminal::Ready(Value::Number(n))) =
+            table.read_or_subscribe(TaskId::from_raw(2), key(1))
+        else {
+            panic!("ready");
+        };
+        assert_eq!(n, winners[0], "the winning outcome is never replaced");
     }
 }
