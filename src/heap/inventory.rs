@@ -178,6 +178,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             MethodHomeObject,
             EngineErrorCause,
             JsMapEntries,
+            TypedArrayEdges,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -193,7 +194,6 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ArrayElement,
             TaskGlobalObject,
             ArrayBufferProperty,
-            TypedArrayEdges,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],

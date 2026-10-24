@@ -222,6 +222,8 @@ public API cannot reach.
 | concise method home object (clj-quickjs-126), including literal → method cycles | `PersistentHandle` (`Function` → `PlainObject` → argument) | `method_home_object_retains` | `method_home_object_reclaims` |
 | engine Error's original internal cause, after replacing or deleting its own cause property (clj-quickjs-230) | `PersistentHandle` (`PlainObject` → cause) | `engine_error_cause_retains_and_reclaims` *(lib)* | `engine_error_cause_retains_and_reclaims` *(lib)* |
 
+| typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
+
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
   category or kind does not compile until it is mapped, and its test
@@ -4971,9 +4973,18 @@ delete, prototypes and integrity reflection integrate with existing VM paths.
 Concrete constructor/prototype pairs inherit from `%TypedArray%` and its
 shared branded-getter prototype. All intrinsics remain immutable and shared.
 Constructor offset/length coercion and object-valued element/descriptor writes
-run in traced `NativeState::Convert` continuations. Writes retain both the
+run in traced `NativeState::Convert` continuations. Native callers such as
+generic `Array.prototype.push` use `Action::SetProperty`, which applies the
+same coercion and setter protocol while keeping their cursor in a traced frame.
+Writes retain both the
 receiver and original RHS (assignment result); a callback may detach the
 buffer, wait or erase the caller's binding without retaining a Rust stack or
 losing the only buffer edge. ArrayBuffer's fallible 16 MiB allocation limit
 applies to newly allocated view backing stores. Resizable, floating and
 BigInt views, copy/iterable constructors and typed-array methods are deferred.
+
+Own-key reflection and `for`-`in` share a detached-aware element snapshot;
+the iterator rechecks each descriptor before visiting it. Inherited writes
+stop at a typed array's canonical numeric keys: valid elements allow an own
+property on the receiver, while invalid indices are successful no-ops without
+value conversion or further prototype traversal.

@@ -211,6 +211,11 @@ pub(crate) fn own_property_keys(
     let Some(store) = key_store(heap, target)? else {
         return Ok(Vec::new());
     };
+    Ok(order(heap, collect_object(heap, task, store)?, filter))
+}
+
+/// Shared detached-aware snapshot for own-key reflection and for-in walks.
+fn collect_object(heap: &Heap, task: TaskId, store: ObjectId) -> Result<Raw, Fault> {
     let mut raw = heap
         .read(store, |object| collect(object, task))
         .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
@@ -219,7 +224,7 @@ pub(crate) fn own_property_keys(
             .map(|i| (i, true))
             .collect();
     }
-    Ok(order(heap, raw, filter))
+    Ok(raw)
 }
 
 /// The object that holds `target`'s keys: `target` itself, or a function's
@@ -582,9 +587,7 @@ fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKe
     let Some(store) = key_store(heap, id)? else {
         return Ok(Some(Vec::new()));
     };
-    let raw = heap
-        .read(store, |object| collect(object, task))
-        .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
+    let raw = collect_object(heap, task, store)?;
     Ok(Some(order(heap, raw, KeyFilter::All)))
 }
 

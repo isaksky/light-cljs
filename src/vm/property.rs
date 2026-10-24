@@ -921,6 +921,7 @@ pub(crate) fn prepare_put(
     if heap.realm().get().is_some_and(|r| r.view(id).is_some()) || is_function(heap, id) {
         match check_inherited(heap, task, id, interned.or_else(|| key.lookup(heap)), key) {
             Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
+            Ok(Chain::Ignored) => return Ok(None),
             // The store below applies the receiver's data-write policy:
             // immutable intrinsics always throw; function metadata follows
             // the caller's strictness.
@@ -958,6 +959,7 @@ pub(crate) fn prepare_put(
     };
     match check_inherited(heap, task, prototype, chain_key, key) {
         Ok(Chain::Add) => {}
+        Ok(Chain::Ignored) => return Ok(None),
         Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
         // The walk's only TypeError is an inherited read-only property.
         Err(fault @ Fault::TypeError(_)) => return rejected(fault),
@@ -1059,6 +1061,8 @@ fn put_field(
 enum Chain {
     /// The receiver gets a new own data property.
     Add,
+    /// An invalid integer index on a typed-array prototype is a no-op.
+    Ignored,
     Setter(Value),
 }
 
@@ -1075,6 +1079,13 @@ fn check_inherited(
 ) -> Result<Chain, Fault> {
     let mut realm = heap.realm().get();
     loop {
+        if let Some(element) = typed_element(heap, task, id, key)? {
+            return Ok(if element.is_some() {
+                Chain::Add
+            } else {
+                Chain::Ignored
+            });
+        }
         // Intrinsics through their immutable view, as in `get`.
         if let Some(view) = realm.and_then(|r| r.view(id)) {
             match k.and_then(|k| view.get_own(k)) {

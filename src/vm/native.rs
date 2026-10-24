@@ -267,6 +267,14 @@ enum Failure {
 enum Action {
     /// Keep this native frame runnable for another budgeted step.
     Continue,
+    /// Complete a property write through the same resumable conversion and
+    /// setter protocol as bytecode writes, then deliver its original RHS.
+    SetProperty {
+        this: Value,
+        key: property::Key,
+        value: Value,
+        strict: bool,
+    },
 
     ToNumber(Value),
     /// Limit leaf StringToNumber after observable ToPrimitive completes.
@@ -1428,6 +1436,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
                 natives.pop();
             }
             Action::Continue
+            | Action::SetProperty { .. }
             | Action::Call { .. }
             | Action::ToNumber(_)
             | Action::ToNumberLimited(_, _)
@@ -1497,6 +1506,26 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.truncate_operands(base)?;
     match action {
+        Action::SetProperty {
+            this,
+            key,
+            value,
+            strict,
+        } => {
+            set_awaiting(state, Awaiting::CallResult)?;
+            if !typed_array_write(heap, state, &this, &key, &value)? {
+                let setter = property::prepare_put(
+                    heap,
+                    state.diag.task,
+                    &this,
+                    &key,
+                    value.clone(),
+                    strict,
+                )?;
+                write_result(state, setter, this, value)?;
+            }
+            Ok(Flow::Next)
+        }
         Action::ToNumber(_) | Action::ToNumberLimited(_, _) | Action::ToString(_) => {
             let (value, target, hint) = match action {
                 Action::ToNumber(value) => (value, ConvertTarget::NumberValue, Hint::Number),
@@ -1966,37 +1995,25 @@ impl NativeState {
                     }
                     *len = Some(length);
                 }
-                while *next < args.len() {
+                if *next < args.len() {
                     let key = index_key(len.unwrap() + *next as u64);
                     let item = args[*next].clone();
-                    let setter = property::prepare_put(heap, task, this, &key, item.clone(), true)?;
                     *next += 1;
-                    if let Some(callee) = setter {
-                        return Ok(Action::Call {
-                            callee,
-                            this: this.clone(),
-                            args: vec![item],
-                        });
-                    }
+                    return Ok(Action::SetProperty {
+                        this: this.clone(),
+                        key,
+                        value: item,
+                        strict: true,
+                    });
                 }
                 let length = Value::Number((len.unwrap() + args.len() as u64) as f64);
-                let setter = property::prepare_put(
-                    heap,
-                    task,
-                    this,
-                    &property::Key::Name(JsString::from("length")),
-                    length.clone(),
-                    true,
-                )?;
                 *finishing = true;
-                match setter {
-                    Some(callee) => Ok(Action::Call {
-                        callee,
-                        this: this.clone(),
-                        args: vec![length],
-                    }),
-                    None => Ok(Action::Return(length)),
-                }
+                Ok(Action::SetProperty {
+                    this: this.clone(),
+                    key: property::Key::Name(JsString::from("length")),
+                    value: length,
+                    strict: true,
+                })
             }
             NativeState::Instanceof { value, target } => {
                 let proto = match input {

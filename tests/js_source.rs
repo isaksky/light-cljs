@@ -577,6 +577,67 @@ fn typed_array_integer_indexed_properties() {
 }
 
 #[test]
+fn typed_array_for_in_elements() {
+    for source in [
+        "let a = new Uint8Array(2); let keys = ''; for (let k in a) keys += k; keys === '01'",
+        "let a = new Uint8Array(2); let o = Object.create(a); o[0] = 7; o.x = 8; let keys = ''; for (let k in o) keys += k; keys === '0x1'",
+        "let a = new Uint8Array(2); a.x = 8; let keys = ''; for (let k in a) { keys += k; if (k === '0') a.buffer.transfer(); } keys === '0x'",
+        "let a = new Uint8Array(2); a.buffer.transfer(); let keys = ''; for (let k in a) keys += k; keys === ''",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn typed_array_generic_push_coercion() {
+    for source in [
+        "let a = new Uint8Array(1); Object.defineProperty(a, 'length', {value: 0, writable: true}); let n = 0; let r = Array.prototype.push.call(a, {valueOf() { n++; return 257; }}); r === 1 && a[0] === 1 && a.length === 1 && n === 1",
+        "let a = new Uint8Array(1); let n = 0; let ok = false; try { Array.prototype.push.call(a, {valueOf() { n++; return 257; }}); } catch(e) { ok = e instanceof TypeError; } ok && n === 1 && a[1] === undefined",
+        "let a = new Uint8Array(1); Object.defineProperty(a, 'length', {value: 0, writable: true}); let b = a.buffer; let r = Array.prototype.push.call(a, {valueOf() { b.transfer(); return 257; }}); r === 1 && a.length === 1 && a[0] === undefined",
+        "let a = new Uint8Array(1); Object.defineProperty(a, 'length', {value: 0, writable: true}); let ok = false; try { Array.prototype.push.call(a, {valueOf() { throw 42; }}); } catch(e) { ok = e === 42; } ok && a.length === 0 && a[0] === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn typed_array_element_descriptor_restrictions() {
+    for descriptor in [
+        "{writable: false}",
+        "{enumerable: false}",
+        "{configurable: false}",
+        "{get: undefined}",
+        "{set: function(v) {}}",
+        "{writable: false, value: {valueOf() { n++; return 5; }}}",
+        "{enumerable: false, value: {valueOf() { n++; return 5; }}}",
+        "{configurable: false, value: {valueOf() { n++; return 5; }}}",
+    ] {
+        let source = format!(
+            "let a = new Uint8Array(1); a[0] = 9; let n = 0; let ok = false; try {{ Object.defineProperty(a, '0', {descriptor}); }} catch(e) {{ ok = e instanceof TypeError; }} ok && a[0] === 9 && n === 0"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(
+        eval(
+            "let a = new Uint8Array(1); Object.defineProperty(a, '0', {writable: true, enumerable: true, configurable: true, value: 258}); a[0] === 2"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn typed_array_as_prototype_stops_integer_index_writes() {
+    for source in [
+        "let a = new Uint8Array(1); let n = 0; let p = {}; Object.defineProperty(p, '0', {set: function(v) { n++; }}); Object.setPrototypeOf(a, p); let o = Object.create(a); o[0] = 256; o[0] === 256 && a[0] === 0 && n === 0",
+        "let a = new Uint8Array(1); let o = Object.create(a); let n = 0; o[9] = {valueOf() { n++; return 7; }}; !(9 in o) && Object.getOwnPropertyDescriptor(o, '9') === undefined && n === 0",
+        "let a = new Uint8Array(1); let o = Object.create(a); a.buffer.transfer(); o[0] = 7; !(0 in o) && Object.getOwnPropertyDescriptor(o, '0') === undefined",
+        "let a = new Uint8Array(1); let o = Object.create(a); let value = {}; o[0] = value; o[0] === value && a[0] === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
 fn typed_array_constructor_validation_and_metadata() {
     for src in [
         "new Uint8Array().length === 0 && new Uint16Array('3.9').byteLength === 6 && new Uint32Array(-0.9).length === 0",
@@ -634,6 +695,7 @@ fn typed_array_coercion_survives_waits_gc_and_migration() {
         "let log = ''; let a = new Uint8Array(1); a[{toString() { log += 'k'; __rt.need(166, 1); return '0'; }}] = {valueOf() { log += 'v'; return 4; }}; a[0] === 4 && log === 'kv'",
         "let a = new Uint8Array(1); let b = a.buffer; let n = 0; b.transfer(); a[0] = {valueOf() { __rt.need(166, 1); n++; return 42; }}; a[0] === undefined && n === 1",
         "let a = new Uint8Array(1); let r = Object.defineProperty(a, '0', {value: {valueOf() { __rt.need(166, 1); return 257; }}}); r === a && a[0] === 1",
+        "let a = new Uint8Array(1); let b = a.buffer; Object.defineProperty(a, 'length', {value: 0, writable: true}); let r = Array.prototype.push.call(a, {valueOf() { a = null; __rt.need(166, 1); return 257; }}); let u = new Uint8Array(b); a === null && r === 1 && u[0] === 1",
     ] {
         let rt = Runtime::new();
         let mut task = rt.spawn(&exe(source), &[]).unwrap();
