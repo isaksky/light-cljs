@@ -2861,19 +2861,24 @@ impl WorkerView {
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
         install_registrations(engine, &pending, |_| Ok(()))
     }
-    /// Whether the view's engine failed for good, such as by running out of
-    /// memory or time: its worker retires it.
-    /// Whether the view's engine took headroom from the build's memory
-    /// budget, which only destroying it gives back: its worker retires it
-    /// after the job, so what one unit needed does not stay taken for the
-    /// rest of the build and decide which later units fit.
-    fn holds_headroom(&self) -> bool {
+    /// Whether the view's engine took more headroom from the build's
+    /// memory budget than a worker keeps between jobs
+    /// ([`crate::evaluator::MemoryPool::keep`]), which only destroying it
+    /// gives back: its worker retires it after the job, so what one unit
+    /// needed does not stay taken for the rest of the build and decide
+    /// which later units fit. What it holds up to that is its steady need,
+    /// such as the build's macros, which a replacement would take again at
+    /// once (light-cljs-459).
+    fn holds_excess_headroom(&self) -> bool {
+        let keep = self.shared.resources().map_or(0, |r| r.memory.keep());
         self.host
             .engine
             .bootstrap
             .as_ref()
-            .is_some_and(|b| b.evaluator.holds_headroom())
+            .is_some_and(|b| b.evaluator.headroom_held() > keep)
     }
+    /// Whether the view's engine failed for good, such as by running out of
+    /// memory or time: its worker retires it.
     fn terminal(&self) -> bool {
         self.host
             .engine
@@ -3119,7 +3124,20 @@ mod share_tests {
                     limit,
                     "{limit} {n}"
                 );
+                // What the workers keep between jobs leaves at least a
+                // worker's part of the headroom (light-cljs-459).
+                assert!(
+                    pool.headroom() - (isolates - 1) * pool.keep() >= pool.keep(),
+                    "{limit} {n}"
+                );
             }
+        }
+        // The 800k generated project's 2 GiB at 8, 12 and 16 slots: its
+        // workers' isolates hold about 90 to 100 MiB once they have its
+        // macros, within what they keep.
+        for (n, base, keep) in [(8, 128, 128), (12, 85, 85), (16, 64, 64)] {
+            let pool = MemoryPool::new(2 << 30, super::isolate_count(2 << 30, slots(n)));
+            assert_eq!((pool.base() >> 20, pool.keep() >> 20), (base, keep), "{n}");
         }
         // 64 MiB and a share for two: the main isolate's 64 MiB and a
         // worker's share.
@@ -3136,6 +3154,7 @@ mod share_tests {
             (pool.main_base(), pool.base(), pool.headroom()),
             (64 << 20, share, 96 << 20)
         );
+        assert_eq!(pool.keep(), 24 << 20);
         assert_eq!(pool.take(68 << 20, 1), 68 << 20);
         assert_eq!(pool.take(100 << 20, 1), 28 << 20);
         assert_eq!(pool.take(1, 1), 0);
@@ -3378,7 +3397,10 @@ fn serve_pool(
             if slot.engines == PoolEngines::None {
                 (shared.counters.engine_less_units).fetch_add(1, relaxed);
             }
-            if slot.engines != PoolEngines::Fresh && !view.terminal() && !view.holds_headroom() {
+            if slot.engines != PoolEngines::Fresh
+                && !view.terminal()
+                && !view.holds_excess_headroom()
+            {
                 slot.view = Some(view);
             }
         },

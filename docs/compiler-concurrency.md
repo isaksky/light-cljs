@@ -1830,7 +1830,9 @@ of a V8 build, with a QuickJS runtime where a V8 build has an isolate:
   takes what it needs from the shared headroom, at least 1 MiB at a time
   (`HEADROOM_STEP`), which it gives back when the runtime is freed; a
   worker whose runtime took headroom is retired after its unit
-  (`holds_headroom`), as an isolate is. A build with no worker runtime
+  (`holds_headroom`), as an isolate is (since light-cljs-459, only one
+  that took more than a worker keeps; see "As built (light-cljs-459)"
+  below). A build with no worker runtime
   (fewer than two isolates by `isolate_count`) gives the main runtime the
   whole limit, as before.
 - *The budget.* QuickJS runtimes share V8's budget: one aggregate
@@ -1921,6 +1923,68 @@ isolate, in `CppHeap::StartDetachingIsolate`:
   removed the child aborted at 57 MiB. `isolate_count`'s test and the
   suites' `WORKER_SHARE` and `ONE_WORKER_ENGINE` now have one value for
   both engines.
+
+*As built (light-cljs-459), a worker keeps its steady need.* A worker
+whose engine took any headroom was retired after its unit
+(light-cljs-341), so a worker whose need with the build's macros was
+above its base was retired after every unit, and its replacement
+installed the macros and took the headroom again at once: the 800k
+generated project at its own 2 GiB took 30 s at 8 jobs (a 128 MiB base),
+165 s with 1,322 isolates at 12 (85 MiB) and 922 s with 14,132 at 16
+(64 MiB), its workers holding about 90 to 100 MiB (light-cljs-434).
+
+- *What a worker keeps.* `MemoryPool::keep` is the headroom over the
+  isolates. A worker whose engine holds at most that much headroom after
+  its job keeps the engine (`WorkerView::holds_excess_headroom`, from the
+  engines' `headroom_held`); one that holds more is retired as before, so
+  one unit's spike still does not stay taken. The workers together keep
+  at most (isolates - 1) x `keep`, which leaves at least one `keep` of the
+  headroom for the main isolate and for a running unit's spike, and the
+  main isolate keeps what it took, as before. Nothing is reserved or
+  moved: the budget stays one aggregate, the bases and the headroom still
+  sum to the limit, and the default 64 MiB still starts no worker isolate,
+  so a build the default fits at `--jobs 1` fits it at every N.
+  `--jobs 1` has no pool and runs nothing new.
+- *Growing to it.* A V8 isolate grows its heap by half again at its
+  limit (`near_heap_limit`), which from a 64 MiB base passes 128 MiB at
+  the second step. A worker isolate now grows to what it keeps
+  (`v8_buffers::Budget::kept`, its base and `keep`) before it grows past
+  it, so a steady need within it is not taken for a spike; the main
+  isolate and engines outside a build grow as before. A QuickJS runtime
+  takes headroom 1 MiB at a time already.
+- *What fit depends on.* Before, workers held no headroom between jobs,
+  so the main isolate could take all of it while no worker unit ran. Now
+  what the workers keep between jobs depends on which units each ran, so
+  a main-isolate spike above one `keep` can find less headroom than at
+  light-cljs-341. Which build fits already depended on which units ran at
+  the same time; a timeout or memory failure is not promised identical
+  across job counts ("Semantics and determinism", Limits), and
+  `headroom_a_worker_took_returns_for_the_main_isolate`, whose worker
+  unit takes more than a worker keeps, passes unchanged.
+- *Tests.*
+  `parallel_diagnostics::a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate`:
+  a macro namespace that holds 70 MiB in every isolate installing it, at
+  256 MiB and two slots (a 64 MiB base and 64 MiB kept), makes one worker
+  isolate for its twelve pooled units (twelve before), in both engines.
+  `headroom_a_worker_took_returns_for_the_main_isolate` now sets the
+  256 MiB its comment describes (it had `limited`'s 352 MiB, whose 88 MiB
+  kept would hold the 150 MiB spike) and asserts that the worker's later
+  units run in a replacement isolate; with retirement disabled it fails
+  with the memory limit.
+  `share_tests::isolates_share_the_memory_limit_without_exceeding_it`
+  checks that what the workers keep leaves a `keep` of the headroom at
+  every limit and slot count, and the 800k project's bases and `keep`.
+- *Measured* (benchmarks/compiler-concurrency.md, "Worker isolates that
+  keep their steady need"): the 800k project at 2 GiB takes 28.9 s at 8
+  jobs, 29.6 s at 12 and 30.4 s at 16 (1.05x of 8) with one isolate per
+  worker, and the QuickJS-only build 32.5 s at 8 and 33.4 s at 16 (the
+  baseline 1,383 s at 16); output is identical at every N. At 24 jobs
+  2 GiB gives 23 worker isolates a 64 MiB base and 21 MiB to keep, which
+  the project's workers cannot fit: it fails with the memory limit.
+- *Open question.* A V8 isolate torn down at its heap limit while a
+  concurrent Sparkplug or Maglev job of it allocates aborts the process
+  (`CALL_AND_RETRY_LAST`); master did so at 12 and 24 jobs on the 800k
+  project. Fewer retirements make it rare; light-cljs-460 fixes it.
 
 ### Stage C: parallel namespaces
 
@@ -2471,7 +2535,10 @@ output changes once, when stage A lands.
     took headroom is retired after its job (`WorkerView::holds_headroom`),
     so what one unit needed does not stay taken and decide which later
     units fit (`headroom_a_worker_took_returns_for_the_main_isolate`); the
-    main isolate keeps what it took for the build. One that cannot get it
+    main isolate keeps what it took for the build. (Changed by
+    light-cljs-459: a worker keeps up to the headroom over the isolates,
+    its steady need, and is retired only after a job that left it holding
+    more; see "As built (light-cljs-459)" under "Stage A".) One that cannot get it
     fails the build with the memory error, never takes more. The bases and
     the headroom sum to the limit, so the isolates never hold more
     together; the per-isolate limit stays each one's secondary cap. The
@@ -2955,8 +3022,9 @@ is part of the stage A gate.
   top-level passes are serial (0.65x to 0.73x of one job on Penpot and
   the generated projects, 1.13x to 1.28x the peak RSS), and a default
   macro memory of 256 MiB per job, still one budget, which gives every
-  isolate a 128 MiB base; a worker isolate below its need is retired and
-  made again after every unit (light-cljs-459). Numbers and the exact
+  isolate a 128 MiB base; a worker isolate below its need was retired and
+  made again after every unit, which light-cljs-459 settled ("As built
+  (light-cljs-459)" under "Stage A"). Numbers and the exact
   change are in benchmarks/compiler-concurrency.md, "The `--jobs` and
   macro memory defaults".
 

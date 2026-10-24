@@ -325,12 +325,15 @@ impl ExecutionControl {
 /// taking from the headroom the others have not taken, which it gives back
 /// when it is destroyed, so the isolates never hold more than the limit
 /// together. An isolate that cannot take what it needs fails; none takes
-/// more silently.
+/// more silently. A worker isolate keeps what it took up to [`Self::keep`]
+/// between jobs, which is its steady need rather than one unit's spike, and
+/// is retired after a job that left it holding more (light-cljs-459).
 #[derive(Debug)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct MemoryPool {
     base: usize,
     main: usize,
+    keep: usize,
     headroom: std::sync::atomic::AtomicUsize,
 }
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
@@ -341,7 +344,8 @@ impl MemoryPool {
     /// same, but never less than a serial build with the default limit
     /// has, or the whole limit when it is lower (light-cljs-437), as far
     /// as the workers' bases leave it. What is left of the limit is
-    /// headroom to grow into.
+    /// headroom to grow into, of which a worker keeps an even part between
+    /// jobs.
     pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
         let isolates = isolates.max(1);
         let base = (limit / (2 * isolates))
@@ -351,10 +355,12 @@ impl MemoryPool {
         let main = base
             .max(limit.min(DEFAULT_MEMORY_LIMIT))
             .min(limit - workers);
+        let headroom = limit - workers - main;
         Arc::new(Self {
             base,
             main,
-            headroom: std::sync::atomic::AtomicUsize::new(limit - workers - main),
+            keep: headroom / isolates,
+            headroom: std::sync::atomic::AtomicUsize::new(headroom),
         })
     }
     /// The bytes each worker isolate is allowed before it takes headroom.
@@ -364,6 +370,16 @@ impl MemoryPool {
     /// The bytes the main isolate is allowed before it takes headroom.
     pub(crate) fn main_base(&self) -> usize {
         self.main
+    }
+    /// The headroom a worker isolate keeps between its jobs: the headroom
+    /// over the isolates, so that the workers together keep less than all
+    /// of it and at least this much is left for the main isolate and for
+    /// one unit's spike. A worker whose need beyond its base is no more
+    /// keeps its engine, rather than giving the headroom back after every
+    /// unit for a replacement that installs the build's macros again and
+    /// takes it at once (light-cljs-459).
+    pub(crate) fn keep(&self) -> usize {
+        self.keep
     }
     /// Take up to `wanted` bytes of headroom, but nothing unless at least
     /// `needed` are left: what was taken.
@@ -577,12 +593,12 @@ impl Evaluator {
     ) -> Result<Self, EvalError> {
         Self::create(options, true, Some(control), None)
     }
-    /// Whether the runtime took headroom from its build's [`MemoryPool`]
+    /// The headroom the runtime took from its build's [`MemoryPool`]
     /// beyond its base, which it gives back only when it is freed.
-    pub(crate) fn holds_headroom(&self) -> bool {
+    pub(crate) fn headroom_held(&self) -> usize {
         self.headroom
             .as_ref()
-            .is_some_and(|taken| taken.load(Ordering::Relaxed) > 0)
+            .map_or(0, |taken| taken.load(Ordering::Relaxed))
     }
     fn create(
         options: EvaluatorOptions,
@@ -2024,7 +2040,7 @@ struct PoolShare {
     pool: Arc<MemoryPool>,
     /// What it may hold before it takes headroom.
     base: usize,
-    /// The headroom it took ([`Evaluator::holds_headroom`]).
+    /// The headroom it took ([`Evaluator::headroom_held`]).
     taken: Arc<std::sync::atomic::AtomicUsize>,
 }
 /// What a runtime past its base takes of the shared headroom at least, so
@@ -2200,12 +2216,12 @@ mod active_tests {
             )
         };
         let worker = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        assert!(!worker.holds_headroom());
+        assert_eq!(worker.headroom_held(), 0);
         let kept = worker.evaluate_js(&keep(base + 32)).unwrap();
         assert_eq!(worker.number(kept).unwrap(), (base + 32) as f64);
         worker.release(kept).unwrap();
-        assert!(worker.holds_headroom());
         let taken = headroom - resources.memory.headroom();
+        assert_eq!(worker.headroom_held(), taken);
         assert!((16 << 20..48 << 20).contains(&taken), "{taken}");
         // Another worker cannot take more than what is left.
         let other = Evaluator::new_for_build(options.clone(), &resources, false).unwrap();

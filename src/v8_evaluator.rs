@@ -209,9 +209,16 @@ extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: us
     // A build's isolate grows past its allowance only by taking from the
     // build's pool what the others left (docs/compiler-concurrency.md, "As
     // built (light-cljs-341)"); the session's limit stays its own cap.
-    let wanted = current
+    let mut wanted = current
         .saturating_add((current / 2).max(16 * 1024 * 1024))
         .min(state.maximum.saturating_sub(used));
+    // A worker isolate grows to what it keeps between jobs before it grows
+    // past that, so a steady need within it does not overshoot it and get
+    // the isolate retired after every unit (light-cljs-459).
+    let kept = state.buffers.kept().saturating_sub(used);
+    if current < kept {
+        wanted = wanted.min(kept);
+    }
     if state.adaptive
         && wanted > available
         && state.buffers.grow(
@@ -1202,8 +1209,8 @@ fn string_service(
     scope.terminate_execution();
 }
 impl CompilerEvaluator for V8Evaluator {
-    fn holds_headroom(&self) -> bool {
-        self.state.buffers.holds_headroom()
+    fn headroom_held(&self) -> usize {
+        self.state.buffers.headroom_held()
     }
     fn collect_garbage(&self) {
         let mut isolate = self.isolate.borrow_mut();

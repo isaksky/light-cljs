@@ -17,11 +17,11 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError>;
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
-    /// Whether the engine holds memory it took from its build's shared
-    /// budget beyond its base ([`crate::evaluator::MemoryPool`]), which it
-    /// gives back only when it is destroyed.
-    fn holds_headroom(&self) -> bool {
-        false
+    /// The memory the engine took from its build's shared budget beyond
+    /// its base ([`crate::evaluator::MemoryPool`]), which it gives back
+    /// only when it is destroyed.
+    fn headroom_held(&self) -> usize {
+        0
     }
     /// Collect the engine's garbage in full, between operations, so that
     /// what it still holds is what is reachable (`--watch --stats`).
@@ -55,8 +55,8 @@ impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_js(self, expression)
     }
-    fn holds_headroom(&self) -> bool {
-        Evaluator::holds_headroom(self)
+    fn headroom_held(&self) -> usize {
+        Evaluator::headroom_held(self)
     }
     fn collect_garbage(&self) {
         Evaluator::collect_garbage(self);

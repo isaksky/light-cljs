@@ -378,12 +378,15 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
     // the main isolate needs as much, as with one slot: `DRAIN_LAG`
     // namespaces between them put that pass after `app.h`'s drain point,
     // which waits for the worker (light-cljs-391); within the lag, the two
-    // would need the headroom at once.
+    // would need the headroom at once. The spike is more than the 64 MiB a
+    // worker keeps between jobs (light-cljs-459), so the worker's later
+    // units run in a replacement isolate.
     let sources = Sources::new();
     sources.write("app/m.cljs", &hog());
     sources.write(
         "app/h.cljs",
-        "(ns app.h (:require [app.m :refer [hog]])) (defn h0 [] (hog 150)) (defn h1 [] 1)",
+        "(ns app.h (:require [app.m :refer [hog]])) (defn h0 [] (hog 150)) (defn h1 [] 1) \
+         (defn h2 [] (hog 1)) (defn h3 [] (hog 1)) (defn h4 [] (hog 1)) (defn h5 [] (hog 1))",
     );
     let mut fillers = String::new();
     for k in 0..light_cljs::analyzer::DRAIN_LAG {
@@ -399,12 +402,65 @@ fn headroom_a_worker_took_returns_for_the_main_isolate() {
             "(ns app.t (:require [app.h]{fillers} [app.m :refer [hog]])) (hog 150) (js/console.log (app.h/h0))"
         ),
     );
-    for slots in [1, 2] {
-        let built = build_with(&sources, "app.t", slots, false, limited(1024, 100_000));
+    let host = || {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 256 << 20;
+        host
+    };
+    for slots in [1, 2, 2, 2] {
+        let built = build_with(&sources, "app.t", slots, false, host());
         assert!(built.output.is_ok(), "{slots} slots: {:?}", built.output);
         if slots == 2 {
-            assert!(built.stats.deferred_units.worker_isolates >= 1);
+            let units = &built.stats.deferred_units;
+            assert!(units.worker_isolates >= 2, "{units:?}");
         }
+    }
+}
+
+#[test]
+fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
+    // With 256 MiB and two slots, the worker is allowed 64 MiB and keeps up
+    // to 64 MiB of the 128 MiB of headroom between jobs. Every isolate that
+    // installs `app.m` holds its 70 MiB ballast, so the worker takes
+    // headroom at its first unit and needs it at every unit after. It
+    // keeps its isolate for the build instead of being retired after each
+    // unit and replaced by one that installs the macros and takes the
+    // headroom again (light-cljs-459); a unit's spike beyond that still
+    // retires it (`headroom_a_worker_took_returns_for_the_main_isolate`).
+    let sources = Sources::new();
+    let length = if cfg!(feature = "v8-macros") {
+        131072
+    } else {
+        48000
+    };
+    sources.write(
+        "app/m.cljs",
+        &format!(
+            "(ns app.m) (def ballast (let [keep #js []] (dotimes [_ 70] (.push keep (.fill (js/Array. {length}) 1.5))) keep)) (defmacro held [] (.-length ballast))"
+        ),
+    );
+    let mut body = String::from("(ns app.h (:require [app.m :refer [held]]))\n");
+    for k in 0..12 {
+        body.push_str(&format!("(defn h{k} [] (+ {k} (held)))\n"));
+    }
+    body.push_str("(js/console.log (h11))");
+    sources.write("app/h.cljs", &body);
+    let host = || {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 256 << 20;
+        host
+    };
+    let serial = build_with(&sources, "app.h", 1, false, host());
+    assert_eq!(
+        crate::macro_free_units::execute(&serial.output.clone().unwrap()),
+        "81\n"
+    );
+    for _ in 0..3 {
+        let built = build_with(&sources, "app.h", 2, false, host());
+        assert_eq!(built.output, serial.output);
+        let units = &built.stats.deferred_units;
+        assert!(units.pooled >= 2, "{units:?}");
+        assert_eq!(units.worker_isolates, 1, "{units:?}");
     }
 }
 

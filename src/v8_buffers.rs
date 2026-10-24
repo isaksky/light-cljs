@@ -18,6 +18,9 @@ pub(super) struct Budget {
     /// The build's pool and the isolate's base in it: the main isolate's
     /// or a worker's.
     pool: Option<(Arc<MemoryPool>, usize)>,
+    /// The allowance a worker isolate keeps between jobs, its base and
+    /// [`MemoryPool::keep`]; unbounded for any other.
+    kept: usize,
     control: ExecutionControl,
 }
 
@@ -44,6 +47,10 @@ impl Budget {
         control: ExecutionControl,
         pool: Option<(Arc<MemoryPool>, bool)>,
     ) -> Arc<Self> {
+        let kept = match &pool {
+            Some((pool, false)) => pool.base() + pool.keep(),
+            _ => usize::MAX,
+        };
         let pool = pool.map(|(pool, main)| {
             let base = if main { pool.main_base() } else { pool.base() };
             (pool, base)
@@ -53,6 +60,7 @@ impl Budget {
             heap: AtomicUsize::new(0),
             allowance: AtomicUsize::new(pool.as_ref().map_or(limit, |(_, base)| *base)),
             pool,
+            kept,
             control,
         })
     }
@@ -73,11 +81,17 @@ impl Budget {
         taken > 0
     }
 
-    /// Whether the budget took headroom from its build's pool.
-    pub(super) fn holds_headroom(&self) -> bool {
+    /// The headroom the budget took from its build's pool.
+    pub(super) fn headroom_held(&self) -> usize {
         self.pool
             .as_ref()
-            .is_some_and(|(_, base)| self.allowance() > *base)
+            .map_or(0, |(_, base)| self.allowance().saturating_sub(*base))
+    }
+
+    /// The allowance a worker isolate keeps between jobs
+    /// ([`MemoryPool::keep`]): it grows toward it before past it.
+    pub(super) fn kept(&self) -> usize {
+        self.kept
     }
 
     pub(super) fn used(&self) -> usize {

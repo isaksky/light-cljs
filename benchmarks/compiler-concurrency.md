@@ -11,6 +11,72 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Worker isolates that keep their steady need (light-cljs-459, October 23, 2026)
+
+Master `17c70df` (baseline) against the candidate, immutable copies of
+one release binary each, V8 and QuickJS-only (`--no-default-features
+--target-dir target/quickjs`). The seed-42 800k generated project at
+`release bench --no-cache --stats` with its own 2 GiB
+`:macro-memory-limit`, peak RSS from `/usr/bin/time -l` in MiB. V8: three
+rounds at 8, 12 and 16 jobs, the second in reverse order, baseline and
+candidate alternating at 8; QuickJS: two rounds at 8 and 16. Medians
+(range). "isolates" is `pool.worker-isolates` (QuickJS runtimes in the
+QuickJS-only build), "startup" `time.worker-isolate-startup-ms` and
+"wait" `trace.wait-ms`. One other worker (light-cljs-458) shared the
+machine: the 1-minute load average was 2.5 to 5.2 for the V8 rounds and
+the candidate's QuickJS rows, but the baseline's churning rows drive it
+to 13 to 26, and the second QuickJS round started at 11.4. Every
+successful build has one output (SHA-256 over every file of `out/`,
+first 16 hex digits `9993fec2da7bbac1`) at every `--jobs`, in both
+engines and both binaries, `--jobs 1` included.
+
+| Engine | `--jobs` | Binary | Wall | User | RSS | isolates | startup | wait |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| V8 | 1 | baseline | 37.98 s | 38.5 s | 3,691 |  |  | 0 ms |
+| V8 | 1 | candidate | 37.45 s | 38.1 s | 3,690 |  |  | 0 ms |
+| V8 | 8 | baseline | 29.12 s (28.59-29.18) | 69.4 s | 4,627 | 7 | 104 ms | 0 ms |
+| V8 | 8 | candidate | 28.89 s (27.61-31.01) | 68.9 s | 4,611 | 7 | 106 ms | 0 ms |
+| V8 | 12 | baseline | 128.61 s, 1 of 2 (the other aborted) | 1,841 s | 4,563 | 1,037 | 15,870 ms | 98,910 ms |
+| V8 | 12 | candidate | 29.56 s (29.56-29.96) | 104.7 s | 4,994 | 11 | 182 ms | 149 ms |
+| V8 | 16 | baseline (light-cljs-434) | 921.54 s | 18,788 s | 4,465 | 14,132 | 235,576 ms | 887,286 ms |
+| V8 | 16 | candidate | 30.41 s (30.05-30.89) | 124.0 s | 5,233 | 15 | 238 ms | 268 ms |
+| V8 | 24 | baseline | aborted, 1 of 1 |  |  |  |  |  |
+| V8 | 24 | candidate | memory limit, 2 of 2 |  |  |  |  |  |
+| QuickJS | 8 | baseline | 37.65 s (36.75-38.55) | 85.8 s | 4,763 | 14 | 510 ms | 4,902 ms |
+| QuickJS | 8 | candidate | 32.47 s (32.38-32.55) | 76.8 s | 4,720 | 7 | 256 ms | 69 ms |
+| QuickJS | 16 | baseline | 1,382.66 s, 1 run | 20,269 s | 5,059 | 18,757 | 679,434 ms | 1,346,343 ms |
+| QuickJS | 16 | candidate | 33.38 s (33.27-33.48) | 116.2 s | 5,860 | 15 | 553 ms | 94 ms |
+
+- *The cliff is gone.* With 2 GiB a worker isolate's base is 128 MiB at 8
+  jobs, 85 MiB at 12 and 64 MiB at 16, and it now keeps up to the same
+  again of headroom (`MemoryPool::keep`, the headroom over the isolates).
+  The 800k project's workers hold about 90 to 100 MiB once they have its
+  macros, so each keeps its one isolate: 16 jobs take 1.05x the wall of 8
+  (30.41 s against 28.89 s) with 15 isolates for 15 workers, against
+  921.5 s and 14,132 isolates at light-cljs-434, and 12 jobs 1.02x with
+  11, against 128.6 s and 1,037 here. QuickJS had the same cliff at 16 jobs
+  (1,383 s, 18,757 runtimes) and retired half its runtimes at 8 (14 for 7
+  workers, 5 s of waits at drain points): 0.86x of the baseline's wall at
+  8 jobs, 1.03x of 8 at 16.
+- *Aborts.* The baseline aborted the process once at 12 jobs (V8's "Fatal
+  JavaScript out of memory: CALL_AND_RETRY_LAST" in a concurrent
+  Sparkplug job) and once at 24 (the same in a concurrent Maglev job): a
+  worker isolate torn down at its heap limit while its compile job
+  allocates. Retiring fewer isolates makes it rare, but it is not fixed
+  (light-cljs-460).
+- *24 jobs at 2 GiB does not fit.* 23 worker isolates of 64 MiB with
+  512 MiB of headroom cannot each hold the project's 90 to 100 MiB: a
+  worker keeps 21 MiB, the workers still retire after each unit, and the
+  candidate fails with "JavaScript session memory limit exhausted"
+  (`workload/leiveim.cljs:4:3`) in 2 of 2 runs, as one isolate per
+  64 MiB of the limit promises no more (light-cljs-434's proposal sizes
+  the default by job instead).
+- *Serial gate.* Penpot `app.main --optimize none` at `--jobs 1`
+  (`penpot.bb main-none`), three alternating rounds at load 2.5 to 4.5:
+  baseline 11.84 s (11.75-12.21) and 852 MB (852-855), candidate 11.82 s
+  (11.77-11.82) and 865 MB (840-872), -0.2% wall and +1.5% peak RSS. A
+  build with one slot has no memory pool, so nothing it runs changed.
+
 ## The `--jobs` and macro memory defaults (light-cljs-434, October 23, 2026)
 
 Master `0f0e6c0`, immutable copies of one V8 release binary and one
