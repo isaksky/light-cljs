@@ -555,6 +555,7 @@ fn optional_chaining() {
 
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::Super => "super".into(),
         ExprKind::SuperCall { args, .. } => format!(
             "(super {})",
             args.iter().map(render_expr).collect::<Vec<_>>().join(" ")
@@ -4595,11 +4596,7 @@ fn class_syntax() {
             "{source}"
         );
     }
-    for source in [
-        "class C { x; }",
-        "class C { static {} }",
-        "class C { m() { return super.x; } }",
-    ] {
+    for source in ["class C { x; }", "class C { static {} }"] {
         assert_eq!(
             parse_script(source).unwrap_err().kind,
             SyntaxErrorKind::Unsupported,
@@ -4621,7 +4618,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
-        ("x = super.y;", 1, 5, "super"),
         ("x.y &&= 1;", 1, 5, "&&="),
         ("function f(...a) {}", 1, 12, "rest"),
         ("a ||= 1;", 1, 3, "||="),
@@ -4629,6 +4625,7 @@ fn rejects_unsupported_syntax_with_positions() {
     for &(src, line, column, needle) in cases {
         rejects_with(src, Unsupported, line, column, needle);
     }
+    rejects_with("x = super.y;", SyntaxErrorKind::Invalid, 1, 5, "super");
 }
 
 // ----- negative: JavaScript early errors and grammar mismatches ---------------

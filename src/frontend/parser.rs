@@ -98,6 +98,7 @@ pub(super) struct Parser<'a> {
     /// and methods before parsing their parameters.
     new_target_allowed: bool,
     super_call: bool,
+    super_property: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -164,6 +165,7 @@ impl<'a> Parser<'a> {
             in_function: false,
             new_target_allowed: false,
             super_call: false,
+            super_property: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -1660,6 +1662,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_function(&mut self, declaration: bool) -> PResult<Function> {
         let outer_super = std::mem::replace(&mut self.super_call, false);
+        let outer_property = std::mem::replace(&mut self.super_property, false);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
@@ -1693,6 +1696,7 @@ impl<'a> Parser<'a> {
         self.depth = saved;
         self.suspension = outer_suspension;
         self.super_call = outer_super;
+        self.super_property = outer_property;
         let mut function = Function::new(
             FunctionKind::Ordinary,
             name,
@@ -1839,6 +1843,7 @@ impl<'a> Parser<'a> {
     /// holds, at the start of an AssignmentExpression.
     #[inline(never)]
     fn parse_arrow_function(&mut self) -> PResult<Expr> {
+        let outer_property = std::mem::replace(&mut self.super_property, false);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
@@ -1904,6 +1909,7 @@ impl<'a> Parser<'a> {
             strict,
         );
         function.asynchronous = asynchronous;
+        self.super_property = outer_property;
         self.check_height(function.height)?;
         let span = function.span;
         self.expr(ExprKind::Function(Box::new(function)), span)
@@ -2775,6 +2781,7 @@ impl<'a> Parser<'a> {
         asynchronous: bool,
         class: bool,
     ) -> PResult<Function> {
+        let outer_property = std::mem::replace(&mut self.super_property, true);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let outer_strict = self.strict;
@@ -2814,6 +2821,7 @@ impl<'a> Parser<'a> {
         );
         function.generator = generator;
         function.asynchronous = asynchronous;
+        self.super_property = outer_property;
         self.check_height(function.height)?;
         Ok(function)
     }
@@ -3296,18 +3304,18 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return self.expr(ExprKind::NewTarget, op_span.to(property.span));
         }
-        if self.is_keyword(Keyword::Super) {
-            return Err(self.error(
-                SyntaxErrorKind::Invalid,
-                self.tok.span,
-                "super cannot be a new callee",
-            ));
-        }
         let mut callee = if self.is_keyword(Keyword::New) {
             self.parse_new()?
         } else {
             self.parse_primary()?
         };
+        if matches!(callee.kind, ExprKind::SuperCall { .. }) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                callee.span,
+                "super() cannot be a new callee",
+            ));
+        }
         loop {
             if self.is_punct(Punct::Dot) {
                 self.deeper(cost::OPERATOR)?;
@@ -3515,7 +3523,22 @@ impl<'a> Parser<'a> {
     fn parse_super_call(&mut self) -> PResult<Expr> {
         let span = self.advance()?.span;
         if !self.is_punct(Punct::LParen) {
-            return Err(self.unsupported(span, "super property access is"));
+            if !self.super_property {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    "super properties require a method",
+                ));
+            }
+            // Arrows and direct eval need lexical home-object transport (-112).
+            if !(self.is_punct(Punct::Dot) || self.is_punct(Punct::LBracket)) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    "super requires a property access",
+                ));
+            }
+            return self.expr(ExprKind::Super, span);
         }
         if !self.super_call {
             return Err(self.error(

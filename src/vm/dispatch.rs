@@ -484,6 +484,7 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
             format!("assignment to constant variable '{n}'")
         }
         (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
+        (ThrowKind::DeleteSuper, _) => "cannot delete a super property".to_string(),
     }
 }
 
@@ -1028,6 +1029,74 @@ fn property_step(
         return Ok(Flow::Next);
     }
     match instr {
+        Instr::GetSuperBase => {
+            let Value::Object(id) = state.pop()? else {
+                return Err(Fault::Internal("invalid super method"));
+            };
+            let home = heap
+                .read(id, |object| match object {
+                    HeapObject::Function(function) => function.home_object,
+                    _ => None,
+                })
+                .flatten()
+                .ok_or(Fault::Internal("super method has no home object"))?;
+            let base = prototype::get_prototype_of(heap, state.diag.task, home)?;
+            state.push(base.map_or(Value::Null, Value::Object));
+        }
+        Instr::GetSuperElem => {
+            let key = property::to_property_key(&state.pop()?)?;
+            let base = state.pop()?;
+            let receiver = state.pop()?;
+            let read = property::read(heap, state.diag.task, &base, &key)?;
+            native::read_result(state, read, receiver)?;
+        }
+        Instr::PutSuperElem | Instr::PutSuperElemStrict => {
+            let strict = code.strict || matches!(instr, Instr::PutSuperElemStrict);
+            let value = state.pop()?;
+            let key = property::to_property_key(&state.pop()?)?;
+            let base = state.pop()?;
+            let receiver = state.pop()?;
+            let task = state.diag.task;
+            match property::super_write(heap, task, &base, &key, strict)? {
+                property::SuperWrite::Setter(setter) => {
+                    native::write_result(state, Some(setter), receiver, value)?;
+                }
+                property::SuperWrite::Done => state.push(value),
+                property::SuperWrite::Receiver => {
+                    if let Some(desc) = property::super_receiver_descriptor(
+                        heap,
+                        task,
+                        &receiver,
+                        &key,
+                        value.clone(),
+                        strict,
+                    )? {
+                        if native::typed_array_write(heap, state, &receiver, &key, &value)? {
+                            return Ok(Flow::Next);
+                        }
+                        let Value::Object(id) = receiver else {
+                            return Err(Fault::Internal("super write receiver is not an object"));
+                        };
+                        property::put_super_receiver(heap, task, id, &key, &desc, strict)?;
+                    }
+                    state.push(value);
+                }
+            }
+        }
+        Instr::ToSuperKey => {
+            let key = property::to_property_key(&state.pop()?)?;
+            state.push(match key {
+                property::Key::Index(index) => Value::Number(f64::from(index)),
+                property::Key::Name(name) => Value::String(name),
+                property::Key::Symbol(symbol) => Value::Symbol(symbol),
+            });
+        }
+        Instr::Dup3 => {
+            let values = top_operands(state, 3)?.to_vec();
+            for value in values {
+                state.push(value);
+            }
+        }
         Instr::GetField(i) => {
             let name = name_constant(code, i)?;
             let base = state.pop()?;
@@ -1397,7 +1466,13 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::PutElem
         | Instr::PutElemStrict
         | Instr::Dup2
-        | Instr::ToPropertyKey => property_step,
+        | Instr::Dup3
+        | Instr::ToPropertyKey
+        | Instr::GetSuperBase
+        | Instr::GetSuperElem
+        | Instr::PutSuperElem
+        | Instr::PutSuperElemStrict
+        | Instr::ToSuperKey => property_step,
         _ => step,
     }
 }
@@ -1717,7 +1792,9 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         }
         Fault::Throw(kind) => {
             let error_kind = match kind {
-                ThrowKind::Unresolvable | ThrowKind::Uninitialized => VmErrorKind::ReferenceError,
+                ThrowKind::Unresolvable | ThrowKind::Uninitialized | ThrowKind::DeleteSuper => {
+                    VmErrorKind::ReferenceError
+                }
                 ThrowKind::ConstAssignment => VmErrorKind::TypeError,
             };
             (error_kind, throw_message(code, pc, kind))
@@ -2193,7 +2270,13 @@ fn step_instruction(
         | Instr::PutElem
         | Instr::PutElemStrict
         | Instr::Dup2
-        | Instr::ToPropertyKey => return property_step(state, code, heap, host, instr),
+        | Instr::Dup3
+        | Instr::ToPropertyKey
+        | Instr::GetSuperBase
+        | Instr::GetSuperElem
+        | Instr::PutSuperElem
+        | Instr::PutSuperElemStrict
+        | Instr::ToSuperKey => return property_step(state, code, heap, host, instr),
         Instr::RegExpLiteral(index) => {
             let compiled = state
                 .top()
@@ -2820,6 +2903,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).
         Instr::GetField(_) | Instr::PutField(_) | Instr::PutFieldStrict(_) | Instr::GetElem | Instr::PutElem | Instr::PutElemStrict
+        | Instr::GetSuperBase | Instr::GetSuperElem | Instr::PutSuperElem | Instr::PutSuperElemStrict | Instr::ToSuperKey
         // Deleting initial metadata creates the property record (clj-quickjs-101).
         | Instr::Delete | Instr::DeleteStrict
         // Reads `f.prototype` (clj-quickjs-75).
@@ -2918,7 +3002,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::GetRawThis
         | Instr::CheckSloppyThis
         // Copy or convert operands only (clj-quickjs-76).
-        | Instr::Dup2
+        | Instr::Dup2 | Instr::Dup3
         | Instr::ToPropertyKey
         // Re-checks keys only; the key string lives outside the heap
         // (clj-quickjs-85).

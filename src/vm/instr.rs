@@ -146,6 +146,12 @@
 //! | `BindThis` | 0xA0 | – | receiver-cell result → result | initialize derived this exactly once |
 //! | `ResolveThis` | 0xA1 | – | receiver-or-cell → receiver | read this with its initialization check |
 //! | `ForwardArguments` | 0xA2 | – | → packed-arguments | forward default derived constructor arguments |
+//! | `GetSuperBase` | 0xA3 | – | function → base | read the home object's current prototype |
+//! | `GetSuperElem` | 0xA4 | – | receiver base key → value | read with a separate receiver |
+//! | `PutSuperElem` | 0xA5 | – | receiver base key value → value | write with a separate receiver |
+//! | `ToSuperKey` | 0xA6 | – | key → key | resumable ToPropertyKey before a super access |
+//! | `Dup3` | 0xA7 | – | a b c → a b c a b c | retain a super reference for updates |
+//! | `PutSuperElemStrict` | 0xA8 | – | receiver base key value → value | strict write inside class computed names |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -683,6 +689,17 @@ pub enum Opcode {
     ResolveThis = 0xA1,
     /// → packed-arguments: copy default constructor's original arguments.
     ForwardArguments = 0xA2,
+    /// function → lookup base: [[HomeObject]].[[Prototype]].
+    GetSuperBase = 0xA3,
+    /// receiver base key → value, with resumable getter dispatch.
+    GetSuperElem = 0xA4,
+    /// receiver base key value → value, with resumable setter dispatch.
+    PutSuperElem = 0xA5,
+    /// key → primitive property key, without a base coercibility check.
+    ToSuperKey = 0xA6,
+    /// a b c → a b c a b c: retain a super reference across its read.
+    Dup3 = 0xA7,
+    PutSuperElemStrict = 0xA8,
 }
 
 /// Operand encoding of an opcode.
@@ -875,6 +892,12 @@ impl Opcode {
             0xA0 => BindThis,
             0xA1 => ResolveThis,
             0xA2 => ForwardArguments,
+            0xA3 => GetSuperBase,
+            0xA4 => GetSuperElem,
+            0xA5 => PutSuperElem,
+            0xA6 => ToSuperKey,
+            0xA7 => Dup3,
+            0xA8 => PutSuperElemStrict,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1047,6 +1070,12 @@ impl Opcode {
             BindThis => "bind_this",
             ResolveThis => "resolve_this",
             ForwardArguments => "forward_arguments",
+            GetSuperBase => "get_super_base",
+            GetSuperElem => "get_super_elem",
+            PutSuperElem => "put_super_elem",
+            ToSuperKey => "to_super_key",
+            Dup3 => "dup3",
+            PutSuperElemStrict => "put_super_elem_strict",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1139,7 +1168,8 @@ impl Opcode {
             DefineGetterElem | DefineSetterElem => OperandKind::None,
             GetRawThis | GetNewTarget | CheckSloppyThis => OperandKind::None,
             CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuperSpread
-            | BindThis | ResolveThis | ForwardArguments => OperandKind::None,
+            | BindThis | ResolveThis | ForwardArguments | GetSuperBase | GetSuperElem
+            | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1160,6 +1190,8 @@ pub enum ThrowKind {
     Uninitialized = 1,
     /// TypeError: assignment to a `const` binding.
     ConstAssignment = 2,
+    /// ReferenceError: delete of a super property reference.
+    DeleteSuper = 3,
 }
 
 impl ThrowKind {
@@ -1169,6 +1201,7 @@ impl ThrowKind {
             0 => ThrowKind::Unresolvable,
             1 => ThrowKind::Uninitialized,
             2 => ThrowKind::ConstAssignment,
+            3 => ThrowKind::DeleteSuper,
             _ => return None,
         })
     }
@@ -1358,6 +1391,12 @@ pub(crate) enum Instr {
     PutFieldStrict(u16),
     PutElemStrict,
     DeleteStrict,
+    GetSuperBase,
+    GetSuperElem,
+    PutSuperElem,
+    ToSuperKey,
+    Dup3,
+    PutSuperElemStrict,
 }
 
 impl Instr {
@@ -1522,6 +1561,12 @@ impl Instr {
             Instr::BindThis => Opcode::BindThis,
             Instr::ResolveThis => Opcode::ResolveThis,
             Instr::ForwardArguments => Opcode::ForwardArguments,
+            Instr::GetSuperBase => Opcode::GetSuperBase,
+            Instr::GetSuperElem => Opcode::GetSuperElem,
+            Instr::PutSuperElem => Opcode::PutSuperElem,
+            Instr::ToSuperKey => Opcode::ToSuperKey,
+            Instr::Dup3 => Opcode::Dup3,
+            Instr::PutSuperElemStrict => Opcode::PutSuperElemStrict,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1580,6 +1625,10 @@ impl Instr {
             | GetElem | SetProto | Delete | PutFieldStrict(_) | DeleteStrict => (2, 1),
             PutElem | PutElemStrict => (3, 1),
             Dup2 => (2, 4),
+            Dup3 => (3, 6),
+            GetSuperBase | ToSuperKey => (1, 1),
+            GetSuperElem => (3, 1),
+            PutSuperElem | PutSuperElemStrict => (4, 1),
             ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
@@ -1614,6 +1663,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 162);
+        assert_eq!(assigned, 168);
     }
 }

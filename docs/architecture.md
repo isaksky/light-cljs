@@ -2531,8 +2531,7 @@ dictionary use would want shapes or a compacting map later.
 
 **Consequences.** Deleting is linear in the object's own-property count.
 Sloppy `delete` of a non-configurable property is `false` (the running
-code's `Code::strict`, as for writes). `delete super.x` (clj-quickjs-138)
-waits for `super`; `delete a?.b` (clj-quickjs-134) returns true on a nullish
+code's `Code::strict`, as for writes). `delete super.x` throws ReferenceError (clj-quickjs-138); `delete a?.b` (clj-quickjs-134) returns true on a nullish
 base and otherwise uses ordinary property deletion. `delete` of an
 identifier is clj-quickjs-105; `delete f.length`/`f.name` use the ordinary
 record after copying initial metadata (clj-quickjs-101).
@@ -3659,7 +3658,7 @@ allocates the closure with the literal below its captured values as its
 `FunctionObject::home_object`, preserving the literal on the operand stack for
 `define_field`. That field defines the usual writable, enumerable, configurable
 data property. A `__proto__() {}` method is a data property, including beside
-a `__proto__: value` prototype setter. Computed keys and `super` remain deferred in this slice. Generator methods
+a `__proto__: value` prototype setter. Computed keys (-233) and super properties (-138) execute. Generator methods
 execute through detachable activations (clj-quickjs-243 below); async methods
 execute through promise jobs (clj-quickjs-248 below).
 
@@ -7337,7 +7336,7 @@ records and home objects. Constructors, prototypes and detached class methods
 therefore fail publication on their task-owned reachable state, just like
 object methods and functions with own properties. Tests exercise collection and
 worker migration during constructors, methods, accessors and computed-key
-conversion, and execution on 64 KiB worker stacks. Fields and super properties
+conversion, and execution on 64 KiB worker stacks. Fields
 continue to fail explicitly.
 
 Computed keys execute inline in their enclosing activation, so `yield` and
@@ -7978,3 +7977,32 @@ objects/native continuations. Each case/zone reports its unmodified status;
 failures are accumulated so one case cannot hide another. No runtime
 representation, locale tables or host interfaces change. Attribution and
 the retained license are recorded in docs/attribution.md and the fixture.
+
+### Super property references (clj-quickjs-138)
+
+The parser admits a super property base only in method/accessor parameters and
+bodies. Ordinary functions reset the context; arrows and runtime eval keep
+lexical super deferred to -112. The base is never a standalone JavaScript value.
+Lowering preserves a triple on the operand stack: current receiver, home-object
+prototype, converted key. `GetSuperBase` reads the executing function's existing
+traced `home_object` edge and obtains its current prototype. `GetSuperElem`
+searches that base but dispatches a getter with the separate receiver.
+`PutSuperElem` performs the lookup-base descriptor decision before checking the
+receiver's own descriptor and defining/updating its data property; inherited
+setters run with the receiver. `PutSuperElemStrict` preserves class computed-key
+strictness inside sloppy surrounding code. `ToSuperKey` reuses the string-hint
+resumable conversion continuation without checking base coercibility; `Dup3`
+retains the triple for compound assignments and updates. Destructuring targets
+use the same reference representation. Calls and tagged templates keep a second
+receiver below the triple and use ordinary method-call instructions. Deletion
+converts its key and uses `ThrowError(DeleteSuper)` without fetching a property.
+
+All opcodes append to the registry (0xA3..0xA8); existing encodings are unchanged.
+There are no new heap kinds or publication categories: the method's home object
+already participates in precise tracing and transitive publication. Operand and
+native frames root receivers, lookup bases, keys, setters and assigned values;
+callbacks use ordinary resumable frames without retaining a Rust stack. Tests
+cover one-instruction budgets, collections around waits and yields, worker
+migration and 64 KiB worker stacks. Class fields and lexical super in arrows/eval
+remain explicit gaps. QuickJS is a semantic reference; this implementation uses
+the existing Rust object model and VM continuations.

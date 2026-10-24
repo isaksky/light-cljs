@@ -1063,6 +1063,84 @@ fn setter_result(setter: Value, key: &Key, strict: bool) -> Result<Option<Value>
     }
 }
 
+/// Super [[Set]] first consults the lookup base, independently of the receiver.
+pub(crate) enum SuperWrite {
+    Setter(Value),
+    Receiver,
+    Done,
+}
+
+pub(crate) fn super_write(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    strict: bool,
+) -> Result<SuperWrite, Fault> {
+    let Value::Object(base) = base else {
+        return Err(Fault::TypeError("super lookup base is null".into()));
+    };
+    match check_inherited(heap, task, *base, key.lookup(heap), key) {
+        Ok(Chain::Add) => Ok(SuperWrite::Receiver),
+        Ok(Chain::Ignored) => Ok(SuperWrite::Done),
+        Ok(Chain::Setter(setter)) => Ok(match setter_result(setter, key, strict)? {
+            Some(setter) => SuperWrite::Setter(setter),
+            None => SuperWrite::Done,
+        }),
+        Err(Fault::TypeError(_)) if !strict => Ok(SuperWrite::Done),
+        Err(fault) => Err(fault),
+    }
+}
+
+/// OrdinarySetWithOwnDescriptor's receiver check. An own accessor on the
+/// receiver rejects a data write; it must never be called as a setter.
+pub(crate) fn super_receiver_descriptor(
+    heap: &Heap,
+    task: TaskId,
+    receiver: &Value,
+    key: &Key,
+    value: Value,
+    strict: bool,
+) -> Result<Option<PropertyDescriptor>, Fault> {
+    let rejected = || {
+        if strict {
+            Err(read_only(key))
+        } else {
+            Ok(None)
+        }
+    };
+    let Value::Object(id) = receiver else {
+        return rejected();
+    };
+    let own = get_own_property(heap, task, *id, key)?;
+    if let Some(own) = &own
+        && (own.accessor.is_some() || !own.flags.writable)
+    {
+        return rejected();
+    }
+    Ok(Some(PropertyDescriptor {
+        value: Some(value),
+        writable: own.is_none().then_some(true),
+        enumerable: own.is_none().then_some(true),
+        configurable: own.is_none().then_some(true),
+        ..PropertyDescriptor::default()
+    }))
+}
+
+pub(crate) fn put_super_receiver(
+    heap: &Heap,
+    task: TaskId,
+    receiver: ObjectId,
+    key: &Key,
+    desc: &PropertyDescriptor,
+    strict: bool,
+) -> Result<(), Fault> {
+    match define_own_property(heap, task, receiver, key, desc) {
+        Err(Fault::TypeError(_)) if !strict => Ok(()),
+        result => result,
+    }
+}
+
 /// `base[key] = value` on a primitive `base` (module docs, "Primitive
 /// bases"; ECMAScript PutValue: OrdinarySet on ToObject(base) with the
 /// primitive as the receiver, which never creates a wrapper here).

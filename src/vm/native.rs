@@ -1012,7 +1012,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | GetNewTarget
         | CheckSloppyThis => false,
         CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuper(_)
-        | ConstructSuperSpread | BindThis | ResolveThis | ForwardArguments => false,
+        | ConstructSuperSpread | BindThis | ResolveThis | ForwardArguments | GetSuperBase
+        | GetSuperElem | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -1106,7 +1107,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
     }
     let (count, first, end, hint) = match instr {
         ToNumber | ToNumeric => (1, 0, 1, Hint::Number),
-        ToString => (1, 0, 1, Hint::String),
+        ToString | ToSuperKey => (1, 0, 1, Hint::String),
         Plus => (2, 0, 2, Hint::Default),
         ToNumberPair | CompareLt | CompareGt | CompareLe | CompareGe => (2, 0, 2, Hint::Number),
         LooseEq => {
@@ -1158,6 +1159,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
                 && (matches!(
                     instr,
                     ToString
+                        | ToSuperKey
                         | GetElem
                         | ToPropertyKey
                         | Delete
@@ -2718,7 +2720,7 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
         PrimitiveConstructor { which, .. } => {
             matches!(which, builtin::Builtin::String | builtin::Builtin::Symbol)
         }
-        Instruction(Instr::ToString) => true,
+        Instruction(Instr::ToString | Instr::ToSuperKey) => true,
         Instruction(
             Instr::GetElem
             | Instr::ToPropertyKey

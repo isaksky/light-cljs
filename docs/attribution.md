@@ -1256,3 +1256,16 @@ and `tests/quickjs_intl.rs` list adapted rows: none. This is adapted QuickJS
 test text, a synthetic fixture, not light-cljs output. The integration test
 runs each case separately in two simulated host zones with en-US as the
 default locale and collection between instruction-budget slices.
+
+## Super properties (clj-quickjs-138)
+
+`tests/js_source.rs::super_property_access` and the super-properties examples in
+`docs/grammar.md` adapt the h/H inheritance rows of
+`research/quickjs/tests/test_language.js::test_class` and the `delete super.a`
+row of `test_delete`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). The full QuickJS MIT notice is retained in
+`tests/js_source.rs` beside `object_literals_and_named_properties`.
+Other fixtures are synthetic, not light-cljs output. `js_method_set_home_object`,
+`CASE(OP_get_super)`, `CASE(OP_get_super_value)` and `js_parse_postfix_expr` in
+`research/quickjs/quickjs.c` at that revision were semantic references. The Rust
+implementation was written afresh; no C implementation was copied or wrapped.

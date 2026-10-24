@@ -508,6 +508,7 @@ impl Expr {
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::This
+            | ExprKind::Super
             | ExprKind::NewTarget
             | ExprKind::Undefined
             | ExprKind::Identifier(_)
@@ -588,6 +589,8 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    /// Only the immediate base of a Member/Index; never a standalone value.
+    Super,
     SuperCall {
         args: Vec<Expr>,
         op_span: Span,

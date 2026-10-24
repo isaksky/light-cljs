@@ -125,6 +125,125 @@ fn derived_classes() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Class h/H and delete rows
+/// adapt QuickJS test_language.js::test_class/test_delete (notice below).
+#[test]
+fn super_property_access() {
+    for source in [
+        "class C { f() { return 1; } static F() { return -1; } } class D extends C { h() { return super.f(); } static H() { return super['F'](); } } let o = new D(); o.h() === 1 && D.H() === -1",
+        "let p = {x: 1, m() { return this.y; }}; let o = {__proto__: p, y: 2, f() { return super.x + super.m(); }, g() { return super['x'] + super['m'](); }}; o.f() === 3 && o.g() === 3",
+        "let p = {get x() { return this; }, set z(v) { this.y = v; }}; let o = {__proto__: p, get x() { return super.x; }, set z(v) { super.z = v; }}; o.z = 5; o.x === o && o.y === 5 && p.y === undefined",
+        "let p = {}; let o = {__proto__: p, f() { super.z = 5; super['w'] = 6; }}; o.f(); o.z === 5 && o.w === 6 && p.z === undefined && p.w === undefined",
+        "let a = { f() { delete super.a; } }; let ok = false; try { a.f(); } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "let n = 0; let key = {toString() { n++; return 'x'; }}; let o = {m() { delete super[key]; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof ReferenceError; } ok && n === 1",
+        "let p = {x: 1}; let o = {__proto__: p, m() { return super.x; }}; let other = {x: 9, m: o.m}; Object.setPrototypeOf(other, {x: 8}); let before = other.m(); Object.setPrototypeOf(o, {x: 2}); before === 1 && other.m() === 2",
+        "let p = {m(a,b) { return this.x + a + b; }}; let o = {__proto__: p, x: 1, f() { return (super.m)(...[2,3]); }}; o.f() === 6",
+        "let p = {x: 1}; let o = {__proto__: p, m() { let a = super.x++; let b = ++super['x']; super.x += 3; return a === 1 && b === 2 && this.x === 4; }}; o.m() && p.x === 1",
+        "let p = {}; Object.defineProperty(p, 'x', {value: 1}); let o = {__proto__: p, m() { super.x = 2; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok && o.x === 1",
+        "let p = {x: 1}; let o = {__proto__: p, set x(v) { throw 9; }, m() { super.x = 2; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let p = {m() { return this; }}; let o = {__proto__: p, f() { return super.m?.(); }}; o.f() === o",
+        "let o = {__proto__: null, m() { return super.x; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let n = 0; class C {} class D extends C { constructor() { let ok = false; try { super[n++]; } catch(e) { ok = e instanceof ReferenceError; } super(); this.ok = ok; }} new D().ok && n === 0",
+        "class C { static get x() { return this; } static set z(v) { this.y = v; }} class D extends C { static get x() { return super.x; } static set z(v) { super.z = v; }} D.z = 5; D.x === D && D.y === 5 && C.y === undefined",
+        "let key = Symbol('x'); let p = {[key]: 7}; let o = {__proto__: p, m() { super[key] = super[key] + 1; }}; o.m(); o[key] === 8 && p[key] === 7",
+        "let p = {x: 7}; let o = {__proto__: p, m(x = super.x) { return x; }}; o.m() === 7",
+        "let p = {C: function(v) { this.x = v; }}; let o = {__proto__: p, m() { return new super.C(7).x; }}; o.m() === 7",
+        "let p = {tag(a) { return this.x + a[0]; }}; let o = {__proto__: p, x: 'a', m() { return super.tag`b`; }}; o.m() === 'ab'",
+        "let p = {get x() { return this; }}; let o = {__proto__: p, m() { return super.x; }}; o.m.call(7) === 7 && o.m.call(null) === null",
+        "let n = 0; let p = {set x(v) { n++; }}; let o = {__proto__: p, m() { super.x = 7; }}; Object.preventExtensions(o); o.m(); n === 1",
+        "let p = {}; let o = {__proto__: p, m() { super.x = 7; }}; Object.preventExtensions(o); let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let n = 0; let key = {toString() { n++; return 'x'; }}; let p = {x: 1}; let o = {__proto__: p, m() { super[key] += 2; }}; o.m(); n === 1 && o.x === 3 && p.x === 1",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let o = {m() { super[key] = (log += 'v', 7); }}; o.m(); log === 'kv' && o.x === 7",
+        "let n = 0; let o = {m() { let inner = {m() { return super.x; }}; Object.setPrototypeOf(inner, {x: 7}); n = inner.m(); return super.x; }}; Object.setPrototypeOf(o, {x: 8}); o.m() === 8 && n === 7",
+        "let p = {x: 1}; let o = {__proto__: p, m() { [super.x] = [7]; ({x: super['y']} = {x: 8}); }}; o.m(); o.x === 7 && o.y === 8 && p.x === 1 && p.y === undefined",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(
+        sloppy_eval(
+            "let p = {}; Object.defineProperty(p, 'x', {value: 1}); let o = {__proto__: p, m() { super.x = 2; return super.x; }}; o.m() === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        sloppy_eval(
+            "let p = {}; Object.defineProperty(p, 'x', {value: 1}); let o = {__proto__: p, m() { let ok = false; try { class C { [super.x = 2]() {} } } catch(e) { ok = e instanceof TypeError; } return ok; }}; o.m()"
+        ),
+        ValueView::Bool(true)
+    );
+    for source in [
+        "super.x",
+        "function g() { return super.x; }",
+        "({m: function() { return super.x; }})",
+        "({m() { function g() { return super.x; } }})",
+        "({m() { return super?.x; }})",
+        "({m() { return super; }})",
+    ] {
+        assert_eq!(
+            compile_script("super.js", source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn super_property_access_on_small_worker_stack() {
+    for source in [
+        "let p = {get x() { return this.y; }, set x(v) { this.y = v; }, m(v) { return this.y + v; }}; let o = {__proto__: p, y: 1, f() { super['x'] += 2; return super.m(super.x); }}; return o.f() === 6;",
+        "class C { static m() { return this.x; }} class D extends C { static f() { super.x = 7; return super.m(); }} return D.f() === 7 && C.x === undefined;",
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = compile_function(&format!("function check() {{ {source} }}")).unwrap();
+        let code = Executable::load(code.to_spec()).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("complete")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn super_property_access_error_positions() {
+    for (source, kind, line, column) in [
+        (
+            "let o = {__proto__: null, m() {\nreturn super.x;\n}}; o.m()",
+            VmErrorKind::TypeError,
+            2,
+            13,
+        ),
+        (
+            "let o = {m() {\ndelete super.x;\n}}; o.m()",
+            VmErrorKind::ReferenceError,
+            2,
+            1,
+        ),
+        (
+            "class C {} class D extends C { constructor() {\nsuper.x;\n}}; new D()",
+            VmErrorKind::ReferenceError,
+            2,
+            1,
+        ),
+    ] {
+        let (actual, message, actual_line, actual_column) = failure_at(source);
+        assert_eq!(
+            (actual, actual_line, actual_column),
+            (kind, line, column),
+            "{source}: {message}"
+        );
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Constructor targets share the
 /// ordinary function/arrow/eval binding introduced by clj-quickjs-99.
 #[test]

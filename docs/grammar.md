@@ -120,6 +120,7 @@ StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaratio
 ClassDeclaration    = "class" BindingIdentifier [ "extends" LeftHandSideExpression ] ClassBody
 ClassExpression     = "class" [ BindingIdentifier ] [ "extends" LeftHandSideExpression ] ClassBody
 SuperCall           = "super" Arguments  (* derived constructors and their arrows only *)
+SuperProperty       = "super" ( "." IdentifierName | "[" Expression "]" ) (* methods/accessors only *)
 ClassBody           = "{" { ";" | [ "static" ] ClassMethod } "}"
 ClassMethod         = PropertyName FormalParameters FunctionBody
                     | ( "get" | "set" ) PropertyName FormalParameters FunctionBody
@@ -220,7 +221,7 @@ New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expre
 Arguments             = "(" [ SpreadElement { "," SpreadElement } [ "," ] ] ")"
 SpreadElement         = [ "..." ] AssignmentExpression
 Primary               = Identifier | Literal | FunctionExpression | ClassExpression | ObjectLiteral
-                      | ArrayLiteral | TemplateLiteral | RegExpLiteral | SuperCall | "this" | NewTarget | "(" Expression ")"
+                      | ArrayLiteral | TemplateLiteral | RegExpLiteral | SuperCall | SuperProperty | "this" | NewTarget | "(" Expression ")"
                         (* `this`: script global object, ordinary receivers, lexical arrow captures *)
 NewTarget             = "new" "." "target"
                         (* ordinary functions/methods and their lexical arrows/direct eval only *)
@@ -496,7 +497,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | Form | Kind |
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
-| class fields, static initialization blocks, super property access, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| class fields, static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | module `export * as ns from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
@@ -506,7 +507,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
 | numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
-| `delete super.x` (clj-quickjs-138) waits for `super` | Unsupported |
+| `super.x` outside a method/accessor, bare `super`, `super?.x` | Invalid |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
@@ -555,7 +556,8 @@ the rejected function's `name` property (`JS_ThrowTypeErrorNotAConstructor`).
 
 Optional chains support member/index access, calls (including spread arguments)
 and delete (clj-quickjs-134). They use the same object, call and delete behavior
-and limits as ordinary chains. Super property access remains unsupported, including `super?.x`.
+and limits as ordinary chains. Super properties execute in methods/accessors
+(clj-quickjs-138); `super?.x` is an early Invalid SyntaxError.
 
 Number `toFixed`, `toExponential` and `toPrecision` are supported
 (clj-quickjs-150/-151). Digit-count strings longer than 4096 UTF-16 units
@@ -1241,7 +1243,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
 | `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `delete_global` for dynamic global names, or constant `false` for a declarative binding; failures are reported at `delete` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
-| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super` remains deferred; generator methods execute through detachable activations (clj-quickjs-243); async methods execute (clj-quickjs-248). |
+| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. Super properties execute (-138); generator methods execute through detachable activations (clj-quickjs-243); async methods execute (clj-quickjs-248). |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property, else the one it inherits from `Function.prototype` (clj-quickjs-102: `call`, `apply`, `constructor`) and then `Object.prototype`, and fails with `UnsupportedOperand` for a standard `Function.prototype` name that does not exist yet (`bind`, `toString`, `arguments`, `caller`); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; a function object (clj-quickjs-125, `docs/architecture.md`, "Function own properties") gives its own property, else `prototype` of a `function` declaration or expression: an object created on first read (owned by the task, inheriting from `Object.prototype`, with `constructor` the function) and the same object afterwards (an arrow has none: `undefined`); `length` and `name` are initial own metadata (clj-quickjs-101); a missing `Function.prototype` name (`bind`, `toString`, `arguments`, `caller`) fail with `UnsupportedOperand`, any other name continues at `Function.prototype` (`f.call`, `f.apply`, `f.constructor === Function`, clj-quickjs-102) and then `Object.prototype`; a published function's `prototype` cannot be created (`UnsupportedOperand`); a number or string reads through `Number.prototype` / `String.prototype` (clj-quickjs-73, see `(1).toString()` below); a string's own `length` and code-unit indices are read before its prototype (clj-quickjs-142); caught engine-raised errors use ordinary Error instance properties (clj-quickjs-230); booleans fail with `UnsupportedOperand` until Boolean.prototype exists (clj-quickjs-39); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a function object gets the property in its task-owned property record (clj-quickjs-125), so it can no longer be published; a function that was published is shared and immutable (a catchable `TypeError`), one created by another task fails with `ForeignObject`; initial `length` and `name` reject writes as read-only, and a missing `Function.prototype` name fails with `UnsupportedOperand` unless the function has it as its own; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; a number, string or boolean base (clj-quickjs-73) takes no property: a catchable `TypeError` ("cannot create property 'x' on a number", "cannot assign to read-only property '0' of a string") in strict code, nothing in sloppy code, and `__proto__` runs the setter, which ignores a primitive; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
@@ -1378,7 +1380,8 @@ in the method body also makes it strict. In strict methods, detached calls
 receive `undefined`; in sloppy methods, evaluating `this` without an object
 receiver fails with `UnsupportedOperand` until global-object substitution
 and primitive wrappers exist (see "Explicit gaps").
-`super` remains rejected explicitly (clj-quickjs-138/-112).
+Super properties execute through the home object (clj-quickjs-138); lexical
+super properties in arrows and runtime eval source remain deferred (-112).
 
 Computed property names (clj-quickjs-233) use an AssignmentExpression inside
 brackets: `{[key]: value}`, `{[key]() {}}`, `{get [key]() {}}` and
@@ -1397,7 +1400,7 @@ inside brackets (`[d]`, `[]` for an empty description, an empty name when
 absent), with `get ` or `set ` prefixes for accessors. Named functions and
 other expressions retain their names. Rejected forms include `{[key]}`
 shorthand and unparenthesized comma expressions inside the brackets.
-Explicit gaps remain object spread, `super` and async generators. Key conversion
+Explicit gaps remain object spread, lexical super in arrows/eval and async generators. Key conversion
 uses the shared OrdinaryToPrimitive path; `Symbol.toPrimitive` protocol
 dispatch remains the existing conversion gap described below.
 
@@ -1430,8 +1433,8 @@ let o = {m() { return this; }, get() { return 1; }, static() { return 42; }, if(
 ({m() { "use strict"; return 010; }});
 ```
 
-```js reject Unsupported 1:16
-({m() { return super.x; }});
+```js accept
+let p = {x: 1, m() { return this.y; }}; let o = {__proto__: p, y: 2, f() { return super.x + super.m(); }}; o.f() === 3;
 ```
 
 Default parameter values run only for `undefined` arguments, left to
@@ -1906,7 +1909,8 @@ Accessor calls in ordinary reads/writes, conversion-method lookup,
 descriptor fields, `instanceof`, `bind` metadata, `apply` argument lists
 and `push` length/index operations can yield, wait and migrate. `apply`
 and `push` also convert object-valued lengths resumably. All pending values
-are traced and cancellation discards the continuations. `super`, async and generator accessors remain unsupported. The stored
+are traced and cancellation discards the continuations. Super properties execute
+in accessors (-138); async and generator accessors remain unsupported. The stored
 built-in `Object.prototype.__proto__` accessor uses the same call path
 (clj-quickjs-261).
 
@@ -5251,8 +5255,8 @@ use resumable VM frames, including constructors and computed-key conversion.
 Rejected forms: duplicate constructors, accessor/async/generator constructors,
 and non-computed static methods/accessors named `prototype` are early `Invalid`
 SyntaxErrors. Declarations in single-statement positions are `Invalid`.
-Fields, super properties and static blocks are explicitly unsupported.
-Explicit gaps: super properties (-138), instance/static/private fields and
+Fields and static blocks are explicitly unsupported.
+Explicit gaps: lexical super properties in arrows/eval (-112), instance/static/private fields and
 static initialization blocks (-139). Derived constructors execute below (-137).
 
 ```js accept
@@ -5315,7 +5319,7 @@ Rejected forms: `super()` outside a derived constructor or its arrows, and
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
-Explicit gaps: super properties (-138), fields and static blocks (-139), and
+Explicit gaps: lexical super properties in arrows/eval (-112), fields and static blocks (-139), and
 inherited super-call context in runtime eval source. Construction with the
 derived new target supports ordinary/class parents and `Object`; constructing
 other built-in subclasses is explicitly rejected with UnsupportedOperand.
@@ -5749,3 +5753,48 @@ UTC and UTC+05:30 with host default locale en-US. This adapted QuickJS text
 is a synthetic fixture, not light-cljs output. No syntax or runtime behavior
 is added. Explicit gaps remain those of the individual Intl services;
 the README's complete-fixture section collects the principal limitations.
+
+### Super properties (clj-quickjs-138)
+
+Syntax: `super.name` and `super[expression]` occur in concise object methods,
+class constructors, instance/static methods and accessors, including defaults.
+They may be read, assigned, updated, called, constructed or used as template
+tags; a call or tag retains the method's current `this` receiver.
+
+Execution: evaluate `this` (including a derived constructor's initialization
+check), then obtain the prototype of the executing method's immutable
+`[[HomeObject]]`, then evaluate and convert the key with string hint.
+Reads search that prototype chain; getters receive `this`. Calls retain that
+receiver even when parenthesized. Writes consult the lookup base's descriptor,
+then update or create an own data property on `this`, or call an inherited
+setter with `this`. They preserve the assigned value. An own accessor on the
+receiver rejects a data write instead of invoking its setter. Rejected writes
+throw TypeError in strict code and do nothing in sloppy code. Computed keys
+convert once before the right-hand side, including compound updates. Detaching
+or copying a method changes its receiver without changing its home object;
+changing the home object's prototype changes subsequent super lookups.
+`delete super.name` and `delete super[key]` evaluate the reference, including
+computed-key conversion, then throw ReferenceError without reading a getter.
+Key conversions, getters, setters and calls use resumable VM frames and retain
+all operands through yields, dependency waits, collection and worker migration.
+Runtime errors point to the access operator, or to `delete` for deletion;
+a derived receiver's initialization error points to `super`.
+
+Rejected forms: super properties outside methods/accessors (including ordinary
+nested functions), bare `super`, and `super?.x` are early Invalid SyntaxErrors.
+Explicit gaps: lexical super properties in arrows and runtime direct eval
+(-112), and fields/static blocks (-139). These contexts still reject explicitly.
+
+```js accept
+class C { f() { return 1; } static F() { return -1; } } class D extends C { h() { return super.f(); } static H() { return super["F"](); } } let o = new D(); o.h() === 1 && D.H() === -1;
+let p = {}; let o = {__proto__: p, f() { super.z = 5; }}; o.f(); o.z === 5 && p.z === undefined;
+let o = {f() { delete super.x; }}; let ok = false; try { o.f(); } catch(e) { ok = e instanceof ReferenceError; } ok;
+```
+
+```js reject Invalid 1:5
+x = super.y;
+```
+
+```js reject Invalid 1:23
+function g() { return super.x; }
+```

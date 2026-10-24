@@ -2148,11 +2148,9 @@ Supported (`cargo test --test js_source delete_property_references`,
 - Optional-chain delete (clj-quickjs-134) returns true on a nullish base and
   otherwise deletes the final property normally.
 
-Deferred:
-
-- `delete super.x` (clj-quickjs-138) waits for `super`.
-  Error instances have ordinary configurable properties. Built-in objects are immutable: deleting a
-  property they have is a `TypeError` in both modes.
+`delete super.x` throws ReferenceError (clj-quickjs-138).
+Error instances have ordinary configurable properties. Built-in objects are immutable: deleting a
+property they have is a `TypeError` in both modes.
 
 ### `in` (clj-quickjs-74)
 
@@ -2483,8 +2481,7 @@ name from the key, and own `this` and unmapped `arguments`. They are strict in
 this subset, have no own `prototype`, and `new o.m()` throws TypeError.
 An immutable home-object reference retains the defining literal and prevents
 publication of the method through its task-owned home object. GC traces and
-reclaims method/literal cycles. Computed keys and `super` remain
-deferred. Generator methods execute through detachable activations (clj-quickjs-243).
+reclaims method/literal cycles. Computed keys (-233) and super properties (-138) execute. Generator methods execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
 `cargo test --test js_source object_literal_methods -- --exact`,
@@ -2516,7 +2513,7 @@ Getters/setters, descriptor-field reads, conversion-method lookup,
 length/index operations run through traced native continuations and ordinary
 VM frames. They can yield, wait, migrate and unwind on cancellation; apply
 and push also support object-valued lengths through resumable ToPrimitive.
-Computed literal keys execute (clj-quickjs-233); super remains deferred. Async methods execute (clj-quickjs-248). Generator methods
+Computed literal keys execute (clj-quickjs-233); super properties execute (clj-quickjs-138). Async methods execute (clj-quickjs-248). Generator methods
 execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
@@ -3565,7 +3562,7 @@ conversion. Own definitions bypass inherited setters; computed `__proto__`
 defines a property. Methods keep their home object, and anonymous function
 values/methods infer names from strings or bracketed symbol descriptions.
 Computed async methods execute through async function support (clj-quickjs-248).
-Computed shorthand, object spread and `super` remain rejected.
+Computed shorthand and object spread remain rejected; super properties execute in methods and accessors (-138).
 
 Checks: `cargo test --lib frontend::tests::computed_property_names -- --exact`,
 `cargo test --test js_source computed_prop`,
@@ -3730,7 +3727,7 @@ construction of other built-in subclasses is explicitly rejected. Verify with
 `cargo test --test js_source derived_classes` and
 `cargo test --test need derived_constructor_waits_inside_super`.
 
-Deferred: super properties (-138), fields and static
+Deferred: lexical super properties in arrows/eval (-112), fields and static
 initialization blocks (-139), and super calls from runtime eval source.
 
 ### Intl.ListFormat (clj-quickjs-220)
@@ -3932,3 +3929,15 @@ individual service sections above for further limits.
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test quickjs_intl -- --nocapture --test-threads=3
 ```
+
+### Super property access (clj-quickjs-138)
+
+Supported: `super.name` and `super[key]` reads, writes, compound updates,
+deletions (ReferenceError) and calls in object/class methods and accessors,
+including static methods and constructors. Lookup uses the defining home
+object's current prototype and preserves `this` for getters, setters and calls.
+Keys and callbacks can yield, wait, collect and migrate on 64 KiB workers.
+Lexical super properties through arrows and runtime eval remain deferred (-112).
+
+Verify with `cargo test --test js_source super_property_access` and
+`cargo test --test need super_property_access_waits_collects_and_migrates`.

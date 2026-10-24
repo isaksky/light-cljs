@@ -151,7 +151,8 @@
 //! `home_object` is the defining literal. `Trace` visits it separately from
 //! captures and the property record. The persistent publication walk follows
 //! it with `.home_object`: because literals are task-owned, even detached
-//! methods with no captures cannot publish. No `super` execution is added.
+//! methods with no captures cannot publish. Super properties resolve through
+//! the home object's current prototype, independently of their receiver.
 //!
 //! Base classes (clj-quickjs-136) eagerly materialize a non-writable
 //! `prototype` and retain it as the constructor's home object. Their own

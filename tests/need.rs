@@ -30,6 +30,65 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+/// Synthetic fixtures, not light-cljs output: super keeps its receiver,
+/// lookup base, converted key and assigned value through suspension and GC.
+#[test]
+fn super_property_access_waits_collects_and_migrates() {
+    for source in [
+        "let p = {get x() { return __rt.need(5, 3) + this.y; }}; let o = {__proto__: p, y: 20, m() { return super.x; }}; o.m()",
+        "let p = {set x(v) { this.y = __rt.need(5, 3) + v.n; }}; let o = {__proto__: p, m() { let assigned = (super.x = {n: 10}); return this.y + assigned.n; }}; o.m()",
+        "let p = {m(v) { return this.y + v; }}; let o = {__proto__: p, y: 20, m() { return super.m(__rt.need(5, 3)); }}; o.m()",
+        "let p = {get m() { __rt.need(5, 3); return function(v) { return this.y + v; }; }}; let o = {__proto__: p, y: 20, m() { return super['m'](10); }}; o.m()",
+        "let n = 0; let key = {toString() { n++; __rt.need(5, 3); return 'x'; }}; let p = {x: 10}; let o = {__proto__: p, m() { super[key] += 20; return this.x + n - 1; }}; o.m()",
+        "let p = {x: 0}; let o = {__proto__: p, m() { return super.x = __rt.need(5, 3) + 20; }}; o.m()",
+        "class C { static get x() { return __rt.need(5, 3) + this.y; }} class D extends C { static m() { this.y = 20; return super['x']; }} D.m()",
+        "let key = {toString() { __rt.need(5, 3); return 'x'; }}; let o = {m() { try { delete super[key]; } catch(e) { return e instanceof ReferenceError ? 30 : 0; } }}; o.m()",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("super-properties-wait", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let expected = key(&rt, NUMBER);
+        for step in 0..2000 {
+            match task
+                .run_with(Budget::instructions(1), &mut Recorder::default())
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{source}");
+                    break;
+                }
+            }
+            assert!(step < 1999, "bounded super-property wait");
+        }
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+        let result = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..2000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut Recorder::default())
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            rt.collect().unwrap();
+                        }
+                        outcome => return number(outcome),
+                    }
+                }
+                panic!("bounded super-property completion")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(result, 30.0, "{source}");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output: suspend in a base constructor
 /// below super(), collect, then finish the derived frame on another worker.
 #[test]

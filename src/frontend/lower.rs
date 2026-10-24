@@ -497,6 +497,8 @@ enum PropertyRef {
     Field(u16, Span),
     /// `o[k]`: `o` and the converted key on the stack.
     Elem(Span),
+    /// `super[k]`: current receiver, lookup base and converted key.
+    Super(Span),
 }
 
 /// Constant-pool deduplication key. Numbers compare by bit pattern, so `0`
@@ -1907,6 +1909,18 @@ impl<'s> Lowerer<'s> {
         Place::Capture(index)
     }
 
+    /// Keep the receiver separate from the home object's current prototype.
+    /// A method call retains a second receiver below the read's operands.
+    fn super_base(&mut self, span: Span, method: bool) -> Result<(), SyntaxError> {
+        self.literal(&Expr::new(ExprKind::This, span))?;
+        if method {
+            self.out().op(Opcode::Dup, span);
+        }
+        self.out().op(Opcode::CurrentFunction, span);
+        self.out().op(Opcode::GetSuperBase, span);
+        Ok(())
+    }
+
     #[inline(never)]
     fn super_call(&mut self, args: &[Expr], span: Span, forward: bool) -> Result<(), SyntaxError> {
         if args.len() > MAX_COUNT {
@@ -2806,7 +2820,9 @@ impl<'s> Lowerer<'s> {
                 // Assignment references retain the unconverted computed key.
                 // PutElem performs ToPropertyKey after stepping/defaults, as
                 // for a simple property assignment (rather than a read/write).
-                if let ExprKind::Index { object, index, .. } = &target.kind {
+                if let ExprKind::Index { object, index, .. } = &target.kind
+                    && !matches!(object.kind, ExprKind::Super)
+                {
                     self.expr(object)?;
                     self.expr(index)?;
                 } else {
@@ -2893,6 +2909,12 @@ impl<'s> Lowerer<'s> {
                     return Err(self.internal(span, "unprepared pattern reference"));
                 }
                 let reference = match &target.kind {
+                    ExprKind::Member {
+                        object, op_span, ..
+                    }
+                    | ExprKind::Index {
+                        object, op_span, ..
+                    } if matches!(object.kind, ExprKind::Super) => PropertyRef::Super(*op_span),
                     ExprKind::Member {
                         property, op_span, ..
                     } => PropertyRef::Field(
@@ -4030,6 +4052,15 @@ impl<'s> Lowerer<'s> {
         value: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        if matches!(object.kind, ExprKind::Super) {
+            self.super_base(object.span, false)?;
+            self.expr(index)?;
+            self.out().op(Opcode::ToSuperKey, op_span);
+            self.expr(value)?;
+            let op = self.strict_op(Opcode::PutSuperElem);
+            self.out().op(op, op_span);
+            return Ok(());
+        }
         self.expr(object)?;
         self.expr(index)?;
         self.expr(value)?;
@@ -4084,8 +4115,28 @@ impl<'s> Lowerer<'s> {
             }
             Some(_) => {}
         }
-        self.expr(base)?;
+        let mut super_access = matches!(base.kind, ExprKind::Super);
+        if super_access {
+            self.super_base(base.span, false)?;
+        } else {
+            self.expr(base)?;
+        }
         for &(link, op_span) in links.iter().rev() {
+            if super_access {
+                match link {
+                    Ok(property) => {
+                        let name = self.name_index(&property.name, property.span)?;
+                        self.out().op_u16(Opcode::Const, name, op_span);
+                    }
+                    Err(index) => {
+                        self.expr(index)?;
+                        self.out().op(Opcode::ToSuperKey, op_span);
+                    }
+                }
+                self.out().op(Opcode::GetSuperElem, op_span);
+                super_access = false;
+                continue;
+            }
             match link {
                 Ok(property) => {
                     let index = self.name_index(&property.name, property.span)?;
@@ -4189,6 +4240,13 @@ impl<'s> Lowerer<'s> {
                 property,
                 op_span,
             } => {
+                if matches!(object.kind, ExprKind::Super) {
+                    self.super_base(object.span, true)?;
+                    let name = self.name_index(&property.name, property.span)?;
+                    self.out().op_u16(Opcode::Const, name, *op_span);
+                    self.out().op(Opcode::GetSuperElem, *op_span);
+                    return Ok(());
+                }
                 self.expr(object)?;
                 self.out().op(Opcode::Dup, *op_span);
                 let index = self.name_index(&property.name, property.span)?;
@@ -4200,6 +4258,13 @@ impl<'s> Lowerer<'s> {
                 index,
                 op_span,
             } => {
+                if matches!(object.kind, ExprKind::Super) {
+                    self.super_base(object.span, true)?;
+                    self.expr(index)?;
+                    self.out().op(Opcode::ToSuperKey, *op_span);
+                    self.out().op(Opcode::GetSuperElem, *op_span);
+                    return Ok(());
+                }
                 self.expr(object)?;
                 self.out().op(Opcode::Dup, *op_span);
                 self.expr(index)?;
@@ -4326,6 +4391,15 @@ impl<'s> Lowerer<'s> {
         value: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        if matches!(object.kind, ExprKind::Super) {
+            self.super_base(object.span, false)?;
+            let name = self.name_index(&property.name, property.span)?;
+            self.out().op_u16(Opcode::Const, name, op_span);
+            self.expr(value)?;
+            let op = self.strict_op(Opcode::PutSuperElem);
+            self.out().op(op, op_span);
+            return Ok(());
+        }
         self.expr(object)?;
         self.expr(value)?;
         let index = self.name_index(&property.name, property.span)?;
@@ -4352,6 +4426,12 @@ impl<'s> Lowerer<'s> {
                 property,
                 op_span,
             } => {
+                if matches!(object.kind, ExprKind::Super) {
+                    self.super_base(object.span, false)?;
+                    let name = self.name_index(&property.name, property.span)?;
+                    self.out().op_u16(Opcode::Const, name, *op_span);
+                    return Ok(PropertyRef::Super(*op_span));
+                }
                 self.expr(object)?;
                 let name = self.name_index(&property.name, property.span)?;
                 Ok(PropertyRef::Field(name, *op_span))
@@ -4361,6 +4441,12 @@ impl<'s> Lowerer<'s> {
                 index,
                 op_span,
             } => {
+                if matches!(object.kind, ExprKind::Super) {
+                    self.super_base(object.span, false)?;
+                    self.expr(index)?;
+                    self.out().op(Opcode::ToSuperKey, *op_span);
+                    return Ok(PropertyRef::Super(*op_span));
+                }
                 self.expr(object)?;
                 self.expr(index)?;
                 self.out().op(Opcode::ToPropertyKey, *op_span);
@@ -4374,6 +4460,10 @@ impl<'s> Lowerer<'s> {
     /// `o key` → the same, then the value), reported at the `.` or `[`.
     fn reference_get(&mut self, r: PropertyRef) {
         match r {
+            PropertyRef::Super(at) => {
+                self.out().op(Opcode::Dup3, at);
+                self.out().op(Opcode::GetSuperElem, at);
+            }
             PropertyRef::Field(name, at) => {
                 self.out().op(Opcode::Dup, at);
                 self.out().op_u16(Opcode::GetField, name, at);
@@ -4391,6 +4481,10 @@ impl<'s> Lowerer<'s> {
         let field = self.strict_op(Opcode::PutField);
         let elem = self.strict_op(Opcode::PutElem);
         match r {
+            PropertyRef::Super(at) => {
+                let op = self.strict_op(Opcode::PutSuperElem);
+                self.out().op(op, at);
+            }
             PropertyRef::Field(name, at) => self.out().op_u16(field, name, at),
             PropertyRef::Elem(at) => self.out().op(elem, at),
         }
@@ -4640,6 +4734,7 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.call(callee, args, span, *op_span),
             ExprKind::SuperCall { args, op_span } => self.super_call(args, *op_span, false),
+            ExprKind::Super => Err(self.internal(span, "standalone super")),
             ExprKind::New { .. } => self.new_expr(e),
             ExprKind::OptionalChain { base, links } => {
                 self.optional_chain(base, links, false, None, span)
@@ -4776,6 +4871,18 @@ impl<'s> Lowerer<'s> {
     /// The parser rejects strict identifier operands.
     #[inline(never)]
     fn delete(&mut self, operand: &Expr, op_span: Span) -> Result<(), SyntaxError> {
+        if matches!(&operand.kind,
+            ExprKind::Member { object, .. } | ExprKind::Index { object, .. }
+                if matches!(object.kind, ExprKind::Super))
+        {
+            self.property_reference(operand)?;
+            for _ in 0..3 {
+                self.out().op(Opcode::Pop, op_span);
+            }
+            self.throw(ThrowKind::DeleteSuper, op_span);
+            self.out().op(Opcode::Undefined, op_span);
+            return Ok(());
+        }
         match &operand.kind {
             ExprKind::OptionalChain { base, links } => {
                 return self.optional_chain(base, links, false, Some(op_span), operand.span);
@@ -5290,6 +5397,7 @@ impl<'s> Lowerer<'s> {
             Opcode::PutGlobal => Opcode::PutGlobalStrict,
             Opcode::PutField => Opcode::PutFieldStrict,
             Opcode::PutElem => Opcode::PutElemStrict,
+            Opcode::PutSuperElem => Opcode::PutSuperElemStrict,
             Opcode::Delete => Opcode::DeleteStrict,
             _ => opcode,
         }
