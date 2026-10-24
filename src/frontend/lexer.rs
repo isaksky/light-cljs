@@ -224,8 +224,17 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// A lexer at the start of `src`, past a hashbang comment (ECMAScript
+    /// HashbangComment, QuickJS `skip_shebang`): `#!` at byte 0 up to, not
+    /// including, the first line terminator, which still counts for ASI and
+    /// line numbers. `#` anywhere else is not a token.
     pub fn new(src: &'a str) -> Lexer<'a> {
-        Lexer { src, pos: 0 }
+        let pos = if src.starts_with("#!") {
+            src.find(is_line_terminator).unwrap_or(src.len())
+        } else {
+            0
+        };
+        Lexer { src, pos }
     }
 
     pub fn source(&self) -> &'a str {

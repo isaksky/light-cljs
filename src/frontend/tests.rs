@@ -527,6 +527,32 @@ fn line_column_counts_lines_and_scalar_values() {
 }
 
 #[test]
+fn hashbang_comment_only_at_start() {
+    use SyntaxErrorKind::UnknownToken;
+    // ECMAScript HashbangComment, skipped as QuickJS `skip_shebang` does
+    // (case: the first line of `research/quickjs/tests/test_std.js` at
+    // 7d1c13c5d8f8): only at byte 0, ending before the first line
+    // terminator, which still separates lines.
+    let src = "#! (shebang test)\nx";
+    assert_eq!(ast(src), "x");
+    let script = parse_script(src).unwrap();
+    assert_eq!(script.body[0].span.text(src), "x");
+    assert_eq!(line_column(src, script.body[0].span.start), (2, 1));
+    assert!(parse_script("#!x").unwrap().body.is_empty());
+    assert!(parse_script("#!").unwrap().body.is_empty());
+    assert_eq!(ast("#!a\u{2028}b"), "b");
+    assert_eq!(ast("#!a\r\nb"), "b");
+    // The comment runs to the line end; `/*` inside it opens nothing.
+    assert_eq!(ast("#! /* \nb"), "b");
+    // Anywhere else `#` is not a token.
+    rejects(" #!x", UnknownToken, 1, 2);
+    rejects("\n#!x", UnknownToken, 2, 1);
+    rejects("1;\n#!x", UnknownToken, 2, 1);
+    rejects("x = #!y", UnknownToken, 1, 5);
+    rejects("// c\n#!x", UnknownToken, 2, 1);
+}
+
+#[test]
 fn lexer_maximal_munch() {
     let kinds = |src: &str| {
         let mut lexer = Lexer::new(src);
@@ -642,7 +668,9 @@ fn rejects_lexically_ambiguous_input() {
     // Characters and constructs that are not tokens of the subset.
     rejects_with("x = `t`;", Unsupported, 1, 5, "template");
     rejects("x = @y;", UnknownToken, 1, 5);
-    rejects("#!/usr/bin/env node", UnknownToken, 1, 1);
+    // A hashbang is a comment only at the start of the source.
+    assert_eq!(ast("#!/usr/bin/env node"), "");
+    rejects("x;\n#!/usr/bin/env node", UnknownToken, 2, 1);
     rejects("x.#y", UnknownToken, 1, 3);
     rejects("let é = 1;", UnknownToken, 1, 5);
     rejects_with("let \\u0061 = 1;", Unsupported, 1, 5, "escape");

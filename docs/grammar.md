@@ -38,7 +38,7 @@ execute; see "Exceptions" below.
 |---------|----------|----------|
 | Whitespace | TAB, VT, FF, SP, NBSP, ZWNBSP (BOM), Unicode `Zs` | – |
 | Line terminators | LF, CR, CRLF, U+2028, U+2029 | – |
-| Comments | `// ...` and `/* ... */` (a block comment containing a line terminator counts as one for ASI) | unterminated `/*` (truncated input); HTML-like `<!--` / `-->` comments (they lex as operators and hit `--`) |
+| Comments | `// ...` and `/* ... */` (a block comment containing a line terminator counts as one for ASI); a hashbang comment `#! ...` at the very start of the source (byte 0, before any whitespace), running to the first line terminator, which still counts for ASI and line numbers | unterminated `/*` (truncated input); `#!` anywhere else (`UnknownToken`); HTML-like `<!--` / `-->` comments (they lex as operators and hit `--`) |
 | Identifiers | ASCII `[A-Za-z$_][A-Za-z0-9$_]*` | non-ASCII identifier characters, `\u` escapes in identifiers |
 | Reserved words | all ECMAScript reserved words plus the strict-mode ones (`let`, `static`, `yield`, `implements`, `interface`, `package`, `private`, `protected`, `public`) and `await`; any of these may follow `.` as a property name | as binding names, assignment targets or references |
 | Numbers | decimal integers, fractions (`1.5`, `.5`, `5.`), exponents (`1e-3`), `0x`/`0o`/`0b` integers; values are IEEE-754 doubles, correctly rounded; overflow gives `Infinity` | legacy octal / leading zeros (`017`, `08`), numeric separators (`1_000`), BigInt (`10n`), a literal immediately followed by an identifier or digit (`3in`, `1.toString`), missing digits (`0x`, `1e`) |
@@ -190,7 +190,6 @@ checks left to later stages:
   Unicode scalar values).
 - **Directive prologues are not interpreted**: `"use strict"` is an ordinary
   expression statement, and every script is strict anyway.
-- Hashbang comments (`#!`) are rejected as an unknown token.
 
 ## Execution
 
@@ -415,6 +414,11 @@ const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
 
+```js accept
+#!/usr/bin/env qjs
+let x = 1;
+```
+
 Rejected (`kind line:column` of the reported position):
 
 ```js reject Unsupported 1:9
@@ -477,6 +481,11 @@ let n = 3.toFixed;
 
 ```js reject UnknownToken 1:9
 let n = @x;
+```
+
+```js reject UnknownToken 2:1
+let x = 1;
+#!/usr/bin/env qjs
 ```
 
 ## References

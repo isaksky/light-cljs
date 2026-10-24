@@ -346,6 +346,16 @@ fn function_entry_points_take_arguments_and_return() {
 }
 
 #[test]
+fn hashbang_script_runs() {
+    assert_eq!(num("#!/usr/bin/env qjs\n1 + 1"), 2.0);
+    // The hashbang line still counts: the error is reported on line 2.
+    let (kind, message, line, column) = failure_at("#!/usr/bin/env qjs\nmissing + 1");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "missing is not defined");
+    assert_eq!((line, column), (2, 1));
+}
+
+#[test]
 fn unknown_names_fail_with_reference_errors_at_their_position() {
     let (kind, message, line, column) = failure_at("let a = 1;\na + missing");
     assert_eq!(kind, VmErrorKind::ReferenceError);
