@@ -42,6 +42,7 @@ pub enum Node {
     /// duplicate declarations are in mutually exclusive alternatives.
     Backreference(Vec<usize>),
     Class(CharacterClass),
+    UnicodeSet(Vec<ClassSetItem>),
     Repeat {
         body: NodeId,
         min: u64,
@@ -90,4 +91,17 @@ pub enum ClassEscape {
     NotWord,
     Space,
     NotSpace,
+}
+
+/// Postfix set expression: nested v classes never require recursive traversal
+/// or destruction. Strings of length one share the code-point set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClassSetItem {
+    Empty,
+    Member(ClassMember),
+    String(Vec<u32>),
+    Union,
+    Intersection,
+    Subtraction,
+    Complement,
 }

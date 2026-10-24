@@ -424,7 +424,7 @@ fn unicode_candidate_positions_and_capture_offsets() {
 
 #[test]
 fn unicode_program_validation_and_shared_step_limit() {
-    // The v grammar remains deferred; core Unicode reads also apply to v IR.
+    // Core Unicode reads also apply to v IR.
     let mut p = parse(&JsString::from("🐱"), &JsString::from("u")).unwrap();
     p.flags.unicode = false;
     p.flags.unicode_sets = true;
@@ -466,4 +466,43 @@ fn malformed_arenas_are_rejected() {
         capture: None,
     };
     assert!(matches!(compile(&p), Err(MatchError::InvalidPattern)));
+}
+
+#[test]
+fn unicode_sets_deep_nesting_and_ir_validation() {
+    // A flat set IR also makes parsing and dropping deeply nested v classes safe.
+    let text = format!("{}a{}", "[".repeat(20_000), "]".repeat(20_000));
+    let p = program(&text, "vi").unwrap();
+    assert_eq!(exec(&p, &[65], 0).unwrap().unwrap().groups, [Some(0..1)]);
+    for items in [
+        vec![],
+        vec![ClassSetItem::Union],
+        vec![ClassSetItem::Empty, ClassSetItem::Empty],
+        vec![ClassSetItem::Member(ClassMember::Range(2, 1))],
+        vec![ClassSetItem::String(vec![0x110000])],
+        vec![ClassSetItem::String(vec![]), ClassSetItem::Complement],
+        // Static MayContainStrings rejects complement even after subtraction
+        // would remove all actual strings.
+        vec![
+            ClassSetItem::String(vec![97, 98]),
+            ClassSetItem::String(vec![97, 98]),
+            ClassSetItem::Subtraction,
+            ClassSetItem::Complement,
+        ],
+    ] {
+        let mut ir = parse(&JsString::from("a"), &JsString::from("v")).unwrap();
+        ir.nodes[0] = Node::UnicodeSet(items);
+        assert!(matches!(compile(&ir), Err(MatchError::InvalidPattern)));
+    }
+}
+
+#[test]
+fn unicode_sets_share_compilation_and_search_budget() {
+    let text = format!("[{}]", r"\p{L}".repeat(1000));
+    assert!(matches!(
+        program(&text, "v"),
+        Err(MatchError::LimitExceeded)
+    ));
+    let p = program(r"([\q{aa|a}]+)+b", "v").unwrap();
+    assert_eq!(exec(&p, &[97; 25], 0), Err(MatchError::LimitExceeded));
 }

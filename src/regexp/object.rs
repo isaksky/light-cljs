@@ -34,15 +34,10 @@ impl CompileError {
 pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compiled>, CompileError> {
     let parsed_flags =
         parse::Flags::parse(flags).map_err(|e| CompileError::Syntax(e.to_string()))?;
-    for (flag, set) in [
-        ('i', parsed_flags.ignore_case && !parsed_flags.unicode),
-        ('v', parsed_flags.unicode_sets),
-    ] {
-        if set {
-            return Err(CompileError::Syntax(format!(
-                "unsupported regular expression flag '{flag}'"
-            )));
-        }
+    if parsed_flags.ignore_case && !parsed_flags.unicode_mode() {
+        return Err(CompileError::Syntax(
+            "unsupported regular expression flag 'i'".into(),
+        ));
     }
     let pattern = parse::parse(source, flags).map_err(|e| CompileError::Syntax(e.to_string()))?;
     let program = matcher::compile(&pattern).map_err(|e| match e {

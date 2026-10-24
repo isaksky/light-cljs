@@ -3987,8 +3987,8 @@ to ASCII word characters, including long s and Kelvin sign. Identifiers and
 capture names now use the same verified Unicode 17.0.0 version. Expansion
 and matching preserve the catchable work limit and UTF-16 result offsets.
 
-Explicit gaps: plain i and scoped i without u throw catchable SyntaxError;
-Script properties, v sets and lookbehind remain deferred.
+Explicit gaps: plain i and scoped i without u or v throw catchable SyntaxError;
+Script properties and lookbehind remain deferred.
 
 ```js accept
 /k/iu.test('\u212A') && /[a-z]/iu.test('\u017F');
@@ -4059,7 +4059,7 @@ Object.prototype.toString remains unsupported as for NumberFormat and Locale.
 
 ### Unicode RegExp property escapes (clj-quickjs-192)
 
-Execution: in u patterns, `\p{Name}` / `\P{Name}` accept the 53 binary
+Execution: in u or v patterns, `\p{Name}` / `\P{Name}` accept the 53 binary
 properties in ECMA-262's Binary Unicode property aliases table, or any of the
 38 General_Category values and aliases. Categories also accept `gc=Value`
 and `General_Category=Value`. Spellings are exact, including lowercase aliases
@@ -4067,7 +4067,7 @@ such as `digit`, `cntrl`, `punct`, and `space`; loose casing, spaces, Is prefixe
 binary `Name=Yes` and unknown values throw catchable SyntaxError. Property sets
 work as standalone atoms and class members, but cannot be range endpoints.
 Lone surrogates participate in Cs, Any and other applicable code-point sets.
-Without u, p/P are identity escapes, so `/\p{L}/.test('p{L}')` is true.
+Without u or v, p/P are identity escapes, so `/\p{L}/.test('p{L}')` is true.
 
 In iu (also scoped i inside u), `\P` complements the property before simple
 folding. This differs from class inversion: `/\P{Lower}/iu.test('a')` is true,
@@ -4075,7 +4075,7 @@ while `/[^\p{Lower}]/iu.test('a')` is false. Matching retains the catchable
 step budget and UTF-16 offsets.
 
 Explicit gaps: Script, sc, Script_Extensions and scx deliberately throw
-SyntaxError. The v flag and Unicode string properties remain deferred.
+SyntaxError. Unicode string properties remain deferred.
 
 ```js accept
 /\p{General_Category=Uppercase_Letter}/u.test('A');
@@ -4200,7 +4200,7 @@ Global/sticky lastIndex behavior and Unicode surrogate handling are unchanged.
 Indices construction consumes the search's existing work allowance and
 exhaustion throws catchable RangeError before result allocation.
 
-Explicit gaps: `v` Unicode sets, lookbehind, non-Unicode ignore-case matching
+Explicit gaps: lookbehind, non-Unicode ignore-case matching
 and the previously documented symbol-based dispatch remain deferred.
 
 ## Array.from (clj-quickjs-207)
@@ -4226,3 +4226,39 @@ Array and nonconstructor receivers return plain arrays. Boolean and Symbol
 wrapper prototypes are unavailable in the subset; those primitives have no
 observable length/iterator and produce empty arrays. Async iteration and
 `Array.fromAsync` remain unsupported.
+
+### RegExp Unicode sets (clj-quickjs-194)
+
+Execution: `v` selects Unicode mode outside classes, with the same code-point
+consumption and UTF-16 indices as `u`. Inside classes it enables nested sets,
+union by adjacency, intersection chains (`&&`), subtraction chains (`--`),
+and `\q{...|...}` finite strings, including empty strings. Different operations
+require nested classes; ranges cannot be operands of intersection/subtraction.
+Each class tries longer strings before shorter strings, single code points,
+and finally the empty string, retaining alternatives for backtracking.
+
+In `vi`, operands and input use Unicode 17 simple folding before union,
+intersection, subtraction and complement. In particular, `\P{Lower}` is the
+complement of folded Lower, unlike `iu`'s complement-before-folding rule.
+Scoped `i` uses the same set operations. `v` and `u` are mutually exclusive;
+`unicodeSets` and `unicode` expose their respective flags.
+
+Unescaped `()[]{}/-|` inside sets and reserved double punctuation throw
+catchable SyntaxError. Escaped class syntax and reserved punctuation are
+accepted. A negated set is rejected when static MayContainStrings is true:
+union combines it with OR, intersection with AND, and subtraction retains
+the left operand's value. This includes empty class strings and rejects
+negation even if subtraction would remove all actual strings. Parsing and
+set traversal use explicit stacks; compilation and matching retain their
+catchable RangeError work limits.
+
+Explicit gaps: properties of strings such as `\p{RGI_Emoji}` deliberately
+throw SyntaxError. Script/Script_Extensions, lookbehind, non-Unicode folding,
+and symbol-based string dispatch retain their existing deferred status.
+Literal pattern errors retain the current catchable construction-time policy.
+
+```js accept
+/[\q{abc|ab|a}]/v.exec('abcd')[0] === 'abc';
+! /[[a-z]--[aeiou]]/v.test('e');
+'aAbBcC#4'.replace(/\P{Lower}/gvi, 'X') === 'aAbBcCXX';
+```

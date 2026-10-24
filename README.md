@@ -3001,11 +3001,10 @@ ToLength and global/sticky updates. Match arrays include `index`, `input`,
 use a null-prototype object. Programs are immutable; objects are task-owned
 and cannot be published. Argument coercions and getters may suspend.
 
-Matching supports d/g/m/s/u/y and i with u. The 1,000,000-step search/compilation bounds throw
-catchable RangeError; invalid patterns, plain i and deferred v flags throw
-catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `dgimsuy`
-for currently constructible patterns. Deferred: literal pattern early errors,
-lookbehind, non-Unicode case folding, Unicode sets, Symbol.match recognition,
+Matching supports d/g/m/s/u/v/y and i with u or v. The 1,000,000-step search/compilation bounds throw
+catchable RangeError; invalid patterns and plain i throw
+catchable SyntaxError. Flag ordering is `dgimsuvy` (u and v are exclusive).
+Deferred: literal pattern early errors, lookbehind, non-Unicode case folding, Symbol.match recognition,
 and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
@@ -3096,8 +3095,8 @@ themselves, never half a pair. Braced escapes and astral ranges execute.
 Match/capture indices and lastIndex remain UTF-16 offsets; an initial lastIndex
 inside a pair starts at its lead surrogate. Global replacement advances empty
 matches by code point, while plain `exec` leaves empty matches at their end.
-The existing catchable step limit applies. Deferred: non-Unicode i folding, property
-escapes, v sets and lookbehind. Match indices execute with d (clj-quickjs-193). Test:
+The existing catchable step limit applies. Deferred: non-Unicode i folding,
+Script property escapes and lookbehind. Match indices execute with d (clj-quickjs-193). Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.
 
 ### Promise core (clj-quickjs-246)
@@ -3194,7 +3193,7 @@ boundaries, backreferences and scoped i. Classes close under folding before
 negation: `"aAbBcC".replace(/[^b]/gui, "X")` returns `"XXbBXX"`.
 Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
-Script properties, v sets and lookbehind remain deferred. Test:
+Script properties and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
 
 ### Intl.PluralRules (clj-quickjs-212)
@@ -3220,15 +3219,15 @@ Check: `cargo test --test js_source intl_plural_rules -- --test-threads=3`;
 
 ### Unicode RegExp property escapes (clj-quickjs-192)
 
-Supported: `\p{...}` and `\P{...}` in u mode, alone or inside classes, for all
+Supported: `\p{...}` and `\P{...}` in u or v mode, alone or inside classes, for all
 53 ECMAScript binary properties and 38 General_Category values with exact
 aliases (`Lower`, `Lu`, `gc=Lu`, `General_Category=Uppercase_Letter`). Unicode
 17.0.0 data shares the folding/identifier generator and has complete-domain
 verification against QuickJS and pinned UCD inputs. In iu, property complements
 are taken before folding; `/\P{Lower}/iu` matches lowercase letters too.
-Without u, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
-Deferred: Script/Script_Extensions (including sc/scx) throw SyntaxError; v sets
-and string properties remain unsupported. Run:
+Without u or v, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
+Deferred: Script/Script_Extensions (including sc/scx) and string properties
+throw SyntaxError. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_property_escapes -- --exact --test-threads=3`.
 
 ### Percent and currency NumberFormat (clj-quickjs-214)
@@ -3284,7 +3283,7 @@ present `undefined` elements. `indices.groups` is undefined without named
 groups, otherwise a null-prototype object sharing the numbered pairs.
 Unicode matching from inside a surrogate pair reports its lead offset.
 Indices allocation shares the existing search work limit. Patterns without
-`d` have no own `indices` property. Unicode sets (`v`) remain deferred.
+`d` have no own `indices` property.
 Run `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
 
 ### `Array.from` (clj-quickjs-207)
@@ -3323,3 +3322,21 @@ Generator functions eagerly create their own task-owned prototype records, so
 publication rejects them without disabling local calls. Generators expose the
 inherited `Symbol.toStringTag` value `Generator`; general tag consumption by
 `Object.prototype.toString` remains explicitly deferred.
+
+### RegExp Unicode sets (clj-quickjs-194)
+
+Supported: `v` enables Unicode matching, nested classes, union, intersection
+(`&&`), subtraction (`--`) and finite class strings (`\q{abc|d}`). Class
+strings match longest first and backtrack to shorter members. In `vi`, each
+operand folds before set operations and complement; `/\P{Lower}/vi` excludes
+both lowercase and uppercase letters. Scoped `i` works inside `v` patterns.
+`unicodeSets` reports `v`; `unicode` continues to report only `u`.
+
+Malformed operations, unescaped class syntax/reserved double punctuation,
+negation of classes that may contain strings, and combining `u` with `v`
+throw catchable SyntaxError. Unicode string properties (including RGI_Emoji),
+Script/Script_Extensions, lookbehind and non-Unicode folding remain deferred.
+Set compilation and string matching share the existing catchable step bounds;
+normal builds use the existing generated Unicode 17 tables without new data
+or dependencies. Run `CARGO_BUILD_JOBS=3 cargo test --lib regexp:: -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.

@@ -34,6 +34,10 @@ pub fn lookup(name: &str) -> Option<UnicodeProperty> {
 }
 
 impl UnicodeProperty {
+    pub(super) fn ranges(self) -> &'static [(u32, u32)] {
+        data::PROPERTIES[self.0].ranges
+    }
+
     /// The matcher passes Canonicalize(input) in ignore-case mode. Complement
     /// membership is computed before adding its own folding contributions.
     pub fn contains(self, cp: u32, inverted: bool, ignore_case: bool) -> bool {

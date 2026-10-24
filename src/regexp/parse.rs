@@ -46,8 +46,11 @@ pub struct Flags {
 }
 
 impl Flags {
+    pub(super) fn unicode_mode(self) -> bool {
+        self.unicode || self.unicode_sets
+    }
+
     /// Validate flag spellings, duplicates and the mutually exclusive u/v pair.
-    /// Recognizes v; the pattern parser explicitly rejects its deferred grammar.
     pub fn parse(text: &JsString) -> Result<Self, SyntaxError> {
         let mut flags = Self::default();
         for (offset, &unit) in text.code_units().iter().enumerate() {
@@ -77,13 +80,9 @@ impl Flags {
 /// Parse pattern text without literal delimiters. No lossy conversion to UTF-8
 /// occurs. The result owns its arena and has no heap/GC edges. Both parsing and
 /// dropping nested groups are iterative. Quantifier counts above u64::MAX are
-/// rejected explicitly; Script property escapes and v grammar are deferred.
+/// rejected explicitly; Script and string property escapes are deferred.
 pub fn parse(pattern: &JsString, flags: &JsString) -> Result<Pattern, SyntaxError> {
     let flags_value = Flags::parse(flags)?;
-    if flags_value.unicode_sets {
-        let offset = flags.code_units().iter().position(|&u| u == 118).unwrap();
-        return Err(error(offset, "v flag patterns are not supported yet"));
-    }
     Parser::new(pattern.code_units(), flags_value).run()
 }
 
@@ -133,6 +132,63 @@ struct NamedCapture {
     context: usize,
 }
 
+#[derive(Default)]
+struct SetFrame {
+    start: usize,
+    inverted: bool,
+    count: usize,
+    operator: Option<u16>,
+    awaiting: bool,
+    range: bool,
+    may_strings: bool,
+}
+
+impl SetFrame {
+    fn operand(&mut self, may_strings: bool, range: bool, out: &mut Vec<ClassSetItem>) {
+        if self.count != 0 {
+            out.push(match self.operator {
+                Some(38) => ClassSetItem::Intersection,
+                Some(45) => ClassSetItem::Subtraction,
+                _ => ClassSetItem::Union,
+            });
+            self.may_strings = match self.operator {
+                Some(38) => self.may_strings && may_strings,
+                Some(45) => self.may_strings,
+                _ => self.may_strings || may_strings,
+            };
+        } else {
+            self.may_strings = may_strings;
+        }
+        self.range |= range;
+        self.count += 1;
+        self.awaiting = false;
+    }
+}
+
+fn reserved_set_punctuator(c: u16) -> bool {
+    matches!(
+        c,
+        33 | 35
+            | 36
+            | 37
+            | 38
+            | 42
+            | 43
+            | 44
+            | 46
+            | 58
+            | 59
+            | 60
+            | 61
+            | 62
+            | 63
+            | 64
+            | 94
+            | 96
+            | 126
+    )
+}
+
 struct Parser<'a> {
     text: &'a [u16],
     pos: usize,
@@ -152,16 +208,16 @@ impl<'a> Parser<'a> {
         // Decimal and named escapes depend on captures anywhere in the pattern,
         // including forward references. This lexical scan never interprets a
         // parenthesis inside a class or immediately after a backslash.
-        let (mut count, mut named, mut class, mut pos) = (0, false, false, 0);
+        let (mut count, mut named, mut class, mut pos) = (0, false, 0usize, 0);
         while pos < text.len() {
             match text[pos] {
                 92 => {
                     pos += 2;
                     continue;
                 }
-                91 if !class => class = true,
-                93 if class => class = false,
-                40 if !class => {
+                91 if class == 0 || flags.unicode_sets => class += 1,
+                93 if class > 0 => class -= 1,
+                40 if class == 0 => {
                     if text.get(pos + 1) != Some(&63) {
                         count += 1;
                     } else if text.get(pos + 2) == Some(&60)
@@ -278,7 +334,7 @@ impl<'a> Parser<'a> {
                 123 if self.quantifier()?.is_some() => {
                     return Err(error(start, "nothing to repeat"));
                 }
-                93 | 125 if self.flags.unicode => {
+                93 | 125 if self.flags.unicode_mode() => {
                     return Err(error(start, "unexpected syntax character"));
                 }
                 _ => {
@@ -295,6 +351,7 @@ impl<'a> Parser<'a> {
                             self.pos += 1;
                             Node::Dot
                         }
+                        91 if self.flags.unicode_sets => Node::UnicodeSet(self.unicode_set()?),
                         91 => Node::Class(self.character_class()?),
                         92 => self.escape_atom()?,
                         _ => Node::Literal(self.raw_character()),
@@ -466,7 +523,7 @@ impl<'a> Parser<'a> {
         if let Some((min, max)) = self.quantifier()? {
             if matches!(self.nodes[id.0], Node::Assertion(_))
                 || matches!(self.nodes[id.0], Node::Lookaround { behind: true, .. })
-                || self.flags.unicode && matches!(self.nodes[id.0], Node::Lookaround { .. })
+                || self.flags.unicode_mode() && matches!(self.nodes[id.0], Node::Lookaround { .. })
             {
                 return Err(error(start, "assertion cannot be quantified"));
             }
@@ -511,7 +568,7 @@ impl<'a> Parser<'a> {
         };
         if min.is_none() || !self.eat(125) {
             self.pos = start;
-            return if self.flags.unicode {
+            return if self.flags.unicode_mode() {
                 Err(error(start, "invalid quantifier"))
             } else {
                 Ok(None)
@@ -544,7 +601,7 @@ impl<'a> Parser<'a> {
     }
 
     fn raw_character(&mut self) -> u32 {
-        if self.flags.unicode {
+        if self.flags.unicode_mode() {
             self.raw_code_point()
         } else {
             let cp = u32::from(self.text[self.pos]);
@@ -582,13 +639,13 @@ impl<'a> Parser<'a> {
                 if let Some(n) = value.filter(|&n| n <= self.total_captures as u64) {
                     return Ok(Node::Backreference(vec![n as usize]));
                 }
-                if self.flags.unicode {
+                if self.flags.unicode_mode() {
                     return Err(error(start, "invalid decimal backreference"));
                 }
                 self.pos = digits;
                 Ok(Node::Literal(self.legacy_octal()))
             }
-            Some(107) if self.flags.unicode || self.has_named => {
+            Some(107) if self.flags.unicode_mode() || self.has_named => {
                 self.pos += 1;
                 if !self.eat(60) {
                     return Err(error(start, "invalid named backreference"));
@@ -602,12 +659,155 @@ impl<'a> Parser<'a> {
             }
             _ => match self.character_escape(false, start)? {
                 ClassMember::Literal(cp) => Ok(Node::Literal(cp)),
+                member if self.flags.unicode_sets => {
+                    Ok(Node::UnicodeSet(vec![ClassSetItem::Member(member)]))
+                }
                 member => Ok(Node::Class(CharacterClass {
                     inverted: false,
                     members: vec![member],
                 })),
             },
         }
+    }
+
+    fn unicode_set(&mut self) -> Result<Vec<ClassSetItem>, SyntaxError> {
+        let mut frames = Vec::<SetFrame>::new();
+        let mut out = Vec::new();
+        loop {
+            if self.peek() == Some(91) && frames.last().is_none_or(|f| f.awaiting) {
+                let start = self.pos;
+                self.pos += 1;
+                let inverted = self.eat(94);
+                frames.push(SetFrame {
+                    start,
+                    inverted,
+                    awaiting: true,
+                    ..SetFrame::default()
+                });
+            }
+            let frame = frames.last_mut().unwrap();
+            if self.peek() == Some(93) {
+                if frame.awaiting && frame.count != 0 {
+                    return Err(error(self.pos, "missing class set operand"));
+                }
+                if frame.count == 0 {
+                    out.push(ClassSetItem::Empty);
+                }
+                if frame.inverted {
+                    if frame.may_strings {
+                        return Err(error(frame.start, "negated class may contain strings"));
+                    }
+                    out.push(ClassSetItem::Complement);
+                }
+                self.pos += 1;
+                let may_strings = frame.may_strings;
+                frames.pop();
+                if let Some(parent) = frames.last_mut() {
+                    parent.operand(may_strings, false, &mut out);
+                    continue;
+                }
+                return Ok(out);
+            }
+            if self.peek().is_none() {
+                return Err(error(frame.start, "unterminated character class"));
+            }
+            if !frame.awaiting {
+                let c = self.peek().unwrap();
+                if matches!(c, 38 | 45) && self.text.get(self.pos + 1) == Some(&c) {
+                    if c == 38 && self.text.get(self.pos + 2) == Some(&38)
+                        || frame.range
+                        || frame.operator.is_none() && frame.count != 1
+                        || frame.operator.is_some_and(|op| op != c)
+                    {
+                        return Err(error(self.pos, "invalid class set operation"));
+                    }
+                    frame.operator = Some(c);
+                    frame.awaiting = true;
+                    self.pos += 2;
+                    continue;
+                }
+                if frame.operator.is_some() {
+                    return Err(error(self.pos, "expected class set operator"));
+                }
+                frame.awaiting = true;
+            }
+            // Opening a nested operand is handled at the top of the loop.
+            if self.peek() == Some(91) {
+                continue;
+            }
+            let start = self.pos;
+            let mut range = false;
+            let may_strings;
+            if self.peek() == Some(92) && self.text.get(self.pos + 1) == Some(&113) {
+                self.pos += 2;
+                if !self.eat(123) {
+                    return Err(error(start, "invalid class string"));
+                }
+                let mut count = 0;
+                let mut may = false;
+                loop {
+                    let mut string = Vec::new();
+                    while !matches!(self.peek(), None | Some(124 | 125)) {
+                        let atom = self.set_character()?;
+                        let ClassMember::Literal(cp) = atom else {
+                            return Err(error(self.pos, "class escape in class string"));
+                        };
+                        string.push(cp);
+                    }
+                    may |= string.len() != 1;
+                    out.push(ClassSetItem::String(string));
+                    if count != 0 {
+                        out.push(ClassSetItem::Union);
+                    }
+                    count += 1;
+                    if self.eat(125) {
+                        break;
+                    }
+                    if !self.eat(124) {
+                        return Err(error(start, "unterminated class string"));
+                    }
+                }
+                may_strings = may;
+            } else {
+                let mut member = self.set_character()?;
+                if self.peek() == Some(45) && self.text.get(self.pos + 1) != Some(&45) {
+                    self.pos += 1;
+                    let right = self.set_character()?;
+                    let (ClassMember::Literal(lo), ClassMember::Literal(hi)) = (member, right)
+                    else {
+                        return Err(error(start, "class escape cannot be a range endpoint"));
+                    };
+                    if lo > hi {
+                        return Err(error(start, "class range out of order"));
+                    }
+                    member = ClassMember::Range(lo, hi);
+                    range = true;
+                }
+                out.push(ClassSetItem::Member(member));
+                may_strings = false;
+            }
+            let frame = frames.last_mut().unwrap();
+            if range && frame.operator.is_some() {
+                return Err(error(start, "range is not a class set operand"));
+            }
+            frame.operand(may_strings, range, &mut out);
+        }
+    }
+
+    fn set_character(&mut self) -> Result<ClassMember, SyntaxError> {
+        let start = self.pos;
+        let c = self
+            .peek()
+            .ok_or_else(|| error(start, "missing class character"))?;
+        if self.eat(92) {
+            return self.character_escape(true, start);
+        }
+        if matches!(c, 40 | 41 | 91 | 93 | 123 | 125 | 47 | 45 | 124)
+            || reserved_set_punctuator(c) && self.text.get(self.pos + 1) == Some(&c)
+        {
+            return Err(error(start, "unescaped class set syntax character"));
+        }
+        Ok(ClassMember::Literal(self.raw_character()))
     }
 
     fn character_class(&mut self) -> Result<CharacterClass, SyntaxError> {
@@ -632,7 +832,7 @@ impl<'a> Parser<'a> {
                         return Err(error(dash, "class range out of order"));
                     }
                     members.push(ClassMember::Range(*lo, *hi));
-                } else if self.flags.unicode {
+                } else if self.flags.unicode_mode() {
                     return Err(error(dash, "class escape cannot be a range endpoint"));
                 } else {
                     members.extend([left, ClassMember::Literal(45), right]);
@@ -689,11 +889,11 @@ impl<'a> Parser<'a> {
                 let next = self.peek();
                 if next.is_some_and(|n| {
                     matches!(n,65..=90 | 97..=122)
-                        || in_class && !self.flags.unicode && matches!(n, 48..=57 | 95)
+                        || in_class && !self.flags.unicode_mode() && matches!(n, 48..=57 | 95)
                 }) {
                     self.pos += 1;
                     u32::from(next.unwrap() & 31)
-                } else if self.flags.unicode {
+                } else if self.flags.unicode_mode() {
                     return Err(error(start, "invalid control escape"));
                 } else {
                     self.pos -= 1;
@@ -703,7 +903,7 @@ impl<'a> Parser<'a> {
             120 => {
                 if let Some(cp) = self.hex(2) {
                     cp
-                } else if self.flags.unicode {
+                } else if self.flags.unicode_mode() {
                     return Err(error(start, "invalid hexadecimal escape"));
                 } else {
                     120
@@ -711,9 +911,9 @@ impl<'a> Parser<'a> {
             }
             117 => {
                 let saved = self.pos;
-                if let Some(cp) = self.unicode_escape(self.flags.unicode) {
+                if let Some(cp) = self.unicode_escape(self.flags.unicode_mode()) {
                     cp
-                } else if self.flags.unicode {
+                } else if self.flags.unicode_mode() {
                     return Err(error(start, "invalid Unicode escape"));
                 } else {
                     self.pos = saved;
@@ -721,7 +921,7 @@ impl<'a> Parser<'a> {
                 }
             }
             48..=57 => {
-                if self.flags.unicode {
+                if self.flags.unicode_mode() {
                     if unit != 48 || digit(self.peek()).is_some() {
                         return Err(error(start, "invalid decimal escape"));
                     }
@@ -731,7 +931,7 @@ impl<'a> Parser<'a> {
                     self.legacy_octal()
                 }
             }
-            112 | 80 if self.flags.unicode => {
+            112 | 80 if self.flags.unicode_mode() => {
                 if !self.eat(123) {
                     return Err(error(start, "invalid Unicode property escape"));
                 }
@@ -750,12 +950,13 @@ impl<'a> Parser<'a> {
                     inverted: unit == 80,
                 });
             }
-            _ if !self.flags.unicode
+            _ if !self.flags.unicode_mode()
                 || matches!(
                     unit,
                     94 | 36 | 92 | 46 | 42 | 43 | 63 | 40 | 41 | 91 | 93 | 123 | 125 | 124 | 47
                 )
-                || in_class && unit == 45 =>
+                || in_class
+                    && (unit == 45 || self.flags.unicode_sets && reserved_set_punctuator(unit)) =>
             {
                 u32::from(unit)
             }
@@ -1233,10 +1434,7 @@ mod tests {
                 && f.sticky
         );
         assert!(Flags::parse(&JsString::from("v")).unwrap().unicode_sets);
-        assert_eq!(
-            pattern("[a]", "v").unwrap_err().message,
-            "v flag patterns are not supported yet"
-        );
+        assert!(pattern("[a]", "v").is_ok());
         assert!(pattern(r"\p{ASCII}", "u").is_ok());
         assert_eq!(pattern(r"\p{sc=Greek}", "u").unwrap_err().offset, 0);
         let p = pattern("(?im-s:a)", "").unwrap();

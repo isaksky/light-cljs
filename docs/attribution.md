@@ -799,3 +799,17 @@ flag for upstream's `v` flag and retains the QuickJS MIT notice. Additional
 capture, identity and resource checks are synthetic. The indices path in
 `research/quickjs/quickjs.c::js_regexp_exec` at that revision was consulted
 as a semantic reference; no C implementation was copied.
+
+## RegExp Unicode sets (clj-quickjs-194)
+
+`tests/fixtures/js/regexp_sets.js` adapts the v/vi replacement, class-string,
+UTF-16 indices and outside-class punctuation rows from
+`research/quickjs/tests/test_builtin.js::test_regexp` (lines 778–810), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The fixture retains the QuickJS
+copyright and MIT notice. Other tests are synthetic fixtures, not light-cljs
+output. `research/quickjs/libregexp.c::re_parse_nested_class`,
+`re_parse_class_set_operand` and REStringList were semantic references;
+implementation is fresh Rust over existing attributed Unicode data.
+The reserved punctuation grammar and static MayContainStrings rules follow
+[ECMA-262 RegExp patterns](https://tc39.es/ecma262/multipage/text-processing.html#sec-patterns)
+and [MayContainStrings](https://tc39.es/ecma262/multipage/text-processing.html#sec-static-semantics-maycontainstrings).

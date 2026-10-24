@@ -97,9 +97,9 @@ enum Build {
     Label(usize),
 }
 
-struct Budget(usize);
+pub(super) struct Budget(pub(super) usize);
 impl Budget {
-    fn charge(&mut self, amount: usize) -> Result<(), MatchError> {
+    pub(super) fn charge(&mut self, amount: usize) -> Result<(), MatchError> {
         self.0 = self
             .0
             .checked_sub(amount)
@@ -210,11 +210,18 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                         ClassMember::Literal(c) => *c > max_character,
                         ClassMember::Range(a, b) => a > b || *b > max_character,
                         ClassMember::Escape(_) => false,
-                        ClassMember::Property { .. } => !pattern.flags.unicode,
+                        ClassMember::Property { .. } => !unicode,
                     } {
                         return Err(MatchError::InvalidPattern);
                     }
                 }
+                None
+            }
+            Node::UnicodeSet(_) if !pattern.flags.unicode_sets => {
+                return Err(MatchError::InvalidPattern);
+            }
+            Node::UnicodeSet(items) => {
+                super::sets::validate(items, &mut budget)?;
                 None
             }
             Node::Dot | Node::Assertion(_) => None,
@@ -356,6 +363,48 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                             ids.clone(),
                             modifiers.ignore_case,
                         )));
+                    }
+                    Node::UnicodeSet(items) => {
+                        let set = super::sets::compile(items, modifiers.ignore_case, &mut budget)?;
+                        let end = labels.len();
+                        labels.push(0);
+                        let mut strings = set.strings.into_iter().peekable();
+                        // Multi-character strings first, then code points, then
+                        // the empty string. Split preserves shorter alternatives
+                        // for ordinary VM backtracking.
+                        while strings.peek().is_some_and(|s| !s.is_empty()) {
+                            let s = strings.next().unwrap();
+                            let next = labels.len();
+                            labels.push(0);
+                            sequence.push(Build::Emit(Instruction::Split(next)));
+                            for c in s {
+                                budget.charge(1)?;
+                                sequence
+                                    .push(Build::Emit(Instruction::Char(c, modifiers.ignore_case)));
+                            }
+                            sequence.push(Build::Emit(Instruction::Jump(end)));
+                            sequence.push(Build::Label(next));
+                        }
+                        let empty = strings.next().is_some();
+                        let next = labels.len();
+                        labels.push(0);
+                        if empty {
+                            sequence.push(Build::Emit(Instruction::Split(next)));
+                        }
+                        budget.charge(set.ranges.len())?;
+                        sequence.push(Build::Emit(Instruction::Class(
+                            CharacterClass {
+                                inverted: false,
+                                members: set
+                                    .ranges
+                                    .into_iter()
+                                    .map(|(a, b)| ClassMember::Range(a, b))
+                                    .collect(),
+                            },
+                            modifiers.ignore_case,
+                        )));
+                        sequence.push(Build::Label(next));
+                        sequence.push(Build::Label(end));
                     }
                     Node::Class(class) => {
                         budget.charge(class.members.len())?;

@@ -16897,6 +16897,14 @@ fn regexp_indices_limit_is_catchable() {
 }
 
 #[test]
+fn regexp_unicode_sets() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_sets.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_property_escapes() {
     // Synthetic fixture, not light-cljs output. QuickJS rows retain their notice.
     assert_eq!(
@@ -16938,7 +16946,7 @@ fn regexp_objects_exec_and_test() {
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn regexp_flags_errors_and_internal_state() {
-    for flag in ['i', 'v'] {
+    for flag in ['i'] {
         for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
             assert_eq!(
                 eval(&format!(

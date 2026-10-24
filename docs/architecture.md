@@ -5226,11 +5226,11 @@ catchable RangeError and never becomes a failed match. Parsing, source
 escaping, capture copying and string flattening are synchronous, bounded by
 the runtime's string length limit, like existing string leaf operations.
 
-Objects support the code-unit and Unicode matcher, d/g/m/s/u/y and iu, named captures with a
+Objects support the code-unit and Unicode matcher, d/g/m/s/u/v/y and iu/iv, named captures with a
 null-prototype groups object, and explicit undefined elements for unmatched
-captures. Plain i and v constructors and literals throw SyntaxError naming the
+captures. Plain i constructors and literals throw SyntaxError naming the
 unsupported flag; lookbehind also fails explicitly. Symbol.match
-recognition, symbol-based string consumers, non-Unicode folding and Unicode sets
+recognition, symbol-based string consumers, non-Unicode folding
 remain later work. Direct and indirect eval are unavailable, so the raw NUL
 upstream case is exercised through the constructor and a literal containing
 an actual NUL instead.
@@ -5452,13 +5452,13 @@ BigInt.prototype.toLocaleString remain deferred.
 
 ## Unicode RegExp mode (clj-quickjs-190)
 
-The immutable matcher program stores a Unicode-mode bit (`u` or future `v`
+The immutable matcher program stores a Unicode-mode bit (`u` or `v`
 IR), and character instructions retain u32 code points. The shared forward
 reader decodes UTF-16 pairs and preserves lone surrogates. Literals, dot,
 classes and backreferences use that reader; the search loop uses the same
 AdvanceStringIndex operation as global replacement's empty-match progress.
 Compilation validates code points through U+10FFFF in Unicode mode and code
-units otherwise. The v parser/object flag remains explicitly unsupported.
+units otherwise.
 
 `matcher::exec` maps a starting offset within a pair to its lead, matching
 QuickJS `lre_exec`; this applies to both exec/test and sticky replacement.
@@ -6116,3 +6116,28 @@ this coverage to the task-frame root category and the Generator heap kind.
 `suspended_generator_operands_and_completions_are_traced` additionally collects
 with an object held only by a saved operand or pending return/throw completion,
 then resumes from deeper callers and checks its value and reclamation.
+
+## RegExp Unicode sets (clj-quickjs-194)
+
+The parser emits `Node::UnicodeSet` as a flat postfix expression of code-point
+members, strings, union, intersection, subtraction and complement. Nested
+classes use explicit parser frames; static MayContainStrings tracks syntactic
+possibility through each operator and rejects invalid negation. No recursive
+Rust traversal or destruction depends on class nesting depth.
+
+`regexp::sets` evaluates the expression under the current scoped `i` modifier
+to sorted disjoint code-point intervals and finite strings. It reuses the
+verified Unicode 17 property ranges and simple-fold mappings. Case folding
+computes each operand's canonical image before set operations, including
+complement, so `vi` property complements differ from `iu`. No data generation,
+new runtime dependency or GC edge is introduced.
+
+The compiler lowers strings to ordinary Char/Split/Jump alternatives in
+longest-code-point-length order, then a code-point class, then an optional
+empty match. Existing explicit backtracking, capture undo, lookahead and
+repeat progress checks handle these alternatives. Interval scans, string
+comparisons, sort bounds and instruction emission consume the compilation
+budget; matching consumes the existing shared search budget. Exhaustion is
+catchable RangeError. Programs retain the same immutable Arc storage boundary
+and RegExp instances remain task-owned. String-property decoding is deferred
+and unsupported string property names throw SyntaxError.
