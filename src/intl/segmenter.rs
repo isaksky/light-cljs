@@ -228,6 +228,23 @@ mod tests {
         );
         assert_eq!(breaks("👩🏽‍💻x", false).0, [0, 7, 8]);
         assert_eq!(breaks("각x", false).0, [0, 3, 4]);
+        for text in [
+            "ก\u{0e31}x", // Thai extender with canonical combining class zero.
+            "ก\u{0e47}x", // The second Thai extender range.
+            "a\u{fe0f}x", // Variation selector, also combining class zero.
+            "각x",        // Precomposed LV followed by T.
+            "각ᆨx",        // Precomposed LVT followed by T.
+            "ᄀ가x",      // L followed by LV.
+            "ᄀ각x",      // L followed by LVT.
+            "ᅡᅡx",          // V followed by V.
+            "ᆨᆨx",          // T followed by T.
+        ] {
+            assert_eq!(breaks(text, false).0, [0, 2, 3], "{text}");
+        }
+        assert_eq!(breaks("가나x", false).0, [0, 1, 2, 3]);
+        assert_eq!(breaks("ᄀxᅡ", false).0, [0, 1, 2, 3]);
+        assert_eq!(breaks("🇫🇷🇩", false).0, [0, 4, 6]);
+        assert_eq!(breaks("🇫a", false).0, [0, 2, 3]);
         // Deliberate snapshot limits, not a claim of UAX #29 conformance.
         assert_eq!(breaks("\r\nx", false).0, [0, 1, 2, 3]);
         assert_eq!(breaks("a.b 😀!", true).1, [true, false, true, false]);
