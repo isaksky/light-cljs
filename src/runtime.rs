@@ -186,6 +186,20 @@ impl Runtime {
         dep::complete(&self.0.deps, key, producer, completion)
     }
 
+    /// Cancel `key`'s cell on the embedder's authority: install the terminal
+    /// outcome `Cancelled` whoever its producer is (claimed or not; the
+    /// cell is created if absent, so later needs read it too), and return
+    /// the wakes of every waiting task, delivered exactly as by
+    /// [`Runtime::complete`]. Their next needs read
+    /// [`Need::Cancelled`](crate::Need::Cancelled); the tasks themselves are
+    /// not cancelled. Terminal: a later completion by the producer, claim,
+    /// or second cancellation is rejected (`AlreadyComplete`), the only
+    /// error. A claimed producer can also cancel through `complete`; tasks
+    /// cannot cancel cells. See [`crate::dep`], "Cancellation".
+    pub fn cancel_cell(&self, key: DependencyKey) -> Result<Wakeups, CompleteError> {
+        dep::cancel_cell(&self.0.deps, key)
+    }
+
     /// A snapshot of `key`'s cell: absent, pending (producer and waiters),
     /// or its terminal outcome with values rooted for the caller.
     pub fn cell_status(&self, key: DependencyKey) -> CellStatus {

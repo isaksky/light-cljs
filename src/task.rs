@@ -23,35 +23,40 @@
 //! with its VM state saved; running it again (on any thread) continues at the
 //! saved instruction. No Rust stack frame survives between runs.
 //!
-//! # State machine (`docs/design.md` §§3, 8)
+//! # State machine (`docs/design.md` §§3, 8, 10)
 //!
-//! Each task has one atomic word: a phase, a `NOTIFIED` bit, and an
-//! **execution number** (how many runs have been claimed). A need in run
-//! `m` registers the wake handle `(task, m)` ([`WakeHandle`]).
+//! Each task has one atomic word: a phase, a `NOTIFIED` bit, a `CANCELLED`
+//! bit, and an **execution number** (how many runs have been claimed). A
+//! need in run `m` registers the wake handle `(task, m)` ([`WakeHandle`]).
 //!
 //! ```text
 //!               claim                         park, no NOTIFIED
 //! Runnable(n) ────────► Executing(m = n+1) ─────────────────────► Parked(m)
 //!     ▲                   │      │      │                            │
-//!     │ yield, guard      │      │      │ complete / fail            │
-//!     │ dropped, or park  │      │      ▼                            │
-//!     │ with NOTIFIED     │      │   Terminal(m)                     │
+//!     │ yield, guard      │      │      │ complete / fail, or        │
+//!     │ dropped, or park  │      │      │ cancellation observed      │
+//!     │ with NOTIFIED     │      │      ▼                            │
+//!     │                   │      │   Terminal(m)                     │
 //!     ├───────────────────┘      │                                   │
 //!     │                          └─ wake(m): set NOTIFIED            │
+//!     │                             cancel: set CANCELLED            │
 //!     │                             (stays Executing)                │
-//!     └──────────────────────── wake(m) ─────────────────────────────┘
+//!     └──────────────── wake(m), or cancel (sets CANCELLED) ─────────┘
 //! ```
 //!
 //! | Transition | By | Linearization point | Result |
 //! |---|---|---|---|
-//! | `Runnable(n) → Executing(n+1)` | [`Task::try_begin_run`] | CAS (`Acquire`) | the only owner of execution `n+1` |
-//! | `Executing → Runnable` | yield, or dropping a guard | store (`Release`) | runnable; a pending `NOTIFIED` is dropped (it is runnable anyway) |
-//! | `Executing → Terminal` | completion or failure | store (`Release`) | every later claim fails, every later wake is stale |
-//! | `Executing(m) → Parked(m)` | [`RunGuard::park`], no `NOTIFIED` | CAS (`Release`) | run returns [`RunOutcome::Waiting`]; only a wake for `m` resumes it |
-//! | `Executing(m)+NOTIFIED → Runnable(m)` | [`RunGuard::park`] | read of `NOTIFIED` (`Acquire`) | run returns [`RunOutcome::Yielded`]: the runner requeues it |
+//! | `Runnable(n) → Executing(n+1)` | [`Task::try_begin_run`] | CAS (`Acquire`) | the only owner of execution `n+1`; `CANCELLED` is kept |
+//! | `Executing → Runnable` | yield, or dropping a guard | CAS (`Release`) | runnable; a pending `NOTIFIED` is dropped (it is runnable anyway), `CANCELLED` is kept |
+//! | `Executing → Terminal` | completion or failure | CAS (`Release`) | every later claim fails, every later wake is stale; an unobserved `CANCELLED` is dropped |
+//! | `Executing+CANCELLED → Terminal+CANCELLED` | the run observing a cancellation, after terminal cleanup | CAS (`Release`) | run returns [`RunOutcome::Cancelled`]; [`TaskStatus::Cancelled`] |
+//! | `Executing(m) → Parked(m)` | [`RunGuard::park`], no `NOTIFIED` or `CANCELLED` | CAS (`Release`) | run returns [`RunOutcome::Waiting`]; only a wake for `m` or a cancellation resumes it |
+//! | `Executing(m)+NOTIFIED → Runnable(m)` | [`RunGuard::park`], no `CANCELLED` | CAS (`Release`) | run returns [`RunOutcome::Yielded`]: the runner requeues it |
 //! | `Executing(m) → Executing(m)+NOTIFIED` | wake for `m` | CAS (`AcqRel`) | [`Wake::Remembered`]: nothing to enqueue |
 //! | `Parked(m) → Runnable(m)` | wake for `m` | CAS (`AcqRel`) | [`Wake::Runnable`]: the waker enqueues it |
-//! | anything else | wake | read | [`Wake::Stale`]: nothing changes |
+//! | `Runnable` or `Executing` `→ +CANCELLED` | [`Task::cancel`] | CAS (`AcqRel`) | [`Cancel::Requested`]: the current or next run observes it |
+//! | `Parked(m) → Runnable(m)+CANCELLED` | [`Task::cancel`] | CAS (`AcqRel`) | [`Cancel::Runnable`]: the canceller enqueues it |
+//! | anything else | wake / cancel | read | [`Wake::Stale`] (any `CANCELLED` word included) / [`Cancel::AlreadyRequested`] or [`Cancel::Finished`]: nothing changes |
 //!
 //! **Exactly once per suspension.** A suspension is one execution `m` that
 //! subscribed. A wake for `m` changes the word only from `Executing(m)`
@@ -63,7 +68,11 @@
 //! sees `NOTIFIED` and the run returns `Yielded` (the runner requeues); if the
 //! park comes first, the wake finds `Parked` and returns the task to enqueue.
 //! Either way exactly one party makes the task runnable, and a claim then
-//! gives it exactly one owner.
+//! gives it exactly one owner. A cancellation is one more party racing for
+//! the same word: from `Parked(m)` it and the wake CAS from the same value,
+//! so exactly one of them returns the task to enqueue and the other rereads
+//! (a wake that finds `CANCELLED` is stale; a cancellation that finds the
+//! task runnable only sets its bit).
 //!
 //! **Completion racing the consumer.** A need registers the handle and the
 //! completion drains it in the same cell critical section ([`crate::dep`]),
@@ -73,15 +82,72 @@
 //! before park: the wake is remembered and the park returns `Yielded`;
 //! after park: the wake returns the task as runnable.
 //!
+//! # Consumer cancellation (`docs/design.md` §§8, 10)
+//!
+//! [`Task::cancel`] cancels one consumer: one CAS that sets the sticky
+//! `CANCELLED` bit (and, if the task is parked, makes it runnable for the
+//! canceller to enqueue). It never touches a dependency cell's outcome or
+//! producer: a producer still needed by other consumers keeps running and
+//! its completion still wakes them. It takes no lock and runs no
+//! JavaScript or host code, so any thread may call it, including a leaf
+//! host effect of the task's own run.
+//!
+//! From the request on, the task can never be resurrected into ordinary
+//! execution: every wake is [`Wake::Stale`] (a completion that still finds
+//! its waiter entry enqueues nothing), [`RunGuard::need`] refuses with
+//! [`NeedError::Cancelled`] and subscribes nothing, and a park cannot park.
+//!
+//! **Observation points.** The cancellation is observed by the task's own
+//! run, never inline by the canceller, so a later exception/finally policy
+//! (pellet clj-quickjs-27) can run language cleanup there. A run observes
+//! it at run start ([`RunGuard::run_with`], before executing anything), at
+//! [`RunGuard::need`] (the error above; the caller ends the run), at
+//! [`RunGuard::park`] (up to its CAS, ahead of a remembered wake), and at
+//! the budget boundary of a run that would otherwise yield.
+//! [`RunGuard::cancel_requested`] lets a run poll. The VM dispatch loop does
+//! not poll between instructions, so a run with an unlimited budget and no
+//! need observes nothing until it returns or fails, in which case that
+//! outcome stands and the request is dropped. A request that lands after a
+//! need's initial check is observed by the park: the need still subscribes
+//! and still returns the producer request it claimed, so the producer is
+//! never lost for the other consumers.
+//!
+//! **Terminal cleanup** is done by the observing run while it still owns the
+//! execution: (1) resolve the task's unresolved wait and remove its waiter
+//! entry from that cell (cell lock, a leaf; recorded dependency edges stay);
+//! (2) release its transient builders and its VM state (frames, operands,
+//! locals), so nothing the suspended state held is a root any more; (3) end
+//! the execution `Terminal` with `CANCELLED`. The run returns
+//! [`RunOutcome::Cancelled`], which is neither a suspension (`Waiting`) nor
+//! an error (`Failed`); the task's status becomes [`TaskStatus::Cancelled`],
+//! later claims fail with [`RunError::Finished`] and later cancellations
+//! return [`Cancel::Finished`]. Until that run happens the request is only
+//! recorded: a cancelled task that its embedder never runs again keeps its
+//! VM state as roots until its last [`Task`] handle is dropped (cells hold
+//! only a `Weak` reference), and its waiter entry is inert.
+//!
+//! The windows (`src/task/cancel_tests.rs`, forced with test hooks):
+//! before registration (need refused); inside the need between the
+//! fast-path read and the subscription (observed by the park; producer
+//! claim kept); after subscription (observed by the park, also with a
+//! remembered wake); inside the park between its read and CAS (CAS fails,
+//! park rereads); after park (canceller enqueues; the completion's wake is
+//! stale whether it comes before or after the cleanup); inside a wake
+//! between its read and CAS and vice versa (one enqueue); while running
+//! (budget boundary) and between runs (run start).
+//!
 //! **Locks.** The state word is not a lock. The task body mutex is taken only
 //! by the claim's owner (and for an instant by the collector, which cannot
 //! run while a run guard exists, or by a diagnostic reader such as
 //! `Task::source_location`); the claim only `try_lock`s it, reporting
 //! `AlreadyRunning` on contention, so starting a run never waits. The
-//! dependency log mutex is a leaf. No lock is held while a wake is
-//! delivered, and delivering a wake runs no JavaScript and no host code: it
-//! is one CAS that reports what the caller should enqueue.
+//! dependency log mutex is a leaf; terminal cleanup releases it before
+//! taking the cell lock. No lock is held while a wake or a cancellation is
+//! delivered, and neither runs JavaScript or host code: each is one CAS
+//! that reports what the caller should enqueue.
 
+#[cfg(test)]
+mod cancel_tests;
 #[cfg(test)]
 mod handoff_tests;
 mod state;
@@ -100,7 +166,7 @@ use crate::value::Value;
 use crate::vm::Executable;
 use crate::vm::dispatch::{Exit, execute};
 use crate::vm::frames::VmState;
-use state::{Delivery, ExecState, NotRunnable, Park, Phase};
+use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
 
 /// Result of one run of a task.
 #[derive(Debug)]
@@ -121,6 +187,12 @@ pub enum RunOutcome {
     /// are saved; the next run, on any thread, continues there), or a park
     /// found its wake already delivered.
     Yielded,
+    /// The run observed the task's cancellation ([`Task::cancel`]) and
+    /// performed terminal cleanup: its waiter entry is removed, its VM state
+    /// and transient builders are released, and the task is finished
+    /// ([`TaskStatus::Cancelled`]). Distinct from `Waiting` (a suspension)
+    /// and `Failed` (an error). See the module docs, "Consumer cancellation".
+    Cancelled,
 }
 
 /// How many instructions one run may execute before it returns
@@ -147,7 +219,8 @@ impl Budget {
 pub enum RunError {
     /// The task is currently being run (its execution guard is held).
     AlreadyRunning,
-    /// The task already completed or failed; its VM state is gone.
+    /// The task already completed, failed or was cancelled; its VM state is
+    /// gone.
     Finished,
     /// A previous run panicked while holding the guard, so the task state may
     /// be inconsistent. The VM does not panic by design; this is defensive.
@@ -185,6 +258,29 @@ pub enum TaskStatus {
     Finished,
     /// Parked on a dependency until its completion wakes it.
     Waiting,
+    /// A run observed its cancellation and performed terminal cleanup. (A
+    /// cancellation that is requested but not yet observed shows as `Ready`
+    /// or `Running`; see [`Task::cancel`].)
+    Cancelled,
+}
+
+/// What requesting a consumer's cancellation did ([`Task::cancel`]).
+#[derive(Debug)]
+#[must_use = "a task returned as runnable must be enqueued so its run can clean up"]
+pub enum Cancel {
+    /// The task was parked. It is now runnable (no wake can make it runnable
+    /// again), and the canceller enqueues it: its next run observes the
+    /// cancellation and performs terminal cleanup. Exactly one of this and a
+    /// racing completion's wake returns the task to enqueue.
+    Runnable(Task),
+    /// The task was runnable or executing. Its current run observes the
+    /// cancellation at its next observation point, or its next run does;
+    /// whoever already holds or queues the task runs it. Nothing to enqueue.
+    Requested,
+    /// Cancellation was already requested: nothing changed.
+    AlreadyRequested,
+    /// The task already completed, failed or was cancelled: nothing changed.
+    Finished,
 }
 
 /// What delivering a wake did ([`Task::wake`], [`Wakeups`](crate::Wakeups)).
@@ -268,6 +364,18 @@ impl TaskInner {
     }
 }
 
+/// Terminal cleanup of a cancelled task, by the owner of its execution
+/// (module docs, "Consumer cancellation"): leave the cell it waits on, then
+/// release its transient builders and VM state, so nothing it held stays a
+/// root. The caller then releases the claim with [`End::Cancelled`].
+fn cleanup_cancelled(task: &TaskInner, body: &mut TaskBody) {
+    dep::withdraw(&task.deps, &task.log, task.id);
+    if let TaskBody::Ready(vm) = body {
+        vm.builders.release_all(&task.heap, task.id);
+    }
+    *body = TaskBody::Finished;
+}
+
 /// Deliver a drained wake handle to its task, if the task still exists.
 /// Called by completion with no lock held.
 pub(crate) fn deliver_wake(task: &Weak<TaskInner>, handle: WakeHandle) -> Wake {
@@ -291,21 +399,26 @@ struct ExecutionClaim<'t> {
 }
 
 impl ExecutionClaim<'_> {
-    fn end(mut self, terminal: bool) {
+    fn end(mut self, end: End) {
         self.ended = true;
-        self.state.release(self.number, terminal);
+        self.state.release(self.number, end);
     }
 
-    fn park(mut self, before_cas: impl FnMut()) -> Park {
-        self.ended = true;
-        self.state.park(self.number, before_cas)
+    /// Park; on [`Park::Cancelled`] the claim is still held, and the caller
+    /// ends it after terminal cleanup.
+    fn park(&mut self, before_cas: impl FnMut()) -> Park {
+        let park = self.state.park(self.number, before_cas);
+        if park != Park::Cancelled {
+            self.ended = true;
+        }
+        park
     }
 }
 
 impl Drop for ExecutionClaim<'_> {
     fn drop(&mut self) {
         if !self.ended {
-            self.state.release(self.number, false);
+            self.state.release(self.number, End::Runnable);
         }
     }
 }
@@ -390,12 +503,47 @@ impl Task {
 
     /// Current status. A snapshot: it may change as soon as it is returned.
     pub fn status(&self) -> TaskStatus {
-        match self.0.exec.snapshot().0 {
+        let snapshot = self.0.exec.snapshot();
+        match snapshot.phase {
             Phase::Runnable if self.0.body.is_poisoned() => TaskStatus::Finished,
             Phase::Runnable => TaskStatus::Ready,
             Phase::Executing { .. } => TaskStatus::Running,
             Phase::Parked => TaskStatus::Waiting,
+            Phase::Terminal if snapshot.cancelled => TaskStatus::Cancelled,
             Phase::Terminal => TaskStatus::Finished,
+        }
+    }
+
+    /// True once cancellation has been requested ([`Task::cancel`]), whether
+    /// or not a run has observed it yet; false again only if a run completed
+    /// or failed before observing it. A snapshot.
+    pub fn cancel_requested(&self) -> bool {
+        self.0.exec.snapshot().cancelled
+    }
+
+    /// Cancel this task as a consumer (module docs, "Consumer cancellation").
+    ///
+    /// One CAS on the task's state word; it takes no lock, runs no
+    /// JavaScript or host code, and never cancels a dependency cell or its
+    /// producer, which other consumers may still need. The request is
+    /// sticky: from now on no wake makes the task runnable and no need
+    /// subscribes it. Terminal cleanup (removing its waiter entry,
+    /// releasing its VM state and builders) is done by the task's own run
+    /// when it observes the request: at run start, [`RunGuard::need`],
+    /// [`RunGuard::park`], or the end of a budgeted run; that run returns
+    /// [`RunOutcome::Cancelled`]. If this returns [`Cancel::Runnable`] the
+    /// caller enqueues the task for that run. Allowed from any thread,
+    /// including inside a leaf host effect of the task's own run.
+    pub fn cancel(&self) -> Cancel {
+        match self
+            .0
+            .exec
+            .cancel(|| self.0.deps.hook(HookPoint::CancelBeforeCas))
+        {
+            CancelDelivery::Runnable => Cancel::Runnable(self.clone()),
+            CancelDelivery::Requested => Cancel::Requested,
+            CancelDelivery::AlreadyRequested => Cancel::AlreadyRequested,
+            CancelDelivery::Finished => Cancel::Finished,
         }
     }
 
@@ -439,7 +587,7 @@ impl Task {
         if let TaskBody::Finished = *body {
             // Unreachable: a finished body always comes with `Terminal`.
             drop(body);
-            claim.end(true);
+            claim.end(End::Finished);
             return Err(RunError::Finished);
         }
         Ok(RunGuard {
@@ -518,9 +666,19 @@ impl RunGuard<'_> {
     /// key again after it completes resolves the wait.
     ///
     /// Fails with [`NeedError::AlreadyWaiting`], changing nothing, if the
-    /// task's unresolved wait is on a different key.
+    /// task's unresolved wait is on a different key, and with
+    /// [`NeedError::Cancelled`], changing nothing, if the task's
+    /// cancellation has been requested (an observation point: the run should
+    /// end, and [`RunGuard::park`] or [`RunGuard::run_with`] cleans up). A
+    /// cancellation that arrives after this check is observed by the park
+    /// instead: the need still subscribes and still returns any producer
+    /// request it claimed, so the cell keeps a producer for its other
+    /// consumers.
     pub fn need(&mut self, dependency: DependencyId, kind: ResultKind) -> Result<Need, NeedError> {
         let key = DependencyKey::new(self.task.world, dependency, kind);
+        if self.task.exec.snapshot().cancelled {
+            return Err(NeedError::Cancelled { requested: key });
+        }
         let waiter = Waiter {
             handle: self.wake_handle(),
             task: Arc::downgrade(self.task),
@@ -550,23 +708,64 @@ impl RunGuard<'_> {
     /// makes the park yield. That resume is spurious but harmless: the next
     /// run needs the key again, finds it pending, and parks with a fresh
     /// handle.
+    ///
+    /// Returns [`RunOutcome::Cancelled`] if the task's cancellation has been
+    /// requested, at any point up to the park's CAS (an observation point;
+    /// it takes precedence over a remembered wake): the run performs
+    /// terminal cleanup instead of parking or yielding.
     pub fn park(self) -> RunOutcome {
+        if self.task.exec.snapshot().cancelled {
+            return self.end_cancelled();
+        }
         let RunGuard {
             task,
             body,
-            claim,
+            mut claim,
             subscribed,
             _mutator,
         } = self;
         drop(body);
         let Some(key) = subscribed else {
-            claim.end(false);
+            // A cancellation arriving now stays requested for the next run.
+            claim.end(End::Runnable);
             return RunOutcome::Yielded;
         };
         match claim.park(|| task.deps.hook(HookPoint::ParkBeforeCas)) {
             Park::Parked => RunOutcome::Waiting(key),
             Park::AlreadyWoken => RunOutcome::Yielded,
+            Park::Cancelled => {
+                // Cancelled after the body was released: the execution is
+                // still ours, so nobody else can hold the body for long
+                // (only a diagnostic reader, for an instant).
+                let mut body = task.body.lock().unwrap_or_else(PoisonError::into_inner);
+                cleanup_cancelled(task, &mut body);
+                drop(body);
+                claim.end(End::Cancelled);
+                RunOutcome::Cancelled
+            }
         }
+    }
+
+    /// True once the task's cancellation has been requested: the run should
+    /// end, and [`RunGuard::park`] or [`RunGuard::run_with`] then performs
+    /// terminal cleanup. A snapshot (module docs, "Consumer cancellation").
+    pub fn cancel_requested(&self) -> bool {
+        self.task.exec.snapshot().cancelled
+    }
+
+    /// Observe the cancellation: terminal cleanup, then end the execution.
+    fn end_cancelled(self) -> RunOutcome {
+        let RunGuard {
+            task,
+            mut body,
+            claim,
+            _mutator,
+            ..
+        } = self;
+        cleanup_cancelled(task, &mut body);
+        drop(body);
+        claim.end(End::Cancelled);
+        RunOutcome::Cancelled
     }
 
     /// Execute until the task returns or fails, then release the guard.
@@ -577,8 +776,18 @@ impl RunGuard<'_> {
 
     /// Execute until the task returns or fails or `budget` is used up, then
     /// release the guard. See [`Task::run_with`].
+    ///
+    /// Cancellation is observed at run start (nothing executes) and when the
+    /// budget runs out (instead of yielding); either way the run performs
+    /// terminal cleanup and returns [`RunOutcome::Cancelled`]. A run that
+    /// returns or fails first reports that outcome and the request is moot.
+    /// The dispatch loop does not poll for cancellation between
+    /// instructions; a bounded budget bounds how long a request waits.
     pub fn run_with(mut self, budget: Budget, host: &mut dyn Host) -> RunOutcome {
         let task = self.task;
+        if task.exec.snapshot().cancelled {
+            return self.end_cancelled();
+        }
         let TaskBody::Ready(vm) = &mut *self.body else {
             // `try_begin_run` only hands out guards for ready tasks, and only
             // `run_with` (which consumes the guard) changes the body.
@@ -605,6 +814,10 @@ impl RunGuard<'_> {
             match execute(vm, &task.heap, host, budget.0) {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => RunOutcome::Failed(error),
+                // The budget boundary is an observation point.
+                Exit::Yield if task.exec.snapshot().cancelled => {
+                    return self.end_cancelled();
+                }
                 // The VM state stays in the task; dropping the guard releases
                 // the body and makes the task runnable.
                 Exit::Yield => return RunOutcome::Yielded,
@@ -622,7 +835,7 @@ impl RunGuard<'_> {
             ..
         } = self;
         drop(body);
-        claim.end(true);
+        claim.end(End::Finished);
         outcome
     }
 }

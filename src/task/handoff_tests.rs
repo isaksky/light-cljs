@@ -19,27 +19,27 @@ use crate::value::Primitive;
 use crate::vm::{Assembler, Opcode};
 use crate::{ProducerRequest, Runtime};
 
-const DEF: DependencyId = DependencyId::new(3);
-const KIND: ResultKind = ResultKind::new(1);
+pub(super) const DEF: DependencyId = DependencyId::new(3);
+pub(super) const KIND: ResultKind = ResultKind::new(1);
 /// Bound for every cross-thread handshake.
-const HANDSHAKE: Duration = Duration::from_secs(10);
+pub(super) const HANDSHAKE: Duration = Duration::from_secs(10);
 
-fn consumer(rt: &Runtime) -> Task {
+pub(super) fn consumer(rt: &Runtime) -> Task {
     let mut asm = Assembler::new();
     asm.constant(Primitive::Undefined).op(Opcode::Return);
     rt.spawn(&asm.finish("consumer", 0, 0).unwrap(), &[])
         .unwrap()
 }
 
-fn key(rt: &Runtime) -> DependencyKey {
+pub(super) fn key(rt: &Runtime) -> DependencyKey {
     DependencyKey::new(rt.world(), DEF, KIND)
 }
 
-fn hooks(task: &Task) -> &crate::dep::Hooks {
+pub(super) fn hooks(task: &Task) -> &crate::dep::Hooks {
     &task.0.deps.hooks
 }
 
-fn number(n: Need) -> f64 {
+pub(super) fn number(n: Need) -> f64 {
     match n {
         Need::Ready(v) => match v.view() {
             crate::ValueView::Number(n) => n,
@@ -49,7 +49,7 @@ fn number(n: Need) -> f64 {
     }
 }
 
-fn complete(rt: &Runtime, req: &ProducerRequest, n: f64) -> Wakeups {
+pub(super) fn complete(rt: &Runtime, req: &ProducerRequest, n: f64) -> Wakeups {
     let value = rt.root(Primitive::Number(n));
     rt.complete(req.key(), req.producer(), Completion::Ready(&value))
         .unwrap()
@@ -362,7 +362,7 @@ fn resubscription_in_a_later_run_refreshes_the_wake_handle() {
 /// consumer is returned to enqueue, the consumer still in its subscribing
 /// run has the wake remembered (its park yields), duplicates are stale, and
 /// both resumed needs read `Cancelled` with their waits resolved. (Consumer
-/// cancellation is pellet clj-quickjs-24.)
+/// cancellation and embedder cell cancellation: `cancel_tests.rs`.)
 #[test]
 fn cancelled_completion_wakes_parked_and_parking_consumers() {
     let rt = Runtime::new();

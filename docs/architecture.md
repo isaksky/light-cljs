@@ -466,9 +466,9 @@ clj-quickjs-23; the reference executor is clj-quickjs-8.
   `DependencyOutcome`): a published value or error survives collection
   while the cell exists, after the producer drops its handle. Readers get a
   fresh `Rooted` of the same identity.
-- **Deferred.** The VM instruction (clj-quickjs-23); consumer/cell cancellation beyond a producer completing
-  with `Cancelled`; deadlock reporting over unresolved waits; cell
-  invalidation and removal.
+- **Deferred.** The VM instruction (clj-quickjs-23); deadlock reporting over
+  unresolved waits; cell invalidation and removal. Cancellation: below
+  (clj-quickjs-24).
 
 ## Parking and wakeups (clj-quickjs-7)
 
@@ -480,7 +480,7 @@ contract). Design: `design.md` §§3, 8, 10, 15.
 - **Task state machine.** One `AtomicU64` per task: phase `Runnable |
   Executing | Parked | Terminal`, a `NOTIFIED` bit, and an execution number
   (runs claimed so far). Claim = CAS `Runnable(n) → Executing(n+1)`; the run
-  ends by a store to `Runnable` (yield, guard dropped) or `Terminal`
+  ends by a CAS to `Runnable` (yield, guard dropped) or `Terminal`
   (complete, fail), or by `RunGuard::park`. `Task::status` reports
   `Ready | Running | Waiting | Finished` from the word.
 - **Wake handles.** `WakeHandle` = process-unique runtime id + task id +
@@ -512,8 +512,7 @@ contract). Design: `design.md` §§3, 8, 10, 15.
   races many waiters, duplicate wakers and competing claimers through
   barriers.
 - **Deferred.** The VM operation that needs and parks by itself
-  (clj-quickjs-23); cancellation of a consumer or a cell across these
-  windows (clj-quickjs-24); a scheduler/executor that owns a ready queue
+  (clj-quickjs-23); a scheduler/executor that owns a ready queue
   (clj-quickjs-8).
 
 ## Simulated compiler host (clj-quickjs-9)
@@ -562,7 +561,47 @@ parser, analyzer, namespace or module linking.
 - **Deferred.** VM-level `__rt.need` and real calls/closures; worker
   threads (clj-quickjs-8); wait-cycle detection and reporting
   (clj-quickjs-26); cancelling a stalled request (its job stays parked;
-  clj-quickjs-24); invalidation.
+  the host does not call `Task::cancel` of clj-quickjs-24 yet); invalidation.
+
+## Consumer and cell cancellation (clj-quickjs-24)
+
+`src/task.rs` ("Consumer cancellation" in its module docs: observation
+points, terminal cleanup, transition rows), `src/task/state.rs` (the
+`CANCELLED` bit), `src/dep.rs` ("Cancellation": who may cancel a cell).
+Design: `design.md` §§8, 10, 15.
+
+- **Two kinds, kept apart.** Consumer cancellation (`Task::cancel`) ends one
+  task; cell cancellation is the terminal outcome `Cancelled` of a cell.
+  Cancelling a consumer never changes a cell, its producer claim or its
+  other waiters; a needing task that reads a cancelled cell
+  (`Need::Cancelled`) is not itself cancelled.
+- **State word.** Bit 3 is a sticky `CANCELLED` (execution number moved to
+  bits 4..). `cancel` CASes it in: `Parked(m) → Runnable(m)+CANCELLED`
+  (`Cancel::Runnable`: the canceller enqueues), or on `Runnable`/`Executing`
+  (`Cancel::Requested`: the current or next run observes it). Wakes treat a
+  `CANCELLED` word as stale; parks report it; claims and plain releases
+  keep it (release became a CAS loop so a concurrent request is never
+  lost). A cancellation and a wake of one parked execution CAS from the
+  same word, so exactly one enqueues.
+- **Observation and cleanup.** Only the task's own run observes the
+  request (run start, `need`, `park`, budget boundary), so a later
+  exception/finally policy (clj-quickjs-27) can run cleanup code there; the
+  canceller never runs anything. Terminal cleanup, under the execution
+  claim: withdraw the waiter entry from the cell (log lock released before
+  the cell lock), clear the unresolved wait, release builders and VM state
+  (their roots become reclaimable), end `Terminal+CANCELLED`. The run
+  returns `RunOutcome::Cancelled`; status `TaskStatus::Cancelled`.
+- **Who cancels a cell.** Its claimed producer (`Completion::Cancelled`) or
+  the embedder without a producer id (`Runtime::cancel_cell`, creating the
+  cell if absent); never a task. Same install path as any completion:
+  recheck under the cell lock, drain, deliver wakes with no lock held, so
+  waiters are woken exactly once and a racing producer completion or
+  second cancellation gets `AlreadyComplete`.
+- **Tests.** `src/task/cancel_tests.rs` forces every window with hooks
+  (including the new `CancelBeforeCas`); `tests/cancellation.rs` races
+  parking consumers, settlement and a canceller with barriers.
+- **Deferred.** Polling between VM instructions; language-level
+  cancellation semantics (clj-quickjs-27, -28).
 
 ## Atoms (clj-quickjs-10)
 

@@ -39,6 +39,8 @@ cargo test --lib task::           # task state machine and hook-forced handoff w
 cargo test --test sim_host        # simulated host: worlds, result kinds, producers
 cargo test --test atoms           # atoms: identity CAS, single-writer publication, load-to-root
 cargo test --lib atom::           # SameValue comparison, replaced-box reclamation
+cargo test --test cancellation    # consumer and cell cancellation racing settlement and parking
+cargo test --lib task::cancel_tests # hook-forced cancellation in every handoff window
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -283,9 +285,8 @@ Deferred:
 
 - The `__rt.need` VM operation (clj-quickjs-23); needs are issued from Rust
   through a run guard for now.
-- Consumer and cell cancellation other than a producer completing with
-  `Cancelled`; deadlock reporting; invalidation or removal of cells (they
-  live as long as the runtime).
+- Deadlock reporting; invalidation or removal of cells (they live as long
+  as the runtime). Cancellation: see clj-quickjs-24 below.
 
 ### JavaScript source compilation (clj-quickjs-22)
 
@@ -360,9 +361,9 @@ Supported:
 
 Deferred:
 
-- The VM instruction that needs and parks by itself (clj-quickjs-23);
-  cancellation across these windows (clj-quickjs-24); a reference executor
-  with a ready queue (clj-quickjs-8).
+- The VM instruction that needs and parks by itself (clj-quickjs-23); a
+  reference executor with a ready queue (clj-quickjs-8). Cancellation:
+  clj-quickjs-24 below.
 
 ### Simulated compiler host (clj-quickjs-9)
 
@@ -519,3 +520,43 @@ Deferred:
   capability).
 - Memory held by replaced values until the next collection is bounded by one
   small box per write; there is no reclamation without a collection.
+
+### Cancellation (clj-quickjs-24)
+
+Supported:
+
+- Consumer cancellation: `Task::cancel()` sets a sticky `CANCELLED` bit in
+  the task's state word (one CAS, no lock, nothing inline) and returns
+  `Cancel::Runnable(task)` for a parked task (enqueue it), else
+  `Requested`, `AlreadyRequested` or `Finished`. It never cancels a cell or
+  its producer: other consumers still get the result. From then on every
+  wake is `Wake::Stale` and `RunGuard::need` refuses with
+  `NeedError::Cancelled`, so a stale wake cannot resurrect the task.
+- Observation by the task's own run, never inline: at run start, at
+  `need`, at `park` (ahead of a remembered wake), and at the budget
+  boundary; `RunGuard::cancel_requested()` polls. The run then performs
+  terminal cleanup (removes its waiter entry, resolves its unresolved wait,
+  releases its builders and VM state so their roots are reclaimable) and
+  returns `RunOutcome::Cancelled`; `Task::status()` is
+  `TaskStatus::Cancelled`. A run that returns or fails first keeps its
+  outcome.
+- Cell cancellation is a terminal outcome, separate from consumer
+  cancellation: installed by the claimed producer
+  (`Runtime::complete(.., Completion::Cancelled)`) or by the embedder
+  without a producer id (`Runtime::cancel_cell(key)`); tasks cannot cancel
+  cells. Waiters are woken exactly once like any completion and read
+  `Need::Cancelled`; later completions, claims and cancellations are
+  `AlreadyComplete`.
+- Contract: "Consumer cancellation" in `src/task.rs` and "Cancellation" in
+  `src/dep.rs` module docs. Tests force each handoff window with hooks
+  (`cargo test --lib task::cancel_tests`) and race cancellation against
+  parking and settlement with barriers (`cargo test --test cancellation`).
+
+Deferred:
+
+- Polling between VM instructions (a run with an unlimited budget and no
+  need observes a cancellation only if it would yield); cancellation as a
+  language-level unwind with `finally` cleanup (clj-quickjs-27) and through
+  native continuations (clj-quickjs-28); cancelling a producer
+  automatically when its last consumer is cancelled (not done by design:
+  the embedder decides, with `Runtime::cancel_cell`).

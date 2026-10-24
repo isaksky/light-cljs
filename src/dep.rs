@@ -62,6 +62,39 @@
 //! wake that reaches a task still in its subscribing run is remembered by
 //! the task, so a completion that races the consumer's park is not lost.
 //!
+//! # Cancellation
+//!
+//! Two different things, kept apart (`docs/design.md` §§8, 10):
+//!
+//! * **Cell cancellation** is a terminal *outcome* of a cell, `Cancelled`,
+//!   installed exactly like `Ready` or `Failed`: once, under the cell lock,
+//!   draining the waiters and then waking each of them exactly once with no
+//!   lock held. Only two parties may install it: the cell's claimed
+//!   producer ([`Runtime::complete`](crate::Runtime::complete) with
+//!   [`Completion::Cancelled`]), and the embedder, which owns the scheduler
+//!   and may cancel any pending cell without a producer id
+//!   ([`Runtime::cancel_cell`](crate::Runtime::cancel_cell), for example
+//!   when abandoning a key; the cell is created if absent). Tasks cannot
+//!   cancel cells. Waiters observe it when they resume and need the key
+//!   again: [`Need::Cancelled`], a value-free outcome; the consumer itself
+//!   is not cancelled and decides what to do. It is terminal like every
+//!   outcome: later needs read it, and a later completion, claim or
+//!   cancellation of the cell is rejected (`AlreadyComplete`). A producer
+//!   completion and an embedder cancellation that race are ordered by the
+//!   recheck under the cell lock: exactly one installs.
+//! * **Consumer cancellation** ([`Task::cancel`](crate::Task::cancel); the
+//!   protocol is in [`crate::task`]) cancels one waiting task, never a
+//!   cell. It does not change the outcome, the producer claim or the other
+//!   waiters, so a producer still needed by other consumers stays alive
+//!   (no consumer reference counting cancels a producer either: a cell
+//!   whose consumers were all cancelled keeps its producer until the
+//!   producer or the embedder settles it). The cancelled consumer's waiter
+//!   entry is invalidated at once (its task's state word makes every
+//!   delivery [`Wake::Stale`]) and removed by its terminal cleanup
+//!   (`DependencyTable::unsubscribe`, one cell critical section). A need
+//!   refused because its task is cancelled is [`NeedError::Cancelled`],
+//!   not [`Need::Cancelled`].
+//!
 //! # Lock and ordering contract
 //!
 //! * **Dependency table lock** (`RwLock`): held only to find (read) or
@@ -69,9 +102,9 @@
 //!   source while holding the write lock, so the order is *table → heap
 //!   `sources`*. Never held while taking a cell lock.
 //! * **Cell lock** (the small per-cell pending-waiter lock): a leaf. Its
-//!   critical sections read or write the producer and waiter bookkeeping,
-//!   set the outcome, and allocate producer IDs (an atomic counter); they
-//!   acquire no other lock. The collector does not take it: it reads the
+//!   critical sections read or write the producer and waiter bookkeeping
+//!   (including a cancelled consumer's removal), set the outcome, and
+//!   allocate producer IDs (an atomic counter); they acquire no other lock. The collector does not take it: it reads the
 //!   outcome lock-free.
 //! * **Task dependency log lock**: a leaf, taken only by the task's own run
 //!   (exclusive through its execution claim) and by snapshot readers.
@@ -203,6 +236,9 @@ pub(crate) enum HookPoint {
     ParkBeforeCas,
     /// A wake read a state it can change and is about to CAS.
     WakeBeforeCas,
+    /// A consumer cancellation read a state it can change and is about to
+    /// CAS.
+    CancelBeforeCas,
 }
 
 /// Test hooks: code run at a [`HookPoint`], once or every time.
@@ -375,6 +411,29 @@ impl DependencyTable {
         }
     }
 
+    /// Remove `task`'s waiter entry from `key`'s cell, if it has one: terminal
+    /// cleanup of a cancelled consumer. The cell's producer, outcome and
+    /// other waiters are untouched, so a producer still needed by other
+    /// consumers keeps running and its completion still wakes them. Returns
+    /// whether an entry was removed (`false` if the cell completed first and
+    /// drained it, or the task never subscribed).
+    pub(crate) fn unsubscribe(&self, key: DependencyKey, task: TaskId) -> bool {
+        let Some(cell) = self.existing(key) else {
+            return false;
+        };
+        let mut state = lock(&cell.pending);
+        let Some(index) = state.subscribed.remove(&task) else {
+            return false;
+        };
+        state.waiters.remove(index);
+        for i in state.subscribed.values_mut() {
+            if *i > index {
+                *i -= 1;
+            }
+        }
+        true
+    }
+
     /// Install `outcome` as the cell's terminal outcome and return the
     /// drained waiters (subscription order). The caller keeps any value in
     /// `outcome` rooted for the duration of the call, and delivers the wakes
@@ -392,9 +451,30 @@ impl DependencyTable {
                 claimed: None,
             });
         };
+        self.settle(&cell, key, Some(producer), outcome)
+    }
+
+    /// Cancel `key`'s cell on the embedder's authority, whoever its producer
+    /// is (none included), creating the cell if it does not exist so later
+    /// needs read `Cancelled`. Returns the drained waiters like
+    /// [`DependencyTable::complete`].
+    pub(crate) fn cancel_cell(&self, key: DependencyKey) -> Result<Vec<Waiter>, CompleteError> {
+        let cell = self.cell(key);
+        self.settle(&cell, key, None, Terminal::Cancelled)
+    }
+
+    /// The install shared by producer completion (`producer` is `Some`: it
+    /// must be the claimed one) and embedder cancellation (`None`).
+    fn settle(
+        &self,
+        cell: &Cell,
+        key: DependencyKey,
+        producer: Option<ProducerId>,
+        outcome: Terminal,
+    ) -> Result<Vec<Waiter>, CompleteError> {
         // Cheap rejections first, so a duplicate completion is reported as
         // such rather than as a publication failure.
-        Self::may_complete(&cell, &lock(&cell.pending), key, producer)?;
+        Self::may_complete(cell, &lock(&cell.pending), key, producer)?;
         // The publication check takes heap object locks: never under the
         // cell lock. Its result stays valid because `value` is rooted by the
         // caller and its shareability cannot change.
@@ -403,8 +483,9 @@ impl DependencyTable {
         }
         self.hook(HookPoint::CompleteBeforeInstall);
         let mut state = lock(&cell.pending);
-        // Recheck: a concurrent completion by the same producer may have won.
-        Self::may_complete(&cell, &state, key, producer)?;
+        // Recheck: a concurrent completion (by the same producer, or an
+        // embedder cancellation) may have won.
+        Self::may_complete(cell, &state, key, producer)?;
         // Publication point. Release (inside `OnceLock::set`) pairs with the
         // fast path's Acquire. Under the lock, so a need's recheck cannot
         // miss it and a need that registered before it is in `waiters`.
@@ -415,16 +496,19 @@ impl DependencyTable {
         Ok(std::mem::take(&mut state.waiters))
     }
 
+    /// `producer`: `None` for the embedder, who may settle any pending cell.
     fn may_complete(
         cell: &Cell,
         state: &PendingState,
         key: DependencyKey,
-        producer: ProducerId,
+        producer: Option<ProducerId>,
     ) -> Result<(), CompleteError> {
         if cell.outcome.get().is_some() {
             return Err(CompleteError::AlreadyComplete { key });
         }
-        if state.producer != Some(producer) {
+        if let Some(producer) = producer
+            && state.producer != Some(producer)
+        {
             return Err(CompleteError::NotProducer {
                 key,
                 producer,
@@ -505,6 +589,17 @@ pub(crate) fn read_and_record(
     Ok(read)
 }
 
+/// Terminal cleanup of a cancelled consumer's dependency state, by the owner
+/// of its execution: resolve its unresolved wait (a cancelled task waits for
+/// nothing) and remove its waiter entry from that cell. Recorded edges stay.
+/// The log lock is released before the cell lock is taken.
+pub(crate) fn withdraw(table: &DependencyTable, log: &Mutex<DependencyLog>, task: TaskId) {
+    let waiting = lock(log).waiting.take();
+    if let Some(key) = waiting {
+        table.unsubscribe(key, task);
+    }
+}
+
 /// A need with the terminal value rooted for the embedder.
 pub(crate) fn need(
     table: &DependencyTable,
@@ -534,13 +629,28 @@ pub(crate) fn complete(
         Completion::Cancelled => Terminal::Cancelled,
     };
     let drained = table.complete(key, producer, outcome)?;
+    Ok(deliver(table, drained))
+}
+
+/// Cancel a cell on the embedder's authority (module docs, "Cancellation"),
+/// then (every lock released) deliver the drained wakes.
+pub(crate) fn cancel_cell(
+    table: &DependencyTable,
+    key: DependencyKey,
+) -> Result<Wakeups, CompleteError> {
+    let drained = table.cancel_cell(key)?;
+    Ok(deliver(table, drained))
+}
+
+/// Deliver drained wakes, with no lock held.
+fn deliver(table: &DependencyTable, drained: Vec<Waiter>) -> Wakeups {
     table.hook(HookPoint::CompleteAfterDrain);
-    Ok(Wakeups(
+    Wakeups(
         drained
             .into_iter()
             .map(|w| (w.handle, deliver_wake(&w.task, w.handle)))
             .collect(),
-    ))
+    )
 }
 
 /// The wakes one completion delivered, in subscription order: every
@@ -611,7 +721,9 @@ pub enum Need {
     Ready(Rooted),
     /// The producer failed: the published error value.
     Failed(Rooted),
-    /// The cell was cancelled.
+    /// The cell's terminal outcome is `Cancelled` (by its producer or the
+    /// embedder; module docs, "Cancellation"). The needing task itself is
+    /// not cancelled and may continue; compare [`NeedError::Cancelled`].
     Cancelled,
     /// Not complete. The task is registered as a waiter on `key` and will be
     /// among the wake handles its completion returns. `produce` is `Some`
@@ -632,6 +744,13 @@ pub enum NeedError {
         waiting: DependencyKey,
         requested: DependencyKey,
     },
+    /// The consumer task is cancelled ([`Task::cancel`](crate::Task::cancel)):
+    /// it subscribes to nothing and claims no producer. This is consumer
+    /// cancellation, not the cell outcome [`Need::Cancelled`]. The run
+    /// should end; [`RunGuard::park`](crate::RunGuard::park) or
+    /// [`RunGuard::run_with`](crate::RunGuard::run_with) then performs
+    /// terminal cleanup.
+    Cancelled { requested: DependencyKey },
 }
 
 impl fmt::Display for NeedError {
@@ -641,6 +760,9 @@ impl fmt::Display for NeedError {
                 f,
                 "cannot need {requested}: the task is still waiting on {waiting}"
             ),
+            NeedError::Cancelled { requested } => {
+                write!(f, "cannot need {requested}: the task is cancelled")
+            }
         }
     }
 }
@@ -656,7 +778,9 @@ pub enum Completion<'a> {
     /// The producer failed with this error value. Must pass the publication
     /// check; it wakes waiters exactly like success.
     Failed(&'a Rooted),
-    /// The cell is cancelled.
+    /// The cell is cancelled by its producer. (The embedder may also cancel
+    /// any pending cell without a producer id:
+    /// [`Runtime::cancel_cell`](crate::Runtime::cancel_cell).)
     Cancelled,
 }
 
@@ -868,6 +992,50 @@ mod tests {
             ids(table.complete(key(1), req.producer(), Terminal::Cancelled)),
             Ok(vec![TaskId::from_raw(1)])
         );
+    }
+
+    /// Removing a cancelled consumer's waiter keeps the per-task index
+    /// consistent: a task behind it that re-subscribes in a later run
+    /// refreshes its own entry, and completion drains the rest in
+    /// subscription order. Removal is idempotent and leaves the producer.
+    #[test]
+    fn unsubscribe_keeps_the_remaining_waiters_in_order() {
+        let heap = Arc::new(Heap::default());
+        let table = DependencyTable::new(Arc::clone(&heap));
+        let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(w(1), key(1)) else {
+            panic!("first need claims the producer");
+        };
+        for id in [2, 3] {
+            assert!(matches!(
+                table.read_or_subscribe(w(id), key(1)),
+                Read::Waiting { produce: None }
+            ));
+        }
+        let t = TaskId::from_raw;
+        assert!(table.unsubscribe(key(1), t(2)));
+        assert!(!table.unsubscribe(key(1), t(2)), "idempotent");
+        assert!(!table.unsubscribe(key(9), t(1)), "absent cell");
+        let later = Waiter {
+            handle: WakeHandle::new(0, t(3), 2),
+            task: Weak::new(),
+        };
+        assert!(matches!(
+            table.read_or_subscribe(later, key(1)),
+            Read::Waiting { produce: None }
+        ));
+        assert!(matches!(
+            table.status(key(1)),
+            CellStatus::Pending { producer: Some(p), waiters } if p == req.producer() && waiters == [t(1), t(3)]
+        ));
+        let drained = table
+            .complete(key(1), req.producer(), Terminal::Cancelled)
+            .unwrap();
+        let got: Vec<_> = drained
+            .iter()
+            .map(|w| (w.handle.task(), w.handle.execution()))
+            .collect();
+        assert_eq!(got, [(t(1), 1), (t(3), 2)]);
+        assert!(!table.unsubscribe(key(1), t(1)), "already drained");
     }
 
     /// Two completions by the same producer both pass the first validation

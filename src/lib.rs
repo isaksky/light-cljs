@@ -17,13 +17,16 @@
 //!   another task; rejects values reaching task-owned mutation with a
 //!   [`PublishError`] naming the path (`value::share`).
 //! * [`RunOutcome`]: `Complete(value)`, `Failed(error)`, `Yielded` (budget used
-//!   up, or a park found its wake already delivered: run again), and
-//!   `Waiting(key)` (parked by [`RunGuard::park`] until a wake).
+//!   up, or a park found its wake already delivered: run again),
+//!   `Waiting(key)` (parked by [`RunGuard::park`] until a wake), and
+//!   `Cancelled` (the run observed [`Task::cancel`] and cleaned up).
 //! * Dependency cells ([`dep`]): [`RunGuard::need`] reads or subscribes to the
 //!   single-assignment cell of a [`DependencyKey`] (world, definition, result
 //!   kind); [`Runtime::complete`] publishes its outcome, delivers each waiter's
 //!   [`WakeHandle`] to its task's state machine with no lock held, and
-//!   returns the [`Wakeups`]: the tasks to enqueue.
+//!   returns the [`Wakeups`]: the tasks to enqueue. [`Runtime::cancel_cell`]
+//!   lets the embedder settle a cell `Cancelled`; [`Task::cancel`] cancels a
+//!   consumer without touching its cell ([`Cancel`]).
 //!
 //! See `docs/architecture.md` for the boundaries and continuation shape.
 //!
@@ -85,7 +88,7 @@ pub use heap::{
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};
 pub use runtime::Runtime;
-pub use task::{Budget, RunError, RunGuard, RunOutcome, Task, TaskStatus, Wake};
+pub use task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStatus, Wake};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{Primitive, ValueView};
 pub use vm::{
