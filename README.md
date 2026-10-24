@@ -2238,16 +2238,15 @@ tests only, no code change: arrays use the generic enumerator):
   named properties in creation order (`"01"`, `"-1"`, `"1.5"` and
   `"4294967295"` are names, not indices), never `length`. QuickJS
   `test_for_in`'s fourth group ("array optimization") runs from source,
-  adapted, with notice.
+  adapted, with notice, using the original `push` / `toString` operations
+  (clj-quickjs-264).
 - An element removed before it is reached is not visited; elements added
   during the loop are not. Shrinking with `a.length = n` during iteration
   skips removed indices in dense and sparse arrays; named properties
   remain enumerable even after shrinking to zero.
 
-Deferred: shrinking with `a.pop()` (not implemented), and the upstream
-group's original `push` / `toString` form (clj-quickjs-264, after
-clj-quickjs-155 and -156). The test appends with `a[a.length] = i` and
-collects keys with string `+` meanwhile.
+Deferred: shrinking with `a.pop()` (`Array.prototype.pop` is not
+implemented; clj-quickjs-264 covers the available length-assignment form).
 
 ### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
 

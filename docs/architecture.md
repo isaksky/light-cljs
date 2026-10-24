@@ -3181,10 +3181,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
   group ("array optimization") of `test_for_in` (line 77) of
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
   JavaScript source compiled by this frontend. Modified: `let` for `var`,
-  `a[a.length] = i` for `a.push(i)`, the keys collected with string `+`
-  instead of `tab.push` and `tab.toString()`, and the asserted condition is
-  the script's completion value, with a string-key check added. The test
-  carries the full notice.
+  and the asserted condition is the script's completion value, with a
+  string-key check added. The original `push` / `toString` form is restored
+  in clj-quickjs-264. The test carries the full notice.
   `build_for_in_iterator` (its fast array path) and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
 - `tests/js_source.rs` `var_heads_in_for_loops` (clj-quickjs-89): the

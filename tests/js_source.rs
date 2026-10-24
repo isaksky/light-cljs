@@ -9472,11 +9472,10 @@ fn for_in_walks_the_prototype_chain() {
 /// from the fourth group ("array optimization") of `test_for_in`, in
 /// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
 /// see `docs/architecture.md` for the attribution). Modified: `let` for
-/// `var`, `a[a.length] = i` for `a.push(i)`, the keys collected with string
-/// `+` instead of `tab.push` and `tab.toString()` (`Array.prototype.push`,
-/// `join` and `toString` are clj-quickjs-155 and -156), and the asserted
-/// condition is the script's completion value, with a string-key check
-/// added. The other scripts are written for this project.
+/// `var`, and the asserted condition is the script's completion value,
+/// with a string-key check added. The original `push` / `toString` form
+/// is restored in clj-quickjs-264. The other scripts are written for this
+/// project.
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
 /// released under the MIT license: Permission is hereby granted, free of
@@ -9503,13 +9502,13 @@ fn for_in_over_arrays() {
         /* array optimization */
         a = [];
         for(i = 0; i < 10; i++)
-            a[a.length] = i;
-        tab = "";
+            a.push(i);
+        tab = [];
         for(i in a) {
             strings = strings && typeof i === "string";
-            tab = tab + i + ",";
+            tab.push(i);
         }
-        strings && tab === "0,1,2,3,4,5,6,7,8,9,""#;
+        strings && tab.toString() === "0,1,2,3,4,5,6,7,8,9""#;
     assert_eq!(eval(TEST_FOR_IN_ARRAY), ValueView::Bool(true));
 
     let keys = |src: &str| string(&format!(r#"let s = ""; {src} s"#));
