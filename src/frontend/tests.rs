@@ -1274,9 +1274,10 @@ fn property_assignment() {
 /// `test_number_literals` (line 667) in
 /// `research/quickjs/tests/test_language.js` (QuickJS, revision
 /// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution), checked
-/// as parse trees instead of evaluated to `undefined`; `01.a` is rejected
-/// here because legacy octal literals are not supported. The other cases
-/// are written for this project.
+/// as parse trees instead of evaluated to `undefined`; `01.a` is checked in
+/// sloppy code, where legacy octal literals are lexed (clj-quickjs-51), and
+/// is rejected in strict code. The other cases are written for this
+/// project.
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
 /// released under the MIT license: Permission is hereby granted, free of
@@ -1313,7 +1314,10 @@ fn number_literal_member_access() {
     rejects("0.a;", InvalidToken, 1, 3);
     // `.2` after `0.1` is a second number literal, not a property name.
     rejects("0.1.2", UnexpectedToken, 1, 4);
-    // Legacy octal is not supported, so upstream's `01.a` is rejected.
+    // Upstream's `01.a` is the legacy octal integer 1 then a member access
+    // in sloppy code (the upstream test script is sloppy); legacy octal is
+    // an early error in strict code.
+    assert_eq!(sloppy_ast("01.a;"), "(. 1 a)");
     rejects("01.a", InvalidToken, 1, 1);
 }
 
@@ -2343,6 +2347,96 @@ fn directive_prologues_set_strictness() {
     assert_eq!(
         parse_script("let a = 1;"),
         parse_script_with("let a = 1;", ScriptOptions::STRICT)
+    );
+}
+
+fn sloppy_ast(src: &str) -> String {
+    sloppy_script(src)
+        .body
+        .iter()
+        .map(render_stmt)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Legacy octal (`017`) and leading-zero decimal (`08`, `09.5`) number
+/// literals are lexed in sloppy code and stay early errors in strict code
+/// (clj-quickjs-51; ECMAScript B.1.1, QuickJS `next_token` and `js_atof`).
+#[test]
+fn legacy_octal_literals_in_sloppy_mode() {
+    use SyntaxErrorKind::{InvalidToken, UnexpectedToken};
+    for (src, expected) in [
+        ("01;", "1"),
+        ("017;", "15"),
+        ("00;", "0"),
+        ("0777;", "511"),
+        ("08;", "8"),
+        ("09.5;", "9.5"),
+        ("08e1;", "80"),
+        ("08.5e1;", "85"),
+        ("078;", "78"),
+        ("0189.5;", "189.5"),
+        ("09.;", "9"),
+        // A legacy octal integer has no fraction: its `.` is a member access.
+        ("01.a;", "(. 1 a)"),
+        ("08.5.a;", "(. 8.5 a)"),
+        ("x = 010 + 0.5;", "(= x (+ 8 0.5))"),
+    ] {
+        assert_eq!(sloppy_ast(src), expected, "sloppy {src:?}");
+    }
+    // Beyond 2^53 the octal value is correctly rounded.
+    assert_eq!(
+        sloppy_ast("01000000000000000001;"),
+        format!("{}", 2f64.powi(54))
+    );
+    // A legacy octal integer takes no fraction, exponent, BigInt suffix or
+    // separator, and neither does a leading-zero decimal take a suffix or
+    // separator.
+    sloppy_rejects("01.5", UnexpectedToken, 1, 3);
+    sloppy_rejects("01e1", InvalidToken, 1, 3);
+    sloppy_rejects("01n", InvalidToken, 1, 3);
+    sloppy_rejects("08n", InvalidToken, 1, 3);
+    sloppy_rejects("0_1", InvalidToken, 1, 2);
+    sloppy_rejects("01_2", InvalidToken, 1, 3);
+    sloppy_rejects("08_1", InvalidToken, 1, 3);
+    sloppy_rejects("09.a", InvalidToken, 1, 4);
+    // Strict code (the default) rejects them at the literal.
+    rejects("01", InvalidToken, 1, 1);
+    rejects("08", InvalidToken, 1, 1);
+    rejects("x = 09.5;", InvalidToken, 1, 5);
+    rejects("0_1", InvalidToken, 1, 1);
+    // A `"use strict"` directive makes the literal right after it strict,
+    // although that token is read before the directive is recognised.
+    sloppy_rejects("\"use strict\"; 010", InvalidToken, 1, 15);
+    sloppy_rejects("'use strict'\n08;", InvalidToken, 2, 1);
+    sloppy_rejects("\"a\"; 'use strict'; 01.a", InvalidToken, 1, 20);
+    sloppy_rejects("function f() { 'use strict'; 010; }", InvalidToken, 1, 30);
+    sloppy_rejects("() => { 'use strict'\n07 }", InvalidToken, 2, 1);
+    sloppy_rejects(
+        "function f() { 'use strict'; x = 010; }",
+        InvalidToken,
+        1,
+        34,
+    );
+    // ... and only to the code it applies to: the literal after the
+    // function's closing brace is sloppy again.
+    assert_eq!(
+        sloppy_ast("function f() { 'use strict'; }\n010;")
+            .rsplit(' ')
+            .next(),
+        Some("8")
+    );
+    assert_eq!(
+        sloppy_ast("x = () => { 'use strict' }; 010;")
+            .rsplit(' ')
+            .next(),
+        Some("8")
+    );
+    // A string that is not a `"use strict"` directive leaves it sloppy.
+    assert_eq!(sloppy_ast("'use strict' + 010;"), "(+ \"use strict\" 8)");
+    assert_eq!(
+        sloppy_ast("1; 'use strict'; 010;").rsplit(' ').next(),
+        Some("8")
     );
 }
 

@@ -1702,8 +1702,12 @@ and Charlie Gordon) and is listed here with its source path and revision:
   (`0.1.a`, `0x1.a`, `0b1.a`, `01.a`, `0o1.a` and `eval('0.a')`).
   Modified: each case is checked as a parse tree or a lexer rejection
   instead of evaluated (`undefined`, or a SyntaxError for `0.a`), and
-  `01.a` is rejected because legacy octal literals are not supported. The
-  test carries the full notice. No code was copied.
+  `01.a` is checked as sloppy code, where it is the legacy octal integer 1
+  then a member access, and as strict code, where it is rejected
+  (clj-quickjs-51). The test carries the full notice. No code was copied.
+  `research/quickjs/quickjs.c` `next_token` (number branch) and `js_atof`
+  (`ATOD_ACCEPT_LEGACY_OCTAL`) were consulted for clj-quickjs-51's legacy
+  octal lexing only.
 - `tests/js_source.rs` `loose_equality_with_a_boolean_left_operand`
   (clj-quickjs-60): the `null == undefined`, `undefined == null`,
   `true == 1` and `0 == false` cases of `test_eq` (line 126) of

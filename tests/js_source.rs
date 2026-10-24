@@ -1848,6 +1848,29 @@ fn use_strict_directives() {
     assert_eq!(e.kind, SyntaxErrorKind::ReservedWord);
 }
 
+/// Legacy octal and leading-zero decimal literals run in sloppy scripts and
+/// are early errors in strict code (clj-quickjs-51).
+#[test]
+fn legacy_octal_literals_in_sloppy_scripts() {
+    let src = "function f() { return 010; } f() + 017 + 08 + 09.5";
+    let script =
+        compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_or_else(|e| panic!("{e}"));
+    match run(&script, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(40.5)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    for (src, options) in [
+        (src, ScriptOptions::STRICT),
+        (
+            "function f() { 'use strict'; return 010; }",
+            ScriptOptions::SLOPPY,
+        ),
+    ] {
+        let e = compile_script_with("strict", src, options).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::InvalidToken, "{src}");
+    }
+}
+
 #[test]
 fn hashbang_script_runs() {
     assert_eq!(num("#!/usr/bin/env qjs\n1 + 1"), 2.0);

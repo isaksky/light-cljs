@@ -1674,7 +1674,7 @@ Deferred:
 
 - Every other sloppy-mode difference (listed in `docs/grammar.md`,
   "Explicit gaps"): references that would denote the `arguments` object (clj-quickjs-97) or the global `eval`
-  (clj-quickjs-106), legacy octal (clj-quickjs-51), sloppy function-name
+  (clj-quickjs-106), octal escapes in strings (clj-quickjs-258), sloppy function-name
   stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
   (clj-quickjs-110); strict reserved words and duplicate parameters stay
   rejected in sloppy code.
@@ -1702,3 +1702,16 @@ Deferred:
 - `this`, the `arguments` object and `eval` in defaults (clj-quickjs-71,
   -97, -106/-109; rejected as everywhere); function `length`/`name`
   (clj-quickjs-101).
+
+### Legacy octal number literals in sloppy code (clj-quickjs-51)
+
+Supported (`cargo test --lib frontend::tests::legacy_octal_literals_in_sloppy_mode`,
+`cargo test --test js_source legacy_octal_literals_in_sloppy_scripts`):
+
+- In sloppy code (`ScriptOptions::SLOPPY`), legacy octal integers (`017` is 15; `01.a` is a member
+  access) and leading-zero decimals (`08`, `09.5`, `08e1`). They stay `InvalidToken` in strict code,
+  including the literal right after a `"use strict"` directive (`"use strict"; 010`).
+
+Deferred:
+
+- Octal escapes and `\8` `\9` in sloppy string literals (clj-quickjs-258).

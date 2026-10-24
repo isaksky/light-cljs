@@ -14,7 +14,9 @@ use super::ast::{
     SwitchCase, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
-use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
+use super::lexer::{
+    Keyword, Lexer, Punct, Token, TokenKind, is_leading_zero_literal, leading_zero_in_strict_code,
+};
 use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
 type PResult<T> = Result<T, SyntaxError>;
@@ -72,10 +74,9 @@ pub(super) struct Parser<'a> {
     /// script was parsed strict, or a `"use strict"` directive of the
     /// script or of an enclosing function applies. The parser consults it
     /// for mode-dependent early errors; the result is recorded as
-    /// [`Script::strict`] and [`Function::strict`]. The lexer does not
-    /// depend on it yet (legacy octal is clj-quickjs-51): when it does, note
-    /// that the token after a directive is lexed before the directive is
-    /// recognised.
+    /// [`Script::strict`] and [`Function::strict`]. The lexer lexes number
+    /// literals by mode (clj-quickjs-51) and is kept in step with it
+    /// ([`Self::set_strict`]).
     strict: bool,
     in_function: bool,
     /// Inside the body of a loop of the current function (`break` and
@@ -100,9 +101,11 @@ struct LabelEntry {
 impl<'a> Parser<'a> {
     /// A parser of `src` whose top level is strict-mode code if `strict`.
     pub(super) fn new(src: &'a str, strict: bool) -> Parser<'a> {
+        let mut lexer = Lexer::new(src);
+        lexer.set_strict(strict);
         Parser {
             src,
-            lexer: Lexer::new(src),
+            lexer,
             tok: Token {
                 kind: TokenKind::Eof,
                 span: Span::new(0, 0),
@@ -119,6 +122,15 @@ impl<'a> Parser<'a> {
     }
 
     // ----- token helpers -------------------------------------------------
+
+    /// Parse what follows as strict-mode code if `strict`, and have the
+    /// lexer lex the tokens after the current one in the same mode. The
+    /// current token was lexed in the previous mode; when the mode becomes
+    /// strict at a directive, [`Self::directive`] checks it again.
+    fn set_strict(&mut self, strict: bool) {
+        self.strict = strict;
+        self.lexer.set_strict(strict);
+    }
 
     fn advance(&mut self) -> PResult<Token> {
         let next = self.lexer.next_token()?;
@@ -298,7 +310,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         }
         if USE_STRICT.contains(&text) && !self.strict {
-            self.strict = true;
+            self.set_strict(true);
             if let Some(ident) = name
                 .into_iter()
                 .chain(params)
@@ -312,6 +324,14 @@ impl<'a> Parser<'a> {
                         ident.name
                     ),
                 ));
+            }
+            // The token after the directive was lexed as sloppy code,
+            // before the directive was recognised (`"use strict"; 010`).
+            if let TokenKind::Number(_) = self.tok.kind {
+                let start = self.tok.span.start;
+                if is_leading_zero_literal(&self.src[start..]) {
+                    return Err(leading_zero_in_strict_code(self.src, start));
+                }
             }
         }
         Ok(true)
@@ -1054,8 +1074,10 @@ impl<'a> Parser<'a> {
             prologue = prologue && self.directive(&stmt, name, params)?;
             body.push(stmt);
         }
+        // Restore the enclosing mode before the token after `}` is lexed.
+        let strict = self.strict;
+        self.set_strict(outer_strict);
         self.advance()?;
-        let strict = std::mem::replace(&mut self.strict, outer_strict);
         self.depth = saved;
         Ok((body, strict))
     }

@@ -264,6 +264,10 @@ pub struct Lexer<'a> {
     /// [`Lexer::expect_property_name`]), where a reserved word written with
     /// escapes is an ordinary name.
     after_dot: bool,
+    /// The code being lexed is strict-mode code, where legacy octal and
+    /// leading-zero number literals are early errors (clj-quickjs-51). The
+    /// parser keeps it in step with its own mode ([`Lexer::set_strict`]).
+    strict: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -281,6 +285,7 @@ impl<'a> Lexer<'a> {
             src,
             pos,
             after_dot: false,
+            strict: true,
         }
     }
 
@@ -290,6 +295,12 @@ impl<'a> Lexer<'a> {
     /// the next token only.
     pub(crate) fn expect_property_name(&mut self) {
         self.after_dot = true;
+    }
+
+    /// Lex what follows as strict-mode code if `strict`, else as sloppy
+    /// code (clj-quickjs-51). A new lexer is strict.
+    pub(crate) fn set_strict(&mut self, strict: bool) {
+        self.strict = strict;
     }
 
     pub fn source(&self) -> &'a str {
@@ -544,8 +555,9 @@ impl<'a> Lexer<'a> {
             Some("0b" | "0B") => 2,
             _ => 10,
         };
-        let mut integral = true;
-        let value = if radix != 10 {
+        // `bigint_suffix`: a BigInt suffix `n` would be valid after the
+        // literal (it is unsupported): an integer with no leading zero.
+        let (value, bigint_suffix) = if radix != 10 {
             self.pos += 2;
             let digits_start = self.pos;
             if self.eat_digits(radix)? == 0 {
@@ -555,50 +567,18 @@ impl<'a> Lexer<'a> {
                     "missing digits after radix prefix",
                 ));
             }
-            radix_value(&self.src[digits_start..self.pos], radix)
+            (radix_value(&self.src[digits_start..self.pos], radix), true)
+        } else if is_leading_zero_literal(rest) {
+            if self.strict {
+                return Err(leading_zero_in_strict_code(self.src, start));
+            }
+            (self.lex_leading_zero_literal(start)?, false)
         } else {
-            if rest.starts_with('0')
-                && rest[1..].starts_with(|c: char| c.is_ascii_digit() || c == '_')
-            {
-                return Err(self.error(
-                    SyntaxErrorKind::InvalidToken,
-                    Span::new(start, start + 1),
-                    "legacy octal and leading-zero number literals are not allowed in strict mode",
-                ));
-            }
             self.eat_digits(10)?;
-            if self.peek_char() == Some('.') {
-                integral = false;
-                self.bump();
-                self.eat_digits(10)?;
-            }
-            if matches!(self.peek_char(), Some('e' | 'E')) {
-                integral = false;
-                self.bump();
-                if matches!(self.peek_char(), Some('+' | '-')) {
-                    self.bump();
-                }
-                if self.eat_digits(10)? == 0 {
-                    return Err(self.error(
-                        SyntaxErrorKind::InvalidToken,
-                        Span::new(start, self.pos),
-                        "missing exponent digits in number literal",
-                    ));
-                }
-            }
-            // Rust's float parser is correctly rounded, overflows to
-            // infinity, and accepts every form lexed above ("1.", ".5",
-            // "1.e3"). A failure here would be a lexer bug; report it.
-            self.src[start..self.pos].parse::<f64>().map_err(|_| {
-                self.error(
-                    SyntaxErrorKind::InvalidToken,
-                    Span::new(start, self.pos),
-                    "malformed number literal",
-                )
-            })?
+            self.lex_decimal_tail(start)?
         };
         match self.peek_char() {
-            Some('n') if integral => Err(self.error(
+            Some('n') if bigint_suffix => Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 Span::new(start, self.pos + 1),
                 "BigInt literals are not supported",
@@ -609,6 +589,74 @@ impl<'a> Lexer<'a> {
                 "identifier or digit starts immediately after number literal",
             )),
             _ => Ok(TokenKind::Number(value)),
+        }
+    }
+
+    /// After the integer digits of a decimal literal starting at `start`:
+    /// an optional fraction and exponent. Returns the literal's value and
+    /// whether it is an integer (no fraction or exponent).
+    fn lex_decimal_tail(&mut self, start: usize) -> Result<(f64, bool), SyntaxError> {
+        let mut integral = true;
+        if self.peek_char() == Some('.') {
+            integral = false;
+            self.bump();
+            self.eat_digits(10)?;
+        }
+        if matches!(self.peek_char(), Some('e' | 'E')) {
+            integral = false;
+            self.bump();
+            if matches!(self.peek_char(), Some('+' | '-')) {
+                self.bump();
+            }
+            if self.eat_digits(10)? == 0 {
+                return Err(self.error(
+                    SyntaxErrorKind::InvalidToken,
+                    Span::new(start, self.pos),
+                    "missing exponent digits in number literal",
+                ));
+            }
+        }
+        // Rust's float parser is correctly rounded, overflows to infinity,
+        // ignores leading zeros, and accepts every form lexed above ("1.",
+        // ".5", "1.e3", "09.5"). A failure here would be a lexer bug;
+        // report it.
+        let value = self.src[start..self.pos].parse::<f64>().map_err(|_| {
+            self.error(
+                SyntaxErrorKind::InvalidToken,
+                Span::new(start, self.pos),
+                "malformed number literal",
+            )
+        })?;
+        Ok((value, integral))
+    }
+
+    /// Sloppy code only: a literal starting with `0` and a digit
+    /// (ECMAScript B.1.1; QuickJS `js_atof` with `ATOD_ACCEPT_LEGACY_OCTAL`).
+    /// If all its digits are octal it is a LegacyOctalIntegerLiteral
+    /// (`017` is 15), which ends there: a following `.` is a member access
+    /// (`01.a`) and an exponent is an identifier right after the literal.
+    /// Otherwise (an `8` or `9` among them) it is a
+    /// NonOctalDecimalIntegerLiteral, a decimal literal that may take a
+    /// fraction and exponent (`09.5`, `08e1`). Neither form allows a
+    /// numeric separator in its integer digits.
+    fn lex_leading_zero_literal(&mut self, start: usize) -> Result<f64, SyntaxError> {
+        self.bump();
+        let digits_start = self.pos;
+        while self.peek_char().is_some_and(|c| c.is_ascii_digit()) {
+            self.bump();
+        }
+        if self.peek_char() == Some('_') {
+            return Err(self.error_at(
+                self.pos,
+                SyntaxErrorKind::InvalidToken,
+                "a numeric separator cannot appear in a number literal with a leading 0",
+            ));
+        }
+        let digits = &self.src[digits_start..self.pos];
+        if digits.bytes().all(|b| b < b'8') {
+            Ok(radix_value(digits, 8))
+        } else {
+            Ok(self.lex_decimal_tail(start)?.0)
         }
     }
 
@@ -778,6 +826,24 @@ fn push_code_point(out: &mut Vec<u16>, value: u32) {
 
 /// Correctly rounded value of a non-empty digit string in a power-of-two
 /// radix (2, 8 or 16).
+/// `text`, the source from the start of a number literal, starts with a
+/// legacy octal or leading-zero decimal literal (`017`, `08`; also `0_1`,
+/// which is invalid in either mode): an early error in strict code.
+pub(crate) fn is_leading_zero_literal(text: &str) -> bool {
+    text.starts_with('0') && text[1..].starts_with(|c: char| c.is_ascii_digit() || c == '_')
+}
+
+/// The strict-mode early error for a legacy octal or leading-zero literal
+/// at `start` in `src`, at its leading `0`.
+pub(crate) fn leading_zero_in_strict_code(src: &str, start: usize) -> SyntaxError {
+    SyntaxError::new(
+        src,
+        SyntaxErrorKind::InvalidToken,
+        Span::new(start, start + 1),
+        "legacy octal and leading-zero number literals are not allowed in strict mode",
+    )
+}
+
 fn radix_value(digits: &str, radix: u32) -> f64 {
     let bits_per_digit = radix.trailing_zeros();
     let digits = digits.trim_start_matches('0');
