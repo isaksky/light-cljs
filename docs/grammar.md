@@ -3322,7 +3322,8 @@ not an ECMAScript standard constructor. Each constructor inherits from
 `Error`; each prototype inherits from `Error.prototype`, has its own
 `constructor`, `name` and empty `message`, and inherits `toString`.
 The realm intrinsics remain shared and immutable, with writable task-owned
-global bindings. AggregateError and SuppressedError remain deferred.
+global bindings. AggregateError remains deferred; SuppressedError is supported
+as described under "SuppressedError" below.
 
 Every constructor uses Error's resumable message/cause handling and stack
 capture, and creates a task-owned ordinary object with the internal error
@@ -5668,3 +5669,45 @@ Explicit execution gaps: cycles, namespace imports, JSON instances and
 `export default` declarations fail before bodies execute. Top-level await,
 dynamic import, import.meta and attributes remain unsupported. The CLI stays
 script-only; loading continues to accept cyclic graphs for future execution.
+
+### SuppressedError (clj-quickjs-234)
+
+Lexical grammar and rejected forms: unchanged; `SuppressedError` is an
+ordinary callable and constructible global, with length 3. Execution:
+`SuppressedError(error, suppressed, message)` creates a task-owned Error
+instance with writable, configurable, non-enumerable own `error` and
+`suppressed`, holding any values by identity. A non-undefined third argument
+is converted to a string resumably and becomes an own `message`; otherwise
+the empty message is inherited. Error's generic `toString` and creation-site
+`stack` capture apply. Both input values remain traced during message
+getters/conversion, including waits, yields, collection and migration.
+
+The constructor inherits from `Error`; its prototype inherits from
+`Error.prototype` and owns `constructor`, `name: 'SuppressedError'`, and
+`message: ''`, with the normal method descriptors. Exceptions: throwing an
+instance preserves its identity in catch, and an uncaught instance reports
+`uncaught exception: SuppressedError: <message>`. Conversion exceptions
+propagate normally. Instances carry the Error brand and satisfy both
+`instanceof SuppressedError` and `instanceof Error`.
+
+ECMAScript has no options argument here. Unlike the pinned QuickJS
+`js_error_constructor`, a fourth `{cause}` argument is ignored completely,
+including any getters. Explicit gaps: all realm intrinsics remain shared
+and immutable. Assigning `SuppressedError.prototype.constructor` therefore
+throws TypeError, just like assigning other intrinsic properties. Replacing
+the task's global binding is supported. The user decision to amend acceptance
+preserves this design: the engine test expects TypeError from the attempted
+intrinsic overwrite before replacing the global. The engine wrapping helper
+ignores that global binding and uses the original intrinsic prototype directly;
+disposal syntax and stacks are separate pellets.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let e = new SuppressedError(1, 2, 'm');
+e.error === 1 && e.suppressed === 2 && e.toString() === 'SuppressedError: m';
+e instanceof SuppressedError && e instanceof Error;
+Object.getPrototypeOf(SuppressedError) === Error && SuppressedError.length === 3;
+Object.getOwnPropertyDescriptor(SuppressedError(1, 2), 'message') === undefined;
+SuppressedError(1, 2, undefined, {get cause() { throw 42; }}).cause === undefined;
+```

@@ -1209,11 +1209,11 @@ mod tests {
     fn builtin_global_operands_are_validated() {
         let g = Opcode::GetBuiltinGlobal as u8;
         assert_eq!(
-            kind(load(vec![g, 42, 0, RET], vec![], 0)),
-            UnknownBuiltinGlobal { index: 42 }
+            kind(load(vec![g, 43, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 43 }
         );
-        // FinalizationRegistry appends operand 41; prior operands keep their meaning.
-        for i in 0..42 {
+        // SuppressedError appends operand 42; prior operands keep their meaning.
+        for i in 0..43 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
     }

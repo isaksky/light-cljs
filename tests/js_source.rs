@@ -17864,6 +17864,96 @@ fn native_error_constructors() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-234).
+#[test]
+fn suppressed_error_constructor() {
+    for source in [
+        "let e = new SuppressedError(1, 2, 'm'); e.error === 1 && e.suppressed === 2 && e.message === 'm' && e.name === 'SuppressedError' && e.toString() === 'SuppressedError: m' && e instanceof SuppressedError && e instanceof Error",
+        "let e = SuppressedError(1, 2); e.message === '' && Object.getOwnPropertyDescriptor(e, 'message') === undefined && e.toString() === 'SuppressedError'",
+        "Object.getPrototypeOf(SuppressedError) === Error && Object.getPrototypeOf(SuppressedError.prototype) === Error.prototype && SuppressedError.length === 3 && SuppressedError.name === 'SuppressedError'",
+        "SuppressedError.prototype.constructor === SuppressedError && SuppressedError.prototype.name === 'SuppressedError' && SuppressedError.prototype.message === '' && SuppressedError.prototype.toString === Error.prototype.toString",
+        "let o = {}; let e = new SuppressedError(o, o); e.error === o && e.suppressed === o",
+        "let e = SuppressedError(); e.error === undefined && e.suppressed === undefined && Object.getOwnPropertyDescriptor(e, 'error').value === undefined && Object.getOwnPropertyDescriptor(e, 'suppressed').value === undefined",
+        "let e = SuppressedError(null, false, 42); e.error === null && e.suppressed === false && e.message === '42'",
+        "let s = Symbol(); let e = SuppressedError(s, s); e.error === s && e.suppressed === s",
+        "let e = SuppressedError(1, 2, 'm'); let a = Object.getOwnPropertyDescriptor(e, 'error'); let b = Object.getOwnPropertyDescriptor(e, 'suppressed'); let m = Object.getOwnPropertyDescriptor(e, 'message'); a.writable && a.configurable && !a.enumerable && b.writable && b.configurable && !b.enumerable && m.writable && m.configurable && !m.enumerable && Object.keys(e).length === 0",
+        "let e = SuppressedError(1, 2, 'm'); let k = Object.getOwnPropertyNames(e); k.length === 4 && k[0] === 'message' && k[1] === 'error' && k[2] === 'suppressed' && k[3] === 'stack'",
+        "let e = SuppressedError(1, 2); e.error = 3; e.suppressed = 4; delete e.error && delete e.suppressed && e.error === undefined && e.suppressed === undefined",
+        "let log = ''; let a = {toString() { throw 1; }}; let e = SuppressedError(a, a, {toString() { log += 'm'; return 'text'; }}, {get cause() { throw 2; }}); e.error === a && e.suppressed === a && e.message === 'text' && log === 'm' && !('cause' in e)",
+        "let e = SuppressedError(1, 2, undefined, {get cause() { throw 42; }}); !('cause' in e) && Object.getOwnPropertyDescriptor(e, 'message') === undefined",
+        "let caught = false; try { SuppressedError(1, 2, {toString() { throw 42; }}); } catch(e) { caught = e === 42; } caught",
+        "let caught = false; try { new SuppressedError(1, 2, Symbol()); } catch(e) { caught = e instanceof TypeError; } caught",
+        "let E = SuppressedError.bind(null, 1, 2); let e = new E('bound'); e.error === 1 && e.suppressed === 2 && e.message === 'bound' && e instanceof SuppressedError",
+        "SuppressedError.call(null, 1, 2, 'call').message === 'call' && SuppressedError.apply(null, [1, 2, 'apply']).message === 'apply'",
+        "Object.prototype.toString.call(SuppressedError()) === '[object Error]' && Object.prototype.toString.call(SuppressedError.prototype) === '[object Object]'",
+        "let E = SuppressedError; SuppressedError = function() { throw 42; }; Error = 0; let e = E(1, 2, 'saved'); e instanceof E && e.toString() === 'SuppressedError: saved'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let error = failure("throw SuppressedError(1, 2, 'boom')");
+    assert_eq!(error.kind(), VmErrorKind::Thrown);
+    assert_eq!(error.message(), "uncaught exception: SuppressedError: boom");
+}
+
+/// Synthetic fixture, not light-cljs output. The two input objects are
+/// retained only by the constructor continuation while message conversion waits.
+#[test]
+fn suppressed_error_message_waits_yields_collects_and_migrates() {
+    let rt = Runtime::new();
+    let source = r"
+        let effects = '';
+        function make() {
+            return new SuppressedError({n: 42}, {n: 43}, {get toString() {
+                effects += 'g'; __rt.need(1, 1);
+                return function() { effects += 's'; __rt.need(2, 1); return 'message'; };
+            }});
+        }
+        let e = make();
+        e.error.n === 42 && e.suppressed.n === 43 && e.message === 'message'
+            && e.toString() === 'SuppressedError: message' && effects === 'gs'
+            && e.stack.indexOf('    at make (') === 0
+            && e instanceof SuppressedError && e instanceof Error
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("SuppressedError message conversion did not complete");
+}
+
 /// Synthetic fixtures, not light-cljs output: all NativeErrors share Error's
 /// resumable callbacks and retain their prototype across GC and migration.
 #[test]

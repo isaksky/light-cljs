@@ -224,6 +224,24 @@ fn native_error_stacks_share_error_capture() {
 }
 
 #[test]
+fn suppressed_error_stacks_share_error_capture() {
+    assert_eq!(
+        run(
+            "function make() { return SuppressedError(1, 2, 'saved'); }\nlet e = make();\ntry { throw e; } catch (x) { x.stack; }"
+        ),
+        "    at make (stack-test.js:1:41)\n    at <anonymous> (stack-test.js:2:13)\n",
+    );
+    assert_eq!(
+        run("function make() { return new SuppressedError(1, 2, 'saved'); }\nmake().stack;"),
+        "    at make (stack-test.js:1:26)\n    at <anonymous> (stack-test.js:2:5)\n",
+    );
+    assert_eq!(
+        run("const E = SuppressedError.bind(null, 1, 2);\nnew E().stack;"),
+        "    at <anonymous> (stack-test.js:2:1)\n",
+    );
+}
+
+#[test]
 fn constructor_stacks_survive_callback_waits() {
     for name in [
         "Error",

@@ -60,6 +60,7 @@
 //! | `Math` additions (clj-quickjs-158) | same namespace | `sumPrecise` (length 1), exact resumable iterable summation |
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
+//! | `SuppressedError` (clj-quickjs-234) | NativeError constructor/prototype pair; constructor inherits from Error, prototype from Error.prototype | length 3; prototype owns constructor, name and empty message; instances own error/suppressed and capture stack |
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
@@ -132,7 +133,7 @@
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect`
-//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, `Array` (clj-quickjs-155), `Error` (clj-quickjs-228), and the seven NativeError constructors (clj-quickjs-229). They initialize writable
+//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, `Array` (clj-quickjs-155), `Error` (clj-quickjs-228), the seven NativeError constructors (clj-quickjs-229), and `SuppressedError` (clj-quickjs-234). They initialize writable
 //! properties of each task's mutable global object (clj-quickjs-104,
 //! [`new_global_object`]). Source references always look up those properties;
 //! `get_builtin_global` remains an instruction for hand-assembled code.
@@ -215,11 +216,12 @@ pub(crate) enum Global {
     Eval = 39,
     WeakRef = 40,
     FinalizationRegistry = 41,
+    SuppressedError = 42,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 42] = [
+    const ALL: [Global; 43] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -262,6 +264,7 @@ impl Global {
         Global::Eval,
         Global::WeakRef,
         Global::FinalizationRegistry,
+        Global::SuppressedError,
     ];
 
     /// The JavaScript name.
@@ -290,6 +293,7 @@ impl Global {
             Global::EvalError => "EvalError",
             Global::URIError => "URIError",
             Global::InternalError => "InternalError",
+            Global::SuppressedError => "SuppressedError",
             Global::Json => "JSON",
 
             Global::Symbol => "Symbol",
@@ -380,7 +384,7 @@ pub(crate) struct Intrinsics {
     pub(crate) error_prototype: ObjectId,
     error: ObjectId,
     /// (constructor, prototype) pairs in NativeErrorKind order; rooted in `all`.
-    native_errors: [(ObjectId, ObjectId); 7],
+    native_errors: Box<[(ObjectId, ObjectId); NativeErrorKind::ALL.len()]>,
     json: ObjectId,
 
     symbol: ObjectId,
@@ -549,6 +553,9 @@ impl Intrinsics {
             Global::URIError => Value::Object(self.native_errors[NativeErrorKind::Uri as usize].0),
             Global::InternalError => {
                 Value::Object(self.native_errors[NativeErrorKind::Internal as usize].0)
+            }
+            Global::SuppressedError => {
+                Value::Object(self.native_errors[NativeErrorKind::Suppressed as usize].0)
             }
             Global::Json => Value::Object(self.json),
 
@@ -1023,7 +1030,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         }
         native_errors.push((constructor, prototype));
     }
-    let native_errors = native_errors.try_into().ok()?;
+    let native_errors = native_errors.into_boxed_slice().try_into().ok()?;
     let json = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
         object_prototype,
     ))))?;
@@ -2702,7 +2709,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 321); // Includes DisplayNames (-223) and DurationFormat (-225).
+        assert_eq!(first.all.len(), 323); // Includes DurationFormat (-225) and SuppressedError (-234).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2734,10 +2741,13 @@ mod tests {
         assert_eq!(Global::from_name("Error"), Some(Global::Error));
         assert_eq!(Global::from_u16(11), Some(Global::Error));
         for (offset, kind) in NativeErrorKind::ALL.into_iter().enumerate() {
-            assert_eq!(
-                Global::from_u16(12 + offset as u16),
-                Global::from_name(kind.name())
-            );
+            // Later error globals append after the original global inventory.
+            let operand = if kind == NativeErrorKind::Suppressed {
+                42
+            } else {
+                12 + offset as u16
+            };
+            assert_eq!(Global::from_u16(operand), Global::from_name(kind.name()));
         }
         assert_eq!(Global::from_u16(19), Some(Global::Json));
 
@@ -2775,7 +2785,8 @@ mod tests {
             Global::from_name("FinalizationRegistry"),
             Some(Global::FinalizationRegistry)
         );
-        assert_eq!(Global::from_u16(42), None);
+        assert_eq!(Global::from_u16(42), Some(Global::SuppressedError));
+        assert_eq!(Global::from_u16(43), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

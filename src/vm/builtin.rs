@@ -448,10 +448,11 @@ pub(crate) enum NativeErrorKind {
     Eval,
     Uri,
     Internal,
+    Suppressed,
 }
 
 impl NativeErrorKind {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Type,
         Self::Range,
         Self::Reference,
@@ -459,6 +460,7 @@ impl NativeErrorKind {
         Self::Eval,
         Self::Uri,
         Self::Internal,
+        Self::Suppressed,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -470,6 +472,7 @@ impl NativeErrorKind {
             Self::Eval => "EvalError",
             Self::Uri => "URIError",
             Self::Internal => "InternalError",
+            Self::Suppressed => "SuppressedError",
         }
     }
 }
@@ -897,6 +900,7 @@ impl Builtin {
             Builtin::ObjectPrototypeProtoSetter => 1,
             Builtin::Error => 1,
             Builtin::ErrorPrototypeToString => 0,
+            Builtin::NativeError(NativeErrorKind::Suppressed) => 3,
             Builtin::NativeError(_) => 1,
             Builtin::JsonParse => 2,
             Builtin::StringRaw => 1,

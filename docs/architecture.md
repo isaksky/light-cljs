@@ -7892,3 +7892,49 @@ QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 were consulted as semantic references, without adapting C code. The licensed
 `tests/fixtures/modules/fib_module.js` copy of `examples/fib_module.js` is now
 executed as well as parsed; its JavaScript body remains verbatim.
+
+## SuppressedError and engine wrapping (clj-quickjs-234)
+
+`NativeErrorKind::Suppressed` appends one constructor/prototype pair to the
+realm's error inventory and appends the global operand. The fixed-size
+constructor/prototype inventory is boxed so extending it does not grow
+the realm initialization stack; `Intrinsics::all` roots all its objects.
+It reuses
+`Builtin::NativeError(kind)` and Error's native continuation, selecting the
+third argument for resumable message conversion and retaining both input
+values in traced continuation fields until their ordinary properties are
+installed. It ignores options. Instances use the existing ordinary-object
+Error marker, ownership, precise tracing and publication policy; no heap
+kind or root category is added.
+
+`VmState::suppressed_error(heap, error, suppressed)` is the crate-internal
+engine entry point for future disposal continuations. It takes the
+prototype directly from `realm::Intrinsics`, builds own `error`,
+`suppressed` and `stack` properties, and allocates an ordinary Error without
+consulting globals, properties, getters or JavaScript constructors. It uses
+the current VM creation-site stack snapshot and leaves message inherited,
+matching QuickJS's engine helper. Allocation/key exhaustion propagates the
+existing terminal OutOfMemory fault. Like other VM allocations, it runs
+under a mutator guard between safepoints: inputs stay in traced task/native
+state, and the caller stores the result there before the next collection
+poll. No collector can interleave inside this leaf operation.
+
+User decision (Amend acceptance): the direct unit test attempts the intrinsic
+`SuppressedError.prototype.constructor` overwrite and expects TypeError,
+then replaces the global `SuppressedError` with a throwing function. This
+keeps the shared immutable intrinsics design. The test verifies the original
+prototype, exact input identity, descriptors, absence of own message, stack,
+no callback effects, survival of
+input objects after dropping their original roots, and nested wrapping
+across collections. The existing shared-immutable-intrinsic decision
+prevents the literal upstream intrinsic `prototype.constructor` write;
+the test catches its TypeError and verifies the replacement global cannot
+redirect engine wrapping. Supporting an actual write to the intrinsic would
+require a separate change to the realm mutation policy;
+this pellet does not introduce shared mutable prototypes or task overlays.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_error_constructor`,
+`js_native_error_proto_funcs` and `js_new_suppressed_error` were read for
+semantics. Rust implementation and synthetic tests were written fresh;
+no upstream source or test text was copied.
