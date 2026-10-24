@@ -976,6 +976,8 @@ fn realm_intrinsics_retain() {
         "Map.prototype.clear",
         "Object.getOwnPropertyDescriptor(Map.prototype, 'size').get",
         "Intl",
+        "Intl.Locale.prototype.maximize",
+        "Intl.Locale.prototype.minimize",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1019,7 +1021,8 @@ fn realm_intrinsics_retain() {
     // Integer typed arrays add 12 built-ins and 8 prototypes (-166).
     // Intl adds its ordinary namespace (-209).
     // Locale adds one prototype and fourteen built-ins (-210).
-    assert_eq!(rt.heap_usage().objects.builtin, 117);
+    // Locale likely-subtag methods add two built-in functions (-211).
+    assert_eq!(rt.heap_usage().objects.builtin, 119);
     assert_eq!(rt.heap_usage().objects.plain, 27);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

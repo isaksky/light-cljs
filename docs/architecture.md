@@ -5046,6 +5046,6 @@ and ownership check clones the immutable record before any allocation, then a
 fresh ordinary task-owned Locale uses the intrinsic prototype. No JavaScript
 getters, overridden constructors or coercions run; no continuation, heap kind or
 GC edge is added. Existing ordinary-object tracing and publication rules apply
-to the result. The realm retention assertion increases from 124 to 126 to count
-the two new function objects. Formatting service negotiation and
+to the result. The realm retention and GC inventory assertions increase from
+124 to 126 to count the two new function objects. Formatting service negotiation and
 `supportedLocalesOf` remain with clj-quickjs-212.
