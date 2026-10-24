@@ -4823,3 +4823,20 @@ outer === 9 && (0, eval)('outer') === 9;
 ```js compile-reject Unsupported 1:1
 eval('1 + 1');
 ```
+
+### Math.sumPrecise (clj-quickjs-158)
+
+Execution: `Math.sumPrecise(items)` consumes a synchronous iterable of Numbers
+and rounds its exact sum once to binary64, ties to even. It has length 1,
+ignores `this` and extra arguments, and is not a constructor. Empty inputs and
+inputs containing only negative zeros return -0; other exact zero sums return
++0. NaN or both signs of
+Infinity produce NaN; otherwise an input Infinity determines the result.
+Finite intermediate overflow is retained exactly until the final rounding.
+Non-Number elements throw TypeError without coercion and close the iterator;
+iteration continues after NaN/Infinity to validate the remaining elements.
+Getters, next and return may yield, wait, survive GC and migrate. Iterator step
+errors propagate without closing; a pending validation error wins over close
+errors. At 2^53 elements a TypeError closes the iterator.
+Explicit gaps: async iterables are not accepted by this synchronous method.
+Other Math methods/constants retain their existing supported/deferred status.

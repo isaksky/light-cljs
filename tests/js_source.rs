@@ -4016,6 +4016,54 @@ fn tagged_templates_wait_yield_collect_and_migrate() {
 /// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
 /// and MIT permission notice is retained on string_code_unit_access below.
 #[test]
+fn math_sum_precise() {
+    // Synthetic fixtures, not light-cljs output, except the first row adapted
+    // from QuickJS test_builtin.js::test_math (license in docs/attribution.md).
+    // Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon. MIT license;
+    // see the retained QuickJS notice in this file and src/intl/data/QUICKJS-LICENSE.
+    for src in [
+        "Math.sumPrecise([1, Number.EPSILON / 2, Number.MIN_VALUE]) === 1.0000000000000002",
+        "1 / Math.sumPrecise([]) === -Infinity && 1 / Math.sumPrecise([-0, -0]) === -Infinity",
+        "1 / Math.sumPrecise([-0, 0]) === Infinity && 1 / Math.sumPrecise([1, -1]) === Infinity",
+        "Math.sumPrecise([1e16, 1, -1e16]) === 1",
+        "Math.sumPrecise([1e308, 1e308, -1e308]) === 1e308",
+        "Math.sumPrecise([1e308, 1e308]) === Infinity && Math.sumPrecise([-1e308, -1e308]) === -Infinity",
+        "Number.isNaN(Math.sumPrecise([Infinity, -Infinity])) && Number.isNaN(Math.sumPrecise([NaN]))",
+        "Math.sumPrecise([Infinity, 1]) === Infinity && Math.sumPrecise([-Infinity, 1]) === -Infinity",
+        "Math.sumPrecise([0.1, 0.2]) === 0.30000000000000004",
+        "Math.sumPrecise([Number.MIN_VALUE, Number.MIN_VALUE]) === 2 * Number.MIN_VALUE",
+        "Math.sumPrecise([1, Number.EPSILON / 2]) === 1 && Math.sumPrecise([1, 3 * Number.EPSILON / 2]) === 1 + 2 * Number.EPSILON",
+        "Math.sumPrecise([-1, -Number.EPSILON / 2, -Number.MIN_VALUE]) === -1.0000000000000002",
+        "Math.sumPrecise.call(null, [1, 2]) === 3 && Math.sumPrecise.apply(null, [[2, 3]]) === 5 && Math.sumPrecise.bind(null, [3, 4])() === 7",
+        "let d = Object.getOwnPropertyDescriptor(Math, 'sumPrecise'); d.writable && !d.enumerable && d.configurable && d.value.length === 1 && d.value.name === 'sumPrecise'",
+        "let n = 0, c = 0, o = {next() { n++; return {value: n === 1 ? 1 : '2'}; }, return() { c++; throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e instanceof TypeError; } ok && n === 2 && c === 1",
+        "let c = 0, o = {next() { throw 42; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e === 42; } ok && c === 0",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for argument in [
+        "[1, '2']",
+        "1",
+        "null",
+        "undefined",
+        "[1n]",
+        "[new Number(1)]",
+        "[NaN, '2']",
+        "[Infinity, '2']",
+        "'12'",
+    ] {
+        let src = format!(
+            "let ok = false; try {{ Math.sumPrecise({argument}); }} catch(e) {{ ok = e instanceof TypeError; }} ok"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("new Math.sumPrecise([])").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+#[test]
 fn math_basic_functions() {
     for src in [
         "Math.floor(1.4) === 1 && Math.ceil(1.4) === 2",

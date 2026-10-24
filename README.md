@@ -3577,3 +3577,14 @@ remain publishable under the existing rules. Direct eval remains explicitly
 unsupported. Raw unpaired
 surrogates in source require Unicode escapes. See `docs/grammar.md`, "Indirect
 eval", for limits. Verification: `cargo test --test js_source indirect_eval`.
+
+### Exact iterable summation (clj-quickjs-158)
+
+Supported: `Math.sumPrecise(iterable)` returns the correctly rounded exact sum
+of Number elements, including cancellation after intermediate overflow and
+negative zero for empty inputs or inputs containing only negative zeros.
+Non-Numbers throw TypeError and close
+the iterator. Iterator getters/calls and close can suspend, collect and migrate.
+Check: `cargo test --test js_source math_sum_precise -- --exact` and
+`cargo test --test need math_sum_precise_waits_and_migrates -- --exact`.
+Async iterables remain outside this synchronous API.

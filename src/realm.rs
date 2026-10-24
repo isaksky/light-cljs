@@ -56,6 +56,7 @@
 //! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
 //! | `Math` (clj-quickjs-152, clj-quickjs-164) | ordinary object, prototype `Object.prototype` | `floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot`, `pow` (length 2); each function has `name` |
 //! | `Math` additions (clj-quickjs-205) | same namespace | `sqrt`, `log2` (length 1), each with `name` |
+//! | `Math` additions (clj-quickjs-158) | same namespace | `sumPrecise` (length 1), exact resumable iterable summation |
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
@@ -947,6 +948,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         Builtin::MathPow,
         Builtin::MathSqrt,
         Builtin::MathLog2,
+        Builtin::MathSumPrecise,
     ] {
         let method = b.function(which, &[])?;
         b.add(math, which.name(), method, PropertyFlags::METHOD)?;

@@ -6907,3 +6907,22 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. These were semantic references;
 implementation and synthetic fixtures were written independently, with no
 upstream code or test text copied.
+
+### Exact iterable summation (clj-quickjs-158)
+
+`Math.sumPrecise` drives the shared resumable GetIterator protocol, caching
+`next` and reading `done` before `value`. Iterator calls/getters and IteratorClose
+are ordinary VM actions. A native catch boundary closes on non-Number elements
+or the 2^53-element limit; the original exception wins over return errors.
+IteratorStepValue failures propagate directly, as in QuickJS.
+
+The task-owned native state traces the acquisition, iterator, cached next,
+current result and pending exception. Its numeric accumulator uses two 34-limb
+unsigned integers in units of 2^-1074, one for each sign. A finite binary64
+occupies at most 2098 bits; fewer than 2^53 elements fit in 2151 bits. Subtraction
+and one ties-to-even rounding happen only after exhaustion, allowing overflowing
+intermediate sums to cancel. Each element has its own budgeted addition step;
+addition, subtraction and rounding each scan at most 34 limbs. Empty/all-negative-
+zero inputs yield -0; other exact zero sums yield +0. No heap kind or dependency
+was added. GC, waiting and worker migration preserve the accumulator in the
+native continuation rather than on a Rust stack.

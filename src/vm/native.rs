@@ -229,6 +229,7 @@ mod number_format;
 mod plural_rules;
 mod string_raw;
 mod string_replace;
+mod sum_precise;
 mod typed_array;
 
 use super::builtin;
@@ -431,6 +432,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    MathSumPrecise(Box<sum_precise::State>),
     Async(super::asynchronous::Boundary),
     Eval(Box<eval::State>),
     ArrayFrom(Box<array_from::State>),
@@ -793,6 +795,7 @@ impl Trace for NativeFrame {
             NativeState::Async(a) => a.trace(visit),
             NativeState::Eval(_) => {} // Source and compiler state have no heap edges.
             NativeState::ArrayFrom(from) => from.trace(visit),
+            NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Generator { id, failed } => {
@@ -1333,6 +1336,9 @@ fn start_builtin_slow(
 
             Builtin::ArrayPrototypeSort => Some(NativeState::ArraySort(Box::new(
                 array_sort::State::new(this.clone(), args),
+            ))),
+            Builtin::MathSumPrecise => Some(NativeState::MathSumPrecise(Box::new(
+                sum_precise::State::new(arg(0)),
             ))),
             Builtin::ArrayFrom => Some(NativeState::ArrayFrom(Box::new(array_from::State::new(
                 this.clone(),
@@ -2112,9 +2118,11 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     let native_index = state.natives.len() - 1;
     // These steps begin without a delivered operand, so the handler's
     // height is exactly the native base. Other boundaries catch only calls.
-    if matches!(&state.natives[native_index].state,
-        NativeState::ArrayFrom(from) if from.catches_step())
-    {
+    if match &state.natives[native_index].state {
+        NativeState::ArrayFrom(from) => from.catches_step(),
+        NativeState::MathSumPrecise(sum) => sum.catches_step(),
+        _ => false,
+    } {
         state.push_handler(super::exception::HandlerKind::NativeCatch {
             native: native_index,
         })?;
@@ -2307,6 +2315,7 @@ pub(crate) fn catch(
         NativeState::Async(a) => a.failed = Some(exception.value),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
+        NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
         _ => return Err("invalid native catch"),
     }
@@ -2499,6 +2508,7 @@ impl NativeState {
             Self::Async(_) => true,
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
+            Self::MathSumPrecise(sum) => sum.catches(),
             _ => false,
         }
     }
@@ -2600,6 +2610,7 @@ impl NativeState {
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
+            NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
@@ -3722,6 +3733,7 @@ impl NativeState {
                 NativeState::Eval(_)
                 | NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
+                | NativeState::MathSumPrecise(_)
                 | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)
                 | NativeState::Generator { .. }

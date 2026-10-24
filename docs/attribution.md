@@ -992,3 +992,14 @@ revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Five time rows in
 copyright and MIT notice above the date test also covers these rows. Existing
 generated am/pm, day-period and time-pattern pools keep their QuickJS and
 Unicode notices. No table bytes or generation steps changed.
+
+### Math.sumPrecise (clj-quickjs-158)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_math_sumPrecise` and
+`sum_precise_*`), revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The Rust integer accumulator is an independent implementation, not copied C.
+The first row of `tests/js_source.rs::math_sum_precise` adapts
+`research/quickjs/tests/test_builtin.js::test_math` at that revision; the other
+rows are synthetic fixtures, not light-cljs output. The copyright/MIT notice
+is retained in that test file, with the complete license also available at
+`src/intl/data/QUICKJS-LICENSE`.

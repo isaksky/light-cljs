@@ -1420,6 +1420,103 @@ fn migrating_executor(rt: &Runtime, effects: &WorkerEffects) -> Executor {
         .unwrap()
 }
 
+/// Synthetic fixture, not light-cljs output. The exact accumulator already
+/// contains 1e16 when next suspends, and must survive GC and worker migration.
+#[test]
+fn math_sum_precise_waits_and_migrates() {
+    let rt = Runtime::new();
+    let effects = WorkerEffects::default();
+    let exec = migrating_executor(&rt, &effects);
+    let src = "let n = 0, o = {next() { n++; __rt.effect(1, n); if (n === 2) __rt.need(5, 3); return {value: n === 1 ? 1e16 : n === 2 ? 1 : -1e16, done: n > 3}; }}; o[Symbol.iterator] = function() { return this; }; Math.sumPrecise(o) === 1 && n === 4";
+    let task = rt
+        .spawn(&compile_script("sum-precise-wait", src).unwrap(), &[])
+        .unwrap();
+    exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    let expected = key(&rt, NUMBER);
+    assert!(exec.wait_for(TIMEOUT, |events| {
+        events.iter().any(|e| {
+            e.task == Some(task.id())
+                && e.kind == EventKind::Released(OutcomeKind::Waiting(expected))
+        })
+    }));
+    collect_on_worker(&exec, WorkerId::new(0));
+    collect_on_worker(&exec, WorkerId::new(1));
+    let request = one_request(&task, expected);
+    assert_eq!(exec.wake(publish_number(&rt, &request, 7.0)).unwrap(), 1);
+    let RunOutcome::Complete(value) = exec.take_outcome(task.id(), TIMEOUT).unwrap() else {
+        panic!("sum did not complete")
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
+    let (w0, w1) = (WorkerId::new(0), WorkerId::new(1));
+    assert_eq!(
+        *effects.lock().unwrap(),
+        [(w0, 1.0), (w0, 2.0), (w1, 3.0), (w1, 4.0)]
+    );
+    assert_eq!(task.dependency_log().edges(), &[expected]);
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// Synthetic fixtures, not light-cljs output. One-instruction slices collect
+/// between every native action, including acquisition and abrupt cleanup.
+#[test]
+fn math_sum_precise_getters_and_close_wait() {
+    for src in [
+        "let n = 0, o = {}; Object.defineProperty(o, Symbol.iterator, {get() { n++; __rt.effect(1, 3); __rt.need(5, 3); return function() { return [1e16, 1, -1e16].values(); }; }}); Math.sumPrecise(o) === 1 && n === 1",
+        "let n = 0, o = {get next() { __rt.effect(1, 3); __rt.need(5, 3); return function() { return {value: 1, done: n++ > 0}; }; }}; o[Symbol.iterator] = function() { return this; }; Math.sumPrecise(o) === 1 && n === 2",
+        "let n = 0, o = {next() { return {get done() { n++; if (n === 1) { __rt.effect(1, 3); __rt.need(5, 3); } return n > 1; }, value: 1}; }}; o[Symbol.iterator] = function() { return this; }; Math.sumPrecise(o) === 1 && n === 2",
+        "let n = 0, o = {next() { return ++n === 1 ? {get value() { __rt.effect(1, 3); return __rt.need(5, 3); }} : {done: true}; }}; o[Symbol.iterator] = function() { return this; }; Math.sumPrecise(o) === 7 && n === 2",
+        "let n = 0, c = 0, o = {next() { n++; return {value: 'bad'}; }, return() { c++; __rt.effect(1, 3); __rt.need(5, 3); throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e instanceof TypeError; } ok && n === 1 && c === 1",
+        "let c = 0, o = {next() { return {value: {}}; }, get return() { c++; __rt.effect(1, 3); __rt.need(5, 3); throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e instanceof TypeError; } ok && c === 1",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("sum-precise-getters", src).unwrap(), &[])
+            .unwrap();
+        let expected = key(&rt, NUMBER);
+        let mut host = Recorder::default();
+        let mut reached_wait = false;
+        for _ in 0..3000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    reached_wait = true;
+                    break;
+                }
+            }
+        }
+        assert!(reached_wait, "{src}");
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let (result, host) = thread::spawn(move || {
+            for _ in 0..3000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (outcome, host),
+                }
+            }
+            panic!("sumPrecise did not complete");
+        })
+        .join()
+        .unwrap();
+        let RunOutcome::Complete(value) = result else {
+            panic!("unexpected {result:?}: {src}");
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+        assert_eq!(host.effects, [3.0], "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}
+
 /// Request a collection on `worker` and wait until it is recorded.
 fn collect_on_worker(exec: &Executor, worker: WorkerId) {
     let collections = |ev: &[Event]| {
