@@ -1028,6 +1028,7 @@ fn realm_intrinsics_retain() {
         "Intl.DateTimeFormat.supportedLocalesOf",
         "Intl.DateTimeFormat.prototype.resolvedOptions",
         "Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype, 'format').get",
+        "eval",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1098,7 +1099,8 @@ fn realm_intrinsics_retain() {
     // WeakMap adds one prototype and five built-in functions (-173).
     // Number.prototype.toExponential/toPrecision add two built-ins (-151).
     // DateTimeFormat adds one prototype and five built-ins (-215).
-    assert_eq!(rt.heap_usage().objects.builtin, 231);
+    // Indirect eval adds one built-in function (-106).
+    assert_eq!(rt.heap_usage().objects.builtin, 232);
     assert_eq!(rt.heap_usage().objects.plain, 43);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
