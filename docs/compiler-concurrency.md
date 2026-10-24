@@ -1968,6 +1968,104 @@ good at 8 workers (2.8 s), but units keep balancing the load at 12 and above.
 Stage A's measured speedup cannot be extrapolated to this changed schedule;
 plan C from stage A's trace, not from the model.
 
+*As built (light-cljs-429), re-measured and cut into pellets.* A planning
+note: no compiler code changed (a probe of the engine services each
+top-level pass calls was built and reverted). The user settled on
+2026-10-22 that top-level passes may run on separate isolates under the
+contract deferred units already have (see "Semantics and determinism"), and
+that parallelism should be the default path.
+
+- *Measured* at `cc1ec07` (benchmarks/compiler-concurrency.md, "Stage C
+  re-measured"): `--jobs 8` takes 0.58x of `--jobs 1`'s wall on Penpot
+  `app.main --optimize none` (7.34 s), 0.66x with `advanced` (9.69 s) and
+  0.70x on the seed-42 200k project (5.25 s), at 1.84x, 1.64x and 1.46x
+  peak RSS. At eight jobs the coordinator's analysis on Penpot main-none is
+  6.74 s of the 7.54 s: 4.44 s of top-level passes (2.7 s of the serial
+  build's 4.3 s is V8), 1.47 s waiting at drain points and 0.8 s of its
+  own bookkeeping; the 200k project's is 2.87 s (2.09 s of passes, no wait)
+  before a 2.3 s serial tail. Units on workers take 1.56x (Penpot) and
+  2.28x (200k) their one-job time, matched unit by unit.
+- *Modeled* (`benchmarks/concurrency/dag.bb`, its new "Stage C against
+  stage A" section, on the `--jobs 1` traces, with worker tasks, passes
+  included, at those inflations). Stage A as built is Option U with the lag
+  of 6 on P-1 workers plus the coordinator's bookkeeping S (0.77 s Penpot,
+  0.68 s 200k), which matches the measured analysis at eight jobs (6.94 s
+  modeled against 6.74 s, 2.59 s against 2.87 s). Stage C's floor is the
+  larger of its schedule and S. Analysis seconds:
+
+  | Penpot main-none | P = 4 | 8 | 24 |
+  | --- | ---: | ---: | ---: |
+  | Stage A (lag 6) + S | 7.50 | 6.94 | 6.84 |
+  | C, units dispatched at commit | 4.33 | 3.20 | 3.08 |
+  | C, units dispatched at the pass's end | 4.33 | 2.17 | 1.23 |
+  | B (in-order commit, no overlays) | 4.33 | 3.87 | 3.85 |
+
+  | 200k project | P = 4 | 8 | 24 |
+  | --- | ---: | ---: | ---: |
+  | Stage A (lag 6) + S | 2.64 | 2.59 | 2.59 |
+  | C, units dispatched at commit | 2.47 | 1.24 | 0.81 |
+  | C, units dispatched at the pass's end | 2.47 | 1.24 | 0.68 |
+  | B (in-order commit, no overlays) | 2.47 | 1.24 | 0.71 |
+
+  The gain at eight jobs is 4.77 s on Penpot main-none (65% of the
+  `--jobs 8` wall), 4.88 s with `advanced` (50%) and 1.35 s on the 200k
+  project (26%); at four jobs 3.17 s and 0.17 s (where the 2.28x inflation
+  eats it); at 24, 5.62 s and 1.90 s. Well above the 5% bar, so
+  light-cljs-344 is split rather than dropped.
+- *Settled by the evidence.*
+  - *C, not B.* Committing in order without overlays (stage B) is as good
+    on the 200k project but leaves 1.7 s at eight jobs on Penpot (3.87 s
+    against 2.17 s). A pass reads the committed prefix plus its requires'
+    uncommitted fragments.
+  - *No ID-order change.* Fragments commit in source order where today's
+    passes return, and a namespace's drain point stays after the commit of
+    the namespace `DRAIN_LAG` after it. Letting a pass also wait for the
+    drain points of its requires at least `DRAIN_LAG` + 1 places earlier,
+    which keeps the light-cljs-391 rule for globals bodies add exactly,
+    costs nothing in the model ("bodies at the lag"), nor do the trace's
+    73,774 root edges (a pass or unit waiting for the drained units whose
+    compile-time roots it reads).
+  - *Units at commit first.* Dispatching a namespace's units at its commit,
+    as stage A does, keeps unit IDs as they are and gets most of the gain
+    (3.20 s on Penpot at eight jobs, all of it on the 200k project);
+    dispatching at the pass's end is a later pellet.
+  - *Engine-less passes.* A probe of the engine services each top-level
+    pass called (reverted) found 507 of Penpot's 922 passes (0.63 s of
+    3.88 s of top-level time) and 134 of the 200k project's 569 (0.29 s of
+    1.96 s) expanding no JavaScript macro. Their only engine calls register
+    the namespace's compile-time roots (`registerRoot`,
+    `canCacheRegistration`, `evaluate` of registration code,
+    `registerNamespaces`, `gensymScope` and `release`), which a worker's
+    isolate already installs lazily from the catalog. With the default
+    64 MiB, which starts no worker isolate, these are the only passes
+    workers can take. By engine time alone (zero V8 time in the trace)
+    only 8 and 1 would qualify, since registration enters the engine.
+  - *The fragment.* The cache's first artifact part (capture and install,
+    light-cljs-316 to 318) already refers to earlier namespaces by identity
+    and installs at the next IDs, with the macro host's part and the units
+    renumbered; reuse it in memory. `program_fragment::append` assumes the
+    fragment's prefix is the target's, which a pass that read uncommitted
+    fragments does not have.
+- *What bounds the build after stage C:* the coordinator's bookkeeping S
+  (0.68 to 0.78 s: release 0.28 s, the loop's own 0.22 s, drains 0.16 s,
+  appends 0.07 s on Penpot), the workers' inflation, the serial tail after
+  analysis (0.8 s on Penpot main-none, 3.0 s with `advanced`, 2.3 s on the
+  200k project; stage D, light-cljs-430) and peak RSS, already above the
+  1.5x gate at eight jobs.
+- *The cut*, in queue order, each with its own acceptance text:
+  light-cljs-446 resolves every namespace against its require closure at
+  every `--jobs` (the visibility rule above, measured on its own in the
+  serial build); 447 analyzes a top-level pass into a detached fragment
+  that its namespace commits in source order, still on one thread; 448
+  runs passes on workers once their requires' passes are done, units
+  dispatched at commit, blockers on the main isolate, the first failing
+  namespace in source order reported; 449 charges the macro limits of
+  parallel passes in source order; 450 runs passes that expand no
+  JavaScript macro on workers without an engine; 451 dispatches units
+  when their pass ends; 452 extends the determinism stress to passes; 453
+  benchmarks stage C and updates light-cljs-434's `--jobs` default
+  proposal for the user.
+
 ### Stage D: the serial tail
 
 After stage C, the 0.87 s that stays serial (load 95 ms, prepare 98 ms, emit
@@ -1999,6 +2097,18 @@ output changes once, when stage A lands.
   prints `1 1` under stage A without further measures, because dep's
   increment happened on a worker and main's top-level call ran on the main
   isolate. Stage C widens the exposure to top-level effects as well.
+  - *Settled by the user on 2026-10-22 (light-cljs-429):* top-level passes
+    may run in parallel on different isolates, under the contract that
+    already applies to deferred units under `--jobs N`. A compile-time side
+    effect a macro makes, in a top-level form or in a unit, is visible only
+    in the isolate that made it, unless its namespace is declared with
+    `--cache-blocker NS`, which keeps NS and its consumers, their top-level
+    passes and their units, on the main isolate in source order. Exact
+    single-heap visibility of cross-namespace compile-time effects is not a
+    requirement; upstream ClojureScript and shadow-cljs do not offer it
+    either. Stage C is designed on this contract (see "As built
+    (light-cljs-429)" under "Stage C"), and the counter fixture keeps
+    printing `1 1` without a blocker and `1 2` with one.
   - **Why the cache blocker set is the right opt-out.** A cache hit skips a
     consumer namespace's macro expansion, so its effects never happen and a
     later fresh consumer sees state without them. A worker isolate produces
@@ -2823,6 +2933,21 @@ is part of the stage A gate.
   deferred units (2 to 3%): they are constants, data and small functions.
   The narrow cut gains nothing measurable; stage A's gain needs the
   per-worker isolates of light-cljs-339.
+- *Stage C (light-cljs-429).* Whether top-level passes may run on separate
+  isolates was settled by the user on 2026-10-22 (yes, under the
+  deferred-unit contract; "Semantics and determinism"). The re-measure
+  settled four more design questions ("As built (light-cljs-429)" under
+  "Stage C"): overlays rather than stage B's in-order commit, no ID-order
+  change (commit in source order with the drain lag kept), units
+  dispatched at commit first, and the cache's capture and install as the
+  fragment. Two remain for the user. *Visibility by require closure at
+  every `--jobs`*, `--jobs 1` included: the design took it as a language
+  policy, and light-cljs-446 measures it alone and stops if Penpot's or the
+  200k project's output changes. *The `--jobs` default and the default
+  macro memory*: light-cljs-434 proposes them from stage A, light-cljs-453
+  updates the proposal with stage C; at the default 64 MiB no worker
+  isolate starts, so only engine-less passes (light-cljs-450) could leave
+  the coordinator.
 
 ## Method and reproduction
 

@@ -11,6 +11,100 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## Stage C re-measured (light-cljs-429, October 23, 2026)
+
+Master `cc1ec07`, one release binary (an immutable copy), cold builds with
+`--stats --stats-file`, 3 rounds, each round Penpot `main-none` at
+`--jobs 1` and 8, `main-advanced` at 1 and 8 (both by `penpot.bb`, 4 GB
+macro memory, so seven worker isolates at eight jobs), then the seed-42 200k
+generated project at `release bench --no-cache` at 1 and 8 (its 2 GiB gives
+seven too). 1-minute load average 3.0-5.3 throughout, with one other
+worker on the machine. Medians (range), peak RSS in MiB; "top-level" is
+`trace.top-level-ms`, "wait" `trace.wait-ms`, the coordinator's waits at
+drain points:
+
+| Build | Wall | Peak RSS | Top-level | Wait |
+| --- | --- | ---: | ---: | ---: |
+| Penpot none `--jobs 1` | 12.64 s (12.25-12.99) | 825 | 4.26 s | 0 |
+| Penpot none `--jobs 8` | 7.34 s (7.27-7.54) | 1,515 | 4.42 s | 1.39 s |
+| Penpot advanced `--jobs 1` | 14.74 s (14.61-15.17) | 1,066 | 4.19 s | 0 |
+| Penpot advanced `--jobs 8` | 9.69 s (9.67-9.91) | 1,750 | 4.40 s | 1.43 s |
+| 200k `--jobs 1` | 7.46 s (7.35-7.58) | 1,047 | 1.89 s | 0 |
+| 200k `--jobs 8` | 5.25 s (5.19-5.41) | 1,524 | 2.11 s | 0 |
+
+`--jobs 8` against `--jobs 1`: Penpot none 0.58x wall and 1.84x RSS,
+advanced 0.66x and 1.64x, the 200k project 0.70x and 1.46x. At eight jobs
+`pool.utilization` is 0.25 on Penpot and 0.38 on the 200k project.
+
+Where the `--jobs 8` build goes (round 2, the trace's exclusive stages):
+
+| Stage | Penpot none | Penpot advanced | 200k |
+| --- | ---: | ---: | ---: |
+| Top-level passes | 4.44 s | 4.36 s | 2.09 s |
+| Waiting at drain points | 1.47 s | 1.43 s | 0 |
+| Coordinator bookkeeping (other, load, prepare-source, drain, append, index, release, warnings, finish) | 0.84 s | 0.83 s | 0.78 s |
+| Analysis (`trace-wall`) | 6.74 s | 6.62 s | 2.87 s |
+| Prepare application | 0.10 s | 2.21 s | 1.51 s |
+| Emission and write | 0.68 s | 0.81 s | 0.80 s |
+| Wall | 7.54 s | 9.67 s | 5.19 s |
+
+At one job V8 is 2.74 s of Penpot's 4.31 s of top-level passes and 0.53 s
+of the 200k project's 1.96 s. Matched unit by unit (namespace, name, line,
+column), a unit on a worker takes 1.56x its one-job exclusive time on
+Penpot (6.82 s against 10.61 s, none and advanced alike) and 2.28x on the
+200k project (2.43 s against 5.55 s, two rounds).
+
+*Models.* `bb benchmarks/concurrency/dag.bb TRACE --workers 4,8,24
+--inflation F` on round 2's `--jobs 1` traces, in seconds of analysis. The
+new "Stage C against stage A" section is described in the script; S is the
+coordinator's bookkeeping in the one-job trace (0.77 s Penpot none, 0.78 s
+advanced, 0.68 s 200k). "+ edges" adds the 73,774 (Penpot) and 317 (200k)
+root edges; "+ lag" also makes a pass wait for its requires' units at least
+seven places earlier (today's rule for globals bodies add); "at commit"
+dispatches units at their namespace's commit; the gain is stage A against
+"+ lag".
+
+| Project, F | P | Stage A (lag 6) + S | C | + edges | + lag | At commit | B | Gain |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Penpot none, 1.00 | 4 | 6.46 | 2.78 | 2.78 | 2.78 | | 2.78 | 3.68 |
+| | 8 | 6.17 | 1.39 | 1.39 | 1.39 | | 2.48 | 4.78 |
+| | 24 | 6.14 | 0.76 | 0.78 | 0.79 | | 2.47 | 5.35 |
+| Penpot none, 1.56 | 4 | 7.50 | 4.33 | 4.33 | 4.33 | 4.33 | 4.33 | 3.17 |
+| | 8 | 6.94 | 2.17 | 2.17 | 2.17 | 3.20 | 3.87 | 4.77 |
+| | 24 | 6.84 | 1.19 | 1.22 | 1.23 | 3.08 | 3.85 | 5.62 |
+| Penpot advanced, 1.56 | 4 | 7.60 | 4.36 | 4.36 | 4.36 | 4.36 | 4.37 | 3.24 |
+| | 8 | 7.06 | 2.18 | 2.18 | 2.18 | 3.16 | 3.92 | 4.88 |
+| | 24 | 6.97 | 1.21 | 1.24 | 1.24 | 3.07 | 3.91 | 5.73 |
+| 200k, 1.00 | 4 | 2.58 | 1.08 | 1.08 | 1.08 | | 1.08 | 1.50 |
+| | 8 | 2.58 | 0.54 | 0.54 | 0.54 | | 0.68 | 1.90 |
+| | 24 | 2.58 | 0.18 | 0.18 | 0.18 | | 0.68 | 1.90 |
+| 200k, 2.28 | 4 | 2.64 | 2.47 | 2.47 | 2.47 | 2.47 | 2.47 | 0.17 |
+| | 8 | 2.59 | 1.24 | 1.24 | 1.24 | 1.24 | 1.24 | 1.35 |
+| | 24 | 2.59 | 0.41 | 0.41 | 0.41 | 0.81 | 0.71 | 1.90 |
+
+B is stage B, floored at S as C is; the 200k project's C rows at 8 and 24
+jobs are below S, so its floor there is S (0.68 s). Stage A's model at
+eight jobs and the measured inflation is within 0.3 s of the measured
+analysis (6.94 s against 6.74 s, 2.59 s against 2.87 s). Against the
+measured `--jobs 8` wall, the gain is 65% on Penpot none, 50% with
+`advanced` and 26% on the 200k project; dispatching units at commit keeps
+3.74 s of Penpot none's 4.77 s and all of the 200k project's 1.35 s.
+
+*Engine-less top-level passes.* A temporary probe in
+`compile_trace::engine_exit` (reverted) counted, per namespace, the engine
+services its top-level pass called, on a one-job build of each project:
+
+| Passes whose engine calls are | Penpot passes | top-level | V8 | 200k passes | top-level | V8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| a JavaScript macro's (`call`, `exportForm`, `importMacroForm`, ...) and registration | 415 | 3.25 s | 2.40 s | 435 | 1.67 s | 0.47 s |
+| registration, with `evaluate` of registration code | 122 | 0.24 s | 0.04 s | 101 | 0.28 s | 0.06 s |
+| registration only (`registerRoot`, `canCacheRegistration`, `registerNamespaces`, `gensymScope`, `release`, `checkBridge`) | 385 | 0.39 s | 0.01 s | 33 | 0.01 s | 0.00 s |
+| all | 922 | 3.88 s | 2.45 s | 569 | 1.96 s | 0.53 s |
+
+So 507 of Penpot's passes (55%, 16% of top-level time) and 134 of the 200k
+project's (24%, 15%) need an engine only for root registration. Counting
+passes with no V8 time at all gives 8 and 1.
+
 ## A V8 worker's share of 64 MiB (light-cljs-441, October 23, 2026)
 
 The seed-42 200k generated project, `release bench --no-cache --stats`

@@ -2,7 +2,7 @@
 ;; Model parallel namespace compilation from NSPROBE lines, or from the trace
 ;; `light-cljs --compile --stats-file PATH` writes (light-cljs-331).
 ;;
-;; Usage: bb benchmarks/concurrency/dag.bb FILE [--workers P,P...]
+;; Usage: bb benchmarks/concurrency/dag.bb FILE [--workers P,P...] [--inflation F]
 ;;
 ;; FILE is a probe run (`NSPREP`/`NSPROBE` lines, as in main-probe.tsv) or a
 ;; `light-cljs-trace` file (version 1, or 2 with `read` rows). From a trace
@@ -12,12 +12,16 @@
 ;; demanded. A trace also prints its exclusive stage totals, demand edges
 ;; (root evaluations and, from version 2, root reads), macro-host share and
 ;; the ready width of each namespace's drain (the last section; --workers
-;; sets its P values), and runs Option U (stage A) again with the root
-;; evaluations and reads as dependencies.
+;; sets its P values), runs Option U (stage A) again with the root
+;; evaluations and reads as dependencies, and models stage C against stage
+;; A as built at the --workers job counts, with worker tasks at F times
+;; their serial cost (light-cljs-429).
 (require '[clojure.string :as str])
 (def args *command-line-args*)
 (def workers (or (some->> (drop-while #(not= "--workers" %) args) second (#(str/split % #",")) (mapv parse-long))
                  [4 8 12]))
+;; --inflation F scales the tasks the stage C section runs on workers.
+(def inflation (or (some->> (drop-while #(not= "--inflation" %) args) second parse-double) 1.0))
 (def lines (->> (str/split-lines (slurp (first args)))))
 (def trace? (str/starts-with? (first lines) "light-cljs-trace\t"))
 (def trace-version (when trace? (parse-long (second (str/split (first lines) #"\t")))))
@@ -461,3 +465,94 @@
           (let [all (+ (- total drained) (reduce + (map #(max (/ (:work %) (double P)) (:longest %)) drains)))
                 some (+ (- total free) (reduce + (map #(max (/ (:free-work %) (double P)) (:free-longest %)) drains)))]
             (println (format "  P=%2d  %s   %s   (serial %s)" P (s all) (s some) (s total)))))))))
+;; Stage C against stage A as built, at P job slots (light-cljs-429). Stage A
+;; (Option U with the lag of 6, light-cljs-391) runs the top-level passes on
+;; the coordinator and the units on P-1 workers; its coordinator also does
+;; the serial bookkeeping S the trace measured outside passes and units
+;; (other, load, prepare-source, drain, append, index, release, warnings,
+;; finish), so its floor is the model plus S. Stage C runs passes and units
+;; on P slots, the coordinator committing in source order, so its floor is
+;; the larger of the model and S. Model C: a pass waits for its requires'
+;; passes; "with root edges", also for the drained units whose roots it or
+;; its units read (edges against source order are dropped); "bodies at
+;; the lag", also for the drained units of each require at least 7 places
+;; before it in source order, whose drain points precede its pass in the
+;; serial build, so the globals their bodies add stay visible to it as
+;; they are today (light-cljs-391). Model D (stage B): a pass waits until
+;; every namespace up to its latest require has committed. "Units at
+;; commit" is the last C variant with each namespace's units dispatched only
+;; once it commits, in source order, after the commit before it, as stage
+;; A's dispatch gives them their unit IDs today. Tasks on workers cost F times their serial time (--inflation),
+;; passes included under C and D.
+(when trace?
+  (let [F inflation
+        stage-us (into {} (for [[name us] (rows "stage")] [name (parse-long us)]))
+        S (reduce + (map #(get stage-us % 0) ["other" "load" "prepare-source" "drain" "append" "index" "release" "warnings" "finish"]))
+        pass (fn [n] (+ (:prep n) (:body n) (:warn n)))
+        lag-u (fn [W L]
+                (loop [j 0 t 0.0 ws (vec (repeat W 0.0)) done []]
+                  (if (< j N)
+                    (let [n (nss j)
+                          t (+ t (pass n))
+                          [ws finish] (reduce (fn [[ws finish] u]
+                                                (let [[free & more] ws end (+ (max free t) (* F u))]
+                                                  [(vec (sort (conj (vec more) end))) (max finish end)]))
+                                              [ws t] (:unit-us n))
+                          done (conj done finish)
+                          drained (- j L)
+                          t (if (>= drained 0) (max t (done drained)) t)]
+                      (recur (inc j) t ws done))
+                    (reduce max t done))))
+        drained (group-by :demander (filter #(= "drain" (:kind %)) trace-units))
+        ;; Tasks in source order: each namespace's pass, its commit, then its
+        ;; drained units.
+        ids (vec (for [n nss t (list* [:b (:idx n)] [:c (:idx n)] (map (fn [u] [:u (:id u)]) (drained (:idx n))))] t))
+        pos (into {} (map-indexed (fn [i t] [t i]) ids))
+        edges (distinct (keep root-edge (concat trace-executions trace-reads)))
+        forward (filter (fn [[from to]] (and (pos from) (pos to) (< (pos to) (pos from)))) edges)
+        waits (reduce (fn [m [from to]] (update m from (fnil conj []) to)) {} forward)
+        unit-cost (into {} (map (fn [u] [[:u (:id u)] (inclusive u)]) trace-units))
+        ns-of (into {} (map (fn [n] [(:idx n) n]) nss))
+        tasks (fn [edges? dep-of & [at-commit?]]
+                (mapv (fn [t]
+                        (let [[kind x] t
+                              base (case kind
+                                     :b (mapv pos (dep-of x))
+                                     :c (cond-> [(pos [:b x])] (pos? x) (conj (pos [:c (dec x)])))
+                                     :u [(pos [(if at-commit? :c :b) (:ns (unit-by-id x))])])]
+                          {:cost (case kind :b (* F (pass (ns-of x))) :c 0 :u (* F (unit-cost t)))
+                           :deps (vec (distinct (concat base (when edges? (map pos (waits t))))))}))
+                      ids))
+        c-deps (fn [i] (map (fn [d] [:b d]) (:deps (ns-of i))))
+        lagged-deps (fn [i] (concat (c-deps i)
+                                    (for [d (:deps (ns-of i)) :when (<= d (- i 7)) u (drained d)] [:u (:id u)])))
+        ;; Model D as a task graph: a zero-cost commit after each pass, in
+        ;; order; a pass waits for the commit of its latest require.
+        d-tasks (fn [P]
+                  (let [maxdep (mapv (fn [n] (reduce max -1 (:deps n))) nss)
+                        layout (reduce (fn [{:keys [tasks commit]} n]
+                                         (let [i (:idx n) b (count tasks) md (maxdep i)
+                                               tasks (conj tasks {:cost (* F (pass n)) :deps (if (neg? md) [] [(commit md)])})
+                                               c (count tasks)
+                                               tasks (conj tasks {:cost 0 :deps (cond-> [b] (pos? i) (conj (commit (dec i))))})
+                                               tasks (into tasks (map (fn [u] {:cost (* F u) :deps [b]}) (:unit-us n)))]
+                                           {:tasks tasks :commit (assoc commit i c)}))
+                                       {:tasks [] :commit {}} nss)]
+                    (schedule (:tasks layout) P)))
+        c-plain (tasks false c-deps)
+        c-edges (tasks true c-deps)
+        c-lagged (tasks true lagged-deps)
+        c-commit (tasks true lagged-deps true)]
+    (println (format "\nStage C against stage A at P job slots (worker tasks at %.2fx; coordinator bookkeeping S %s; %d of %d root edges kept):"
+                     F (s S) (count forward) (count edges)))
+    (println "  P   stage A (lag 6) + S   Model C   + root edges   + bodies at the lag   + units at commit   Model D (stage B)   C floor   gain")
+    (doseq [P workers]
+      (let [u (+ (lag-u (dec P) 6) S)
+            c (schedule c-plain P)
+            ce (schedule c-edges P)
+            cl (schedule c-lagged P)
+            cc (schedule c-commit P)
+            d (d-tasks P)
+            floor (max cl S)]
+        (println (format "  %-3d %-21s %-9s %-14s %-21s %-19s %-19s %-9s %s"
+                         P (s u) (s c) (s ce) (s cl) (s cc) (s (max d S)) (s floor) (s (- u floor))))))))

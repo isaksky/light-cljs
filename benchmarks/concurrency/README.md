@@ -28,7 +28,7 @@ byte-identical to the uninstrumented build.
 | `conc_probe.rs` | The probe module the patch declares as `mod conc_probe;`; copy it to `src/conc_probe.rs`. V8 time is counted at `v8_evaluator::invoke` depth 0, so it includes Rust callbacks made from JS. |
 | `arc-experiment.patch` | The `Rc` → `Arc` swap in `arena`, `compiler_data`, `compiler_reader`, `layered`, `name_index` and `shared`, used for the A/B in the design document (medians 23.07 s `Rc`, 23.13 s `Arc`). |
 | `parse_probe.rs` | The parse harness. It links the `light_cljs` library and mimalloc, preloads every `.cljs`/`.cljc` under the roots given as arguments, and times parsing on 1, 2, 4 and 8 threads claiming one or four files at a time; one warm-up, seven samples, rotated order. Timing covers thread creation, parsing and joining. |
-| `dag.bb` | The schedule models. It reads `NSPREP` and `NSPROBE` lines, or a `--stats-file` trace (light-cljs-331), builds the require DAG and prints critical paths and list schedules (critical-path-first) for the designs in the document. From a trace it also prints the exclusive stage totals, the demand edges, the macro host's share and the ready width of each drain. |
+| `dag.bb` | The schedule models. It reads `NSPREP` and `NSPROBE` lines, or a `--stats-file` trace (light-cljs-331), builds the require DAG and prints critical paths and list schedules (critical-path-first) for the designs in the document. From a trace it also prints the exclusive stage totals, the demand edges, the macro host's share, the ready width of each drain and stage C's models against stage A as built at the `--workers` job counts, with worker tasks at `--inflation F` times their serial cost (light-cljs-429). |
 | `phases.bb` | Attributes self samples of one thread's `sample` call tree to the outermost phase marker and the innermost light-cljs module or V8 frame. |
 | `jscallers2.bb` | Attributes V8 self samples to the light-cljs operation that entered JS (the frames above `v8_evaluator::invoke`). |
 | `main-probe.tsv` | The probe run itself: the build's whole stderr, `NS*` lines followed by `/usr/bin/time -l` (23.76 s wall, 962 MB peak RSS under the probes). |
@@ -75,7 +75,7 @@ a tab-separated file, with no patch and no rebuild:
 
 ```sh
 bb benchmarks/concurrency/run.bb OUTPUT-DIR -- --stats-file OUTPUT-DIR/app.main.trace.tsv
-bb benchmarks/concurrency/dag.bb OUTPUT-DIR/app.main.trace.tsv [--workers 4,8,12]
+bb benchmarks/concurrency/dag.bb OUTPUT-DIR/app.main.trace.tsv [--workers 4,8,12] [--inflation 1.0]
 ```
 
 The file starts with `light-cljs-trace 2` (1 before the `read` rows); each
