@@ -909,6 +909,29 @@ mod resume_tests {
     }
 
     #[test]
+    fn panicking_host_clears_the_effect_guard_and_poisons_only_its_task() {
+        struct Panic;
+        impl Host for Panic {
+            fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+                panic!("host bug")
+            }
+        }
+        let rt = Runtime::new();
+        let one = rt.root(Primitive::Number(1.0));
+        let task = rt.spawn(&effect_loop(), &[&one]).unwrap();
+        let run = std::panic::catch_unwind(|| task.run_with(Budget::UNLIMITED, &mut Panic));
+        assert!(run.is_err());
+        assert!(!crate::host::inside_effect(), "flag cleared on unwind");
+        assert_eq!(task.run().unwrap_err(), RunError::Poisoned);
+        // The same thread can run other tasks and open heap scopes again.
+        let other = rt.spawn(&effect_loop(), &[&one]).unwrap();
+        let mut host = Counter::default();
+        let outcome = other.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert_eq!(complete(outcome), ValueView::Number(1.0));
+        rt.scope(|_| ());
+    }
+
+    #[test]
     fn host_effect_rejects_object_arguments_before_calling_the_host() {
         let rt = Runtime::new();
         let mut asm = Assembler::new();
