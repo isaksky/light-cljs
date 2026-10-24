@@ -1145,6 +1145,44 @@ mod tests {
     use crate::vm::frames::{DiagnosticContext, VmLimits};
     use crate::vm::{Assembler, Executable, Opcode};
 
+    /// Seed an already converted near-limit prefix instead of allocating a
+    /// gigabyte string. The later object's toString must not run on overflow.
+    #[test]
+    fn concat_overflow_precedes_later_coercion() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(145);
+        let prototype = crate::realm::intrinsics(&heap).unwrap().object_prototype;
+        let later = Value::Object(
+            heap.alloc(crate::heap::HeapObject::Plain(
+                crate::object::OrdinaryObject::with_prototype(task, prototype),
+            ))
+            .unwrap(),
+        );
+        let pending = |concat_len| NativeState::Convert {
+            target: ConvertTarget::StringBuiltin {
+                which: builtin::Builtin::StringPrototypeConcat,
+                access: true,
+                concat_len,
+            },
+            operands: vec![
+                Value::String(JsString::from("")),
+                Value::String(JsString::from("ab")),
+                later.clone(),
+            ],
+            next: 1,
+            end: 3,
+            hint: Hint::String,
+            method: 0,
+        };
+        let limit = crate::value::string::MAX_STRING_LEN;
+        assert!(matches!(pending(limit - 1).step(&heap, task, Input::Start),
+            Err(Fault::RangeError(message)) if message == "string too long"));
+        // The same continuation below the limit really does request the
+        // later conversion callback, so the overflow assertion checks order.
+        assert!(matches!(pending(limit - 3).step(&heap, task, Input::Start),
+            Ok(Action::Call { this, .. }) if this == later));
+    }
+
     fn vector(heap: &Heap, n: usize) -> Value {
         let items: Vec<Value> = (1..=n).map(|i| Value::Number(i as f64)).collect();
         coll::new_vector(heap, &items).unwrap()
