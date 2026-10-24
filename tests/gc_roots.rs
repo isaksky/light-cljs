@@ -343,6 +343,31 @@ fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
     (task, weak)
 }
 
+/// A pending `return` completion of a `finally` block suspended at a
+/// pending `__rt.need` (the handler stack is saved across the wait).
+fn finally_return_across_wait(rt: &Runtime) -> (Task, WeakHandle) {
+    let (task, weak) = spawn_holding(
+        rt,
+        "function f(o) { try { return o; } finally { o = 0; const r = __rt.need(9, 1); } }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(rt, 9)));
+    (task, weak)
+}
+
+/// Settle every dependency `task` claimed with a primitive, then run it to
+/// the end.
+fn resume_to_end(rt: &Runtime, task: &Task) -> Rooted {
+    for request in task.take_producer_requests() {
+        let value = rt.root(Primitive::Number(0.0));
+        let wakeups = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+    run_to_end(task)
+}
+
 /// A pending `throw` completion of a running `finally` block, caught by an
 /// enclosing handler once the block ends.
 fn finally_throw(rt: &Runtime) -> (Task, WeakHandle) {
@@ -631,19 +656,19 @@ fn transient_builder_reclaims() {
 
 #[test]
 fn handler_completion_retains() {
-    for fixture in [finally_return, finally_throw] {
+    for fixture in [finally_return, finally_throw, finally_return_across_wait] {
         let rt = Runtime::new();
         let (task, weak) = fixture(&rt);
         assert_retained(&rt, &Held::new(vec![weak.clone()], || {}));
         // The completion delivers the very object once the block ends.
-        let result = run_to_end(&task);
+        let result = resume_to_end(&rt, &task);
         assert!(result.same_object(&weak.upgrade().unwrap()));
     }
 }
 
 #[test]
 fn handler_completion_reclaims() {
-    for fixture in [finally_return, finally_throw] {
+    for fixture in [finally_return, finally_throw, finally_return_across_wait] {
         let rt = Runtime::new();
         let held = handler_completion(&rt, fixture);
         assert_retained(&rt, &held);
@@ -853,6 +878,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         transient_builder(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),
+        handler_completion(&rt, finally_return_across_wait),
         ready_queue(&rt),
         executor_parked(&rt),
     ];
