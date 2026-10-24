@@ -52,6 +52,9 @@
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
 //! | `Object.defineProperty(o, k, attributes)` | define or update the own data property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError`; an accessor descriptor: `UnsupportedOperand` (clj-quickjs-120) |
 //! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
+//! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `undefined`/`null` `v`: catchable `TypeError`; a primitive, a function, a built-in function or an error object: `UnsupportedOperand` (wrapper objects, `Function.prototype` and `Error.prototype` do not exist yet) |
+//! | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | set the `[[Prototype]]` of the object `o` and return `o`; a primitive `o` is returned unchanged; `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a cycle, a built-in or non-extensible `o`: catchable `TypeError` |
+//! | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task with prototype `proto` (an object or `null`, else a catchable `TypeError`); a second argument other than `undefined`: `UnsupportedOperand` (`Object.defineProperties`) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -63,6 +66,7 @@ use crate::value::{JsString, Value};
 use crate::vm::descriptor;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
+use crate::vm::prototype;
 
 /// Which built-in function: the Rust code a [`BuiltinFunction`] runs.
 /// Append-only.
@@ -89,6 +93,14 @@ pub(crate) enum Builtin {
     /// `Object.getOwnPropertyDescriptor` (QuickJS
     /// `js_object_getOwnPropertyDescriptor`; clj-quickjs-119).
     ObjectGetOwnPropertyDescriptor,
+    /// `Object.getPrototypeOf` (QuickJS `js_object_getPrototypeOf`;
+    /// clj-quickjs-121, `crate::vm::prototype`).
+    ObjectGetPrototypeOf,
+    /// `Object.setPrototypeOf` (QuickJS `js_object_setPrototypeOf`;
+    /// clj-quickjs-121).
+    ObjectSetPrototypeOf,
+    /// `Object.create` (QuickJS `js_object_create`; clj-quickjs-121).
+    ObjectCreate,
 }
 
 impl Builtin {
@@ -103,6 +115,9 @@ impl Builtin {
             Builtin::Array => "Array",
             Builtin::ObjectDefineProperty => "defineProperty",
             Builtin::ObjectGetOwnPropertyDescriptor => "getOwnPropertyDescriptor",
+            Builtin::ObjectGetPrototypeOf => "getPrototypeOf",
+            Builtin::ObjectSetPrototypeOf => "setPrototypeOf",
+            Builtin::ObjectCreate => "create",
         }
     }
 
@@ -116,6 +131,8 @@ impl Builtin {
             | Builtin::ArrayPrototypeToString => 0,
             Builtin::ObjectDefineProperty => 3,
             Builtin::ObjectGetOwnPropertyDescriptor => 2,
+            Builtin::ObjectGetPrototypeOf => 1,
+            Builtin::ObjectSetPrototypeOf | Builtin::ObjectCreate => 2,
         }
     }
 }
@@ -181,6 +198,9 @@ pub(crate) fn call(
         Builtin::ObjectGetOwnPropertyDescriptor => {
             descriptor::get_own_property_descriptor(heap, task, args)
         }
+        Builtin::ObjectGetPrototypeOf => prototype::object_get_prototype_of(heap, task, args),
+        Builtin::ObjectSetPrototypeOf => prototype::object_set_prototype_of(heap, task, args),
+        Builtin::ObjectCreate => prototype::object_create(heap, task, args),
     }
 }
 

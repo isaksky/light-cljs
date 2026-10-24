@@ -1622,8 +1622,9 @@ impl<'a> Parser<'a> {
         self.lexer.expect_property_name();
         self.advance()?;
         let mut properties = Vec::new();
+        let mut proto_seen = false;
         while !self.is_punct(Punct::RBrace) {
-            properties.push(self.parse_property_definition()?);
+            properties.push(self.parse_property_definition(&mut proto_seen)?);
             if self.is_punct(Punct::Comma) {
                 self.lexer.expect_property_name();
             }
@@ -1640,9 +1641,11 @@ impl<'a> Parser<'a> {
     /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
     /// (reserved words included), a string literal or a numeric literal.
-    /// Computed names, spread, methods, getters/setters and `__proto__:`
-    /// (which sets the prototype) are rejected explicitly.
-    fn parse_property_definition(&mut self) -> PResult<PropertyDef> {
+    /// Computed names, spread, methods and getters/setters are rejected
+    /// explicitly. A `__proto__: value` (identifier or string name, not a
+    /// shorthand) sets the prototype (clj-quickjs-121); a second one in the
+    /// same literal (`proto_seen`) is an early error.
+    fn parse_property_definition(&mut self, proto_seen: &mut bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
         let next = self.peek_next();
         let ends_shorthand = next
@@ -1691,16 +1694,15 @@ impl<'a> Parser<'a> {
         if !self.is_punct(Punct::Colon) {
             return Err(self.unexpected("`:` after the property name"));
         }
-        let is_proto = match &name {
-            PropertyName::Identifier(n) => n == "__proto__",
-            PropertyName::String(s) => *s == "__proto__",
-            PropertyName::Number(_) => false,
-        };
-        if is_proto {
-            return Err(self.unsupported(
-                span,
-                "setting the prototype with `__proto__: value` in an object literal is",
-            ));
+        if name.is_proto() {
+            if *proto_seen {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    "duplicate `__proto__` in an object literal: only one `__proto__: value` may set the prototype",
+                ));
+            }
+            *proto_seen = true;
         }
         self.advance()?;
         let value = self.parse_assignment()?;

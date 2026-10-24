@@ -473,6 +473,7 @@ impl Executable {
                 Opcode::Dup2 => Instr::Dup2,
                 Opcode::ToPropertyKey => Instr::ToPropertyKey,
                 Opcode::Construct => Instr::Construct(operand as u16),
+                Opcode::SetProto => Instr::SetProto,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

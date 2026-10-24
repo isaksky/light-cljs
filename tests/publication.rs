@@ -687,6 +687,11 @@ fn function_own_properties_follow_publication_rule() {
     let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
     assert_eq!(result.view(), ValueView::Number(7.0));
 
+    // A `__proto__` assignment the accessor ignores (clj-quickjs-121)
+    // writes no property: still publishable.
+    let (h, _) = run("function h() {} h.__proto__ = 1; h");
+    rt.publish(&h).unwrap();
+
     // A written property: rejected at the record.
     let (h, producer) = run("function h() {} h.x = 1; h");
     let err = rt.publish(&h).unwrap_err();

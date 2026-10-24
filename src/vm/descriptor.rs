@@ -177,8 +177,8 @@ mod tests {
 
     /// ToPropertyDescriptor reads fields with `[[Get]]`: inherited fields
     /// count, and an own field holding `undefined` shadows an inherited
-    /// one. Source code cannot build the prototype link until
-    /// `Object.create` (clj-quickjs-121).
+    /// one (from source: `prototype_reflection` in
+    /// `tests/js_source.rs`).
     #[test]
     fn to_property_descriptor_reads_inherited_fields() {
         let heap = Heap::default();

@@ -31,8 +31,10 @@
 //! * **`[[Prototype]]`**, an object or null: `Object.prototype` for an
 //!   object literal or an `Object()` result (clj-quickjs-117,
 //!   [`crate::realm`]), null for an object made by the `NewObject`
-//!   instruction or by the embedder, and for `Object.prototype` itself. `Object.setPrototypeOf` and `__proto__` are
-//!   clj-quickjs-121. Reads walk it; a write of a property the object does
+//!   instruction or by the embedder, and for `Object.prototype` itself;
+//!   whatever `Object.create`, `Object.setPrototypeOf`, `o.__proto__ = p`
+//!   or a literal's `__proto__: p` gives it (clj-quickjs-121,
+//!   `crate::vm::prototype`). Reads walk it; a write of a property the object does
 //!   not have itself consults it (`crate::vm::property`).
 //! * **Intrinsic**: true only for the realm's shared, immutable intrinsic
 //!   objects ([`crate::realm`]): `Object.prototype` and the property storage
@@ -271,10 +273,18 @@ impl OrdinaryObject {
         self.extensible
     }
 
-    /// Set the `[[Prototype]]` (tests; no operation of this slice sets it).
-    #[cfg(test)]
+    /// Set the `[[Prototype]]` (`Object.setPrototypeOf`, `Object.create`,
+    /// `__proto__`; clj-quickjs-121). The caller has made the checks of
+    /// OrdinarySetPrototypeOf (owner, extensibility, no cycle:
+    /// `crate::vm::prototype`); nothing changes a realm intrinsic's.
     pub(crate) fn set_prototype(&mut self, prototype: Option<ObjectId>) {
         self.prototype = prototype;
+    }
+
+    /// Set the `[[Extensible]]` flag (tests, until clj-quickjs-122).
+    #[cfg(test)]
+    pub(crate) fn set_extensible_for_tests(&mut self, extensible: bool) {
+        self.extensible = extensible;
     }
 
     fn position(&self, key: PropertyKey) -> Option<usize> {

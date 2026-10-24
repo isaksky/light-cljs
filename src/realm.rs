@@ -9,7 +9,8 @@
 //!
 //! Each heap (one per [`Runtime`](crate::Runtime)) has at most one realm,
 //! built the first time an instruction needs it (`NewObjectLiteral`, for
-//! the prototype of a literal, or `GetBuiltinGlobal`) and kept until the heap
+//! the prototype of a literal, `GetBuiltinGlobal`, or a write of `__proto__`,
+//! clj-quickjs-121) and kept until the heap
 //! is dropped. Every task of the runtime sees the same intrinsic objects,
 //! with the same identities (`({}).toString === Object.prototype.toString`
 //! in every task, and a closure that captured `Object` in one task calls the
@@ -19,11 +20,14 @@
 //!
 //! | Object | Kind | Own properties |
 //! |--------|------|----------------|
-//! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf` |
-//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119) |
+//! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf`; the `__proto__` accessor is applied by the property walk, not stored (clj-quickjs-121, `crate::vm::prototype`) |
+//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119), `getPrototypeOf`, `setPrototypeOf`, `create` (clj-quickjs-121) |
 //! | `Object.is` | built-in function | `length` (2), `name` |
 //! | `Object.defineProperty` | built-in function | `length` (3), `name` |
 //! | `Object.getOwnPropertyDescriptor` | built-in function | `length` (2), `name` |
+//! | `Object.getPrototypeOf` | built-in function | `length` (1), `name` |
+//! | `Object.setPrototypeOf` | built-in function | `length` (2), `name` |
+//! | `Object.create` | built-in function | `length` (2), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
 //! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
@@ -143,6 +147,10 @@ pub(crate) struct Intrinsics {
     /// instead of the object table, so they take no lock (module docs,
     /// "Lock-free reads").
     views: Vec<IntrinsicView>,
+    /// The interned key `__proto__`: the name of `Object.prototype`'s
+    /// `__proto__` accessor, which the property walk applies
+    /// (clj-quickjs-121, `crate::vm::prototype`).
+    proto_key: PropertyKey,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -170,6 +178,18 @@ impl Intrinsics {
     /// intrinsic identities, no lock.
     pub(crate) fn view(&self, id: ObjectId) -> Option<&IntrinsicView> {
         self.views.iter().find(|v| v.id == id)
+    }
+
+    /// True when a property access of `key` that reached the intrinsic `id`
+    /// without finding an own property first meets `Object.prototype`'s
+    /// `__proto__` accessor (`crate::vm::prototype`, "`Object.prototype.__proto__`").
+    pub(crate) fn is_proto_accessor(&self, id: ObjectId, key: PropertyKey) -> bool {
+        id == self.object_prototype && key == self.proto_key
+    }
+
+    /// True when `key` is the interned name `__proto__`.
+    pub(crate) fn is_proto_key(&self, key: PropertyKey) -> bool {
+        key == self.proto_key
     }
 
     /// The value of a built-in global.
@@ -241,6 +261,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let define_property = builtin(heap, &mut all, Builtin::ObjectDefineProperty, &[])?;
     let get_own_property_descriptor =
         builtin(heap, &mut all, Builtin::ObjectGetOwnPropertyDescriptor, &[])?;
+    let get_prototype_of = builtin(heap, &mut all, Builtin::ObjectGetPrototypeOf, &[])?;
+    let set_prototype_of = builtin(heap, &mut all, Builtin::ObjectSetPrototypeOf, &[])?;
+    let create = builtin(heap, &mut all, Builtin::ObjectCreate, &[])?;
 
     let mut prototype = OrdinaryObject::intrinsic(None);
     define(
@@ -273,6 +296,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
                 get_own_property_descriptor,
                 PropertyFlags::METHOD,
             ),
+            ("getPrototypeOf", get_prototype_of, PropertyFlags::METHOD),
+            ("setPrototypeOf", set_prototype_of, PropertyFlags::METHOD),
+            ("create", create, PropertyFlags::METHOD),
         ],
     )?;
     // The one cycle: `Object.prototype.constructor` is `Object`.
@@ -305,12 +331,14 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             .flatten()
         })
         .collect::<Option<Vec<_>>>()?;
+    let proto_key = heap.keys().intern(&JsString::from("__proto__"))?;
     Some(Intrinsics {
         object_prototype,
         object,
         array_prototype,
         all,
         views,
+        proto_key,
     })
 }
 
@@ -422,7 +450,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 10);
+        assert_eq!(first.all.len(), 13);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

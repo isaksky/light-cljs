@@ -1953,8 +1953,8 @@ Deferred:
 - Accessor descriptors (`get`/`set`) fail with `UnsupportedOperand` (clj-quickjs-120); so do
   primitive targets of `getOwnPropertyDescriptor` (wrapper objects, clj-quickjs-72), object keys
   (ToPrimitive, clj-quickjs-70) and functions' `length`/`name` (clj-quickjs-101; other function
-  properties: clj-quickjs-125). `Object.create`,
-  needed to inherit a read-only property from source, is clj-quickjs-121.
+  properties: clj-quickjs-125). An inherited read-only property can be set up from source with
+  `Object.create` since clj-quickjs-121.
   `length` changes on arrays fail explicitly (ArraySetLength, clj-quickjs-39). Built-in objects stay immutable: `defineProperty` on one
   is a `TypeError`.
 
@@ -1984,7 +1984,8 @@ Deferred:
   `call`/`apply`/`bind`/`toString` (clj-quickjs-102/-103): those names fail
   with `UnsupportedOperand`, also in `Object.defineProperty` /
   `getOwnPropertyDescriptor` (which otherwise work on functions, through
-  the record). `Object.getPrototypeOf(f)` (clj-quickjs-121). Creating the `prototype` of a
+  the record). `Object.getPrototypeOf(f)` and `Object.setPrototypeOf(f, p)` fail with
+  `UnsupportedOperand` until `Function.prototype` exists (clj-quickjs-121, -102). Creating the `prototype` of a
   published function fails with `UnsupportedOperand`.
 
 ### `new` on ordinary function constructors (clj-quickjs-71)
@@ -2017,3 +2018,35 @@ Deferred:
   (clj-quickjs-75), spread arguments.
 - `new` on a published function whose `prototype` was never created fails
   with `UnsupportedOperand`, as reading that `prototype` does.
+
+### `Object.getPrototypeOf`, `Object.setPrototypeOf`, `Object.create` and `__proto__` (clj-quickjs-121)
+
+Supported (`cargo test --test js_source prototype_reflection`, `cargo test --lib vm::prototype`,
+`cargo test --lib frontend::tests::object_literals`; decision record in
+`docs/architecture.md`, "Prototype reflection"):
+
+- `Object.getPrototypeOf(v)` of objects and arrays (`Object.getPrototypeOf([])` is
+  `Array.prototype`, whose prototype is `Object.prototype`, whose prototype is `null`); values
+  without JavaScript properties (`__rt.vector(...)`, ...) give `null`.
+- `Object.setPrototypeOf(o, proto)` on the running task's objects and arrays, returning `o`
+  (a primitive `o` is returned unchanged); a cycle, a `proto` that is neither an object nor
+  `null`, an `undefined`/`null` `o`, a built-in object or a non-extensible `o` throw a catchable
+  `TypeError`. Setting the prototype an object already has always succeeds.
+- `Object.create(proto)` with an object or `null`.
+- `o.__proto__` reads and `o.__proto__ = p` writes reach `Object.prototype`'s `__proto__`
+  accessor (a non-object, non-null `p` is ignored); an object without `Object.prototype` on its
+  chain has an ordinary `__proto__` property.
+- `{__proto__: p}` and `{"__proto__": p}` in a literal set the prototype (non-object, non-null
+  values are ignored, a second one is an early `SyntaxError`, kind `Invalid`); the shorthand
+  `{__proto__}` defines an own property. Lowered to the appended `set_proto` opcode (`0x5F`).
+- A prototype link never points at another task's object (`ForeignObject`).
+
+Deferred:
+
+- `Object.prototype.__proto__` is applied by the property walk, not stored:
+  `Object.getOwnPropertyDescriptor(Object.prototype, "__proto__")` fails with
+  `UnsupportedOperand` until it becomes a stored accessor (clj-quickjs-120, then clj-quickjs-261);
+  so do the prototypes of primitives (wrappers, clj-quickjs-72), functions and built-in
+  functions (`Function.prototype`, clj-quickjs-102) and error objects (clj-quickjs-230), and
+  `Object.create`'s second argument (`Object.defineProperties`). `Object.getOwnPropertyNames`
+  (clj-quickjs-123) and extensibility (clj-quickjs-122) are their own pellets.

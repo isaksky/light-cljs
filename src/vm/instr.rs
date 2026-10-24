@@ -284,6 +284,13 @@
 //! `Array.prototype`), so it is a poll point, as `NewObjectLiteral` is; the
 //! others allocate no heap object.
 //!
+//! Opcode `0x5F`, `SetProto` (clj-quickjs-121; QuickJS `OP_set_proto`):
+//! `obj v → obj`. If v is an object or `null` it becomes the prototype of
+//! the object literal obj, with the checks of `[[SetPrototypeOf]]` (another
+//! task's object as v is `ForeignObject`; `crate::vm::prototype`); any other
+//! v is ignored. The compiler emits it for a literal's `__proto__: value`.
+//! It allocates nothing and runs no JavaScript, so it is not a poll point.
+//!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
 //! the realm on first use, so it may allocate and is a poll point. Its
@@ -460,6 +467,7 @@ pub enum Opcode {
     Dup2 = 0x5C,
     ToPropertyKey = 0x5D,
     Construct = 0x5E,
+    SetProto = 0x5F,
 }
 
 /// Operand encoding of an opcode.
@@ -609,6 +617,7 @@ impl Opcode {
             0x5C => Dup2,
             0x5D => ToPropertyKey,
             0x5E => Construct,
+            0x5F => SetProto,
             _ => return None,
         })
     }
@@ -711,6 +720,7 @@ impl Opcode {
             Dup2 => "dup2",
             ToPropertyKey => "to_property_key",
             Construct => "construct",
+            SetProto => "set_proto",
         }
     }
 
@@ -736,7 +746,7 @@ impl Opcode {
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
-            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey => {
+            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto => {
                 OperandKind::None
             }
         }
@@ -883,6 +893,7 @@ pub(crate) enum Instr {
     ToPropertyKey,
     /// Argument count (the constructor is below the arguments).
     Construct(u16),
+    SetProto,
 }
 
 impl Instr {
@@ -982,6 +993,7 @@ impl Instr {
             Instr::Dup2 => Opcode::Dup2,
             Instr::ToPropertyKey => Opcode::ToPropertyKey,
             Instr::Construct(_) => Opcode::Construct,
+            Instr::SetProto => Opcode::SetProto,
         }
     }
 
@@ -1005,7 +1017,7 @@ impl Instr {
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
             | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
-            PutField(_) | DefineField(_) | AppendElement | GetElem => (2, 1),
+            PutField(_) | DefineField(_) | AppendElement | GetElem | SetProto => (2, 1),
             PutElem => (3, 1),
             Dup2 => (2, 4),
             ToPropertyKey => (2, 2),
@@ -1035,6 +1047,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 94);
+        assert_eq!(assigned, 95);
     }
 }

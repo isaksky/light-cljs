@@ -1557,7 +1557,8 @@ for a write the right-hand side is evaluated first (PutValue).
   a data/accessor enum for getters and setters (clj-quickjs-119/-120);
   `prototype` gets set by `Object.prototype` and `Object.create`
   (clj-quickjs-117/-121), at which point a write of an absent property must
-  consult the chain (today it fails explicitly, `SetOutcome::Inherited`);
+  consult the chain (`SetOutcome::Inherited`; done, see "Realm intrinsics"
+  and "Prototype reflection");
   `extensible` is cleared by `Object.preventExtensions`/`freeze`
   (clj-quickjs-122); creation order is kept for enumeration, where integer
   keys must sort first (clj-quickjs-123); `delete` removes an entry and
@@ -1597,7 +1598,8 @@ until the heap is dropped. Its objects are:
   and an intrinsic `OrdinaryObject` as its property store (`length`,
   `name`; `Object` also `prototype` and `is`). clj-quickjs-119 appended
   `Object.defineProperty` and `Object.getOwnPropertyDescriptor` ("Property
-  attributes" below).
+  attributes" below), clj-quickjs-121 `Object.getPrototypeOf`,
+  `Object.setPrototypeOf` and `Object.create` ("Prototype reflection").
 
 Every task reads them without any lock (an immutable copy of each
 intrinsic's properties and prototype is published with the realm, and
@@ -1653,7 +1655,7 @@ moment (a leaf lock, never taken by the collector).
 - **Literals.** Object literals compile to `NewObjectLiteral`, which
   allocates an owned object whose prototype is `Object.prototype`, like
   `Object()`; `NewObject` keeps a null prototype (OrdinaryObjectCreate(null),
-  what `Object.create(null)` will need) and never builds the realm, so
+  the prototype `Object.create(null)` gives, clj-quickjs-121) and never builds the realm, so
   hand-assembled programs that only allocate objects do not pay for it.
 
 **Alternatives considered.**
@@ -1702,7 +1704,7 @@ moment (a leaf lock, never taken by the collector).
   through the realm; built-in functions get it as their `[[Prototype]]`.
   Until it exists, reading a property a built-in function does not have
   itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's objects (ten since clj-quickjs-119) and its interned names live as long as the
+- The realm's objects (thirteen since clj-quickjs-121) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -1822,9 +1824,8 @@ the element or property is added.
   and a non-default element attribute (`defineProperty`, freezing) needs
   per-element flags or a move to a named property, which the sparse part
   can take.
-- `Object.getPrototypeOf([])` (the reflection pellet) and an `Array`
-  global (clj-quickjs-39) will make `Array.prototype` nameable; it is
-  reachable today only as `[].constructor.prototype`. Its methods are
+- `Object.getPrototypeOf([])` names `Array.prototype` (clj-quickjs-121);
+  an `Array` global (clj-quickjs-39) will give it its usual name. Its methods are
   added to the realm (`realm::build`, `Builtin`, append-only).
 - Assigning `length` (truncation or extension), the `Array` constructor,
   `Array.isArray` and the `Array.prototype` methods (clj-quickjs-39,
@@ -2045,6 +2046,106 @@ task-owned when it is first written.
 - The record is a `PlainObject` in heap counts (`heap_usage().objects`) and
   a new root-inventory holder (`function_properties_retain` /
   `function_properties_reclaim`).
+
+## Prototype reflection (clj-quickjs-121)
+
+Contract: `src/vm/prototype.rs` (`[[GetPrototypeOf]]` and
+`[[SetPrototypeOf]]` by kind, the three built-ins, the `__proto__`
+accessor, `SetProto`), `src/vm/property.rs` (where the walk meets the
+accessor), `src/object.rs` (`OrdinaryObject::set_prototype`),
+`src/vm/instr.rs` (`set_proto`, `0x5F`). Semantics: `docs/grammar.md`,
+"Execution".
+
+**Decision.** The `[[Prototype]]` slot clj-quickjs-114 gave every ordinary
+object and array becomes settable by its owner task: `Object.create`,
+`Object.setPrototypeOf`, `o.__proto__ = p` and a literal's `__proto__: p`
+(lowered to the appended `set_proto` opcode after the value, as QuickJS's
+`OP_set_proto`) all end in `prototype::set_prototype_of`, which is
+ECMAScript's OrdinarySetPrototypeOf: setting the current prototype is a
+no-op for every value; otherwise the target must be an ordinary object or
+array the running task owns and that is extensible, and the new chain must
+not lead back to it. `getPrototypeOf`, `setPrototypeOf` and `create` are
+`Builtin` variants appended to the realm's `Object`; none runs JavaScript,
+so they run inside their call instruction.
+
+- **Ownership of prototype links.** A link is an edge of the task-owned
+  object holding it, traced with its properties, and changed only by the
+  owner, so a chain the running task walks cannot change under it. It may
+  point at the task's own objects, at realm intrinsics (shared and
+  immutable), at embedder-made objects (readable by every task, changed by
+  none) and at persistent values; never at another task's object, because
+  every operation that installs a link first reads the new chain with the
+  usual owner check and fails with `ForeignObject`. Since task-owned
+  objects are never published, a link never crosses tasks except into
+  shared, immutable or ownerless objects, and the publication check needs
+  no change. Intrinsics keep their prototypes: changing one is the same
+  `TypeError` as writing one of their properties, and their lock-free
+  views stay exact.
+- **The cycle check** walks the new chain through ordinary objects and
+  arrays only, one short object-table lock per object, and stops at an
+  intrinsic or any other kind: their prototypes are fixed and can never
+  lead back to a task's ordinary object (an intrinsic's chain holds only
+  intrinsics).
+- **Other kinds.** Values without JavaScript properties (vectors, maps,
+  builders, ...) report a `null` prototype and are not extensible, so
+  setting anything else is a `TypeError`. Functions, built-in functions and
+  error objects would report `Function.prototype` / `Error.prototype`,
+  which do not exist (clj-quickjs-102, -230): both directions fail with
+  `UnsupportedOperand` rather than answer `null` (or `Object.prototype`,
+  which a function's property record stands on, "Function own
+  properties"). A function used as a prototype
+  (`Object.create(function () {})`) lends its own properties, read and
+  write-checked through its record (`function::read`, `own_store`),
+  with their attributes; the names `Function.prototype` will own fail
+  explicitly through the chain as on the function itself. The `__proto__`
+  setter always receives the original base, not the record a function's
+  write is redirected to.
+- **`Object.prototype.__proto__` without stored accessors.** Accessor
+  properties are clj-quickjs-120, so the accessor is not a property entry:
+  the realm interns `__proto__` once and `Intrinsics::is_proto_accessor`
+  recognizes it, and the property walk applies the getter (`find`) or the
+  setter (`check_inherited` answering `Chain::ProtoSetter`) when an access
+  of `__proto__` reaches `Object.prototype` without meeting an own
+  `__proto__` on the way, which is exactly when the real accessor would
+  run. A write of `__proto__` first walks the chain read-only
+  (`reaches_proto_accessor`) and, when it meets the accessor, runs the
+  setter before any data-property rule: an intrinsic receiver may make
+  the no-op `Object.prototype.__proto__ = null`, and a function gets no
+  property record for an ignored assignment. Both are Rust and call no
+  JavaScript. Reads and writes are
+  therefore exact; only reflection on `Object.prototype` itself differs,
+  and it fails explicitly (`getOwnPropertyDescriptor`) instead of
+  answering `undefined`.
+
+**Alternatives considered.**
+
+- *A native-accessor property kind now*: the property entry would become a
+  data/accessor enum with a Rust getter/setter variant ahead of
+  clj-quickjs-120, which designs that enum for JavaScript accessors and
+  their resumable calls. Two designs of one entry would conflict; the walk
+  hook is a few lines that clj-quickjs-261 deletes once the accessor can
+  be stored with built-in getter and setter functions.
+- *Lowering `__proto__: p` to a call of `Object.setPrototypeOf`*: needs
+  the realm's function on the stack and has the wrong semantics (a
+  non-object value must be ignored, not a `TypeError`). A one-byte opcode
+  matches QuickJS and allocates nothing, so it is not a poll point.
+- *Allowing only ordinary objects as prototypes*: ECMAScript accepts any
+  object; the runtime's other values already behave as objects without
+  properties, so they end a chain like `null` does, and functions and
+  error objects fail explicitly until their properties exist.
+
+**Consequences.**
+
+- clj-quickjs-120 adds the accessor storage; clj-quickjs-261 then stores
+  `__proto__` as an accessor with built-in getter and setter and removes
+  `is_proto_accessor`, `reaches_proto_accessor` and `Chain::ProtoSetter`.
+- clj-quickjs-122 (`preventExtensions`) only has to clear the flag:
+  `set_prototype_of` already rejects a non-extensible target.
+- `Object.create`'s second argument (`Object.defineProperties`) fails with
+  `UnsupportedOperand`; it needs own enumerable keys (clj-quickjs-123).
+- `Function.prototype` (clj-quickjs-102) will give functions a prototype
+  to report and change; the cycle walk must then follow functions (and
+  their records) whose prototype can change.
 
 ## QuickJS references and provenance
 
@@ -2446,8 +2547,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
   Modified: each `assert` is a Rust assertion on the expression's value;
   `new Object()` waits for built-in constructors (clj-quickjs-71 constructs
-  with ordinary functions only) and `Object.getPrototypeOf` for
-  the reflection pellet. The notice on `object_literals_and_named_properties`
+  with ordinary functions only); the `Object.getPrototypeOf` row is in
+  `prototype_reflection` (clj-quickjs-121, below). The notice on `object_literals_and_named_properties`
   covers them. `research/quickjs/quickjs.c` `js_object_constructor`,
   `js_object_toString`, `js_object_valueOf`, `js_object_is`, `JS_ToObject`,
   `JS_GetPropertyInternal` (prototype walk), `JS_SetPropertyInternal`
@@ -2497,3 +2598,19 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `OP_call_constructor`, `JS_CallConstructorInternal`,
   `JS_CreateFromConstructor` and `js_get_prototype_from_ctor` were consulted
   only, for semantics. No code was copied.
+- `tests/js_source.rs` `prototype_reflection` (clj-quickjs-121): the
+  `Object.getPrototypeOf(a)`, `Object.create(a)` and
+  `Object.setPrototypeOf(a, c)` rows of `test` (line 124) in
+  `research/quickjs/tests/test_builtin.js` and the `o2.__proto__ = o1;
+  o2.f() === o2` row of `test_arrow_function` (line 128) in
+  `research/quickjs/tests/test_closure.js`, revision 7d1c13c5d8f8.
+  Modified: `new Object()` is `Object()`, the accessor literal `a` is a
+  data literal (clj-quickjs-120), the methods are function-valued
+  properties and the `eval("super.f()")` arrow is left out, and each
+  `assert` is a Rust assertion. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_object_getPrototypeOf`,
+  `js_object_setPrototypeOf`, `js_object_create`,
+  `JS_SetPrototypeInternal`, `js_object_get___proto__`,
+  `js_object_set___proto__`, the `__proto__` case of
+  `js_parse_object_literal` and `CASE(OP_set_proto)` were consulted only,
+  for semantics. No code was copied.

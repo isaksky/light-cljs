@@ -18,6 +18,9 @@
 //!   continuations the loop drives step by step (clj-quickjs-12).
 //! * `descriptor`: property descriptors, `Object.defineProperty` and
 //!   `Object.getOwnPropertyDescriptor` (appended by clj-quickjs-119).
+//! * `prototype`: prototype reflection, `Object.getPrototypeOf`,
+//!   `Object.setPrototypeOf`, `Object.create` and `__proto__` (appended by
+//!   clj-quickjs-121).
 
 pub mod asm;
 pub(crate) mod builtin;
@@ -31,6 +34,7 @@ pub mod instr;
 pub mod intrinsics;
 pub(crate) mod native;
 pub(crate) mod property;
+pub(crate) mod prototype;
 
 pub use asm::{Assembler, Label};
 pub use executable::{Executable, ExecutableSpec, ValidationError, ValidationErrorKind};

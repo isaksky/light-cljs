@@ -43,7 +43,11 @@
 //! is a `TypeError`, else (or if no object has it) the receiver gets a new
 //! own data property (a non-extensible receiver is a `TypeError`). The
 //! realm's intrinsic properties are writable, so `o.toString = f` gives `o`
-//! its own `toString`. Setters (clj-quickjs-120) will take part in the same
+//! its own `toString`. The one accessor so far, `Object.prototype.__proto__`
+//! (clj-quickjs-121, `crate::vm::prototype`), is applied where a read or
+//! write of `__proto__` reaches `Object.prototype`; a function on the chain
+//! (`Object.create(f)`) is walked through its property record
+//! (clj-quickjs-125). Setters (clj-quickjs-120) will take part in the same
 //! walk. An array element is written the same way: a hole or an index past
 //! the end consults the chain from `Array.prototype` before the element is
 //! added.
@@ -101,6 +105,7 @@ use crate::value::{JsString, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::function::{self, FunctionRead};
+use crate::vm::prototype;
 
 /// A property key after ToPropertyKey: an array index, or any other name.
 #[derive(Clone, Debug, PartialEq)]
@@ -364,6 +369,7 @@ pub(crate) fn find(
     let Value::Object(mut id) = *base else {
         return Err(primitive_base(base, key, Access::Read));
     };
+    let receiver = id;
     // A name that was never interned is no object's property; the owner
     // and kind checks below still apply.
     let mut interned: Interned = match key {
@@ -379,6 +385,10 @@ pub(crate) fn find(
                 interned = Some(heap.keys().lookup(&key.to_name()));
                 continue;
             };
+            // `Object.prototype.__proto__`'s getter (`crate::vm::prototype`).
+            if k.is_some_and(|k| realm.is_some_and(|r| r.is_proto_accessor(id, k))) {
+                return prototype::proto_getter(heap, task, receiver).map(Some);
+            }
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(property.value.clone())),
                 None if view.builtin => return Err(function_prototype_miss(key, Access::Read)),
@@ -536,10 +546,29 @@ pub(crate) fn put(
     let Value::Object(mut id) = *base else {
         return Err(primitive_base(base, key, Access::Write));
     };
+    // The base itself: a function's writes go to its property record
+    // (`id` below), but the `__proto__` setter gets the function.
+    let receiver = id;
     let mut interned = match key {
         Key::Name(name) => Some(intern(heap, name)?),
         Key::Index(_) => None,
     };
+    // A write of `__proto__` that meets `Object.prototype`'s accessor runs
+    // its setter before any data-property rule (an immutable intrinsic
+    // receiver, a function's property record) applies. The realm is built
+    // for it if needed (a function can exist before any object literal).
+    let realm = match key {
+        Key::Name(name) if *name == "__proto__" => {
+            Some(realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?)
+        }
+        _ => heap.realm().get(),
+    };
+    if let (Some(realm), Some(k)) = (realm, interned)
+        && realm.is_proto_key(k)
+        && reaches_proto_accessor(heap, task, receiver, k, key)?
+    {
+        return prototype::proto_setter(heap, task, receiver, &value);
+    }
     // `[[Set]]` returned false (module docs).
     let rejected = |fault: Fault| if strict { Err(fault) } else { Ok(()) };
     let prototype = loop {
@@ -554,17 +583,23 @@ pub(crate) fn put(
             Stored::Function => id = function::write_target(heap, task, id, key)?,
         }
     };
-    // An index name that was never interned is on no object of the chain.
+    // An index name that was never interned is on no ordinary object of
+    // the chain, but may still be an element of an array on it.
     let chain_key = match interned {
         Some(k) => Some(k),
         None => heap.keys().lookup(&key.to_name()),
     };
-    if let Some(k) = chain_key {
-        match check_inherited(heap, task, prototype, k, key) {
-            // The walk's only TypeError is an inherited read-only property.
-            Err(fault @ Fault::TypeError(_)) => return rejected(fault),
-            other => other?,
+    match check_inherited(heap, task, prototype, chain_key, key) {
+        Ok(Chain::Add) => {}
+        // `Object.prototype.__proto__`'s setter (`crate::vm::prototype`);
+        // its TypeErrors are thrown in sloppy code too. The check above
+        // normally catches it first.
+        Ok(Chain::ProtoSetter) => {
+            return prototype::proto_setter(heap, task, receiver, &value);
         }
+        // The walk's only TypeError is an inherited read-only property.
+        Err(fault @ Fault::TypeError(_)) => return rejected(fault),
+        Err(fault) => return Err(fault),
     }
     // Only the running task changes the receiver, so it still lacks `key`.
     let added = |done: bool| match done {
@@ -601,6 +636,17 @@ pub(crate) fn put_field(
     put(heap, task, base, &Key::from_name(name), value, strict)
 }
 
+/// What the prototype chain decided about a write of a property the
+/// receiver does not have.
+#[derive(Debug, PartialEq, Eq)]
+enum Chain {
+    /// The receiver gets a new own data property.
+    Add,
+    /// The write reached `Object.prototype.__proto__`: its setter runs
+    /// instead (`crate::vm::prototype`).
+    ProtoSetter,
+}
+
 /// The prototype-chain part of OrdinarySet for a property the receiver does
 /// not have: walk from `prototype` to the first object with `k` (the
 /// interned name of `key`); fail if that property is read-only. One short
@@ -609,31 +655,34 @@ fn check_inherited(
     heap: &Heap,
     task: TaskId,
     mut id: ObjectId,
-    k: PropertyKey,
+    k: Option<PropertyKey>,
     key: &Key,
-) -> Result<(), Fault> {
-    let realm = heap.realm().get();
+) -> Result<Chain, Fault> {
+    let mut realm = heap.realm().get();
     loop {
         // Intrinsics through their immutable view, as in `get`.
         if let Some(view) = realm.and_then(|r| r.view(id)) {
-            match view.get_own(k) {
+            if k.is_some_and(|k| realm.is_some_and(|r| r.is_proto_accessor(id, k))) {
+                return Ok(Chain::ProtoSetter);
+            }
+            match k.and_then(|k| view.get_own(k)) {
                 Some(property) if !property.flags.writable => return Err(read_only(key)),
-                Some(_) => return Ok(()),
+                Some(_) => return Ok(Chain::Add),
                 None if view.builtin => return Err(function_prototype_miss(key, Access::Write)),
                 None => match view.prototype {
                     Some(prototype) => {
                         id = prototype;
                         continue;
                     }
-                    None => return Ok(()),
+                    None => return Ok(Chain::Add),
                 },
             }
         }
-        let in_store = |o: &OrdinaryObject, builtin: bool| match o.get_own(k) {
+        let in_store = |o: &OrdinaryObject, builtin: bool| match k.and_then(|k| o.get_own(k)) {
             Some(property) if !property.flags.writable => Err(read_only(key)),
-            Some(_) => Ok(None),
+            Some(_) => Ok(Walk::Next(None)),
             None if builtin => Err(function_prototype_miss(key, Access::Write)),
-            None => Ok(o.prototype()),
+            None => Ok(Walk::Next(o.prototype())),
         };
         let next = heap
             .read(id, |object| match visit(object, task)? {
@@ -641,22 +690,104 @@ fn check_inherited(
                 Visit::Array(a) => match key {
                     Key::Index(index) => match a.element(*index) {
                         Some(element) if !element.flags.writable => Err(read_only(key)),
-                        Some(_) => Ok(None),
-                        None => Ok(a.object().prototype()),
+                        Some(_) => Ok(Walk::Next(None)),
+                        None => Ok(Walk::Next(a.object().prototype())),
                     },
                     _ if key.is_length() && !a.length_writable() => Err(read_only(key)),
-                    _ if key.is_length() => Ok(None),
+                    _ if key.is_length() => Ok(Walk::Next(None)),
                     _ => in_store(a.object(), false),
                 },
-                // No other kind is ever a prototype; it has no properties.
-                Visit::Other(_) => Ok(None),
+                // A function as a prototype (`Object.create(f)`,
+                // clj-quickjs-121): its own properties are in its record
+                // (clj-quickjs-125).
+                Visit::Other(HeapObject::Function(_)) => Ok(Walk::Function),
+                // Another kind as a prototype: one without JavaScript
+                // properties ends the walk; an error object, whose
+                // properties are not supported yet, fails as for a read.
+                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                    Some(fault) => Err(fault),
+                    None => Ok(Walk::Next(None)),
+                },
             })
             .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
         match next {
-            Some(prototype) => id = prototype,
-            None => return Ok(()),
+            Walk::Next(Some(prototype)) => id = prototype,
+            Walk::Next(None) => return Ok(Chain::Add),
+            // Continue at the store that has the function's own `key`, or
+            // where its read would continue; a name `Function.prototype`
+            // will own fails (`crate::vm::function::read`). The step may
+            // build the realm to continue at `Object.prototype`.
+            Walk::Function => {
+                id = match function::read(heap, task, id, key)? {
+                    FunctionRead::Found(_) => match function::own_store(heap, task, id, key)? {
+                        Some(record) => record,
+                        None => return Err(Fault::Internal("a function property without a store")),
+                    },
+                    FunctionRead::Continue(next) => next,
+                };
+                realm = heap.realm().get();
+            }
         }
     }
+}
+
+/// True when a write of `__proto__` (interned as `k`) to the object `id`
+/// meets `Object.prototype`'s accessor: no object before it on the chain,
+/// `id` included, has an own `__proto__` (`crate::vm::prototype`). Reads
+/// only: a function is looked through without getting a property record.
+fn reaches_proto_accessor(
+    heap: &Heap,
+    task: TaskId,
+    mut id: ObjectId,
+    k: PropertyKey,
+    key: &Key,
+) -> Result<bool, Fault> {
+    let Some(realm) = heap.realm().get() else {
+        return Ok(false);
+    };
+    loop {
+        if realm.is_proto_accessor(id, k) {
+            return Ok(true);
+        }
+        if let Some(view) = realm.view(id) {
+            match (view.get_own(k), view.prototype) {
+                (None, Some(prototype)) => {
+                    id = prototype;
+                    continue;
+                }
+                _ => return Ok(false),
+            }
+        }
+        let own_or_next = |o: &OrdinaryObject| match o.get_own(k) {
+            Some(_) => Walk::Next(None),
+            None => Walk::Next(o.prototype()),
+        };
+        let step = heap
+            .read(id, |object| match visit(object, task)? {
+                Visit::Store(o, _) => Ok(own_or_next(o)),
+                Visit::Array(a) => Ok(own_or_next(a.object())),
+                Visit::Other(HeapObject::Function(_)) => Ok(Walk::Function),
+                Visit::Other(_) => Ok(Walk::Next(None)),
+            })
+            .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
+        match step {
+            Walk::Next(Some(prototype)) => id = prototype,
+            Walk::Next(None) => return Ok(false),
+            Walk::Function => match function::read(heap, task, id, key)? {
+                FunctionRead::Found(_) => return Ok(false),
+                FunctionRead::Continue(next) => id = next,
+            },
+        }
+    }
+}
+
+/// One step of [`check_inherited`] outside the realm's views.
+enum Walk {
+    /// Continue at this prototype, or (`None`) stop: the receiver may add
+    /// the property.
+    Next(Option<ObjectId>),
+    /// The object is a function (`crate::vm::function`).
+    Function,
 }
 
 /// Define `name` as an own data property of the object literal `object`
@@ -794,6 +925,8 @@ fn defined(outcome: DefineOutcome, key: &Key) -> Result<(), Fault> {
 /// those in its property record (`crate::vm::function::own_store`,
 /// clj-quickjs-125); an error object is `UnsupportedOperand`; the other heap
 /// kinds have none.
+/// `Object.prototype.__proto__` is `UnsupportedOperand` until it is a
+/// stored accessor property (`crate::vm::prototype`, clj-quickjs-120).
 pub(crate) fn get_own_property(
     heap: &Heap,
     task: TaskId,
@@ -808,6 +941,14 @@ pub(crate) fn get_own_property(
         false => target,
     };
     let k = heap.keys().lookup(&key.to_name());
+    if let (Some(realm), Some(k)) = (heap.realm().get(), k)
+        && realm.is_proto_accessor(target, k)
+    {
+        return Err(Fault::Unsupported(
+            "the property Object.prototype.__proto__ is an accessor, and accessor properties are not supported"
+                .to_string(),
+        ));
+    }
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
         Visit::Store(o, _) => Ok(named(o)),
@@ -939,7 +1080,7 @@ mod tests {
                         &heap,
                         task,
                         prototype_id(&prototype),
-                        key(&heap),
+                        Some(key(&heap)),
                         &Key::Name(s("valueOf")),
                     )
                     .is_ok(),
@@ -1034,8 +1175,8 @@ mod tests {
 
     /// OrdinarySet with an inherited non-writable data property
     /// (clj-quickjs-119): strict code throws, sloppy code ignores the write,
-    /// and the receiver gets no own property either way. Source code cannot
-    /// build the prototype link until `Object.create` (clj-quickjs-121).
+    /// and the receiver gets no own property either way (from source:
+    /// `define_property_data_descriptors` in `tests/js_source.rs`).
     #[test]
     fn inherited_read_only_properties_reject_writes() {
         fn ok<T>(result: Result<T, Fault>) -> T {

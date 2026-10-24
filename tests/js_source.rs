@@ -5457,7 +5457,7 @@ fn function_own_properties() {
 /// covered here as far as arrays need it (on ordinary objects:
 /// `computed_member_access`, clj-quickjs-115).
 /// Arrays inherit from the realm intrinsic `Array.prototype` (no methods
-/// yet; `Object.getPrototypeOf` is the reflection pellet's), which
+/// yet; `Object.getPrototypeOf([])` is in `prototype_reflection`), which
 /// inherits from `Object.prototype` (clj-quickjs-117).
 /// Synthetic fixtures, not light-cljs output.
 #[test]
@@ -5846,16 +5846,28 @@ fn define_property_data_descriptors() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
-    // An object inheriting a non-writable `k`: `Object.create` is the
-    // reflection pellet (clj-quickjs-121), so making one from source fails
-    // explicitly for now (the inherited write is covered by
-    // `vm::property::tests::inherited_read_only_properties_reject_writes`).
-    let (kind, message, ..) = failure_at(
-        "let p = {}; Object.defineProperty(p, 'k', {value: 1}); \
-         let child = Object.create(p); child.k = 1;",
+    // An object inheriting a non-writable `k` (`Object.create`,
+    // clj-quickjs-121): strict code throws a TypeError at the write, sloppy
+    // code ignores it, and the child gets no own `k` either way.
+    let inherit = "let p = {}; Object.defineProperty(p, 'k', {value: 1}); \
+                   let child = Object.create(p);";
+    let (kind, message, line, column) = failure_at(&format!("{inherit}\nchild.k = 2;"));
+    assert_eq!(kind, VmErrorKind::TypeError, "{message}");
+    assert_eq!(message, "cannot assign to read-only property 'k'");
+    assert_eq!((line, column), (2, 6));
+    assert_eq!(
+        caught(&format!(
+            "{inherit} try {{ child.k = 2; }} catch (e) {{ r = 'caught'; }} \
+             r + ':' + child.k + ':' + Object.getOwnPropertyDescriptor(child, 'k')"
+        )),
+        "caught:1:undefined"
     );
-    assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{message}");
-    assert!(message.contains("'create'"), "{message}");
+    assert_eq!(
+        sloppy_eval(&format!(
+            "{inherit} child.k = 2; child.k === 1 && Object.getOwnPropertyDescriptor(child, 'k') === undefined"
+        )),
+        ValueView::Bool(true)
+    );
 }
 
 /// The rest of ValidateAndApplyPropertyDescriptor, ToPropertyDescriptor and
@@ -6238,4 +6250,403 @@ fn define_property_sloppy_writes() {
         )),
         ValueView::Bool(true)
     );
+}
+
+/// Prototype reflection (clj-quickjs-121; `src/vm/prototype.rs`):
+/// `Object.getPrototypeOf`, `Object.setPrototypeOf`, `Object.create`, the
+/// `__proto__` accessor and a literal's `__proto__: value`. The three
+/// upstream rows follow `test` (line 124) of
+/// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8 (`new
+/// Object()` written `Object()`, the accessor literal `a` replaced by a data
+/// literal until clj-quickjs-120, each `assert` as a Rust assertion), and
+/// the `o2.__proto__ = o1` row follows `test_arrow_function` (line 128) of
+/// `research/quickjs/tests/test_closure.js` (methods written as function
+/// properties, the `eval("super.f()")` arrow left out); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The rest
+/// are synthetic fixtures, not light-cljs output.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn prototype_reflection() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    let caught = |body: &str| {
+        string(&format!(
+            "let r = 'none'; try {{ {body} }} catch (e) {{ r = 'caught'; }} r"
+        ))
+    };
+    let fails = |src: &str, kind: VmErrorKind, needle: &str| {
+        let (k, message, ..) = failure_at(src);
+        assert_eq!(k, kind, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    };
+    // The upstream rows.
+    truth("let a = Object(); a.x = 1; Object.getPrototypeOf(a) === Object.prototype");
+    truth("let a = {x: 1}; let b = Object.create(a); Object.getPrototypeOf(b) === a");
+    truth(
+        "let a = {x: 1}; let b = Object.create(a); let c = {u: 2}; \
+         Object.setPrototypeOf(a, c); Object.getPrototypeOf(a) === c && b.u === 2",
+    );
+    truth(
+        "let o1 = {f: function () { return this; }}; let o2 = {}; \
+         o2.__proto__ = o1; o2.f() === o2",
+    );
+
+    // getPrototypeOf.
+    truth("Object.getPrototypeOf({}) === Object.prototype");
+    truth("Object.getPrototypeOf(Object.prototype) === null");
+    truth(
+        "Object.getPrototypeOf(Object.getOwnPropertyDescriptor({x: 1}, 'x')) === Object.prototype",
+    );
+    // Arrays inherit from Array.prototype (owed by clj-quickjs-118).
+    truth(
+        "let ap = Object.getPrototypeOf([]); ap === [].constructor.prototype && \
+         ap !== Object.prototype && Object.getPrototypeOf(ap) === Object.prototype && \
+         Object.getPrototypeOf([1, 2]) === ap",
+    );
+    // Values without JavaScript properties have a null prototype.
+    truth("Object.getPrototypeOf(__rt.vector(1, 2)) === null");
+    fails(
+        "Object.getPrototypeOf(undefined)",
+        VmErrorKind::TypeError,
+        "undefined",
+    );
+    fails(
+        "Object.getPrototypeOf(null)",
+        VmErrorKind::TypeError,
+        "null",
+    );
+    fails(
+        "Object.getPrototypeOf()",
+        VmErrorKind::TypeError,
+        "undefined",
+    );
+    // Wrappers, Function.prototype and Error.prototype do not exist yet.
+    fails(
+        "Object.getPrototypeOf(1)",
+        VmErrorKind::UnsupportedOperand,
+        "wrapper",
+    );
+    fails(
+        "Object.getPrototypeOf('s')",
+        VmErrorKind::UnsupportedOperand,
+        "wrapper",
+    );
+    fails(
+        "Object.getPrototypeOf(function () {})",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    fails(
+        "Object.getPrototypeOf(Object)",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    fails(
+        "let e = null; try { null.x; } catch (x) { e = x; } Object.getPrototypeOf(e)",
+        VmErrorKind::UnsupportedOperand,
+        "Error.prototype",
+    );
+
+    // create.
+    truth(
+        "let o = Object.create(null); Object.getPrototypeOf(o) === null && \
+         o.toString === undefined && o.x === undefined",
+    );
+    truth(
+        "let a = {x: 1}; let b = Object.create(a); let r1 = b.x; a.x = 2; let r2 = b.x; \
+         b.x = 3; r1 === 1 && r2 === 2 && b.x === 3 && a.x === 2 && \
+         Object.getOwnPropertyDescriptor(b, 'x').value === 3 && \
+         b.toString === Object.prototype.toString",
+    );
+    truth("let a = {}; Object.create(a) !== Object.create(a)");
+    // A property descriptor's fields may be inherited (ToPropertyDescriptor
+    // reads them with [[Get]], clj-quickjs-119).
+    truth(
+        "let o = {}; Object.defineProperty(o, 'k', Object.create({value: 7, writable: true})); \
+         let d = Object.getOwnPropertyDescriptor(o, 'k'); d.value === 7 && d.writable && !d.enumerable",
+    );
+    truth(
+        "typeof Object.create({}) === 'object' && Object.create.length === 2 && \
+         Object.create.name === 'create'",
+    );
+    truth(
+        "Object.getPrototypeOf.length === 1 && Object.setPrototypeOf.length === 2 && \
+         Object.getPrototypeOf.name === 'getPrototypeOf' && \
+         Object.setPrototypeOf.name === 'setPrototypeOf'",
+    );
+    for src in [
+        "Object.create(1)",
+        "Object.create()",
+        "Object.create('p')",
+        "Object.create(undefined)",
+    ] {
+        fails(src, VmErrorKind::TypeError, "object or null");
+        assert_eq!(caught(&format!("{src};")), "caught", "{src}");
+    }
+    fails(
+        "Object.create({}, {x: {value: 1}})",
+        VmErrorKind::UnsupportedOperand,
+        "defineProperties",
+    );
+    truth("Object.getPrototypeOf(Object.create({}, undefined)) !== null");
+    // A prototype chain through a value without properties ends there.
+    truth("let o = Object.create(__rt.vector(1)); o.x === undefined && o.toString === undefined");
+    // A function as a prototype: its own properties (clj-quickjs-125) are
+    // inherited, attributes included; names `Function.prototype` will own
+    // fail explicitly (clj-quickjs-102).
+    truth(
+        "let f = function () {}; f.y = 2; let o = Object.create(f); \
+         o.x === undefined && o.y === 2 && o.prototype === f.prototype",
+    );
+    truth(
+        "function F() {} let o = Object.create(F); o.x = 1; o.prototype = 5; \
+         o.x === 1 && o.prototype === 5 && F.prototype !== 5 && F.x === undefined && \
+         Object.getOwnPropertyDescriptor(o, 'prototype').value === 5",
+    );
+    fails(
+        "let f = function () {}; Object.defineProperty(f, 'k', {value: 1}); \
+         let o = Object.create(f); o.k = 2;",
+        VmErrorKind::TypeError,
+        "read-only property 'k'",
+    );
+    fails(
+        "function F() {} Object.defineProperty(F, 'prototype', {writable: false}); \
+         let o = Object.create(F); o.prototype = 2;",
+        VmErrorKind::TypeError,
+        "read-only property 'prototype'",
+    );
+    fails(
+        "Object.create(function () {}).call",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    fails(
+        "let o = Object.create(function () {}); o.bind = 1;",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    // A function's own `__proto__` is its [[Prototype]], Function.prototype.
+    fails(
+        "let f = function () {}; f.__proto__",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    fails(
+        "let f = function () {}; f.__proto__ = {};",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+
+    // setPrototypeOf.
+    truth("let a = {}; let p = {y: 4}; Object.setPrototypeOf(a, p) === a && a.y === 4");
+    truth(
+        "let a = {x: 1}; Object.setPrototypeOf(a, null); \
+         Object.getPrototypeOf(a) === null && a.toString === undefined && a.x === 1",
+    );
+    truth("Object.setPrototypeOf(1, null) === 1 && Object.setPrototypeOf('s', {}) === 's'");
+    truth(
+        "let a = [1, 2]; let p = {z: 9}; Object.setPrototypeOf(a, p); \
+         a.z === 9 && a.length === 2 && a[1] === 2",
+    );
+    // A cycle is a TypeError and changes nothing.
+    fails(
+        "let a = {}; let b = Object.create(a); Object.setPrototypeOf(a, b);",
+        VmErrorKind::TypeError,
+        "circular",
+    );
+    fails(
+        "let a = {}; Object.setPrototypeOf(a, a);",
+        VmErrorKind::TypeError,
+        "circular",
+    );
+    truth(
+        "let a = {}; let b = Object.create(a); let c = Object.create(b); let r = 'none'; \
+         try { Object.setPrototypeOf(a, c); } catch (e) { r = 'caught'; } \
+         r === 'caught' && Object.getPrototypeOf(a) === Object.prototype",
+    );
+    // Setting the prototype an object already has is always allowed.
+    truth("let a = {}; let b = Object.create(a); Object.setPrototypeOf(b, a) === b");
+    truth("Object.setPrototypeOf(Object.prototype, null) === Object.prototype");
+    for src in [
+        "Object.setPrototypeOf(undefined, {})",
+        "Object.setPrototypeOf(null, null)",
+        "Object.setPrototypeOf({}, 1)",
+        "Object.setPrototypeOf({}, undefined)",
+        "Object.setPrototypeOf({})",
+    ] {
+        assert_eq!(caught(&format!("{src};")), "caught", "{src}");
+        fails(src, VmErrorKind::TypeError, "");
+    }
+    // Built-in objects are shared and immutable, their prototypes included.
+    fails(
+        "Object.setPrototypeOf(Object.prototype, {})",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    fails(
+        "Object.setPrototypeOf([].constructor.prototype, null)",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    fails(
+        "Object.setPrototypeOf(Object, null)",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+    // A value without JavaScript properties is not extensible.
+    fails(
+        "Object.setPrototypeOf(__rt.vector(1), {})",
+        VmErrorKind::TypeError,
+        "not extensible",
+    );
+    truth("let v = __rt.vector(1); Object.setPrototypeOf(v, null) === v");
+    fails(
+        "Object.setPrototypeOf(function () {}, null)",
+        VmErrorKind::UnsupportedOperand,
+        "Function.prototype",
+    );
+
+    // The `__proto__` accessor of Object.prototype.
+    truth("let o = {}; o.__proto__ === Object.prototype && o['__proto__'] === Object.prototype");
+    truth("[].__proto__ === Object.getPrototypeOf([])");
+    truth("Object.prototype.__proto__ === null");
+    truth(
+        "let p = {x: 5}; let o = {}; let v = (o.__proto__ = p); \
+         v === p && Object.getPrototypeOf(o) === p && o.x === 5 && o.__proto__ === p && \
+         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined",
+    );
+    truth(
+        "let p = {}; let o = Object.create(p); let v = (o.__proto__ = 1); \
+         v === 1 && Object.getPrototypeOf(o) === p && \
+         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined",
+    );
+    truth(
+        "let o = {}; o.__proto__ = null; \
+         Object.getPrototypeOf(o) === null && o.__proto__ === undefined",
+    );
+    truth("let o = {}; o['__proto__'] = []; o.length === 0 && Object.getPrototypeOf(o) !== null");
+    // The setter's TypeErrors are thrown in sloppy code too.
+    fails(
+        "let o = {}; o.__proto__ = o;",
+        VmErrorKind::TypeError,
+        "circular",
+    );
+    assert_eq!(
+        sloppy_eval(
+            "let o = {}; let r = 'none'; try { o.__proto__ = o; } catch (e) { r = 'caught'; } \
+             r === 'caught'"
+        ),
+        ValueView::Bool(true)
+    );
+    fails(
+        "Object.prototype.__proto__ = {};",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    // The setter runs before the immutability of built-in objects applies:
+    // a no-op on Object.prototype is allowed in both modes.
+    let no_op = "Object.prototype.__proto__ = null; Object.prototype.__proto__ = 1; \
+                 [].constructor.prototype.__proto__ = Object.prototype; \
+                 Object.getPrototypeOf(Object.prototype) === null";
+    truth(no_op);
+    assert_eq!(sloppy_eval(no_op), ValueView::Bool(true));
+    // Inherited read-only array elements reject writes of their index, on
+    // an array receiver and an ordinary one, without adding an element.
+    let elements = "let p = []; Object.defineProperty(p, 0, {value: 1}); \
+                    let a = []; Object.setPrototypeOf(a, p); let o = Object.create(p);";
+    for write in ["a[0] = 2;", "o[0] = 2;", "a['0'] = 2;"] {
+        fails(
+            &format!("{elements} {write}"),
+            VmErrorKind::TypeError,
+            "read-only property '0'",
+        );
+    }
+    assert_eq!(
+        sloppy_eval(&format!(
+            "{elements} a[0] = 2; o[0] = 2; a[0] === 1 && a.length === 0 && o[0] === 1 && \
+             Object.getOwnPropertyDescriptor(a, 0) === undefined && \
+             Object.getOwnPropertyDescriptor(o, 0) === undefined"
+        )),
+        ValueView::Bool(true)
+    );
+    truth(
+        "let p = [5]; let a = []; Object.setPrototypeOf(a, p); a[0] = 6; a[0] === 6 && p[0] === 5 && a.length === 1",
+    );
+    // Without Object.prototype on the chain, `__proto__` is an ordinary
+    // property.
+    truth(
+        "let o = Object.create(null); let p = {x: 1}; o.__proto__ = p; \
+         Object.getPrototypeOf(o) === null && o.x === undefined && o.__proto__ === p && \
+         Object.getOwnPropertyDescriptor(o, '__proto__').value === p",
+    );
+    // An own `__proto__` data property shadows the accessor.
+    truth(
+        "let o = {}; Object.defineProperty(o, '__proto__', {value: 7, writable: true}); \
+         o.__proto__ = 8; o.__proto__ === 8 && Object.getPrototypeOf(o) === Object.prototype",
+    );
+    // The accessor is not a stored property until clj-quickjs-120.
+    fails(
+        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__')",
+        VmErrorKind::UnsupportedOperand,
+        "accessor",
+    );
+
+    // `__proto__: value` in a literal.
+    truth(
+        "let p = {x: 3}; let o = {__proto__: p, y: 4}; \
+         o.x === 3 && o.y === 4 && Object.getPrototypeOf(o) === p && \
+         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined",
+    );
+    truth("let p = {x: 3}; ({\"__proto__\": p}).x === 3");
+    truth("Object.getPrototypeOf({__proto__: null}) === null");
+    truth("Object.getPrototypeOf({__proto__: 1}) === Object.prototype");
+    truth("let o = {__proto__: undefined}; Object.getPrototypeOf(o) === Object.prototype");
+    truth("let p = {}; Object.getPrototypeOf({a: 1, __proto__: p, b: 2}) === p");
+    // A shorthand defines an own property, and so may follow a colon form.
+    truth(
+        "let __proto__ = 5; let p = {}; let o = {__proto__: p, __proto__}; \
+         Object.getPrototypeOf(o) === p && \
+         Object.getOwnPropertyDescriptor(o, '__proto__').value === 5 && o.__proto__ === 5",
+    );
+    // The values are evaluated in order, each before the next property.
+    truth(
+        "let log = ''; let p = {}; \
+         let o = {a: (log = log + 'a'), __proto__: (log = log + 'p', p), b: (log = log + 'b')}; \
+         log === 'apb' && Object.getPrototypeOf(o) === p",
+    );
+    for src in [
+        "({__proto__: 1, __proto__: 2});",
+        "({__proto__: 1, \"__proto__\": 2});",
+    ] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Invalid, "{src}: {e}");
+    }
+    let ops = opcodes(&exe("let o = {__proto__: null, a: 1};"));
+    assert!(ops.contains(&Opcode::SetProto), "{ops:?}");
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "let a = {x: 1}; let b = Object.create(a); Object.getPrototypeOf(b) === a && b.x === 1 && Object.getPrototypeOf(a) === Object.prototype;",
+        "let c = {}; let e = Object.create(c); let r1 = false; try { Object.setPrototypeOf(c, e); } catch (err) { r1 = true; } r1;",
+        "let n = Object.create(null); n.toString === undefined && Object.getPrototypeOf(Object.prototype) === null;",
+        "let q = {y: 2}; let s = {__proto__: q}; let t = {}; t.__proto__ = q; s.y === 2 && t.__proto__ === q && ({}).__proto__ === Object.prototype;",
+    ] {
+        truth(src);
+    }
 }

@@ -2418,7 +2418,8 @@ impl<'s> Lowerer<'s> {
     /// An object literal: `NewObjectLiteral`, then each value in source order
     /// followed by a `DefineField` of its key (a later duplicate redefines
     /// the property in place, so the last value wins at the position of the
-    /// first). Out of line, like [`Self::get_field`].
+    /// first), or by `SetProto` for `__proto__: value` (clj-quickjs-121).
+    /// Out of line, like [`Self::get_field`].
     #[inline(never)]
     fn object_literal(
         &mut self,
@@ -2428,6 +2429,11 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::NewObjectLiteral, span);
         for property in properties {
             self.expr(&property.value)?;
+            if property.sets_prototype() {
+                // `__proto__: value` sets the prototype (clj-quickjs-121).
+                self.out().op(Opcode::SetProto, property.name_span);
+                continue;
+            }
             let index = match &property.name {
                 PropertyName::Identifier(name) => self.name_index(name, property.name_span)?,
                 PropertyName::String(s) => self.string_index(s.clone(), property.name_span)?,

@@ -1331,6 +1331,23 @@ fn object_literals() {
         ast("({a: b = 1, c: {d: e}.d, f: (1, 2)});"),
         "(object (a (= b 1)) (c (. (object (d e)) d)) (f (, 1 2)))"
     );
+    // `__proto__` (clj-quickjs-121): a colon form sets the prototype, a
+    // shorthand is an ordinary property (so it may repeat a colon form),
+    // and the AST keeps both as written.
+    let proto = ast(r#"({__proto__: p, __proto__, "x": 1});"#);
+    assert_eq!(
+        proto,
+        "(object (__proto__ p) (shorthand __proto__ __proto__) (\"x\" 1))"
+    );
+    let script = parse_script(r#"({"__proto__": p, __proto__});"#).unwrap();
+    let Some(StmtKind::Expr(e)) = script.body.first().map(|s| &s.kind) else {
+        panic!("not an expression statement");
+    };
+    let ExprKind::Object(properties) = &e.kind else {
+        panic!("not an object literal");
+    };
+    let sets: Vec<bool> = properties.iter().map(|p| p.sets_prototype()).collect();
+    assert_eq!(sets, [true, false]);
     // At statement start `{` is a block, so a literal is parenthesized.
     assert_eq!(ast("{ a: 1 }"), "(block (label a 1))");
     assert_eq!(ast("x = {a: {b: 2}};"), "(= x (object (a (object (b 2)))))");
@@ -1354,8 +1371,29 @@ fn object_literals() {
     rejects_with("({set x(v) {}});", Unsupported, 1, 3, "getters and setters");
     rejects_with("({async m() {}});", Unsupported, 1, 3, "async methods");
     rejects_with("({*g() {}});", Unsupported, 1, 3, "generator methods");
-    rejects_with("({__proto__: p});", Unsupported, 1, 3, "__proto__");
-    rejects_with(r#"({"__proto__": p});"#, Unsupported, 1, 3, "__proto__");
+    // `__proto__: value` sets the prototype (clj-quickjs-121): only one per
+    // literal, whether written as a name or a string.
+    rejects_with(
+        "({__proto__: 1, __proto__: 2});",
+        Invalid,
+        1,
+        17,
+        "duplicate `__proto__`",
+    );
+    rejects_with(
+        r#"({__proto__: 1, "__proto__": 2});"#,
+        Invalid,
+        1,
+        17,
+        "duplicate",
+    );
+    rejects_with(
+        r#"({"__proto__": 1, a: 2, __proto__: 3});"#,
+        Invalid,
+        1,
+        25,
+        "duplicate",
+    );
     rejects_with("({a: 1 b: 2});", UnexpectedToken, 1, 8, "");
     rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
 }

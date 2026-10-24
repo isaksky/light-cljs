@@ -751,8 +751,9 @@ fn realm_intrinsics_retain() {
         .collect();
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
-    // clj-quickjs-118, and `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119.)
-    assert_eq!(rt.heap_usage().objects.builtin, 8);
+    // clj-quickjs-118, `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119,
+    // and `getPrototypeOf`, `setPrototypeOf` and `create`, clj-quickjs-121.)
+    assert_eq!(rt.heap_usage().objects.builtin, 11);
     assert_eq!(rt.heap_usage().objects.plain, 2);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
@@ -1320,4 +1321,88 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         keep.push(held.keep);
     }
     assert_reclaimed(&rt, Held::new(weak, || {}).keeping(keep));
+}
+
+/// Complete every dependency request `task` made with a ready `0`.
+fn complete_requests(rt: &Runtime, task: &Task) {
+    for request in task.take_producer_requests() {
+        let value = rt.root(Primitive::Number(0.0));
+        let wakeups = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+}
+
+/// Prototype links (clj-quickjs-121) are traced edges: the argument (an
+/// embedder object, which every task may read) is reachable only as the
+/// last ancestor of a chain built with `Object.create`, a literal's
+/// `__proto__:`, the `__proto__` setter and `Object.setPrototypeOf`, whose
+/// first object is a local of a task waiting on a dependency. It survives
+/// collections, the task resumes on another thread, and the inherited read
+/// and the chain's identity are intact.
+#[test]
+fn prototype_links_survive_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { const a = Object.create(o); a.k = 7; const b = {__proto__: a}; \
+         const c = {}; c.__proto__ = b; const d = Object.create(null); \
+         Object.setPrototypeOf(d, c); o = 0; const r = __rt.need(9, 1); \
+         const p = Object.getPrototypeOf; \
+         return __rt.vector(p(p(p(p(d)))), d.k === 7 && p(d) === c && p(c) === b && p(b) === a); }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+    }
+    complete_requests(&rt, &task);
+    let result = thread::spawn(move || run_to_end(&task)).join().unwrap();
+    let original = weak.upgrade().unwrap();
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        let first = s.nth(v, 0).unwrap();
+        assert!(s.same_object(first, s.local(&original).unwrap()));
+        assert_eq!(s.view(s.nth(v, 1).unwrap()), ValueView::Bool(true));
+    });
+}
+
+/// Replacing a prototype link (clj-quickjs-121) releases the old
+/// prototype: once every link to the argument (made by `Object.create`, a
+/// literal's `__proto__:` and the `__proto__` setter) is replaced with
+/// `Object.setPrototypeOf`, a collection reclaims it while the task, which still holds
+/// the objects, waits; the objects themselves stay.
+#[test]
+fn replaced_prototypes_are_reclaimed() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { const a = Object.create(o); const c = {__proto__: o}; const e = {}; \
+         e.__proto__ = o; o = 0; const r1 = __rt.need(9, 1); \
+         Object.setPrototypeOf(a, null); Object.setPrototypeOf(c, {}); Object.setPrototypeOf(e, a); \
+         c.__proto__ = 1; \
+         const r2 = __rt.need(10, 1); \
+         return Object.getPrototypeOf(a) === null && Object.getPrototypeOf(e) === a && \
+           c.__proto__ !== 1 && Object.getPrototypeOf(c).__proto__ === Object.prototype; }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    rt.request_collection().unwrap();
+    assert_live(std::slice::from_ref(&weak));
+    complete_requests(&rt, &task);
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 10)));
+    let before = rt.heap_usage().objects.plain;
+    rt.request_collection().unwrap();
+    assert_stale(&rt, std::slice::from_ref(&weak));
+    // Only the argument went: `a`, `c`, `e` and `c`'s new prototype stay.
+    assert_eq!(rt.heap_usage().objects.plain, before - 1);
+    complete_requests(&rt, &task);
+    let result = run_to_end(&task);
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert_eq!(s.view(v), ValueView::Bool(true));
+    });
 }

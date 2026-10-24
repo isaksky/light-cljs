@@ -605,6 +605,15 @@ pub struct PropertyDef {
     pub shorthand: bool,
 }
 
+impl PropertyDef {
+    /// `__proto__: value` (identifier or string name, not a shorthand):
+    /// sets the literal's prototype instead of defining a property
+    /// (clj-quickjs-121; ECMAScript PropertyDefinitionEvaluation).
+    pub fn sets_prototype(&self) -> bool {
+        !self.shorthand && self.name.is_proto()
+    }
+}
+
 /// A literal property name of an object literal.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyName {
@@ -614,6 +623,17 @@ pub enum PropertyName {
     String(crate::value::JsString),
     /// A numeric literal's value; the key is its ToString (`1.0` is `"1"`).
     Number(f64),
+}
+
+impl PropertyName {
+    /// The name is `__proto__` (escapes decoded).
+    pub fn is_proto(&self) -> bool {
+        match self {
+            PropertyName::Identifier(n) => n == "__proto__",
+            PropertyName::String(s) => *s == "__proto__",
+            PropertyName::Number(_) => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -97,6 +97,7 @@ use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
 use crate::vm::native;
 use crate::vm::property;
+use crate::vm::prototype;
 
 /// How a run of the interpreter loop ended.
 #[derive(Debug)]
@@ -961,6 +962,13 @@ fn step(
             property::append(heap, state.diag.task, &array, element)?;
             state.push(array);
         }
+        Instr::SetProto => {
+            // The literal stays on the stack for the next property.
+            let v = state.pop()?;
+            let object = state.pop()?;
+            prototype::set_literal_proto(heap, state.diag.task, &object, &v)?;
+            state.push(object);
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1288,6 +1296,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2
         | Instr::ToPropertyKey
+        | Instr::SetProto
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit
