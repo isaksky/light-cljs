@@ -387,6 +387,13 @@ fn identifiers_are_not_normalized() {
     assert_eq!(kind, VmErrorKind::ReferenceError);
     assert_eq!(message, "õ is not defined");
     assert_eq!((line, column), (1, 13));
+    // Canonically equivalent (NFC) and compatibility-equivalent (NFKC)
+    // spellings are distinct bindings, not redeclarations.
+    assert_eq!(
+        num("let \u{E9} = 1, e\u{301} = 2; \u{E9} * 10 + e\u{301}"),
+        12.0
+    );
+    assert_eq!(num("let A = 1, 𝒜 = 2; A * 10 + 𝒜"), 12.0);
     // Escapes are decoded before names are compared.
     assert_eq!(num("let a\\u0062c = 2; abc"), 2.0);
     assert_eq!(num("let abc = 2; a\\u{62}c + \\u0061bc"), 4.0);
