@@ -1927,6 +1927,13 @@ pub(crate) fn raise_failure(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    // Consume once on this thread to exercise try_reserve_exact's error path
+    // without exhausting the process allocator, like object::array_buffer.
+    static FAIL_MESSAGE_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 // Production uses MAX_STRING_LEN; a smaller limit tests error-message overflow
 // through the same raise path without constructing gigabyte property names.
 fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
@@ -1986,8 +1993,16 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
             return Err("error message too long");
         }
         let mut units = Vec::new();
+        #[cfg(test)]
+        let reservation_len = if FAIL_MESSAGE_RESERVATION.replace(false) {
+            usize::MAX
+        } else {
+            len
+        };
+        #[cfg(not(test))]
+        let reservation_len = len;
         units
-            .try_reserve_exact(len)
+            .try_reserve_exact(reservation_len)
             .map_err(|_| "error message allocation failed")?;
         units.extend(message.encode_utf16());
         let message = JsString::from_owned_code_units(units).ok_or("error message too long")?;
@@ -3457,6 +3472,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn engine_error_message_allocation_failure_is_uncatchable() {
+        // Synthetic fixture, not light-cljs output. Register a source-level
+        // catch before injecting a buffer reservation failure into the raise.
+        let exe = crate::frontend::compile_script(
+            "message-allocation.js",
+            "try { null.x; } catch (e) { e; }",
+        )
+        .unwrap();
+        let heap = Heap::default();
+        let mut s = state(&exe, 1);
+        for _ in 0..exe.0.instrs.len() {
+            if s.has_handlers() {
+                break;
+            }
+            assert!(matches!(
+                execute(&mut s, &heap, &mut NoHost, Some(1)),
+                Exit::Yield
+            ));
+        }
+        assert!(s.has_handlers());
+        let pc = s.top().pc;
+        let original = s.failure(VmErrorKind::TypeError, "small message".into(), pc);
+        realm::intrinsics(&heap).unwrap();
+        let before = heap.stats().objects;
+        FAIL_MESSAGE_RESERVATION.set(true);
+        let Some(Exit::Fail(error)) =
+            raise_failure(&mut s, &heap, original.clone(), Value::Undefined)
+        else {
+            panic!("message allocation failure must skip catch");
+        };
+        assert_eq!(error.kind, VmErrorKind::OutOfMemory);
+        assert_eq!(error.message, "error message allocation failed");
+        assert_eq!(error.diagnostic, original.diagnostic);
+        assert!(s.has_handlers());
+        assert_eq!(s.top().pc, pc);
+        assert_eq!(heap.stats().objects, before);
+        assert!(
+            !FAIL_MESSAGE_RESERVATION.get(),
+            "failure hook consumed once"
+        );
+        assert!(raise_failure(&mut s, &heap, original, Value::Undefined).is_none());
     }
 
     /// Early VM test: hand-loaded code cannot put mutable edges or invalid
