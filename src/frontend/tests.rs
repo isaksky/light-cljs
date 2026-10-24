@@ -3731,6 +3731,23 @@ fn arbitrary_input_never_panics() {
 /// every `js compile-reject <Kind> <line>:<column>` example parses but fails
 /// to compile exactly so.
 #[test]
+fn unused_arguments_does_not_reduce_local_limit() {
+    let names = (0..u16::MAX).map(|i| format!("v{i}")).collect::<Vec<_>>();
+    let vars = names.join(",");
+    let code = super::compile_function(&format!("function f() {{ var {vars}; }}")).unwrap();
+    assert_eq!(code.to_spec().locals, u16::MAX);
+    // The parameter scope must not reserve an unused candidate either.
+    let vars = names[..names.len() - 1].join(",");
+    let code = super::compile_function(&format!("function f(a=1) {{ var {vars}; }}")).unwrap();
+    assert_eq!(code.to_spec().locals, u16::MAX);
+    let vars = names.join(",");
+    let error =
+        super::compile_function(&format!("function f() {{ var {vars}; return arguments; }}"))
+            .unwrap_err();
+    assert_eq!(error.kind, SyntaxErrorKind::TooLarge);
+}
+
+#[test]
 fn grammar_doc_examples() {
     let doc = include_str!("../../docs/grammar.md");
     let mut lines = doc.lines();

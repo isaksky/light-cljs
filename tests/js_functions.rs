@@ -266,6 +266,41 @@ fn arguments_survive_wait_collection_and_migration() {
     }
 }
 
+#[test]
+fn arguments_retention_respects_stack_value_limit() {
+    let run = |source: &str, limit| {
+        let rt = Runtime::with_limits(VmLimits {
+            max_call_depth: 100,
+            max_stack_values: limit,
+        });
+        let code = compile_function(source).unwrap();
+        rt.spawn(&code, &[]).unwrap().run().unwrap()
+    };
+    let uses = "function main() { function f(a) { return arguments.length; } return f(1,2,3); }";
+    // Caller local + two callee locals + one operand + three retained values.
+    match run(uses, 6) {
+        RunOutcome::Failed(e) => assert_eq!(e.kind(), VmErrorKind::StackOverflow),
+        other => panic!("{other:?}"),
+    }
+    let RunOutcome::Complete(v) = run(uses, 7) else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(3.0));
+    // Ignoring extras needs no retained vector and fits the caller's peak.
+    let ignores = "function main() { function f(a) { return a; } return f(1,2,3); }";
+    let RunOutcome::Complete(v) = run(ignores, 5) else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(1.0));
+    // f enters needing eleven values. Once materialized, its vector charge
+    // is gone: sink needs twelve, and would fail with a stale charge of three.
+    let subsequent = "function main() { function sink(p,q,r) { let x=1,y=2,z=3,w=4; return p; } function f(a) { arguments; return sink(4,5,6); } return f(1,2,3); }";
+    let RunOutcome::Complete(v) = run(subsequent, 12) else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(4.0));
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn function_length_and_name() {

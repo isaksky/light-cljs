@@ -1150,7 +1150,14 @@ impl<'s> Lowerer<'s> {
             None => {
                 let b = Binding {
                     kind: BindingKind::Var,
-                    slot: self.temp(span)?,
+                    // Analysis bytecode is discarded. A symbolic slot keeps
+                    // an unused candidate from reducing the local budget,
+                    // including space needed by subsequent body declarations.
+                    slot: if self.analyzing() {
+                        u16::MAX
+                    } else {
+                        self.temp(span)?
+                    },
                     initialized: true,
                     repr: self.facts_of(key).repr(),
                     key,

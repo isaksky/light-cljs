@@ -1189,8 +1189,8 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 Deferred:
 
 - `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100,
-  below), `arguments`, `new.target` and `super` (rejected inside arrows).
-  Lexical `this` is supported by clj-quickjs-98, below.
+  below), `new.target` and `super` (rejected inside arrows).
+  Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
 
