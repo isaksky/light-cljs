@@ -3069,3 +3069,20 @@ matches by code point, while plain `exec` leaves empty matches at their end.
 The existing catchable step limit applies. Deferred: i/iu folding, property
 escapes, v sets, d indices and lookbehind. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.
+
+### Promise core (clj-quickjs-246)
+
+Supported: `new Promise(executor)` calls its executor synchronously with
+shareable, first-call-wins resolve/reject functions. `Promise.resolve`,
+`Promise.reject`, `then` and generic `catch` produce promises; reactions run
+in FIFO jobs on the registering task after the current body/job. Handler
+returns and throws settle derived promises. Executors, handlers and `then`
+getters can yield, wait on dependencies, migrate and survive collection.
+Promises publish across tasks; settlement enqueues jobs without executing
+JavaScript or waking a dependency wait. Task-owned results remain confined
+to their settling task; foreign reactions reject with TypeError.
+
+Deferred: thenable adoption (explicit UnsupportedOperand), Promise subclass
+capabilities/species, arbitrary own-property mutation on promises, async/await,
+combinators, finally and unhandled rejection reporting. Test with
+`cargo test --test promises -- --test-threads=3`.

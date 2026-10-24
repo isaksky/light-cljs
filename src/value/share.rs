@@ -37,6 +37,11 @@
 //! because its own operations (set, compare-and-swap, single-assignment
 //! completion) run this check on every value they install; the walk
 //! therefore stops at it instead of reading contents that may change.
+//! Promises (`crate::vm::promise`) additionally store opaque owner-bound
+//! reaction and result envelopes. Every settlement checks publication;
+//! an unshareable result remains confined to its settling task, and foreign
+//! reactions reject rather than extracting it. Only checked results cross
+//! task boundaries; tracing an opaque envelope grants no foreign read access.
 //!
 //! A function object is persistent: its code and captured values never change
 //! after allocation. A closure is therefore shareable exactly when its
@@ -196,6 +201,8 @@ pub(crate) enum Shareability {
 /// declare one (module docs, "What a later object kind must declare").
 pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
+        HeapObject::Promise(_) => Shareability::ConcurrentReference,
+        HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
         // engine Error, Intl.Locale or RegExp instance, is task-owned.
@@ -238,7 +245,9 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Function(_)
         | HeapObject::BoundFunction(_)
         | HeapObject::Atom(_)
-        | HeapObject::Builtin(_) => None,
+        | HeapObject::Builtin(_)
+        | HeapObject::Promise(_)
+        | HeapObject::PromiseReaction(_) => None,
     }
 }
 

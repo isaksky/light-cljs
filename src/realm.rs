@@ -207,11 +207,12 @@ pub(crate) enum Global {
     RegExp = 35,
 
     BigInt = 36,
+    Promise = 37,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 37] = [
+    const ALL: [Global; 38] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -249,12 +250,14 @@ impl Global {
         Global::Float64Array,
         Global::RegExp,
         Global::BigInt,
+        Global::Promise,
     ];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Global::BigInt => "BigInt",
+            Global::Promise => "Promise",
             Global::Object => "Object",
             Global::Number => "Number",
             Global::String => "String",
@@ -383,6 +386,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) bigint_prototype: ObjectId,
     bigint: ObjectId,
+    pub(crate) promise_prototype: ObjectId,
+    promise: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -450,6 +455,7 @@ impl Intrinsics {
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
             Global::BigInt => Value::Object(self.bigint),
+            Global::Promise => Value::Object(self.promise),
             Global::ArrayBuffer => Value::Object(self.array_buffer),
             Global::Int8Array => Value::Object(self.typed_array_constructors[0]),
             Global::Uint8Array => Value::Object(self.typed_array_constructors[1]),
@@ -987,17 +993,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(method, &[])?;
         b.add(shared, method.name(), function, PropertyFlags::METHOD)?;
     }
-    for method in [
-        Builtin::BigIntPrototypeToString,
-        Builtin::BigIntPrototypeValueOf,
-    ] {
-        let function = b.function(method, &[])?;
-        b.add(
-            bigint_prototype,
-            method.name(),
-            function,
-            PropertyFlags::METHOD,
-        )?;
+    }
     }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
@@ -1063,6 +1059,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
         date_prototype,
         date,
+
+        promise_prototype,
+        promise,
     })
 }
 
@@ -1679,7 +1678,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 198); // Includes typed arrays, replacement and BigInt methods.
+        assert_eq!(first.all.len(), 204); // Includes String replacement, BigInt methods and Promise.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1739,7 +1738,9 @@ mod tests {
         assert_eq!(Global::from_u16(35), Some(Global::RegExp));
 
         assert_eq!(Global::from_u16(36), Some(Global::BigInt));
-        assert_eq!(Global::from_u16(37), None);
+        assert_eq!(Global::from_name("Promise"), Some(Global::Promise));
+        assert_eq!(Global::from_u16(37), Some(Global::Promise));
+        assert_eq!(Global::from_u16(38), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

@@ -91,11 +91,13 @@ enum Holder {
     /// Ordinary properties and prototype links of ArrayBuffer objects.
     ArrayBufferProperty,
     TypedArrayEdges,
+    PromiseReactions,
+    PromiseResults,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 31] = [
+const HOLDERS: [Holder; 33] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -127,6 +129,8 @@ const HOLDERS: [Holder; 31] = [
     Holder::JsMapEntries,
     Holder::ArrayBufferProperty,
     Holder::TypedArrayEdges,
+    Holder::PromiseReactions,
+    Holder::PromiseResults,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -142,7 +146,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 15] = [
+const KINDS: [ObjectKind; 17] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -158,6 +162,8 @@ const KINDS: [ObjectKind; 15] = [
     ObjectKind::JsMap,
     ObjectKind::ArrayBuffer,
     ObjectKind::TypedArray,
+    ObjectKind::Promise,
+    ObjectKind::PromiseReaction,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -165,6 +171,8 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
     use Holder::*;
     match category {
         RootCategory::PersistentHandle => &[
+            PromiseReactions,
+            PromiseResults,
             PersistentHandle,
             TaskResult,
             AtomRetainedOld,
@@ -206,6 +214,8 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
+        ObjectKind::Promise => &[PromiseReactions, PromiseResults],
+        ObjectKind::PromiseReaction => &[PromiseReactions],
         ObjectKind::PlainObject => &[
             PersistentHandle,
             ObjectProperty,
@@ -238,6 +248,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
 /// Where a test lives.
 #[derive(Clone, Copy, Debug)]
 enum File {
+    Promises,
     /// `tests/gc_roots.rs`: through the public API.
     GcRoots,
     /// This module: crate-internal holders.
@@ -262,6 +273,14 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::TypedArrayEdges => Coverage {
             retains: (Gc, "typed_array_retains_buffer_and_properties"),
             reclaims: (Gc, "typed_array_retains_buffer_and_properties"),
+        },
+        Holder::PromiseReactions => Coverage {
+            retains: (Promises, "pending_promise_reactions_are_traced"),
+            reclaims: (Promises, "pending_promise_reactions_are_traced"),
+        },
+        Holder::PromiseResults => Coverage {
+            retains: (Promises, "settled_promise_results_and_resolvers_are_traced"),
+            reclaims: (Promises, "settled_promise_results_and_resolvers_are_traced"),
         },
         Holder::ArrayBufferProperty => public(
             "array_buffer_properties_retained_and_reclaimed",
@@ -389,6 +408,7 @@ fn every_category_and_kind_has_retention_and_reclamation_tests() {
                 File::GcRoots => GC_ROOTS_SOURCE,
                 File::Inventory => INVENTORY_SOURCE,
                 File::Gc => GC_SOURCE,
+                File::Promises => include_str!("../../tests/promises.rs"),
             };
             assert!(
                 defines_test(source, name),
@@ -678,7 +698,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 198); // Includes typed arrays, replacement and BigInt methods.
+    assert_eq!(ids.len(), 204); // Includes String replacement, BigInt methods and Promise.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

@@ -72,7 +72,10 @@
 //! and let the exception go on to the handler below it. No current
 //! native recovers from a failure; any other answer is refused as an
 //! internal error, so a native can never resume after its frame was
-//! partially unwound.
+//! partially unwound. Promise callback boundaries instead install an explicit
+//! `NativeCatch` handler before the call: after inner JS handlers unwind, it
+//! preserves that native and delivers the thrown value to its rejection
+//! continuation. Cancellation skips these handlers without running native code.
 //!
 //! No Rust frame represents a pending native: between steps everything it
 //! needs is in its `NativeFrame` (a trampoline, not a callback stack), so a
@@ -245,7 +248,7 @@ enum Awaiting {
 
 /// The completion delivered to a step.
 #[derive(Clone, Debug)]
-enum Input {
+pub(crate) enum Input {
     Start,
     CallResult(Value),
     Dependency(Value),
@@ -267,7 +270,7 @@ enum Failure {
 
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
-enum Action {
+pub(crate) enum Action {
     /// Keep this native frame runnable for another budgeted step.
     Continue,
     /// Complete a property write through the same resumable conversion and
@@ -387,6 +390,7 @@ enum NativeState {
         operands: Vec<Value>,
         index: usize,
     },
+    Promise(super::promise::PromiseState),
     StringSplit {
         split: Box<crate::value::string::StringSplit>,
         out: Value,
@@ -657,6 +661,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::TypedArray(array) => array.trace(visit),
+            NativeState::Promise(p) => p.trace(visit),
             NativeState::StringSplit { out, .. } => out.trace(visit),
             NativeState::JsonStringify(stringifier) => stringifier.trace(visit),
             NativeState::Json {
@@ -995,6 +1000,33 @@ pub(crate) fn start_builtin(
     if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::RegExp(native))?;
+        return Ok(true);
+    }
+    if matches!(
+        which,
+        Builtin::Promise
+            | Builtin::PromiseResolve
+            | Builtin::PromiseReject
+            | Builtin::PromiseThen
+            | Builtin::PromiseCatch
+            | Builtin::PromiseResolver(_, _)
+            | Builtin::PromiseReaction(_)
+    ) {
+        let native = super::promise::start(
+            heap,
+            state.diag.task,
+            &state.jobs,
+            which,
+            this,
+            args,
+            construct,
+        )?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        if let Some(native) = native {
+            push_native(state, NativeState::Promise(native))?;
+        } else {
+            state.push(Value::Undefined);
+        }
         return Ok(true);
     }
     let error = match which {
@@ -1670,6 +1702,9 @@ pub(crate) fn running(state: &VmState) -> Option<usize> {
 /// Run one step of the running native frame and apply its action (module
 /// docs, "The protocol").
 pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Result<Flow, Fault> {
+    if !state.natives.is_empty() {
+        state.pop_native_catch(state.natives.len() - 1);
+    }
     let depth = state.depth();
     let frame = state
         .natives
@@ -1759,6 +1794,15 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             Ok(Flow::Next)
         }
         Action::Call { callee, this, args } => {
+            if state
+                .natives
+                .last()
+                .is_some_and(|frame| matches!(&frame.state, NativeState::Promise(p) if p.catches()))
+            {
+                state.push_handler(super::exception::HandlerKind::NativeCatch {
+                    native: state.natives.len() - 1,
+                })?;
+            }
             // A forwarding built-in callback (`Reflect.apply`) is followed
             // to the call it makes (`dispatch::resolve`).
             let (max_args, max_hops) = state.forward_limits(state.stack_len());
@@ -1807,6 +1851,26 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
+}
+
+/// A promise boundary consumes a callback's exception after JavaScript's
+/// own catch/finally handlers have run. Cancellation never calls this path.
+pub(crate) fn catch(
+    natives: &mut Vec<NativeFrame>,
+    index: usize,
+    value: Value,
+) -> Result<(), &'static str> {
+    natives.truncate(index + 1);
+    let frame = natives.get_mut(index).ok_or("native catch frame missing")?;
+    let NativeState::Promise(promise) = &mut frame.state else {
+        return Err("invalid native catch");
+    };
+    if !promise.catches() {
+        return Err("promise native cannot catch");
+    }
+    promise.failed(value);
+    frame.awaiting = Awaiting::Nothing;
+    Ok(())
 }
 
 fn set_awaiting(state: &mut VmState, awaiting: Awaiting) -> Result<(), Fault> {
@@ -1995,6 +2059,7 @@ impl NativeState {
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
+            NativeState::Promise(p) => p.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -2995,6 +3060,7 @@ impl NativeState {
             (
                 NativeState::Reduce { .. }
                 | NativeState::TypedArray(_)
+                | NativeState::Promise(_)
                 | NativeState::Error(_)
                 | NativeState::RegExp(_)
                 | NativeState::StringReplace(_)

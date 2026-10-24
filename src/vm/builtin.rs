@@ -321,6 +321,14 @@ pub(crate) enum Builtin {
 
     BigIntPrototypeToString,
     BigIntPrototypeValueOf,
+
+    Promise,
+    PromiseResolve,
+    PromiseReject,
+    PromiseThen,
+    PromiseCatch,
+    PromiseResolver(ObjectId, bool),
+    PromiseReaction(ObjectId),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -403,6 +411,13 @@ impl Builtin {
                 'v' => "get unicodeSets",
                 _ => "get sticky",
             },
+
+            Builtin::Promise => "Promise",
+            Builtin::PromiseResolve => "resolve",
+            Builtin::PromiseReject => "reject",
+            Builtin::PromiseThen => "then",
+            Builtin::PromiseCatch => "catch",
+            Builtin::PromiseResolver(_, _) | Builtin::PromiseReaction(_) => "",
             Builtin::ArrayBuffer => "ArrayBuffer",
             Builtin::ArrayBufferByteLength => "get byteLength",
             Builtin::ArrayBufferDetached => "get detached",
@@ -526,6 +541,14 @@ impl Builtin {
             | Builtin::RegExpSource
             | Builtin::RegExpFlags
             | Builtin::RegExpFlag(_) => 0,
+
+            Builtin::PromiseThen => 2,
+            Builtin::Promise
+            | Builtin::PromiseResolve
+            | Builtin::PromiseReject
+            | Builtin::PromiseCatch
+            | Builtin::PromiseResolver(_, _) => 1,
+            Builtin::PromiseReaction(_) => 0,
             Builtin::ArrayBuffer => 1,
             Builtin::ArrayBufferByteLength
             | Builtin::ArrayBufferDetached
@@ -617,6 +640,10 @@ pub(crate) struct BuiltinFunction {
 impl Trace for BuiltinFunction {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.properties.trace(visit);
+        match self.which {
+            Builtin::PromiseResolver(id, _) | Builtin::PromiseReaction(id) => visit(id),
+            _ => {}
+        }
     }
 }
 
@@ -670,6 +697,14 @@ pub(crate) fn call(
         Builtin::RegExpSource | Builtin::RegExpFlag(_) => {
             crate::vm::native::regexp::getter(heap, task, which, this)
         }
+
+        Builtin::Promise
+        | Builtin::PromiseResolve
+        | Builtin::PromiseReject
+        | Builtin::PromiseThen
+        | Builtin::PromiseCatch
+        | Builtin::PromiseResolver(_, _)
+        | Builtin::PromiseReaction(_) => Err(Fault::Internal("promise builtin requires VM state")),
         Builtin::ArrayBuffer => Err(Fault::TypeError("ArrayBuffer requires new".into())),
         Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => {
             crate::object::array_buffer::inspect(
@@ -1553,7 +1588,9 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::Occurrence(_)
                 | HeapObject::Builder(_)
                 | HeapObject::Cell(_)
-                | HeapObject::Atom(_) => Ok("Object"),
+                | HeapObject::Atom(_)
+                | HeapObject::PromiseReaction(_) => Ok("Object"),
+                HeapObject::Promise(_) => Ok("Promise"),
             })
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),

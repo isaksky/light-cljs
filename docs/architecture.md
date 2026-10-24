@@ -5383,3 +5383,85 @@ half of a later pair. Assertions retain BMP word/line classification; i/iu
 folding and lookbehind stay deferred. The existing single search step budget
 covers candidate scans and comparisons, with catchable RangeError on exhaustion.
 No heap representation, native continuation or publication rule changes.
+
+## Shareable Promise core (clj-quickjs-246)
+
+`HeapObject::Promise` is an explicit concurrent reference, never a dependency
+cell. It holds a fixed intrinsic prototype, an already-resolved flag, an
+optional fulfilled/rejected result, an `is_handled` bit and an ordered list of
+reaction registrations. These fields are inspected or changed only under the
+heap's short object-table metadata lock. There is no per-Promise Arc/Mutex,
+interpreter lock or JavaScript execution inside that lock. Resolving functions
+are immutable built-in function objects tracing the Promise identity; their
+shared first-call flag is the Promise's already-resolved bit. Claiming it
+precedes observable `then` lookup, so reentry cannot resolve twice.
+
+A Promise can be published while pending or settled. Every settlement runs
+`share::check` before storing its result: shareable results are available to
+all registered tasks; an unshareable value is stored in an opaque owner-bound
+result envelope carrying the settling task's identity. It is a traced lifetime
+edge, not a permission to read that object's graph from another task. Only
+that task's reactions can extract the value. A foreign reaction rejects its
+derived promise with a locally created TypeError. This extends the opaque
+owner-bound callable rule used by the job inbox to result storage, preserving
+ordinary same-task object/error identity without permitting shared mutable
+JavaScript objects. The publication walk stops at the concurrent Promise;
+it does not walk through either opaque result or reaction envelopes.
+
+Each registration creates a traced `PromiseReaction` record containing source,
+derived Promise and both handlers, and a built-in job callable tracing that
+record. Non-callable handlers are treated as identity/thrower when the job
+runs. A registration holds the callable and a weak reference to the
+registering task's inbox. It never keeps that task alive, imports its closure
+into the settling task, or runs its JavaScript there. Settlement appends
+zero-argument reaction jobs to those inboxes while still holding the Promise
+metadata lock, preserving registration order even against a racing `then`.
+Inbox push is a leaf metadata operation; it performs no heap lookup, JS, host
+effect, dependency wake or callback. The job reads the source result through
+the owner check on its registering task. Dead/cancelled/completed destinations
+silently discard delivery; settlement never resurrects a finished task.
+
+Executors, handler calls, resolving `then` getters and generic `catch` getters
+use task-owned native continuations and ordinary VM call frames. A native
+catch boundary is inserted immediately before an executor/handler/getter
+call. Inner JavaScript catch/finally entries run first; the boundary then
+stores a thrown value in the native continuation, which rejects on its next
+budgeted step. Normal returns remove the boundary. Cancellation skips these
+boundaries and uses ordinary finally cleanup, dropping queued jobs. Native
+continuations and the inbox's weak routing link survive activation switches,
+yields, waits, collection and migration. No Rust callback stack survives.
+
+`Promise.resolve` preserves an intrinsic Promise argument's identity;
+`Promise.reject` creates a new Promise. Non-thenable results fulfill; callable
+thenables explicitly fail UnsupportedOperand until clj-quickjs-247. Promise
+subclass capabilities/species and mutable own properties are explicit gaps.
+The two internal rejection-tracking transitions are reserved for -249;
+quiescence reporting and its fixed-size list are not implemented here.
+
+Root inventory additions: `pending_promise_reactions_are_traced` retains a
+pending Promise reachable only through a closure, the derived Promise, both
+handlers and their captures; it reclaims the complete unreachable cycle.
+`settled_promise_results_and_resolvers_are_traced` retains/reclaims object
+results through a Promise closure and through a resolving function alone.
+`promise_reaction_waits_and_resumes` covers active native frames and queued
+reaction records across GC and migration. `promise_cancellation_releases_queued_jobs_and_runs_finally`
+checks reclamation after cancellation; `promise_publication_and_cross_task_settlement_do_not_run_callbacks`
+checks shared publication, remote settlement and whole-task wait isolation.
+Results and prototypes are traced from Promise objects; source/derived/handler
+edges from reaction records; resolver and reaction identities from dynamic
+built-ins; native pending values from TaskFrame roots; queued jobs and saved
+body values use the existing job root inventory. Weak inbox references add
+no collector roots, and no Promise creates hidden persistent roots.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+`promise_reaction_job`, `fulfill_or_reject_promise`,
+`js_create_resolving_functions`, `js_promise_resolve_function_call`,
+`js_promise_constructor`, `js_promise_resolve`, `perform_promise_then`,
+`js_promise_then` and `js_promise_catch`, and
+`research/quickjs/tests/test_std.js` `test_async_gc` /
+`test_async_promise_rejection`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The implementation is written
+fresh. The opening rejection-counter case in `tests/promises.rs` adapts
+`test_async_promise_rejection`, replacing its timer with a final reaction
+job; that file preserves the QuickJS LICENSE notice. Other fixtures are
+synthetic and were written for this runtime.

@@ -59,6 +59,8 @@ pub struct ObjectCounts {
     pub array_buffer: usize,
     /// Task-owned typed-array views (backing bytes counted on their buffer).
     pub typed_array: usize,
+    pub promise: usize,
+    pub promise_reaction: usize,
 }
 
 impl ObjectCounts {
@@ -79,6 +81,8 @@ impl ObjectCounts {
             + self.js_map
             + self.array_buffer
             + self.typed_array
+            + self.promise
+            + self.promise_reaction
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -99,6 +103,8 @@ impl ObjectCounts {
 
             HeapObject::ArrayBuffer(_) => &mut self.array_buffer,
             HeapObject::TypedArray(_) => &mut self.typed_array,
+            HeapObject::Promise(_) => &mut self.promise,
+            HeapObject::PromiseReaction(_) => &mut self.promise_reaction,
         };
         *n += 1;
     }

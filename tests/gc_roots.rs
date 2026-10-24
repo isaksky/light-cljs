@@ -893,10 +893,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 33);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 34);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 33);
+    assert_eq!(rt.heap_usage().objects.plain, 34);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1055,8 +1055,9 @@ fn realm_intrinsics_retain() {
     // Typed-array set/fill/join append three built-ins (-168).
     // String replacement adds two built-in functions (-189).
     // BigInt conversion adds two built-in methods (-202).
-    assert_eq!(rt.heap_usage().objects.builtin, 165);
-    assert_eq!(rt.heap_usage().objects.plain, 33);
+    // Promise adds one prototype and five built-ins (-246).
+    assert_eq!(rt.heap_usage().objects.builtin, 170);
+    assert_eq!(rt.heap_usage().objects.plain, 34);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1255,18 +1256,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's thirty-two ordinary objects stay.
+    // go with the function; the realm's thirty-four ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 33, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 34, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (33, 0));
+    assert_eq!((usage.plain, usage.function), (34, 0));
 }
 
 #[test]
@@ -1284,11 +1285,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 33, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 34, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (33, 0));
+    assert_eq!((usage.plain, usage.array), (34, 0));
 }
 
 #[test]

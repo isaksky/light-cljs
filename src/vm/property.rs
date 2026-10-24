@@ -697,6 +697,7 @@ fn lookup(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
                 }
+                Visit::Other(HeapObject::Promise(p)) => Ok(Lookup::Next(Some(p.prototype))),
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
                     None => Ok(Lookup::Next(None)),

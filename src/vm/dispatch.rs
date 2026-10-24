@@ -392,7 +392,9 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Array(_)
                 | HeapObject::JsMap(_)
                 | HeapObject::ArrayBuffer(_)
-                | HeapObject::TypedArray(_) => "object",
+                | HeapObject::TypedArray(_)
+                | HeapObject::Promise(_)
+                | HeapObject::PromiseReaction(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -673,7 +675,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::ArrayBuffer
             | Builtin::IntlLocale
             | Builtin::IntegerTypedArray(_)
-            | Builtin::RegExp),
+            | Builtin::RegExp
+            | Builtin::Promise),
         )) => {
             if super::native::start_builtin(
                 heap,

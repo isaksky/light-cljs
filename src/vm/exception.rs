@@ -187,6 +187,7 @@ pub(crate) enum HandlerKind {
     Catch { target: u32 },
     Finally { target: u32 },
     Pending(Completion),
+    NativeCatch { native: usize },
 }
 
 /// One entry of a task's handler stack.
@@ -202,7 +203,9 @@ pub(crate) struct Handler {
 impl Trace for Handler {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.kind {
-            HandlerKind::Catch { .. } | HandlerKind::Finally { .. } => {}
+            HandlerKind::Catch { .. }
+            | HandlerKind::Finally { .. }
+            | HandlerKind::NativeCatch { .. } => {}
             HandlerKind::Pending(Completion::Normal | Completion::Cancel | Completion::Jump(_)) => {
             }
             HandlerKind::Pending(Completion::Return(v)) => v.trace(visit),

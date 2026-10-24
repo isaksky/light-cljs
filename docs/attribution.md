@@ -612,3 +612,12 @@ The fixture retains QuickJS's copyright and MIT permission notice from
 semantic references for starting offsets and UTF-16 capture positions.
 The Rust code-point reader, matching changes and other tests were written
 independently; no C engine implementation was copied or linked.
+
+## Promise reactions (clj-quickjs-246)
+
+`tests/promises.rs` adapts the rejection-counter case from
+`research/quickjs/tests/test_std.js`, `test_async_promise_rejection`, at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The timer becomes a final
+Promise job; the QuickJS LICENSE copyright and permission notice is retained
+in the test file. The Rust implementation is written fresh, consulting the
+Promise routines in `research/quickjs/quickjs.c` listed in architecture.md.

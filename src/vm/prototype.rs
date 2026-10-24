@@ -98,6 +98,7 @@ pub(crate) fn get_prototype_of(
     let function = heap
         .read(id, |object| match object {
             HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::Promise(p) => Ok(Some(Some(p.prototype))),
             HeapObject::JsMap(m) => {
                 readable(m.object(), task).map(|()| Some(m.object().prototype()))
             }

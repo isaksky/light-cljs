@@ -607,8 +607,10 @@ impl Task {
         executable: Executable,
         heap: Arc<Heap>,
         deps: Arc<DependencyTable>,
-        vm: VmState,
+        mut vm: VmState,
     ) -> Task {
+        let jobs = Arc::new(crate::job::JobInbox::default());
+        vm.jobs = Arc::downgrade(&jobs);
         let inner = Arc::new(TaskInner {
             id,
             world,
@@ -619,7 +621,7 @@ impl Task {
             log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(Box::new(vm))),
             produce: Mutex::new(Vec::new()),
-            jobs: Arc::new(crate::job::JobInbox::default()),
+            jobs,
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
         inner.heap.register_source(source);

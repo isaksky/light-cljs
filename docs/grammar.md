@@ -3651,6 +3651,53 @@ folding and the other deferred RegExp flags remain separate work.
 'ab'.replaceAll('', '-') === '-a-b-';
 'abc'.replace(/(?<x>b)/, '<$<x>>') === 'a<b>c';
 'ab'.replaceAll('', (match, offset) => offset) === '0a1b2';
+
+## Promise core (clj-quickjs-246)
+
+Syntax: existing `new`, calls, method calls and functions express all Promise
+operations; no syntax production is added. Execution: `new Promise(executor)`
+calls a callable executor synchronously with resolve/reject functions sharing
+one already-resolved flag. Calling without `new` or with a non-callable
+executor throws TypeError. The first resolution/rejection wins, including over
+an executor's later throw. Self-resolution rejects with TypeError.
+`Promise.resolve(p)` preserves a Promise's identity; other values produce a
+new promise. `Promise.reject(value)` always produces a new rejected promise.
+`then` requires a Promise; non-callable handlers act as identity/thrower.
+Handler returns fulfill and throws reject the derived Promise. `catch` reads
+and calls `this.then(undefined, handler)`, including resumable getters.
+
+Reactions run as FIFO jobs on the task that registered them, after synchronous
+code and behind already queued jobs. Waiting on a dependency inside an executor,
+getter or reaction suspends the whole task; collection and migration preserve
+its exact continuation. Settlement on another task only appends jobs and never
+wakes dependency waits. Promises and their resolve/reject functions are
+shareable. A task-owned object result remains confined to its settling task;
+a foreign reaction rejects its derived promise with TypeError instead of
+exposing that object. Promise prototypes and resolver properties are immutable
+under the existing shared-intrinsic policy.
+
+Rejected forms: async/await and class syntax retain their existing explicit
+rejections. Resolving a callable thenable (including a different Promise)
+fails with UnsupportedOperand until adoption lands; getters are still read
+resumably and a throwing getter rejects. Explicit gaps: subclass capabilities,
+species, combinators, `finally`, arbitrary Promise own properties and unhandled
+rejection reporting are deferred. Only the intrinsic Promise constructor is
+accepted as `this` for static resolve/reject.
+
+Synthetic fixtures, not light-cljs output; callbacks run after the final
+synchronous expression:
+
+```js accept
+let p = Promise.resolve(1); p.then(x => x + 1); Promise.resolve(p) === p;
+let n = 0; new Promise(() => { n++; }); n === 1;
+```
+
+```js accept
+let n = 0; Promise.reject(1).catch(() => n++); n === 0;
+```
+
+```js accept
+let n = 0; try { new Promise(1); } catch (e) { n = e instanceof TypeError; } n;
 ```
 
 ### BigInt string formatting (clj-quickjs-202)

@@ -153,6 +153,8 @@ pub(crate) enum ObjectKind {
 
     ArrayBuffer,
     TypedArray,
+    Promise,
+    PromiseReaction,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -223,6 +225,8 @@ pub(crate) enum HeapObject {
 
     ArrayBuffer(Box<crate::object::array_buffer::ArrayBuffer>),
     TypedArray(Box<crate::object::typed_array::TypedArray>),
+    Promise(crate::vm::promise::Promise),
+    PromiseReaction(crate::vm::promise::Reaction),
 }
 
 impl HeapObject {
@@ -250,6 +254,8 @@ impl HeapObject {
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
             HeapObject::ArrayBuffer(_) => ObjectKind::ArrayBuffer,
             HeapObject::TypedArray(_) => ObjectKind::TypedArray,
+            HeapObject::Promise(_) => ObjectKind::Promise,
+            HeapObject::PromiseReaction(_) => ObjectKind::PromiseReaction,
         }
     }
 }
@@ -272,6 +278,8 @@ impl Trace for HeapObject {
             HeapObject::BoundFunction(f) => f.trace(visit),
             HeapObject::ArrayBuffer(b) => b.trace(visit),
             HeapObject::TypedArray(a) => a.trace(visit),
+            HeapObject::Promise(p) => p.trace(visit),
+            HeapObject::PromiseReaction(r) => r.trace(visit),
         }
     }
 }

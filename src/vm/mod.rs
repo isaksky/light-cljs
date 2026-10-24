@@ -42,6 +42,7 @@ pub mod intrinsics;
 pub(crate) mod json;
 pub(crate) mod keys;
 pub(crate) mod native;
+pub(crate) mod promise;
 pub(crate) mod property;
 pub(crate) mod prototype;
 

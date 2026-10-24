@@ -322,7 +322,9 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
         | HeapObject::Occurrence(_)
         | HeapObject::Builder(_)
         | HeapObject::Cell(_)
-        | HeapObject::Atom(_) => Ok(Raw::default()),
+        | HeapObject::Atom(_)
+        | HeapObject::PromiseReaction(_) => Ok(Raw::default()),
+        HeapObject::Promise(_) => Ok(Raw::default()),
     }
 }
 

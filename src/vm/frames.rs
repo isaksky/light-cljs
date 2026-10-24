@@ -188,6 +188,7 @@ pub(crate) enum Raised {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    pub(crate) jobs: std::sync::Weak<crate::job::JobInbox>,
     /// The script body's completion value, retained while jobs run.
     pub(crate) script_result: Option<Value>,
     /// Mutable global state belongs to the task, independently of workers.
@@ -243,6 +244,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            jobs: std::sync::Weak::new(),
             script_result: None,
             global_object: None,
             entry: Frame {
@@ -324,6 +326,7 @@ impl VmState {
     }
 
     fn replace_activation(&mut self, mut next: Self) {
+        next.jobs = self.jobs.clone();
         next.global_object = self.global_object.take();
         next.script_result = self.script_result.take();
         next.builders = std::mem::take(&mut self.builders);
@@ -740,10 +743,19 @@ impl VmState {
     /// recurses, whatever the number of frames.
     pub(crate) fn raise(&mut self, exception: Exception) -> Raised {
         while let Some(h) = self.handlers.pop() {
+            if let HandlerKind::NativeCatch { native } = h.kind {
+                self.truncate_calls(h.frame);
+                self.stack.truncate(h.height);
+                if let Err(message) = native::catch(&mut self.natives, native, exception.value) {
+                    return Raised::Broken(message);
+                }
+                return Raised::Caught;
+            }
             let target = match h.kind {
                 HandlerKind::Catch { target } | HandlerKind::Finally { target } => target,
                 HandlerKind::Pending(Completion::Cancel) => return Raised::Cancelled,
                 HandlerKind::Pending(_) => continue,
+                HandlerKind::NativeCatch { .. } => unreachable!(),
             };
             // The handler's frame must still be live, and its operands must
             // not have dropped below the handler's height since it was
@@ -777,6 +789,15 @@ impl VmState {
             return Raised::Caught;
         }
         Raised::Uncaught(exception)
+    }
+
+    pub(crate) fn pop_native_catch(&mut self, native: usize) {
+        if self.handlers.last().is_some_and(|h| {
+            matches!(h.kind,
+            HandlerKind::NativeCatch { native: index } if index == native)
+        }) {
+            self.handlers.pop();
+        }
     }
 
     /// True when some finally handler would run for a cancellation observed
