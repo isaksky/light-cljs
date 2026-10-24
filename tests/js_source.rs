@@ -19916,7 +19916,13 @@ fn intl_collator_long_ropes_are_budgeted() {
         let rt = Runtime::new();
         let mut rope = clj_quickjs::JsString::from("x");
         for _ in 0..3000 {
-            rope = rope.concat(&clj_quickjs::JsString::from("0")).unwrap();
+            rope = rope
+                .concat(&clj_quickjs::JsString::from(if numeric {
+                    "1"
+                } else {
+                    "0"
+                }))
+                .unwrap();
         }
         rope = rope
             .concat(&clj_quickjs::JsString::from("2a\u{315}\u{300}"))

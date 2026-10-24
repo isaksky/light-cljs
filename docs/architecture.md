@@ -6303,8 +6303,11 @@ including dependency waits, budget yields, collection and worker migration.
 `intl/collator.rs` owns immutable root options and an incremental comparison
 state, separate from the resumable locale/option/coercion stages in
 `vm/native/collator.rs`. Service resolution and option getters use the shared
-Intl helpers. The ordinary object stores an immutable boxed record and a cached
+Intl helpers. One boxed slot payload holds immutable options and a cached
 bound function, whose cycle back to the receiver is traced by the collector.
+Keeping that cache out of ordinary objects' inline storage preserves execution
+on the existing 64 KiB worker-stack tests. A GC test retains and then reclaims
+both the receiver and detached-callable cases of the cycle.
 The object remains task-owned even when frozen; all public entry points check
 ownership and internal-slot brand. Compare copies the edge-free options into
 its continuation, then requests two resumable ToString operations in order.

@@ -264,6 +264,14 @@ pub(crate) enum PrimitiveData {
     String(JsString),
 }
 
+/// Keep service slots behind one pointer so adding Collator does not enlarge
+/// every object by an inline cached Value (including dispatcher temporaries).
+#[derive(Debug)]
+struct CollatorSlots {
+    options: crate::intl::collator::Collator,
+    bound: Option<Value>,
+}
+
 /// Storage of an ordinary object, optionally with immutable primitive data.
 #[derive(Debug)]
 pub(crate) struct OrdinaryObject {
@@ -296,8 +304,7 @@ pub(crate) struct OrdinaryObject {
     iterator: Option<Box<crate::vm::native::iterator::Data>>,
 
     plural_rules: Option<Box<crate::intl::plural_rules::PluralRules>>,
-    collator: Option<Box<crate::intl::collator::Collator>>,
-    collator_bound: Option<Value>,
+    collator: Option<Box<CollatorSlots>>,
 }
 
 impl OrdinaryObject {
@@ -334,7 +341,6 @@ impl OrdinaryObject {
 
             plural_rules: None,
             collator: None,
-            collator_bound: None,
         }
     }
 
@@ -409,17 +415,25 @@ impl OrdinaryObject {
         self
     }
     pub(crate) fn with_collator(mut self, data: crate::intl::collator::Collator) -> Self {
-        self.collator = Some(Box::new(data));
+        self.collator = Some(Box::new(CollatorSlots {
+            options: data,
+            bound: None,
+        }));
         self
     }
     pub(crate) fn collator(&self) -> Option<&crate::intl::collator::Collator> {
-        self.collator.as_deref()
+        self.collator.as_ref().map(|slots| &slots.options)
     }
     pub(crate) fn collator_bound(&self) -> Option<&Value> {
-        self.collator_bound.as_ref()
+        self.collator
+            .as_ref()
+            .and_then(|slots| slots.bound.as_ref())
     }
     pub(crate) fn set_collator_bound(&mut self, value: Value) {
-        self.collator_bound = Some(value);
+        self.collator
+            .as_mut()
+            .expect("Collator receiver checked")
+            .bound = Some(value);
     }
     pub(crate) fn plural_rules(&self) -> Option<&crate::intl::plural_rules::PluralRules> {
         self.plural_rules.as_deref()
@@ -850,7 +864,7 @@ impl Trace for OrdinaryObject {
         }
         // Collator's immutable options contain no heap edges. The bound
         // compare cache forms a traced cycle through its bound receiver.
-        if let Some(bound) = &self.collator_bound {
+        if let Some(bound) = self.collator_bound() {
             bound.trace(visit);
         }
         if let Some(error) = &self.engine_error {

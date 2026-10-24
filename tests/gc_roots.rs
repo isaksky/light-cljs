@@ -896,10 +896,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 40);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 41);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 40);
+    assert_eq!(rt.heap_usage().objects.plain, 41);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1084,8 +1084,9 @@ fn realm_intrinsics_retain() {
     // Array.from adds one built-in function (-207).
     // Generators add one prototype and its next built-in (-243).
     // Array.prototype.sort adds one built-in function (-208).
-    assert_eq!(rt.heap_usage().objects.builtin, 213);
-    assert_eq!(rt.heap_usage().objects.plain, 40);
+    // Collator adds one prototype and five built-in functions (-218).
+    assert_eq!(rt.heap_usage().objects.builtin, 218);
+    assert_eq!(rt.heap_usage().objects.plain, 41);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1284,18 +1285,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's forty ordinary objects stay.
+    // go with the function; the realm's forty-one ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 40, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 41, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (40, 0));
+    assert_eq!((usage.plain, usage.function), (41, 0));
 }
 
 #[test]
@@ -1314,11 +1315,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 40, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 41, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (40, 0));
+    assert_eq!((usage.plain, usage.array), (41, 0));
 }
 
 #[test]
@@ -1975,6 +1976,31 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 40);
+        assert_eq!(rt.heap_usage().objects.plain, 41);
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. The cached compare function and
+/// receiver retain one another while rooted, then their cycle is collected.
+#[test]
+fn intl_collator_bound_cache_retains_and_reclaims() {
+    for result in ["c", "c.compare"] {
+        let rt = Runtime::new();
+        let source = format!("let c=new Intl.Collator('en'); c.compare; {result}");
+        let code = clj_quickjs::frontend::compile_script("collator", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(value) = task.run().unwrap() else {
+            panic!("expected Collator")
+        };
+        let weak = value.downgrade();
+        drop(task);
+        rt.collect().unwrap();
+        assert!(weak.upgrade().is_ok());
+        assert_eq!(rt.heap_usage().objects.bound_function, 1);
+        drop(value);
+        rt.collect().unwrap();
+        assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
+        assert_eq!(rt.heap_usage().objects.bound_function, 0);
+        assert_eq!(rt.heap_usage().objects.plain, 41);
     }
 }
