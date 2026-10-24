@@ -94,6 +94,9 @@ pub(super) struct Parser<'a> {
     strict: bool,
     module_goal: bool,
     in_function: bool,
+    /// Inherited by arrows and direct eval, established by ordinary functions
+    /// and methods before parsing their parameters.
+    new_target_allowed: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -158,6 +161,7 @@ impl<'a> Parser<'a> {
             strict,
             module_goal: false,
             in_function: false,
+            new_target_allowed: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -357,6 +361,10 @@ impl<'a> Parser<'a> {
     }
 
     // ----- script and statements ----------------------------------------
+
+    pub(super) fn allow_new_target(&mut self, allowed: bool) {
+        self.new_target_allowed = allowed;
+    }
 
     /// Script: Directive* StatementListItem* (the directive prologue is
     /// recognised by [`Self::directive`]).
@@ -1632,6 +1640,7 @@ impl<'a> Parser<'a> {
                 ..SuspensionContext::default()
             },
         );
+        let outer_new_target = std::mem::replace(&mut self.new_target_allowed, true);
         let (name, (params, defaults)) = self.parse_function_head(declaration)?;
         let generator = self.suspension.generator;
         let outer = std::mem::replace(&mut self.in_function, true);
@@ -1643,6 +1652,7 @@ impl<'a> Parser<'a> {
         let (body, strict) =
             self.parse_function_body(name.as_ref(), &params, simple, self.strict, false)?;
         self.in_function = outer;
+        self.new_target_allowed = outer_new_target;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
         self.labels = outer_labels;
@@ -2736,6 +2746,7 @@ impl<'a> Parser<'a> {
                 parameters: false,
             },
         );
+        let outer_new_target = std::mem::replace(&mut self.new_target_allowed, true);
         let (params, defaults) = self.parse_formal_parameters()?;
         let outer_function = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -2746,6 +2757,7 @@ impl<'a> Parser<'a> {
         let (body, strict) =
             self.parse_function_body(None, &params, simple, outer_strict, class)?;
         self.in_function = outer_function;
+        self.new_target_allowed = outer_new_target;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
         self.labels = outer_labels;
@@ -3225,14 +3237,24 @@ impl<'a> Parser<'a> {
     /// first argument list belongs to this `new` (`new F()()` calls the
     /// constructed value, `new new F()()` constructs with the result of
     /// `new F()`). Without an argument list there are no arguments
-    /// (`new F`). `new.target` is not supported (clj-quickjs-99).
+    /// (`new F`). `new.target` reads the nearest ordinary function's
+    /// construct target, including through arrows and direct eval.
     #[inline(never)]
     fn parse_new(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         self.deeper(cost::CALL)?;
         let op_span = self.advance()?.span;
         if self.is_punct(Punct::Dot) {
-            return Err(self.unsupported(self.span_from(op_span.start), "`new.target` is"));
+            let property = self.parse_property_name()?;
+            if property.span.text(self.src) != "target" || !self.new_target_allowed {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    op_span,
+                    "new.target requires an enclosing non-arrow function and the literal name `target`",
+                ));
+            }
+            self.depth = saved;
+            return self.expr(ExprKind::NewTarget, op_span.to(property.span));
         }
         let mut callee = if self.is_keyword(Keyword::New) {
             self.parse_new()?

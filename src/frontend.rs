@@ -288,9 +288,19 @@ pub(crate) fn compile_direct_eval(
     strict: bool,
     bindings: &[crate::vm::executable::EvalBinding],
     receiver_strict: bool,
+    new_target_allowed: bool,
 ) -> Result<Executable, SyntaxError> {
-    let script = parse_script_with(source, ScriptOptions { strict })?;
-    lower::lower_direct_eval(name, source, &script, bindings, receiver_strict)
+    let mut parser = parser::Parser::new(source, strict);
+    parser.allow_new_target(new_target_allowed);
+    let script = parser.parse_script()?;
+    lower::lower_direct_eval(
+        name,
+        source,
+        &script,
+        bindings,
+        receiver_strict,
+        new_target_allowed,
+    )
 }
 
 /// Compile `source`, which must consist of exactly one function declaration,

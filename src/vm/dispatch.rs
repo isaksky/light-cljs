@@ -888,6 +888,7 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     args.into_iter().for_each(|a| state.push(a));
     state.enter_constructor(code, id, Value::Object(object), argc)?;
     state.top_mut().construct = true;
+    state.top_mut().new_target = Value::Object(id);
     Ok(Flow::FrameChanged)
 }
 
@@ -2285,6 +2286,7 @@ fn step_instruction(
             state.push(this);
         }
         Instr::GetRawThis => state.push(state.top().this.clone()),
+        Instr::GetNewTarget => state.push(state.top().new_target.clone()),
         Instr::CheckSloppyThis => {
             let value = state
                 .operands()
@@ -2618,6 +2620,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CheckSpreadArguments
         | Instr::CheckDirectEval
         | Instr::GetRawThis
+        | Instr::GetNewTarget
         | Instr::CheckSloppyThis
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2

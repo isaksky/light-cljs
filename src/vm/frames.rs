@@ -120,6 +120,9 @@ pub(crate) struct Frame {
     /// native's callback and the entry frame. Task-owned and traced with the
     /// frame; `GetThis` reads it.
     pub(crate) this: Value,
+    /// Construct target, undefined on ordinary calls. Arrows capture it by
+    /// value; direct eval transports it through its scope descriptor.
+    pub(crate) new_target: Value,
     /// A construct frame (clj-quickjs-71): entered by `Construct` with the
     /// new object as `this`. When it returns a value that is not an object,
     /// the caller receives `this` instead (the return-override rule).
@@ -152,6 +155,7 @@ impl Trace for DetachedActivation {
             visit(id.into());
         }
         self.frame.this.trace(visit);
+        self.frame.new_target.trace(visit);
         self.frame.code.trace(visit);
         self.frame
             .arguments
@@ -300,6 +304,7 @@ impl VmState {
                     code,
                     callee: None,
                     this: Value::Undefined,
+                    new_target: Value::Undefined,
                     construct: false,
                     arguments: None,
                     pc: 1,
@@ -407,6 +412,7 @@ impl VmState {
                 code: Arc::clone(code),
                 callee: None,
                 this: Value::Undefined,
+                new_target: Value::Undefined,
                 construct: false,
                 arguments: code.uses_arguments.then(|| args.to_vec()),
                 pc: 0,
@@ -689,6 +695,7 @@ impl VmState {
             code,
             callee: Some(callee),
             this,
+            new_target: Value::Undefined,
             construct: false,
             arguments,
             pc: 0,
@@ -1162,6 +1169,7 @@ impl Trace for VmState {
                 visit(id.into());
             }
             frame.this.trace(visit);
+            frame.new_target.trace(visit);
             if let Some(args) = &frame.arguments {
                 args.iter().for_each(|v| v.trace(visit));
             }

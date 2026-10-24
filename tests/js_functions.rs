@@ -51,6 +51,93 @@ fn eval(src: &str) -> ValueView {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn new_target_in_functions_and_arrows() {
+    for body in ["new.target", "(() => new.target)()"] {
+        for (invoke, expected) in [("new F()", "F"), ("F()", "undefined")] {
+            let src = format!("let r; function F() {{ r = {body}; }} {invoke}; r === {expected}");
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for src in [
+        "function F() { return () => () => new.target; } new F()()() === F && F()()() === undefined",
+        "function F(a = new.target, b = () => new.target) { return {a:a, b:b}; } const r = new F(); r.a === F && r.b() === F && F().a === undefined",
+        "function F() { return function G() { return new.target; }; } const G = new F(); G() === undefined && new G() === G",
+        "let r; function F() { r = new.target; } const B = F.bind(null); new B(); r === F",
+        "class C { constructor() { this.target = new.target; } method() { return new.target; } } const c = new C(); c.target === C && c.method() === undefined",
+        "function F() { return eval('new.target'); } new F() === F && F() === undefined",
+        "function F() { return (() => eval('new.target'))(); } new F() === F && F() === undefined",
+        "function F() { return eval('() => eval(\"new.target\")'); } new F()() === F && F()() === undefined",
+        "function F() { return (0, eval)('new.target'); } let caught = false; try { new F(); } catch (e) { caught = e instanceof SyntaxError; } caught",
+        "function F() { this.name = new.target.name; } new F().name === 'F'",
+        "function F(again) { if (!again) return new new.target(true); this.ok = new.target === F; } new F().ok",
+        "function F() { return new.target; } F.call({}) === undefined && F.apply(null, []) === undefined && Reflect.apply(F, null, []) === undefined",
+        "function* G() { yield new.target; return (() => new.target)(); } const g = G(); g.next().value === undefined && g.next().value === undefined",
+        "const o = {get x() { return new.target; }, m(a = new.target) { return a; }}; o.x === undefined && o.m() === undefined",
+        "let ok = false; try { (() => eval('new.target'))(); } catch (e) { ok = e instanceof SyntaxError; } ok",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn new_target_survives_yields_waits_collection_and_migration() {
+    let rt = Runtime::new();
+    let program = exe(
+        "function F(a = () => () => new.target) { __rt.need(5,3); return eval('() => a()() === new.target'); } const f = new F(); f() && F()();",
+    );
+    // Eval descriptors and the new bytecode also survive executable reloads.
+    let mut spec = program.to_spec();
+    spec.functions = spec
+        .functions
+        .into_iter()
+        .map(|code| Executable::load(code.to_spec()).unwrap())
+        .collect();
+    let mut task = rt.spawn(&Executable::load(spec).unwrap(), &[]).unwrap();
+    let mut yields = 0;
+    let mut waits = 0;
+    for _ in 0..1000 {
+        let outcome = std::thread::scope(|scope| {
+            scope
+                .spawn(|| task.run_with(Budget::instructions(1), &mut PlusThousand::default()))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                rt.collect().unwrap();
+                let requests = task.take_producer_requests();
+                assert_eq!(requests.len(), 1);
+                let value = rt.root(Primitive::Number(1.0));
+                let mut ready = rt
+                    .complete(
+                        requests[0].key(),
+                        requests[0].producer(),
+                        Completion::Ready(&value),
+                    )
+                    .unwrap()
+                    .into_runnable();
+                task = ready.pop().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yields > 50);
+                assert_eq!(waits, 1);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("did not finish within 1000 steps");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn arguments_object_holds_every_argument() {
     for src in [
         "function f() { return arguments.length; } f(1,3)===2",

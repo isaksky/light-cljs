@@ -1202,7 +1202,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 Deferred:
 
 - Rest parameters (defaults: clj-quickjs-100,
-  below), `new.target` and `super` (rejected inside arrows).
+  below) and `super` (rejected inside arrows).
   Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
@@ -2033,7 +2033,7 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 
 Deferred:
 
-- `new.target` (clj-quickjs-99, `Unsupported`), derived classes, `super`
+- Derived classes, `super`
   and fields (clj-quickjs-137..-139), built-in constructors such as `new Object()`,
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
@@ -2336,7 +2336,8 @@ and forwarding hops obey the VM's stack and depth limits.
 
 Binding snapshots the target's current own numeric length, subtracting bound
 arguments and clamping at zero, and prefixes its current string name with
-`bound ` (clj-quickjs-101). `new.target` syntax remains clj-quickjs-99.
+`bound ` (clj-quickjs-101). Construction through a bound function sets
+`new.target` to the resolved target (clj-quickjs-99).
 
 ### Function `length` and `name` (clj-quickjs-101)
 
@@ -2652,7 +2653,7 @@ non-number element, or multiple elements. Large lengths allocate no holes.
 `Array.isArray` recognizes arrays and `Array.prototype`, and rejects
 persistent vectors and ordinary objects. Constructor/prototype links and
 standard property attributes are exposed. Results are task-owned like literals.
-Deferred: subclassing/new.target, proxies, species and remaining array methods.
+Deferred: subclassing built-ins, proxies, species and remaining array methods.
 
 Verify: `cargo test --test js_source array_constructor_and_is_array`.
 
@@ -3704,8 +3705,9 @@ TDZ checks apply, loop closures capture each iteration, and strict eval
 declarations stay local. Eval-visible bindings use cells, so closures over them
 cannot be published. Ordinary functions without eval retain value captures.
 Eval frames can yield, wait, collect, and migrate on 64 KiB stacks.
-Sloppy var/function hoisting (-108), parameter-expression eval (-109), and
-`new.target` (-99) remain explicit gaps. Verification:
+Direct eval inherits `new.target` from the enclosing function (-99).
+Sloppy var/function hoisting (-108) and parameter-expression eval (-109)
+remain explicit gaps. Verification:
 `cargo test --test js_source direct_eval -- --test-threads=3`.
 
 ### Base classes (clj-quickjs-136)
@@ -3801,3 +3803,17 @@ example prints its default 1000 decimal places through a one-line host-print
 prelude; all upstream bodies and expected values remain unchanged.
 QuickJS shell argument/loading globals remain absent.
 Run `CARGO_BUILD_JOBS=3 cargo test --test quickjs_bigint -- --test-threads=3`.
+
+### Construct target in functions and arrows (clj-quickjs-99)
+
+`new.target` is the invoked constructor inside `new F()`, and `undefined`
+inside ordinary calls to `F`. Bound construction resolves to the underlying
+constructor. Functions and methods establish the binding before parameter
+defaults run; arrows and direct eval inherit it lexically, including after
+an enclosing function returns. Script scope, top-level arrows and indirect
+eval reject it with an early SyntaxError. Frames and captured values survive
+yields, dependency waits, collection and worker migration.
+
+Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_functions -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --lib frontend:: -- --test-threads=3`.
+`Reflect.construct`, built-in subclassing and `super` remain deferred.

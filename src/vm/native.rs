@@ -1000,6 +1000,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | SetComputedName(_)
         | CheckDirectEval
         | GetRawThis
+        | GetNewTarget
         | CheckSloppyThis => false,
         GetGlobalObject
         | GetGlobal(_)
@@ -1199,16 +1200,20 @@ pub(crate) fn start_direct_eval(
         return Ok(());
     };
     let mut native = eval::State::new(text)?;
-    let mut captures = Vec::with_capacity(site.bindings.len() + 1);
+    let mut captures = Vec::with_capacity(site.bindings.len() + 2);
     for binding in &site.bindings {
         captures.push(eval_source(heap, state, binding.source)?);
     }
     captures.push(eval_source(heap, state, site.receiver)?);
+    if let Some(source) = site.new_target {
+        captures.push(eval_source(heap, state, source)?);
+    }
     native.caller = Some(eval::Caller {
         strict: site.strict,
         bindings: site.bindings,
         captures,
         receiver_strict: site.receiver_strict,
+        new_target_allowed: site.new_target.is_some(),
     });
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Eval(Box::new(native)))?;
@@ -1235,6 +1240,7 @@ fn eval_source(
             })
             .ok_or(Fault::Internal("eval caller capture is missing")),
         EvalSource::This => Ok(state.top().this.clone()),
+        EvalSource::NewTarget => Ok(state.top().new_target.clone()),
         EvalSource::GlobalObject => dispatch::global_object(state, heap),
         EvalSource::CurrentFunction => {
             if let Some(id) = state.top().callee {

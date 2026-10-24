@@ -68,6 +68,7 @@ pub enum EvalSource {
     CurrentFunction,
     This,
     GlobalObject,
+    NewTarget,
 }
 
 /// Assignment semantics retained when compiling against a caller's scope.
@@ -97,6 +98,9 @@ pub struct EvalSite {
     pub receiver: EvalSource,
     /// Originating ordinary function's mode, independent of eval directives.
     pub receiver_strict: bool,
+    /// None at script scope; arrows and eval inherit the enclosing function's
+    /// binding, whose value can itself be undefined on an ordinary call.
+    pub new_target: Option<EvalSource>,
 }
 
 /// Input to [`Executable::load`].
@@ -604,6 +608,7 @@ impl Executable {
                 Opcode::Await => Instr::Await,
                 Opcode::CheckDirectEval => Instr::CheckDirectEval,
                 Opcode::GetRawThis => Instr::GetRawThis,
+                Opcode::GetNewTarget => Instr::GetNewTarget,
                 Opcode::CheckSloppyThis => Instr::CheckSloppyThis,
                 Opcode::DeclareGlobalLet => Instr::DeclareGlobalLet(operand as u16),
                 Opcode::DeclareGlobalConst => Instr::DeclareGlobalConst(operand as u16),
@@ -684,6 +689,7 @@ impl Executable {
             if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
                 || site.bindings.len() >= usize::from(u16::MAX)
                 || !valid_source(site.receiver)
+                || site.new_target.is_some_and(|source| !valid_source(source))
                 || site.bindings.iter().any(|b| {
                     !valid_source(b.source)
                         || !names.insert(&b.name)

@@ -21,8 +21,8 @@
 //! Arrows capture `arguments` lexically; ordinary functions install an
 //! implicit binding only when referenced, using the analysis pass's facts.
 //! Their `this` is captured by value from the nearest ordinary function
-//! through intervening arrows (clj-quickjs-98). `new.target` and `super`
-//! remain deferred.
+//! through intervening arrows (clj-quickjs-98). `new.target` uses the same capture path (clj-quickjs-99);
+//! `super` remains deferred.
 //!
 //! **Bindings.** Every `let`/`const`/function binding and every parameter
 //! lives in a frame local. Entering a statement list (script, function body,
@@ -192,7 +192,7 @@ pub(crate) fn lower_script(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, false, None, true)
+    lower_script_kind(name, source, script, false, None, true, false)
 }
 
 pub(crate) fn lower_eval(
@@ -200,7 +200,7 @@ pub(crate) fn lower_eval(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, None, true)
+    lower_script_kind(name, source, script, true, None, true, false)
 }
 
 pub(crate) fn lower_direct_eval(
@@ -209,8 +209,17 @@ pub(crate) fn lower_direct_eval(
     script: &Script,
     bindings: &[EvalBinding],
     receiver_strict: bool,
+    new_target_allowed: bool,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, Some(bindings), receiver_strict)
+    lower_script_kind(
+        name,
+        source,
+        script,
+        true,
+        Some(bindings),
+        receiver_strict,
+        new_target_allowed,
+    )
 }
 
 fn lower_script_kind(
@@ -220,11 +229,13 @@ fn lower_script_kind(
     eval: bool,
     bindings: Option<&[EvalBinding]>,
     receiver_strict: bool,
+    new_target_allowed: bool,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
         if let Some(bindings) = bindings {
             lower.import_eval_bindings(bindings);
+            lower.eval_new_target = new_target_allowed.then_some((bindings.len() + 1) as u16);
             // Sloppy declaration injection belongs to -108. Reject it before
             // running any code, rather than accidentally declaring globals.
             if !script.strict {
@@ -243,7 +254,8 @@ fn lower_script_kind(
         }
         lower.enter_function(None, true, script.strict);
         if let Some(bindings) = bindings {
-            lower.cur_mut().captures = vec![Place::This; bindings.len() + 1];
+            lower.cur_mut().captures =
+                vec![Place::This; bindings.len() + 1 + usize::from(new_target_allowed)];
             lower.cur_mut().this_strict = receiver_strict;
         }
         lower.cur_mut().global_declarations = !eval || (!script.strict && bindings.is_none());
@@ -420,6 +432,7 @@ enum Place {
     This,
     /// Transport an unevaluated receiver solely for a potential eval call.
     RawThis,
+    NewTarget,
 }
 
 fn eval_source(place: Place) -> EvalSource {
@@ -429,6 +442,7 @@ fn eval_source(place: Place) -> EvalSource {
         Place::Capture(i) => EvalSource::Capture(i),
         Place::Current => EvalSource::CurrentFunction,
         Place::This | Place::RawThis => EvalSource::This,
+        Place::NewTarget => EvalSource::NewTarget,
     }
 }
 
@@ -526,6 +540,7 @@ impl Emitter {
             Place::Current => self.op(Opcode::CurrentFunction, span),
             Place::This => self.op(Opcode::GetThis, span),
             Place::RawThis => self.op(Opcode::GetRawThis, span),
+            Place::NewTarget => self.op(Opcode::GetNewTarget, span),
         }
     }
 }
@@ -569,6 +584,7 @@ struct FnCtx {
     /// nested arrows that need it. No cell: a frame's receiver is immutable.
     this_capture: Option<u16>,
     raw_this_capture: Option<u16>,
+    new_target_capture: Option<u16>,
     /// Strictness of the ordinary function supplying lexical `this`, which
     /// can differ from an arrow/eval's own directive-selected strictness.
     this_strict: bool,
@@ -654,6 +670,7 @@ struct Sealed {
 struct Lowerer<'s> {
     eval_bindings: HashMap<String, Access>,
     eval_this: Option<u16>,
+    eval_new_target: Option<u16>,
     /// Names indexed by `Access::Global`, keeping the recursive resolver's
     /// return type small and Copy. Constant indices belong to each emitter.
     global_names: Vec<String>,
@@ -674,6 +691,7 @@ impl<'s> Lowerer<'s> {
         Lowerer {
             eval_bindings: HashMap::new(),
             eval_this: None,
+            eval_new_target: None,
             global_names: Vec::new(),
             source,
             shared_source: Arc::from(source),
@@ -778,6 +796,7 @@ impl<'s> Lowerer<'s> {
             lexical_this: false,
             this_capture: None,
             raw_this_capture: None,
+            new_target_capture: None,
             this_strict: strict,
 
             arguments_key,
@@ -1550,6 +1569,27 @@ impl<'s> Lowerer<'s> {
         Place::Capture(index)
     }
 
+    /// Arrows capture the immutable construct target by value through each
+    /// enclosing arrow. Eval imports it alongside its receiver, and ordinary
+    /// functions always start a fresh binding (even when created by eval).
+    fn resolve_new_target(&mut self, level: usize) -> Option<Place> {
+        if self.fns[level].completion.is_some() {
+            return self.eval_new_target.map(Place::Capture);
+        }
+        if !self.fns[level].lexical_this {
+            return Some(Place::NewTarget);
+        }
+        if let Some(index) = self.fns[level].new_target_capture {
+            return Some(Place::Capture(index));
+        }
+        let parent = self.resolve_new_target(level - 1)?;
+        let ctx = &mut self.fns[level];
+        let index = ctx.captures.len().min(MAX_COUNT) as u16;
+        ctx.captures.push(parent);
+        ctx.new_target_capture = Some(index);
+        Some(Place::Capture(index))
+    }
+
     /// The span of the identifier token `name` within `span`, which may also
     /// cover parentheses and comments around it (`( /* c */ x )`), so
     /// diagnostics point at, and quote, the name itself.
@@ -1762,7 +1802,8 @@ impl<'s> Lowerer<'s> {
                 });
             }
         }
-        if bindings.len() >= MAX_COUNT {
+        // Reserve both the receiver and optional new.target capture.
+        if bindings.len() > MAX_COUNT - 2 {
             return Err(self.error(
                 SyntaxErrorKind::TooLarge,
                 span,
@@ -1770,12 +1811,14 @@ impl<'s> Lowerer<'s> {
             ));
         }
         let receiver = eval_source(self.resolve_this(self.fns.len() - 1, true));
+        let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
         Ok(EvalSite {
             offset: self.cur().out.code.len() as u32,
             strict: self.cur().strict,
             bindings,
             receiver,
             receiver_strict: self.cur().this_strict,
+            new_target,
         })
     }
 
@@ -4001,6 +4044,7 @@ impl<'s> Lowerer<'s> {
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::This
+            | ExprKind::NewTarget
             | ExprKind::Undefined
             | ExprKind::String(_) => self.literal(e),
             ExprKind::Identifier(name) => self.identifier(name, span),
@@ -4141,6 +4185,13 @@ impl<'s> Lowerer<'s> {
                 if imported && !self.cur().this_strict {
                     self.out().op(Opcode::CheckSloppyThis, span);
                 }
+                Ok(())
+            }
+            ExprKind::NewTarget => {
+                let place = self
+                    .resolve_new_target(self.fns.len() - 1)
+                    .ok_or_else(|| self.internal(span, "new.target outside a function"))?;
+                self.out().load(place, span);
                 Ok(())
             }
             ExprKind::Undefined => {

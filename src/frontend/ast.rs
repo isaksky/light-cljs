@@ -504,6 +504,7 @@ impl Expr {
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::This
+            | ExprKind::NewTarget
             | ExprKind::Undefined
             | ExprKind::Identifier(_)
             | ExprKind::Update { .. } => 0,
@@ -604,6 +605,8 @@ pub enum ExprKind {
     /// `this` inside a non-arrow function (clj-quickjs-116): the receiver
     /// the running function was called with.
     This,
+    /// Lexically inherited construct target (undefined on ordinary calls).
+    NewTarget,
     /// `undefined` (which the subset reserves).
     Undefined,
     /// A reference to a binding.

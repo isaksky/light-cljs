@@ -608,6 +608,7 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::Null => "null".into(),
         ExprKind::This => "this".into(),
+        ExprKind::NewTarget => "new.target".into(),
         ExprKind::Undefined => "undefined".into(),
         ExprKind::Identifier(name) => name.clone(),
         ExprKind::Unary { op, operand } => {
@@ -3044,7 +3045,7 @@ fn this_expressions() {
 
 #[test]
 fn new_expressions() {
-    use SyntaxErrorKind::{Invalid, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, UnexpectedToken};
     // clj-quickjs-71: `new MemberExpression Arguments?`.
     assert_eq!(ast("new F;"), "(new F)");
     assert_eq!(ast("new F(1, 2);"), "(new F 1 2)");
@@ -3075,17 +3076,34 @@ fn new_expressions() {
     );
     rejects("new F()++;", Invalid, 1, 1);
     rejects("new F() = 1;", Invalid, 1, 1);
-    // `new.target` (clj-quickjs-99) stays unsupported; a missing
-    // constructor or an unclosed argument list is a syntax error.
-    rejects_with(
-        "function f() { return new.target; }",
-        Unsupported,
-        1,
-        23,
-        "`new.target`",
-    );
+    // A missing constructor or an unclosed argument list is a syntax error.
     rejects("new;", UnexpectedToken, 1, 4);
     rejects("new F(1;", UnexpectedToken, 1, 8);
+}
+
+#[test]
+fn new_target() {
+    use SyntaxErrorKind::Invalid;
+    for src in [
+        "function f() { return new.target; }",
+        "function f() { return () => new.target; }",
+        "function f(a = new.target) {}",
+        "function f() { return (a = new.target) => a; }",
+        "({ method(a = new.target) { return new.target; } });",
+        "class C { constructor(a = new.target) {} }",
+    ] {
+        super::parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    rejects("new.target;", Invalid, 1, 1);
+    rejects("const a = () => new.target;", Invalid, 1, 17);
+    rejects("const a = () => { return new.target; };", Invalid, 1, 26);
+    rejects("const a = (x = new.target) => x;", Invalid, 1, 16);
+    rejects("function f() { new.target = 1; }", Invalid, 1, 16);
+    rejects("function f() { new.target++; }", Invalid, 1, 16);
+    rejects("function f() { return new.foo; }", Invalid, 1, 23);
+    rejects("function f() { return new.t\\u0061rget; }", Invalid, 1, 23);
+    rejects("function f() {} new.target;", Invalid, 1, 17);
+    rejects("({ method() {} }); new.target;", Invalid, 1, 20);
 }
 
 #[test]

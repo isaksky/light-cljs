@@ -137,6 +137,7 @@
 //! | `DeleteGlobal` | 0x8E | u16 name | – → boolean | false for lexical bindings, otherwise delete global property |
 //! | `DeclareGlobalConstValue` | 0x8F | u16 name | – | create the environment copy of a value-represented const |
 //! | `CheckGlobalLexicalConflict` | 0x90 | u16 name | – | reject a global var/function name conflicting with a lexical before property checks |
+//! | `GetNewTarget` | 0x9A | – | → constructor or undefined | ordinary function construct target; arrows/eval capture it lexically (clj-quickjs-99) |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -656,6 +657,8 @@ pub enum Opcode {
     PutFieldStrict = 0x97,
     PutElemStrict = 0x98,
     DeleteStrict = 0x99,
+    /// The running ordinary function's construct target (undefined on call).
+    GetNewTarget = 0x9A,
 }
 
 /// Operand encoding of an opcode.
@@ -844,6 +847,7 @@ impl Opcode {
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
             0x99 => DeleteStrict,
+            0x9A => GetNewTarget,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -990,6 +994,7 @@ impl Opcode {
             Await => "await",
             CheckDirectEval => "check_direct_eval",
             GetRawThis => "get_raw_this",
+            GetNewTarget => "get_new_target",
             CheckSloppyThis => "check_sloppy_this",
             DeclareGlobalLet => "declare_global_let",
             DeclareGlobalConst => "declare_global_const",
@@ -1092,7 +1097,7 @@ impl Opcode {
             | Await => OperandKind::None,
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
-            GetRawThis | CheckSloppyThis => OperandKind::None,
+            GetRawThis | GetNewTarget | CheckSloppyThis => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1302,6 +1307,7 @@ pub(crate) enum Instr {
     PutFieldStrict(u16),
     PutElemStrict,
     DeleteStrict,
+    GetNewTarget,
 }
 
 impl Instr {
@@ -1424,6 +1430,7 @@ impl Instr {
             Instr::Await => Opcode::Await,
             Instr::CheckDirectEval => Opcode::CheckDirectEval,
             Instr::GetRawThis => Opcode::GetRawThis,
+            Instr::GetNewTarget => Opcode::GetNewTarget,
             Instr::CheckSloppyThis => Opcode::CheckSloppyThis,
             Instr::DeclareGlobalLet(_) => Opcode::DeclareGlobalLet,
             Instr::DeclareGlobalConst(_) => Opcode::DeclareGlobalConst,
@@ -1503,7 +1510,7 @@ impl Instr {
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
             CheckSpreadArguments | CheckDirectEval | CheckSloppyThis => (1, 1),
-            GetRawThis => (0, 1),
+            GetRawThis | GetNewTarget => (0, 1),
             ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),

@@ -2734,6 +2734,23 @@ those of ordinary objects; virtual properties introduce no heap edges.
   prepended to each; source bodies are unchanged. The frontend tests check
   their exact static module tables without claiming module execution support.
 
+- `new.target` (clj-quickjs-99) uses `research/quickjs/quickjs.c`
+  `js_parse_postfix_expr` (`TOK_NEW`), `OP_special_object`
+  (`OP_SPECIAL_OBJECT_NEW_TARGET`) and `tests/test_closure.js`
+  `test_arrow_function` as semantic references at revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No source or test text was
+  adapted. The parser tracks a separate function context inherited by arrows
+  and direct eval, including parameter defaults. `GetNewTarget` reads a traced
+  task-owned frame value, initialized to undefined on calls and the resolved
+  constructor on construction (bound constructors resolve to their target).
+  Arrows capture that immutable value through intervening arrows using the
+  existing closure representation and publication checks. Direct-eval scope
+  descriptors carry an optional source, distinguishing an absent binding at
+  script scope from a function binding whose value is undefined. The native
+  eval continuation traces the imported value until the eval closure owns it.
+  Frames, detached generator/async activations and escaping closures retain
+  their usual yield/wait/collection/migration behavior.
+
 - `tests/fixtures/js/quickjs_test_generator.js`,
   `quickjs_test_async_gc.js` and `quickjs_test_async_promise_rejection.js`
   (clj-quickjs-250) extract `research/quickjs/tests/test_builtin.js`
@@ -3396,8 +3413,8 @@ same task-owned record used by ordinary functions. Publication traverses the
 bound operands and rejects mutable records, including records attached during
 a publication walk; installing a record and marking shareable exclude each
 other under the object-table lock. Ordinary-function metadata now follows
-the same descriptor/publication rules (clj-quickjs-101); `new.target`
-syntax remains with clj-quickjs-99.
+the same descriptor/publication rules (clj-quickjs-101). Bound construction
+sets `new.target` to the resolved target (clj-quickjs-99).
 
 Rejected assignments to the initial read-only metadata follow strict/sloppy
 `[[Set]]` rules without attaching a record. Publication implicitly freezes
@@ -7206,7 +7223,8 @@ the existing intrinsic rejection guard until parameter eval is supported.
 Strict eval declarations use a private variable environment; lexical
 declarations always remain private. Sloppy var/function declaration injection
 is explicitly rejected until -108; parameter-expression eval remains -109.
-`new.target` (-99) and `super` (-112) are still frontend gaps.
+`new.target` (-99) is transported with the receiver; `super` (-112) remains
+a frontend gap.
 
 QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `OP_eval`, `OP_apply_eval`, and `add_eval_variables` at revision
