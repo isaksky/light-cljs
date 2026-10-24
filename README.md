@@ -3374,7 +3374,7 @@ to another worker before finishing its pending return or throw. Generator
 ### Array destructuring (clj-quickjs-131)
 
 Array patterns execute in `let`/`const`/`var` declarations, assignments,
-ordinary/arrow parameters and catch clauses. They support elisions, nested
+ordinary/generator/arrow parameters and catch clauses. They support elisions, nested
 patterns, defaults for undefined values, rest arrays and property assignment
 targets. Patterns consume the shared synchronous iterator protocol and close
 live iterators on early completion or consumer errors. Iterator callbacks,

@@ -30,6 +30,8 @@ fn array_destructuring() {
         "let o = {}, a = []; [o.x, a[0]] = [3, 4]; o.x === 3 && a[0] === 4",
         "var [a, ...r] = [1, 2]; a === 1 && r[0] === 2",
         "function f([a, b] = [2, 3]) { return a + b; } f() === 5 && f.length === 0 && (([a,b]) => 0).length === 1",
+        "function* values([a, b] = [3, 4]) { yield a; yield b; return 9; } let [x, ...r] = values(); x === 3 && r.length === 1 && r[0] === 4",
+        "function* finished([a] = [7]) { return a; } let [x] = finished(); x === undefined",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -118,6 +120,7 @@ fn array_destructuring_waits_collects_and_migrates() {
         "let key = {toString() { __rt.need(131, 1); return 'x'; }}; let o = {}; [o[key]] = [7]; o.x === 7",
         "let n = 0; let o = {set x(v) { __rt.need(131, 1); n = v; }}; [o.x] = [7]; n === 7",
         "function f([a = __rt.need(131, 1)]) { return () => a; } f([])() === 7",
+        "function* values([a = __rt.need(131, 1)]) { yield a; } let [...r] = values([]); r.length === 1 && r[0] === 7",
         "let n = 0; let it = {next() { return {value: undefined}; }, return() { n++; __rt.need(131, 1); throw 99; }}; it[Symbol.iterator] = function() { return this; }; function fail() { throw 17; } let error; try { let [a = fail()] = it; } catch(e) { error = e; } error === 17 && n === 1",
     ] {
         let rt = Runtime::new();
