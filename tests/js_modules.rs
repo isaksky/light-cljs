@@ -423,6 +423,159 @@ fn assert_effects(sources: &[(&str, &str)], expected: Vec<Primitive>) {
     assert_eq!(effects, expected);
 }
 
+const QUICKJS_CYCLIC_ENTRY: &str =
+    include_str!("fixtures/js/quickjs_modules/test_cyclic_import.js");
+const QUICKJS_CYCLIC_FIXTURE: &str =
+    include_str!("fixtures/js/quickjs_modules/fixture_cyclic_import.js");
+const QUICKJS_MODULE_ASSERT: &str = include_str!("fixtures/js/quickjs_modules/assert.js");
+
+fn quickjs_cyclic_sources(fixture: &str) -> [(&str, &str); 4] {
+    [
+        (
+            "observer.js",
+            "import './tests/test_cyclic_import.js'; __rt.effect(0, 'cyclic assertion completed');",
+        ),
+        ("tests/test_cyclic_import.js", QUICKJS_CYCLIC_ENTRY),
+        ("tests/fixture_cyclic_import.js", fixture),
+        ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+    ]
+}
+
+#[test]
+fn quickjs_test_cyclic_import_passes() {
+    // Adapted metadata only: upstream entry lines 1-5 expect a resolution
+    // SyntaxError for a QuickJS limitation. Keep every source byte, including
+    // assert(f(1), 4), and expect success. The observer cannot emit its effect
+    // until the cyclic entry's assertion has run and returned normally.
+    for budget in [Budget::UNLIMITED, Budget::instructions(7)] {
+        let (outcome, effects) =
+            execute_modules(&quickjs_cyclic_sources(QUICKJS_CYCLIC_FIXTURE), budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![Primitive::String("cyclic assertion completed".into())]
+        );
+    }
+}
+
+#[test]
+fn quickjs_test_cyclic_import_detects_a_wrong_result() {
+    // Only negative-control adaptation: fixture_cyclic_import.js line 2,
+    // 2 * -> 3 *. All assert.js exports and the entry assertion stay intact.
+    let original = "export function f(x) { return 2 * a.g(x) }";
+    assert_eq!(QUICKJS_CYCLIC_FIXTURE.matches(original).count(), 1);
+    let broken =
+        QUICKJS_CYCLIC_FIXTURE.replace(original, "export function f(x) { return 3 * a.g(x) }");
+    let (outcome, effects) =
+        execute_modules(&quickjs_cyclic_sources(&broken), Budget::instructions(7));
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("wrong result must fail the upstream assertion: {outcome:?}");
+    };
+    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::Thrown);
+    assert!(
+        error
+            .message()
+            .contains("assertion failed: got |6|, expected |4|"),
+        "{error:?}"
+    );
+    assert!(error.message().contains("Error:"), "{error:?}");
+    assert_eq!(error.diagnostic().executable.as_ref(), "assert");
+    assert!(
+        error
+            .diagnostic()
+            .call_chain
+            .iter()
+            .any(|site| { site.executable.as_ref() == "tests/test_cyclic_import.js" })
+    );
+    assert!(
+        effects.is_empty(),
+        "the observer must not run after a throw"
+    );
+}
+
+#[test]
+fn quickjs_hello_module_runs() {
+    // Host adaptation only: upstream hello_module.js lines 6-8 use this
+    // recording console binding instead of QuickJS-libc console output.
+    // All six upstream bodies are complete; .json selection needs no import
+    // attributes. The synthetic observer checks actual argument objects,
+    // including the JSON array's shape, without relying on print formatting.
+    let sources = [
+        (
+            "observer.js",
+            r#"
+                import './console.js';
+                import './examples/hello_module.js';
+                import {assert} from './tests/assert.js';
+                const output = globalThis.moduleOutput;
+                assert(output.length, 3);
+                assert(output[0].length, 1);
+                assert(output[0][0], 'Hello World');
+                assert(output[1].length, 2);
+                assert(output[1][0], 'fib(10)=');
+                assert(output[1][1], 55);
+                assert(output[2].length, 2);
+                assert(output[2][0], 'msg=');
+                const msg = output[2][1];
+                assert(typeof msg, 'object');
+                assert(msg.x, 1);
+                assert(Array.isArray(msg.tab));
+                assert(msg.tab.length, 3);
+                assert(msg.tab[0], 1);
+                assert(msg.tab[1], 2);
+                assert(msg.tab[2], 3);
+                __rt.effect(0, output[0][0]);
+                __rt.effect(0, output[1][0]);
+                __rt.effect(0, output[1][1]);
+                __rt.effect(0, output[2][0]);
+                __rt.effect(0, 'message object verified structurally');
+            "#,
+        ),
+        (
+            "console.js",
+            r#"
+                globalThis.moduleOutput = [];
+                globalThis.console = {
+                    log() { globalThis.moduleOutput.push(arguments); }
+                };
+            "#,
+        ),
+        (
+            "examples/hello_module.js",
+            include_str!("fixtures/js/quickjs_modules/hello_module.js"),
+        ),
+        (
+            "examples/fib_module.js",
+            include_str!("fixtures/js/quickjs_modules/fib_module.js"),
+        ),
+        (
+            "examples/message.json",
+            include_str!("fixtures/js/quickjs_modules/message.json"),
+        ),
+        ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(7)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Primitive::String("Hello World".into()),
+                Primitive::String("fib(10)=".into()),
+                Primitive::Number(55.0),
+                Primitive::String("msg=".into()),
+                Primitive::String("message object verified structurally".into()),
+            ]
+        );
+    }
+}
+
 #[test]
 fn using_module_resources_dispose_after_evaluation() {
     let (outcome, effects) = execute_modules(

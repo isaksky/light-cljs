@@ -574,6 +574,16 @@ Namespace imports and re-exports execute, including cyclic TDZ checks
 (clj-quickjs-256). Default-export declarations remain deferred; the CLI and
 `compile_script` take scripts only.
 
+The complete adapted QuickJS `test_cyclic_import.js` and `hello_module.js`
+graphs execute through the embedding API (clj-quickjs-257). Their JavaScript
+bodies are unchanged, including every exported `assert.js` helper. The cyclic
+entry expects normal completion despite its retained upstream negative
+metadata; changing the cyclic fixture's multiplier to 3 produces the expected
+uncaught assertion Error. A synthetic host console records hello's arguments:
+`Hello World`, `fib(10)=` with 55, and `msg=` with the actual JSON object
+`{x: 1, tab: [1, 2, 3]}`, checked structurally. Provenance and every harness
+adaptation are listed in each fixture header and `docs/architecture.md`.
+
 Super properties and public class fields execute (clj-quickjs-138/139);
 private names and static blocks remain rejected.
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
@@ -5882,6 +5892,32 @@ parser. Script grammar and the script-only CLI are unchanged.
 ```js module-reject Unsupported 1:25
 import './message.json' with {type: 'json5'};
 ```
+
+### Adapted upstream module fixtures (clj-quickjs-257)
+
+Execution: `tests/js_modules.rs` runs the complete cyclic-import and hello
+graphs from `tests/fixtures/js/quickjs_modules/` through the in-memory host.
+Small-budget runs collect between slices; the unmodified `assert.js` is used
+on both successful and deliberately failing paths. The hello case uses a
+recording console host binding and checks its arguments structurally.
+
+The complete hello body (host supplies the console and both dependencies;
+synthetic fixture, not light-cljs output):
+
+```js module-accept
+/* example of JS and JSON modules */
+
+import { fib } from "./fib_module.js";
+import msg from "./message.json";
+
+console.log("Hello World");
+console.log("fib(10)=", fib(10));
+console.log("msg=", msg);
+```
+
+Rejected forms and explicit gaps are unchanged: the CLI remains script-only,
+the console is supplied by the test host, and dynamic import, import.meta,
+top-level await and import attributes remain unsupported.
 
 ### SuppressedError (clj-quickjs-234)
 

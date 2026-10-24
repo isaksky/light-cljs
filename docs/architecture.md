@@ -2796,6 +2796,34 @@ those of ordinary objects; virtual properties introduce no heap edges.
   prepended to each; source bodies are unchanged. The frontend tests check
   their exact static module tables without claiming module execution support.
 
+- `tests/fixtures/js/quickjs_modules/` (clj-quickjs-257) contains whole-file
+  execution fixtures from `research/quickjs/tests/test_cyclic_import.js`,
+  `tests/fixture_cyclic_import.js`, `tests/assert.js`,
+  `examples/hello_module.js`, `examples/fib_module.js`, and
+  `examples/message.json`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Every JavaScript file has a
+  prepended provenance/adaptation header and the full `research/quickjs/LICENSE`
+  notice (Copyright 2017-2021 Fabrice Bellard and Charlie Gordon, MIT).
+  The same notice applies to `message.json`, copied byte-for-byte without a
+  comment header because JSON cannot contain comments. All upstream bodies
+  remain byte-for-byte. These are adapted QuickJS module fixtures, synthetic
+  fixture text, not light-cljs output. Harness adaptations: the cyclic entry's
+  lines 1-5 retain the upstream negative-resolution metadata but expect normal
+  completion; `hello_module.js` lines 6-8 use a recording `console.log` binding
+  supplied by a synthetic setup module instead of QuickJS-libc output. No JSON
+  attributes are added. Only the negative-control test changes source: line 2
+  of `fixture_cyclic_import.js` replaces `2 *` with `3 *` in memory.
+  `tests/js_modules.rs` runs the complete graphs through `ModuleLoader` and
+  `Runtime::spawn_module`, with unlimited and seven-instruction budgets and
+  collection between slices. A synthetic observer emits a host effect only
+  after the cyclic entry's `assert(f(1), 4)` completes. The negative control
+  must fail inside the untrimmed `assert.js` with the uncaught Error message
+  `assertion failed: got |6|, expected |4|`, before the observer runs.
+  The hello observer checks three recorded console calls, their arities and
+  labels, the Fibonacci result 55, and the actual message object's `x` and
+  array `tab` (length and each element). It emits primitive observations only
+  after those structural assertions pass; it never compares console formatting.
+
 - `new.target` (clj-quickjs-99) uses `research/quickjs/quickjs.c`
   `js_parse_postfix_expr` (`TOK_NEW`), `OP_special_object`
   (`OP_SPECIAL_OBJECT_NEW_TARGET`) and `tests/test_closure.js`
@@ -7780,9 +7808,9 @@ copyright notices and provenance above remain applicable.
 
 Policy (a) is retained: the host returns `ModuleSource::Json`, normally selected
 by the resolved name's case-sensitive `.json` suffix. Thus the pinned
-`examples/hello_module.js` JSON import works without adding attributes; running
-that complete example still requires its console host facility. Attributes,
-including `type: 'json5'`, remain explicit syntax rejections; JSON5 text is
+`examples/hello_module.js` JSON import works without adding attributes;
+clj-quickjs-257 runs the complete example with a recording console binding.
+Attributes, including `type: 'json5'`, remain explicit syntax rejections; JSON5 text is
 rejected by the strict JSON parser. There is no filesystem access in the VM.
 
 The world/version record cache retains immutable JSON source and a synthetic
