@@ -1110,11 +1110,9 @@ and one trailing call per case are added. The full QuickJS MIT notice from
 `research/quickjs/LICENSE`, copyright Fabrice Bellard and Charlie Gordon,
 is retained in the fixture. This is synthetic test input, not light-cljs output.
 
-`tests/js_source.rs::quickjs_date_regexp_cases_run_adapted` selects each case
+`tests/js_source.rs::quickjs_date_regexp_cases_run_unmodified` selects each case
 independently. Date runs unmodified in UTC, UTC+01:00, UTC-05:00 and
 Europe/Paris (a zone with DST). RegExp's upstream line 744,
-`a = eval("/\0a/");`, is explicitly expected to fail compilation because
-direct eval is deferred (clj-quickjs-107). After asserting that failure,
-the driver replaces that one statement with `a = new RegExp("\0a");`
-and runs every original assertion, with no changed expected values.
-This is adapted RegExp coverage, not a claim of unmodified-case acceptance.
+`a = eval("/\0a/");`, executes unchanged with direct eval support
+(clj-quickjs-107). Both cases run every original assertion without
+source substitutions or changed expected values.

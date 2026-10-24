@@ -3,12 +3,8 @@
 // 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2 (VERSION 2026-06-04).
 // Lines 1-71, 612-713 and 715-811 are copied byte for byte below.
 // Fixture changes: prepend this notice; append one call per case.
-// Upstream lines below are unchanged. The Rust test runs an adapted RegExp
-// variant: line 744, `a = eval("/\0a/");`, becomes `a = new RegExp("\0a");`.
-// Expected-failure list:
-// - test_regexp, upstream line 744: direct eval is rejected during compilation
-//   (clj-quickjs-107). The test asserts this rejection before running the
-//   constructor variant. No assertions or expected values are changed.
+// The Rust test executes each selected case without source substitutions.
+// All upstream assertions and expected values are unchanged.
 //
 // QuickJS Javascript Engine
 // 
