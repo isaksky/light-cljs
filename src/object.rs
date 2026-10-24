@@ -1226,6 +1226,116 @@ mod tests {
         drop(symbol_root);
     }
 
+    /// Synthetic fixture, not light-cljs output. The final value and its
+    /// property keys are reached only after two conditional edges activate.
+    #[test]
+    fn collector_preserves_keys_reached_through_ephemerons() {
+        use crate::heap::HeapObject;
+        use crate::{RunOutcome, Runtime};
+
+        let rt = Runtime::new();
+        crate::realm::intrinsics(rt.heap()).unwrap();
+        rt.collect().unwrap();
+        let baseline = rt.heap().keys().len();
+        let code = crate::frontend::compile_function(
+            r#"
+            function make() {
+                const a = new WeakMap(), b = new WeakMap(), key = {}, middle = {};
+                const value = {}, symbol = Symbol('259-conditional-symbol');
+                value['259-conditional-name'] = 42;
+                value[symbol] = 73;
+                a.set(key, middle);
+                b.set(middle, value);
+                return __rt.vector(a, b, key);
+            }
+        "#,
+        )
+        .unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("expected completed fixture")
+        };
+        let (a, b, key) = rt.scope(|scope| {
+            let result = scope.local(&result).unwrap();
+            (
+                scope.persist(scope.nth(result, 0).unwrap()),
+                scope.persist(scope.nth(result, 1).unwrap()),
+                scope.persist(scope.nth(result, 2).unwrap()),
+            )
+        });
+        drop((task, result, code));
+        let object_id = |root: &crate::Rooted| {
+            let Value::Object(id) = root.value_in(rt.heap()).unwrap() else {
+                unreachable!()
+            };
+            id
+        };
+        let weak_value = |map, key: crate::heap::ObjectId| {
+            rt.heap()
+                .read(map, |object| {
+                    let HeapObject::WeakMap(map) = object else {
+                        unreachable!()
+                    };
+                    let Value::Object(value) = map.get(key.into()).unwrap() else {
+                        unreachable!()
+                    };
+                    *value
+                })
+                .unwrap()
+        };
+        let middle = weak_value(object_id(&a), object_id(&key));
+        let value = weak_value(object_id(&b), middle);
+        let symbol = {
+            let name_key = rt.heap().keys().lookup(&s("259-conditional-name")).unwrap();
+            let symbol_key = rt
+                .heap()
+                .read(value, |object| {
+                    let HeapObject::Plain(object) = object else {
+                        unreachable!()
+                    };
+                    object
+                        .properties()
+                        .find(|(key, _)| key.1.is_some())
+                        .unwrap()
+                        .0
+                })
+                .unwrap();
+            let symbol = rt.heap().keys().symbol(symbol_key).unwrap();
+            for _ in 0..3 {
+                rt.collect().unwrap();
+                assert_eq!(rt.heap().keys().len(), baseline + 2);
+                assert_eq!(
+                    rt.heap().keys().lookup(&s("259-conditional-name")),
+                    Some(name_key)
+                );
+                assert_eq!(rt.heap().keys().lookup_symbol(&symbol), Some(symbol_key));
+                assert_eq!(weak_value(object_id(&b), middle), value);
+                rt.heap()
+                    .read(value, |object| {
+                        let HeapObject::Plain(object) = object else {
+                            unreachable!()
+                        };
+                        assert_eq!(object.get_own(name_key).unwrap().value, Value::Number(42.0));
+                        assert_eq!(
+                            object.get_own(symbol_key).unwrap().value,
+                            Value::Number(73.0)
+                        );
+                    })
+                    .unwrap();
+            }
+            symbol
+        };
+        drop(key);
+        rt.collect().unwrap();
+        assert!(!rt.heap().is_live(middle));
+        assert!(!rt.heap().is_live(value));
+        assert_eq!(a.weak_map_live_entry_count(), Some(0));
+        assert_eq!(b.weak_map_live_entry_count(), Some(0));
+        assert_eq!(rt.heap().keys().lookup(&s("259-conditional-name")), None);
+        assert_eq!(rt.heap().keys().lookup_symbol(&symbol), None);
+        assert_eq!(rt.heap().keys().len(), baseline);
+    }
+
     /// Synthetic fixture, not light-cljs output. Collect at every budget
     /// boundary, including accessor calls and lazy function-store creation.
     #[test]

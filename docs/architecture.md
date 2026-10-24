@@ -1646,7 +1646,9 @@ list (`research/quickjs/quickjs.c`, `JS_FreeAtomStruct`, revision
 Lib tests exercise repeated batches of computed writes returning to the
 prior table size, surviving reads and stable live ids, slot reuse across
 names and symbols, and collection at every instruction budget boundary
-through ordinary/exotic stores, accessors and class fields.
+through ordinary/exotic stores, accessors and class fields. An ephemeron
+chain retains its conditional value's named and symbol keys until the
+activating key dies, then reclaims both slots.
 
 ## Ordinary objects (clj-quickjs-114)
 
@@ -2043,7 +2045,7 @@ the element or property is added.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
   arrays never do). The collector reclaims unused keys (clj-quickjs-259,
-  "Interned property-key reclamation" below).
+  "Interned property-key reclamation").
 - These instructions are all of computed member access
   (clj-quickjs-115 added its tests and documentation, no new
   representation): `a[k]` and `a[k] = v` with primitive keys on every
