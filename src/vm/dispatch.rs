@@ -252,6 +252,7 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         Value::Number(x) => Ok(*x),
         Value::String(s) => Ok(string_to_number(s)),
+        Value::Symbol(_) => Err(Fault::TypeError("cannot convert symbol to number".into())),
         Value::Object(_) => Err(Fault::Unsupported(
             "converting an object to a number (ToPrimitive) is not supported".to_string(),
         )),
@@ -265,6 +266,7 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
 pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
+        Value::Symbol(_) => return Err(Fault::TypeError("cannot convert symbol to string".into())),
         Value::Undefined => JsString::from("undefined"),
         Value::Null => JsString::from("null"),
         Value::Bool(b) => JsString::from(if *b { "true" } else { "false" }),
@@ -324,6 +326,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::Bool(_) => "boolean",
         Value::Number(_) => "number",
         Value::String(_) => "string",
+        Value::Symbol(_) => "symbol",
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
@@ -361,13 +364,15 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
         (Object(_), Object(_))
         | (Number(_), Number(_))
         | (Bool(_), Bool(_))
-        | (String(_), String(_)) => a.strict_equals(b),
+        | (String(_), String(_))
+        | (Symbol(_), Symbol(_)) => a.strict_equals(b),
         (Number(_) | Bool(_) | String(_), Number(_) | Bool(_) | String(_)) => {
             to_number(a)? == to_number(b)?
         }
         (Object(_), _) | (_, Object(_)) => {
             return Err(Fault::Internal("unconverted object reached loose equality"));
         }
+        (Symbol(_), _) | (_, Symbol(_)) => false,
     })
 }
 
@@ -1210,6 +1215,7 @@ pub(crate) fn step(
             let key = match property::element_key(&base, &key, false)? {
                 property::Key::Index(index) => Value::Number(f64::from(index)),
                 property::Key::Name(name) => Value::String(name),
+                property::Key::Symbol(s) => Value::Symbol(s),
             };
             state.push(key);
         }
@@ -2201,6 +2207,7 @@ mod tests {
             (Value::Bool(false), "boolean"),
             (Value::Number(f64::NAN), "number"),
             (Value::String(JsString::from("s")), "string"),
+            (Value::Symbol(crate::value::JsSymbol::new(None)), "symbol"),
         ] {
             assert_eq!(type_of(&heap, &v).ok(), Some(expected));
         }

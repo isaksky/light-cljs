@@ -251,3 +251,14 @@ same test file. Other cases are synthetic fixtures, not light-cljs output.
 `json_parse_value` and `json_next_token` in `research/quickjs/quickjs.c` at
 that revision were consulted as semantic references. The iterative Rust
 parser and continuation were written afresh; no C implementation was copied.
+## Symbol primitives (clj-quickjs-127)
+
+`tests/js_source.rs::symbol_values` adapts the initial symbol-key property and
+identity equality cases from `research/quickjs/tests/test_builtin.js`,
+`test_symbol`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). The full MIT copyright and permission notice is retained
+in that test file on `string_code_unit_access`. Other cases are synthetic
+fixtures written for this runtime, not light-cljs output.
+`research/quickjs/quickjs.c`, `js_symbol_constructor`, `JS_NewSymbolFromAtom`
+and `JS_ToPropertyKey` at that revision were semantic references. The Rust
+representation, key storage and continuations were written afresh.

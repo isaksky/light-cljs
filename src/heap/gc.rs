@@ -181,7 +181,8 @@ impl Trace for Value {
             | Value::Null
             | Value::Bool(_)
             | Value::Number(_)
-            | Value::String(_) => {}
+            | Value::String(_)
+            | Value::Symbol(_) => {}
         }
     }
 }

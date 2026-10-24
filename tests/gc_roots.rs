@@ -848,6 +848,7 @@ fn realm_intrinsics_retain() {
         "String.prototype.padStart",
         "String.prototype.padEnd",
         "String.prototype.split",
+        "Symbol",
         "isNaN",
         "isFinite",
         "Number.isNaN",
@@ -919,10 +920,10 @@ fn realm_intrinsics_retain() {
     // clj-quickjs-156, Error and its prototype/toString, clj-quickjs-228,
     // String.prototype.split, clj-quickjs-157, Array.isArray, clj-quickjs-153,
     // seven NativeError constructors and prototypes, clj-quickjs-229,
-    // Math.pow, clj-quickjs-164, and JSON with parse, clj-quickjs-159.
-    // Two unary Math functions were added by clj-quickjs-205,
-    // and String.raw by clj-quickjs-58.
-    assert_eq!(rt.heap_usage().objects.builtin, 75);
+    // Math.pow, clj-quickjs-164, JSON with parse, clj-quickjs-159, and
+    // Symbol, clj-quickjs-127. Two unary Math functions: clj-quickjs-205;
+    // String.raw: clj-quickjs-58.
+    assert_eq!(rt.heap_usage().objects.builtin, 76);
     assert_eq!(rt.heap_usage().objects.plain, 15);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

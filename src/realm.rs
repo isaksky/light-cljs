@@ -177,6 +177,8 @@ pub(crate) enum Global {
     URIError = 17,
     InternalError = 18,
     Json = 19,
+
+    Symbol = 20,
 }
 
 impl Global {
@@ -202,6 +204,7 @@ impl Global {
         Global::URIError,
         Global::InternalError,
         Global::Json,
+        Global::Symbol,
     ];
 
     /// The JavaScript name.
@@ -228,6 +231,8 @@ impl Global {
             Global::URIError => "URIError",
             Global::InternalError => "InternalError",
             Global::Json => "JSON",
+
+            Global::Symbol => "Symbol",
         }
     }
 
@@ -295,6 +300,8 @@ pub(crate) struct Intrinsics {
     /// (constructor, prototype) pairs in NativeErrorKind order; rooted in `all`.
     native_errors: [(ObjectId, ObjectId); 7],
     json: ObjectId,
+
+    symbol: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -392,6 +399,8 @@ impl Intrinsics {
                 Value::Object(self.native_errors[NativeErrorKind::Internal as usize].0)
             }
             Global::Json => Value::Object(self.json),
+
+            Global::Symbol => Value::Object(self.symbol),
         }
     }
 }
@@ -791,6 +800,16 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.all.push(json);
     let parse = b.function(Builtin::JsonParse, &[])?;
     b.add(json, "parse", parse, PropertyFlags::METHOD)?;
+
+    let symbol = b.function(Builtin::Symbol, &[])?;
+    for name in ["iterator", "toPrimitive", "hasInstance"] {
+        b.add_value(
+            symbol,
+            name,
+            Value::Symbol(crate::value::symbol::well_known(name)),
+            PropertyFlags::FIXED,
+        )?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -838,6 +857,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         error,
         native_errors,
         json,
+
+        symbol,
     })
 }
 
@@ -1141,7 +1162,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 90);
+        assert_eq!(first.all.len(), 91);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1179,7 +1200,10 @@ mod tests {
             );
         }
         assert_eq!(Global::from_u16(19), Some(Global::Json));
-        assert_eq!(Global::from_u16(20), None);
+
+        assert_eq!(Global::from_name("Symbol"), Some(Global::Symbol));
+        assert_eq!(Global::from_u16(20), Some(Global::Symbol));
+        assert_eq!(Global::from_u16(21), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

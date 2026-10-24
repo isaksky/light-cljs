@@ -326,7 +326,8 @@ impl WeakHandle {
             | Value::Null
             | Value::Bool(_)
             | Value::Number(_)
-            | Value::String(_) => true,
+            | Value::String(_)
+            | Value::Symbol(_) => true,
         }
     }
 

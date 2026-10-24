@@ -310,6 +310,7 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    SymbolDescription,
     StringSplit {
         separator_undefined: bool,
         limit_undefined: bool,
@@ -999,14 +1000,21 @@ pub(crate) fn start_builtin(
                 Hint::String,
             )
         }
-        Builtin::Number | Builtin::String => {
+        Builtin::Number | Builtin::String | Builtin::Symbol => {
+            if which == Builtin::Symbol && construct {
+                return Ok(false);
+            }
             let Some(value @ Value::Object(_)) = args.first() else {
                 return Ok(false);
             };
             (
-                ConvertTarget::PrimitiveConstructor { which, construct },
+                if which == Builtin::Symbol {
+                    ConvertTarget::SymbolDescription
+                } else {
+                    ConvertTarget::PrimitiveConstructor { which, construct }
+                },
                 vec![value.clone()],
-                if which == Builtin::String {
+                if matches!(which, Builtin::String | Builtin::Symbol) {
                     Hint::String
                 } else {
                     Hint::Number
@@ -2072,6 +2080,9 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::SymbolDescription => Ok(Action::Return(Value::Symbol(
+                        crate::value::JsSymbol::new(Some(dispatch::to_js_string(&operands[0])?)),
+                    ))),
                     ConvertTarget::StringSplit {
                         separator_undefined,
                         ..
@@ -2138,6 +2149,12 @@ impl NativeState {
                         operands: operands.clone(),
                     }),
                     ConvertTarget::PrimitiveConstructor { which, construct } => {
+                        // String's descriptive-symbol exception applies only
+                        // to an original symbol argument, never the result of
+                        // an object's ToPrimitive.
+                        if which == builtin::Builtin::String {
+                            operands[0] = Value::String(dispatch::to_js_string(&operands[0])?);
+                        }
                         builtin::primitive_constructor(heap, task, which, operands, construct)
                             .map(Action::Return)
                     }

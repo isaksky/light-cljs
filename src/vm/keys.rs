@@ -9,7 +9,7 @@
 //!
 //! # Order
 //!
-//! [`own_property_keys`] lists an object's own string keys in the order of
+//! [`own_property_keys`] lists an object's own keys in the order of
 //! OrdinaryOwnPropertyKeys:
 //!
 //! 1. every key that is an array index (the canonical numeric string of an
@@ -21,10 +21,8 @@
 //! 2. every other string key in property creation order (a redefinition
 //!    keeps the first position). An array's `length` was created with the
 //!    array, so it comes first among them;
-//! 3. symbol keys (clj-quickjs-127) would follow in creation order; no key
-//!    is a symbol yet, and a key without a name in the key table is
-//!    skipped, so `Object.keys` and `Object.getOwnPropertyNames`, which
-//!    never list symbols, stay correct once they exist.
+//! 3. symbol keys (clj-quickjs-127) follow in creation order. Object.keys,
+//!    Object.getOwnPropertyNames and for-in filter them out.
 //!
 //! Each key carries its `enumerable` attribute (clj-quickjs-119), so
 //! `Object.keys` and `for`-`in` (clj-quickjs-85, which reuses this order)
@@ -146,7 +144,8 @@ use crate::vm::prototype;
 pub(crate) enum KeyFilter {
     /// Only enumerable properties (`Object.keys`, `for`-`in`).
     Enumerable,
-    /// Every string key (`Object.getOwnPropertyNames`).
+    /// Every key, including symbols. Object.getOwnPropertyNames filters
+    /// out symbols after enumeration.
     All,
 }
 
@@ -165,6 +164,7 @@ impl OwnKey {
         match &self.key {
             Key::Index(index) => JsString::from(index.to_string().as_str()),
             Key::Name(name) => name.clone(),
+            Key::Symbol(_) => unreachable!("symbol is not a property name"),
         }
     }
 }
@@ -179,7 +179,7 @@ struct Raw {
     named: Vec<(PropertyKey, bool)>,
 }
 
-/// The own string keys of `target` as `task` sees them, in
+/// The own keys of `target` as `task` sees them, in
 /// OrdinaryOwnPropertyKeys order (module docs, "Order"), restricted by
 /// `filter`; or the failure of the module docs' table. The shared key
 /// enumeration of `Object.keys`, `Object.getOwnPropertyNames` and (later)
@@ -267,6 +267,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                     match own.key {
                         Key::Index(index) => raw.elements.push((index, own.enumerable)),
                         Key::Name(_) => raw.length = true,
+                        Key::Symbol(_) => unreachable!("string wrapper symbol"),
                     }
                 }
             }
@@ -311,6 +312,7 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
     let wanted = |enumerable: bool| filter == KeyFilter::All || enumerable;
     let mut indices: Vec<(u32, bool)> = raw.elements;
     let mut names: Vec<OwnKey> = Vec::new();
+    let mut symbols: Vec<OwnKey> = Vec::new();
     if raw.length && wanted(false) {
         names.push(OwnKey {
             key: Key::Name(JsString::from("length")),
@@ -318,8 +320,15 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
         });
     }
     for (key, enumerable) in raw.named {
-        // A key without a name is a symbol (clj-quickjs-127): never listed.
         let Some(name) = heap.keys().name(key) else {
+            if filter == KeyFilter::All
+                && let Some(symbol) = heap.keys().symbol(key)
+            {
+                symbols.push(OwnKey {
+                    key: Key::Symbol(symbol),
+                    enumerable,
+                });
+            }
             continue;
         };
         match array_index(&name) {
@@ -343,6 +352,7 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
             enumerable,
         })
         .chain(names)
+        .chain(symbols)
         .collect()
 }
 
@@ -368,7 +378,7 @@ pub(crate) fn object_keys(
         // wrapper's indices, then its `length` (clj-quickjs-142).
         Value::String(s) => string_own_keys(&s, filter)?,
         // Number and Boolean wrappers have no own properties.
-        Value::Number(_) | Value::Bool(_) => Vec::new(),
+        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) => Vec::new(),
     };
     let exhausted = || Fault::OutOfMemory("heap object table exhausted");
     let prototype = realm::intrinsics(heap)
@@ -376,6 +386,9 @@ pub(crate) fn object_keys(
         .array_prototype;
     let mut array = ArrayObject::with_prototype(task, prototype);
     for key in &keys {
+        if matches!(key.key, Key::Symbol(_)) {
+            continue;
+        }
         if !array.push(Some(Value::String(key.name()))) {
             return Err(Fault::Internal("more than 2^32 - 1 own keys"));
         }
@@ -443,6 +456,7 @@ impl Visited {
         match key {
             Key::Index(index) => self.indices.contains(index),
             Key::Name(name) => self.names.contains(name),
+            Key::Symbol(_) => false,
         }
     }
 
@@ -450,6 +464,7 @@ impl Visited {
         match key {
             Key::Index(index) => self.indices.insert(index),
             Key::Name(name) => self.names.insert(name),
+            Key::Symbol(_) => false,
         };
     }
 }
@@ -480,7 +495,10 @@ impl ForInIterator {
     fn step(&mut self) -> Step {
         while let Some(key) = self.keys.get(self.next) {
             self.next += 1;
-            if key.enumerable && !self.visited.contains(&key.key) {
+            if !matches!(key.key, Key::Symbol(_))
+                && key.enumerable
+                && !self.visited.contains(&key.key)
+            {
                 return Step::Key(self.object, key.key.clone());
             }
         }
@@ -598,7 +616,7 @@ pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<V
         }
         // `null` and `undefined` run no iteration; a Number or Boolean
         // wrapper has no own enumerable keys.
-        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => {
+        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) | Value::Symbol(_) => {
             ForInIterator::new(None, Vec::new())
         }
     };
@@ -654,6 +672,7 @@ pub(crate) fn for_in_next(
                     return Ok(Some(match key {
                         Key::Index(index) => JsString::from(index.to_string().as_str()),
                         Key::Name(name) => name,
+                        Key::Symbol(_) => return Err(Fault::Internal("symbol in for-in")),
                     }));
                 }
             }
@@ -682,6 +701,69 @@ mod tests {
 
     fn ok<T>(result: Result<T, Fault>) -> T {
         result.unwrap_or_else(|_| panic!("unexpected fault"))
+    }
+
+    #[test]
+    fn symbol_keys_follow_all_strings_in_creation_order() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let id = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+            .unwrap();
+        let s = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
+        let t = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
+        let z = Key::Name("z".into());
+        let a = Key::Name("a".into());
+        let set = |key: &Key, value| {
+            ok(property::define_own_property(
+                &heap,
+                task,
+                id,
+                key,
+                &crate::object::PropertyDescriptor {
+                    value: Some(value),
+                    writable: Some(true),
+                    enumerable: Some(true),
+                    configurable: Some(true),
+                    ..crate::object::PropertyDescriptor::default()
+                },
+            ));
+        };
+        for key in [&s, &z, &Key::Index(2), &t, &a, &Key::Index(0)] {
+            set(key, Value::Null);
+        }
+        let all = || {
+            ok(own_property_keys(&heap, task, id, KeyFilter::All))
+                .into_iter()
+                .map(|k| k.key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            all(),
+            [
+                Key::Index(0),
+                Key::Index(2),
+                z.clone(),
+                a.clone(),
+                s.clone(),
+                t.clone()
+            ]
+        );
+        // Replacing preserves creation order; delete/re-add moves it last.
+        set(&s, Value::Bool(true));
+        assert_eq!(all()[4], s);
+        let Key::Symbol(symbol) = &s else {
+            unreachable!()
+        };
+        assert!(ok(property::delete(
+            &heap,
+            task,
+            &Value::Object(id),
+            &Value::Symbol(symbol.clone()),
+            true
+        )));
+        set(&s, Value::Null);
+        assert_eq!(all(), [Key::Index(0), Key::Index(2), z, a, t, s]);
     }
 
     /// Index-named properties of an ordinary object sort ascending ahead of

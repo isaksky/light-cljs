@@ -1088,3 +1088,50 @@ fn freezing_keeps_ownership_and_published_functions_are_frozen() {
     assert_eq!(complete(task.run().unwrap()).view(), ValueView::Bool(true));
     rt.publish(&h).unwrap();
 }
+
+/// Synthetic JavaScript fixtures, not light-cljs output. The atom handoff
+/// runs on separate task executors and retains primitive identity across GC.
+#[test]
+fn symbols_publish_with_identity() {
+    let rt = Runtime::new();
+    let make = compile_script("symbol", "Symbol('k')").unwrap();
+    let symbol = thread::scope(|t| {
+        t.spawn(|| complete(rt.spawn(&make, &[]).unwrap().run().unwrap()))
+            .join()
+            .unwrap()
+    });
+    rt.publish(&symbol).unwrap();
+    let atom = rt.new_atom(&symbol).unwrap();
+    drop(symbol);
+    rt.collect().unwrap();
+    let probe = compile_function(
+        "function f(a, b) { return a === b && a !== Symbol('k') && typeof a === 'symbol'; }",
+    )
+    .unwrap();
+    // Early VM instructions supply the atom operations, which have no
+    // source spelling yet; equality and Symbol calls execute source code.
+    let reader = program(1, |asm| {
+        asm.function(&probe)
+            .get_local(0)
+            .op(Opcode::AtomLoad)
+            .get_local(0)
+            .op(Opcode::AtomLoad)
+            .call(2)
+            .op(Opcode::Return);
+    });
+    let good = thread::scope(|t| {
+        t.spawn(|| complete(rt.spawn(&reader, &[&atom]).unwrap().run().unwrap()))
+            .join()
+            .unwrap()
+    });
+    assert_eq!(good.view(), ValueView::Bool(true));
+    let well_known = compile_script("well-known", "Symbol.iterator").unwrap();
+    let a = complete(rt.spawn(&well_known, &[]).unwrap().run().unwrap());
+    let b = thread::scope(|t| {
+        t.spawn(|| complete(rt.spawn(&well_known, &[]).unwrap().run().unwrap()))
+            .join()
+            .unwrap()
+    });
+    assert!(a.strict_equals(&b).unwrap());
+    rt.publish(&a).unwrap();
+}

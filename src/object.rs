@@ -76,7 +76,7 @@ use crate::atom::same_value;
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::ids::TaskId;
-use crate::value::{JsString, Value};
+use crate::value::{JsString, JsSymbol, Value};
 
 /// Interned identity of a property name: a private id issued by
 /// [`PropertyKeys`]. Equal names in one runtime always have the same key.
@@ -94,7 +94,14 @@ pub(crate) struct PropertyKeys {
 #[derive(Debug, Default)]
 struct KeyTable {
     ids: HashMap<JsString, PropertyKey>,
-    names: Vec<JsString>,
+    names: Vec<StoredKey>,
+    symbols: HashMap<JsSymbol, PropertyKey>,
+}
+
+#[derive(Debug)]
+enum StoredKey {
+    Name(JsString),
+    Symbol(JsSymbol),
 }
 
 impl PropertyKeys {
@@ -116,7 +123,7 @@ impl PropertyKeys {
             return Some(key);
         }
         let key = PropertyKey(u32::try_from(table.names.len()).ok()?);
-        table.names.push(name.clone());
+        table.names.push(StoredKey::Name(name.clone()));
         table.ids.insert(name.clone(), key);
         Some(key)
     }
@@ -124,7 +131,41 @@ impl PropertyKeys {
     /// The name `key` was interned for.
     pub(crate) fn name(&self, key: PropertyKey) -> Option<JsString> {
         let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
-        table.names.get(key.0 as usize).cloned()
+        match table.names.get(key.0 as usize)? {
+            StoredKey::Name(name) => Some(name.clone()),
+            StoredKey::Symbol(_) => None,
+        }
+    }
+
+    /// Symbols occupy the same private u32 key space as names, without
+    /// entering the name index. Entries retain identity and description
+    /// until heap drop, like interned names (docs/architecture.md).
+    pub(crate) fn intern_symbol(&self, symbol: &JsSymbol) -> Option<PropertyKey> {
+        let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&key) = table.symbols.get(symbol) {
+            return Some(key);
+        }
+        let key = PropertyKey(u32::try_from(table.names.len()).ok()?);
+        table.names.push(StoredKey::Symbol(symbol.clone()));
+        table.symbols.insert(symbol.clone(), key);
+        Some(key)
+    }
+
+    pub(crate) fn lookup_symbol(&self, symbol: &JsSymbol) -> Option<PropertyKey> {
+        self.table
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .symbols
+            .get(symbol)
+            .copied()
+    }
+
+    pub(crate) fn symbol(&self, key: PropertyKey) -> Option<JsSymbol> {
+        let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
+        match table.names.get(key.0 as usize)? {
+            StoredKey::Symbol(symbol) => Some(symbol.clone()),
+            StoredKey::Name(_) => None,
+        }
     }
 
     /// Number of interned names (tests).

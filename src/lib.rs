@@ -107,7 +107,7 @@ pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeH
 pub use runtime::Runtime;
 pub use task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStats, TaskStatus, Wake};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
-pub use value::{JsString, Primitive, ValueView};
+pub use value::{JsString, JsSymbol, Primitive, ValueView};
 pub use vm::{
     Assembler, Executable, ExecutableSpec, Label, Opcode, ThrowKind, ValidationError,
     ValidationErrorKind, VmLimits,

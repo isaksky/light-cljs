@@ -147,6 +147,7 @@ pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
             x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
         }
         (Value::Object(x), Value::Object(y)) => x == y,
+        (Value::Symbol(x), Value::Symbol(y)) => x == y,
         // Strings have no identity: SameValue compares their code units.
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,

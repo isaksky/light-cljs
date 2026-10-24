@@ -2295,8 +2295,8 @@ table, moves every name that is an array index (`array_index`) into the
 index list, sorts that list, and emits indices first, then the other
 names: ECMAScript OrdinaryOwnPropertyKeys (QuickJS
 `JS_GetOwnPropertyNamesInternal` and `num_keys_cmp` count and sort the
-same way). A key with no name would be a symbol (clj-quickjs-127) and is
-skipped, which is what both built-ins require. `for`-`in`
+same way). Symbols follow the string keys in creation order
+(clj-quickjs-127); both built-ins filter them out. `for`-`in`
 (clj-quickjs-85, -86) and object spread/rest copies are expected to call
 `own_property_keys` with `KeyFilter::Enumerable` rather than walk storage
 themselves.
@@ -3327,7 +3327,8 @@ a yield or wait. Every callback and native step consumes budget and uses
 the existing safepoints. NativeFrame::trace visits all operands, including
 the unvisited right operand and unrelated property values. Exceptions and
 cancellation use the same unwind/discard path as reduce and needAll.
-Symbols and resumable conversions inside other leaf built-ins remain
+Symbols are primitives (clj-quickjs-127); well-known coercion protocol
+dispatch and resumable conversions inside other leaf built-ins remain
 with their own pellets.
 
 ## Number and String wrapper data (clj-quickjs-72)
@@ -4176,3 +4177,59 @@ Semantic references: research/quickjs/quickjs.c, js_parse_template and
 js_string_raw, revision 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. All new
 implementation and synthetic fixtures were written fresh; no upstream source
 or test text was adapted.
+
+## Symbol primitives and property keys (clj-quickjs-127)
+
+`Value::Symbol(JsSymbol)` is a primitive over an immutable `Arc<SymbolData>`
+leaf, outside the traced heap, using the same coarse immutable storage boundary
+as strings. The body holds a process-wide, never reused u64 identity and an
+optional `JsString` description, with no heap edges. A relaxed atomic counter
+only issues identities; publication of the immutable body uses the existing
+value handoff. Exhausting the identity space fails instead of wrapping.
+Cloning preserves identity. Equality, SameValue, SameValueZero and persistent
+map hashing use that identity, including after publication through an atom.
+A description is diagnostic text, never the symbol's identity.
+
+The alternatives were a traced heap kind (requiring rooting for a primitive
+with no heap edges), and a runtime-only identity table (preventing independent
+host ownership). An immutable leaf keeps `Primitive::Symbol` root-free,
+shareable by construction, and safely transferable between executors. The last
+value releases an ordinary symbol's body and description, unless it has been
+used to define a property: the runtime's property-key table retains those
+symbols until heap drop, just as it retains interned string names. The shared
+u32 key space bounds the table to 2^32 entries; reads of absent symbols do not
+intern. This follows the existing key-table lifetime policy rather than
+introducing a second collector. The three well-known bodies (`iterator`,
+`toPrimitive`, `hasInstance`) live in process-wide OnceLocks and are shared by
+all realms and tasks until process exit.
+
+`share::classify` still exhaustively categorizes heap kinds; symbols introduce
+no heap kind or trace edge. `Trace for Value` skips them as primitives. There
+is no new root category or holder in the GC inventory. The `Symbol` function
+is an ordinary Persistent built-in under the existing Intrinsic root category;
+realm retention/reclamation tests include it. Its three well-known properties
+are non-writable, non-enumerable and non-configurable.
+
+`PropertyKey` remains a private u32. `PropertyKeys` maps string contents and
+symbol identity through separate indexes into one key space; reverse entries
+hold either a string or a symbol. `property::Key::Symbol` survives ToPropertyKey
+unchanged, including object conversions that return a symbol, and uses the
+ordinary object's existing descriptor store. Arrays and function property
+records use the same path. Internal OwnPropertyKeys order is array indices,
+other string keys, then symbols, with creation order in each latter group.
+Object.keys, Object.getOwnPropertyNames and for-in exclude symbols.
+
+`Symbol()` creates an absent description; a non-undefined argument undergoes
+ToString. Object descriptions use the existing native conversion continuation
+with string hint, including resumable getter/method calls and a distinct
+completion target so an object returning undefined becomes the description
+"undefined". New Symbol throws TypeError. ToBoolean is true; typeof is "symbol";
+implicit ToString and ToNumber throw catchable TypeError at the source operator.
+String(symbol) alone uses the descriptive `Symbol(description)` string without
+losing UTF-16 code units; String(object) still uses ordinary ToString, even
+when that object's conversion returns a symbol.
+
+Symbol.prototype, wrappers, registry operations, further well-known symbols
+and well-known protocol dispatch are deferred to their own pellets. This change
+exposes the three identities without changing iteration, instanceof or
+OrdinaryToPrimitive protocol lookup.

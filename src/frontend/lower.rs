@@ -2391,6 +2391,7 @@ impl<'s> Lowerer<'s> {
             Primitive::Bool(b) => ConstKey::Bool(*b),
             Primitive::Number(n) => ConstKey::Number(n.to_bits()),
             Primitive::String(s) => ConstKey::String(s.clone()),
+            Primitive::Symbol(_) => unreachable!("symbols have no literal syntax"),
             Primitive::Undefined => {
                 self.out().op(Opcode::Undefined, span);
                 return Ok(());

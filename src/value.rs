@@ -19,9 +19,11 @@
 
 pub(crate) mod share;
 pub(crate) mod string;
+pub(crate) mod symbol;
 
 use crate::heap::ObjectId;
 pub use string::JsString;
+pub use symbol::JsSymbol;
 
 /// A raw VM value. See the module docs for why this is crate-private.
 ///
@@ -38,6 +40,8 @@ pub(crate) enum Value {
     /// A string primitive: immutable code units outside the heap
     /// ([`string`] module docs). Compared by content, never by identity.
     String(JsString),
+    /// An immutable primitive compared by identity.
+    Symbol(JsSymbol),
 }
 
 impl Value {
@@ -47,7 +51,7 @@ impl Value {
             Value::Undefined | Value::Null => false,
             Value::Bool(b) => *b,
             Value::Number(n) => !(*n == 0.0 || n.is_nan()),
-            Value::Object(_) => true,
+            Value::Object(_) | Value::Symbol(_) => true,
             Value::String(s) => !s.is_empty(),
         }
     }
@@ -63,6 +67,7 @@ impl Value {
             (Value::Number(a), Value::Number(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
+            (Value::Symbol(a), Value::Symbol(b)) => a == b,
             _ => false,
         }
     }
@@ -82,6 +87,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::Object(_) => "object",
             Value::String(_) => "string",
+            Value::Symbol(_) => "symbol",
         }
     }
 
@@ -94,6 +100,7 @@ impl Value {
             Value::Number(n) => Some(Primitive::Number(*n)),
             Value::Object(_) => None,
             Value::String(s) => Some(Primitive::String(s.clone())),
+            Value::Symbol(s) => Some(Primitive::Symbol(s.clone())),
         }
     }
 
@@ -106,6 +113,7 @@ impl Value {
             Value::Number(n) => ValueView::Number(*n),
             Value::Object(_) => ValueView::Object,
             Value::String(_) => ValueView::String,
+            Value::Symbol(_) => ValueView::Symbol,
         }
     }
 }
@@ -118,6 +126,7 @@ impl From<Primitive> for Value {
             Primitive::Bool(b) => Value::Bool(b),
             Primitive::Number(n) => Value::Number(n),
             Primitive::String(s) => Value::String(s),
+            Primitive::Symbol(s) => Value::Symbol(s),
         }
     }
 }
@@ -142,6 +151,8 @@ pub enum Primitive {
     Number(f64),
     /// A JavaScript string ([`JsString`]): immutable, compared by content.
     String(JsString),
+    /// An immutable primitive compared by identity.
+    Symbol(JsSymbol),
 }
 
 impl Primitive {
@@ -169,6 +180,8 @@ pub enum ValueView {
     Object,
     /// A string primitive.
     String,
+    /// A symbol primitive.
+    Symbol,
 }
 
 #[cfg(test)]

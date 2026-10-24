@@ -11,10 +11,12 @@
 //! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
-//! Primitives are always shareable, strings included: a string
+//! Primitives are always shareable, strings and symbols included: a string
 //! (`crate::value::JsString`, clj-quickjs-65) is immutable `Arc` storage
 //! outside the heap with no heap edges, not a heap object, so it needs no
-//! category and the walk never descends into it. Ordinary objects
+//! category and the walk never descends into it. Symbols use the same
+//! immutable leaf storage boundary (`crate::value::symbol`) with no heap
+//! edges, and preserve identity across publication. Ordinary objects
 //! (`crate::object`, clj-quickjs-114) are the mutable JavaScript objects of
 //! `design.md` §4: task-owned mutation, never shareable, whatever their
 //! properties hold (an object literal is rejected like a builder). The
@@ -247,6 +249,7 @@ impl fmt::Display for KeyName {
             }
             KeyName::Primitive(Primitive::Number(n)) => write!(f, "{n}"),
             KeyName::Primitive(Primitive::String(s)) => write!(f, "{s:?}"),
+            KeyName::Primitive(Primitive::Symbol(s)) => write!(f, "{s}"),
             KeyName::Object(kind) => write!(f, "<{kind}>"),
         }
     }

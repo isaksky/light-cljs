@@ -2675,3 +2675,18 @@ Callable revivers explicitly throw TypeError; reviver traversal and
 JSON.stringify remain deferred. See `docs/grammar.md` for details.
 
 Tests: `cargo test --test js_source json_parse`.
+### Symbol primitives (clj-quickjs-127)
+
+`Symbol()` / `Symbol(description)` produce immutable, publishable primitives
+compared by identity. Symbols work as property keys and persistent-map keys,
+are truthy, and have typeof "symbol". Object.keys, Object.getOwnPropertyNames
+and for-in omit symbol keys. Symbol.iterator, Symbol.toPrimitive and
+Symbol.hasInstance expose shared fixed identities. New Symbol, implicit
+ToString and ToNumber throw TypeError; String(symbol) gives its descriptive
+string. Description conversion can yield, wait, survive GC and migrate.
+
+Tests: `cargo test --test js_source symbol_`,
+`cargo test --test publication symbols_publish_with_identity`,
+`cargo test --lib vm::keys::tests::symbol_keys_follow_all_strings_in_creation_order`.
+Symbol.prototype, wrappers, registry operations, other well-known symbols and
+protocol dispatch remain deferred.

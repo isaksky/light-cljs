@@ -158,7 +158,7 @@ use crate::object::{
 };
 use crate::realm;
 use crate::value::string::number_to_string;
-use crate::value::{JsString, Value};
+use crate::value::{JsString, JsSymbol, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::function::{self, FunctionRead};
@@ -170,6 +170,7 @@ pub(crate) enum Key {
     Index(u32),
     /// A name that is not the canonical string of an array index.
     Name(JsString),
+    Symbol(JsSymbol),
 }
 
 impl Key {
@@ -186,6 +187,24 @@ impl Key {
         match self {
             Key::Index(index) => JsString::from(index.to_string().as_str()),
             Key::Name(name) => name.clone(),
+            Key::Symbol(_) => unreachable!("symbol key has no string name"),
+        }
+    }
+
+    fn lookup(&self, heap: &Heap) -> Option<PropertyKey> {
+        match self {
+            Key::Symbol(s) => heap.keys().lookup_symbol(s),
+            _ => heap.keys().lookup(&self.to_name()),
+        }
+    }
+
+    fn intern(&self, heap: &Heap) -> Result<PropertyKey, Fault> {
+        match self {
+            Key::Symbol(s) => heap
+                .keys()
+                .intern_symbol(s)
+                .ok_or(Fault::OutOfMemory("property-key table exhausted")),
+            _ => intern(heap, &self.to_name()),
         }
     }
 
@@ -199,6 +218,7 @@ impl fmt::Display for Key {
         match self {
             Key::Index(index) => write!(f, "{index}"),
             Key::Name(name) => write!(f, "{name}"),
+            Key::Symbol(s) => write!(f, "{s}"),
         }
     }
 }
@@ -207,6 +227,7 @@ impl fmt::Display for Key {
 pub(crate) fn to_property_key(key: &Value) -> Result<Key, Fault> {
     Ok(match key {
         Value::String(s) => Key::from_name(s),
+        Value::Symbol(s) => Key::Symbol(s.clone()),
         Value::Number(n) => match number_index(*n) {
             Some(index) => Key::Index(index),
             None => Key::Name(JsString::from(number_to_string(*n).as_str())),
@@ -310,7 +331,7 @@ pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
             value: Value::Number(s.len() as f64),
             flags: PropertyFlags::FIXED,
         }),
-        Key::Name(_) => None,
+        Key::Name(_) | Key::Symbol(_) => None,
     }
 }
 
@@ -635,7 +656,7 @@ fn lookup(
     // A name that was never interned is no object's property; the owner
     // and kind checks below still apply.
     let mut interned: Interned = match key {
-        Key::Name(name) => Some(heap.keys().lookup(name)),
+        Key::Name(_) | Key::Symbol(_) => Some(key.lookup(heap)),
         Key::Index(_) => None,
     };
     let mut realm = heap.realm().get();
@@ -644,7 +665,7 @@ fn lookup(
         // object-table lock (`crate::realm`, "Lock-free reads").
         if let Some(view) = realm.and_then(|r| r.view(id)) {
             let Some(k) = interned else {
-                interned = Some(heap.keys().lookup(&key.to_name()));
+                interned = Some(key.lookup(heap));
                 continue;
             };
             match k.and_then(|k| view.get_own(k)) {
@@ -677,7 +698,7 @@ fn lookup(
                     _ if key.is_length() => Ok(Lookup::Found(Read::Value(Value::Number(
                         f64::from(a.length()),
                     )))),
-                    Key::Name(_) => read_store(a.object(), key, interned, has),
+                    Key::Name(_) | Key::Symbol(_) => read_store(a.object(), key, interned, has),
                 },
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
@@ -699,7 +720,7 @@ fn lookup(
             Lookup::Found(v) => return Ok(Some(v)),
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(None),
-            Lookup::NeedsName => interned = Some(heap.keys().lookup(&key.to_name())),
+            Lookup::NeedsName => interned = Some(key.lookup(heap)),
             Lookup::Function => match if conversion {
                 // Conversion asks only for valueOf/toString, never for
                 // lazy own metadata such as prototype, length or name.
@@ -826,7 +847,7 @@ fn store(
                         Err(fault) => Ok(Stored::Rejected(fault)),
                     }
                 }
-                Key::Name(_) => named(a.object_mut()),
+                Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
             }
         }
         other => Err(not_ordinary(other, key, Access::Write)
@@ -885,33 +906,23 @@ pub(crate) fn prepare_put(
             } else {
                 primitive_prototype(heap, base, key)?
             };
-            if let Ok(Chain::Setter(setter)) = check_inherited(
-                heap,
-                task,
-                prototype,
-                heap.keys().lookup(&key.to_name()),
-                key,
-            ) {
+            if let Ok(Chain::Setter(setter)) =
+                check_inherited(heap, task, prototype, key.lookup(heap), key)
+            {
                 return setter_result(setter, key, strict);
             }
         }
         return put_primitive(base, key, strict).map(|()| None);
     };
     let mut interned = match key {
-        Key::Name(name) => Some(intern(heap, name)?),
+        Key::Name(_) | Key::Symbol(_) => Some(key.intern(heap)?),
         Key::Index(_) => None,
     };
     // Accessor calls precede data-property mutation rules. An intrinsic
     // setter may accept a no-op even on a shared receiver; a function's
     // inherited setter must run without creating a property record.
     if heap.realm().get().is_some_and(|r| r.view(id).is_some()) || is_function(heap, id) {
-        match check_inherited(
-            heap,
-            task,
-            id,
-            interned.or_else(|| heap.keys().lookup(&key.to_name())),
-            key,
-        ) {
+        match check_inherited(heap, task, id, interned.or_else(|| key.lookup(heap)), key) {
             Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
             // The store below applies the receiver's data-write policy:
             // immutable intrinsics always throw; function metadata follows
@@ -931,7 +942,7 @@ pub(crate) fn prepare_put(
         match outcome {
             Stored::Done => return Ok(None),
             Stored::Setter(setter) => return setter_result(setter, key, strict),
-            Stored::NeedsName => interned = Some(intern(heap, &key.to_name())?),
+            Stored::NeedsName => interned = Some(key.intern(heap)?),
             Stored::Inherited(prototype) => break prototype,
             Stored::Rejected(fault) => return rejected(fault),
             Stored::Function => {
@@ -946,7 +957,7 @@ pub(crate) fn prepare_put(
     // the chain, but may still be an element of an array on it.
     let chain_key = match interned {
         Some(k) => Some(k),
-        None => heap.keys().lookup(&key.to_name()),
+        None => key.lookup(heap),
     };
     match check_inherited(heap, task, prototype, chain_key, key) {
         Ok(Chain::Add) => {}
@@ -1241,7 +1252,7 @@ pub(crate) fn define_own_property(
             .unwrap_or(false);
     let interned = match element {
         true => None,
-        false => Some(intern(heap, &key.to_name())?),
+        false => Some(key.intern(heap)?),
     };
     let named = |o: &mut OrdinaryObject| {
         if let Some(property) = string_wrapper_property(o, key) {
@@ -1270,7 +1281,7 @@ pub(crate) fn define_own_property(
             match key {
                 Key::Index(index) => defined(a.define_element(*index, desc), key),
                 _ if key.is_length() => defined(a.define_length(&length_descriptor(desc)?), key),
-                Key::Name(_) => named(a.object_mut()),
+                Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
             }
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => unsupported("a function"),
@@ -1370,14 +1381,14 @@ pub(crate) fn get_own_property(
         },
         false => target,
     };
-    let k = heap.keys().lookup(&key.to_name());
+    let k = key.lookup(heap);
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
         Visit::Store(o) => Ok(string_wrapper_property(o, key).or_else(|| named(o))),
         Visit::Array(a) => Ok(match key {
             Key::Index(index) => a.element(*index),
             _ if key.is_length() => Some(a.length_property()),
-            Key::Name(_) => named(a.object()),
+            Key::Name(_) | Key::Symbol(_) => named(a.object()),
         }),
         Visit::Other(other) => {
             if let Some(property) = error_stack_property(other, key) {
@@ -1467,7 +1478,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             .unwrap_or(false);
     let k = match element {
         true => None,
-        false => heap.keys().lookup(&key.to_name()),
+        false => key.lookup(heap),
     };
     let shared = |o: &OrdinaryObject| match k.is_some_and(|k| o.get_own(k).is_some()) {
         true => Err(Fault::TypeError(format!(
@@ -1491,7 +1502,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             Ok(match key {
                 Key::Index(index) => a.delete_element(*index),
                 _ if key.is_length() => DeleteOutcome::NonConfigurable,
-                Key::Name(_) => named(a.object_mut()),
+                Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
             })
         }
         other => match not_ordinary(other, key, Access::Delete) {

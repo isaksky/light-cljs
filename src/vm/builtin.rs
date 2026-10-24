@@ -252,6 +252,10 @@ pub(crate) enum Builtin {
     MathLog2,
     JsonParse,
     StringRaw,
+
+
+    /// Symbol primitives (clj-quickjs-127); callable, never constructible.
+    Symbol,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -295,6 +299,8 @@ impl Builtin {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Builtin::ArrayIsArray => "isArray",
+
+            Builtin::Symbol => "Symbol",
             Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
@@ -367,6 +373,8 @@ impl Builtin {
     pub(crate) fn length(self) -> u32 {
         match self {
             Builtin::Object | Builtin::Array | Builtin::ArrayIsArray => 1,
+
+            Builtin::Symbol => 0,
             Builtin::ObjectIs => 2,
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
@@ -530,7 +538,9 @@ pub(crate) fn call(
         | Builtin::ReflectApply => {
             Err(Fault::Internal("a forwarding built-in was called directly"))
         }
-        Builtin::Number | Builtin::String => primitive_constructor(heap, task, which, args, false),
+        Builtin::Number | Builtin::String | Builtin::Symbol => {
+            primitive_constructor(heap, task, which, args, false)
+        }
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
             number_to_string(n, &arg(0))
@@ -939,9 +949,22 @@ pub(crate) fn primitive_constructor(
             None => 0.0,
         }),
         Builtin::String => Value::String(match args.first() {
+            Some(Value::Symbol(s)) if !construct => {
+                let prefix = JsString::from("Symbol(");
+                prefix
+                    .concat(s.description().unwrap_or(&JsString::from("")))
+                    .and_then(|s| s.concat(&JsString::from(")")))
+                    .ok_or(Fault::OutOfMemory("string too long"))?
+            }
             Some(value) => to_js_string(value)?,
             None => JsString::from(""),
         }),
+        Builtin::Symbol if !construct => {
+            Value::Symbol(crate::value::JsSymbol::new(match args.first() {
+                None | Some(Value::Undefined) => None,
+                Some(value) => Some(to_js_string(value)?),
+            }))
+        }
         _ => return Err(Fault::Internal("not a primitive constructor")),
     };
     if !construct {
@@ -987,6 +1010,9 @@ pub(crate) fn array_string_receiver(
         Value::Bool(_) => Err(Fault::Unsupported(
             "Boolean wrapper objects are not supported".into(),
         )),
+        Value::Symbol(_) => Err(Fault::Unsupported(
+            "Symbol wrapper objects are not supported".into(),
+        )),
     }
 }
 
@@ -998,6 +1024,7 @@ fn describe_receiver(v: &Value) -> &'static str {
         Value::Bool(_) => "a boolean",
         Value::Number(_) => "a number",
         Value::String(_) => "a string",
+        Value::Symbol(_) => "a symbol",
         Value::Object(_) => "an object",
     }
 }
@@ -1117,6 +1144,7 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
         Value::Bool(_) => unsupported("a boolean"),
         Value::Number(_) => unsupported("a number"),
         Value::String(_) => unsupported("a string"),
+        Value::Symbol(_) => unsupported("a symbol"),
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {

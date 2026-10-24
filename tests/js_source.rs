@@ -12688,3 +12688,100 @@ fn native_error_callbacks_wait_yield_collect_and_migrate() {
         assert_eq!(waited, 4, "{name}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Identity/property rows adapt
+/// QuickJS tests/test_builtin.js test_symbol (7d1c13c5d8f8); its MIT notice
+/// is retained on string_code_unit_access above (see docs/attribution.md).
+#[test]
+fn symbol_values() {
+    for src in [
+        "String(Symbol()) === 'Symbol()' && String(Symbol(undefined)) === 'Symbol()' && String(Symbol('x')) === 'Symbol(x)' && String(Symbol(null)) === 'Symbol(null)' && String(Symbol(42)) === 'Symbol(42)'",
+        "String(Symbol({toString() { return undefined; }})) === 'Symbol(undefined)' && String(Symbol({toString() { return '\\uD800'; }})) === 'Symbol(\\uD800)'",
+        "let s = Symbol('k'); let t = Symbol('k'); let m = __rt.map(s, 3, t, 4); __rt.get(m, s) === 3 && __rt.get(m, t) === 4 && __rt.getOr(m, 'k', undefined) === undefined",
+        "let a = Symbol('abc'); let b = Symbol('abc'); let obj = {}; obj[a] = 2; obj[a] === 2 && obj['abc'] === undefined && a == a && a === a && a != b && a !== b && typeof a === 'symbol'",
+        "Symbol() !== Symbol() && Symbol('x') !== Symbol('x') && !!Symbol()",
+        "Symbol.iterator === Symbol.iterator && Symbol.toPrimitive !== Symbol.hasInstance && typeof Symbol.iterator === 'symbol'",
+        "let s = Symbol('x'); let o = {x: 1}; o[s] = 2; Object.keys(o).join() === 'x' && Object.getOwnPropertyNames(o).join() === 'x'",
+        "let s = Symbol('x'); let o = {}; o[s] = 2; let names = ''; for (let k in o) { names += k; } names === '' && s in o && !('x' in o)",
+        "let s = Symbol(); let a = []; a[s] = 3; a[s]++ === 3 && a[s] === 4 && a.length === 0 && delete a[s] && !(s in a)",
+        "let s = Symbol(); function f() {} f[s] = 3; f[s] === 3 && Object.keys(f).length === 0 && delete f[s] && !(s in f)",
+        "let s = Symbol(); let p = {}; Object.defineProperty(p, s, {get() { return 7; }}); let o = Object.create(p); o[s] === 7 && s in o && Object.getOwnPropertyNames(p).length === 0",
+        "let s = Symbol(); let o = {}; Object.defineProperty(o, s, {value: 2, writable: true}); o[s]++; Object.getOwnPropertyDescriptor(o, s).value === 3",
+        "let s = Symbol(); s != 1 && s != 'x' && s != true && s != null && s != undefined && Object.is(s, s) && !Object.is(s, Symbol())",
+        "let n = 0; Symbol({toString() { n++; return 'k'; }}) !== Symbol('k') && n === 1",
+        "let s = Symbol(); let key = {toString() { return s; }}; let o = {}; o[key] = 5; o[s] === 5",
+        "let d = Object.getOwnPropertyDescriptor(Symbol, 'iterator'); !d.writable && !d.enumerable && !d.configurable && d.value === Symbol.iterator && Symbol.length === 0 && Symbol.name === 'Symbol'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "new Symbol()",
+        "'' + Symbol()",
+        "Symbol() + 1",
+        "Symbol() * 1",
+        "Symbol(Symbol())",
+        "`${Symbol()}`",
+        "String({toString() { return Symbol(); }})",
+        "new String(Symbol())",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+        let caught =
+            format!("let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught");
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output: description callbacks and
+/// symbol-keyed accessors retain their operands across suspension and GC.
+#[test]
+fn symbol_callbacks_wait_yield_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r"
+        let log = '';
+        let s = Symbol({get toString() {
+            log += 'g'; __rt.need(1271, 1);
+            return function() { log += 's'; __rt.need(1272, 1); return 'key'; };
+        }});
+        let o = {};
+        Object.defineProperty(o, s, {get() { __rt.need(1273, 1); return s; }});
+        o[s] === s && String(s) === 'Symbol(key)' && log === 'gs'
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 3);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Null);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 3);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("symbol callback did not finish");
+}
