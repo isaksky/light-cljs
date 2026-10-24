@@ -1745,6 +1745,7 @@ fn json_parse() {
         r#"let caught = false; try { JSON.parse({toString() { throw 42; }}); } catch (e) { caught = e === 42; } caught"#,
         r#"JSON.parse('"\ud800"').charCodeAt(0) === 0xd800"#,
         r#"let JSON = 7; JSON === 7"#,
+        r#"JSON.parse('1', Symbol('reviver')) === 1"#,
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
@@ -1804,6 +1805,14 @@ fn json_parse() {
     );
     assert_eq!(failure("JSON()").kind(), VmErrorKind::TypeError);
     assert_eq!(failure("new JSON()").kind(), VmErrorKind::TypeError);
+    assert_eq!(
+        failure("JSON.parse(Symbol('1'))").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        failure("JSON.parse({toString() { return Symbol('1'); }})").kind(),
+        VmErrorKind::TypeError
+    );
     assert_eq!(failure("JSON.parse()").kind(), VmErrorKind::SyntaxError);
     let code = compile_function("function parse(text) { try { JSON.parse(text); } catch (e) { return true; } return false; }").unwrap();
     assert!(

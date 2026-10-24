@@ -183,7 +183,7 @@ pub(crate) enum Global {
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 20] = [
+    const ALL: [Global; 21] = [
         Global::Object,
         Global::Number,
         Global::String,
