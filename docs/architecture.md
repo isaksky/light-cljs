@@ -1797,10 +1797,12 @@ does.
 intrinsics"), `Array.prototype` is a shared immutable intrinsic: an
 ordinary object (not itself an array, which is unobservable while nobody
 can write to it) inheriting from `Object.prototype`, with an own `length`
-of 0, a `toString` that fails explicitly until `Array.prototype.join`
-exists (so `[].toString()` never answers `"[object Array]"`), and a
+of 0, a `push` method (clj-quickjs-155), a `toString` that fails explicitly
+until `Array.prototype.join` exists (so `[].toString()` never answers
+`"[object Array]"`), and a
 `constructor` that is the `Array` built-in, a stub that fails when called
-and is not yet a global name (clj-quickjs-39). Every array literal
+and is also a global name (clj-quickjs-155; construction remains
+clj-quickjs-39). Every array literal
 inherits from it; a hole or a missing name reads along the chain, and a
 write of an absent index or name consults the chain (OrdinarySet) before
 the element or property is added.
