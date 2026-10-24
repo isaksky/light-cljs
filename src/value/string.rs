@@ -1231,6 +1231,22 @@ mod tests {
     }
 
     #[test]
+    fn number_to_string_radix_rounds_halfway_coefficients_to_even() {
+        // In odd bases, the parity of the whole coefficient matters.
+        // 3^33 is odd, so both values lie exactly halfway between radix
+        // coefficients. 33 fractional digits first fit their binary64
+        // intervals: 1/(2*3^32) > half an ulp, 1/(2*3^33) < half an ulp.
+        // The lower coefficient for 1.5 is even; for 2.5 it is odd.
+        for (x, expected) in [
+            (1.5, format!("1.{}", "1".repeat(33))),
+            (2.5, format!("2.{}2", "1".repeat(32))),
+        ] {
+            assert_eq!(number_to_string_radix(x, 3), expected);
+            assert_eq!(number_to_string_radix(-x, 3), format!("-{expected}"));
+        }
+    }
+
+    #[test]
     fn radix_extremes_and_exact_integers() {
         assert_eq!(
             number_to_string_radix(f64::from_bits(1), 2),
