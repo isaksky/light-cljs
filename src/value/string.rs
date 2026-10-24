@@ -67,7 +67,9 @@ pub struct JsString(Arc<Body>);
 
 /// The immutable body of a string.
 struct Body {
-    units: Box<[u16]>,
+    // Keeping the allocation as a Vec lets the incremental builder transfer
+    // ownership without a potentially linear shrink/copy at its final step.
+    units: Vec<u16>,
 }
 
 impl JsString {
@@ -75,7 +77,11 @@ impl JsString {
     /// `None` when longer than [`MAX_STRING_LEN`].
     pub fn from_code_units(units: impl Into<Box<[u16]>>) -> Option<JsString> {
         let units = units.into();
-        (units.len() <= MAX_STRING_LEN).then(|| JsString(Arc::new(Body { units })))
+        (units.len() <= MAX_STRING_LEN).then(|| {
+            JsString(Arc::new(Body {
+                units: units.into_vec(),
+            }))
+        })
     }
 
     /// The number of UTF-16 code units (JavaScript `length`).
@@ -92,9 +98,7 @@ impl JsString {
     /// or `None` at or past the end. Constant time: no scan of the string.
     pub fn code_unit_at(&self, index: usize) -> Option<JsString> {
         let unit = *self.0.units.get(index)?;
-        Some(JsString(Arc::new(Body {
-            units: Box::new([unit]),
-        })))
+        Some(JsString(Arc::new(Body { units: vec![unit] })))
     }
 
     /// The code units, in order.
@@ -148,6 +152,66 @@ impl JsString {
             h = h.wrapping_mul(0x0100_0000_01b3);
         }
         h ^ (self.len() as u64).rotate_left(32)
+    }
+}
+
+/// Incremental flat-string construction. Each part names a source, starting
+/// unit, and output length. A part longer than the source suffix repeats it
+/// (padding). All storage is task-owned Rust data with no collector edges.
+#[derive(Debug)]
+pub(crate) struct StringBuild {
+    parts: Vec<(JsString, usize, usize)>,
+    part: usize,
+    offset: usize,
+    units: Vec<u16>,
+}
+
+impl StringBuild {
+    pub(crate) fn new(parts: Vec<(JsString, usize, usize)>) -> Option<Self> {
+        let len = parts
+            .iter()
+            .try_fold(0usize, |n, (_, _, len)| n.checked_add(*len))?;
+        if len > MAX_STRING_LEN {
+            return None;
+        }
+        let mut units = Vec::new();
+        // Reserve once so bounded copying never triggers a growing-buffer
+        // copy. Allocation itself is not interruptible; no units are filled.
+        if !matches!(parts.as_slice(), [(text, 0, n)] if *n == text.len()) {
+            units.try_reserve_exact(len).ok()?;
+        }
+        Some(Self {
+            parts,
+            part: 0,
+            offset: 0,
+            units,
+        })
+    }
+
+    /// Copy at most `budget` units/part boundaries; moving the finished Vec
+    /// into immutable Arc storage does no final linear copy.
+    pub(crate) fn advance(&mut self, budget: usize) -> Option<JsString> {
+        if let [(text, 0, len)] = self.parts.as_slice()
+            && *len == text.len()
+        {
+            return Some(text.clone());
+        }
+        for _ in 0..budget {
+            let Some((text, start, len)) = self.parts.get(self.part) else {
+                return Some(JsString(Arc::new(Body {
+                    units: std::mem::take(&mut self.units),
+                })));
+            };
+            if self.offset == *len {
+                self.part += 1;
+                self.offset = 0;
+            } else {
+                self.units
+                    .push(text.code_units()[start + self.offset % (text.len() - start)]);
+                self.offset += 1;
+            }
+        }
+        None
     }
 }
 
@@ -592,6 +656,33 @@ fn radix_integer(digits: &[u8], bits_per_digit: u32) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incremental_string_build_checks_limits_and_moves_completed_storage() {
+        let source = JsString::from("ab");
+        assert!(StringBuild::new(vec![(source.clone(), 0, MAX_STRING_LEN + 1)]).is_none());
+        assert!(
+            StringBuild::new(vec![
+                (source.clone(), 0, usize::MAX),
+                (source.clone(), 0, 1)
+            ])
+            .is_none()
+        );
+        let mut unchanged = StringBuild::new(vec![(source.clone(), 0, 2)]).unwrap();
+        assert!(unchanged.units.is_empty());
+        assert!(unchanged.advance(1).unwrap().same_body(&source));
+
+        let mut build = StringBuild::new(vec![(source, 1, 513)]).unwrap();
+        let allocation = build.units.as_ptr();
+        assert!(build.advance(256).is_none());
+        assert_eq!(build.units.len(), 256);
+        assert!(build.advance(256).is_none());
+        assert_eq!(build.units.len(), 512);
+        let result = build.advance(256).unwrap();
+        assert_eq!(result.len(), 513);
+        assert!(result.code_units().iter().all(|unit| *unit == b'b' as u16));
+        assert_eq!(result.code_units().as_ptr(), allocation);
+    }
+
     #[test]
     fn incremental_search_matches_code_unit_windows() {
         use super::{JsString, StringSearch};

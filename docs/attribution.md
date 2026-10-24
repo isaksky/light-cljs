@@ -81,3 +81,16 @@ Other search tests are synthetic fixtures, not light-cljs output.
 `js_string_indexOf` in `research/quickjs/quickjs.c` at that revision was read
 as a semantic reference. The incremental Rust KMP implementation was written
 afresh; no upstream implementation code was copied.
+
+## String extraction and combination (clj-quickjs-145)
+
+`tests/js_source.rs::string_substring_slice_concat_pad` adapts the substring,
+concat and infinite-target empty-filler padding assertions from `test_string`
+in `research/quickjs/tests/test_builtin.js` (lines 249, 263, 341), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`string_code_unit_access` in the same test file (`research/quickjs/LICENSE`).
+The remaining cases are synthetic fixtures, not light-cljs output.
+`js_string_substring`, `js_string_slice`, `js_string_concat` and `js_string_pad`
+in `research/quickjs/quickjs.c` at that revision were read as semantic
+references. The resumable Rust implementation was written afresh.

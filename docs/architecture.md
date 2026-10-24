@@ -3543,3 +3543,39 @@ end and retains the latest start, preserving overlapping matches. Empty
 search returns the clamped position. Unwind and cancellation drop the search
 with the existing native-frame protocol. Primitive coercion still has the
 bulk-conversion limitation tracked by clj-quickjs-265.
+
+## String extraction and combination (clj-quickjs-145)
+
+Five appended realm built-ins implement `substring`, `slice`, `concat`,
+`padStart` and `padEnd`. Every call enters a native conversion frame so
+primitive-only calls also budget result construction. Receivers undergo
+RequireObjectCoercible and generic ToString, rather than the restrictive
+thisStringValue used by `String.prototype.toString`/`valueOf`. The existing
+ToPrimitive continuation retains unconverted values as precise roots and
+calls observable conversion methods as ordinary VM frames. Hints follow
+operand roles: string for receivers, concat arguments and fillers; number
+for extraction positions and target lengths. Padding stops before filler
+conversion when no padding is needed. Concat checks its accumulated length
+before visiting the next operand. Omitted/undefined ends and fillers are
+represented by absent conversion operands, so objects returning undefined
+still undergo the required numeric or string conversion.
+
+`NativeState::StringBuild` owns flat-copy plans (immutable source strings,
+a starting unit, output length) and an output `Vec<u16>`, with no heap edges.
+A repeated plan supplies padding. Each native step copies at most 256 units
+or advances part boundaries, charging the instruction budget and allowing a
+safepoint. The result length is checked against `MAX_STRING_LEN` (`2^30 - 1`)
+before reserving output storage; overlong results throw `RangeError` with
+"string too long". Empty padding returns the original text even for an
+infinite target. A plan representing one whole source reuses that string.
+
+The private `JsString` body now owns a `Vec<u16>` instead of a boxed slice;
+it remains immutable behind its independently owned leaf `Arc`. This permits
+the native builder to reserve once before bounded copying and transfer the
+completed allocation without a final linear shrink/copy. Allocation failure
+returns a catchable error; allocation itself is not interruptible. Bulk
+operand conversion and plan creation retain the limitation tracked by
+clj-quickjs-265. Unwind/cancellation drop the builder with its native frame.
+No heap kind, tracing edge, publication category or public string API changes;
+ropes remain clj-quickjs-146. Tests cover callback waits, budget yields,
+collection and thread migration during coercion and long result construction.

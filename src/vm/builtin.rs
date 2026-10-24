@@ -87,6 +87,7 @@
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
 //! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
 //! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
+//! | `String.prototype.substring`, `.slice`, `.concat`, `.padStart`, `.padEnd` (clj-quickjs-145) | generic ToString receivers and resumable argument coercion; UTF-16 extraction/combination, with at most 256 output units copied per native step; length above `2^30 - 1`: catchable `RangeError` ("string too long") |
 //! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
@@ -206,6 +207,12 @@ pub(crate) enum Builtin {
     /// UTF-16 substring search (clj-quickjs-144).
     StringPrototypeIndexOf,
     StringPrototypeLastIndexOf,
+    /// UTF-16 extraction and combination (clj-quickjs-145).
+    StringPrototypeSubstring,
+    StringPrototypeSlice,
+    StringPrototypeConcat,
+    StringPrototypePadStart,
+    StringPrototypePadEnd,
 }
 
 impl Builtin {
@@ -246,6 +253,11 @@ impl Builtin {
             Builtin::StringFromCodePoint => "fromCodePoint",
             Builtin::StringPrototypeIndexOf => "indexOf",
             Builtin::StringPrototypeLastIndexOf => "lastIndexOf",
+            Builtin::StringPrototypeSubstring => "substring",
+            Builtin::StringPrototypeSlice => "slice",
+            Builtin::StringPrototypeConcat => "concat",
+            Builtin::StringPrototypePadStart => "padStart",
+            Builtin::StringPrototypePadEnd => "padEnd",
         }
     }
 
@@ -282,7 +294,11 @@ impl Builtin {
             | Builtin::StringFromCharCode
             | Builtin::StringFromCodePoint
             | Builtin::StringPrototypeIndexOf
-            | Builtin::StringPrototypeLastIndexOf => 1,
+            | Builtin::StringPrototypeLastIndexOf
+            | Builtin::StringPrototypeConcat
+            | Builtin::StringPrototypePadStart
+            | Builtin::StringPrototypePadEnd => 1,
+            Builtin::StringPrototypeSubstring | Builtin::StringPrototypeSlice => 2,
         }
     }
 }
@@ -396,9 +412,15 @@ pub(crate) fn call(
         Builtin::StringFromCharCode | Builtin::StringFromCodePoint => {
             string_from_codes(which, args)
         }
-        Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf => Err(
-            Fault::Internal("string search requires a resumable native frame"),
-        ),
+        Builtin::StringPrototypeIndexOf
+        | Builtin::StringPrototypeLastIndexOf
+        | Builtin::StringPrototypeSubstring
+        | Builtin::StringPrototypeSlice
+        | Builtin::StringPrototypeConcat
+        | Builtin::StringPrototypePadStart
+        | Builtin::StringPrototypePadEnd => Err(Fault::Internal(
+            "string operation requires a resumable native frame",
+        )),
     }
 }
 
@@ -505,6 +527,9 @@ pub(crate) fn string_builtin_operand(
         Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf if index < 2 => {
             crate::vm::dispatch::to_js_string(value).map(Value::String)
         }
+        _ if string_operand_is_text(which, index) => {
+            crate::vm::dispatch::to_js_string(value).map(Value::String)
+        }
         _ => {
             let n = crate::vm::dispatch::to_number(value)?;
             if which == Builtin::StringFromCodePoint {
@@ -513,6 +538,98 @@ pub(crate) fn string_builtin_operand(
             Ok(Value::Number(n))
         }
     }
+}
+
+/// Conversion hints and primitive conversion must agree for every operand.
+pub(crate) fn string_operand_is_text(which: Builtin, index: usize) -> bool {
+    use Builtin::*;
+    match which {
+        StringPrototypeConcat => true,
+        StringPrototypeIndexOf | StringPrototypeLastIndexOf => index < 2,
+        StringPrototypePadStart | StringPrototypePadEnd => index != 1,
+        _ => index == 0 && !matches!(which, StringFromCharCode | StringFromCodePoint),
+    }
+}
+
+pub(crate) fn is_string_build(which: Builtin) -> bool {
+    matches!(
+        which,
+        Builtin::StringPrototypeSubstring
+            | Builtin::StringPrototypeSlice
+            | Builtin::StringPrototypeConcat
+            | Builtin::StringPrototypePadStart
+            | Builtin::StringPrototypePadEnd
+    )
+}
+
+/// After receiver/arguments have been converted in observable order, plan
+/// bounded copying. Undefined ends default to length; padding checks its
+/// empty filler before the engine length limit, including an infinite target.
+pub(crate) fn string_build(
+    which: Builtin,
+    operands: &[Value],
+) -> Result<crate::value::string::StringBuild, Fault> {
+    use Builtin::*;
+    let text = to_js_string(&operands[0])?;
+    let len = text.len();
+    let parts = match which {
+        StringPrototypeSubstring | StringPrototypeSlice => {
+            let position = |v: &Value| -> Result<usize, Fault> {
+                let n = to_number(v)?;
+                let n = if n.is_nan() { 0.0 } else { n.trunc() };
+                let n = if which == StringPrototypeSlice && n < 0.0 {
+                    len as f64 + n
+                } else {
+                    n
+                };
+                Ok(n.clamp(0.0, len as f64) as usize)
+            };
+            let mut start = position(&operands[1])?;
+            let mut end = match operands.get(2) {
+                None => len,
+                Some(value) => position(value)?,
+            };
+            if which == StringPrototypeSubstring && start > end {
+                std::mem::swap(&mut start, &mut end);
+            }
+            vec![(text, start, end.saturating_sub(start))]
+        }
+        StringPrototypeConcat => operands
+            .iter()
+            .map(|v| {
+                let s = to_js_string(v)?;
+                let len = s.len();
+                Ok((s, 0, len))
+            })
+            .collect::<Result<Vec<_>, Fault>>()?,
+        StringPrototypePadStart | StringPrototypePadEnd => {
+            let target = to_number(&operands[1])?;
+            if target.is_nan() || target.trunc() <= len as f64 {
+                vec![(text, 0, len)]
+            } else {
+                let fill = match operands.get(2) {
+                    None => JsString::from(" "),
+                    Some(value) => to_js_string(value)?,
+                };
+                if fill.is_empty() {
+                    vec![(text, 0, len)]
+                } else {
+                    if target.trunc() > crate::value::string::MAX_STRING_LEN as f64 {
+                        return Err(Fault::RangeError("string too long".to_string()));
+                    }
+                    let padding = (fill, 0, target.trunc() as usize - len);
+                    if which == StringPrototypePadStart {
+                        vec![padding, (text, 0, len)]
+                    } else {
+                        vec![(text, 0, len), padding]
+                    }
+                }
+            }
+        }
+        _ => return Err(Fault::Internal("not a string build operation")),
+    };
+    crate::value::string::StringBuild::new(parts)
+        .ok_or_else(|| Fault::RangeError("string too long".to_string()))
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

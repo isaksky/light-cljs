@@ -41,6 +41,7 @@
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
 //! | String code-unit methods (clj-quickjs-143) | built-in functions | `String.prototype` has `charAt`, `charCodeAt`, `codePointAt`; `String` has `fromCharCode`, `fromCodePoint`; all have `length` (1), `name` |
+//! | String extraction/combination (clj-quickjs-145) | built-in functions | `String.prototype` has `substring`, `slice` (length 2), `concat`, `padStart`, `padEnd` (length 1); each has `name` |
 //! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
@@ -467,6 +468,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         Builtin::StringPrototypeCodePointAt,
         Builtin::StringPrototypeIndexOf,
         Builtin::StringPrototypeLastIndexOf,
+        Builtin::StringPrototypeSubstring,
+        Builtin::StringPrototypeSlice,
+        Builtin::StringPrototypeConcat,
+        Builtin::StringPrototypePadStart,
+        Builtin::StringPrototypePadEnd,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -707,7 +713,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 42);
+        assert_eq!(first.all.len(), 47);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

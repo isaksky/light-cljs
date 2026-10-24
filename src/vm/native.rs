@@ -303,6 +303,8 @@ enum ConvertTarget {
     StringBuiltin {
         which: builtin::Builtin,
         access: bool,
+        // Running concat length: reject overflow before coercing a later argument.
+        concat_len: usize,
     },
 }
 
@@ -343,6 +345,7 @@ enum NativeState {
         method: usize,
     },
     StringSearch(crate::value::string::StringSearch),
+    StringBuild(crate::value::string::StringBuild),
 }
 
 /// A pending resumable native operation. See the module docs.
@@ -377,7 +380,7 @@ impl Trace for NativeFrame {
                     v.trace(visit);
                 }
             }
-            NativeState::StringSearch(_) => {} // Strings have no heap edges.
+            NativeState::StringSearch(_) | NativeState::StringBuild(_) => {} // No heap edges.
         }
     }
 }
@@ -538,6 +541,7 @@ pub(crate) fn start_builtin_conversion(
                 ConvertTarget::StringBuiltin {
                     which,
                     access: true,
+                    concat_len: 0,
                 },
                 vec![this.clone(), pos],
                 Hint::String,
@@ -557,6 +561,7 @@ pub(crate) fn start_builtin_conversion(
                 ConvertTarget::StringBuiltin {
                     which,
                     access: true,
+                    concat_len: 0,
                 },
                 vec![
                     this.clone(),
@@ -574,9 +579,39 @@ pub(crate) fn start_builtin_conversion(
                 ConvertTarget::StringBuiltin {
                     which,
                     access: false,
+                    concat_len: 0,
                 },
                 args.to_vec(),
                 Hint::Number,
+            )
+        }
+        _ if !construct && builtin::is_string_build(which) => {
+            if matches!(this, Value::Null | Value::Undefined) {
+                return Err(Fault::TypeError(format!(
+                    "String.prototype.{} called on {}",
+                    which.name(),
+                    this.type_name()
+                )));
+            }
+            let mut operands = vec![this.clone()];
+            if which == Builtin::StringPrototypeConcat {
+                operands.extend_from_slice(args);
+            } else {
+                operands.push(args.first().cloned().unwrap_or(Value::Undefined));
+                // An omitted/undefined end or filler differs from an object
+                // whose ToPrimitive returns undefined. Only omit the former.
+                if let Some(value) = args.get(1).filter(|v| !matches!(v, Value::Undefined)) {
+                    operands.push(value.clone());
+                }
+            }
+            (
+                ConvertTarget::StringBuiltin {
+                    which,
+                    access: true,
+                    concat_len: 0,
+                },
+                operands,
+                Hint::String,
             )
         }
         _ => return Ok(false),
@@ -905,21 +940,41 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
-                        if let ConvertTarget::StringBuiltin { which, .. } = *target {
+                        if let ConvertTarget::StringBuiltin {
+                            which, concat_len, ..
+                        } = target
+                        {
+                            let which = *which;
                             operands[*next] =
                                 builtin::string_builtin_operand(which, *next, receiver)?;
-                            // Search converts receiver and search with string
-                            // hint, then position with number hint.
-                            *hint = if matches!(
-                                which,
-                                builtin::Builtin::StringPrototypeIndexOf
-                                    | builtin::Builtin::StringPrototypeLastIndexOf
-                            ) && *next == 0
-                            {
+                            if which == builtin::Builtin::StringPrototypeConcat {
+                                let text = dispatch::to_js_string(&operands[*next])?;
+                                *concat_len = concat_len
+                                    .checked_add(text.len())
+                                    .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
+                                    .ok_or_else(|| {
+                                        Fault::RangeError("string too long".to_string())
+                                    })?;
+                            }
+                            *hint = if builtin::string_operand_is_text(which, *next + 1) {
                                 Hint::String
                             } else {
                                 Hint::Number
                             };
+                            if *next == 1
+                                && matches!(
+                                    which,
+                                    builtin::Builtin::StringPrototypePadStart
+                                        | builtin::Builtin::StringPrototypePadEnd
+                                )
+                            {
+                                let length = dispatch::to_number(&operands[1])?;
+                                let text = dispatch::to_js_string(&operands[0])?;
+                                if length.is_nan() || length.trunc() <= text.len() as f64 {
+                                    // A short target never observes the filler.
+                                    *end = 2;
+                                }
+                            }
                         }
                         *next += 1;
                         continue;
@@ -960,7 +1015,14 @@ impl NativeState {
                         builtin::primitive_constructor(heap, task, which, operands, construct)
                             .map(Action::Return)
                     }
-                    ConvertTarget::StringBuiltin { which, access } => {
+                    ConvertTarget::StringBuiltin { which, access, .. } => {
+                        if builtin::is_string_build(which) {
+                            *self = NativeState::StringBuild(builtin::string_build(
+                                which,
+                                &operands[..*end],
+                            )?);
+                            return Ok(Action::Continue);
+                        }
                         if matches!(
                             which,
                             builtin::Builtin::StringPrototypeIndexOf
@@ -993,6 +1055,10 @@ impl NativeState {
                 Some(index) => Action::Return(Value::Number(index as f64)),
                 None => Action::Continue,
             }),
+            NativeState::StringBuild(build) => Ok(match build.advance(256) {
+                Some(text) => Action::Return(Value::String(text)),
+                None => Action::Continue,
+            }),
         }
     }
 
@@ -1008,7 +1074,8 @@ impl NativeState {
                 NativeState::Reduce { .. }
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }
-                | NativeState::StringSearch(_),
+                | NativeState::StringSearch(_)
+                | NativeState::StringBuild(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }

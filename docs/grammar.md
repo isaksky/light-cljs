@@ -413,6 +413,10 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **String extraction and combination** (clj-quickjs-145): `substring`,
+  `slice`, `concat`, `padStart` and `padEnd` are supported, including generic
+  receivers, resumable object coercion and budgeted result copying. Ropes and
+  yielding during bulk primitive coercion remain deferred (-146, -265).
 - **String methods remain partial** (clj-quickjs-143). Code-unit access
   and construction execute, including resumable object coercion. Other
   string methods remain deferred. Bulk primitive-string conversion can
@@ -782,6 +786,10 @@ delete a[o];
 ```
 
 ## Execution
+
+String extraction and combination methods (`substring`, `slice`, `concat`,
+`padStart`, `padEnd`) operate on UTF-16 units. Object coercion can suspend;
+result copying runs in batches of at most 256 units (clj-quickjs-145).
 
 String substring searches `indexOf` and `lastIndexOf` execute with generic
 ToString receivers and searches, clamped positions and budgeted UTF-16
@@ -2270,3 +2278,38 @@ new String('abc').indexOf({toString: () => 'b'}, {valueOf: () => 1}) === 1;
 Explicit gaps: other string search methods remain deferred. Bulk primitive
 coercion may delay yielding (clj-quickjs-265); substring scanning itself is
 budgeted. Error constructors/properties remain deferred as documented above.
+
+### String extraction and combination (clj-quickjs-145)
+
+`String.prototype.substring(start, end)` truncates numeric positions toward
+zero, clamps them to [0, length], and swaps them if start exceeds end.
+`slice(start, end)` counts negative positions from the end and returns empty
+when start is at or beyond end. NaN positions mean zero; an omitted or
+undefined end means length. Results contain UTF-16 units, including lone
+surrogates when extraction splits a pair.
+
+`concat(...args)` converts its receiver and each argument to strings in
+order. `padStart(maxLength, fill)` and `padEnd(maxLength, fill)` truncate the
+target length and return the receiver's string if it is already long enough,
+without converting fill. Otherwise fill defaults to one space; an empty fill
+returns the receiver's string even for an infinite target. Nonempty fill is
+repeated and truncated to the required number of UTF-16 units. Results above
+`2^30 - 1` units throw the catchable `RangeError` "string too long" before
+allocating the result.
+
+All five methods require a non-null/undefined receiver and otherwise use
+generic ToString, including observable wrapper conversion methods. Object
+receivers and arguments use resumable ToPrimitive with string or number
+hint as appropriate. Each output-copy step processes at most 256 units or
+part boundaries, allowing yields, GC and migration. Allocations and bulk
+primitive operand conversion are not interruptible (clj-quickjs-265); flat
+string storage remains in use (ropes are clj-quickjs-146).
+
+Synthetic fixtures, not light-cljs output:
+
+```js
+'abcd'.substring(3, 1) === 'bc' && 'abcd'.slice(0, -1) === 'abc';
+'a'.concat(1, null, undefined) === 'a1nullundefined';
+'abc'.padStart(6, '12') === '121abc' && 'abc'.padEnd(5) === 'abc  ';
+'abc'.padStart(Infinity, '') === 'abc' && '\u{10000}'.slice(0, 1) === '\ud800';
+```

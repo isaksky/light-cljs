@@ -135,6 +135,31 @@ fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
             3,
         ),
         (
+            "String.prototype.substring.call(receiver(), position(), code(2, 145)) === 'b'",
+            "spn",
+            3,
+        ),
+        (
+            "String.prototype.slice.apply(receiver(), [position(), code(2, 145)]) === 'b'",
+            "spn",
+            3,
+        ),
+        (
+            "String.prototype.concat.call(receiver(), search(), search()) === 'abcbb'",
+            "sbb",
+            2,
+        ),
+        (
+            "String.prototype.padStart.call(receiver(), code(5, 144), search()) === 'bbabc'",
+            "snb",
+            3,
+        ),
+        (
+            "Reflect.apply(String.prototype.padEnd, receiver(), [code(5, 144), search()]) === 'abcbb'",
+            "snb",
+            3,
+        ),
+        (
             "Reflect.apply(String.prototype.codePointAt, receiver(), [position()]) === 98",
             "sp",
             2,
@@ -398,6 +423,134 @@ fn string_search_long_scans_yield_and_migrate() {
             yields > 32,
             "{name} did not budget prefix construction and scanning"
         );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Includes the substring/concat/
+/// empty-filler padding cases from QuickJS test_string; MIT notice above.
+#[test]
+fn string_substring_slice_concat_pad() {
+    for src in [
+        "'abcd'.substring(1, 3) === 'bc'",
+        "'a'.concat('b', 'c') === 'abc'",
+        "'abc'.padStart(Infinity, '') === 'abc'",
+        "'abcd'.substring(3, 1) === 'bc'",
+        "'abcd'.substring(-5, 2) === 'ab'",
+        "'abcd'.substring(1) === 'bcd'",
+        "'abcd'.slice(-1) === 'd'",
+        "'abcd'.slice(0, -1) === 'abc'",
+        "'abcd'.slice(2, 1) === ''",
+        "'x@y'.slice(0, 1) + 'x@y'.slice(2) === 'xy'",
+        "'a'.concat(1, null, undefined) === 'a1nullundefined'",
+        "'abc'.padStart(6, '12') === '121abc'",
+        "'abc'.padEnd(5) === 'abc  '",
+        "'abc'.padStart(2, 'x') === 'abc'",
+        "let caught = false; try { 'abc'.padStart(Infinity, 'x'); } catch (e) { caught = true; } caught",
+        "'\\u{10000}'.slice(0, 1) === '\\ud800'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_extract_combine_coercion_and_boundaries() {
+    for src in [
+        "'abcd'.substring(Infinity, -Infinity) === 'abcd' && 'abcd'.slice(-Infinity, Infinity) === 'abcd'",
+        "'abcd'.substring(NaN, 2.9) === 'ab' && 'abcd'.slice(-2.9) === 'cd'",
+        "'abcd'.substring(1, undefined) === 'bcd' && 'abcd'.slice(1, undefined) === 'bcd'",
+        "'abcd'.substring(1, {valueOf: () => undefined}) === 'a' && 'abcd'.slice(1, {valueOf: () => undefined}) === ''",
+        "'abc'.padStart(5, undefined) === '  abc' && 'abc'.padEnd(5, {toString: () => undefined}) === 'abcun'",
+        "'abc'.padEnd(Infinity, '') === 'abc' && 'abc'.padStart(NaN) === 'abc' && 'abc'.padEnd(-Infinity) === 'abc'",
+        "'abc'.padStart(5.9, '12') === '12abc' && 'abc'.padEnd('6.9', '12') === 'abc121'",
+        "'a'.concat() === 'a' && ''.concat('', '') === '' && ''.padStart(0, '') === ''",
+        "'abc'.slice(99) === '' && 'abc'.substring(99) === '' && 'abc'.slice(2, null) === ''",
+        "'a'.padStart(2, '\\u{10000}') === '\\ud800a' && 'a'.padEnd(2, '\\udc00') === 'a\\udc00'",
+        "String.prototype.substring.call(123, 1) === '23' && String.prototype.slice.call(false, -2) === 'se'",
+        "String.prototype.concat.call(true, 1) === 'true1' && String.prototype.padStart.call(1, 2, 0) === '01'",
+        "String.prototype.substring(0) === '' && new String('abc').slice(1) === 'bc'",
+        "let s = new String('abc'); s.toString = () => 'xyz'; s.substring(1) === 'yz' && s.padEnd(5, '!') === 'xyz!!'",
+        "let order = ''; let r = {toString: () => {order += 'r'; return 'abc'; }}; let a = {valueOf: () => {order += 'a'; return 1; }}; let b = {valueOf: () => {order += 'b'; return 2; }}; String.prototype.substring.call(r, a, b) === 'b' && order === 'rab'",
+        "let order = ''; let r = {toString: () => {order += 'r'; return 'a'; }}; let a = {toString: () => {order += 'a'; return 1; }, valueOf: () => {throw 1; }}; String.prototype.concat.call(r, a, a) === 'a11' && order === 'raa'",
+        "let n = 0; let f = {toString: () => {n++; throw 1; }}; 'abc'.padStart(2, f) === 'abc' && 'abc'.padEnd(NaN, f) === 'abc' && n === 0",
+        "let n = 0; let f = {toString: () => {n++; return ''; }}; 'abc'.padEnd(Infinity, f) === 'abc' && n === 1",
+        "let order = ''; let f = {toString: () => {order += 'f'; return 'x'; }}; let caught = false; try { 'abc'.padStart(Infinity, f); } catch(e) { caught = true; } caught && order === 'f'",
+        "let n = 0; let bad = {valueOf: () => {throw 42; }}; let end = {valueOf: () => {n++; return 2; }}; let caught = 0; try { 'abc'.slice(bad, end); } catch(e) { caught = e; } caught === 42 && n === 0",
+        "let n = 0; let bad = {toString: () => {throw 42; }}; let later = {toString: () => {n++; return 'x'; }}; let caught = 0; try { 'abc'.concat(bad, later); } catch(e) { caught = e; } caught === 42 && n === 0",
+        "let f = String.prototype.concat.bind({toString: () => 'a'}, {toString: () => 'b'}); f.apply(null, ['c']) === 'abc'",
+        "let s = {toString: String.prototype.concat.bind('a', {toString: () => 'b'})}; String.prototype.slice.call(s, 1) === 'b'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (name, length) in [
+        ("substring", 2),
+        ("slice", 2),
+        ("concat", 1),
+        ("padStart", 1),
+        ("padEnd", 1),
+    ] {
+        let src = format!(
+            "let d = Object.getOwnPropertyDescriptor(String.prototype, '{name}'); d.writable && !d.enumerable && d.configurable && d.value.name === '{name}' && d.value.length === {length}"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for receiver in ["null", "undefined"] {
+            let src = format!(
+                "let n = 0; let a = {{toString: () => {{n++; return 'x'; }}, valueOf: () => {{n++; return 1; }}}}; let caught = false; try {{ String.prototype.{name}.call({receiver}, a, a); }} catch(e) {{caught = true;}} caught && n === 0"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for name in ["padStart", "padEnd"] {
+        for target in ["Infinity", "1073741824", "9007199254740991"] {
+            let src = format!("'abc'.{name}({target}, 'x')");
+            assert_eq!(failure(&src).kind(), VmErrorKind::RangeError, "{src}");
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Construction of long results
+/// must yield while retaining the source and partially copied output.
+#[test]
+fn string_extract_combine_long_results_yield_collect_and_migrate() {
+    for expression in [
+        format!("'{}z'.substring(1)", "a".repeat(8192)),
+        format!("'{}z'.slice(1)", "a".repeat(8192)),
+        format!("'{}'.concat('{}z')", "a".repeat(4096), "a".repeat(4095)),
+        "'z'.padStart(8192, 'a')".to_string(),
+        "''.padEnd(8192, 'a').slice(0, -1).concat('z')".to_string(),
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(&expression), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..400 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(
+                        result.string().unwrap().to_string(),
+                        format!("{}z", "a".repeat(8191))
+                    );
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete, "construction exceeded instruction bound");
+        assert!(yields > 32, "construction did not budget copying");
     }
 }
 
@@ -9771,7 +9924,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k.length === 9",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k.length === 14",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",
