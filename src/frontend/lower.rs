@@ -2800,6 +2800,7 @@ impl<'s> Lowerer<'s> {
     fn expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
         let span = e.span;
         match &e.kind {
+            ExprKind::RegExp { .. } => Err(self.unsupported(span, "RegExp objects")),
             ExprKind::Number(_)
             | ExprKind::Bool(_)
             | ExprKind::Null

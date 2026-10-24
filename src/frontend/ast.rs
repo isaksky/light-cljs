@@ -376,6 +376,7 @@ impl Expr {
         let child = match &kind {
             ExprKind::Number(_)
             | ExprKind::String(_)
+            | ExprKind::RegExp { .. }
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::This
@@ -625,6 +626,12 @@ pub enum ExprKind {
         /// The `delete` token, where run-time failures are reported (also
         /// when the expression is parenthesized).
         op_span: Span,
+    },
+    /// A regular expression literal's source text, excluding delimiters.
+    /// Escapes are preserved; pattern validation and RegExp objects are deferred.
+    RegExp {
+        pattern: String,
+        flags: String,
     },
 }
 

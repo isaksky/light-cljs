@@ -2438,8 +2438,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> PResult<Expr> {
+        if self.is_punct(Punct::Slash) || self.is_punct(Punct::SlashAssign) {
+            self.tok = self.lexer.rescan_regexp(&self.tok)?;
+        }
         let span = self.tok.span;
         let kind = match &self.tok.kind {
+            TokenKind::RegExp { pattern, flags } => ExprKind::RegExp {
+                pattern: pattern.clone(),
+                flags: flags.clone(),
+            },
             TokenKind::Number(n) => ExprKind::Number(*n),
             TokenKind::String(s) => ExprKind::String(s.clone()),
             TokenKind::Keyword(Keyword::True) => ExprKind::Bool(true),
@@ -2503,9 +2510,6 @@ impl<'a> Parser<'a> {
     fn primary_error(&self) -> SyntaxError {
         let span = self.tok.span;
         match &self.tok.kind {
-            TokenKind::Punct(Punct::Slash | Punct::SlashAssign) => {
-                self.unsupported(span, "regular expression literals are")
-            }
             TokenKind::Punct(Punct::Ellipsis) => self.unsupported(span, "spread syntax is"),
             TokenKind::Keyword(k) => {
                 if let Some(what) = unsupported_expression_keyword(*k) {
@@ -2568,8 +2572,65 @@ impl<'a> Parser<'a> {
     fn arrow_after_parens(&self) -> Option<Token> {
         let mut lexer = self.lexer.clone();
         let mut open = 1usize;
+        // Cover-grammar lookahead uses the previous token to choose the
+        // regexp goal. The real parser chooses by its grammar production.
+        let mut operand = true;
+        let mut after_dot = false;
+        let mut control_head = false;
+        let mut parens = Vec::new();
         while open > 0 {
-            match lexer.next_token().ok()?.kind {
+            let mut token = lexer.next_token().ok()?;
+            if operand
+                && matches!(
+                    token.kind,
+                    TokenKind::Punct(Punct::Slash | Punct::SlashAssign)
+                )
+            {
+                token = lexer.rescan_regexp(&token).ok()?;
+            }
+            let closes_control = match token.kind {
+                TokenKind::Punct(Punct::LParen) => {
+                    parens.push(control_head);
+                    false
+                }
+                TokenKind::Punct(Punct::RParen) => parens.pop().unwrap_or(false),
+                _ => false,
+            };
+            operand = match &token.kind {
+                TokenKind::Keyword(_) if after_dot => false,
+                TokenKind::Identifier(_)
+                | TokenKind::Number(_)
+                | TokenKind::String(_)
+                | TokenKind::RegExp { .. } => false,
+                TokenKind::Keyword(
+                    Keyword::True | Keyword::False | Keyword::Null | Keyword::This,
+                ) => false,
+                TokenKind::Punct(
+                    Punct::RParen
+                    | Punct::RBracket
+                    | Punct::RBrace
+                    | Punct::PlusPlus
+                    | Punct::MinusMinus
+                    | Punct::Dot,
+                ) => false,
+                TokenKind::Template(part) => !part.tail,
+                _ => true,
+            };
+            operand |= closes_control;
+            control_head = !after_dot
+                && matches!(
+                    token.kind,
+                    TokenKind::Keyword(
+                        Keyword::If
+                            | Keyword::While
+                            | Keyword::For
+                            | Keyword::Switch
+                            | Keyword::Catch
+                            | Keyword::With
+                    )
+                );
+            after_dot = token.kind == TokenKind::Punct(Punct::Dot);
+            match token.kind {
                 TokenKind::Punct(Punct::LBrace) => {
                     open += 1;
                     lexer.expect_property_name();

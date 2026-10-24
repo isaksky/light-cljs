@@ -4,18 +4,16 @@
 //! The lexer recognizes every ECMAScript punctuator by maximal munch, so that
 //! an operator outside the subset (`**`, `>>>=`, `?.`, `=>`, ...) arrives at
 //! the parser as one token and is rejected there with a precise diagnostic.
-//! A `/` is always lexed as the division punctuator: the parser decides from
-//! context whether a regular expression literal would have started, and
-//! rejects it. BigInt literals and numeric separators are rejected here.
+//! A `/` initially lexes as division; the parser requests the regexp goal
+//! where an operand is expected. BigInt literals and numeric separators
+//! are rejected here.
 //!
 //! Template literals (clj-quickjs-57) lex as one token per part. The lexer
 //! keeps a stack of open substitutions, and the `}` that closes one (the
 //! first `}` not matching a `{` opened inside it) starts the template's
 //! next part instead of being a punctuator. In this subset a `{` or `}`
-//! inside a substitution can only be a punctuator (regular expression
-//! literals, where a brace could be pattern text, are rejected), so the
-//! lexer can choose the template goal itself, and every clone of it, such
-//! as the parser's lookahead, lexes templates the same way.
+//! inside a substitution is counted only when lexed as a punctuator;
+//! rescanning a regexp consumes its pattern text without counting braces.
 //!
 //! Identifiers are Unicode: a start character is `ID_Start`, `$` or `_`, a
 //! later one `ID_Continue`, `$`, ZWNJ or ZWJ (ECMAScript §12.7; tables in
@@ -53,6 +51,11 @@ pub enum TokenKind {
     Template(Box<TemplatePart>),
     Punct(Punct),
     Eof,
+    /// A regular expression literal, rescanned at the parser's request.
+    RegExp {
+        pattern: String,
+        flags: String,
+    },
 }
 
 impl TokenKind {
@@ -67,6 +70,7 @@ impl TokenKind {
             TokenKind::Template(_) => "`}` closing a template substitution".to_string(),
             TokenKind::Punct(p) => format!("`{}`", p.as_str()),
             TokenKind::Eof => "end of input".to_string(),
+            TokenKind::RegExp { .. } => "regular expression literal".to_string(),
         }
     }
 }
@@ -473,6 +477,109 @@ impl<'a> Lexer<'a> {
             kind,
             span: Span::new(start, self.pos),
             newline_before,
+        })
+    }
+
+    /// Rescan a current `/` or `/=` punctuator with the regexp lexical
+    /// goal. No token in its body has been consumed, so template state is
+    /// unchanged. Pattern syntax is deliberately left to clj-quickjs-56.
+    pub(crate) fn rescan_regexp(&mut self, slash: &Token) -> Result<Token, SyntaxError> {
+        debug_assert!(matches!(
+            slash.kind,
+            TokenKind::Punct(Punct::Slash | Punct::SlashAssign)
+        ));
+        let start = slash.span.start;
+        self.pos = start + 1;
+        self.after_dot = false;
+        let body_start = self.pos;
+        let mut in_class = false;
+        let body_end = loop {
+            let at = self.pos;
+            match self.bump() {
+                None => {
+                    return Err(self.error_at(
+                        start,
+                        SyntaxErrorKind::UnexpectedEnd,
+                        "unterminated regular expression literal",
+                    ));
+                }
+                Some(c) if is_line_terminator(c) => {
+                    return Err(self.error_at(
+                        start,
+                        SyntaxErrorKind::InvalidToken,
+                        "line terminator in regular expression literal",
+                    ));
+                }
+                Some('/') if !in_class => break at,
+                Some('[') => in_class = true,
+                Some(']') => in_class = false,
+                Some('\\') => match self.bump() {
+                    None => {
+                        return Err(self.error_at(
+                            start,
+                            SyntaxErrorKind::UnexpectedEnd,
+                            "unterminated regular expression escape",
+                        ));
+                    }
+                    Some(c) if is_line_terminator(c) => {
+                        return Err(self.error_at(
+                            start,
+                            SyntaxErrorKind::InvalidToken,
+                            "line terminator in regular expression literal",
+                        ));
+                    }
+                    Some(_) => {}
+                },
+                Some(_) => {}
+            }
+        };
+        let flags_start = self.pos;
+        while self.peek_char().is_some_and(is_ident_part) {
+            self.bump();
+        }
+        let flags = &self.src[flags_start..self.pos];
+        let mut seen = 0u8;
+        for flag in flags.chars() {
+            let Some(index) = "dgimsuyv".find(flag) else {
+                return Err(self.error_at(
+                    start,
+                    SyntaxErrorKind::Invalid,
+                    format!("unknown regular expression flag `{flag}`"),
+                ));
+            };
+            let bit = 1 << index;
+            if seen & bit != 0 {
+                return Err(self.error_at(
+                    start,
+                    SyntaxErrorKind::Invalid,
+                    format!("duplicate regular expression flag `{flag}`"),
+                ));
+            }
+            seen |= bit;
+        }
+        if flags.contains('u') && flags.contains('v') {
+            return Err(self.error_at(
+                start,
+                SyntaxErrorKind::Invalid,
+                "regular expression flags `u` and `v` are mutually exclusive",
+            ));
+        }
+        // IdentifierPart permits Unicode escapes, but RegExp flags must
+        // be the literal flag characters, never escaped spellings.
+        if self.peek_char() == Some('\\') {
+            return Err(self.error_at(
+                start,
+                SyntaxErrorKind::Invalid,
+                "escaped regular expression flags are not allowed",
+            ));
+        }
+        Ok(Token {
+            kind: TokenKind::RegExp {
+                pattern: self.src[body_start..body_end].to_string(),
+                flags: flags.to_string(),
+            },
+            span: Span::new(start, self.pos),
+            newline_before: slash.newline_before,
         })
     }
 

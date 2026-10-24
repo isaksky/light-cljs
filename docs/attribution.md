@@ -1,5 +1,18 @@
 # Attribution
 
+## Regular expression literal parsing (clj-quickjs-55)
+
+`src/frontend/tests.rs::regexp_literals` adapts the two default assignments
+in `research/quickjs/tests/test_language.js::test_regexp_skip` to call
+arguments and array elements, since destructuring assignment is deferred.
+`docs/grammar.md` repeats those spellings. The QuickJS MIT copyright and
+permission notice is retained with the test (`research/quickjs/LICENSE`).
+Reference revision: `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). Other fixtures are synthetic, not light-cljs output.
+`js_parse_regexp` and `js_parse_skip_parens_token` in
+`research/quickjs/quickjs.c` at that revision were consulted as semantic
+references; the Rust scanner and parser changes were written afresh.
+
 ## Array length changes (clj-quickjs-154)
 
 `tests/js_source.rs::array_length_assignment` adapts the truncation,

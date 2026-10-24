@@ -2,7 +2,7 @@
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start`, three scripts in
 //! `arrow_functions_and_asi`, one in `break_and_continue`, two in
-//! `labelled_statements` and six in
+//! `labelled_statements`, the assignments in `regexp_literals`, and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
 //! notice), the keys and shorthands of `object_literals`, the `${a, b}`
 //! and nested-template forms of `template_literals` (notice in
@@ -25,6 +25,7 @@ use super::{
 
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::RegExp { pattern, flags } => format!("/{pattern}/{flags}"),
         ExprKind::Number(n) => format!("{n}"),
         ExprKind::String(s) => format!("{s:?}"),
         ExprKind::Bool(b) => b.to_string(),
@@ -2926,21 +2927,145 @@ fn template_literals() {
 
 // ----- negative: lexical ambiguity -------------------------------------------
 
+/// The `b = /abc\(/` assignments adapt QuickJS `test_regexp_skip` to call
+/// arguments and array elements while destructuring assignment is deferred.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn regexp_literals() {
+    // Synthetic fixtures, not light-cljs output.
+    assert_eq!(ast(r"x = /abc\(/;"), r"(= x /abc\(/)");
+    assert_eq!(ast(r"x =/abc\(/;"), r"(= x /abc\(/)");
+    assert_eq!(ast(r"f(/[/]/g, /\//)"), r"(call f /[/]/g /\//)");
+    assert_eq!(ast("x = /=/;"), "(= x /=/)");
+    assert_eq!(ast("if (a) /re/.test(b);"), "(if a (call (. /re/ test) b))");
+    assert_eq!(ast("a\n/ b / g"), "(/ (/ a b) g)");
+    // Adapted upstream regression: escaped `(` does not affect lookahead.
+    assert_eq!(
+        ast(r"f(b = /abc\(/, b =/abc\(/)"),
+        r"(call f (= b /abc\(/) (= b /abc\(/))"
+    );
+    assert_eq!(
+        ast(r"[b = /abc\(/, b =/abc\(/]"),
+        r"(array (= b /abc\(/) (= b /abc\(/))"
+    );
+    for src in ["/a/gimsuyd;", "/a/v;", "f(/'/);", "`${/}/}`;"] {
+        parse_script(src).unwrap();
+    }
+    for src in ["x = /a/gg;", "x = /a/x;"] {
+        rejects(src, SyntaxErrorKind::Invalid, 1, 5);
+    }
+    rejects("x = /abc", SyntaxErrorKind::UnexpectedEnd, 1, 5);
+    rejects("x = /a\n/", SyntaxErrorKind::InvalidToken, 1, 5);
+
+    let source = "let r = /é[\\/]x/g;";
+    let script = parse_script(source).unwrap();
+    let StmtKind::Lexical(decl) = &script.body[0].kind else {
+        panic!("declaration")
+    };
+    let literal = decl.declarators[0].init.as_ref().unwrap();
+    assert_eq!(
+        literal.kind,
+        ExprKind::RegExp {
+            pattern: "é[\\/]x".into(),
+            flags: "g".into()
+        }
+    );
+    assert_eq!(literal.span.text(source), "/é[\\/]x/g");
+    assert_eq!(literal.height, 1);
+
+    for source in [
+        "/x/;",
+        "(/x/);",
+        "[/x/, /y/];",
+        "!/x/;",
+        "function f() { return /x/; }",
+        "throw /x/;",
+        "a ? /x/ : /y/;",
+        "a && /x/;",
+        "a || /x/;",
+        "while (a) /x/;",
+        "{} /x/;",
+        "`${/[}]/} ${/}/}`;",
+        "(a = /[)]/, b = /\\(/) => a;",
+        "(a = `${/}/}`) => a;",
+        "(a = function() { if (a) /[)]/; }) => a;",
+        "(a = obj.return / b / g) => a;",
+        "f(a = /[)]/, b =/= /);",
+        "({x: /x/}).x;",
+        "function f(a = /x/) { return a; }",
+        "a /= b;",
+        "f(a / b / g);",
+        "`${a / b}`;",
+        "// comment\n/x/;",
+        "/* comment */ /x/;",
+    ] {
+        parse_script(source).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+    }
+    for source in [
+        "/a/gg",
+        "/a/x",
+        "/a/uv",
+        "/a/g0",
+        "/a/é",
+        "/a/$",
+        "/a/_",
+        "/a/\u{200c}",
+        r"/a/\u0067",
+    ] {
+        rejects(source, SyntaxErrorKind::Invalid, 1, 1);
+    }
+    for ending in ["", "\\", "[abc", "[abc/", "[\\]"] {
+        rejects(&format!(" /{ending}"), SyntaxErrorKind::UnexpectedEnd, 1, 2);
+    }
+    for line in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
+        for escape in ["", "\\"] {
+            rejects(
+                &format!(" /a{escape}{line}/"),
+                SyntaxErrorKind::InvalidToken,
+                1,
+                2,
+            );
+        }
+    }
+    for source in [
+        "let r = /x/g;",
+        "false && /x/;",
+        "function f() { return /x/; }",
+        "delete /x/;",
+    ] {
+        let error = compile_script("regexp", source).unwrap_err();
+        assert_eq!(error.kind, SyntaxErrorKind::Unsupported, "{source}");
+        assert!(error.message.contains("RegExp objects"), "{error}");
+        assert!(error.span.text(source).starts_with('/'), "{error}");
+    }
+}
+
 #[test]
 fn rejects_lexically_ambiguous_input() {
     use SyntaxErrorKind::*;
-    // `/` where an operand is expected starts a regular expression.
-    rejects_with("x = /ab+c/g;", Unsupported, 1, 5, "regular expression");
-    rejects_with("x = /=/;", Unsupported, 1, 5, "regular expression");
-    rejects_with(
-        "if (a) /re/.test(b);",
-        Unsupported,
-        1,
-        8,
-        "regular expression",
-    );
-    // The regular expression is diagnosed before its body is lexed.
-    rejects_with("f(/'/)", Unsupported, 1, 3, "regular expression");
+    // Regexp-goal cases now parse; evaluation still needs RegExp objects.
+    for source in ["x = /ab+c/g;", "x = /=/;", "if (a) /re/.test(b);", "f(/'/)"] {
+        parse_script(source).unwrap();
+        let error = compile_script("regexp", source).unwrap_err();
+        assert_eq!(error.kind, Unsupported);
+        assert!(error.message.contains("RegExp objects"), "{error}");
+    }
     // A number literal must not run into an identifier or digit.
     rejects("3.toString()", InvalidToken, 1, 3);
     rejects("let n = 3in x;", InvalidToken, 1, 10);
@@ -3918,12 +4043,12 @@ fn grammar_doc_examples() {
 
 #[test]
 fn diagnostics_display_position_and_message() {
-    let e = err("let a = 1;\nlet b = /x/;");
+    let e = compile_script("regexp", "let a = 1;\nlet b = /x/;").unwrap_err();
     assert_eq!(
         e.to_string(),
-        "2:9: SyntaxError: regular expression literals are not supported by this JavaScript subset"
+        "2:9: SyntaxError: RegExp objects cannot be executed yet"
     );
-    assert_eq!(e.span.text("let a = 1;\nlet b = /x/;"), "/");
+    assert_eq!(e.span.text("let a = 1;\nlet b = /x/;"), "/x/");
 }
 
 /// Binary operators, calls and member accesses record their operator

@@ -21,7 +21,8 @@
 //!   form; the error names the form and its position.
 //! * [`lexer::Lexer`]: on-demand tokenizer used by the parser. It never
 //!   decides between division and a regular expression literal; the parser
-//!   does, from grammatical context, and rejects regular expressions.
+//!   requests the regexp lexical goal from grammatical context. Regular
+//!   expressions parse, but compilation requires deferred RegExp objects.
 //!
 //! Every AST node carries a byte-offset [`Span`] into the source.
 //! [`line_column`] converts an offset into the 1-based line and column used by
