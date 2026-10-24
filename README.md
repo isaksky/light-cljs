@@ -1192,7 +1192,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100,
+- `async` arrows; rest and object destructuring parameters (defaults: clj-quickjs-100,
   below), `new.target` and `super` (rejected inside arrows).
   Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
@@ -1935,8 +1935,8 @@ Deferred:
 - Array methods other than `push`, `join`, `toString` and `Array.isArray`.
   Boolean receivers of the generic array
   string methods require the deferred Boolean wrappers. Assigning `length` supports
-  ArraySetLength (clj-quickjs-154). Array destructuring
-  (`Unsupported`); object keys convert since clj-quickjs-70.
+  ArraySetLength (clj-quickjs-154). Array destructuring executes since
+  clj-quickjs-131; object keys convert since clj-quickjs-70.
   `__rt.vector` values stay persistent vectors, not arrays.
 
 ### `Object.defineProperty`, `Object.getOwnPropertyDescriptor` and data property attributes (clj-quickjs-119)
@@ -2342,7 +2342,7 @@ Supported (`cargo test --test js_functions function_length_and_name`,
   0/empty-string fallback. Published functions are immutable and report
   non-configurable metadata descriptors without attaching a record.
 
-Deferred: rest and destructuring parameters;
+Deferred: rest and object destructuring parameters;
 their syntax remains rejected. See `docs/architecture.md`, "Function own properties".
 
 ### `Array.prototype.push` (clj-quickjs-155)
@@ -3270,7 +3270,7 @@ iterator methods and getters may yield, wait on dependencies and migrate.
 Holes become own elements; method receivers are preserved. Argument lists
 above 65,535 values throw RangeError; task stack limits still apply.
 Compiler-reserved `__rt` intrinsics require static arguments. Object spread,
-rest parameters and destructuring remain deferred. Verify with
+rest parameters and object destructuring remain deferred. Verify with
 `cargo test --test js_source spread_`, `cargo test --test need iterator_next_waits_on_dependency`
 and `cargo test --lib frontend::tests::spread_forms`.
 
@@ -3370,3 +3370,14 @@ completions across calls from different depths. For example,
 A resumed finally block may wait on `__rt.need`, survive collection and migrate
 to another worker before finishing its pending return or throw. Generator
 `return()`/`throw()` methods, delegated `yield*` and async/await remain deferred.
+
+### Array destructuring (clj-quickjs-131)
+
+Array patterns execute in `let`/`const`/`var` declarations, assignments,
+ordinary/arrow parameters and catch clauses. They support elisions, nested
+patterns, defaults for undefined values, rest arrays and property assignment
+targets. Patterns consume the shared synchronous iterator protocol and close
+live iterators on early completion or consumer errors. Iterator callbacks,
+defaults and setters can wait, yield and migrate. Object patterns, rest
+parameters and destructuring iteration heads remain deferred. Run:
+`CARGO_BUILD_JOBS=3 cargo test --test js_source array_destructuring -- --test-threads=3`.

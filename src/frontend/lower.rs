@@ -159,8 +159,8 @@ use std::sync::Arc;
 
 use super::ast::{
     BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
-    Ident, LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
-    SwitchCase, TemplateElement, UnaryOp, UpdateOp,
+    Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName,
+    Script, Stmt, StmtKind, SwitchCase, TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -848,8 +848,10 @@ impl<'s> Lowerer<'s> {
                             LexicalKind::Const => BindingKind::Const,
                         };
                         for d in &decl.declarators {
-                            if self.declare(&d.name, kind, top_level, i < checked)? {
-                                declared.push(&d.name);
+                            for name in d.name.names() {
+                                if self.declare(name, kind, top_level, i < checked)? {
+                                    declared.push(name);
+                                }
                             }
                         }
                     }
@@ -1089,12 +1091,12 @@ impl<'s> Lowerer<'s> {
     /// assignment, and `var x;` does nothing.
     fn var_declarators(&mut self, declarators: &[Declarator]) -> Result<(), SyntaxError> {
         for d in declarators {
-            self.check_var_not_shadowed(&d.name)?;
+            for name in d.name.names() {
+                self.check_var_not_shadowed(name)?;
+            }
             if let Some(init) = &d.init {
-                self.named_expr(init, JsString::from(d.name.name.as_str()))?;
-                let access = self.resolve(&d.name.name);
-                self.store(access, d.name.span)?;
-                self.out().op(Opcode::Pop, d.span);
+                self.pattern_value(init, &d.name)?;
+                self.pattern_store(&d.name, false, false)?;
             }
         }
         Ok(())
@@ -1531,11 +1533,12 @@ impl<'s> Lowerer<'s> {
         if f.generator {
             self.out().op(Opcode::GeneratorStart, f.span);
         }
-        if !f.has_defaults() {
+        if !f.has_non_simple_parameters() {
             if f.generator {
                 self.out().op(Opcode::GeneratorInitialYield, f.span);
             }
-            return self.statement_list(&f.body, &f.params, true);
+            let names: Vec<Ident> = f.params.iter().flat_map(|p| p.names()).cloned().collect();
+            return self.statement_list(&f.body, &names, true);
         }
         self.parameter_scope(f)?;
         if f.generator {
@@ -1567,9 +1570,10 @@ impl<'s> Lowerer<'s> {
     /// it), after its argument is moved to a scratch local, and initialized
     /// from that local in its turn (`cell_init`), which is then cleared.
     #[inline(never)]
-    fn parameter_scope(&mut self, f: &Function) -> Result<(), SyntaxError> {
+    fn identifier_parameter_scope(&mut self, f: &Function) -> Result<(), SyntaxError> {
         self.cur_mut().scopes.push(Scope::new());
         for (i, p) in f.params.iter().enumerate() {
+            let p = p.identifier().unwrap();
             self.declare(p, BindingKind::Param, false, false)?;
             let binding = self
                 .cur_mut()
@@ -1585,6 +1589,7 @@ impl<'s> Lowerer<'s> {
         let parameter_slots = self.cur().next_slot;
         let mut sources = Vec::with_capacity(f.params.len());
         for p in &f.params {
+            let p = p.identifier().unwrap();
             let b = self.local(p)?;
             if b.repr == Repr::Cell {
                 let stash = self.temp(p.span)?;
@@ -1598,6 +1603,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         for ((p, default), src) in f.params.iter().zip(&f.defaults).zip(sources) {
+            let p = p.identifier().unwrap();
             if let Some(default) = default {
                 let skip = self.out().label();
                 self.out().op_u16(Opcode::GetLocal, src, p.span);
@@ -1618,6 +1624,57 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Undefined, p.span);
                 self.out().op_u16(Opcode::SetLocal, src, p.span);
             }
+        }
+        // The scratch locals are free again: the body's bindings reuse them
+        // (`init_body_var`).
+        self.cur_mut().next_slot = parameter_slots;
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn parameter_scope(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        if f.params.iter().all(|p| p.identifier().is_some()) {
+            return self.identifier_parameter_scope(f);
+        }
+        self.cur_mut().scopes.push(Scope::new());
+        // Keep incoming argument slots separate from pattern bindings: one
+        // argument may initialize many names, and earlier defaults see TDZ.
+        self.cur_mut().next_slot = f.params.len();
+        for p in &f.params {
+            for name in p.names() {
+                self.declare(name, BindingKind::Param, false, false)?;
+                self.cur_mut()
+                    .scopes
+                    .last_mut()
+                    .unwrap()
+                    .get_mut(&name.name)
+                    .unwrap()
+                    .initialized = false;
+                let b = self.local(name)?;
+                if b.repr == Repr::Cell {
+                    self.out().op(Opcode::NewCell, name.span);
+                    self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                }
+            }
+        }
+        self.arguments_binding(f.span)?;
+        let parameter_slots = self.cur().next_slot;
+        for (i, (p, default)) in f.params.iter().zip(&f.defaults).enumerate() {
+            let src = i as u16;
+            if let Some(default) = default {
+                let skip = self.out().label();
+                self.out().op_u16(Opcode::GetLocal, src, p.span);
+                self.out().op(Opcode::Undefined, p.span);
+                self.out().op(Opcode::StrictEq, p.span);
+                self.out().branch(Opcode::JumpIfFalse, skip, p.span);
+                self.pattern_value(default, p)?;
+                self.out().op_u16(Opcode::SetLocal, src, default.span);
+                self.out().bind(skip);
+            }
+            self.out().op_u16(Opcode::GetLocal, src, p.span);
+            self.pattern_store(p, true, false)?;
+            self.out().op(Opcode::Undefined, p.span);
+            self.out().op_u16(Opcode::SetLocal, src, p.span);
         }
         // The scratch locals are free again: the body's bindings reuse them
         // (`init_body_var`).
@@ -1878,23 +1935,225 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    fn pattern_value(&mut self, value: &Expr, pattern: &Pattern) -> Result<(), SyntaxError> {
+        if let Some(name) = pattern.identifier() {
+            self.named_expr(value, JsString::from(name.name.as_str()))
+        } else {
+            self.expr(value)
+        }
+    }
+
+    /// Prepare assignment references before stepping the iterator or evaluating
+    /// a default. The reference stays on the traced operand stack across calls.
+    fn pattern_reference(&mut self, pattern: &Pattern) -> Result<bool, SyntaxError> {
+        match &pattern.kind {
+            PatternKind::Target(target) => {
+                // Assignment references retain the unconverted computed key.
+                // PutElem performs ToPropertyKey after stepping/defaults, as
+                // for a simple property assignment (rather than a read/write).
+                if let ExprKind::Index { object, index, .. } = &target.kind {
+                    self.expr(object)?;
+                    self.expr(index)?;
+                } else {
+                    self.property_reference(target)?;
+                }
+                Ok(true)
+            }
+            PatternKind::Default { target, .. } => self.pattern_reference(target),
+            _ => Ok(false),
+        }
+    }
+
+    #[inline(never)]
+    fn pattern_store(
+        &mut self,
+        pattern: &Pattern,
+        initialize: bool,
+        prepared: bool,
+    ) -> Result<(), SyntaxError> {
+        let span = pattern.span;
+        match &pattern.kind {
+            PatternKind::Identifier(name) => {
+                if initialize {
+                    let b = self.initialize(name)?;
+                    if b.repr == Repr::Cell {
+                        let saved = self.cur().next_slot;
+                        let tmp = self.temp(span)?;
+                        self.out().op_u16(Opcode::SetLocal, tmp, span);
+                        self.out().op_u16(Opcode::GetLocal, b.slot, span);
+                        self.out().op_u16(Opcode::GetLocal, tmp, span);
+                        self.out().op(Opcode::CellInit, span);
+                        self.out().op(Opcode::Undefined, span);
+                        self.out().op_u16(Opcode::SetLocal, tmp, span);
+                        self.cur_mut().next_slot = saved;
+                    } else {
+                        self.out().op_u16(Opcode::SetLocal, b.slot, span);
+                    }
+                } else {
+                    let access = self.resolve(&name.name);
+                    self.store(access, span)?;
+                    self.out().op(Opcode::Pop, span);
+                }
+            }
+            PatternKind::Default { target, value } => {
+                let skip = self.out().label();
+                self.out().op(Opcode::Dup, span);
+                self.out().op(Opcode::Undefined, span);
+                self.out().op(Opcode::StrictEq, span);
+                self.out().branch(Opcode::JumpIfFalse, skip, span);
+                self.out().op(Opcode::Pop, span);
+                self.pattern_value(value, target)?;
+                self.out().bind(skip);
+                self.pattern_store(target, initialize, prepared)?;
+            }
+            PatternKind::Target(target) => {
+                if !prepared {
+                    return Err(self.internal(span, "unprepared pattern reference"));
+                }
+                let reference = match &target.kind {
+                    ExprKind::Member {
+                        property, op_span, ..
+                    } => PropertyRef::Field(
+                        self.name_index(&property.name, property.span)?,
+                        *op_span,
+                    ),
+                    ExprKind::Index { op_span, .. } => PropertyRef::Elem(*op_span),
+                    _ => return Err(self.internal(span, "invalid pattern reference")),
+                };
+                self.reference_put(reference);
+                self.out().op(Opcode::Pop, span);
+            }
+            PatternKind::Array { elements, rest } => {
+                self.array_pattern(elements, rest.as_deref(), initialize, span)?
+            }
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn assign_pattern(
+        &mut self,
+        target: &Pattern,
+        value: &Expr,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(value)?;
+        self.out().op(Opcode::Dup, span);
+        self.pattern_store(target, false, false)
+    }
+
+    /// Consume a value through the same GetIterator/advance/close lowering as
+    /// for-of. `done` is set before protocol operations, so failures in next,
+    /// done or value do not close. Consumer failures do close, preserving throws.
+    #[inline(never)]
+    fn array_pattern(
+        &mut self,
+        elements: &[Option<Pattern>],
+        rest: Option<&Pattern>,
+        initialize: bool,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
+        let it = self.temp(span)?;
+        let next = self.temp(span)?;
+        let result = self.temp(span)?;
+        let done = self.temp(span)?;
+        let suppress = self.temp(span)?;
+        self.iterator_acquire_value(it, next, span)?;
+        self.constant(Primitive::Bool(false), span)?;
+        self.out().op_u16(Opcode::SetLocal, done, span);
+        let close = self.out().label();
+        self.out().branch(Opcode::PushFinally, close, span);
+        for element in elements {
+            let prepared = match element {
+                Some(p) => self.pattern_reference(p)?,
+                None => false,
+            };
+            let step = self.out().label();
+            let empty = self.out().label();
+            let value = self.out().label();
+            self.out().op_u16(Opcode::GetLocal, done, span);
+            self.out().branch(Opcode::JumpIfFalse, step, span);
+            self.out().branch(Opcode::Jump, empty, span);
+            self.out().bind(step);
+            self.constant(Primitive::Bool(true), span)?;
+            self.out().op_u16(Opcode::SetLocal, done, span);
+            self.iterator_advance(it, next, result, empty, span)?;
+            if element.is_some() {
+                self.out().op_u16(Opcode::GetLocal, result, span);
+                self.iterator_field("value", span)?;
+            }
+            self.constant(Primitive::Bool(false), span)?;
+            self.out().op_u16(Opcode::SetLocal, done, span);
+            self.out().branch(Opcode::Jump, value, span);
+            self.out().bind(empty);
+            if element.is_some() {
+                self.out().op(Opcode::Undefined, span);
+            }
+            self.out().bind(value);
+            if let Some(p) = element {
+                self.pattern_store(p, initialize, prepared)?;
+            }
+        }
+        if let Some(rest) = rest {
+            let prepared = self.pattern_reference(rest)?;
+            self.out().op(Opcode::NewArray, span);
+            let start = self.out().label();
+            let collect = self.out().label();
+            let end = self.out().label();
+            self.out().op_u16(Opcode::GetLocal, done, span);
+            self.out().branch(Opcode::JumpIfFalse, collect, span);
+            self.out().branch(Opcode::Jump, end, span);
+            self.out().bind(collect);
+            self.constant(Primitive::Bool(true), span)?;
+            self.out().op_u16(Opcode::SetLocal, done, span);
+            self.out().bind(start);
+            self.iterator_step(it, next, result, end, span)?;
+            self.out().op(Opcode::AppendElement, span);
+            self.out().branch(Opcode::Jump, start, span);
+            self.out().bind(end);
+            self.pattern_store(rest, initialize, prepared)?;
+        }
+        self.out().op(Opcode::PopFinally, span);
+        self.out().bind(close);
+        let finished = self.out().label();
+        let run_close = self.out().label();
+        let caught = self.out().label();
+        self.out().op_u16(Opcode::GetLocal, done, span);
+        self.out().op(Opcode::Not, span);
+        self.out().branch(Opcode::JumpIfFalse, finished, span);
+        self.out().op(Opcode::PendingThrow, span);
+        self.out().op_u16(Opcode::SetLocal, suppress, span);
+        self.out().op_u16(Opcode::GetLocal, suppress, span);
+        self.out().branch(Opcode::JumpIfFalse, run_close, span);
+        self.out().branch(Opcode::PushCatch, caught, span);
+        self.out().bind(run_close);
+        self.iterator_close(it, result, span)?;
+        self.out().op_u16(Opcode::GetLocal, suppress, span);
+        self.out().branch(Opcode::JumpIfFalse, finished, span);
+        self.out().op(Opcode::PopCatch, span);
+        self.out().branch(Opcode::Jump, finished, span);
+        self.out().bind(caught);
+        self.out().op(Opcode::Pop, span);
+        self.out().bind(finished);
+        self.out().op(Opcode::EndFinally, span);
+        for slot in saved..self.cur().next_slot {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot as u16, span);
+        }
+        self.cur_mut().next_slot = saved;
+        Ok(())
+    }
+
     /// Initialize the declared bindings of `decl` in order, each from its
     /// initializer (`undefined` without one).
     fn declarators(&mut self, decl: &LexicalDecl) -> Result<(), SyntaxError> {
         for d in &decl.declarators {
-            let b = self.local(&d.name)?;
-            if b.repr == Repr::Cell {
-                self.out().op_u16(Opcode::GetLocal, b.slot, d.span);
-            }
             match &d.init {
-                Some(init) => self.named_expr(init, JsString::from(d.name.name.as_str()))?,
+                Some(init) => self.pattern_value(init, &d.name)?,
                 None => self.out().op(Opcode::Undefined, d.span),
             }
-            let b = self.initialize(&d.name)?;
-            match b.repr {
-                Repr::Cell => self.out().op(Opcode::CellInit, d.span),
-                Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, d.span),
-            }
+            self.pattern_store(&d.name, true, false)?;
         }
         Ok(())
     }
@@ -1949,15 +2208,19 @@ impl<'s> Lowerer<'s> {
                     LexicalKind::Const => BindingKind::Const,
                 };
                 for d in &decl.declarators {
-                    self.declare(&d.name, kind, false, false)?;
+                    for name in d.name.names() {
+                        self.declare(name, kind, false, false)?;
+                    }
                 }
                 for d in &decl.declarators {
-                    let b = self.local(&d.name)?;
-                    if b.repr == Repr::Cell {
-                        self.out().op(Opcode::NewCell, d.name.span);
-                        self.out().op_u16(Opcode::SetLocal, b.slot, d.name.span);
-                        if kind == BindingKind::Let {
-                            copies.push((b.slot, d.name.span));
+                    for name in d.name.names() {
+                        let b = self.local(name)?;
+                        if b.repr == Repr::Cell {
+                            self.out().op(Opcode::NewCell, name.span);
+                            self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                            if kind == BindingKind::Let {
+                                copies.push((b.slot, name.span));
+                            }
                         }
                     }
                 }
@@ -2249,6 +2512,15 @@ impl<'s> Lowerer<'s> {
         span: Span,
     ) -> Result<(), SyntaxError> {
         self.expr(source)?;
+        self.iterator_acquire_value(it, next, span)
+    }
+
+    fn iterator_acquire_value(
+        &mut self,
+        it: u16,
+        next: u16,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
         self.out().op(Opcode::GetIterator, span);
         self.out().op(Opcode::Dup, span);
         self.iterator_field("next", span)?;
@@ -2269,6 +2541,19 @@ impl<'s> Lowerer<'s> {
         done: usize,
         span: Span,
     ) -> Result<(), SyntaxError> {
+        self.iterator_advance(it, next, result, done, span)?;
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("value", span)
+    }
+
+    fn iterator_advance(
+        &mut self,
+        it: u16,
+        next: u16,
+        result: u16,
+        done: usize,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
         self.out().op_u16(Opcode::GetLocal, it, span);
         self.out().op_u16(Opcode::GetLocal, next, span);
         self.out().op_u16(Opcode::CallMethod, 0, span);
@@ -2278,8 +2563,7 @@ impl<'s> Lowerer<'s> {
         self.iterator_field("done", span)?;
         self.out().op(Opcode::Not, span);
         self.out().branch(Opcode::JumpIfFalse, done, span);
-        self.out().op_u16(Opcode::GetLocal, result, span);
-        self.iterator_field("value", span)
+        Ok(())
     }
 
     #[inline(never)]
@@ -2551,7 +2835,26 @@ impl<'s> Lowerer<'s> {
                 self.out().bind(catch);
                 self.reset_completion(handler.span);
                 match &handler.param {
+                    Some(pattern) if pattern.identifier().is_none() => {
+                        let saved = self.cur().next_slot;
+                        let source = self.temp(pattern.span)?;
+                        self.out().op_u16(Opcode::SetLocal, source, pattern.span);
+                        self.cur_mut().scopes.push(Scope::new());
+                        for name in pattern.names() {
+                            self.declare(name, BindingKind::Let, false, false)?;
+                            let b = self.local(name)?;
+                            if b.repr == Repr::Cell {
+                                self.out().op(Opcode::NewCell, name.span);
+                                self.out().op_u16(Opcode::SetLocal, b.slot, name.span);
+                            }
+                        }
+                        self.out().op_u16(Opcode::GetLocal, source, pattern.span);
+                        self.pattern_store(pattern, true, false)?;
+                        self.statement_list(&handler.body, &[], false)?;
+                        self.exit_scope(saved);
+                    }
                     Some(param) => {
+                        let param = param.identifier().unwrap();
                         // The parameter is the first binding the catch
                         // body's scope declares, so it takes the next slot.
                         let slot = self.cur().next_slot;
@@ -3091,6 +3394,7 @@ impl<'s> Lowerer<'s> {
     fn expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
         let span = e.span;
         match &e.kind {
+            ExprKind::AssignPattern { target, value } => self.assign_pattern(target, value, span),
             ExprKind::RegExp { pattern, flags } => self.regexp_literal(pattern, flags, span),
             ExprKind::Number(_)
             | ExprKind::BigInt(_)
@@ -3906,10 +4210,10 @@ fn var_names<'a>(body: &'a [Stmt], out: &mut Vec<&'a Ident>) {
 
 fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
     match &stmt.kind {
-        StmtKind::Var(declarators) => out.extend(declarators.iter().map(|d| &d.name)),
+        StmtKind::Var(declarators) => out.extend(declarators.iter().flat_map(|d| d.name.names())),
         StmtKind::For { init, body, .. } => {
             if let Some(ForInit::Var(declarators)) = init {
-                out.extend(declarators.iter().map(|d| &d.name));
+                out.extend(declarators.iter().flat_map(|d| d.name.names()));
             }
             var_names_in(body, out);
         }

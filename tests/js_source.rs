@@ -13,6 +13,119 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_destructuring() {
+    for source in [
+        "let [a, , b = 3, ...r] = [1, 2, undefined, 4, 5]; a === 1 && b === 3 && r.length === 2 && r[0] === 4",
+        "let p = 1, q = 2; [p, q] = [q, p]; p === 2 && q === 1",
+        "let it = {next() { return {done: true}; }}; it[Symbol.iterator] = function() { return this; }; let [x] = it; x === undefined",
+        "let n = 0; let [x = ++n] = [2]; x === 2 && n === 0",
+        "let closed = 0; let it = {next() { return {value: 1}; }, return() { closed++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [x] = it; x === 1 && closed === 1",
+        "let closed = 0; let it = {next() { return {done: true}; }, return() { closed++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [x, y] = it; closed === 0 && x === undefined && y === undefined",
+        "let n = 0; try { let [z] = 1; } catch(e) { if (e instanceof TypeError) n++; } try { let [z] = null; } catch(e) { if (e instanceof TypeError) n++; } n === 2",
+        "(([a, b]) => a + b)([1, 2]) === 3",
+        "try { throw [7]; } catch ([e]) { e === 7; }",
+        "let [[d]] = [[1]]; d === 1",
+        "let o = {}, a = []; [o.x, a[0]] = [3, 4]; o.x === 3 && a[0] === 4",
+        "var [a, ...r] = [1, 2]; a === 1 && r[0] === 2",
+        "function f([a, b] = [2, 3]) { return a + b; } f() === 5 && f.length === 0 && (([a,b]) => 0).length === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_destructuring_protocol_and_abrupt_completion() {
+    for source in [
+        "let n = 0; let it = {next() { n++; return {done: true, get value() { throw 99; }}; }, return() { throw 98; }}; it[Symbol.iterator] = function() { return this; }; let [a, b, ...r] = it; n === 1 && a === undefined && b === undefined && r.length === 0",
+        "let n = 0; let it = {next() { n++; return {get value() { throw 99; }}; }, return() { n += 10; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [,] = it; n === 11",
+        "let n = 0; let it = {next() { n++; return {value: n}; }, return() { n += 10; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [] = it; n === 10",
+        "let log = ''; let it = {next() { log += 'n'; return {value: undefined}; }, return() { log += 'r'; throw 99; }}; it[Symbol.iterator] = function() { return this; }; function fail() { throw 17; } let caught; try { let [x = fail()] = it; } catch(e) { caught = e; } caught === 17 && log === 'nr'",
+        "let log = ''; let o = {set x(v) { log += 's'; throw 17; }}; let it = {next() { log += 'n'; return {value: 1}; }, return() { log += 'r'; return {}; }}; it[Symbol.iterator] = function() { return this; }; let caught; try { [o.x] = it; } catch(e) { caught = e; } caught === 17 && log === 'nsr'",
+        "let log = ''; let o = {}; function key() { log += 'k'; return 'x'; } let it = {next() { log += 'n'; return {value: undefined}; }, return() { log += 'r'; return {}; }}; it[Symbol.iterator] = function() { return this; }; function def() { log += 'd'; return 3; } [o[key()] = def()] = it; o.x === 3 && log === 'kndr'",
+        "let n = 0; let it = {next() { throw 17; }, return() { n++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [x] = it; } catch(e) { error = e; } error === 17 && n === 0",
+        "let n = 0; let it = {next() { return {get value() { throw 17; }}; }, return() { n++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [x] = it; } catch(e) { error = e; } error === 17 && n === 0",
+        "let n = 0; let it = {next() { return {value: 1}; }, return() { n++; return 1; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [x] = it; } catch(e) { error = e instanceof TypeError; } error && n === 1",
+        "let n = 0; let it = {next() { return {value: 1}; }, return() { n++; throw 17; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [x] = it; } catch(e) { error = e; } error === 17 && n === 1",
+        "let n = 0; function f([a = () => b, b = 2]) { return a(); } f([]) === 2",
+        "let caught = false; try { let [a = b, b] = []; } catch(e) { caught = e instanceof ReferenceError; } caught",
+        "let [f = function() {}] = []; f.name === 'f'",
+        "let a = [1, 2]; let x; let v = ([x] = a); v === a && x === 1",
+        "let a; [a = /abc/] = []; a.test('abc')",
+        "let a; [...a /* , allowed in a comment */] = [1]; a[0] === 1",
+        "let a; [[a] = [3]] = []; a === 3",
+        "let n = 0; for (let [a] = [2]; n < a; n++) {} n === 2",
+        "function f([a], c = a) { var a = 5; return c + a; } f([2]) === 7",
+        "let f; try { throw []; } catch([a = 3]) { f = () => a; } f() === 3",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let o = {set x(v) { log += 's'; }}; let it = {next() { log += 'n'; return {}; }, return() { log += 'r'; return {}; }}; it[Symbol.iterator] = function() { return this; }; function def() { log += 'd'; return 7; } [o[key] = def()] = it; log === 'ndksr'",
+        "let log = ''; let it = {next() { log += 'n'; return {}; }, return() { log += 'r'; return {}; }}; it[Symbol.iterator] = function() { return this; }; function def() { log += 'd'; return 7; } let caught = false; try { [null['x'] = def()] = it; } catch(e) { caught = e instanceof TypeError; } caught && log === 'ndr'",
+        "let caught = 0; try { let [x] = undefined; } catch(e) { if (e instanceof TypeError) caught++; } caught === 1",
+        "let [a, ...r] = 'a\\u{1f600}'; a === 'a' && r.length === 1 && r[0].length === 2",
+        "((c, [a, b] = 1, d) => 0).length === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Collect after every instruction,
+/// satisfy one dependency wait, and move the continuation to a new worker.
+#[test]
+fn array_destructuring_waits_collects_and_migrates() {
+    for source in [
+        "let n = 0; let it = {next() { n++; __rt.need(131, 1); return {value: [7]}; }, return() { n += 10; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [[a]] = it; a === 7 && n === 11",
+        "let it = {next() { return {done: false, get value() { __rt.need(131, 1); return [7]; }}; }}; it[Symbol.iterator] = function() { return this; }; let [[a]] = it; a === 7",
+        "let it = {next() { return {get done() { __rt.need(131, 1); return true; }}; }, return() { throw 99; }}; it[Symbol.iterator] = function() { return this; }; let [a = 7] = it; a === 7",
+        "let n = 0; let it = {next() { return {value: 7}; }, get return() { __rt.need(131, 1); return function() { n++; return {}; }; }}; it[Symbol.iterator] = function() { return this; }; let [a] = it; a === 7 && n === 1",
+        "let n = 0; let it = {next() { return {value: 7}; }, return() { n++; __rt.need(131, 1); return {}; }}; it[Symbol.iterator] = function() { return this; }; let [a] = it; a === 7 && n === 1",
+        "let key = {toString() { __rt.need(131, 1); return 'x'; }}; let o = {}; [o[key]] = [7]; o.x === 7",
+        "let n = 0; let o = {set x(v) { __rt.need(131, 1); n = v; }}; [o.x] = [7]; n === 7",
+        "function f([a = __rt.need(131, 1)]) { return () => a; } f([])() === 7",
+        "let n = 0; let it = {next() { return {value: undefined}; }, return() { n++; __rt.need(131, 1); throw 99; }}; it[Symbol.iterator] = function() { return this; }; function fail() { throw 17; } let error; try { let [a = fail()] = it; } catch(e) { error = e; } error === 17 && n === 1",
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1, "{source}");
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(7.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {source}");
+        assert_eq!(waits, 1, "{source}");
+    }
+}
+
 // First two rows adapt test_spread in research/quickjs/tests/test_language.js,
 // revision 7d1c13c5d8f8; synthetic fixtures, not light-cljs output.
 // Copyright (c) 2017-2021 Fabrice Bellard
@@ -11557,10 +11670,9 @@ fn array_literals() {
         ValueView::Bool(true)
     );
 
-    // Destructuring remains explicitly unsupported.
-    for src in ["[a] = [1];", "let [a] = [1];"] {
-        let e = compile_script("t", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+    // Array patterns now consume the array's iterator (clj-quickjs-131).
+    for src in ["let a; [a] = [1]; a", "let [a] = [1]; a"] {
+        assert_eq!(eval(src), ValueView::Number(1.0), "{src}");
     }
 
     // The literal compiles to the array instructions.

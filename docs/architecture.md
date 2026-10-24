@@ -6263,3 +6263,32 @@ upstream `var` as requested by the audit (clj-quickjs-94); its expected rows
 remain `{1, false}` and `{6, true}`. The QuickJS copyright and MIT permission
 notice accompany that adaptation in `tests/js_source.rs`. Other cases are
 synthetic fixtures, not light-cljs output. No QuickJS implementation is copied.
+
+## Array patterns (clj-quickjs-131)
+
+`frontend::ast::Pattern` is shared by declarations, parameters, catch bindings
+and assignment expressions. Identifier, array, default and property-target nodes
+keep source spans and bounded heights. Binding-name traversal supplies scope
+analysis and var hoisting; property targets occur only in assignment patterns.
+This representation leaves object pattern traversal to clj-quickjs-132.
+
+Lowering consumes one value with `pattern_store`, either initializing bindings
+or assigning references. Array consumers reuse the for-of/spread GetIterator,
+advance and IteratorClose lowering. The iterator, cached next method, result,
+exhaustion flag and close state are hidden frame locals traced by the VM.
+Elisions skip the value getter; rest uses the existing array append operation.
+Assignment property references are evaluated before stepping and remain on the
+traced operand stack through defaults and calls. Nested patterns install nested
+finally handlers. Computed keys remain unconverted until PutElem writes the
+value, matching [EvaluatePropertyAccessWithExpressionKey](https://tc39.es/ecma262/multipage/ecmascript-language-expressions.html#sec-evaluate-property-access-with-expression-key).
+Exhaustion and abrupt next/done/value access suppress closing;
+consumer errors close live iterators, with the existing PendingThrow/catch
+sequence preserving the original exception over a failure in return.
+
+Pattern parameters reserve incoming argument slots separately from bound names,
+initialize names from left to right with TDZ checks, and use the existing
+parameter/body scope separation. Identifier-only parameter lists retain their
+original slot layout and default lowering. No new opcode, heap kind, native
+iterator protocol or Rust callback stack is introduced. Iterator methods,
+getters, default expressions and target setters remain resumable VM calls,
+including dependency waits, budget yields, collection and worker migration.

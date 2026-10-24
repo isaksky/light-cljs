@@ -32,6 +32,64 @@ pub struct Ident {
     pub span: Span,
 }
 
+/// Shared binding/assignment pattern. Property targets occur only in assignments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+    pub height: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PatternKind {
+    Identifier(Ident),
+    Array {
+        elements: Vec<Option<Pattern>>,
+        rest: Option<Box<Pattern>>,
+    },
+    Default {
+        target: Box<Pattern>,
+        value: Box<Expr>,
+    },
+    Target(Box<Expr>),
+}
+
+impl Pattern {
+    pub(crate) fn ident(ident: Ident) -> Self {
+        Self {
+            span: ident.span,
+            kind: PatternKind::Identifier(ident),
+            height: 1,
+        }
+    }
+
+    pub(crate) fn identifier(&self) -> Option<&Ident> {
+        match &self.kind {
+            PatternKind::Identifier(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn names(&self) -> Vec<&Ident> {
+        let mut names = Vec::new();
+        self.collect_names(&mut names);
+        names
+    }
+
+    fn collect_names<'a>(&'a self, names: &mut Vec<&'a Ident>) {
+        match &self.kind {
+            PatternKind::Identifier(i) => names.push(i),
+            PatternKind::Array { elements, rest } => {
+                for p in elements.iter().flatten().chain(rest.as_deref()) {
+                    p.collect_names(names);
+                }
+            }
+            PatternKind::Default { target, .. } => target.collect_names(names),
+            PatternKind::Target(_) => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stmt {
     pub kind: StmtKind,
@@ -83,7 +141,9 @@ impl Stmt {
                 handler,
                 finalizer,
             } => max_height(block)
-                .max(handler.as_ref().map_or(0, |h| max_height(&h.body)))
+                .max(handler.as_ref().map_or(0, |h| {
+                    max_height(&h.body).max(h.param.as_ref().map_or(0, |p| p.height))
+                }))
                 .max(finalizer.as_deref().map_or(0, max_height)),
             StmtKind::Labelled { body, .. } => body.height,
             StmtKind::Switch {
@@ -249,8 +309,8 @@ pub enum ForInHead {
 /// `catch (param) { body }` or `catch { body }`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatchClause {
-    /// A plain identifier; `None` for an omitted catch binding.
-    pub param: Option<Ident>,
+    /// A binding pattern; `None` for an omitted catch binding.
+    pub param: Option<Pattern>,
     pub body: Vec<Stmt>,
     /// From the `catch` keyword to the closing `}`.
     pub span: Span,
@@ -270,24 +330,24 @@ pub struct LexicalDecl {
 }
 
 impl LexicalDecl {
-    /// The height of its highest initializer (0 without one).
+    /// The greatest pattern or initializer height.
     pub(crate) fn height(&self) -> usize {
         declarators_height(&self.declarators)
     }
 }
 
-/// The height of the highest initializer of `declarators` (0 without one).
+/// The greatest pattern or initializer height of `declarators`.
 fn declarators_height(declarators: &[Declarator]) -> usize {
     declarators
         .iter()
-        .filter_map(|d| d.init.as_ref().map(|e| e.height))
+        .map(|d| d.name.height.max(d.init.as_ref().map_or(0, |e| e.height)))
         .max()
         .unwrap_or(0)
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Declarator {
-    pub name: Ident,
+    pub name: Pattern,
     pub init: Option<Expr>,
     pub span: Span,
 }
@@ -303,11 +363,11 @@ pub struct Function {
     /// Always present for a declaration; optional for an expression;
     /// `None` for an arrow function.
     pub name: Option<Ident>,
-    /// Plain identifier parameters with distinct names.
-    pub params: Vec<Ident>,
+    /// Binding patterns with distinct bound names.
+    pub params: Vec<Pattern>,
     /// One entry per parameter: its default value (`b = expr`,
     /// clj-quickjs-100), if it has one. A function with any default has a
-    /// non-simple parameter list ([`Function::has_defaults`]).
+    /// non-simple parameter list ([`Function::has_non_simple_parameters`]).
     pub defaults: Vec<Option<Expr>>,
     pub body: Vec<Stmt>,
     /// From the `function` keyword (for an arrow function, its first
@@ -326,7 +386,7 @@ impl Function {
     pub(crate) fn new(
         kind: FunctionKind,
         name: Option<Ident>,
-        params: Vec<Ident>,
+        params: Vec<Pattern>,
         defaults: Vec<Option<Expr>>,
         body: Vec<Stmt>,
         span: Span,
@@ -334,7 +394,10 @@ impl Function {
     ) -> Function {
         debug_assert_eq!(params.len(), defaults.len());
         let defaults_height = defaults.iter().flatten().map(|e| e.height).max();
-        let height = max_height(&body).max(defaults_height.unwrap_or(0)) + 1;
+        let height = max_height(&body)
+            .max(defaults_height.unwrap_or(0))
+            .max(params.iter().map(|p| p.height).max().unwrap_or(0))
+            + 1;
         Function {
             kind,
             generator: false,
@@ -349,10 +412,11 @@ impl Function {
         }
     }
 
-    /// Some parameter has a default value: the parameter list is not
+    /// Some parameter has a default value or a pattern: the parameter list is not
     /// simple, so the parameters have their own scope (`super::lower`).
-    pub(crate) fn has_defaults(&self) -> bool {
+    pub(crate) fn has_non_simple_parameters(&self) -> bool {
         self.defaults.iter().any(Option::is_some)
+            || self.params.iter().any(|p| p.identifier().is_none())
     }
 }
 
@@ -409,6 +473,7 @@ impl Expr {
                 alternate,
             } => test.height.max(consequent.height).max(alternate.height),
             ExprKind::Assign { value, .. } | ExprKind::CompoundAssign { value, .. } => value.height,
+            ExprKind::AssignPattern { target, value } => target.height.max(value.height),
             ExprKind::Call { callee, args, .. } | ExprKind::New { callee, args, .. } => args
                 .iter()
                 .map(|a| a.height)
@@ -452,6 +517,10 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    AssignPattern {
+        target: Box<Pattern>,
+        value: Box<Expr>,
+    },
     /// Spread element/argument. Only occurs directly in Array, Call or New.
     /// The span begins at the ellipsis, where protocol errors are reported.
     Spread(Box<Expr>),

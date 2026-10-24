@@ -12,8 +12,8 @@
 //! `identifiers_are_not_normalized`).
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, PropertyName, Script, Stmt,
-    StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Pattern, PatternKind,
+    PropertyName, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{
@@ -25,6 +25,9 @@ use super::{
 
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::AssignPattern { target, value } => {
+            format!("(= {} {})", render_pattern(target), render_expr(value))
+        }
         ExprKind::Yield { value, delegate } => match value {
             Some(value) => format!(
                 "({} {})",
@@ -249,6 +252,64 @@ fn binary_name(op: BinaryOp) -> &'static str {
     }
 }
 
+fn render_pattern(p: &Pattern) -> String {
+    match &p.kind {
+        PatternKind::Identifier(i) => i.name.clone(),
+        PatternKind::Target(e) => render_expr(e),
+        PatternKind::Default { target, value } => format!(
+            "(default {} {})",
+            render_pattern(target),
+            render_expr(value)
+        ),
+        PatternKind::Array { elements, rest } => {
+            let mut parts: Vec<String> = elements
+                .iter()
+                .map(|e| e.as_ref().map_or("hole".into(), render_pattern))
+                .collect();
+            if let Some(rest) = rest {
+                parts.push(format!("(rest {})", render_pattern(rest)));
+            }
+            format!(
+                "(pattern-array{})",
+                if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", parts.join(" "))
+                }
+            )
+        }
+    }
+}
+
+#[test]
+fn array_patterns() {
+    let src = "let [a, , b = 1, ...r] = x; [a, o.x, ...r] = y; function f([a, b]) {} try {} catch ([e]) {}";
+    let ast = parse_script(src).unwrap();
+    let rendered = render_list("script", &ast.body);
+    assert!(
+        rendered.contains("(pattern-array a hole (default b 1) (rest r))"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("(= (pattern-array a (. o x) (rest r)) y)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("(function f ((pattern-array a b)))"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("(catch (pattern-array e))"), "{rendered}");
+    for src in [
+        "[a + 1] = x",
+        "let [...r, b] = x",
+        "[...r,] = x",
+        "let [a];",
+        "function f([a, a]) {}",
+    ] {
+        assert!(parse_script(src).is_err(), "{src}");
+    }
+}
+
 fn render_function(f: &Function) -> String {
     // A parameter with a default renders as `name=default`.
     let params: Vec<String> = f
@@ -256,8 +317,8 @@ fn render_function(f: &Function) -> String {
         .iter()
         .zip(&f.defaults)
         .map(|(p, d)| match d {
-            Some(d) => format!("{}={}", p.name, render_expr(d)),
-            None => p.name.clone(),
+            Some(d) => format!("{}={}", render_pattern(p), render_expr(d)),
+            None => render_pattern(p),
         })
         .collect();
     let mut out = match f.kind {
@@ -318,8 +379,12 @@ fn render_declarators(keyword: &str, declarators: &[super::ast::Declarator]) -> 
     let mut out = format!("({keyword}");
     for d in declarators {
         match &d.init {
-            Some(init) => out.push_str(&format!(" ({} {})", d.name.name, render_expr(init))),
-            None => out.push_str(&format!(" ({})", d.name.name)),
+            Some(init) => out.push_str(&format!(
+                " ({} {})",
+                render_pattern(&d.name),
+                render_expr(init)
+            )),
+            None => out.push_str(&format!(" ({})", render_pattern(&d.name))),
         }
     }
     out.push(')');
@@ -344,7 +409,7 @@ fn render_stmt(s: &Stmt) -> String {
             let mut out = format!("(try {}", render_list("block", block));
             if let Some(h) = handler {
                 let head = match &h.param {
-                    Some(p) => format!("catch {}", p.name),
+                    Some(p) => format!("catch {}", render_pattern(p)),
                     None => "catch".to_string(),
                 };
                 out.push(' ');
@@ -931,7 +996,7 @@ fn for_statements() {
         6,
         "property references",
     );
-    rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
+    parse_script("for (let [a] = b; ;) {}").unwrap();
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
     // level of the init, so an `in` after any init starts a for-in head
     // (clj-quickjs-85), where these left sides are early errors or
@@ -1880,7 +1945,7 @@ fn spread_forms() {
 
 #[test]
 fn array_literals() {
-    use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken};
     assert_eq!(ast("[];"), "(array)");
     assert_eq!(ast("[1, 2,];"), "(array 1 2)");
     assert_eq!(ast("[ , ];"), "(array <hole>)");
@@ -1906,9 +1971,6 @@ fn array_literals() {
     };
     assert_eq!(value.span.text(src), "[1, , 3,]");
 
-    rejects_with("[a] = b;", Unsupported, 1, 1, "destructuring assignment");
-    rejects_with("[a, b] = [b, a];", Unsupported, 1, 1, "destructuring");
-    rejects_with("let [a] = b;", Unsupported, 1, 5, "destructuring");
     rejects("[a] += 1;", Invalid, 1, 1);
     rejects("x = [1 2];", UnexpectedToken, 1, 8);
     rejects("x = [1,", UnexpectedEnd, 1, 8);
@@ -2648,7 +2710,6 @@ fn arrow_functions_and_asi() {
     rejects("((a)) => 1", UnexpectedToken, 1, 2);
     rejects("(a b) => 1", UnexpectedToken, 1, 4);
     rejects_with("(...a) => 1", Unsupported, 1, 2, "rest parameters");
-    rejects_with("([a]) => 1", Unsupported, 1, 2, "destructuring");
     rejects_with("({ a }) => 1", Unsupported, 1, 2, "destructuring");
     rejects("(eval) => 1", ReservedWord, 1, 2);
     rejects("arguments => 1", ReservedWord, 1, 1);
@@ -3750,7 +3811,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("class A {}", 1, 1, "classes"),
         ("x = class {};", 1, 5, "classes"),
         ("await x;", 1, 1, "await"),
-        ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
         ("import x from 'y';", 1, 1, "import"),
@@ -3758,9 +3818,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = import('y');", 1, 5, "import"),
         ("x = super.y;", 1, 5, "super"),
         ("x.y &&= 1;", 1, 5, "&&="),
-        ("[a] = b;", 1, 1, "destructuring assignment"),
         ("function f(...a) {}", 1, 12, "rest"),
-        ("let [a] = b;", 1, 5, "destructuring"),
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
@@ -4225,6 +4283,12 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
     ];
     let makers: &[(&str, Make)] = &[
+        ("array binding patterns", |n| {
+            format!("let {}a{} = [];", "[".repeat(n), "]".repeat(n))
+        }),
+        ("array assignment patterns", |n| {
+            format!("{}a{} = [];", "[".repeat(n), "]".repeat(n))
+        }),
         ("parens", |n| {
             format!("x = {}1{};", "(".repeat(n), ")".repeat(n))
         }),

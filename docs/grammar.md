@@ -141,17 +141,20 @@ BreakStatement      = "break" [no LineTerminator here] [ Identifier ] ";"
 ContinueStatement   = "continue" [no LineTerminator here] [ Identifier ] ";"
 LabelledStatement   = Identifier ":" Statement   (* the Statement is not a declaration *)
 TryStatement        = "try" Block ( Catch [ Finally ] | Finally )
-Catch               = "catch" [ "(" BindingIdentifier ")" ] Block
+Catch               = "catch" [ "(" BindingPattern ")" ] Block
 Finally             = "finally" Block
 ExpressionStatement = Expression ";"     (* not starting with "{" or "function" *)
 LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
 VariableStatement   = "var" Declarator { "," Declarator } ";"
-Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
+Declarator          = BindingPattern [ "=" AssignmentExpression ] (* required for array patterns *)
+BindingPattern      = BindingIdentifier | ArrayBindingPattern
+ArrayBindingPattern = "[" { "," | BindingPattern [ "=" AssignmentExpression ] "," }
+                      [ BindingPattern [ "=" AssignmentExpression ] | "..." BindingPattern ] "]"
 FunctionDeclaration = [ "async" [no LineTerminator here] ] "function" [ "*" ] BindingIdentifier FunctionRest
 FunctionExpression  = [ "async" [no LineTerminator here] ] "function" [ "*" ] [ BindingIdentifier ] FunctionRest
 FunctionRest        = FormalParameters FunctionBody
 FormalParameters    = "(" [ FormalParameter { "," FormalParameter } [ "," ] ] ")"
-FormalParameter     = BindingIdentifier [ "=" AssignmentExpression ]   (* default value *)
+FormalParameter     = BindingPattern [ "=" AssignmentExpression ]   (* default value *)
 FunctionBody        = "{" { Directive } { StatementListItem } "}"
 
 Expression            = AssignmentExpression { "," AssignmentExpression }
@@ -159,6 +162,12 @@ AssignmentExpression  = ConditionalExpression | ArrowFunction | YieldExpression
                       | Identifier AssignOperator AssignmentExpression
                       | Call "." IdentifierName "=" AssignmentExpression
                       | Call "[" Expression "]" "=" AssignmentExpression
+                      | ArrayAssignmentPattern "=" AssignmentExpression
+ArrayAssignmentPattern = "[" { "," | AssignmentElement "," }
+                         [ AssignmentElement | "..." AssignmentTarget ] "]"
+AssignmentElement     = AssignmentTarget [ "=" AssignmentExpression ]
+AssignmentTarget      = Identifier | Call "." IdentifierName | Call "[" Expression "]"
+                      | ArrayAssignmentPattern
 AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
                       | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
 ArrowFunction         = [ "async" [no LineTerminator here] ] ArrowParameters [no LineTerminator here] "=>" ConciseBody
@@ -200,7 +209,7 @@ PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
                       | [ "async" [no LineTerminator here] ] "*" PropertyName FormalParameters FunctionBody
                       | "async" [no LineTerminator here] PropertyName FormalParameters FunctionBody
                       | "get" PropertyName "(" ")" FunctionBody
-                      | "set" PropertyName "(" BindingIdentifier [ "=" AssignmentExpression ] ")" FunctionBody
+                      | "set" PropertyName "(" BindingPattern [ "=" AssignmentExpression ] ")" FunctionBody
 PropertyName          = IdentifierName | String | Number
 ArrayLiteral          = "[" { [ SpreadElement ] "," } [ SpreadElement ] "]"
                         (* an omitted element is a hole; see the notes *)
@@ -345,8 +354,8 @@ Notes on the grammar:
   parenthesized reference and `undefined`/`NaN`/`Infinity`, is allowed only
   in sloppy code (clj-quickjs-105); strict code rejects it at `delete`.
 - The assignment target may be parenthesized (`(a) = 1`, `(a) += 1`), as
-  in JavaScript. A compound assignment (clj-quickjs-84) takes the same
-  targets as `=`, properties included (clj-quickjs-260), and is
+  in JavaScript. A compound assignment (clj-quickjs-84) takes identifier
+  and property targets (clj-quickjs-260), and is
   right-associative too: `a -= b *= 2` is `a -= (b *= 2)`.
 - `a.b` (an `IdentifierName` after `.`, reserved words included) reads a
   named property, and `a.b = v` (the target may be parenthesized) writes
@@ -362,8 +371,9 @@ Notes on the grammar:
   elision, a hole: `[ , ]` has length 1 and no element, `[1, , 3]` has a
   hole at index 1. One comma after the last element ends the list without
   adding anything (`[1, 2,]` has length 2). Spread elements (`[...a]`)
-  consume the synchronous iteration protocol (clj-quickjs-130). An array literal as an assignment target is unsupported
-  (`[a, b] = v`, destructuring); `let [a] = v` stays rejected as before.
+  consume the synchronous iteration protocol (clj-quickjs-130). On the left of
+  `=`, an array literal becomes an assignment pattern (clj-quickjs-131),
+  with identifier or property targets, defaults, nesting and a final rest element.
 - `a[k]` (clj-quickjs-115; parsed since clj-quickjs-118) reads a
   computed property, and `a[k] = v`
   (the target may be parenthesized) writes one; the key is an Expression
@@ -457,8 +467,8 @@ are still covered by the computed-key rejection below.
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | execution of parsed async functions/arrows/methods (including `await`) | Unsupported at the function during compilation |
 | delegated `yield*` | Unsupported at the yield expression during compilation |
-| rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
-| optional chaining `?.`, object spread `...` (in an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
+| rest parameters, object destructuring, destructuring for-in/for-of heads | Unsupported |
+| optional chaining `?.`, object spread `...` (in an object literal) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233) | Unsupported |
 | numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
@@ -780,6 +790,7 @@ Directive"; QuickJS `js_parse_directives` and
   may also have their own directive in a block body (`(eval) => {
   "use strict"; }` is `ReservedWord`).
 - A function or arrow with a **default parameter value** (clj-quickjs-100)
+  or an array pattern parameter (clj-quickjs-131)
   cannot have a `"use strict"` directive (exact source text, as above):
   it is `Invalid` at the directive, even in code that is already strict
   (ECMAScript FunctionBody early errors; QuickJS
@@ -1242,12 +1253,38 @@ let p = {}; p[-0] = 0; p[true] = 1; p["0"] === 0 && p.true === 1 && p[undefined]
 let q = {}; let k = "y"; q[k] = 7; q.y === 7 && ({})["toString"] === Object.prototype.toString;
 ```
 
-An array literal is not an assignment target (destructuring is its own
-pellet):
+Array patterns bind names in declarations, ordinary/arrow parameters and
+catch clauses, and assign identifiers or properties (clj-quickjs-131):
 
-```js reject Unsupported 1:1
+```js accept
+let a = 1, b = 2;
 [a, b] = [b, a];
+let [first, , third = 3, ...tail] = [1, 2, undefined, 4, 5];
+let [[nested]] = [[1]];
+function sum([x, y]) { return x + y; }
+(([x, y]) => x + y)([1, 2]);
+try { throw [7]; } catch ([error]) { error; }
 ```
+
+Invalid targets and a rest element followed by another element are early errors:
+
+```js reject Invalid 1:2
+[a + 1] = x;
+```
+
+```js reject UnexpectedToken 1:10
+let [...r, b] = x;
+```
+
+Execution uses GetIterator, including custom iterators and strings. An elision
+steps without reading `value`; exhaustion supplies `undefined` for subsequent
+elements. Defaults run only for `undefined`, and rest collects a fresh array.
+A pattern which stops before exhaustion calls `return` once. A default or
+assignment failure also closes a live iterator, preserving the original throw;
+failures in `next`, `done` or `value` do not close it. All getters, iterator
+methods, defaults and setters can suspend and resume. Non-iterables throw
+`TypeError`. Array patterns require declaration initializers. Object patterns,
+rest parameters and patterns in iteration heads remain explicit gaps.
 
 Arrays inherit from `Array.prototype`, which supports `push`, `join` and
 `toString`. The latter calls the receiver's `join` method:
@@ -1295,8 +1332,9 @@ directly initializing it or assigned to an identifier. An anonymous
 function/arrow directly used as an object literal's property value infers
 that property's string key (except the special `__proto__: value` form).
 Other anonymous functions have the empty name. Parentheses preserve direct
-inference; comma and conditional expressions do not. Rest/destructuring
-parameters remain rejected by the grammar. Concise method names are their
+inference; comma and conditional expressions do not. Array pattern parameters
+count as one parameter; a top-level default still ends the `length` count.
+Rest parameters and object patterns remain rejected. Concise method names are their
 property's string key (clj-quickjs-126).
 
 Reads, `in`, metadata descriptors, and `Object.getOwnPropertyNames` do not
@@ -4172,7 +4210,7 @@ a catchable RangeError. A list that cannot fit the task's value stack throws
 the existing catchable StackOverflow at the call. The private packed array is
 never exposed to JavaScript or re-iterated when the call starts.
 
-Rejected forms: object spread, rest parameters, destructuring and a standalone
+Rejected forms: object spread, rest parameters, object destructuring and a standalone
 `(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
 intrinsics require statically supplied arguments and reject spread with
 `Unsupported`. Global eval and dynamic Function construction retain their

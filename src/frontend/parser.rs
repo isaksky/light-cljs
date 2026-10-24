@@ -10,8 +10,8 @@
 
 use super::ast::{
     BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
-    Ident, LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
-    SwitchCase, TemplateElement, UnaryOp, UpdateOp,
+    Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName,
+    Script, Stmt, StmtKind, SwitchCase, TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{
@@ -24,7 +24,7 @@ type PResult<T> = Result<T, SyntaxError>;
 
 /// A formal parameter list: the names, and per name its default value, if
 /// any.
-type Params = (Vec<Ident>, Vec<Option<Expr>>);
+type Params = (Vec<Pattern>, Vec<Option<Expr>>);
 
 /// Nesting-budget cost of each construct, per nesting level. Weighted by the
 /// measured Rust stack each one uses, so that the whole [`MAX_NESTING`]
@@ -821,11 +821,17 @@ impl<'a> Parser<'a> {
                     _ => LexicalKind::Const,
                 };
                 self.advance()?;
-                let name = self.parse_binding_identifier("a variable name")?;
+                let name = self.parse_binding_pattern("a variable name")?;
                 if self.is_of() {
+                    let name = name.identifier().cloned().ok_or_else(|| {
+                        self.unsupported(name.span, "destructuring iteration heads are")
+                    })?;
                     return self.parse_for_of_rest(ForInHead::Lexical(kind, name));
                 }
                 if self.is_keyword(Keyword::In) {
+                    let name = name.identifier().cloned().ok_or_else(|| {
+                        self.unsupported(name.span, "destructuring iteration heads are")
+                    })?;
                     return self.parse_for_in_rest(ForInHead::Lexical(kind, name));
                 }
                 let declarators = self.parse_declarators(Some(kind), Some(keyword), Some(name))?;
@@ -833,11 +839,17 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Keyword(Keyword::Var) => {
                 self.advance()?;
-                let name = self.parse_binding_identifier("a variable name")?;
+                let name = self.parse_binding_pattern("a variable name")?;
                 if self.is_of() {
+                    let name = name.identifier().cloned().ok_or_else(|| {
+                        self.unsupported(name.span, "destructuring iteration heads are")
+                    })?;
                     return self.parse_for_of_rest(ForInHead::Var(name));
                 }
                 if self.is_keyword(Keyword::In) {
+                    let name = name.identifier().cloned().ok_or_else(|| {
+                        self.unsupported(name.span, "destructuring iteration heads are")
+                    })?;
                     return self.parse_for_in_rest(ForInHead::Var(name));
                 }
                 Some(ForInit::Var(self.parse_declarators(
@@ -1082,7 +1094,7 @@ impl<'a> Parser<'a> {
     fn parse_catch(&mut self) -> PResult<CatchClause> {
         let start = self.advance()?.span.start;
         let param = if self.eat_punct(Punct::LParen)? {
-            let param = self.parse_binding_identifier("a catch parameter")?;
+            let param = self.parse_binding_pattern("a catch parameter")?;
             self.expect_punct(Punct::RParen)?;
             Some(param)
         } else {
@@ -1090,22 +1102,33 @@ impl<'a> Parser<'a> {
         };
         let body = self.parse_block()?;
         // Early error: the block may not redeclare the catch parameter.
-        if let Some(param) = &param {
-            let redeclared = body.iter().find_map(|s| match &s.kind {
-                StmtKind::Lexical(decl) => decl
-                    .declarators
-                    .iter()
-                    .map(|d| &d.name)
-                    .find(|n| n.name == param.name),
-                StmtKind::FunctionDecl(f) => f.name.as_ref().filter(|n| n.name == param.name),
-                _ => None,
-            });
-            if let Some(name) = redeclared {
-                return Err(self.error(
-                    SyntaxErrorKind::Invalid,
-                    name.span,
-                    format!("'{}' is already declared as the catch parameter", name.name),
-                ));
+        if let Some(pattern) = &param {
+            let mut seen = Vec::new();
+            for param in pattern.names() {
+                if seen.contains(&param.name) {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        param.span,
+                        "duplicate catch binding",
+                    ));
+                }
+                seen.push(param.name.clone());
+                let redeclared = body.iter().find_map(|s| match &s.kind {
+                    StmtKind::Lexical(decl) => decl
+                        .declarators
+                        .iter()
+                        .flat_map(|d| d.name.names())
+                        .find(|n| n.name == param.name),
+                    StmtKind::FunctionDecl(f) => f.name.as_ref().filter(|n| n.name == param.name),
+                    _ => None,
+                });
+                if let Some(name) = redeclared {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        name.span,
+                        format!("'{}' is already declared as the catch parameter", name.name),
+                    ));
+                }
             }
         }
         Ok(CatchClause {
@@ -1155,13 +1178,13 @@ impl<'a> Parser<'a> {
         &mut self,
         lexical: Option<LexicalKind>,
         for_keyword: Option<Span>,
-        mut first: Option<Ident>,
+        mut first: Option<Pattern>,
     ) -> PResult<Vec<Declarator>> {
         let mut declarators = Vec::new();
         loop {
             let name = match first.take() {
                 Some(name) => name,
-                None => self.parse_binding_identifier("a variable name")?,
+                None => self.parse_binding_pattern("a variable name")?,
             };
             if for_keyword.is_some() && (self.is_keyword(Keyword::In) || self.is_of()) {
                 return Err(self.for_in_declaration_error());
@@ -1175,13 +1198,13 @@ impl<'a> Parser<'a> {
                 }
                 Some(init)
             } else {
-                if lexical == Some(LexicalKind::Const) {
+                if lexical == Some(LexicalKind::Const) || name.identifier().is_none() {
                     return Err(self.error(
                         SyntaxErrorKind::Invalid,
                         name.span,
                         format!(
                             "missing initializer in `const` declaration of `{}`",
-                            name.name
+                            name.span.text(self.src)
                         ),
                     ));
                 }
@@ -1237,6 +1260,56 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline(never)]
+    fn parse_binding_pattern(&mut self, what: &str) -> PResult<Pattern> {
+        if !self.is_punct(Punct::LBracket) {
+            return self.parse_binding_identifier(what).map(Pattern::ident);
+        }
+        let saved = self.depth;
+        self.deeper(cost::ARRAY)?;
+        let start = self.advance()?.span.start;
+        let mut elements = Vec::new();
+        let mut rest = None;
+        let mut height = 1;
+        while !self.is_punct(Punct::RBracket) {
+            if self.eat_punct(Punct::Comma)? {
+                elements.push(None);
+                continue;
+            }
+            if self.eat_punct(Punct::Ellipsis)? {
+                let target = self.parse_binding_pattern(what)?;
+                height = height.max(target.height + 1);
+                rest = Some(Box::new(target));
+                break;
+            }
+            let mut target = self.parse_binding_pattern(what)?;
+            if self.eat_punct(Punct::Assign)? {
+                let value = self.parse_assignment()?;
+                target = Pattern {
+                    span: target.span.to(value.span),
+                    height: target.height.max(value.height) + 1,
+                    kind: PatternKind::Default {
+                        target: Box::new(target),
+                        value: Box::new(value),
+                    },
+                };
+            }
+            height = height.max(target.height + 1);
+            elements.push(Some(target));
+            if !self.eat_punct(Punct::Comma)? {
+                break;
+            }
+        }
+        self.expect_punct(Punct::RBracket)?;
+        self.depth = saved;
+        self.check_height(height)?;
+        Ok(Pattern {
+            kind: PatternKind::Array { elements, rest },
+            span: self.span_from(start),
+            height,
+        })
+    }
+
     /// Function declaration or expression, from the `function` keyword:
     /// `function` Name? `(` Params `)` `{` FunctionBody `}`.
     #[inline(never)]
@@ -1261,7 +1334,8 @@ impl<'a> Parser<'a> {
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
-        let simple = defaults.iter().all(Option::is_none);
+        let simple =
+            defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
         let (body, strict) =
             self.parse_function_body(name.as_ref(), &params, simple, self.strict)?;
         self.in_function = outer;
@@ -1296,7 +1370,7 @@ impl<'a> Parser<'a> {
     fn parse_function_body(
         &mut self,
         name: Option<&Ident>,
-        params: &[Ident],
+        params: &[Pattern],
         simple: bool,
         outer_strict: bool,
     ) -> PResult<(Vec<Stmt>, bool)> {
@@ -1314,7 +1388,8 @@ impl<'a> Parser<'a> {
             if prologue && !simple {
                 self.reject_use_strict(&stmt)?;
             }
-            prologue = prologue && self.directive(&stmt, &body, name, params)?;
+            let names: Vec<Ident> = params.iter().flat_map(|p| p.names()).cloned().collect();
+            prologue = prologue && self.directive(&stmt, &body, name, &names)?;
             body.push(stmt);
         }
         self.no_in = no_in;
@@ -1371,19 +1446,23 @@ impl<'a> Parser<'a> {
         let parameters = std::mem::replace(&mut self.suspension.parameters, true);
         self.expect_punct(Punct::LParen)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
-        let mut params: Vec<Ident> = Vec::new();
+        let mut params: Vec<Pattern> = Vec::new();
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         while !self.is_punct(Punct::RParen) {
             if self.is_punct(Punct::Ellipsis) {
                 return Err(self.unsupported(self.tok.span, "rest parameters are"));
             }
-            let param = self.parse_binding_identifier("a parameter name")?;
-            if params.iter().any(|p| p.name == param.name) {
-                return Err(self.error(
-                    SyntaxErrorKind::Invalid,
-                    param.span,
-                    format!("duplicate parameter name `{}`", param.name),
-                ));
+            let param = self.parse_binding_pattern("a parameter name")?;
+            let mut names: Vec<&Ident> = params.iter().flat_map(|p| p.names()).collect();
+            for name in param.names() {
+                if names.iter().any(|p| p.name == name.name) {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        name.span,
+                        format!("duplicate parameter name `{}`", name.name),
+                    ));
+                }
+                names.push(name);
             }
             params.push(param);
             defaults.push(if self.eat_punct(Punct::Assign)? {
@@ -1421,7 +1500,9 @@ impl<'a> Parser<'a> {
             self.parse_formal_parameters()?
         } else {
             (
-                vec![self.parse_binding_identifier("a parameter name")?],
+                vec![Pattern::ident(
+                    self.parse_binding_identifier("a parameter name")?,
+                )],
                 vec![None],
             )
         };
@@ -1441,7 +1522,8 @@ impl<'a> Parser<'a> {
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
             let outer_switch = std::mem::replace(&mut self.in_switch, false);
             let outer_labels = std::mem::take(&mut self.labels);
-            let simple = defaults.iter().all(Option::is_none);
+            let simple = defaults.iter().all(Option::is_none)
+                && params.iter().all(|p| p.identifier().is_some());
             let (body, strict) = self.parse_function_body(None, &params, simple, self.strict)?;
             self.in_function = outer;
             self.in_loop = outer_loop;
@@ -1598,9 +1680,7 @@ impl<'a> Parser<'a> {
             return self.assign_member(left, saved);
         }
         if matches!(&left.kind, ExprKind::Array(_)) && left.span.text(self.src).starts_with('[') {
-            // An array assignment pattern `[a, b] = v` (clj-quickjs-118
-            // parses the literal; destructuring is its own pellet).
-            return Err(self.unsupported(left.span, "destructuring assignment is"));
+            return self.parse_pattern_assignment(left, saved);
         }
         let target = self.simple_target(&left, TargetUse::Assign)?;
         self.advance()?;
@@ -1614,6 +1694,155 @@ impl<'a> Parser<'a> {
             },
             span,
         )
+    }
+
+    #[inline(never)]
+    fn parse_pattern_assignment(&mut self, left: Expr, saved: usize) -> PResult<Expr> {
+        let target = self.assignment_pattern(left)?;
+        self.advance()?;
+        let value = self.parse_assignment()?;
+        self.depth = saved;
+        let span = target.span.to(value.span);
+        self.expr(
+            ExprKind::AssignPattern {
+                target: Box::new(target),
+                value: Box::new(value),
+            },
+            span,
+        )
+    }
+
+    #[inline(never)]
+    fn assignment_pattern(&self, expr: Expr) -> PResult<Pattern> {
+        let span = expr.span;
+        let kind = match expr.kind {
+            ExprKind::Array(elements) => {
+                if !span.text(self.src).starts_with('[') {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        span,
+                        "a nested pattern cannot be parenthesized",
+                    ));
+                }
+                let mut patterns = Vec::new();
+                let mut rest = None;
+                let count = elements.len();
+                for (i, element) in elements.into_iter().enumerate() {
+                    match element {
+                        Some(Expr {
+                            kind: ExprKind::Spread(target),
+                            span: rest_span,
+                            ..
+                        }) => {
+                            // A rest element must be last, without a trailing comma.
+                            let tail = &self.src[rest_span.end..span.end];
+                            let mut tail_lexer = Lexer::new(tail);
+                            if i + 1 != count
+                                || tail_lexer.next_token()?.kind
+                                    != TokenKind::Punct(Punct::RBracket)
+                            {
+                                return Err(self.error(
+                                    SyntaxErrorKind::Invalid,
+                                    rest_span,
+                                    "rest element must be last",
+                                ));
+                            }
+                            let p = self.assignment_pattern(*target)?;
+                            if matches!(p.kind, PatternKind::Default { .. }) {
+                                return Err(self.error(
+                                    SyntaxErrorKind::Invalid,
+                                    p.span,
+                                    "rest element cannot have a default",
+                                ));
+                            }
+                            rest = Some(Box::new(p));
+                        }
+                        Some(e) => patterns.push(Some(self.assignment_pattern(e)?)),
+                        None => patterns.push(None),
+                    }
+                }
+                PatternKind::Array {
+                    elements: patterns,
+                    rest,
+                }
+            }
+            ExprKind::Assign { target, value } => PatternKind::Default {
+                target: Box::new(Pattern::ident(target)),
+                value,
+            },
+            ExprKind::AssignMember {
+                object,
+                property,
+                value,
+                op_span,
+            } => {
+                let target = self.assignment_pattern(Expr::new(
+                    ExprKind::Member {
+                        object,
+                        property,
+                        op_span,
+                    },
+                    span,
+                ))?;
+                PatternKind::Default {
+                    target: Box::new(target),
+                    value,
+                }
+            }
+            ExprKind::AssignIndex {
+                object,
+                index,
+                value,
+                op_span,
+            } => {
+                let target = self.assignment_pattern(Expr::new(
+                    ExprKind::Index {
+                        object,
+                        index,
+                        op_span,
+                    },
+                    span,
+                ))?;
+                PatternKind::Default {
+                    target: Box::new(target),
+                    value,
+                }
+            }
+            ExprKind::AssignPattern { target, value } => PatternKind::Default { target, value },
+            _ => {
+                if is_property_target(&expr) {
+                    if let ExprKind::Member { object, .. } = &expr.kind
+                        && is_reserved_binding(object)
+                    {
+                        return Err(self.error(
+                            SyntaxErrorKind::Invalid,
+                            span,
+                            "invalid assignment target",
+                        ));
+                    }
+                    PatternKind::Target(Box::new(expr))
+                } else {
+                    PatternKind::Identifier(self.simple_target(&expr, TargetUse::Assign)?)
+                }
+            }
+        };
+        let height = match &kind {
+            PatternKind::Identifier(_) => 1,
+            PatternKind::Target(e) => e.height + 1,
+            PatternKind::Default { target, value } => target.height.max(value.height) + 1,
+            PatternKind::Array { elements, rest } => {
+                elements
+                    .iter()
+                    .flatten()
+                    .chain(rest.as_deref())
+                    .map(|p| p.height)
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            }
+        };
+        self.check_height(height)?;
+        Ok(Pattern { kind, span, height })
     }
 
     #[inline(never)]
@@ -2068,7 +2297,8 @@ impl<'a> Parser<'a> {
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
-        let simple = defaults.iter().all(Option::is_none);
+        let simple =
+            defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
         let (body, strict) = self.parse_function_body(None, &params, simple, outer_strict)?;
         self.in_function = outer_function;
         self.in_loop = outer_loop;
