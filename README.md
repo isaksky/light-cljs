@@ -2771,6 +2771,8 @@ and publication through atoms is rejected. Deferred: custom slice species,
 resizable buffers, typed-array views and SharedArrayBuffer.
 Object-valued ArrayBuffer constructor options fail explicitly until resizable
 buffers are supported; primitive options are ignored.
+Slice indices truncate toward zero before relative-index clamping, including
+negative fractions between -1 and 0 (clj-quickjs-271).
 
 ### BigInt comparisons (clj-quickjs-197)
 

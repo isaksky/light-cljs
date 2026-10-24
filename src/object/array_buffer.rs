@@ -198,12 +198,14 @@ pub(crate) fn slice(
             HeapObject::ArrayBuffer(b) => {
                 attached(b)?;
                 let relative = |n: f64| {
+                    // ToIntegerOrInfinity precedes the negative-index rule.
+                    let n = n.trunc();
                     if n.is_nan() {
                         0
                     } else if n < 0.0 {
-                        (b.bytes.len() as f64 + n.trunc()).max(0.0) as usize
+                        (b.bytes.len() as f64 + n).max(0.0) as usize
                     } else {
-                        n.trunc().min(b.bytes.len() as f64) as usize
+                        n.min(b.bytes.len() as f64) as usize
                     }
                 };
                 let first = relative(start);

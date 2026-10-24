@@ -609,6 +609,29 @@ fn array_buffer_transfer_detaches() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_buffer_slice_truncates_indices_before_relative_clamping() {
+    for (arguments, expected_length) in [
+        ("-0.5", 8.0),
+        ("0, -0.5", 0.0),
+        ("-0.9, -0.1", 0.0),
+        ("0.5, 7.5", 7.0),
+        ("-3.9, -1.1", 2.0),
+        ("-0", 8.0),
+        ("0, -0", 0.0),
+        ("NaN", 8.0),
+        ("0, NaN", 0.0),
+    ] {
+        let source = format!("new ArrayBuffer(8).slice({arguments}).byteLength");
+        assert_eq!(
+            eval(&source),
+            ValueView::Number(expected_length),
+            "{source}"
+        );
+    }
+}
+
 #[test]
 fn array_buffer_coercion_survives_waits_gc_and_migration() {
     for source in [
