@@ -777,7 +777,24 @@ fixtures, not light-cljs output. `research/quickjs/quickjs.c` functions
 `string_get_milliseconds`, `string_get_tzoffset`, and `js_date_constructor`
 were semantic references. The Rust parser/continuation is written afresh;
 QuickJS's 128-byte prefix truncation and nine-digit fraction scan cap are not
-copied. Non-ISO syntax extensions are reserved for the fallback parser.
+copied. Non-ISO syntax extensions are described below (-185).
+
+## Date fallback parsing (clj-quickjs-185)
+
+`src/vm/date.rs::tests::date_fallback_parse_fields` and
+`tests/js_source.rs::date_parse_fallback_strings` adapt the non-ISO construction
+rows in `research/quickjs/tests/test_builtin.js::test_date` (lines 637–658),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The complete copyright/MIT permission notice from `research/quickjs/LICENSE`
+is retained beside the source test and in the unit-test module. Other test
+inputs are synthetic fixtures, not light-cljs output.
+`research/quickjs/quickjs.c` functions `js_date_parse_otherstring`,
+`string_get_month`, `string_get_tzabbr`, `string_get_tzoffset`,
+`string_get_digits`, `string_get_milliseconds` and `js_Date_parse`, including
+the `js_tzabbr` names/offsets, supplied the semantic reference. The incremental
+Rust state machine is written afresh. It retains the fallback's nine-digit
+fraction grammar, but does not copy the fixed byte-buffer or NUL truncation;
+stray closing parentheses are rejected even inside ignored word suffixes.
 
 ## Array and argument spread (clj-quickjs-130)
 

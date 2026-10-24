@@ -388,3 +388,33 @@ fn date_iso_local_zone_disambiguation() {
         ValueView::Number(946681200000.0)
     );
 }
+
+#[test]
+fn date_fallback_local_zone_disambiguation() {
+    let rt = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    for source in [
+        "Date.parse('Mar 29 2020 2:30') === Date.UTC(2020, 2, 29, 1, 30)",
+        "new Date('Oct 25 2020 2:30').getTime() === Date.UTC(2020, 9, 25, 0, 30)",
+        "Date.parse('Mar 29 2020') === Date.UTC(2020, 2, 28, 23)",
+        "Date.parse('Oct 25 2020 2:30 GMT+0100') === Date.UTC(2020, 9, 25, 1, 30)",
+    ] {
+        assert_eq!(
+            evaluate(&rt, &mut host, source),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+    // Explicit-zone fallback parsing must not freeze the runtime's local zone.
+    let rt = Runtime::new();
+    let mut utc = SimTimeHost::new(0.0, TimeZone::UTC);
+    assert_eq!(
+        evaluate(&rt, &mut utc, "Date.parse('Jan 1 2000 GMT')"),
+        ValueView::Number(946684800000.0)
+    );
+    assert_eq!(
+        evaluate(&rt, &mut host, "Date.parse('Jan 1 2000')"),
+        ValueView::Number(946681200000.0)
+    );
+    assert_eq!(host.clock_reads(), 0);
+}

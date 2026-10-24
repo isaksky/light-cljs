@@ -4182,10 +4182,42 @@ needed, the explicit offset when present, and finally TimeClip. Failure is
 NaN or an invalid Date object, rather than an unsupported-operation error.
 
 Explicit gaps: these rules supersede earlier ISO parsing gaps. Non-ISO
-fallback parsing is reserved for clj-quickjs-185; default Date primitive
+fallback parsing is described in clj-quickjs-185 below; default Date primitive
 conversion, `toJSON`, and locale formatting remain deferred. Parsing introduces
 no new input-length cap; the existing 4096-unit Date numeric-field conversion
 limit still applies only to numeric conversions.
+
+### Execution: Date fallback parsing (clj-quickjs-185)
+
+When ISO parsing fails, the same entry points try the QuickJS fallback grammar
+over the complete string. It recognizes case-insensitive three-letter month
+prefixes (with an ignored word suffix), leading weekday/other ignored words,
+ASCII spaces, `-/.,` separators, and balanced nested parenthesized comments.
+Stray closing parentheses and NUL are rejected, including in ignored words.
+Month/day default to January/1 and the fallback year defaults to 2001.
+At most three numeric date fields, counting an explicit year and month name,
+are permitted. A number with more than two digits is a literal year when no
+year has been set; a small number outside 1–31 instead selects a year with
+0–49 mapped to 2000–2049 and 50–99 to 1950–1999. Remaining fields follow
+month/day/year order without a month name, or day/year with one. Signed years
+retain their value and negative zero years are rejected.
+
+An optional `H:mm[:ss[.f]]` time accepts one or two minute/second digits,
+`.` or `,` fractions of up to nine digits (truncated to milliseconds), and
+case-insensitive AM/PM. Range checks and the `24:00` special case match ISO
+parsing. The fixed abbreviations are GMT/UTC/UT/Z, EDT/EST/CDT/CST/MDT/MST/PDT/PST,
+and WET/WEST/CET/CEST/EET/EEST. After a time, signed offsets accept hours,
+compact hour/minute digits or `H:mm`, optionally following GMT. QuickJS's
+non-strict handling drops excess rightmost digit pairs from compact offsets.
+Unicode minus U+2212 is recognized. Without an offset or abbreviation, even a
+date-only fallback form uses the runtime's local-to-UTC conversion and existing
+DST gap/overlap policy. Parsed fields then use the shared calendar arithmetic
+and TimeClip. Date string formats round-trip whole-second values.
+
+Explicit gaps: this supersedes earlier non-ISO parsing gaps. It introduces no
+input-length cap or host clock/time-zone reads outside the embedding boundary.
+QuickJS's fixed byte-buffer truncation is not reproduced. Default Date primitive
+conversion, `toJSON` and locale formatting remain deferred.
 
 ## Array and argument spread (clj-quickjs-130)
 

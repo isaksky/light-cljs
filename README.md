@@ -3256,12 +3256,26 @@ truncate to milliseconds. Date-only forms use UTC; time forms without an
 offset use the runtime's frozen host zone (UTC without a host), including its
 existing DST gap/overlap rules. Fields are range-checked, `24:00` advances to
 the next day, and invalid or TimeClip-out-of-range input returns NaN (an invalid
-Date on construction). This supersedes earlier ISO parsing gaps. Non-ISO
-fallback grammar remains deferred to clj-quickjs-185; Date default coercion,
+Date on construction). This supersedes earlier ISO parsing gaps. For non-ISO
+fallback grammar see clj-quickjs-185 below; Date default coercion,
 `toJSON`, and locale formatting remain deferred.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --lib vm::date:: -- --test-threads=3`.
+
+Date fallback parsing (clj-quickjs-185): after ISO parsing fails, `Date.parse`
+and string construction accept QuickJS's month-name and numeric date orders,
+optional leading weekday words, nested parenthesized comments, `H:mm[:ss[.f]]`,
+AM/PM, and its GMT/UTC/UT/Z, North American and European zone abbreviations.
+Times also accept signed hour, compact hour/minute or colon offsets, including
+`GMT+0100`. Two-digit years follow QuickJS's 0–49/50–99 mapping to 2000/1900;
+longer and signed years retain their value. Missing offsets use the runtime's
+local zone, including DST gap/overlap rules. `toString` and `toUTCString`
+round-trip whole-second dates, including negative/expanded years. Scans are
+budgeted without an input-length cap; malformed fields, unmatched parentheses,
+NUL and extraneous trailing tokens return NaN. The fallback keeps QuickJS's
+nine-digit fractional-field grammar. This supersedes earlier fallback parsing
+gaps; Date default coercion, `toJSON` and locale formatting remain deferred.
 
 ### Array and argument spread (clj-quickjs-130)
 

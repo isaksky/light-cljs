@@ -6030,7 +6030,29 @@ before TimeClip; invalid parsing returns NaN or constructs an invalid Date.
 The new Date.parse intrinsic is allocated after previously rooted intrinsics,
 preserving their identities. Source tests cover UTC and UTC+01:00, long
 fractions, metadata, coercion order, waits/GC/migration, clipping, and named-zone
-DST transitions. Non-ISO fallback parsing remains deferred.
+DST transitions. Non-ISO fallback parsing is described below (-185).
+
+## Date fallback parser (clj-quickjs-185)
+
+After ISO failure, `date::Parser` switches to `FallbackParser` over the same
+immutable UTF-16 buffer. Its constant-size state contains scalar fields,
+three pending date numbers, presence flags and an explicit scan mode. Digits
+(including arbitrary leading zeroes), whitespace/separators, ignored words and
+nested comments advance incrementally; each native step allows 256 state
+transitions. Month/zone prefix matching and time-zone lookahead have fixed
+bounds. Numeric overflow attempts can revisit a digit run at most a constant
+number of times. Overall work remains O(input length), with no fallback buffer
+or collector edges and no new input-length limit. NUL is an invalid unit,
+rather than an end marker. U+2212 maps to an ASCII minus for fallback syntax;
+other code units are inspected without lossy conversion or prefix truncation.
+
+Field ordering and two-digit year selection follow QuickJS, independently of
+heap operations and zone lookup. The parser returns the existing `ParsedDate`
+representation; the existing continuation obtains the runtime zone only for
+local results and uses `TimeZone::utc_time_millis`. Explicit offsets never
+freeze the local zone. Source coverage includes all three simulated fixed
+zones, named-zone DST gaps/overlaps, `toString`/`toUTCString` round trips at
+calendar/clipping boundaries, long scans, and waits/GC/worker migration.
 
 ## Array and argument spread (clj-quickjs-130)
 

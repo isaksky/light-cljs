@@ -7,7 +7,7 @@
 //! is selected per runtime (UTC without a host). Never read the OS clock or
 //! zone here. Snapshot coverage is limited; uncovered names are rejected.
 //! Shared decomposition, ISO and non-locale string formatting are implemented
-//! below, together with ISO parsing (clj-quickjs-184). Non-ISO parsing is deferred.
+//! below, together with ISO and QuickJS fallback parsing (-184/-185).
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
@@ -48,13 +48,13 @@ impl ParsedDate {
 }
 
 /// Date parsing entry point, shared by Date.parse and string construction.
-/// The fallback pellet can extend this dispatcher after ISO parsing fails.
 /// It owns immutable strings, Rust buffers and scalar state, with no heap edges.
 #[derive(Debug)]
 pub(crate) struct Parser {
     text: Option<crate::value::JsString>,
     flatten: crate::value::string::StringFlatten,
     iso: IsoParser,
+    fallback: Option<FallbackParser>,
 }
 
 impl Parser {
@@ -64,11 +64,12 @@ impl Parser {
             flatten: crate::value::string::StringFlatten::new(text)
                 .ok_or(Fault::OutOfMemory("Date parse input allocation failed"))?,
             iso: IsoParser::default(),
+            fallback: None,
         })
     }
 
-    /// At most `budget` fractional digits and constant-size calendar/zone
-    /// fields per step. Rope traversal/copying is also budgeted. Total O(input
+    /// At most `budget` scan steps and constant-size calendar/zone
+    /// lookups per step. Rope traversal/copying is also budgeted. Total O(input
     /// length) work; flat inputs share storage, ropes use an O(length) buffer.
     /// There is no date-string length cap; every trailing unit is validated.
     pub(crate) fn advance(&mut self, budget: usize) -> Option<Option<ParsedDate>> {
@@ -76,7 +77,16 @@ impl Parser {
             self.text = self.flatten.advance(budget);
             return None;
         };
-        self.iso.advance(text.code_units(), budget)
+        if let Some(fallback) = &mut self.fallback {
+            return fallback.advance(text.code_units(), budget);
+        }
+        match self.iso.advance(text.code_units(), budget) {
+            Some(None) => {
+                self.fallback = Some(FallbackParser::default());
+                None
+            }
+            result => result,
+        }
     }
 }
 
@@ -224,6 +234,473 @@ impl IsoParser {
             }
         }
         Some(self.finish(units))
+    }
+}
+
+/// Pure, resumable QuickJS fallback grammar. Every unbounded scan (including
+/// leading zeroes, ignored words and nested comments) consumes the step budget.
+/// Name matching and lookahead inspect only fixed-size ASCII prefixes.
+#[derive(Debug)]
+struct FallbackParser {
+    next: usize,
+    parsed: ParsedDate,
+    has_year: bool,
+    has_month: bool,
+    has_time: bool,
+    numbers: [i32; 3],
+    number_count: usize,
+    scan: FallbackScan,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FallbackNumber {
+    Date,
+    Signed { negative: bool, immediate: bool },
+    Minute,
+    Second,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FallbackScan {
+    Main,
+    Separators,
+    Word {
+        month: bool,
+    },
+    Comment {
+        depth: usize,
+    },
+    Number {
+        kind: FallbackNumber,
+        start: usize,
+        value: i32,
+        count: usize,
+    },
+    Fraction {
+        count: usize,
+        multiplier: i32,
+    },
+    AfterTime,
+}
+
+impl Default for FallbackParser {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            // Keep a one-based month until numeric field ordering is resolved.
+            parsed: ParsedDate {
+                fields: [2001, 1, 1, 0, 0, 0, 0],
+                is_local: true,
+                offset_minutes: 0,
+            },
+            has_year: false,
+            has_month: false,
+            has_time: false,
+            numbers: [0; 3],
+            number_count: 0,
+            scan: FallbackScan::Main,
+        }
+    }
+}
+
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// Abbreviations, order and offsets follow js_tzabbr. Prefix matching is
+// intentional (for example UTC is tested before UT).
+const FALLBACK_ZONES: [(&str, i32); 18] = [
+    ("GMT", 0),
+    ("UTC", 0),
+    ("UT", 0),
+    ("Z", 0),
+    ("EDT", -240),
+    ("EST", -300),
+    ("CDT", -300),
+    ("CST", -360),
+    ("MDT", -360),
+    ("MST", -420),
+    ("PDT", -420),
+    ("PST", -480),
+    ("WET", 0),
+    ("WEST", 60),
+    ("CET", 60),
+    ("CEST", 120),
+    ("EET", 120),
+    ("EEST", 180),
+];
+
+impl FallbackParser {
+    fn unit(units: &[u16], next: usize) -> Option<u16> {
+        units.get(next).map(|&u| if u == 0x2212 { 45 } else { u })
+    }
+
+    fn matches(units: &[u16], next: usize, name: &str) -> bool {
+        name.bytes().enumerate().all(|(i, byte)| {
+            units
+                .get(next + i)
+                .is_some_and(|&u| u <= 127 && (u as u8).eq_ignore_ascii_case(&byte))
+        })
+    }
+
+    fn number(&mut self, kind: FallbackNumber) {
+        self.scan = FallbackScan::Number {
+            kind,
+            start: self.next,
+            value: 0,
+            count: 0,
+        };
+    }
+
+    fn short_year(value: i32) -> i32 {
+        value
+            + if value < 50 {
+                2000
+            } else if value < 100 {
+                1900
+            } else {
+                0
+            }
+    }
+
+    fn finish(&self) -> Option<ParsedDate> {
+        if self.number_count + usize::from(self.has_year) + usize::from(self.has_month) > 3 {
+            return None;
+        }
+        let mut result = self.parsed;
+        let fields = &mut result.fields;
+        let [a, b, c] = self.numbers;
+        match self.number_count {
+            0 if !self.has_year => return None,
+            0 => {}
+            1 if self.has_month => fields[2] = a,
+            1 => fields[1] = a,
+            2 if self.has_year => {
+                fields[1] = a;
+                fields[2] = b;
+            }
+            2 if self.has_month => {
+                fields[0] = Self::short_year(b);
+                fields[2] = a;
+            }
+            2 => {
+                fields[1] = a;
+                fields[2] = b;
+            }
+            3 => {
+                fields[0] = Self::short_year(c);
+                fields[1] = a;
+                fields[2] = b;
+            }
+            _ => return None,
+        }
+        let [_, month, day, hour, minute, second, ms] = *fields;
+        if !(1..=12).contains(&month)
+            || !(1..=31).contains(&day)
+            || hour > 24
+            || minute > 59
+            || second > 59
+            || (hour == 24 && (minute != 0 || second != 0 || ms != 0))
+        {
+            return None;
+        }
+        fields[1] -= 1;
+        Some(result)
+    }
+
+    /// Finish a non-strict signed offset after its digit run. This lookahead
+    /// consumes at most a colon and two digits. Excess digit pairs are dropped
+    /// from the right, as in QuickJS; leading zeroes do not impose a length cap.
+    fn offset(&self, units: &[u16], mut value: i32, mut count: usize) -> Option<(i32, usize)> {
+        if count == 0 {
+            return None;
+        }
+        if count > 4 {
+            let pairs = (count - 3) / 2;
+            value = if pairs >= 5 {
+                0
+            } else {
+                value / 100_i32.pow(pairs as u32)
+            };
+            count -= pairs * 2;
+        }
+        let mut next = self.next;
+        let (hour, minute) = if count > 2 {
+            (value / 100, value % 100)
+        } else if units.get(next) == Some(&58) {
+            let mut cursor = IsoCursor {
+                units,
+                next: next + 1,
+            };
+            let minute = cursor.digits(2)?;
+            next = cursor.next;
+            (value, minute)
+        } else {
+            (value, 0)
+        };
+        (hour <= 23 && minute <= 59).then_some((hour * 60 + minute, next))
+    }
+
+    fn finish_number(
+        &mut self,
+        units: &[u16],
+        kind: FallbackNumber,
+        start: usize,
+        value: i32,
+        count: usize,
+        valid: bool,
+    ) -> Option<()> {
+        if !valid || count == 0 {
+            match kind {
+                FallbackNumber::Signed { immediate, .. } => {
+                    self.next = start - usize::from(immediate);
+                    self.scan = FallbackScan::Separators;
+                }
+                FallbackNumber::Date
+                    if !self.has_year
+                        && !self.has_month
+                        && !self.has_time
+                        && self.number_count == 0 =>
+                {
+                    self.next = start;
+                    self.scan = FallbackScan::Word { month: false };
+                }
+                _ => return None,
+            }
+            return Some(());
+        }
+        self.scan = FallbackScan::Separators;
+        match kind {
+            FallbackNumber::Date => {
+                if units.get(self.next) == Some(&58) {
+                    self.next += 1;
+                    self.parsed.fields[3] = value;
+                    self.number(FallbackNumber::Minute);
+                } else if !self.has_year && (count > 2 || !(1..=31).contains(&value)) {
+                    self.parsed.fields[0] = if count > 2 {
+                        value
+                    } else {
+                        Self::short_year(value)
+                    };
+                    self.has_year = true;
+                } else {
+                    *self.numbers.get_mut(self.number_count)? = value;
+                    self.number_count += 1;
+                }
+            }
+            FallbackNumber::Signed {
+                negative,
+                immediate,
+            } => {
+                if self.has_time
+                    && let Some((offset, next)) = self.offset(units, value, count)
+                {
+                    self.next = next;
+                    self.parsed.offset_minutes = if negative { -offset } else { offset };
+                    self.parsed.is_local = false;
+                } else if immediate {
+                    // Failed immediate offset attempts leave the sign for the
+                    // usual separator/year grammar. At most one retry is needed.
+                    self.next = start - 1;
+                } else {
+                    if negative && value == 0 {
+                        return None;
+                    }
+                    self.parsed.fields[0] = if negative { -value } else { value };
+                    self.has_year = true;
+                }
+            }
+            FallbackNumber::Minute => {
+                self.parsed.fields[4] = value;
+                if units.get(self.next) == Some(&58) {
+                    self.next += 1;
+                    self.number(FallbackNumber::Second);
+                } else {
+                    self.scan = FallbackScan::AfterTime;
+                }
+            }
+            FallbackNumber::Second => {
+                self.parsed.fields[5] = value;
+                if matches!(units.get(self.next), Some(44 | 46))
+                    && units
+                        .get(self.next + 1)
+                        .is_some_and(|u| (48..=57).contains(u))
+                {
+                    self.next += 1;
+                    self.parsed.fields[6] = 0;
+                    self.scan = FallbackScan::Fraction {
+                        count: 0,
+                        multiplier: 100,
+                    };
+                } else {
+                    self.scan = FallbackScan::AfterTime;
+                }
+            }
+        }
+        Some(())
+    }
+
+    fn step(&mut self, units: &[u16]) -> Option<Option<ParsedDate>> {
+        let unit = Self::unit(units, self.next);
+        // Do not inherit QuickJS's NUL-terminated prefix truncation.
+        if unit == Some(0) {
+            return Some(None);
+        }
+        match self.scan {
+            FallbackScan::Main => {
+                let Some(c) = unit else {
+                    return Some(self.finish());
+                };
+                if c == 32 {
+                    self.next += 1;
+                } else if c == 43 || c == 45 {
+                    self.next += 1;
+                    self.number(FallbackNumber::Signed {
+                        negative: c == 45,
+                        immediate: false,
+                    });
+                } else if (48..=57).contains(&c) {
+                    self.number(FallbackNumber::Date);
+                } else if let Some(month) = MONTH_NAMES
+                    .iter()
+                    .position(|name| Self::matches(units, self.next, name))
+                {
+                    self.parsed.fields[1] = month as i32 + 1;
+                    self.has_month = true;
+                    self.next += 3;
+                    self.scan = FallbackScan::Word { month: true };
+                } else if self.has_time && Self::matches(units, self.next, "PM") {
+                    if self.parsed.fields[3] < 12 {
+                        self.parsed.fields[3] += 12;
+                    }
+                    self.next += 2;
+                } else if self.has_time && Self::matches(units, self.next, "AM") {
+                    if self.parsed.fields[3] == 12 {
+                        self.parsed.fields[3] = 0;
+                    }
+                    self.next += 2;
+                } else if let Some(&(name, offset)) = FALLBACK_ZONES
+                    .iter()
+                    .find(|(name, _)| Self::matches(units, self.next, name))
+                {
+                    self.parsed.offset_minutes = offset;
+                    self.parsed.is_local = false;
+                    self.next += name.len();
+                } else if c == 40 {
+                    self.next += 1;
+                    self.scan = FallbackScan::Comment { depth: 1 };
+                } else if c == 41
+                    || self.has_year
+                    || self.has_month
+                    || self.has_time
+                    || self.number_count != 0
+                {
+                    return Some(None);
+                } else {
+                    self.scan = FallbackScan::Word { month: false };
+                }
+            }
+            FallbackScan::Separators => {
+                if matches!(unit, Some(44..=47)) {
+                    self.next += 1;
+                } else {
+                    self.scan = FallbackScan::Main;
+                }
+            }
+            FallbackScan::Word { month } => {
+                if unit.is_none()
+                    || matches!(unit, Some(32 | 45 | 47 | 40 | 41))
+                    || (month && unit.is_some_and(|c| (48..=57).contains(&c)))
+                {
+                    self.scan = FallbackScan::Separators;
+                } else {
+                    self.next += 1;
+                }
+            }
+            FallbackScan::Comment { mut depth } => {
+                let Some(c) = unit else {
+                    return Some(None);
+                };
+                depth += usize::from(c == 40);
+                depth -= usize::from(c == 41);
+                self.next += 1;
+                self.scan = if depth == 0 {
+                    FallbackScan::Separators
+                } else {
+                    FallbackScan::Comment { depth }
+                };
+            }
+            FallbackScan::Number {
+                kind,
+                start,
+                value,
+                count,
+            } => {
+                let digit = unit.filter(|c| (48..=57).contains(c));
+                let capped =
+                    matches!(kind, FallbackNumber::Minute | FallbackNumber::Second) && count == 2;
+                if let Some(digit) = digit
+                    && !capped
+                    && value < 100_000_000
+                {
+                    self.next += 1;
+                    self.scan = FallbackScan::Number {
+                        kind,
+                        start,
+                        value: value * 10 + i32::from(digit - 48),
+                        count: count + 1,
+                    };
+                } else if self
+                    .finish_number(
+                        units,
+                        kind,
+                        start,
+                        value,
+                        count,
+                        digit.is_none() || capped || value < 100_000_000,
+                    )
+                    .is_none()
+                {
+                    return Some(None);
+                }
+            }
+            FallbackScan::Fraction { count, multiplier } => {
+                if let Some(digit) = unit.filter(|c| (48..=57).contains(c))
+                    && count < 9
+                {
+                    self.parsed.fields[6] += i32::from(digit - 48) * multiplier;
+                    self.next += 1;
+                    self.scan = FallbackScan::Fraction {
+                        count: count + 1,
+                        multiplier: multiplier / 10,
+                    };
+                } else {
+                    self.scan = FallbackScan::AfterTime;
+                }
+            }
+            FallbackScan::AfterTime => {
+                self.has_time = true;
+                if matches!(unit, Some(43 | 45)) {
+                    self.next += 1;
+                    self.number(FallbackNumber::Signed {
+                        negative: unit == Some(45),
+                        immediate: true,
+                    });
+                } else {
+                    self.scan = FallbackScan::Separators;
+                }
+            }
+        }
+        None
+    }
+
+    fn advance(&mut self, units: &[u16], budget: usize) -> Option<Option<ParsedDate>> {
+        for _ in 0..budget {
+            if let Some(result) = self.step(units) {
+                return Some(result);
+            }
+        }
+        None
     }
 }
 
@@ -485,9 +962,7 @@ pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part
         return Value::String("Invalid Date".into());
     };
     let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][fields.weekday as usize];
-    let month = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ][fields.month as usize];
+    let month = MONTH_NAMES[fields.month as usize];
     let width = if fields.year < 0 { 5 } else { 4 };
     let year = format!("{:0width$}", fields.year);
     let clock = format!(
@@ -709,6 +1184,205 @@ pub(crate) fn set_time(heap: &Heap, task: TaskId, this: &Value, time: f64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Upstream rows share the complete QuickJS copyright/permission notice
+    // below (date_time_arithmetic); remaining inputs are synthetic fixtures.
+    #[test]
+    fn date_fallback_parse_fields() {
+        for (text, fields, offset) in [
+            ("Jan 1 2000", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Jan 1 2000 00:00", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Jan 1 2000 00:00:00", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Sat Jan 1 2000", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Sat Jan 1 2000 00:00", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Sat Jan 1 2000 00:00:00", [2000, 0, 1, 0, 0, 0, 0], None),
+            (
+                "Jan 1 2000 00:00:00 GMT+0100",
+                [2000, 0, 1, 0, 0, 0, 0],
+                Some(60),
+            ),
+            (
+                "Jan 1 2000 00:00:00 GMT+0200",
+                [2000, 0, 1, 0, 0, 0, 0],
+                Some(120),
+            ),
+            (
+                "Sat Jan 1 2000 00:00:00 GMT+0100",
+                [2000, 0, 1, 0, 0, 0, 0],
+                Some(60),
+            ),
+            (
+                "Sat Jan 1 2000 00:00:00 GMT+0200",
+                [2000, 0, 1, 0, 0, 0, 0],
+                Some(120),
+            ),
+            (
+                "Sat, 01 Jan 2000 00:00:00 GMT",
+                [2000, 0, 1, 0, 0, 0, 0],
+                Some(0),
+            ),
+            ("Jan 1 2000 12:30 PM", [2000, 0, 1, 12, 30, 0, 0], None),
+            ("1/2/2000", [2000, 0, 2, 0, 0, 0, 0], None),
+            ("Jan 1 2000 (comment) 00:00", [2000, 0, 1, 0, 0, 0, 0], None),
+            ("Jan 1 2000 EST", [2000, 0, 1, 0, 0, 0, 0], Some(-300)),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            let parsed = (0..10000)
+                .find_map(|_| parser.advance(&units, 1))
+                .expect("bounded fallback parse")
+                .expect(text);
+            assert_eq!(parsed.fields, fields, "{text}");
+            assert_eq!(parsed.is_local, offset.is_none(), "{text}");
+            assert_eq!(parsed.offset_minutes, offset.unwrap_or(0), "{text}");
+        }
+        for text in ["Jan 1 2000)", "Jan 1 2000 (x", "foo"] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            assert!(
+                (0..10000)
+                    .find_map(|_| parser.advance(&units, 1))
+                    .expect("bounded fallback parse")
+                    .is_none(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn date_fallback_order_years_and_tokens() {
+        for (text, expected) in [
+            ("0", [2000, 0, 1, 0, 0, 0, 0]),
+            ("1", [2001, 0, 1, 0, 0, 0, 0]),
+            ("12", [2001, 11, 1, 0, 0, 0, 0]),
+            ("32", [2032, 0, 1, 0, 0, 0, 0]),
+            ("49", [2049, 0, 1, 0, 0, 0, 0]),
+            ("50", [1950, 0, 1, 0, 0, 0, 0]),
+            ("99", [1999, 0, 1, 0, 0, 0, 0]),
+            ("100", [100, 0, 1, 0, 0, 0, 0]),
+            ("01/02/03", [2003, 0, 2, 0, 0, 0, 0]),
+            ("1/2/49", [2049, 0, 2, 0, 0, 0, 0]),
+            ("1/2/50", [1950, 0, 2, 0, 0, 0, 0]),
+            ("1/2/0003", [3, 0, 2, 0, 0, 0, 0]),
+            ("Jan 1 01", [2001, 0, 1, 0, 0, 0, 0]),
+            ("1 Jan 2", [2002, 0, 1, 0, 0, 0, 0]),
+            ("2000/1/2", [2000, 0, 2, 0, 0, 0, 0]),
+            ("1/2000/2", [2000, 0, 2, 0, 0, 0, 0]),
+            ("Jan2000", [2000, 0, 1, 0, 0, 0, 0]),
+            ("Jan 1 +0000", [0, 0, 1, 0, 0, 0, 0]),
+            ("Sat Jan 01 -0001 00:00 GMT", [-1, 0, 1, 0, 0, 0, 0]),
+            (
+                "jAnUaRy 1 2000 (nested (comment)) 12:30 aM",
+                [2000, 0, 1, 0, 30, 0, 0],
+            ),
+            ("Jan 1 2000 1:2:3,123456789 PM", [2000, 0, 1, 13, 2, 3, 123]),
+            ("Jan 1 2000 24:00", [2000, 0, 1, 24, 0, 0, 0]),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            let fields = (0..10000)
+                .find_map(|_| parser.advance(&units, 1))
+                .expect("bounded fallback parse")
+                .expect(text);
+            assert_eq!(fields.fields, expected, "{text}");
+        }
+        for (suffix, offset) in [
+            ("GMT", 0),
+            ("utc", 0),
+            ("Ut", 0),
+            ("z", 0),
+            ("EDT", -240),
+            ("EST", -300),
+            ("CDT", -300),
+            ("CST", -360),
+            ("MDT", -360),
+            ("MST", -420),
+            ("PDT", -420),
+            ("PST", -480),
+            ("WET", 0),
+            ("WEST", 60),
+            ("CET", 60),
+            ("CEST", 120),
+            ("EET", 120),
+            ("EEST", 180),
+            ("+1", 60),
+            ("-1", -60),
+            ("+001", 1),
+            ("-01:30", -90),
+            ("GMT+12345", 83),
+            ("+123456", 754),
+            ("\u{2212}0500", -300),
+        ] {
+            let units: Vec<u16> = format!("Jan 1 2000 0:00 {suffix}").encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            let fields = (0..10000)
+                .find_map(|_| parser.advance(&units, 1))
+                .expect("bounded fallback parse")
+                .expect(suffix);
+            assert!(!fields.is_local, "{suffix}");
+            assert_eq!(fields.offset_minutes, offset, "{suffix}");
+        }
+        for text in [
+            "",
+            "Jan",
+            "foo",
+            "Jan 1 2000)",
+            "Jan 1 2000 (x",
+            ")Jan 1 2000",
+            "Jan) 1 2000",
+            "Jan 1 2000 ((x)",
+            "Jan 1 2000 xyz",
+            "1/2/3/4",
+            "Jan 1 2 2000",
+            "13/1/2000",
+            "2000/0/1",
+            "2000/1/0",
+            "2000/1/32",
+            "Jan 1 -0",
+            "Jan 1 2000 25:00",
+            "Jan 1 2000 24:00:00.001",
+            "Jan 1 2000 0:60",
+            "Jan 1 2000 0:00:60",
+            "Jan 1 2000 0:",
+            "Jan 1 2000 0:00:",
+            "Jan 1 2000 0:00 +24:00",
+            "Jan 1 2000 0:00 -01:60",
+            "Jan 1 2000 0:00:00.1234567890",
+            "Jan 1 2000\0",
+            "Jan 1 2000\u{d7ff}",
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            assert!(
+                (0..10000)
+                    .find_map(|_| parser.advance(&units, 1))
+                    .expect("bounded fallback parse")
+                    .is_none(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn date_fallback_scan_budget() {
+        for text in [
+            format!("{} Jan 1 2000", "weekday".repeat(2000)),
+            format!("Jan 1 2000 ({}x{})", "(".repeat(5000), ")".repeat(5000)),
+            format!("Jan 1 {}2000", "0".repeat(10000)),
+            format!("Jan 1 2000 0:00 +{}0100", "0".repeat(10000)),
+            format!("{}Jan 1 2000", " ".repeat(10000)),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = FallbackParser::default();
+            assert!(parser.advance(&units, 256).is_none());
+            assert!(parser.next <= 256 + 4);
+            let fields = (0..units.len() * 4)
+                .find_map(|_| parser.advance(&units, 1))
+                .expect("bounded fallback parse")
+                .expect("valid long input");
+            assert_eq!(fields.fields, [2000, 0, 1, 0, 0, 0, 0]);
+        }
+    }
 
     // ISO rows adapted from the same QuickJS test_date function credited
     // with the complete copyright/permission notice below (date_time_arithmetic).
