@@ -453,3 +453,104 @@ fn values_only_a_parked_task_holds_survive_until_it_ends_and_is_unrooted() {
     let down = exec.shutdown(TIMEOUT).unwrap();
     assert!(down.parked.is_empty() && down.pending.is_empty());
 }
+
+/// A native job that panics inside its scope is recorded as panicked; the
+/// unwind closes the scope (no heap access left registered), the worker
+/// keeps running work, and a collection reclaims the abandoned local.
+#[test]
+fn a_panicking_native_job_releases_its_scope_and_the_worker_continues() {
+    let rt = Runtime::new();
+    let exec = ExecutorConfig::new().workers(1).start(&rt).unwrap();
+    let (local_tx, local_rx) = std::sync::mpsc::channel();
+    let job = {
+        let rt = rt.clone();
+        exec.submit_native(Placement::Any, move |_| {
+            rt.scope(|s| {
+                let local = s.new_object();
+                local_tx.send(s.downgrade(local)).unwrap();
+                panic!("native job failure (expected by the test)");
+            })
+        })
+    };
+    let local = local_rx.recv_timeout(TIMEOUT).unwrap();
+    let panicked = EventKind::NativeFinished {
+        job,
+        panicked: true,
+    };
+    assert!(exec.wait_for(TIMEOUT, |ev| ev.iter().any(|e| e.kind == panicked)));
+
+    // The same worker runs a task, and a collection needs no waiting.
+    let (arg, kept) = object(&rt);
+    let task = identity(&rt, &arg);
+    let id = task.id();
+    drop(arg);
+    exec.submit(task).unwrap();
+    let result = complete_value(exec.take_outcome(id, TIMEOUT));
+    assert!(result.same_object(&kept.upgrade().unwrap()));
+    let stats = rt.collect().unwrap();
+    assert!(stats.reclaimed >= 1);
+    assert!(!local.is_live(), "the unwound scope's local was reclaimed");
+    assert!(kept.is_live());
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// Shutdown while a native job runs and another is queued: the timeout
+/// names the busy job; once it returns, a retried shutdown drops the queued
+/// job unrun (its captures are dropped) and reports it.
+#[test]
+fn shutdown_reports_a_busy_native_job_and_drops_queued_ones() {
+    /// Sets its flag when dropped.
+    struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let rt = Runtime::new();
+    let exec = ExecutorConfig::new().workers(1).start(&rt).unwrap();
+    let (started, release) = (Arc::new(Latch::default()), Arc::new(Latch::default()));
+    let busy = {
+        let (started, release) = (Arc::clone(&started), Arc::clone(&release));
+        exec.submit_native(Placement::Any, move |_| {
+            started.open();
+            assert!(release.wait());
+        })
+    };
+    assert!(started.wait());
+    let (ran, dropped) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let queued = {
+        let ran = Arc::clone(&ran);
+        let flag = DropFlag(Arc::clone(&dropped));
+        exec.submit_native(Placement::Any, move |_| {
+            let _flag = flag;
+            ran.store(true, Ordering::Release);
+        })
+    };
+
+    // A deadline, not a synchronization: the busy job cannot return before
+    // `release` opens.
+    let timeout = exec.shutdown(Duration::from_millis(50)).unwrap_err();
+    assert_eq!(timeout.busy_native, [(w(0), busy)]);
+    assert!(timeout.busy.is_empty());
+    release.open();
+    let down = timeout.executor.shutdown(TIMEOUT).unwrap();
+    assert_eq!(down.dropped_native, [queued]);
+    assert!(
+        !ran.load(Ordering::Acquire),
+        "a queued job ran during shutdown"
+    );
+    assert!(dropped.load(Ordering::Acquire), "its captures were dropped");
+    let started_jobs: Vec<_> = down
+        .events
+        .iter()
+        .filter_map(|e| match e.kind {
+            EventKind::NativeStarted { job } => Some(job),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started_jobs, [busy]);
+}
