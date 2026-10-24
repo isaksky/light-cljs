@@ -859,6 +859,7 @@ fn realm_intrinsics_retain() {
         "Math.imul",
         "Math.fround",
         "Math.hypot",
+        "Array.prototype.join",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
     ];
@@ -891,8 +892,9 @@ fn realm_intrinsics_retain() {
     // clj-quickjs-144, five extraction/combination methods, clj-quickjs-145,
     // six number predicates, clj-quickjs-147, two parsing functions,
     // clj-quickjs-148, Math with six numeric methods, clj-quickjs-152,
-    // and the two __proto__ accessors, clj-quickjs-261.
-    assert_eq!(rt.heap_usage().objects.builtin, 58);
+    // the two __proto__ accessors, clj-quickjs-261, and Array.prototype.join,
+    // clj-quickjs-156.
+    assert_eq!(rt.heap_usage().objects.builtin, 59);
     assert_eq!(rt.heap_usage().objects.plain, 6);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

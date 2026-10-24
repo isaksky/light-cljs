@@ -3896,7 +3896,7 @@ the built-in functions. QuickJS `js_object_get___proto__`,
 `research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`, were consulted for semantics;
 no source or tests were copied.
 
-### Array string conversion (clj-quickjs-156)
+## Array string conversion (clj-quickjs-156)
 
 `Array.prototype.join` and `toString` are realm built-in functions executed
 through task-owned native continuations. Join retains its receiver, separator,
