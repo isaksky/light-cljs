@@ -3304,12 +3304,13 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return self.expr(ExprKind::NewTarget, op_span.to(property.span));
         }
+        let direct_super = self.is_keyword(Keyword::Super);
         let mut callee = if self.is_keyword(Keyword::New) {
             self.parse_new()?
         } else {
             self.parse_primary()?
         };
-        if matches!(callee.kind, ExprKind::SuperCall { .. }) {
+        if direct_super && matches!(callee.kind, ExprKind::SuperCall { .. }) {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
                 callee.span,

@@ -7984,18 +7984,23 @@ The parser admits a super property base only in method/accessor parameters and
 bodies. Ordinary functions reset the context; arrows and runtime eval keep
 lexical super deferred to -112. The base is never a standalone JavaScript value.
 Lowering preserves a triple on the operand stack: current receiver, home-object
-prototype, converted key. `GetSuperBase` reads the executing function's existing
+prototype, key. Assignment and deletion retain a raw key; reads and read/write
+updates convert it first. `GetSuperBase` reads the executing function's existing
 traced `home_object` edge and obtains its current prototype. `GetSuperElem`
 searches that base but dispatches a getter with the separate receiver.
 `PutSuperElem` performs the lookup-base descriptor decision before checking the
 receiver's own descriptor and defining/updating its data property; inherited
 setters run with the receiver. `PutSuperElemStrict` preserves class computed-key
 strictness inside sloppy surrounding code. `ToSuperKey` reuses the string-hint
-resumable conversion continuation without checking base coercibility; `Dup3`
+resumable conversion continuation without checking base coercibility. Assignment
+converts through PutSuperElem after the right-hand side; typed-array receiver
+descriptors validate before value coercion. Sharing faults are checked outside
+sloppy ordinary-rejection suppression. `Dup3`
 retains the triple for compound assignments and updates. Destructuring targets
 use the same reference representation. Calls and tagged templates keep a second
 receiver below the triple and use ordinary method-call instructions. Deletion
-converts its key and uses `ThrowError(DeleteSuper)` without fetching a property.
+evaluates its key expression and uses `ThrowError(DeleteSuper)` without key
+coercion or fetching a property.
 
 All opcodes append to the registry (0xA3..0xA8); existing encodings are unchanged.
 There are no new heap kinds or publication categories: the method's home object
@@ -8006,3 +8011,8 @@ cover one-instruction budgets, collections around waits and yields, worker
 migration and 64 KiB worker stacks. Class fields and lexical super in arrows/eval
 remain explicit gaps. QuickJS is a semantic reference; this implementation uses
 the existing Rust object model and VM continuations.
+
+Generator `next` and Promise entry use small dedicated native handlers before
+the general constructor dispatcher, so suspended methods can attach and resume
+on 64 KiB workers. Tests retain compound super references across generator yield
+and async await, collect while detached and migrate before resumption.

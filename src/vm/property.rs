@@ -1118,13 +1118,18 @@ pub(crate) fn super_receiver_descriptor(
     {
         return rejected();
     }
-    Ok(Some(PropertyDescriptor {
+    let desc = PropertyDescriptor {
         value: Some(value),
         writable: own.is_none().then_some(true),
         enumerable: own.is_none().then_some(true),
         configurable: own.is_none().then_some(true),
         ..PropertyDescriptor::default()
-    }))
+    };
+    match typed_array_descriptor(heap, task, *id, key, &desc) {
+        Err(Fault::TypeError(_)) if !strict => Ok(None),
+        Err(fault) => Err(fault),
+        Ok(_) => Ok(Some(desc)),
+    }
 }
 
 pub(crate) fn put_super_receiver(
@@ -1135,6 +1140,22 @@ pub(crate) fn put_super_receiver(
     desc: &PropertyDescriptor,
     strict: bool,
 ) -> Result<(), Fault> {
+    // Sharing/ownership faults are runtime mutation policy, even in sloppy
+    // code. Resolve function storage before suppressing ordinary rejection.
+    let receiver = if is_function(heap, receiver) {
+        function::define_target(heap, task, receiver, key)?
+    } else {
+        receiver
+    };
+    let immutable = heap
+        .read(receiver, |object| {
+            matches!(object, HeapObject::Plain(o) if o.is_intrinsic())
+                || matches!(object, HeapObject::Builtin(_))
+        })
+        .ok_or(Fault::Internal("super receiver was reclaimed"))?;
+    if immutable {
+        return Err(immutable_define(key));
+    }
     match define_own_property(heap, task, receiver, key, desc) {
         Err(Fault::TypeError(_)) if !strict => Ok(()),
         result => result,

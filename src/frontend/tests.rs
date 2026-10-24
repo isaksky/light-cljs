@@ -4628,6 +4628,17 @@ fn rejects_unsupported_syntax_with_positions() {
     rejects_with("x = super.y;", SyntaxErrorKind::Invalid, 1, 5, "super");
 }
 
+#[test]
+fn new_parenthesized_super_call_result() {
+    parse_script("class C {} class D extends C { constructor() { new (super())(); } }").unwrap();
+    assert_eq!(
+        parse_script("class C {} class D extends C { constructor() { new super(); } }")
+            .unwrap_err()
+            .kind,
+        SyntaxErrorKind::Invalid
+    );
+}
+
 // ----- negative: JavaScript early errors and grammar mismatches ---------------
 
 #[test]

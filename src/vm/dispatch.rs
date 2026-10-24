@@ -1053,8 +1053,12 @@ fn property_step(
         Instr::PutSuperElem | Instr::PutSuperElemStrict => {
             let strict = code.strict || matches!(instr, Instr::PutSuperElemStrict);
             let value = state.pop()?;
-            let key = property::to_property_key(&state.pop()?)?;
+            let raw_key = state.pop()?;
             let base = state.pop()?;
+            if !matches!(base, Value::Object(_)) {
+                return Err(Fault::TypeError("super lookup base is null".into()));
+            }
+            let key = property::to_property_key(&raw_key)?;
             let receiver = state.pop()?;
             let task = state.diag.task;
             match property::super_write(heap, task, &base, &key, strict)? {

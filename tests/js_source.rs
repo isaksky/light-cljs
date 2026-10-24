@@ -105,6 +105,7 @@ fn derived_classes() {
         "class C { constructor(a,b) { this.s = a+b; } } class D extends C { constructor() { super(...[1,2]); } } new D().s === 3",
         "class C {} class D extends C { constructor() { (() => super())(); } } new D() instanceof D",
         "class C { constructor() { return {x: 7}; } } class D extends C { constructor() { super(); this.z = 8; } } let d = new D(); d.x === 7 && d.z === 8",
+        "class C {} class D extends C { constructor() { try { new (super())(); } catch(e) {} this.x = 7; } } new D().x === 7",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -135,7 +136,7 @@ fn super_property_access() {
         "let p = {get x() { return this; }, set z(v) { this.y = v; }}; let o = {__proto__: p, get x() { return super.x; }, set z(v) { super.z = v; }}; o.z = 5; o.x === o && o.y === 5 && p.y === undefined",
         "let p = {}; let o = {__proto__: p, f() { super.z = 5; super['w'] = 6; }}; o.f(); o.z === 5 && o.w === 6 && p.z === undefined && p.w === undefined",
         "let a = { f() { delete super.a; } }; let ok = false; try { a.f(); } catch(e) { ok = e instanceof ReferenceError; } ok",
-        "let n = 0; let key = {toString() { n++; return 'x'; }}; let o = {m() { delete super[key]; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof ReferenceError; } ok && n === 1",
+        "let n = 0; let expr = 0; let key = {toString() { n++; throw 7; }}; let o = {m() { delete super[(expr++, key)]; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof ReferenceError; } ok && expr === 1 && n === 0",
         "let p = {x: 1}; let o = {__proto__: p, m() { return super.x; }}; let other = {x: 9, m: o.m}; Object.setPrototypeOf(other, {x: 8}); let before = other.m(); Object.setPrototypeOf(o, {x: 2}); before === 1 && other.m() === 2",
         "let p = {m(a,b) { return this.x + a + b; }}; let o = {__proto__: p, x: 1, f() { return (super.m)(...[2,3]); }}; o.f() === 6",
         "let p = {x: 1}; let o = {__proto__: p, m() { let a = super.x++; let b = ++super['x']; super.x += 3; return a === 1 && b === 2 && this.x === 4; }}; o.m() && p.x === 1",
@@ -153,7 +154,10 @@ fn super_property_access() {
         "let n = 0; let p = {set x(v) { n++; }}; let o = {__proto__: p, m() { super.x = 7; }}; Object.preventExtensions(o); o.m(); n === 1",
         "let p = {}; let o = {__proto__: p, m() { super.x = 7; }}; Object.preventExtensions(o); let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok",
         "let n = 0; let key = {toString() { n++; return 'x'; }}; let p = {x: 1}; let o = {__proto__: p, m() { super[key] += 2; }}; o.m(); n === 1 && o.x === 3 && p.x === 1",
-        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let o = {m() { super[key] = (log += 'v', 7); }}; o.m(); log === 'kv' && o.x === 7",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let o = {m() { super[key] = (log += 'v', 7); }}; o.m(); log === 'vk' && o.x === 7",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let value = {get x() { log += 'v'; return undefined; }}; let o = {m() { ({x: super[key] = (log += 'd', 7)} = value); }}; o.m(); log === 'vdk' && o.x === 7",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; let it = {[Symbol.iterator]() { return this; }, next() { log += 's'; return {value: undefined, done: false}; }, return() { return {done: true}; }}; let o = {m() { [super[(log += 'e', key)] = (log += 'd', 7)] = it; }}; o.m(); log === 'esdk' && o.x === 7",
+        "let n = 0; let key = {toString() { n++; return 'x'; }}; let o = {m() { try { super[key] = (() => { throw 7; })(); } catch(e) { return e === 7; } }}; o.m() && n === 0",
         "let n = 0; let o = {m() { let inner = {m() { return super.x; }}; Object.setPrototypeOf(inner, {x: 7}); n = inner.m(); return super.x; }}; Object.setPrototypeOf(o, {x: 8}); o.m() === 8 && n === 7",
         "let p = {x: 1}; let o = {__proto__: p, m() { [super.x] = [7]; ({x: super['y']} = {x: 8}); }}; o.m(); o.x === 7 && o.y === 8 && p.x === 1 && p.y === undefined",
     ] {
@@ -185,6 +189,60 @@ fn super_property_access() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn super_property_access_typed_array_receivers() {
+    for index in ["1", "-1", "NaN", "'-0'"] {
+        for value in [
+            "7",
+            "{valueOf() { calls++; return 7; }}",
+            "{valueOf() { calls++; throw 9; }}",
+        ] {
+            let source = format!(
+                "let calls = 0; let o = {{m(v) {{ super[{index}] = v; }}}}; let a = new Uint8Array(1); let ok = false; try {{ o.m.call(a, {value}); }} catch(e) {{ ok = e instanceof TypeError; }} ok && calls === 0 && a[0] === 0"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+            let source = format!(
+                "let calls = 0; let o = {{m(v) {{ return super[{index}] = v; }}}}; let a = new Uint8Array(1); let v = {value}; o.m.call(a, v) === v && calls === 0 && a[0] === 0"
+            );
+            assert_eq!(sloppy_eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+    assert_eq!(
+        eval(
+            "let calls = 0; let o = {m(v) { return super[0] = v; }}; let a = new Uint8Array(1); let v = {valueOf() { calls++; return 7; }}; o.m.call(a, v) === v && calls === 1 && a[0] === 7"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn super_property_access_sloppy_immutable_receivers() {
+    assert_eq!(
+        sloppy_eval(
+            "let o = {m() { super.x = 1; }}; let ok = false; try { o.m.call(Object.prototype); } catch(e) { ok = e instanceof TypeError; } ok"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        sloppy_eval(
+            "let o = {m() { return super.x = 1; }}; let receiver = {}; Object.preventExtensions(receiver); o.m.call(receiver) === 1 && receiver.x === undefined"
+        ),
+        ValueView::Bool(true)
+    );
+    let rt = Runtime::new();
+    let RunOutcome::Complete(function) = rt.spawn(&exe("() => 7"), &[]).unwrap().run().unwrap()
+    else {
+        panic!("function")
+    };
+    rt.publish(&function).unwrap();
+    let code = clj_quickjs::frontend::compile_function_with("function check(f) { let o = {m() { super.x = 1; }}; let ok = false; try { o.m.call(f); } catch(e) { ok = e instanceof TypeError; } return ok; }", ScriptOptions::SLOPPY).unwrap();
+    assert!(!code.is_strict());
+    let RunOutcome::Complete(result) = rt.spawn(&code, &[&function]).unwrap().run().unwrap() else {
+        panic!("complete")
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
 }
 
 #[test]
@@ -242,6 +300,37 @@ fn super_property_access_error_positions() {
             "{source}: {message}"
         );
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. Detaching an activation retains
+/// a compound super reference, including its original prototype and receiver.
+#[test]
+fn super_property_access_in_suspended_methods() {
+    assert_eq!(
+        eval(
+            "let p = {x: 1}; let o = {__proto__: p, *m() { super.x += yield 2; return this.x; }}; let it = o.m(); let a = it.next(); let b = it.next(7); a.value === 2 && !a.done && b.value === 8 && b.done && o.x === 8 && p.x === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl clj_quickjs::Host for Log {
+        fn effect(&mut self, call: clj_quickjs::HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let rt = Runtime::new();
+    let code = exe(
+        "let p = {x: 1}; let calls = 0; let o = {__proto__: p, async m() { calls++; super.x += await 7; return this.x; }}; o.m().then(v => __rt.effect(0, v === 8 && o.x === 8 && p.x === 1 && calls === 1));",
+    );
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut host = Log::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [Primitive::Bool(true)]);
 }
 
 /// Synthetic fixtures, not light-cljs output. Constructor targets share the

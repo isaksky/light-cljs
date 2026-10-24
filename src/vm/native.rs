@@ -1139,6 +1139,18 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             }
             (count, 1, 2, Hint::String)
         }
+        PutSuperElem | PutSuperElemStrict => {
+            let base = state
+                .operands()
+                .iter()
+                .rev()
+                .nth(2)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            if !matches!(base, Value::Object(_)) {
+                return Ok(false);
+            }
+            (4, 2, 3, Hint::String)
+        }
         In => {
             let [_, base] = operands::<2>(state)?;
             if !matches!(base, Value::Object(_)) {
@@ -1166,6 +1178,8 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
                         | DeleteStrict
                         | PutElem
                         | PutElemStrict
+                        | PutSuperElem
+                        | PutSuperElemStrict
                         | In
                 ) || (instr == Plus
                     && ops[at..].iter().any(|v| matches!(v, Value::String(_))))))
@@ -1324,7 +1338,91 @@ pub(crate) fn start_builtin(
     {
         return duration_format::start(heap, state, which, this, args, popped).map(|()| true);
     }
+    if matches!(
+        which,
+        Builtin::Promise
+            | Builtin::PromiseResolve
+            | Builtin::PromiseReject
+            | Builtin::PromiseThen
+            | Builtin::PromiseCatch
+            | Builtin::PromiseResolver(_, _)
+            | Builtin::PromiseReaction(_)
+            | Builtin::PromiseResolveThenable(_)
+    ) {
+        return start_promise(heap, state, which, this, args, construct, popped);
+    }
+    if which == Builtin::GeneratorNext {
+        return start_generator_next(heap, state, this, args, popped);
+    }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+#[inline(never)]
+fn start_promise(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = super::promise::start(heap, state, which, this, args, construct)?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    if let Some(native) = native {
+        push_native(state, NativeState::Promise(native))?;
+    } else {
+        state.push(Value::Undefined);
+    }
+    Ok(true)
+}
+
+#[inline(never)]
+fn start_generator_next(
+    heap: &Heap,
+    state: &mut VmState,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let id = super::generator::receiver(heap, state.diag.task, this)?;
+    let value = args.first().cloned().unwrap_or(Value::Undefined);
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::Generator { id, failed: None })?;
+    let boundary_index = state.natives.len() - 1;
+    if let Err(error) = state.push_handler(super::exception::HandlerKind::NativeCatch {
+        native: boundary_index,
+    }) {
+        state.natives.pop();
+        return Err(error);
+    }
+    let resumed = match super::generator::resume(heap, state, id, value) {
+        Ok(resumed) => resumed,
+        Err(error) => {
+            // A rejected attachment has not entered the body. Remove
+            // its boundary so the failure cannot complete the generator.
+            state.pop_native_catch(boundary_index);
+            state.natives.pop();
+            return Err(error);
+        }
+    };
+    if resumed {
+        let boundary = state
+            .natives
+            .get_mut(boundary_index)
+            .ok_or(Fault::Internal("missing generator boundary"))?;
+        boundary.awaiting = Awaiting::CallResult;
+    } else {
+        state.pop_native_catch(state.natives.len() - 1);
+        state.natives.pop();
+        state.push(super::generator::result(
+            heap,
+            state.diag.task,
+            Value::Undefined,
+            true,
+        )?);
+    }
+    Ok(true)
 }
 
 // Iterator callbacks above must not reserve every unrelated constructor's
@@ -1344,46 +1442,6 @@ fn start_builtin_slow(
         state.truncate_operands(state.stack_len() - popped)?;
         state.push(Value::Undefined);
         state.collection_point = true;
-        return Ok(true);
-    }
-    if which == Builtin::GeneratorNext {
-        let id = super::generator::receiver(heap, state.diag.task, this)?;
-        let value = args.first().cloned().unwrap_or(Value::Undefined);
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Generator { id, failed: None })?;
-        let boundary_index = state.natives.len() - 1;
-        if let Err(error) = state.push_handler(super::exception::HandlerKind::NativeCatch {
-            native: boundary_index,
-        }) {
-            state.natives.pop();
-            return Err(error);
-        }
-        let resumed = match super::generator::resume(heap, state, id, value) {
-            Ok(resumed) => resumed,
-            Err(error) => {
-                // A rejected attachment has not entered the body. Remove
-                // its boundary so the failure cannot complete the generator.
-                state.pop_native_catch(boundary_index);
-                state.natives.pop();
-                return Err(error);
-            }
-        };
-        if resumed {
-            let boundary = state
-                .natives
-                .get_mut(boundary_index)
-                .ok_or(Fault::Internal("missing generator boundary"))?;
-            boundary.awaiting = Awaiting::CallResult;
-        } else {
-            state.pop_native_catch(state.natives.len() - 1);
-            state.natives.pop();
-            state.push(super::generator::result(
-                heap,
-                state.diag.task,
-                Value::Undefined,
-                true,
-            )?);
-        }
         return Ok(true);
     }
     if which == Builtin::BigInt
@@ -1530,26 +1588,6 @@ fn start_builtin_slow(
     if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::RegExp(native))?;
-        return Ok(true);
-    }
-    if matches!(
-        which,
-        Builtin::Promise
-            | Builtin::PromiseResolve
-            | Builtin::PromiseReject
-            | Builtin::PromiseThen
-            | Builtin::PromiseCatch
-            | Builtin::PromiseResolver(_, _)
-            | Builtin::PromiseReaction(_)
-            | Builtin::PromiseResolveThenable(_)
-    ) {
-        let native = super::promise::start(heap, state, which, this, args, construct)?;
-        state.truncate_operands(state.stack_len() - popped)?;
-        if let Some(native) = native {
-            push_native(state, NativeState::Promise(native))?;
-        } else {
-            state.push(Value::Undefined);
-        }
         return Ok(true);
     }
     let error = match which {
@@ -2721,6 +2759,7 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
             matches!(which, builtin::Builtin::String | builtin::Builtin::Symbol)
         }
         Instruction(Instr::ToString | Instr::ToSuperKey) => true,
+        Instruction(Instr::PutSuperElem | Instr::PutSuperElemStrict) => index == 2,
         Instruction(
             Instr::GetElem
             | Instr::ToPropertyKey

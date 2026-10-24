@@ -5769,12 +5769,15 @@ receiver even when parenthesized. Writes consult the lookup base's descriptor,
 then update or create an own data property on `this`, or call an inherited
 setter with `this`. They preserve the assigned value. An own accessor on the
 receiver rejects a data write instead of invoking its setter. Rejected writes
-throw TypeError in strict code and do nothing in sloppy code. Computed keys
-convert once before the right-hand side, including compound updates. Detaching
+throw TypeError in strict code and do nothing in sloppy code. Simple assignments
+retain the raw key and convert it after the right-hand side (also after
+iterator stepping and defaults in destructuring). Read/write updates convert
+their key once before reading. Runtime ownership and immutable-object mutation
+errors still throw in both modes. Detaching
 or copying a method changes its receiver without changing its home object;
 changing the home object's prototype changes subsequent super lookups.
-`delete super.name` and `delete super[key]` evaluate the reference, including
-computed-key conversion, then throw ReferenceError without reading a getter.
+`delete super.name` and `delete super[key]` evaluate the reference and its key
+expression, then throw ReferenceError without key coercion or reading a getter.
 Key conversions, getters, setters and calls use resumable VM frames and retain
 all operands through yields, dependency waits, collection and worker migration.
 Runtime errors point to the access operator, or to `delete` for deletion;

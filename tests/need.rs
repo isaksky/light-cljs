@@ -42,7 +42,8 @@ fn super_property_access_waits_collects_and_migrates() {
         "let n = 0; let key = {toString() { n++; __rt.need(5, 3); return 'x'; }}; let p = {x: 10}; let o = {__proto__: p, m() { super[key] += 20; return this.x + n - 1; }}; o.m()",
         "let p = {x: 0}; let o = {__proto__: p, m() { return super.x = __rt.need(5, 3) + 20; }}; o.m()",
         "class C { static get x() { return __rt.need(5, 3) + this.y; }} class D extends C { static m() { this.y = 20; return super['x']; }} D.m()",
-        "let key = {toString() { __rt.need(5, 3); return 'x'; }}; let o = {m() { try { delete super[key]; } catch(e) { return e instanceof ReferenceError ? 30 : 0; } }}; o.m()",
+        "let key = {toString() { throw 7; }}; let o = {m() { try { delete super[(__rt.need(5, 3), key)]; } catch(e) { return e instanceof ReferenceError ? 30 : 0; } }}; o.m()",
+        "let calls = 0; let key = {toString() { calls++; __rt.need(5, 3); return 'x'; }}; let o = {m() { return super[key] = 30; }}; o.m() + calls - 1",
     ] {
         let rt = Runtime::new();
         let code = compile_script("super-properties-wait", source).unwrap();
@@ -86,6 +87,61 @@ fn super_property_access_waits_collects_and_migrates() {
             .join()
             .unwrap();
         assert_eq!(result, 30.0, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Park while the generator/async
+/// activation is detached with a live super reference, then collect and migrate.
+#[test]
+fn super_property_access_in_suspended_methods() {
+    for source in [
+        "let p = {x: 10}; let calls = 0; let o = {__proto__: p, *m() { calls++; super.x += yield 2; return this.x; }}; let it = o.m(); let first = it.next(); __rt.need(5, 3); let last = it.next(20); __rt.effect(2, first.value === 2 && !first.done && last.value === 30 && last.done && o.x === 30 && p.x === 10 && calls === 1 ? 30 : 0); 0",
+        "let resolve; let pending = new Promise(r => { resolve = r; }); let p = {x: 10}; let calls = 0; let o = {__proto__: p, async m() { calls++; super.x += await pending; return this.x; }}; o.m().then(v => __rt.effect(2, v === 30 && o.x === 30 && p.x === 10 && calls === 1 ? 30 : 0)); __rt.need(5, 3); resolve(20); 0",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("super-detached", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let expected = key(&rt, NUMBER);
+        let mut host = Recorder::default();
+        for step in 0..2000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    break;
+                }
+            }
+            assert!(step < 1999, "bounded detached activation wait");
+        }
+        assert!(host.reports.is_empty());
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+        let host = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..2000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut host)
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            rt.collect().unwrap();
+                        }
+                        outcome => {
+                            assert!(matches!(outcome, RunOutcome::Complete(_)));
+                            return host;
+                        }
+                    }
+                }
+                panic!("bounded detached activation completion")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(host.reports, [30.0], "{source}");
     }
 }
 

@@ -497,7 +497,7 @@ enum PropertyRef {
     Field(u16, Span),
     /// `o[k]`: `o` and the converted key on the stack.
     Elem(Span),
-    /// `super[k]`: current receiver, lookup base and converted key.
+    /// `super[k]`: current receiver, lookup base and raw/converted key.
     Super(Span),
 }
 
@@ -2826,7 +2826,7 @@ impl<'s> Lowerer<'s> {
                     self.expr(object)?;
                     self.expr(index)?;
                 } else {
-                    self.property_reference(target)?;
+                    self.property_reference(target, false)?;
                 }
                 Ok(true)
             }
@@ -4055,7 +4055,6 @@ impl<'s> Lowerer<'s> {
         if matches!(object.kind, ExprKind::Super) {
             self.super_base(object.span, false)?;
             self.expr(index)?;
-            self.out().op(Opcode::ToSuperKey, op_span);
             self.expr(value)?;
             let op = self.strict_op(Opcode::PutSuperElem);
             self.out().op(op, op_span);
@@ -4419,7 +4418,11 @@ impl<'s> Lowerer<'s> {
     /// intrinsic binding (the parser rejects that one) or an
     /// [`ExprKind::Index`].
     #[inline(never)]
-    fn property_reference(&mut self, target: &Expr) -> Result<PropertyRef, SyntaxError> {
+    fn property_reference(
+        &mut self,
+        target: &Expr,
+        convert_super: bool,
+    ) -> Result<PropertyRef, SyntaxError> {
         match &target.kind {
             ExprKind::Member {
                 object,
@@ -4444,7 +4447,9 @@ impl<'s> Lowerer<'s> {
                 if matches!(object.kind, ExprKind::Super) {
                     self.super_base(object.span, false)?;
                     self.expr(index)?;
-                    self.out().op(Opcode::ToSuperKey, *op_span);
+                    if convert_super {
+                        self.out().op(Opcode::ToSuperKey, *op_span);
+                    }
                     return Ok(PropertyRef::Super(*op_span));
                 }
                 self.expr(object)?;
@@ -4505,7 +4510,7 @@ impl<'s> Lowerer<'s> {
         target: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
-        let r = self.property_reference(target)?;
+        let r = self.property_reference(target, true)?;
         self.reference_get(r);
         self.out().op(Opcode::ToNumeric, op_span);
         let old = if prefix {
@@ -4544,7 +4549,7 @@ impl<'s> Lowerer<'s> {
         value: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
-        let r = self.property_reference(target)?;
+        let r = self.property_reference(target, true)?;
         self.reference_get(r);
         self.expr(value)?;
         self.binary(op, false, is_number(value), op_span);
@@ -4875,7 +4880,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::Member { object, .. } | ExprKind::Index { object, .. }
                 if matches!(object.kind, ExprKind::Super))
         {
-            self.property_reference(operand)?;
+            self.property_reference(operand, false)?;
             for _ in 0..3 {
                 self.out().op(Opcode::Pop, op_span);
             }
