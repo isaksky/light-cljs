@@ -1701,7 +1701,7 @@ moment (a leaf lock, never taken by the collector).
   later per-task overlay; this is listed under "Explicit gaps".
 - Later intrinsics follow the same pattern: `Function.prototype`
   (clj-quickjs-102), `Array.prototype` (added by clj-quickjs-118, with an
-  `Array` stub as its `constructor`) and the `Array` global and methods
+  `Array` built-in as its `constructor`) and the `Array` global and methods
   (clj-quickjs-39, -153),
   `Symbol.prototype` (clj-quickjs-129) and the error prototypes and
   constructors (clj-quickjs-230) are added to `realm::build` as intrinsic
@@ -1794,13 +1794,14 @@ does.
 
 **Prototype.** Following the realm decision of clj-quickjs-117 ("Realm
 intrinsics"), `Array.prototype` is a shared immutable intrinsic: an
-ordinary object (not itself an array, which is unobservable while nobody
-can write to it) inheriting from `Object.prototype`, with an own `length`
+empty array represented by ordinary property storage inheriting from
+`Object.prototype`, with an own `length`
 of 0, a `push` method (clj-quickjs-155), `join` and `toString`
 (clj-quickjs-156), and a
-`constructor` that is the `Array` built-in, a stub that fails when called
-and is also a global name (clj-quickjs-155; construction remains
-clj-quickjs-39). Every array literal
+`constructor` that is the callable and constructible global `Array`
+(clj-quickjs-153/-155). Its realm identity carries the array brand for
+`Array.isArray` and `Object.prototype.toString`; an object merely inheriting
+from it is not an array. Every array literal
 inherits from it; a hole or a missing name reads along the chain, and a
 write of an absent index or name consults the chain (OrdinarySet) before
 the element or property is added.
@@ -1845,8 +1846,8 @@ the element or property is added.
   the `Array` global also names it (clj-quickjs-155). Its methods are
   added to the realm (`realm::build`, `Builtin`, append-only).
 - Assigning or defining `length` uses ArraySetLength (clj-quickjs-154,
-  "Array length changes" below). The `Array` constructor, `Array.isArray`
-  and the remaining `Array.prototype` methods belong to their own built-in pellets.
+  "Array length changes" below). The `Array` constructor and `Array.isArray`
+  are supported (clj-quickjs-153); remaining methods belong to their own built-in pellets.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
   arrays never do). Key reclamation by the collector is clj-quickjs-259
@@ -3273,7 +3274,7 @@ light-cljs output.
 
 `Builtin::ArrayPrototypePush` is appended to the built-in registry and
 installed on the realm's immutable `Array.prototype`, with length 1 and
-name `push`. The existing `Array` constructor stub is exposed through an
+name `push`. The `Array` constructor is exposed through an
 appended built-in-global operand so `Array.prototype.push.call(o, item)`
 works without implementing construction. No opcode or heap kind is added.
 
@@ -4022,3 +4023,25 @@ payload and expose a fixed virtual own property through property reads,
 HasProperty and descriptor queries. Their cause remains their only traced
 heap edge. No worker-local state or system-stack walk is involved, so
 waiting, migration and collection need no additional roots or protocol.
+
+## Array construction and brand (clj-quickjs-153)
+
+The Array built-in uses one leaf implementation for calls and construction,
+including forwarding and bound constructors. A single Number is checked by
+exact equality with its uint32 conversion; invalid lengths return the same
+catchable RangeError fault used by ArraySetLength. Array arguments never
+require ToPrimitive, so no JavaScript callback or continuation is needed.
+Element copying is bounded by the VM's argument/value-stack limit; numeric
+length construction takes constant time and storage, including `2^32 - 1`.
+`ArrayObject::with_length` records holes as a logical length with empty
+dense and sparse stores, and subsequent large-index writes use sparse storage.
+
+The result is allocated as the same task-owned, precisely traced Array
+heap kind as a literal. Arguments remain rooted until the completed array
+replaces the call operands; no safepoint occurs inside the leaf. Ownership,
+publication rejection, element tracing and mutation rules are unchanged.
+The immutable empty-array intrinsic `Array.prototype` retains ordinary
+property storage; its realm identity supplies the array brand for isArray
+and Object.prototype.toString. All mutable arrays use the Array heap kind.
+This preserves existing realm views and publication categories without
+adding an intrinsic array variant or changing append-only registries.

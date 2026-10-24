@@ -2338,11 +2338,10 @@ receivers through `Array.prototype.push.call(o, ...)`, primitive ToLength,
 the `2^53 - 1` guard, and throwing Sets even in sloppy code. Dense appends
 are amortized O(1). Frozen/non-extensible arrays and read-only lengths
 reject invalid writes; another task's array fails with `ForeignObject`.
-The `Array` global exposes the existing constructor stub and its prototype;
+The `Array` global exposes its constructor and prototype (clj-quickjs-153);
 `Array.prototype.push.length` is 1.
 
-Deferred: primitive receiver wrappers fail explicitly; array construction
-and other array methods retain their
+Deferred: primitive receiver wrappers fail explicitly; other array methods retain their
 existing gaps. The for-in adaptation clj-quickjs-264 also needs array
 string conversion and stays deferred.
 
@@ -2603,3 +2602,15 @@ errors expose immutable stack strings while their other properties and
 instance behavior remain deferred. Eval remains deferred.
 
 Test: `cargo test --test error_stacks`.
+
+### Array construction and brand (clj-quickjs-153)
+
+Supported: callable and constructible `Array`, with no arguments, a single
+numeric hole-only length (catchable RangeError for invalid lengths), one
+non-number element, or multiple elements. Large lengths allocate no holes.
+`Array.isArray` recognizes arrays and `Array.prototype`, and rejects
+persistent vectors and ordinary objects. Constructor/prototype links and
+standard property attributes are exposed. Results are task-owned like literals.
+Deferred: subclassing/new.target, proxies, species and remaining array methods.
+
+Verify: `cargo test --test js_source array_constructor_and_is_array`.

@@ -198,3 +198,13 @@ output; eval and NativeError instance checks are left to their own pellets.
 `research/quickjs/quickjs.c`, `build_backtrace` and `get_line_col`, at the
 same revision were read as semantic references. No C code was copied;
 capture uses this runtime's explicit frames and immutable string storage.
+
+## Array constructor and brand (clj-quickjs-153)
+
+`research/quickjs/quickjs.c`, `js_array_constructor` and `js_array_isArray`,
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04),
+were read for semantics; the Rust implementation was written afresh.
+The first two rows in `tests/js_source.rs::array_constructor_and_is_array`
+adapt `research/quickjs/tests/test_builtin.js::test_array` at that revision.
+Its full copyright and MIT permission notice is retained on `array_push`
+in that test file. Other fixtures are synthetic, not light-cljs output.

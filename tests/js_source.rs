@@ -13,6 +13,83 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output. The first two rows adapt
+/// QuickJS tests/test_builtin.js::test_array, revision 7d1c13c5d8f8;
+/// its full copyright and MIT permission notice is retained on array_push.
+#[test]
+fn array_constructor_and_is_array() {
+    for src in [
+        "let a = new Array(10); a.length === 10",
+        "let a = new Array(1, 2); a.length === 2 && a[0] === 1 && a[1] === 2",
+        "new Array(10)[0] === undefined && Object.keys(new Array(3)).length === 0",
+        "Array(3).length === 3 && Array().length === 0 && new Array().length === 0",
+        "let a = new Array('3'); a.length === 1 && a[0] === '3'",
+        "Array(1, 2)[1] === 2 && new Array(1, 2, 3)[2] === 3",
+        "Array.isArray([]) && Array.isArray(new Array()) && Array.isArray(Array.prototype)",
+        "!Array.isArray({length: 0}) && !Array.isArray(__rt.vector(1)) && !Array.isArray(Object.create(Array.prototype))",
+        "!Array.isArray() && !Array.isArray(null) && !Array.isArray(undefined) && !Array.isArray(3) && !Array.isArray('') && !Array.isArray(true) && !Array.isArray(Array)",
+        "[].constructor === Array && Array.prototype.constructor === Array && Array.name === 'Array' && Array.length === 1",
+        "Object.getPrototypeOf(new Array()) === Array.prototype && new Array() instanceof Array",
+        "let d = Object.getOwnPropertyDescriptor(Array, 'prototype'); d.value === Array.prototype && !d.writable && !d.enumerable && !d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Array.prototype, 'constructor'); d.value === Array && d.writable && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Array, 'isArray'); d.value === Array.isArray && d.writable && !d.enumerable && d.configurable && d.value.name === 'isArray' && d.value.length === 1",
+        "let a = Array(undefined); a.length === 1 && 0 in a && a[0] === undefined",
+        "Array(null)[0] === null && Array(true)[0] === true && Array(-0).length === 0 && 1 / Array(-0).length === Infinity",
+        "let a = Array(4294967295); a.length === 4294967295 && Object.keys(a).length === 0 && !(4294967294 in a)",
+        "let a = new Array(4294967295); a[4294967294] = 7; a.length === 4294967295 && a[4294967294] === 7 && Object.keys(a).length === 1",
+        "let a = Array(3); a.push(7) === 4 && a[3] === 7 && !(0 in a)",
+        "let o = {get valueOf() { throw 42; }, get toString() { throw 43; }}; Array(o)[0] === o && new Array(o)[0] === o && !Array.isArray(o)",
+        "let o = new Number(3); let a = new Array(o); a.length === 1 && a[0] === o",
+        "Array.call(null, 2).length === 2 && Array.apply(null, [1, 2])[1] === 2 && new (Array.bind(null, 1, 2))()[0] === 1",
+        "let a = Array(1); let b = Array(1); a[0] = 7; a !== b && !(0 in b)",
+        "Object.prototype.toString.call(Array.prototype) === '[object Array]'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for length in ["-1", "1.5", "4294967296", "NaN", "Infinity", "-Infinity"] {
+        for constructor in ["Array", "new Array"] {
+            let src = format!("{constructor}({length})");
+            assert_eq!(failure(&src).kind(), VmErrorKind::RangeError, "{src}");
+            let caught = format!(
+                "let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught"
+            );
+            assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+        }
+    }
+    assert_eq!(
+        failure("new Array.isArray([])").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output: constructor results follow
+/// the same task ownership and publication rules as array literals.
+#[test]
+fn constructed_arrays_are_task_owned() {
+    use clj_quickjs::PublishError;
+    let rt = Runtime::new();
+    for source in ["Array(3)", "new Array({n: 7}, 2)"] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(array) = owner.run().unwrap() else {
+            panic!("expected array from {source}");
+        };
+        assert!(matches!(
+            rt.publish(&array),
+            Err(PublishError::NotShareable { .. })
+        ));
+        let code = compile_function("function f(a) { return a.length; }").unwrap();
+        let foreign = rt.spawn(&code, &[&array]).unwrap();
+        assert!(matches!(foreign.run().unwrap(), RunOutcome::Failed(e)
+            if matches!(e.kind(), VmErrorKind::ForeignObject { .. })));
+        let code = compile_function("function f(a) { return Array.isArray(a); }").unwrap();
+        let reader = rt.spawn(&code, &[&array]).unwrap();
+        let RunOutcome::Complete(result) = reader.run().unwrap() else {
+            panic!("array brand inspection must not read foreign properties");
+        };
+        assert_eq!(result.view(), ValueView::Bool(true));
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first rows adapt test_math
 /// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
 /// and MIT permission notice is retained on string_code_unit_access below.
@@ -8208,13 +8285,7 @@ fn array_literals() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
-    {
-        let (src, needle) = ("let a = [];\na.constructor();", "Array constructor");
-        let (kind, message, line, _) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains(needle), "{src}: {message}");
-        assert_eq!(line, 2, "{src}");
-    }
+    assert_eq!(num("let a = [];\na.constructor().length"), 0.0);
     // Array.prototype is a shared built-in object: writes through
     // `constructor.prototype` are rejected like any built-in's.
     assert_eq!(
@@ -10485,7 +10556,7 @@ fn array_push() {
         failure("let a = []; a.length = 4294967295; a.push(7)").kind(),
         VmErrorKind::RangeError
     );
-    assert_eq!(failure("Array()").kind(), VmErrorKind::UnsupportedOperand);
+    assert_eq!(num("Array().length"), 0.0);
 
     // A String wrapper permits ordinary index additions, then rejects the
     // final length Set even when its value is unchanged. Push always throws,

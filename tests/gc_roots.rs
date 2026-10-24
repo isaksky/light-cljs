@@ -896,7 +896,7 @@ fn realm_intrinsics_retain() {
     // the two __proto__ accessors, clj-quickjs-261, Array.prototype.join,
     // clj-quickjs-156, Error and its prototype/toString, clj-quickjs-228,
     // and String.prototype.split, clj-quickjs-157.
-    assert_eq!(rt.heap_usage().objects.builtin, 62);
+    assert_eq!(rt.heap_usage().objects.builtin, 63);
     assert_eq!(rt.heap_usage().objects.plain, 7);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
@@ -972,6 +972,39 @@ fn array_literal_survives_wait_collection_and_migration() {
         assert!(s.same_object(first, s.local(&original).unwrap()));
         assert_eq!(s.view(s.nth(v, 1).unwrap()), ValueView::Bool(true));
     });
+}
+
+/// Synthetic fixture, not light-cljs output: constructor elements are
+/// traced while the result survives a wait, collection and migration.
+#[test]
+fn constructed_array_survives_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { const a = new Array(o, 2); o = 0; \
+         __rt.need(9, 1); return __rt.vector(a[0], \
+         a.length === 2 && a[1] === 2 && Array.isArray(a)); }",
+    );
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    rt.request_collection().unwrap();
+    assert_live(std::slice::from_ref(&weak));
+    for request in task.take_producer_requests() {
+        let value = rt.root(Primitive::Number(0.0));
+        let wakeups = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+    let result = thread::spawn(move || run_to_end(&task)).join().unwrap();
+    let original = weak.upgrade().unwrap();
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert!(s.same_object(s.nth(v, 0).unwrap(), s.local(&original).unwrap()));
+        assert_eq!(s.view(s.nth(v, 1).unwrap()), ValueView::Bool(true));
+    });
+    drop((result, original));
+    rt.collect().unwrap();
+    assert!(weak.upgrade().is_err());
 }
 
 /// A property update (clj-quickjs-76) waiting in its computed key: the

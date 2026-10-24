@@ -543,7 +543,8 @@ fn prepend_args(bound: &mut Vec<Value>, args: Vec<Value>, max_args: usize) -> Re
 /// OrdinaryCreateFromConstructor; QuickJS `JS_CallConstructorInternal` and
 /// `js_get_prototype_from_ctor`, revision 7d1c13c5d8f8): the constructor and
 /// the arguments are the top operands. Number/String construct wrappers
-/// (clj-quickjs-72); otherwise only an ordinary function is a constructor.
+/// (clj-quickjs-72); Array constructs an array (clj-quickjs-153), and Error
+/// constructs an error (clj-quickjs-228). Ordinary functions use the rule below.
 /// Anything else is a TypeError. For ordinary functions, the
 /// new object inherits from `f.prototype` when that is an object, else from
 /// `Object.prototype`, and becomes the `this` of a construct frame entered
@@ -571,6 +572,11 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(Callee::Builtin(Builtin::Array)) => {
+            let result = builtin::array_constructor(heap, task, &args)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String | Builtin::Error))) => {
             if super::native::start_builtin(
                 heap,

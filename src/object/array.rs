@@ -152,6 +152,15 @@ impl ArrayObject {
         }
     }
 
+    /// ArrayCreate(length): all indices are holes. Numeric lengths never
+    /// allocate dense slots or sparse entries, even at 2^32 - 1.
+    pub(crate) fn with_length(owner: TaskId, prototype: ObjectId, length: u32) -> ArrayObject {
+        ArrayObject {
+            length,
+            ..Self::with_prototype(owner, prototype)
+        }
+    }
+
     /// The ordinary part: owner, prototype, extensibility and the own
     /// properties that are not elements.
     pub(crate) fn object(&self) -> &OrdinaryObject {
@@ -484,6 +493,19 @@ mod tests {
 
     fn n(x: f64) -> Value {
         Value::Number(x)
+    }
+
+    #[test]
+    fn constructor_length_allocates_no_elements() {
+        let heap = crate::heap::Heap::default();
+        let task = TaskId::from_raw(1);
+        let prototype = crate::realm::intrinsics(&heap).unwrap().array_prototype;
+        let array = ArrayObject::with_length(task, prototype, u32::MAX);
+        assert_eq!(array.length(), u32::MAX);
+        assert!(array.dense.is_empty());
+        assert!(array.sparse.is_empty());
+        assert_eq!(array.object().owner(), Some(task));
+        assert_eq!(array.object().prototype(), Some(prototype));
     }
 
     #[test]

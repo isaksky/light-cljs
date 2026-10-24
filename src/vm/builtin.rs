@@ -67,7 +67,8 @@
 //! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Array]"` for an array (clj-quickjs-118); `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); an error object or a primitive receiver: `UnsupportedOperand` (their tags belong to clj-quickjs-230 and clj-quickjs-72/-73) |
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 //! | `Array.prototype.join(separator)`, `.toString()` (clj-quickjs-156) | generic array-like join through resumable length/index getters and ToPrimitive; undefined separator defaults to comma; null/undefined elements give empty strings; bounded string building; toString dynamically calls join, or intrinsic Object.prototype.toString for a non-callable join; cycles reach catchable StackOverflow |
-//! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
+//! | `Array(...)`, `new Array(...)` (clj-quickjs-153) | a task-owned array: one Number argument sets a validated uint32 length with holes; otherwise the arguments become elements. Invalid lengths throw catchable RangeError; no argument coercion |
+//! | `Array.isArray(v)` (clj-quickjs-153) | true for arrays and the immutable empty-array intrinsic `Array.prototype`, false for every other value (including persistent vectors) |
 //! | `Array.prototype.push(...items)` (clj-quickjs-155) | ToObject(receiver), ToLength(`length`), Set each index and then `length` with Throw=true, return the new length; over `2^53 - 1`: catchable `TypeError`; null/undefined: catchable `TypeError`; primitive receiver wrappers: `UnsupportedOperand`; object lengths convert resumably |
 //! | `Object.defineProperty(o, k, attributes)` | define or update the own data or accessor property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError` |
 //! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans) |
@@ -96,6 +97,7 @@ use crate::atom::same_value;
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
+use crate::object::array::ArrayObject;
 use crate::object::{OrdinaryObject, PrimitiveData};
 use crate::realm;
 use crate::value::string::number_to_string_radix;
@@ -121,9 +123,7 @@ pub(crate) enum Builtin {
     ObjectPrototypeValueOf,
     /// `Array.prototype.toString` (clj-quickjs-118/-156): dynamic join call.
     ArrayPrototypeToString,
-    /// `Array` (clj-quickjs-118): reachable only as
-    /// `Array.prototype.constructor`; fails when called until the Array
-    /// constructor exists (clj-quickjs-39).
+    /// `Array` (clj-quickjs-153), callable and constructible.
     Array,
     /// `Object.defineProperty` (QuickJS `js_object_defineProperty`;
     /// clj-quickjs-119, `crate::vm::descriptor`).
@@ -240,12 +240,15 @@ pub(crate) enum Builtin {
     ErrorPrototypeToString,
     /// UTF-16 string splitting (clj-quickjs-157).
     StringPrototypeSplit,
+    /// Array brand test (clj-quickjs-153).
+    ArrayIsArray,
 }
 
 impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayIsArray => "isArray",
             Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
@@ -311,7 +314,7 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
-            Builtin::Object | Builtin::Array => 1,
+            Builtin::Object | Builtin::Array | Builtin::ArrayIsArray => 1,
             Builtin::ObjectIs => 2,
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
@@ -434,9 +437,8 @@ pub(crate) fn call(
         Builtin::ArrayPrototypePush => Err(Fault::Internal(
             "push must run through the native trampoline",
         )),
-        Builtin::Array => Err(Fault::Unsupported(
-            "the Array constructor is not supported".to_string(),
-        )),
+        Builtin::Array => array_constructor(heap, task, args),
+        Builtin::ArrayIsArray => is_array(heap, &arg(0)).map(Value::Bool),
         Builtin::ObjectDefineProperty => Err(Fault::Internal(
             "defineProperty must run through the native trampoline",
         )),
@@ -967,10 +969,59 @@ pub(crate) fn new_object(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         .ok_or_else(exhausted)
 }
 
+/// No argument conversion is required by Array: a Number is a length,
+/// every other value is an element, including Number wrappers. Copying
+/// elements is bounded by the VM's argument/value-stack limit; a numeric
+/// length takes constant time and storage. Allocation publishes the
+/// complete array before the next safepoint; arguments remain VM roots.
+pub(crate) fn array_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Value, Fault> {
+    let exhausted = || Fault::OutOfMemory("heap object table exhausted");
+    let prototype = realm::intrinsics(heap)
+        .ok_or_else(exhausted)?
+        .array_prototype;
+    let array = if let [Value::Number(number)] = args {
+        let length = *number as u32;
+        if f64::from(length) != *number {
+            return Err(Fault::RangeError("invalid array length".to_string()));
+        }
+        ArrayObject::with_length(task, prototype, length)
+    } else {
+        let mut array = ArrayObject::with_prototype(task, prototype);
+        for value in args {
+            if !array.push(Some(value.clone())) {
+                return Err(Fault::RangeError("invalid array length".to_string()));
+            }
+        }
+        array
+    };
+    heap.alloc(HeapObject::Array(Box::new(array)))
+        .map(Value::Object)
+        .ok_or_else(exhausted)
+}
+
+/// Array.prototype is an immutable empty-array intrinsic whose property
+/// storage remains ordinary. Its realm identity carries the array brand;
+/// prototype inheritance alone never makes an ordinary object an array.
+fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
+    let Value::Object(id) = value else {
+        return Ok(false);
+    };
+    let intrinsics =
+        realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    if *id == intrinsics.array_prototype {
+        return Ok(true);
+    }
+    heap.read(*id, |object| matches!(object, HeapObject::Array(_)))
+        .ok_or(Fault::Internal("array test argument was reclaimed"))
+}
+
 /// The builtinTag of `Object.prototype.toString` (ECMAScript
 /// Object.prototype.toString steps 1-14; no `@@toStringTag` while symbols
 /// do not exist).
 fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
+    if is_array(heap, this)? {
+        return Ok("Array");
+    }
     let unsupported = |what: &str| {
         Err(Fault::Unsupported(format!(
             "Object.prototype.toString of {what} is not supported"

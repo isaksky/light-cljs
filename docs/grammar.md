@@ -532,9 +532,9 @@ checks left to later stages:
   automatic `length`, inheriting from `Array.prototype`, a realm
   intrinsic that inherits from `Object.prototype` and supports `push`,
   `join` and `toString`. Assigning `a.length` supports truncation and extension
-  (clj-quickjs-154). The global `Array` exposes `Array.prototype`, but
-  calling the constructor fails explicitly (`UnsupportedOperand`);
-  `Array.isArray` and other array methods remain deferred. `push` on a
+  (clj-quickjs-154). `Array` is callable and constructible, exposes
+  `Array.prototype`, and supports `Array.isArray` (clj-quickjs-153).
+  Other array methods remain deferred. `push` on a
   primitive receiver needs wrapper objects (clj-quickjs-72), and an
   object-valued array-like `length` needs resumable ToPrimitive
   (clj-quickjs-70); both fail explicitly with `UnsupportedOperand`.
@@ -895,7 +895,8 @@ Executed, with JavaScript semantics:
 | `[a, , b,]` array literals (clj-quickjs-118) | a new array object owned by the running task (`docs/architecture.md`, "Array objects"), inheriting from `Array.prototype` (a realm intrinsic with `push`, which inherits from `Object.prototype`; see "Explicit gaps"): the elements are evaluated left to right and each defines the next index; an elision skips an index, leaving a hole (no own property: reading it continues along the prototype chain and gives `undefined`); `length` is the number of elements and holes (`[1, , 3].length` is 3, `[ , ].length` 1, `[1, 2,].length` 2). Two evaluations are distinct objects (`[] !== []`); `typeof` is `"object"`. Lowered to `new_array` and one `append_element`/`append_hole` per element |
 | `o[k]` (clj-quickjs-115, -118) | evaluates `o`, then `k`, then converts `k` by ToPropertyKey (see "Explicit gaps") and reads as `o.name` does: on an ordinary object the key string names the property (`o[1]`, `o["1"]` and `o[1.0]` are one property, `o["01"]` another); on an array an array index (the canonical decimal string of an integer `0` to `2^32 - 2`, from a string or a number: `a[1]`, `a["1"]`, `a[-0]`) names an element, `length` its length, any other key an ordinary property; failures as for `o.name`, at the `[`. Lowered to `get_elem` |
 | `o[k] = v` (clj-quickjs-115, -118) | evaluates `o`, `k`, then `v`, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`), converts `k` and writes as `o.name = v` does; writing an array index at or beyond an array's `length` sets `length` to that index plus one (`let a = [1]; a[3] = 4` gives length 4 with holes at 1 and 2), and any other key adds an ordinary property without changing `length`; assigning an array's `length` follows ArraySetLength (clj-quickjs-154, see "Array length changes" below). The expression's value is `v`. Lowered to `put_elem` |
-| `a.push(...items)` (clj-quickjs-155) | generic array-like append at ToLength(`length`), followed by a throwing length Set; returns the new length. `Array.prototype.push.call(o, item)` works through the global `Array` constructor stub. `push.length` is 1; null/undefined receivers and rejected Sets throw caught `TypeError`; primitive wrappers and object-valued length conversion fail explicitly. See "Array push" below |
+| `a.push(...items)` (clj-quickjs-155) | generic array-like append at ToLength(`length`), followed by a throwing length Set; returns the new length. `Array.prototype.push.call(o, item)` works through the global `Array` constructor. `push.length` is 1; null/undefined receivers and rejected Sets throw caught `TypeError`; primitive wrappers and object-valued length conversion fail explicitly. See "Array push" below |
+| `Array(...args)`, `new Array(...args)`, `Array.isArray(v)` (clj-quickjs-153) | both constructor forms create task-owned arrays inheriting from `Array.prototype`; one Number argument is a hole-only uint32 length (otherwise catchable `RangeError`), other arguments become elements without coercion. The brand test accepts arrays and `Array.prototype`, and rejects persistent vectors and ordinary objects. `Array.prototype.constructor === Array`; see "Array construction" below |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `++o.p`, `o.p--`, `++o[k]`, `o[k]--` (clj-quickjs-76) | evaluates `o` once and, for `o[k]`, `k` once, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`) and converts `k` with ToPropertyKey once; reads the property as `o.p` does (an absent one is `undefined`, so `let o = {}; o.x++` is NaN and writes NaN), ToNumber, adds or subtracts 1 and writes as `o.p = v` does (strict: a failed write is a `TypeError`); a prefix update's value is the new number, a postfix update's the old one converted (`let a = [true]; a[0]++` is 1, `a[0]` is 2). Lowered to `get_field`/`put_field` with the base `dup`ed, or to `to_property_key` (new, `0x5D`), `dup2` (new, `0x5C`), `get_elem` and `put_elem`; a postfix update keeps the old number in a scratch local across the write. The read, the checks and the write are reported at the `.`/`[`, the conversion at the `++`/`--` |
 | `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
@@ -2278,8 +2279,8 @@ non-extensible receivers that need a new index, and read-only lengths throw
 array's final length above `2^32 - 1` throws `RangeError` after the preceding
 index writes. Another task's array fails with `ForeignObject`.
 
-The global `Array` is the existing constructor stub, exposing its prototype;
-calling it remains unsupported. `push.length` is 1, `push.name` is `"push"`,
+The global `Array` constructor exposes its prototype (clj-quickjs-153).
+`push.length` is 1, `push.name` is `"push"`,
 and the method is writable, non-enumerable and configurable (intrinsics
 remain immutable under the runtime's sharing rule).
 
@@ -2606,3 +2607,25 @@ let stack; try { null(); } catch (e) { stack = e.stack; } typeof stack === 'stri
 let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.writable && d.configurable && !d.enumerable;
 let has = false; try { missing; } catch (e) { has = 'stack' in e; } has;
 ```
+
+## Array construction (clj-quickjs-153)
+
+Execution: `Array()` and `new Array()` create distinct empty arrays.
+One Number argument creates that many holes without allocating elements;
+only integers in `0 ..= 4294967295` are valid (`-0` becomes `+0`). Invalid
+lengths, including NaN and infinities, throw catchable `RangeError`.
+A single non-Number, including a Number wrapper, becomes element 0;
+two or more arguments become successive elements. No argument is coerced.
+Constructed arrays are task-owned, mutable, and inherit `Array.prototype`.
+
+`Array.isArray(v)` tests the array brand, including on `Array.prototype`,
+without reading properties or calling JavaScript. It returns false for
+persistent vectors, ordinary objects inheriting `Array.prototype`, and
+primitives. `Array.length` is 1 and `Array.name` is `"Array"`;
+`Array.prototype` is non-writable, non-enumerable and non-configurable.
+`Array.prototype.constructor` is `Array`, writable, non-enumerable and
+configurable; intrinsic mutation still follows the shared-immutable rule.
+`Array.isArray` has length 1 and the usual method attributes.
+
+Explicit gaps: subclassing/new.target, proxies (including proxy array
+branding), species and the remaining array methods belong to later work.

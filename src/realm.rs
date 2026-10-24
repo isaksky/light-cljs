@@ -38,7 +38,8 @@
 //! | `Array.prototype.join` | built-in function ([`Builtin::ArrayPrototypeJoin`]) | `length` (1), `name` |
 //! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
 //! | `Array.prototype.push` | built-in function ([`Builtin::ArrayPrototypePush`]) | `length` (1), `name` |
-//! | `Array` (global name, clj-quickjs-155; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
+//! | `Array` (callable and constructible, clj-quickjs-153) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`), `isArray` |
+//! | `Array.isArray` | built-in function ([`Builtin::ArrayIsArray`]) | `length` (1), `name` |
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
@@ -145,7 +146,7 @@ pub(crate) enum Global {
     Function = 3,
     /// `Reflect` (clj-quickjs-102): an ordinary object with `apply`.
     Reflect = 4,
-    /// `Array` (clj-quickjs-155): exposes its prototype; calls remain unsupported.
+    /// `Array` (clj-quickjs-155/-153): callable and constructible.
     Array = 5,
     /// Coercing number predicates (clj-quickjs-147).
     IsNaN = 6,
@@ -215,7 +216,7 @@ pub(crate) struct Intrinsics {
     pub(crate) object: ObjectId,
     /// `Array.prototype`, the prototype of every array (clj-quickjs-118).
     pub(crate) array_prototype: ObjectId,
-    /// The `Array` stub constructor, also reachable as a global.
+    /// The `Array` constructor, also reachable as a global.
     array: ObjectId,
     /// `Function.prototype`, the prototype of every function object and
     /// built-in function (clj-quickjs-102).
@@ -786,10 +787,9 @@ fn primitive_prototype(
 /// inheriting from `Object.prototype`, with an own `length` of 0 (writable,
 /// not enumerable, not configurable, as an array's), `join` and `toString`
 /// (clj-quickjs-156). ECMAScript makes it an array exotic object itself;
-/// that is not observable while no code can write to it. Its
-/// `constructor` is the `Array` constructor stub (also a global name,
-/// clj-quickjs-155). `push` is supported; calling the constructor and the
-/// remaining methods belong to clj-quickjs-39 and -153.
+/// its immutable empty-array representation uses ordinary property storage,
+/// with the array brand recognized by realm identity (clj-quickjs-153).
+/// Its `constructor` is the callable and constructible global `Array`.
 fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
     let to_string = b.function(Builtin::ArrayPrototypeToString, &[])?;
@@ -816,11 +816,11 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     define(heap, &mut prototype, "join", join, PropertyFlags::METHOD)?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
     b.all.push(id);
-    // `Array.prototype.constructor` is the `Array` constructor, a stub
-    // that fails when called until clj-quickjs-39 (so `[].constructor` is
-    // not the inherited `Object`).
+    // Close the constructor/prototype cycle before publishing the realm.
     let array = b.function(Builtin::Array, &[("prototype", id, PropertyFlags::FIXED)])?;
     b.add(id, "constructor", array, PropertyFlags::METHOD)?;
+    let is_array = b.function(Builtin::ArrayIsArray, &[])?;
+    b.add(array, "isArray", is_array, PropertyFlags::METHOD)?;
     Some((id, array))
 }
 
@@ -1027,7 +1027,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 69);
+        assert_eq!(first.all.len(), 70);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
