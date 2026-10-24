@@ -585,6 +585,17 @@ impl Stringifier {
                         "JSON.stringify object property limit of 4096 exceeded".into(),
                     ))
                 }
+                HeapObject::ArrayBuffer(b)
+                    if b.object
+                        .properties()
+                        .take(MAX_OBJECT_PROPERTIES + 1)
+                        .count()
+                        > MAX_OBJECT_PROPERTIES =>
+                {
+                    Err(Fault::RangeError(
+                        "JSON.stringify object property limit of 4096 exceeded".into(),
+                    ))
+                }
                 _ => Ok(None),
             })
             .ok_or(Fault::Internal("JSON.stringify object reclaimed"))??;

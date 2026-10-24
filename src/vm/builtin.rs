@@ -405,8 +405,10 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
-            Builtin::ArrayBuffer | Builtin::ArrayBufferTransfer => 1,
-            Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => 0,
+            Builtin::ArrayBuffer => 1,
+            Builtin::ArrayBufferByteLength
+            | Builtin::ArrayBufferDetached
+            | Builtin::ArrayBufferTransfer => 0,
             Builtin::ArrayBufferSlice => 2,
             Builtin::Object | Builtin::Array | Builtin::ArrayIsArray => 1,
 

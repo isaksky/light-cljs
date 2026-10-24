@@ -3197,3 +3197,8 @@ Explicit gaps: custom slice constructors/species fail explicitly; resizable
 buffers, typed-array views, SharedArrayBuffer and subclassing remain deferred.
 Publication through atoms or dependency cells rejects buffers, including detached
 ones. Foreign tasks cannot read or mutate their state.
+
+Until resizable buffers are supported, an object-valued second constructor
+argument fails explicitly with `UnsupportedOperand` after length coercion;
+primitive options are ignored. `ArrayBuffer.length` is 1, `transfer.length` is 0,
+`slice.length` is 2, and both accessor functions have length 0.

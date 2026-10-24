@@ -2769,3 +2769,5 @@ end?)`. Numeric object coercions can wait/yield and survive GC and migration.
 Buffers are reclaimed by GC, backing-store capacity is reported in heap usage,
 and publication through atoms is rejected. Deferred: custom slice species,
 resizable buffers, typed-array views and SharedArrayBuffer.
+Object-valued ArrayBuffer constructor options fail explicitly until resizable
+buffers are supported; primitive options are ignored.

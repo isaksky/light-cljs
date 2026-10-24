@@ -957,7 +957,10 @@ pub(crate) fn start_builtin(
     let (target, operands, hint) = match which {
         Builtin::ArrayBuffer if construct => (
             ConvertTarget::ArrayBuffer(which),
-            vec![args.first().cloned().unwrap_or(Value::Undefined)],
+            vec![
+                args.first().cloned().unwrap_or(Value::Undefined),
+                args.get(1).cloned().unwrap_or(Value::Undefined),
+            ],
             Hint::Number,
         ),
         Builtin::ArrayBufferTransfer | Builtin::ArrayBufferSlice if !construct => {
@@ -1225,6 +1228,8 @@ pub(crate) fn start_builtin(
     let (first, end) = if matches!(target, ConvertTarget::ArrayBuffer(which) if which != Builtin::ArrayBuffer)
     {
         (1, operands.len())
+    } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
+        (0, 1)
     } else if matches!(target, ConvertTarget::PropertyBuiltin { .. }) {
         (1, 2)
     } else {
@@ -2272,6 +2277,9 @@ impl NativeState {
                         let undefined = Value::Undefined;
                         match which {
                             builtin::Builtin::ArrayBuffer => {
+                                if matches!(operands.get(1), Some(Value::Object(_))) {
+                                    return Err(Fault::Unsupported("ArrayBuffer options and resizable buffers are not supported".into()));
+                                }
                                 buffer::constructor(heap, task, &operands[0])
                             }
                             builtin::Builtin::ArrayBufferTransfer => buffer::transfer(

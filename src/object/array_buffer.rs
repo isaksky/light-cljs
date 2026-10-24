@@ -11,6 +11,13 @@ use crate::vm::dispatch::{self, Fault};
 /// Per-buffer bound, checked before allocating or touching memory (16 MiB).
 pub(crate) const MAX_BYTE_LENGTH: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    // Force the actual try_reserve_exact error path without exhausting the
+    // process allocator. Per-thread and consumed once, so tests stay isolated.
+    static FAIL_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Bytes have no heap edges. The ordinary property store traces its own
 /// prototype and property edges; detachment preserves those properties.
 #[derive(Debug)]
@@ -45,8 +52,16 @@ fn zeroed(length: usize) -> Result<Vec<u8>, Fault> {
         return Err(invalid_length());
     }
     let mut bytes = Vec::new();
+    #[cfg(test)]
+    let reservation_length = if FAIL_RESERVATION.replace(false) {
+        usize::MAX
+    } else {
+        length
+    };
+    #[cfg(not(test))]
+    let reservation_length = length;
     bytes
-        .try_reserve_exact(length)
+        .try_reserve_exact(reservation_length)
         .map_err(|_| invalid_length())?;
     bytes.resize(length, 0);
     Ok(bytes)
@@ -208,6 +223,58 @@ mod tests {
     use super::*;
     use crate::Scope;
     use std::sync::Arc;
+
+    #[test]
+    fn allocation_failure_is_range_error_and_preserves_source() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let task = TaskId::from_raw(1);
+        FAIL_RESERVATION.set(true);
+        assert!(matches!(
+            constructor(&heap, task, &Value::Number(4.0)),
+            Err(Fault::RangeError(_))
+        ));
+        assert_eq!(heap.usage().objects.array_buffer, 0);
+        let buffer = constructor(&heap, task, &Value::Number(4.0))
+            .ok()
+            .expect("constructor");
+        let id = receiver(&heap, task, &buffer).ok().expect("receiver");
+        let key = heap.keys().intern(&"marker".into()).unwrap();
+        heap.with_object_mut(id, |o| {
+            let HeapObject::ArrayBuffer(b) = o else {
+                panic!("buffer")
+            };
+            b.bytes.copy_from_slice(&[1, 2, 3, 4]);
+            assert!(b.object.define(key, Value::Number(42.0)));
+        })
+        .unwrap();
+        for length in [Value::Undefined, Value::Number(8.0), Value::Number(2.0)] {
+            FAIL_RESERVATION.set(true);
+            assert!(matches!(
+                transfer(&heap, task, &buffer, &length),
+                Err(Fault::RangeError(_))
+            ));
+            assert!(!FAIL_RESERVATION.get());
+            heap.read(id, |o| {
+                let HeapObject::ArrayBuffer(b) = o else {
+                    panic!("buffer")
+                };
+                assert!(!b.detached);
+                assert_eq!(b.bytes, [1, 2, 3, 4]);
+                assert!(matches!(
+                    b.object.get_own(key).unwrap().value,
+                    Value::Number(42.0)
+                ));
+            })
+            .unwrap();
+            assert!(matches!(
+                inspect(&heap, task, &buffer, false),
+                Ok(Value::Number(4.0))
+            ));
+            assert_eq!(heap.usage().array_buffer_bytes, 4);
+            assert_eq!(heap.usage().objects.array_buffer, 1);
+        }
+    }
 
     #[test]
     fn byte_contents_transfer_slice_and_accounting() {

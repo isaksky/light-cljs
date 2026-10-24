@@ -287,6 +287,55 @@ fn array_buffer_basics() {
     }
 }
 
+#[test]
+fn array_buffer_intrinsic_metadata() {
+    for source in [
+        "ArrayBuffer.name === 'ArrayBuffer' && ArrayBuffer.length === 1 && ArrayBuffer.prototype.constructor === ArrayBuffer",
+        "ArrayBuffer.prototype.transfer.name === 'transfer' && ArrayBuffer.prototype.transfer.length === 0 && ArrayBuffer.prototype.slice.name === 'slice' && ArrayBuffer.prototype.slice.length === 2",
+        "let d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached'); d.get.name === 'get detached' && d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength'); d.get.name === 'get byteLength' && d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'transfer'); d.writable && !d.enumerable && d.configurable",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn array_buffer_rejects_resizable_options() {
+    for options in [
+        "{}",
+        "{maxByteLength: 8}",
+        "{get maxByteLength() { throw 42; }}",
+    ] {
+        let source = format!("new ArrayBuffer(4, {options})");
+        assert_eq!(
+            failure(&source).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        eval(
+            "let caught = false; try { new ArrayBuffer({valueOf() { throw 42; }}, {}); } catch(e) { caught = e === 42; } caught"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        failure("new ArrayBuffer(-1, {})").kind(),
+        VmErrorKind::RangeError
+    );
+    assert_eq!(
+        failure("ArrayBuffer(4, {maxByteLength: 8})").kind(),
+        VmErrorKind::TypeError
+    );
+    for options in ["undefined", "null", "true", "'ignored'"] {
+        assert_eq!(
+            eval(&format!("new ArrayBuffer(4, {options}).byteLength === 4")),
+            ValueView::Bool(true)
+        );
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn array_buffer_transfer_detaches() {
@@ -13604,6 +13653,29 @@ fn json_stringify_depth_width_and_member_limits() {
         failure("let o = {}; for (let i = 0; i < 4097; i++) { o[i] = 1; } JSON.stringify(o)");
     assert_eq!(error.kind(), VmErrorKind::RangeError);
     assert!(error.message().contains("object property limit of 4096"));
+    for hidden in [false, true] {
+        let property = if hidden {
+            "Object.defineProperty(o, i, {value: 1})"
+        } else {
+            "o[i] = 1"
+        };
+        let check = if hidden {
+            "JSON.stringify(o) === '{}'"
+        } else {
+            "JSON.parse(JSON.stringify(o))[4095] === 1"
+        };
+        assert_eq!(
+            eval(&format!(
+                "let o = new ArrayBuffer(0); for (let i = 0; i < 4096; i++) {{ {property}; }} {check}"
+            )),
+            ValueView::Bool(true)
+        );
+        let error = failure(&format!(
+            "let o = new ArrayBuffer(0); for (let i = 0; i < 4097; i++) {{ {property}; }} JSON.stringify(o)"
+        ));
+        assert_eq!(error.kind(), VmErrorKind::RangeError);
+        assert!(error.message().contains("object property limit of 4096"));
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output. toJSON results retain the

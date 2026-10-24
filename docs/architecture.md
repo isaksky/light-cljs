@@ -4580,3 +4580,12 @@ edges. `array_buffer_reclaimed_when_unreachable` checks retention by a host root
 reclamation after dropping it, stale `WeakHandle` rejection and backing-byte
 accounting. `array_buffer_coercion_survives_waits_gc_and_migration` forces
 collection and changes worker threads during constructor/transfer/slice coercion.
+
+ArrayBuffer constructor object-valued options are rejected explicitly after
+length coercion until resizable buffers are supported; primitive options are
+ignored. The constructor continuation retains options as a traced operand.
+The bounded JSON serializer applies its existing 4096-property snapshot limit
+to buffer ordinary stores, including non-enumerable properties. A per-thread,
+test-only reservation hook forces `try_reserve_exact` to return a capacity error
+without exhausting memory, covering RangeError mapping and preservation of
+source bytes, descriptors, length and attached state on failed transfers.
