@@ -2252,7 +2252,8 @@ impl NativeState {
                         if matches!(target, ConvertTarget::DateUtc | ConvertTarget::DateSetTime) {
                             // Finish each ToNumber before observing the next argument.
                             // Even NaN must not skip later coercion side effects.
-                            operands[*next] = Value::Number(dispatch::to_number(receiver)?);
+                            operands[*next] =
+                                Value::Number(super::date::number_argument(receiver)?);
                             *next += 1;
                             continue;
                         }

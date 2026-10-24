@@ -16,6 +16,22 @@ use crate::vm::dispatch::{Fault, to_number};
 
 pub(crate) const MS_PER_DAY: f64 = 86_400_000.0;
 
+/// Bound the shared leaf StringToNumber scan (including rope flattening).
+/// Generic budgeted numeric parsing remains clj-quickjs-265. Observable
+/// ToPrimitive completes before this check, and later fields are untouched
+/// when the current conversion exceeds the limit.
+pub(crate) fn number_argument(value: &Value) -> Result<f64, Fault> {
+    const MAX_NUMBER_CONVERSION_UNITS: usize = 4096;
+    if let Value::String(text) = value
+        && text.len() > MAX_NUMBER_CONVERSION_UNITS
+    {
+        return Err(Fault::RangeError(format!(
+            "Date numeric conversion limit of {MAX_NUMBER_CONVERSION_UNITS} UTF-16 units exceeded"
+        )));
+    }
+    to_number(value)
+}
+
 pub(crate) fn time_clip(time: f64) -> f64 {
     if time.abs() <= 8.64e15 {
         time.trunc() + 0.0

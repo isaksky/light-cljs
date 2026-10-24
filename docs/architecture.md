@@ -5082,6 +5082,10 @@ only the first seven arguments participate. Date copying bypasses all user
 hooks, and invalid method receivers fail before argument coercion. Existing
 callback/unwinding and native-frame depth limits apply. Arithmetic work is
 bounded (seven fields and constant-time calendar arithmetic).
+UTC/setTime cap numeric strings at 4096 UTF-16 units before the shared leaf
+StringToNumber scan or rope flatten, throwing RangeError after ToPrimitive
+and before subsequent conversions/mutation. This bound is temporary until
+budgeted primitive numeric parsing (clj-quickjs-265).
 `date_coercion_waits_collects_and_migrates` collects at every yield/wait and
 moves execution across workers, including an otherwise unreferenced receiver.
 `date_objects_are_task_owned` checks publication and foreign slot access.

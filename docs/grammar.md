@@ -3426,6 +3426,13 @@ attributes (Date length 7, UTC length 2, getTime/valueOf length 0, setTime
 length 1). Bound Date construction and forwarded method calls work normally.
 Callbacks may yield, wait, survive GC and resume on another worker.
 
+Numeric string coercion for UTC/setTime is capped at 4096 UTF-16 units,
+including strings returned by ToPrimitive. Above that limit a catchable
+RangeError precedes later field conversions and setTime mutation. This bounds
+the shared leaf StringToNumber scan/rope flatten until clj-quickjs-265 supplies
+budgeted primitive numeric parsing. Constructor strings fail explicitly as
+the parsing gap below, without scanning their contents.
+
 Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
 construction fail with UnsupportedOperand pending host clock/local time work
 (clj-quickjs-182). String construction/parsing, formatting, UTC calendar

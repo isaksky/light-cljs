@@ -1128,6 +1128,20 @@ fn date_slots_and_coercion() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: bound leaf numeric string scans
+/// after observable coercion and before visiting later arguments or mutation.
+#[test]
+fn date_numeric_conversion_limit() {
+    for src in [
+        "Date.UTC('1970'.padStart(4096, ' ')) === 0",
+        "let d = new Date(0); d.setTime('5'.padStart(4096, ' ')) === 5",
+        "let log = ''; let caught = false; try {Date.UTC({valueOf() {log += 'y'; return '1970'.padStart(4097, ' ');}}, {valueOf() {log += 'm'; return 0;}});} catch(e) {caught = e instanceof RangeError;} caught && log === 'y'",
+        "let d = new Date(1); let calls = 0; let caught = false; try {d.setTime({valueOf() {calls++; return '5'.padStart(4097, ' ');}});} catch(e) {caught = e instanceof RangeError;} caught && calls === 1 && d.getTime() === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. Exercise both pending arguments
 /// and an otherwise unreachable setTime receiver through waits, GC and migration.
 #[test]
