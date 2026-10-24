@@ -351,9 +351,10 @@ Deferred:
   intrinsic binding compile since clj-quickjs-21, below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `for`, labels, `switch`, `var`, update and compound
+- labels, `switch`, `var`, update and compound
   assignment operators (rejected by the parser). (Unlabelled `break` and
-  `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80, below.)
+  `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
+  clj-quickjs-81, below.)
 
 ### Parking and wakeups (clj-quickjs-7)
 
@@ -1260,8 +1261,8 @@ Supported (`cargo test --lib frontend::tests::break_and_continue`,
 
 Deferred:
 
-- Labels (`break l;` is `Unsupported`), `for` and `switch`. (`do`-`while`:
-  clj-quickjs-80, below.)
+- Labels (`break l;` is `Unsupported`) and `switch`. (`do`-`while`, `for`:
+  clj-quickjs-80, -81, below.)
 
 ### Exponentiation operator (clj-quickjs-63)
 
@@ -1348,3 +1349,36 @@ Supported (`cargo test --lib frontend::tests::do_while_statements`,
 Deferred:
 
 - Labelled `do`-`while` (labels: clj-quickjs-82).
+
+### `for` loops (clj-quickjs-81)
+
+Supported (`cargo test --lib frontend::tests::for_statements`,
+`cargo test --test js_source for_loops`):
+
+- `for (init; test; update) Statement` with an empty head part, an
+  expression init, or a `let`/`const` declaration list (`for (;;)`,
+  `for (i = 0; i < 3; i++)`, `for (let i = 0, j; ; )`). An absent test is
+  true. A declaration as the body, and `const` without an initializer, are
+  early errors (`Invalid`).
+- Unlabelled `break` leaves the loop; `continue` runs the update, then the
+  test. Both pop catch handlers and run finally blocks on the way. The
+  loop is ordinary branches and locals, so a task may yield, wait or
+  migrate anywhere in it. The first group of QuickJS `test_for` runs from
+  source (adapted, with notice).
+- A `let`/`const` head's bindings are scoped to the loop and in their
+  temporal dead zone during their own initializers (`for (let i = i; ;)`
+  is a ReferenceError). Each iteration has its own copy of the `let`
+  bindings (ECMAScript CreatePerIterationEnvironment): closures created in
+  the body keep their iteration's value, and an assignment a closure makes
+  during an iteration carries into the next. A captured, assigned head
+  binding lives in a binding cell, and the copy is a new cell before the
+  first test and before each update; no new opcode. Updating a `const`
+  head is a TypeError.
+- Completion values follow ECMAScript `UpdateEmpty`:
+  `5; for (;;) { 6; break; }` is 6, `5; for (let i = 0; i < 0; ) {}` is
+  `undefined`.
+
+Deferred:
+
+- `var` heads (clj-quickjs-89), for-in (clj-quickjs-85 to -88) and for-of
+  (`Unsupported`), labelled `for` (labels: clj-quickjs-82).

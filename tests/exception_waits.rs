@@ -174,6 +174,44 @@ fn do_while_waits_resume_body_and_test() {
     assert_eq!(log.0, [1.0, 11.0, 2.0, 7.0, 12.0]);
 }
 
+/// A `for` loop with a `let` head (clj-quickjs-81) parks in its update
+/// after a `continue` through a finally block, then in its body, with
+/// closures over two iterations' copies of the head binding live: each time
+/// a collection runs while it is parked and it resumes on another thread
+/// exactly where it stopped, with every effect run once and each closure
+/// still seeing its own iteration's binding.
+#[test]
+fn for_waits_resume_body_and_update_with_per_iteration_bindings() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "const b = __rt.vectorBuilder();
+         for (let i = 0; i < 2; i = i + __rt.need(6, 3)) {
+           __rt.builderConj(b, () => i);
+           try { __rt.effect(1, i); if (i === 0) continue; __rt.effect(1, __rt.need(5, 3)); }
+           finally { __rt.effect(1, 10 + i); }
+         }
+         const v = __rt.freeze(b);
+         __rt.count(v) * 100 + __rt.nth(v, 0)() * 10 + __rt.nth(v, 1)()",
+    );
+    let mut log = Log::default();
+    // Iteration 1: `continue` runs the finally block, then the update waits.
+    run_to_wait(&rt, &task, &mut log, B);
+    assert_eq!(log.0, [0.0, 10.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 1.0);
+    // Iteration 2 (i = 1) waits in the body.
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, A));
+    assert_eq!(log.0, [0.0, 10.0, 1.0]);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(publish(&rt, &task, 7.0), log);
+    // The update reads the ready result of `need(6, 3)` and the test ends
+    // the loop; the closures saw 0 and 1, not the final 2.
+    assert_eq!(number(outcome), 201.0);
+    assert_eq!(log.0, [0.0, 10.0, 1.0, 7.0, 11.0]);
+}
+
 /// A wait in a protected block, a catch block, and a finally block: parking
 /// runs no handler, the finally block runs once after the resumed code, and
 /// nothing before the wait is replayed.

@@ -1,4 +1,4 @@
-//! Syntax tree for the documented JavaScript subset (`docs/grammar.md`).
+//! Syntax trdecl.height(),e for the documented JavaScript subset (`docs/grammar.md`).
 //!
 //! Every node carries the [`Span`] of the source text it was parsed from.
 //! Parentheses are not represented: a parenthesized expression is its inner
@@ -58,6 +58,21 @@ impl Stmt {
                 .max(alternate.as_ref().map_or(0, |s| s.height)),
             StmtKind::While { test, body } => test.height.max(body.height),
             StmtKind::DoWhile { body, test } => body.height.max(test.height),
+            StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
+                let init = match init {
+                    Some(ForInit::Expr(e)) => e.height,
+                    Some(ForInit::Lexical(decl)) => decl.height(),
+                    None => 0,
+                };
+                init.max(test.as_ref().map_or(0, |e| e.height))
+                    .max(update.as_ref().map_or(0, |e| e.height))
+                    .max(body.height)
+            }
             StmtKind::Try {
                 block,
                 handler,
@@ -108,6 +123,15 @@ pub enum StmtKind {
         body: Box<Stmt>,
         test: Expr,
     },
+    /// `for (init; test; update) body` (clj-quickjs-81). An absent test is
+    /// true. A lexical head's bindings are scoped to the loop, and each
+    /// iteration has its own copy of its `let` bindings.
+    For {
+        init: Option<ForInit>,
+        test: Option<Expr>,
+        update: Option<Expr>,
+        body: Box<Stmt>,
+    },
     /// `throw expr;`
     Throw(Expr),
     /// `try { ... }` with a `catch` clause, a `finally` block, or both (at
@@ -125,6 +149,15 @@ pub enum StmtKind {
     Continue,
     /// `;`
     Empty,
+}
+
+/// The head of a `for` statement before its first `;`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ForInit {
+    /// `for (i = 0; ...)`
+    Expr(Expr),
+    /// `for (let i = 0, j; ...)` or `for (const k = 1; ...)`
+    Lexical(LexicalDecl),
 }
 
 /// `catch (param) { body }` or `catch { body }`.
@@ -148,6 +181,17 @@ pub struct LexicalDecl {
     pub kind: LexicalKind,
     /// At least one. Every `const` declarator has an initializer.
     pub declarators: Vec<Declarator>,
+}
+
+impl LexicalDecl {
+    /// The height of its highest initializer (0 without one).
+    pub(crate) fn height(&self) -> usize {
+        self.declarators
+            .iter()
+            .filter_map(|d| d.init.as_ref().map(|e| e.height))
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

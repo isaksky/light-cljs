@@ -58,7 +58,10 @@
 //! skips a declaration of a scope it lands in, and the bindings of the
 //! enclosing statement list are in the same state at the test on every
 //! iteration (a loop body is a single statement, so it declares nothing
-//! there). So a reference before the declaration (or inside its own
+//! there). A `for` head's bindings are all initialized before its first
+//! test, and its test, body, update and `continue` target all lie after
+//! them in its scope (`Lowerer::for_statement`). So a reference before the
+//! declaration (or inside its own
 //! initializer) still always runs before initialization, and one after it
 //! always runs after. Such references, assignments to `const` bindings and
 //! references to undeclared names lower to `throw_error`. Only closures can
@@ -90,7 +93,8 @@
 //! from the exception value.
 //!
 //! **`break` and `continue`** (unlabelled, clj-quickjs-78) jump to the end
-//! or the test of the innermost loop of the running function
+//! or the `continue` target (the test, or a `for` loop's update) of the
+//! innermost loop of the running function
 //! (`Lowerer::jump`), first popping the catch handler of every `try` block
 //! they leave, running the finally block of every `try` block or catch body
 //! they leave and discarding the pending completion of every finally block
@@ -103,8 +107,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, Expr, ExprKind, Function, Ident, LexicalKind, LogicalOp, Script, Stmt,
-    StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, Ident, LexicalDecl, LexicalKind,
+    LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -1082,23 +1086,7 @@ impl<'s> Lowerer<'s> {
                     None => self.out().op(Opcode::Pop, span),
                 }
             }
-            StmtKind::Lexical(decl) => {
-                for d in &decl.declarators {
-                    let b = self.local(&d.name)?;
-                    if b.repr == Repr::Cell {
-                        self.out().op_u16(Opcode::GetLocal, b.slot, d.span);
-                    }
-                    match &d.init {
-                        Some(init) => self.expr(init)?,
-                        None => self.out().op(Opcode::Undefined, d.span),
-                    }
-                    let b = self.initialize(&d.name)?;
-                    match b.repr {
-                        Repr::Cell => self.out().op(Opcode::CellInit, d.span),
-                        Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, d.span),
-                    }
-                }
-            }
+            StmtKind::Lexical(decl) => self.declarators(decl)?,
             StmtKind::Return(value) => {
                 if self.cur().completion.is_some() {
                     // The parser rejects this; kept as a guard.
@@ -1170,6 +1158,12 @@ impl<'s> Lowerer<'s> {
                 self.out().branch(Opcode::Jump, start, span);
                 self.out().bind(end);
             }
+            StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            } => self.for_statement(init.as_ref(), test.as_ref(), update.as_ref(), body, span)?,
             StmtKind::Throw(e) => {
                 self.expr(e)?;
                 self.out().op(Opcode::Throw, span);
@@ -1185,6 +1179,133 @@ impl<'s> Lowerer<'s> {
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
         }
         Ok(())
+    }
+
+    /// Initialize the declared bindings of `decl` in order, each from its
+    /// initializer (`undefined` without one).
+    fn declarators(&mut self, decl: &LexicalDecl) -> Result<(), SyntaxError> {
+        for d in &decl.declarators {
+            let b = self.local(&d.name)?;
+            if b.repr == Repr::Cell {
+                self.out().op_u16(Opcode::GetLocal, b.slot, d.span);
+            }
+            match &d.init {
+                Some(init) => self.expr(init)?,
+                None => self.out().op(Opcode::Undefined, d.span),
+            }
+            let b = self.initialize(&d.name)?;
+            match b.repr {
+                Repr::Cell => self.out().op(Opcode::CellInit, d.span),
+                Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, d.span),
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower `for (init; test; update) body` (clj-quickjs-81):
+    ///
+    /// ```text
+    ///        <init>                (a lexical head: new_cell for its cell
+    ///                               bindings, then its declarators)
+    ///        <copy>
+    /// start: <test>; jump_if_false end
+    ///        <body>
+    /// cont:  <copy>
+    ///        <update>; pop
+    ///        jump start
+    /// end:
+    /// ```
+    ///
+    /// A lexical head's bindings form a scope around the whole loop, in TDZ
+    /// during their own initializers. Each iteration has its own copy of its
+    /// `let` bindings (ECMAScript CreatePerIterationEnvironment, before the
+    /// first test and before each update; QuickJS closes the loop variables
+    /// with `OP_close_loc` before the update): `<copy>` replaces the cell of
+    /// every `let` binding kept in a cell with a new cell holding its current
+    /// value, so closures created during an iteration keep that iteration's
+    /// binding, and the next iteration starts from the values it ended with.
+    /// A binding not kept in a cell is either never captured or never
+    /// assigned after initialization, so it needs no copy; nor does a
+    /// `const`, which cannot change. Every jump stays inside the head's
+    /// scope after its declarations: the static TDZ decision holds.
+    fn for_statement(
+        &mut self,
+        init: Option<&ForInit>,
+        test: Option<&Expr>,
+        update: Option<&Expr>,
+        body: &Stmt,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.reset_completion(span);
+        let saved_slot = self.cur().next_slot;
+        self.cur_mut().scopes.push(Scope::new());
+        // (slot, span) of each per-iteration `let` cell.
+        let mut copies = Vec::new();
+        match init {
+            Some(ForInit::Expr(e)) => {
+                self.expr(e)?;
+                self.out().op(Opcode::Pop, e.span);
+            }
+            Some(ForInit::Lexical(decl)) => {
+                let kind = match decl.kind {
+                    LexicalKind::Let => BindingKind::Let,
+                    LexicalKind::Const => BindingKind::Const,
+                };
+                for d in &decl.declarators {
+                    self.declare(&d.name, kind, false)?;
+                }
+                for d in &decl.declarators {
+                    let b = self.local(&d.name)?;
+                    if b.repr == Repr::Cell {
+                        self.out().op(Opcode::NewCell, d.name.span);
+                        self.out().op_u16(Opcode::SetLocal, b.slot, d.name.span);
+                        if kind == BindingKind::Let {
+                            copies.push((b.slot, d.name.span));
+                        }
+                    }
+                }
+                self.declarators(decl)?;
+            }
+            None => {}
+        }
+        let start = self.out().label();
+        let cont = self.out().label();
+        let end = self.out().label();
+        self.copy_cells(&copies);
+        self.out().bind(start);
+        if let Some(test) = test {
+            self.expr(test)?;
+            self.out().branch(Opcode::JumpIfFalse, end, test.span);
+        }
+        self.cur_mut().exits.push(Exit::Loop { brk: end, cont });
+        self.statement(body)?;
+        self.cur_mut().exits.pop();
+        self.out().bind(cont);
+        self.copy_cells(&copies);
+        if let Some(update) = update {
+            self.expr(update)?;
+            self.out().op(Opcode::Pop, update.span);
+        }
+        self.out().branch(Opcode::Jump, start, span);
+        self.out().bind(end);
+        let ctx = self.cur_mut();
+        ctx.scopes.pop();
+        ctx.next_slot = saved_slot;
+        Ok(())
+    }
+
+    /// Replace each cell local in `copies` with a new cell initialized to
+    /// the old cell's value (always initialized here).
+    fn copy_cells(&mut self, copies: &[(u16, Span)]) {
+        for &(slot, span) in copies {
+            let out = self.out();
+            out.op(Opcode::NewCell, span);
+            out.op(Opcode::Dup, span);
+            out.op_u16(Opcode::GetLocal, slot, span);
+            out.op(Opcode::CellGet, span);
+            out.op(Opcode::CellInit, span);
+            out.op_u16(Opcode::SetLocal, slot, span);
+        }
     }
 
     /// Lower an unlabelled `break` (`is_break`) or `continue` at `span`: leave

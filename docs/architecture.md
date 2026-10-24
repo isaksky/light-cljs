@@ -1440,3 +1440,13 @@ and Charlie Gordon) and is listed here with its source path and revision:
   notice. The `TOK_DO` case of `js_parse_statement_or_decl` in
   `research/quickjs/quickjs.c` (`continue` targets the test; the optional
   `;` after `while (...)`) was consulted only. No code was copied.
+- `tests/js_source.rs` `for_loops` (clj-quickjs-81): the first group of
+  `test_for` (line 61) of `research/quickjs/tests/test_loop.js`, revision
+  7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
+  `let` for `var`, `c = c + 1` for `c++` in the body, and the asserted
+  condition is the script's completion value; the second group (a `var`
+  head) is left to the `var`-heads pellet. The test carries the full
+  notice. The `TOK_FOR` case of `js_parse_statement_or_decl` in
+  `research/quickjs/quickjs.c` (the head's scope, `continue` targeting the
+  update, the loop variables closed before the first iteration and before
+  each update) was consulted only. No code was copied.

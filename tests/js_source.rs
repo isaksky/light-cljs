@@ -411,6 +411,28 @@ fn script_completion_value_follows_javascript() {
         num("let i = 0; do { 6; try { i = i + 1; break; } finally { 7; } } while (true)"),
         1.0
     );
+    // `for` (clj-quickjs-81): reset to undefined on entry, then the value
+    // the body produced last; the head's init, test and update never set it.
+    assert_eq!(num("5; for (;;) { 6; break; }"), 6.0);
+    assert_eq!(eval("5; for (let i = 0; i < 0; ) {}"), ValueView::Undefined);
+    assert_eq!(
+        eval("let i; 5; for (i = 0; i < 2; i = i + 1) {}"),
+        ValueView::Undefined
+    );
+    assert_eq!(num("for (let i = 0; i < 3; i = i + 1) { i * 2; }"), 4.0);
+    assert_eq!(
+        num("for (let i = 0; i < 3; i = i + 1) { 9; continue; }"),
+        9.0
+    );
+    // An `if` around the `continue` makes the value undefined.
+    assert_eq!(
+        eval("for (let i = 0; i < 3; i = i + 1) { if (i > 0) continue; 9; }"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        eval("1; for (let i = 0; i < 3; i = i + 1) { 2; if (i > 1) { break; } }"),
+        ValueView::Undefined
+    );
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
@@ -771,6 +793,262 @@ fn do_while_loops() {
     assert_eq!(eval("5; do { } while (false)"), ValueView::Undefined);
     assert_eq!(num("5; do { 6; break; } while (true)"), 6.0);
     assert_eq!(eval("5; do { break; } while (true)"), ValueView::Undefined);
+}
+
+/// `for` statements with empty, expression and `let`/`const` heads
+/// (clj-quickjs-81). `TEST_FOR` is adapted from the first group of
+/// `test_for` in `research/quickjs/tests/test_loop.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution): `let` for
+/// `var`, `x = x + 1` for `x++` in the body, and the asserted condition is
+/// the completion value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn for_loops() {
+    const TEST_FOR: &str = "
+        let i, c;
+        c = 0;
+        for(i = 0; i < 3; i++) {
+            c = c + 1;
+        }
+        c === 3 && i === 3";
+    assert_eq!(eval(TEST_FOR), ValueView::Bool(true));
+    // The same loop under a 3-instruction budget yields inside it and
+    // resumes there with the same result.
+    let looping = exe(TEST_FOR);
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 1, "{yields} yields");
+
+    // Run under a bounded budget, so a loop that fails to stop fails here
+    // instead of running forever.
+    let bounded = |src: &str| {
+        let looping = exe(src);
+        let task = Runtime::new().spawn(&looping, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100_000), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Complete(v) => v.view(),
+            other => panic!("{src}: expected Complete, got {other:?}"),
+        }
+    };
+    let bounded_num = |src: &str| match bounded(src) {
+        ValueView::Number(n) => n,
+        other => panic!("{src}: expected a number, got {other:?}"),
+    };
+    // An empty head loops until `break`.
+    assert_eq!(bounded("for (;;) { break; } 1"), ValueView::Number(1.0));
+    assert_eq!(
+        bounded_num("let n = 0; for (;;) { n = n + 1; if (n === 4) break; } n"),
+        4.0
+    );
+    // `continue` runs the update: the sum of the odd numbers below 10.
+    assert_eq!(
+        bounded_num(
+            "let sum = 0;
+             for (let i = 0; i < 10; i = i + 1) {
+                 if (i % 2 === 0) continue;
+                 sum = sum + i;
+             }
+             sum"
+        ),
+        25.0
+    );
+    // The test is absent (always true) or false from the start; the update
+    // is absent.
+    assert_eq!(
+        bounded_num("let n = 0; for (let i = 0; ; i = i + 1) { if (i > 2) break; n = n + 1; } n"),
+        3.0
+    );
+    assert_eq!(
+        bounded_num("let n = 0; for (let i = 5; i < 3; ) { n = 1; } n"),
+        0.0
+    );
+    assert_eq!(
+        bounded_num("let i = 0; for (; i < 4; ) { i = i + 1; } i"),
+        4.0
+    );
+    // Several declarators, and an expression head with the comma operator.
+    assert_eq!(
+        bounded_num("let r = 0; for (let i = 0, j = 10; i < j; i = i + 1, j = j - 1) r = r + 1; r"),
+        5.0
+    );
+    assert_eq!(
+        bounded_num("let a, b; for (a = 1, b = 2; a < 3; a = a + 1) b = b * 10; b"),
+        200.0
+    );
+    // The head's bindings are scoped to the loop: the outer one is untouched,
+    // and a body block may shadow them.
+    assert_eq!(
+        bounded_num("let i = 7; for (let i = 0; i < 3; i = i + 1) { let x = i; } i"),
+        7.0
+    );
+    assert_eq!(
+        bounded_num("let s = 0; for (let i = 0; i < 2; i = i + 1) { let i = 5; s = s + i; } s"),
+        10.0
+    );
+    // Nested loops: `break` and `continue` act on the innermost one.
+    assert_eq!(
+        bounded_num(
+            "let log = 0;
+             for (let i = 1; i <= 3; i = i + 1) {
+                 for (let j = 1; ; j = j + 1) {
+                     if (j > i) break;
+                     if (j === 2) continue;
+                     log = log * 10 + j;
+                 }
+             }
+             log"
+        ),
+        // i = 1: 1; i = 2: 1; i = 3: 1 3.
+        1113.0
+    );
+    // Through `try` statements: a jump pops catch handlers and runs finally
+    // blocks on the way; the update still runs after `continue`.
+    assert_eq!(
+        bounded_num(
+            "let r = 0;
+             for (let i = 0; i < 3; i = i + 1) { try { continue; } finally { r = r + 1; } }
+             for (;;) { try { break; } catch (e) { r = 99; } }
+             r"
+        ),
+        3.0
+    );
+    // In a function: `return` from the body.
+    assert_eq!(
+        bounded_num(
+            "function find(n) { for (let i = 0; ; i = i + 1) { if (i * i >= n) return i; } }
+             find(10) * 100 + find(0)"
+        ),
+        400.0
+    );
+
+    // Per-iteration bindings: each closure keeps its iteration's `i`.
+    assert_eq!(
+        bounded_num(
+            "const b = __rt.vectorBuilder();
+             for (let i = 0; i < 3; i = i + 1) { __rt.builderConj(b, function () { return i; }); }
+             const v = __rt.freeze(b);
+             __rt.nth(v, 0)() * 100 + __rt.nth(v, 1)() * 10 + __rt.nth(v, 2)()"
+        ),
+        12.0
+    );
+    // An assignment made by a closure during an iteration is carried into
+    // the next iteration's copy.
+    assert_eq!(
+        bounded_num(
+            "let n = 0;
+             for (let i = 0; i < 5; i = i + 1) { const f = function () { i = i + 1; }; f(); n = n + 1; }
+             n"
+        ),
+        3.0
+    );
+    // A closure sees later assignments within its own iteration (and the
+    // update's, not at all): closures created in the test and the update
+    // capture the iteration they run in.
+    assert_eq!(
+        bounded_num(
+            "const b = __rt.vectorBuilder();
+             for (let i = 0; i < 3; i = i + 1) {
+                 __rt.builderConj(b, () => i);
+                 i = i + 1;
+             }
+             const v = __rt.freeze(b);
+             __rt.count(v) * 100 + __rt.nth(v, 0)() * 10 + __rt.nth(v, 1)()"
+        ),
+        // Iterations with i = 0 (ends at 1) and i = 2 (ends at 3).
+        213.0
+    );
+    assert_eq!(
+        bounded_num(
+            "let g = 0, h = 0;
+             for (let i = 0; (g = () => i, i < 2); h = () => i, i = i + 1) {}
+             g() * 10 + h()"
+        ),
+        // The last test ran in the iteration with i = 2; the last update
+        // ran in that iteration too, before incrementing.
+        22.0
+    );
+    // A closure in an initializer captures the head's first environment,
+    // which the first iteration copies (CreatePerIterationEnvironment
+    // before the first test), so it never sees the body's assignments.
+    assert_eq!(
+        bounded_num(
+            "let f; for (let i = 0, g = () => i; i < 3; i = i + 1) { f = g; i = i + 10; } f()"
+        ),
+        0.0
+    );
+    // A `const` head is a fresh binding per loop, never updated.
+    assert_eq!(
+        bounded_num("let n = 0; for (const k = 3; n < k; ) { const f = () => k; n = n + f(); } n"),
+        3.0
+    );
+
+    // Errors: the head's bindings are in TDZ during their own initializers;
+    // a `const` head cannot be updated.
+    let (kind, message, line, column) = failure_at("for (let i = i; ;) {}");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "cannot access 'i' before initialization");
+    assert_eq!((line, column), (1, 14));
+    let (kind, ..) = failure_at("for (let i = 0, j = k, k = 1; ;) {}");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    // A closure that runs during the initializer fails at run time.
+    let (kind, ..) = failure_at("for (let i = (() => i)(); ;) {}");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    let (kind, message, line, column) = failure_at("for (const k = 0; k < 1; k = k + 1) {}");
+    assert_eq!(kind, VmErrorKind::TypeError);
+    assert_eq!(message, "assignment to constant variable 'k'");
+    assert_eq!((line, column), (1, 26));
+    // The head bindings are not visible after the loop.
+    let (kind, ..) = failure_at("for (let i = 0; i < 1; i = i + 1) {} i");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+
+    // Completion values (ECMAScript UpdateEmpty).
+    assert_eq!(num("5; for (;;) { 6; break; }"), 6.0);
+    assert_eq!(eval("5; for (let i = 0; i < 0; ) {}"), ValueView::Undefined);
+    assert_eq!(eval("5; for (;;) { break; }"), ValueView::Undefined);
+    assert_eq!(num("for (let i = 0; i < 3; i = i + 1) { i; }"), 2.0);
+    // The head's expressions are never the completion value.
+    assert_eq!(
+        eval("let i; 5; for (i = 0; i < 2; i = i + 1) {}"),
+        ValueView::Undefined
+    );
+
+    // Deeply nested loops compile within the 2 MiB stack the parser is
+    // tested with.
+    let nested = format!("{}x;", "for (let i = 0; i < 1; i = i + 1) ".repeat(120));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || compile_script("nested", &nested).map(|_| ()))
+        .unwrap();
+    handle.join().unwrap().unwrap();
 }
 
 #[test]

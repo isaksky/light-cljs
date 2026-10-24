@@ -9,8 +9,8 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, Declarator, Expr, ExprKind, Function, FunctionKind, Ident, LexicalDecl,
-    LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInit, Function, FunctionKind, Ident,
+    LexicalDecl, LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -242,7 +242,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Statement (single-statement position: `if`/`while`/`do` bodies).
+    /// Statement (single-statement position: `if`/`while`/`do`/`for` bodies).
     fn parse_statement(&mut self) -> PResult<Stmt> {
         let saved = self.depth;
         self.deeper(cost::STATEMENT)?;
@@ -256,6 +256,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::If) => self.parse_if()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while()?,
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while()?,
+            TokenKind::Keyword(Keyword::For) => self.parse_for()?,
             TokenKind::Keyword(Keyword::Return) => self.parse_return()?,
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw()?,
             TokenKind::Keyword(Keyword::Try) => self.parse_try()?,
@@ -284,13 +285,13 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Function) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
-                "a function declaration cannot be the body of `if`/`while`/`do`; wrap it in a block",
+                "a function declaration cannot be the body of `if`/`while`/`do`/`for`; wrap it in a block",
             )),
             TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
                 format!(
-                    "a `{}` declaration cannot be the body of `if`/`while`/`do`; wrap it in a block",
+                    "a `{}` declaration cannot be the body of `if`/`while`/`do`/`for`; wrap it in a block",
                     k.as_str()
                 ),
             )),
@@ -391,6 +392,88 @@ impl<'a> Parser<'a> {
         self.eat_punct(Punct::Semicolon)?;
         self.depth = saved;
         Ok(StmtKind::DoWhile { body, test })
+    }
+
+    /// ForStatement (clj-quickjs-81): `for` `(` ForInit? `;` Expression? `;`
+    /// Expression? `)` Statement, where ForInit is an Expression or a
+    /// `let`/`const` declaration list (QuickJS `TOK_FOR` in
+    /// `js_parse_statement_or_decl`). For-in, for-of and `var` heads are
+    /// rejected as unsupported, at the `for` keyword. The `in` operator is
+    /// itself unsupported, so an expression head needs no `in` restriction
+    /// yet.
+    fn parse_for(&mut self) -> PResult<StmtKind> {
+        let saved = self.depth;
+        self.deeper(cost::BODY)?;
+        let (init, test, update) = self.parse_for_head()?;
+        let outer = std::mem::replace(&mut self.in_loop, true);
+        let body = Box::new(self.parse_statement()?);
+        self.in_loop = outer;
+        self.depth = saved;
+        Ok(StmtKind::For {
+            init,
+            test,
+            update,
+            body,
+        })
+    }
+
+    /// `for` `(` ForInit? `;` Expression? `;` Expression? `)`. Out of line,
+    /// so the frame of [`Self::parse_for`], which recurses through the
+    /// body, stays small.
+    #[inline(never)]
+    fn parse_for_head(&mut self) -> PResult<(Option<ForInit>, Option<Expr>, Option<Expr>)> {
+        let keyword = self.advance()?.span;
+        self.expect_punct(Punct::LParen)?;
+        let init = match &self.tok.kind {
+            TokenKind::Punct(Punct::Semicolon) => None,
+            TokenKind::Keyword(Keyword::Let | Keyword::Const) => Some(ForInit::Lexical(
+                self.parse_lexical_declarators(Some(keyword))?,
+            )),
+            TokenKind::Keyword(Keyword::Var) => {
+                return Err(self.unsupported(self.tok.span, "`var` declarations are"));
+            }
+            _ => {
+                // `for (k in o)`: the expression parser would report the
+                // unsupported `in` operator.
+                if matches!(self.tok.kind, TokenKind::Identifier(_))
+                    && let Some(next) = self.peek_next()
+                    && let Some(error) = self.for_in_of_error(&next.kind, keyword)
+                {
+                    return Err(error);
+                }
+                let init = self.parse_expression()?;
+                if let Some(error) = self.for_in_of_error(&self.tok.kind, keyword) {
+                    return Err(error);
+                }
+                Some(ForInit::Expr(init))
+            }
+        };
+        self.expect_punct(Punct::Semicolon)?;
+        let test = if self.is_punct(Punct::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        self.expect_punct(Punct::Semicolon)?;
+        let update = if self.is_punct(Punct::RParen) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        self.expect_punct(Punct::RParen)?;
+        Ok((init, test, update))
+    }
+
+    /// `token` is the `in` or `of` after the left side of a for-in or for-of
+    /// head: reject the loop as unsupported at the `for` keyword.
+    #[inline(never)]
+    fn for_in_of_error(&self, token: &TokenKind, keyword: Span) -> Option<SyntaxError> {
+        let what = match token {
+            TokenKind::Keyword(Keyword::In) => "`for`-`in` loops are",
+            TokenKind::Identifier(name) if name == "of" => "`for`-`of` loops are",
+            _ => return None,
+        };
+        Some(self.unsupported(keyword, what))
     }
 
     fn parse_return(&mut self) -> PResult<StmtKind> {
@@ -532,6 +615,15 @@ impl<'a> Parser<'a> {
     /// LexicalDeclaration: (`let` | `const`) Declarator (`,` Declarator)* `;`
     fn parse_lexical_decl(&mut self) -> PResult<Stmt> {
         let start = self.tok.span.start;
+        let decl = self.parse_lexical_declarators(None)?;
+        self.expect_semi()?;
+        self.bounded(Stmt::new(StmtKind::Lexical(decl), self.span_from(start)))
+    }
+
+    /// (`let` | `const`) Declarator (`,` Declarator)*, without the `;`.
+    /// `for_keyword`: in the head of the `for` statement at that span, where
+    /// `in` or `of` after a name starts an unsupported for-in or for-of head.
+    fn parse_lexical_declarators(&mut self, for_keyword: Option<Span>) -> PResult<LexicalDecl> {
         let kind = if self.advance()?.kind == TokenKind::Keyword(Keyword::Let) {
             LexicalKind::Let
         } else {
@@ -540,6 +632,11 @@ impl<'a> Parser<'a> {
         let mut declarators = Vec::new();
         loop {
             let name = self.parse_binding_identifier("a variable name")?;
+            if let Some(keyword) = for_keyword
+                && let Some(error) = self.for_in_of_error(&self.tok.kind, keyword)
+            {
+                return Err(error);
+            }
             let init = if self.eat_punct(Punct::Assign)? {
                 Some(self.parse_assignment()?)
             } else {
@@ -564,11 +661,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect_semi()?;
-        self.bounded(Stmt::new(
-            StmtKind::Lexical(LexicalDecl { kind, declarators }),
-            self.span_from(start),
-        ))
+        Ok(LexicalDecl { kind, declarators })
     }
 
     /// BindingIdentifier: an identifier that is not a reserved word, a
@@ -1367,7 +1460,6 @@ fn is_compound_assign(p: Punct) -> bool {
 fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Var => "`var` declarations are (use `let` or `const`)",
-        Keyword::For => "`for` loops are (use `while`)",
         Keyword::Switch => "`switch` is",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",

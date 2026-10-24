@@ -152,26 +152,26 @@ fn render_list(head: &str, body: &[Stmt]) -> String {
     out
 }
 
+fn render_lexical(decl: &super::ast::LexicalDecl) -> String {
+    let keyword = match decl.kind {
+        super::ast::LexicalKind::Let => "let",
+        super::ast::LexicalKind::Const => "const",
+    };
+    let mut out = format!("({keyword}");
+    for d in &decl.declarators {
+        match &d.init {
+            Some(init) => out.push_str(&format!(" ({} {})", d.name.name, render_expr(init))),
+            None => out.push_str(&format!(" ({})", d.name.name)),
+        }
+    }
+    out.push(')');
+    out
+}
+
 fn render_stmt(s: &Stmt) -> String {
     match &s.kind {
         StmtKind::FunctionDecl(f) => render_function(f),
-        StmtKind::Lexical(decl) => {
-            let keyword = match decl.kind {
-                super::ast::LexicalKind::Let => "let",
-                super::ast::LexicalKind::Const => "const",
-            };
-            let mut out = format!("({keyword}");
-            for d in &decl.declarators {
-                match &d.init {
-                    Some(init) => {
-                        out.push_str(&format!(" ({} {})", d.name.name, render_expr(init)))
-                    }
-                    None => out.push_str(&format!(" ({})", d.name.name)),
-                }
-            }
-            out.push(')');
-            out
-        }
+        StmtKind::Lexical(decl) => render_lexical(decl),
         StmtKind::Expr(e) => render_expr(e),
         StmtKind::Return(None) => "(return)".into(),
         StmtKind::Return(Some(e)) => format!("(return {})", render_expr(e)),
@@ -216,6 +216,25 @@ fn render_stmt(s: &Stmt) -> String {
         }
         StmtKind::DoWhile { body, test } => {
             format!("(do {} {})", render_stmt(body), render_expr(test))
+        }
+        StmtKind::For {
+            init,
+            test,
+            update,
+            body,
+        } => {
+            let init = match init {
+                Some(super::ast::ForInit::Expr(e)) => render_expr(e),
+                Some(super::ast::ForInit::Lexical(decl)) => render_lexical(decl),
+                None => "_".into(),
+            };
+            let part = |e: &Option<Expr>| e.as_ref().map_or("_".into(), render_expr);
+            format!(
+                "(for {init} {} {} {})",
+                part(test),
+                part(update),
+                render_stmt(body)
+            )
         }
         StmtKind::Break => "(break)".into(),
         StmtKind::Continue => "(continue)".into(),
@@ -453,6 +472,70 @@ fn break_and_continue() {
     rejects_with("while (x) continue l;", Unsupported, 1, 11, "labelled");
     rejects("while (x) break 1;", UnexpectedToken, 1, 17);
     rejects("while (x) break if;", UnexpectedToken, 1, 17);
+}
+
+/// `for (init; test; update)` with an empty, expression or `let`/`const`
+/// head (clj-quickjs-81). `_` renders an absent part.
+#[test]
+fn for_statements() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedEnd, UnexpectedToken, Unsupported};
+    assert_eq!(ast("for (;;) x;"), "(for _ _ _ x)");
+    assert_eq!(
+        ast("for (i = 0; i < 3; i = i + 1) {}"),
+        "(for (= i 0) (< i 3) (= i (+ i 1)) (block))"
+    );
+    assert_eq!(
+        ast("for (let i = 0, j; ; ) {}"),
+        "(for (let (i 0) (j)) _ _ (block))"
+    );
+    assert_eq!(
+        ast("for (const k = 1; k < 0; ) {}"),
+        "(for (const (k 1)) (< k 0) _ (block))"
+    );
+    assert_eq!(
+        ast("for (a, b; c, d; e, f) ;"),
+        "(for (, a b) (, c d) (, e f) (empty))"
+    );
+    assert_eq!(
+        ast("for (i++; ; i--) ;"),
+        "(for (post++ i) _ (post-- i) (empty))"
+    );
+    assert_eq!(
+        ast("for (;;) { if (a) break; continue; }"),
+        "(for _ _ _ (block (if a (break)) (continue)))"
+    );
+    assert_eq!(
+        ast("for (;;) for (;;) break;"),
+        "(for _ _ _ (for _ _ _ (break)))"
+    );
+    assert_eq!(ast("if (a) for (;;) x; else y;"), "(if a (for _ _ _ x) y)");
+    assert_eq!(ast("for (;;) x\ny"), "(for _ _ _ x) y");
+    // A function in the head starts a new `break` context.
+    rejects("for (;; function () { break; }) ;", Invalid, 1, 23);
+    rejects("for (;;) ; break;", Invalid, 1, 12);
+    // `const` needs an initializer; a declaration cannot be the body.
+    rejects_with("for (const k; ;) {}", Invalid, 1, 12, "missing initializer");
+    rejects_with("for (;;) let x;", Invalid, 1, 10, "cannot be the body");
+    rejects("for (;;) function f() {}", Invalid, 1, 10);
+    // For-in, for-of and `var` heads are separate features.
+    rejects_with("for (x of y) {}", Unsupported, 1, 1, "`for`-`of`");
+    rejects_with("for (x in y) {}", Unsupported, 1, 1, "`for`-`in`");
+    rejects_with("for (let x of y) {}", Unsupported, 1, 1, "`for`-`of`");
+    rejects_with("for (const x in y) {}", Unsupported, 1, 1, "`for`-`in`");
+    rejects_with("for (a.b of y) {}", Unsupported, 1, 1, "`for`-`of`");
+    rejects_with("for (var i = 0; ;) {}", Unsupported, 1, 6, "`var`");
+    rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
+    // `let` is a keyword (strict mode); the head is parenthesized and has
+    // exactly two `;`.
+    rejects("for (let let = 1; ;) {}", ReservedWord, 1, 10);
+    rejects("for (;) {}", UnexpectedToken, 1, 7);
+    rejects("for (x) {}", UnexpectedToken, 1, 7);
+    rejects("for ;; {}", UnexpectedToken, 1, 5);
+    rejects("for (;;", UnexpectedEnd, 1, 8);
+    rejects("for (let i = 0, ; ;) {}", UnexpectedToken, 1, 17);
+    // No semicolon is inserted inside the head.
+    rejects("for (a\nb;;) {}", UnexpectedToken, 2, 1);
+    rejects("for (;\n) {}", UnexpectedToken, 2, 1);
 }
 
 /// `do`-`while` (clj-quickjs-80), including its ASI rule: the `;` after
@@ -1454,7 +1537,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("await x;", 1, 1, "await"),
         ("function* g() {}", 1, 1, "generator"),
         ("var x = 1;", 1, 1, "var"),
-        ("for (;;) {}", 1, 1, "for"),
+        ("for (x of y) {}", 1, 1, "for`-`of"),
         ("switch (x) {}", 1, 1, "switch"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("label: x;", 1, 1, "labelled"),
@@ -1540,6 +1623,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("{}x;", "if (1) ".repeat(n)),
         format!("{}x;", "while (1) ".repeat(n)),
         format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n)),
+        format!("{}x;", "for (;;) ".repeat(n)),
+        format!("{}x;", "for (let i = 0; i < 1; i = i + 1) ".repeat(n)),
         format!("{}{}", "function f() {".repeat(n), "}".repeat(n)),
         format!(
             "x = {}1{};",
@@ -1604,6 +1689,10 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("while", |n| format!("{}x;", "while (1) ".repeat(n))),
         ("do-while", |n| {
             format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n))
+        }),
+        ("for", |n| format!("{}x;", "for (;;) ".repeat(n))),
+        ("for with heads", |n| {
+            format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))
         }),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
