@@ -33,7 +33,7 @@ nix develop --command bash scripts/quickjs-data/verify.sh \
 ## Conversion
 
 Inputs are pinned to QuickJS revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all nine local
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all ten local
 data/header files read by the exporter. Hashes are checked before and after
 conversion; an upstream change needs an explicit manifest and converter review.
 

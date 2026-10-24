@@ -157,8 +157,9 @@ perl "$script_dir/repack-intl.pl" "$output_dir/second" "$output_dir/intl-second"
 for file in "$output_dir/intl-first/"*; do
     cmp "$file" "$output_dir/intl-second/${file##*/}"
 done
-cmp <(sed -n '/^pub static nf_unit_patterns:/,$p' "$output_dir/intl-first/units.rs" | tr -d ' \n') \
-    <(sed -n '/^pub static nf_unit_patterns:/,/^];/p' "$output_dir/first/tables.rs" | tr -d ' \n')
+# Normalize Rust layout only; spaces inside byte strings are significant.
+cmp <(sed -n '/^pub static nf_unit_patterns:/,$p' "$output_dir/intl-first/units.rs" | perl -0pe 's{(b?"(?:\\.|[^"\\])*")|\s+}{defined $1 ? $1 : ""}gse') \
+    <(sed -n '/^pub static nf_unit_patterns:/,/^];/p' "$output_dir/first/tables.rs" | perl -0pe 's{(b?"(?:\\.|[^"\\])*")|\s+}{defined $1 ? $1 : ""}gse')
 mkdir "$output_dir/unit-corrupt"
 cp "$output_dir/first/verify.rs" "$output_dir/unit-corrupt/"
 sed 's/{number} mins/{number} minx/' "$output_dir/first/tables.rs" > "$output_dir/unit-corrupt/tables.rs"
