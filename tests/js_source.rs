@@ -1601,7 +1601,7 @@ fn for_in_over_arrays() {
     // still visits named properties after the current index.
     assert_eq!(
         keys(
-            r#"const a = []; a[3] = 3; a[1000] = 4; a.extra = 1;
+            r#"const a = []; a[3] = 3; a[4000] = 4; a.extra = 1;
                for (const k in a) { if (k === "3") a.length = 0; s = s + k + ","; }
                s = s + a.length;"#
         ),
