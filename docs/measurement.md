@@ -258,25 +258,28 @@ Each row has one discarded warmup and three measured rounds.
 
 Measured on 2026-10-24, release, Rust 1.95.0, Linux x86_64, AMD Ryzen 7
 9850X3D (14 available logical CPUs), single embedder thread, other workers
-active. Flat baseline was the parent implementation with only the new
-benchmark workload added. Load averages at start/end: flat 3.27/3.27,
-rope 3.69/3.69 (one-minute values). Medians [min..max], **ns per unit**:
+active. Flat baseline was `8623520` with only the new benchmark workload
+added; the final rope run includes the rebase onto `49708e2` and the review
+fixes. Intervening Symbol/parser merges may also affect timings, so this is
+not an isolated estimate of cache overhead. Load averages at start/end:
+flat 3.27/3.27, rope 2.62/2.62 (one-minute values).
+Medians [min..max], **ns per unit**:
 
 | Direction / units | Flat build | Rope build | Rope first flatten |
 | --- | ---: | ---: | ---: |
-| append / 10,000 | 690.5 [681.8..692.3] | 728.7 [722.2..744.1] | 3.7 [3.6..6.0] |
-| prepend / 10,000 | 730.1 [728.0..733.1] | 753.1 [742.2..805.6] | 3.2 [3.1..3.3] |
-| append / 20,000 | 794.0 [792.5..794.2] | 742.7 [723.4..919.8] | 7.1 [6.5..10.4] |
-| prepend / 20,000 | 841.9 [840.5..852.8] | 888.1 [734.3..908.3] | 3.1 [3.1..4.3] |
-| append / 100,000 | 2428.6 [2412.0..2431.2] | 709.6 [703.0..758.3] | 14.5 [11.3..16.8] |
-| prepend / 100,000 | 2481.8 [2480.2..2500.8] | 742.2 [732.6..746.5] | 3.9 [3.8..4.7] |
+| append / 10,000 | 690.5 [681.8..692.3] | 684.9 [681.6..704.2] | 5.3 [3.8..6.8] |
+| prepend / 10,000 | 730.1 [728.0..733.1] | 710.9 [709.3..724.0] | 3.5 [3.4..3.7] |
+| append / 20,000 | 794.0 [792.5..794.2] | 696.3 [682.1..720.9] | 6.8 [5.2..7.7] |
+| prepend / 20,000 | 841.9 [840.5..852.8] | 709.5 [706.2..805.9] | 4.1 [3.9..5.1] |
+| append / 100,000 | 2428.6 [2412.0..2431.2] | 725.4 [702.1..733.1] | 11.8 [11.7..12.7] |
+| prepend / 100,000 | 2481.8 [2480.2..2500.8] | 736.3 [718.9..750.7] | 6.0 [5.9..6.0] |
 
 Flat first reads round to 0.0 ns/unit because their buffers already exist.
-At 100k units, build plus first flatten was about 72.4 ms append / 74.6 ms
-prepend, versus 242.9 / 248.2 ms for flat construction. Small inputs did not
-consistently improve. Cached JavaScript reads also regressed slightly in this
-sample: append 474.2 [473.2..476.5] flat versus 510.1 [505.2..514.8] rope,
-prepend 475.1 [474.3..475.4] versus 512.0 [510.5..520.1] ns/unit at 100k.
+At 100k units, build plus first flatten was about 73.7 ms append / 74.2 ms
+prepend, versus 242.9 / 248.2 ms for flat construction. The small append
+case was essentially flat after including its first flatten. Cached JavaScript reads regressed in this
+sample: append 474.2 [473.2..476.5] flat versus 545.4 [512.3..573.4] rope,
+prepend 475.1 [474.3..475.4] versus 514.2 [502.8..549.2] ns/unit at 100k.
 These are noisy wall-clock observations, not complexity assertions.
 
 `cargo test --test measurement string_concatenation_is_amortized_linear`
@@ -291,8 +294,11 @@ results. Differences must be taken on the thread doing the work. Tests also
 exercise method concat, template interpolation, shared cache initialization,
 retained prefixes and deep-chain flatten/drop on a 64 KiB native stack.
 
-Ropes allocate a node per large concatenation and retain their children even
-after flattening, so this trades memory and small-string overhead for linear
-construction. This run does not quantify that memory tradeoff. First flatten
+Ropes allocate a node per large concatenation. Flattened operands are reused
+as flat leaves in later concatenations, releasing their obsolete graphs when
+no caller retains them. The requested rope still retains its own children
+after flattening. A regression test bounds reachable code-unit storage by
+2N when every growing prefix is read; this run does not quantify allocator
+overhead. First flatten
 and final release remain synchronous; neither is an instruction-budgeted
 latency measurement. No comparison with another JavaScript engine was made.

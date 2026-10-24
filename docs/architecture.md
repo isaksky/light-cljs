@@ -1405,8 +1405,8 @@ Design: `design.md` §§4, 11.
 - **Flat buffers and ropes.** Every string uses the 16-bit form.
   Concatenation up to 32 units copies into a flat body; larger results link
   the two operands in O(1), with a cached length (clj-quickjs-146). Empty
-  operands return the other's body. `OnceLock<Vec<u16>>` caches the first
-  contiguous read, comparison or hash. The cache changes no observable
+  operands return the other's body. `OnceLock<JsString>` caches a flat leaf
+  at the first contiguous read, comparison or hash. The cache changes no observable
   content and is shared safely across readers. A Latin-1 form remains a
   possible private representation. The length limit is QuickJS's
   `JS_STRING_LEN_MAX`, 2^30 - 1 code units; a longer concatenation fails
@@ -4404,8 +4404,8 @@ is exposed on `Symbol`.
 ## Rope strings (clj-quickjs-146)
 
 `JsString` keeps the existing coarse immutable Arc storage boundary. Each
-body stores length, an optional pair of immutable string children, and a
-`OnceLock<Vec<u16>>` flat cache. There are no heap edges or new publication
+body stores length, either flat units or immutable string children, and a
+`OnceLock<JsString>` cache holding only a flat leaf. There are no heap edges or new publication
 categories. Above 32 units, concat allocates one node and retains its two
 operands, with no prefix copying or balancing. Appending/prepending N single
 units copies only 527 units during short concatenations (2 + ... + 32),
@@ -4420,8 +4420,11 @@ and caches only the requested string. Comparison, hashing (including map and
 property keys), search, formatting and index access all use this entry point.
 Length and out-of-bounds index checks do not flatten. Concurrent first readers
 initialize one cache. Retained prefixes remain immutable and independently
-usable; flattening never changes children. Both the flat cache and children
-are retained, trading memory for simple shared lifetimes.
+usable; flattening never changes children. The requested body retains its
+cache and children, but subsequent concatenation reuses the cached flat leaf
+instead of retaining that body's obsolete graph. Thus reading every growing
+prefix does not keep every previous prefix buffer alive. A regression test
+asserts that both append/read and prepend/read loops retain at most 2N units.
 
 Rope depth is intentionally unbounded. Traversal and destruction are iterative:
 `Body::drop` removes children and drains uniquely owned bodies through

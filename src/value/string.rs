@@ -47,7 +47,7 @@
 //!
 //! Concatenations up to 32 units copy into a flat buffer. Larger results
 //! retain their operands in O(1), with a cached length. The first contiguous
-//! read flattens iteratively into a `OnceLock`; subsequent reads share it.
+//! read flattens iteratively into a cached flat string; subsequent reads share it.
 //! Both traversal and destruction are iterative, even for deep append/prepend
 //! chains. Flattening is synchronous O(length), not instruction-budgeted.
 
@@ -82,16 +82,28 @@ struct Body {
     // Keeping the allocation as a Vec lets the incremental builder transfer
     // ownership without a potentially linear shrink/copy at its final step.
     len: usize,
-    flat: OnceLock<Vec<u16>>,
-    children: Option<(JsString, JsString)>,
+    flat: OnceLock<JsString>,
+    storage: Storage,
+}
+
+enum Storage {
+    Flat(Vec<u16>),
+    Rope(Option<(JsString, JsString)>),
 }
 
 impl Body {
     fn flat(units: Vec<u16>) -> Self {
         Self {
             len: units.len(),
-            flat: OnceLock::from(units),
-            children: None,
+            flat: OnceLock::new(),
+            storage: Storage::Flat(units),
+        }
+    }
+
+    fn take_children(&mut self) -> Option<(JsString, JsString)> {
+        match &mut self.storage {
+            Storage::Flat(_) => None,
+            Storage::Rope(children) => children.take(),
         }
     }
 }
@@ -103,13 +115,13 @@ impl Drop for Body {
         // into_inner also avoids a recursive last-release race when several
         // threads release shared subtrees concurrently.
         let mut pending = Vec::new();
-        if let Some((left, right)) = self.children.take() {
+        if let Some((left, right)) = self.take_children() {
             pending.push(left);
             pending.push(right);
         }
         while let Some(child) = pending.pop() {
             if let Some(mut body) = Arc::into_inner(child.0)
-                && let Some((left, right)) = body.children.take()
+                && let Some((left, right)) = body.take_children()
             {
                 pending.push(left);
                 pending.push(right);
@@ -155,21 +167,40 @@ impl JsString {
     /// The code units, in order. A rope flattens once, in O(length) time
     /// using an explicit traversal stack. Concurrent readers share one cache.
     pub fn code_units(&self) -> &[u16] {
-        self.0.flat.get_or_init(|| {
+        if let Storage::Flat(units) = &self.0.storage {
+            return units;
+        }
+        let flat = self.0.flat.get_or_init(|| {
             let mut units = Vec::with_capacity(self.len());
             let mut pending = vec![self.0.as_ref()];
             while let Some(body) = pending.pop() {
-                if let Some(flat) = body.flat.get() {
-                    units.extend_from_slice(flat);
-                } else if let Some((left, right)) = &body.children {
-                    pending.push(right.0.as_ref());
-                    pending.push(left.0.as_ref());
+                match &body.storage {
+                    Storage::Flat(flat) => units.extend_from_slice(flat),
+                    Storage::Rope(Some((left, right))) => {
+                        if let Some(flat) = body.flat.get() {
+                            pending.push(flat.0.as_ref());
+                        } else {
+                            pending.push(right.0.as_ref());
+                            pending.push(left.0.as_ref());
+                        }
+                    }
+                    Storage::Rope(None) => unreachable!("only a dropping body loses children"),
                 }
             }
             debug_assert_eq!(units.len(), self.len());
             record_copies(units.len());
-            units
-        })
+            Self::from_owned_code_units(units).expect("checked string length")
+        });
+        let Storage::Flat(units) = &flat.0.storage else {
+            unreachable!("the cache always holds a flat leaf")
+        };
+        units
+    }
+
+    /// Reuse an existing flat leaf without retaining a flattened rope's
+    /// obsolete ancestors and their caches. No code units are copied.
+    fn concat_operand(&self) -> JsString {
+        self.0.flat.get().unwrap_or(self).clone()
     }
 
     /// The contents as Rust text; a lone surrogate becomes U+FFFD.
@@ -195,7 +226,7 @@ impl JsString {
             return Some(JsString(Arc::new(Body {
                 len,
                 flat: OnceLock::new(),
-                children: Some((self.clone(), other.clone())),
+                storage: Storage::Rope(Some((self.concat_operand(), other.concat_operand()))),
             })));
         }
         let mut units = Vec::with_capacity(len);
@@ -1268,6 +1299,65 @@ fn round_integer(mant: u64, dropped: u64, sticky: bool) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn appending_after_index_reads_releases_cached_prefixes() {
+        fn reachable_units(text: &JsString) -> usize {
+            let mut pending = vec![text.0.as_ref()];
+            let mut seen = std::collections::HashSet::new();
+            let mut units = 0;
+            while let Some(body) = pending.pop() {
+                if !seen.insert(std::ptr::from_ref(body)) {
+                    continue;
+                }
+                if let Some(flat) = body.flat.get() {
+                    pending.push(flat.0.as_ref());
+                }
+                match &body.storage {
+                    Storage::Flat(flat) => units += flat.len(),
+                    Storage::Rope(Some((left, right))) => {
+                        pending.push(left.0.as_ref());
+                        pending.push(right.0.as_ref());
+                    }
+                    Storage::Rope(None) => unreachable!(),
+                }
+            }
+            units
+        }
+        for prepend in [false, true] {
+            let mut text = JsString::from("");
+            for _ in 0..5000 {
+                let unit = JsString::from("x");
+                text = if prepend {
+                    unit.concat(&text)
+                } else {
+                    text.concat(&unit)
+                }
+                .unwrap();
+                assert_eq!(text.code_units()[0], b'x' as u16);
+            }
+            assert!(
+                reachable_units(&text) <= 2 * text.len(),
+                "obsolete cached prefixes remain reachable"
+            );
+        }
+    }
+
+    #[test]
+    fn concat_assembly_resumes_across_part_batches() {
+        let parts = (0..600)
+            .map(|i| (JsString::from_code_units(vec![i]).unwrap(), 0, 1))
+            .collect();
+        let mut build = StringBuild::concatenation(parts).unwrap();
+        assert!(build.advance(256).is_none());
+        assert_eq!(build.concatenated.as_ref().unwrap().len(), 256);
+        assert_eq!(build.parts.len(), 344);
+        assert!(build.advance(256).is_none());
+        assert_eq!(build.concatenated.as_ref().unwrap().len(), 512);
+        assert_eq!(build.parts.len(), 88);
+        let result = build.advance(256).unwrap();
+        assert_eq!(result.code_units(), (0..600).collect::<Vec<u16>>());
+    }
+
     #[test]
     fn deep_ropes_flatten_and_drop_on_a_small_stack() {
         std::thread::Builder::new()

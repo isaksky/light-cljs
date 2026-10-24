@@ -1730,6 +1730,8 @@ fn string_extract_combine_long_results_yield_collect_and_migrate() {
         format!("'{}'.concat('{}z')", "a".repeat(4096), "a".repeat(4095)),
         "'z'.padStart(8192, 'a')".to_string(),
         "''.padEnd(8192, 'a').slice(0, -1).concat('z')".to_string(),
+        // 601 whole parts cross the native assembly boundary twice.
+        format!("''.concat({}'{}z')", "'a',".repeat(599), "a".repeat(7592)),
     ]
     .into_iter()
     .enumerate()
@@ -1738,7 +1740,9 @@ fn string_extract_combine_long_results_yield_collect_and_migrate() {
         let mut task = rt.spawn(&exe(&expression), &[]).unwrap();
         let mut yields = 0;
         let mut complete = false;
-        for _ in 0..400 {
+        // The new many-argument fixture also budgets its 600 operand pushes
+        // and conversions. Keep the existing fixtures' bounds unchanged.
+        for _ in 0..if i == 5 { 4000 } else { 400 } {
             let (next, outcome) = std::thread::spawn(move || {
                 let outcome = task
                     .run_with(Budget::instructions(1), &mut NoEffects)
