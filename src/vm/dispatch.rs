@@ -324,19 +324,23 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
 /// `None` stands for its `undefined` result, a NaN operand. Two strings
 /// compare lexicographically by UTF-16 code units (QuickJS
 /// `js_string_compare`), a proper prefix being smaller; any other pair
-/// compares the ToNumber of both. native::Convert has already converted
-/// objects in source order with hint number, before operands are swapped.
+/// compares numeric values exactly, preserving BigInts. BigInt/String pairs
+/// fail explicitly pending StringToBigInt. native::Convert has already
+/// converted objects in source order with hint number, before operands swap.
 fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
-    if matches!(x, Value::BigInt(_)) || matches!(y, Value::BigInt(_)) {
-        return Err(Fault::Unsupported(
-            "BigInt comparisons are not supported".into(),
-        ));
-    }
     Ok(match (x, y) {
         (Value::Object(_), _) | (_, Value::Object(_)) => {
             return Err(Fault::Internal("object reached primitive comparison"));
         }
         (Value::String(s), Value::String(t)) => Some(s < t),
+        (Value::BigInt(a), Value::BigInt(b)) => Some(a < b),
+        (Value::BigInt(_), Value::String(_)) | (Value::String(_), Value::BigInt(_)) => {
+            return Err(Fault::Unsupported(
+                "BigInt/String comparisons need StringToBigInt".into(),
+            ));
+        }
+        (Value::BigInt(a), b) => a.cmp_number(to_number(b)?).map(|order| order.is_lt()),
+        (a, Value::BigInt(b)) => b.cmp_number(to_number(a)?).map(|order| order.is_gt()),
         _ => {
             let (n, m) = (to_number(x)?, to_number(y)?);
             n.partial_cmp(&m).map(|order| order.is_lt())
@@ -389,13 +393,10 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
 /// that is not numeric equals no number (its value is NaN). An object
 /// compared with a non-nullish primitive has already passed through
 /// native::Convert with hint default.
+/// BigInt/Number pairs compare exactly, including Boolean-to-Number conversion;
+/// BigInt/String pairs fail explicitly until StringToBigInt lands.
 fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
-    if matches!(a, BigInt(_)) || matches!(b, BigInt(_)) {
-        return Err(Fault::Unsupported(
-            "BigInt loose equality is not supported".into(),
-        ));
-    }
     Ok(match (a, b) {
         (Undefined | Null, Undefined | Null) => true,
         (Undefined | Null, _) | (_, Undefined | Null) => false,
@@ -403,7 +404,19 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
         | (Number(_), Number(_))
         | (Bool(_), Bool(_))
         | (String(_), String(_))
+        | (BigInt(_), BigInt(_))
         | (Symbol(_), Symbol(_)) => a.strict_equals(b),
+        (BigInt(n), Number(_) | Bool(_)) => n
+            .cmp_number(to_number(b)?)
+            .is_some_and(|order| order.is_eq()),
+        (Number(_) | Bool(_), BigInt(n)) => n
+            .cmp_number(to_number(a)?)
+            .is_some_and(|order| order.is_eq()),
+        (BigInt(_), String(_)) | (String(_), BigInt(_)) => {
+            return Err(Fault::Unsupported(
+                "BigInt/String comparisons need StringToBigInt".into(),
+            ));
+        }
         (Number(_) | Bool(_) | String(_), Number(_) | Bool(_) | String(_)) => {
             to_number(a)? == to_number(b)?
         }
@@ -411,7 +424,6 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
             return Err(Fault::Internal("unconverted object reached loose equality"));
         }
         (Symbol(_), _) | (_, Symbol(_)) => false,
-        (BigInt(_), _) | (_, BigInt(_)) => unreachable!("BigInt rejected above"),
     })
 }
 

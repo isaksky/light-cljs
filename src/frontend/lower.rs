@@ -3510,7 +3510,7 @@ impl<'s> Lowerer<'s> {
             }
             BinaryOp::Sub => Opcode::Sub,
             // Preserve an unknown operand's type for IsLessThan, including
-            // explicit rejection of BigInt until its comparisons land.
+            // exact comparison of BigInt with Number.
             BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
                 if !left_number || !right_number =>
             {

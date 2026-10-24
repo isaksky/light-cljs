@@ -2754,8 +2754,8 @@ survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
 `Scope::bigint`, returning immutable `JsBigInt` with decimal `Display` and
 sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
 with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
-TypeError. BigInt operators and JavaScript conversions remain deferred to
-clj-quickjs-197–204 and fail explicitly; JSON serialization throws TypeError.
+TypeError. Arithmetic/bitwise BigInt operators and JavaScript conversions remain
+deferred to clj-quickjs-198–204 and fail explicitly; JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
 `cargo test --test js_source bigint -- --test-threads=3`.
@@ -2771,3 +2771,14 @@ and publication through atoms is rejected. Deferred: custom slice species,
 resizable buffers, typed-array views and SharedArrayBuffer.
 Object-valued ArrayBuffer constructor options fail explicitly until resizable
 buffers are supported; primitive options are ignored.
+
+### BigInt comparisons (clj-quickjs-197)
+
+Relational and loose equality operators compare BigInts with BigInts and
+Numbers by exact mathematical value, including fractions, NaN, infinities
+and values beyond 2^53. Booleans convert to Numbers; null/undefined never
+loosely equal a BigInt. Object conversion uses the existing resumable VM
+frames. BigInt/String comparisons explicitly return UnsupportedOperand until
+StringToBigInt (clj-quickjs-201) lands. Strict equality keeps numeric types
+distinct. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
+and `cargo test --lib value::bigint:: -- --test-threads=3`.

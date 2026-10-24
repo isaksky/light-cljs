@@ -171,8 +171,248 @@ fn bigint_values_publish_and_survive_collection() {
     }
 }
 
+/// Synthetic fixture, not light-cljs output. Comparison rows adapt QuickJS
+/// tests/test_bigint.js::test_less/test_eq/test_bigint3 at revision
+/// 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_relational_and_loose_equality() {
+    for src in [
+        "2n < 3n",
+        "!(3n < 2n)",
+        "2n <= 3n",
+        "!(3n <= 2n)",
+        "3n > 2n",
+        "!(2n > 3n)",
+        "3n >= 2n",
+        "!(2n >= 3n)",
+        "2n != 3n",
+        "!(2n == 3n)",
+        "3n == 3n",
+        "3n == 3n",
+        "!(3n != 3n)",
+        "!(3n != 3n)",
+        "3n <= 3n",
+        "3n <= 3n",
+        "!(3n < 3n)",
+        "3n >= 3n",
+        "3n >= 3n",
+        "!(3n > 3n)",
+        "2 < 3n",
+        "!(3n < 2)",
+        "2 <= 3n",
+        "!(3n <= 2)",
+        "3n > 2",
+        "!(2 > 3n)",
+        "3n >= 2",
+        "!(2 >= 3n)",
+        "2 != 3n",
+        "!(2 == 3n)",
+        "3 == 3n",
+        "3n == 3",
+        "!(3 != 3n)",
+        "!(3n != 3)",
+        "3 <= 3n",
+        "3n <= 3",
+        "!(3 < 3n)",
+        "3 >= 3n",
+        "3n >= 3",
+        "!(3 > 3n)",
+        "2.1 < 3n",
+        "!(3n < 2.1)",
+        "2.1 <= 3n",
+        "!(3n <= 2.1)",
+        "3n > 2.1",
+        "!(2.1 > 3n)",
+        "3n >= 2.1",
+        "!(2.1 >= 3n)",
+        "2.1 != 3n",
+        "!(2.1 == 3n)",
+        "2 == 2n",
+        "2n == 2",
+        "!(2 != 2n)",
+        "!(2n != 2)",
+        "2 <= 2n",
+        "2n <= 2",
+        "!(2 < 2n)",
+        "2 >= 2n",
+        "2n >= 2",
+        "!(2 > 2n)",
+        "100000000000000000000n == 1e20",
+        "!(100000000000000000001n == 1e20)",
+        "!(9007199254740993n == 9007199254740992)",
+        "9007199254740993n > 9007199254740992",
+        "0n == -0",
+        "!(1n < NaN)",
+        "!(1n > NaN)",
+        "!(1n == NaN)",
+        "1000000000000000000000000n < Infinity",
+        "1000000000000000000000000n > -Infinity",
+        "1000000000000000000000000n > 1e24",
+        "999999999999999983222784n == 1e24",
+        "1n == true",
+        "!(0n == null)",
+        "1n != undefined",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Signed BigInts arrive through
+/// the host API while unary BigInt minus remains a separate pellet.
+#[test]
+fn bigint_signed_coercion_and_unordered_comparisons() {
+    for src in [
+        "2.1 > 2n && 2n < 2.1 && 2.1 != 2n",
+        "1n == true && true == 1n && false == 0n && 0n == false",
+        "0n != true && true != 0n && 1n != false && false != 1n",
+        "0n > -0.5 && -0.5 < 0n && 0n < 0.5 && 0.5 > 0n",
+        "0n < 5e-324 && 0n > -5e-324 && 0n != 5e-324",
+        "1n < true === false && 0n < true && false < 1n",
+        "0n >= null && null <= 0n && !(0n == null) && !(null == 0n)",
+        "1n != undefined && undefined != 1n && 1n != Symbol() && Symbol() != 1n",
+        "0x10000000000000000n > 0xffffffffffffffffn && 0x8000000000000000n > 0x7fffffffffffffffn",
+        "0xffffffffffffffffn == 18446744073709551615n",
+        "({valueOf() { return 3n; }}) == 3n && 3n == ({valueOf() { return 3; }})",
+        "({valueOf() { return 2n; }}) < 3 && 2 < ({valueOf() { return 3n; }})",
+        "let o = {valueOf() { throw 42; }}; let caught = false; try { 1n == o; } catch (e) { caught = e === 42; } caught",
+        "let o = {valueOf() { throw 42; }}; let caught = false; try { o < 1n; } catch (e) { caught = e === 42; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for other in ["NaN", "undefined"] {
+        for op in ["<", ">", "<=", ">=", "=="] {
+            for (a, b) in [("1n", other), (other, "1n")] {
+                let src = format!("{a} {op} {b}");
+                assert_eq!(eval(&src), ValueView::Bool(false), "{src}");
+            }
+        }
+    }
+    for op in ["<", ">", "<=", ">="] {
+        for (a, b) in [("1n", "Symbol()"), ("Symbol()", "1n")] {
+            let src = format!("{a} {op} {b}");
+            assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+        }
+    }
+    let rt = Runtime::new();
+    for (limbs, checks) in [
+        (
+            vec![2],
+            "n > -2.1 && n < -1.9 && n == -2 && -2 == n && n < 0n && n < 0",
+        ),
+        (
+            vec![1, 0, 1],
+            "n < -18446744073709551616 && n != -18446744073709551616 && n < 0n && n > -Infinity",
+        ),
+        (
+            vec![0, 0x80000000],
+            "n == -9223372036854775808 && n < 0n && n <= -9223372036854775808",
+        ),
+    ] {
+        let n = clj_quickjs::JsBigInt::from_sign_magnitude(true, limbs).unwrap();
+        let root = rt.root(Primitive::BigInt(n));
+        let script = compile_function(&format!("function f(n) {{ return {checks}; }}")).unwrap();
+        let result = rt.spawn(&script, &[&root]).unwrap().run().unwrap();
+        assert!(
+            matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{checks}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Both objects convert in source
+/// order before relational operand swapping; suspended values retain limbs.
+#[test]
+fn bigint_comparisons_wait_yield_collect_and_migrate() {
+    for expression in [
+        "a < b",
+        "b > a",
+        "a <= b",
+        "b >= a",
+        "a == 9007199254740993n",
+        "9007199254740993n == a",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            r"
+            let log = '';
+            let a = {{valueOf() {{ log += 'a'; __rt.need(1971, 1); return 9007199254740993n; }}}};
+            let b = {{valueOf() {{ log += 'b'; __rt.need(1972, 1); return 9007199254740994; }}}};
+            let result = {expression}; result && log === '{}'
+        ",
+            if expression.contains('b') {
+                if expression.starts_with('b') {
+                    "ba"
+                } else {
+                    "ab"
+                }
+            } else {
+                "a"
+            }
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waited = 0;
+        let expected_waits = if expression.contains('b') { 2 } else { 1 };
+        let mut completed = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert!(waited <= expected_waits, "{expression}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Null);
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waited, expected_waits);
+                    completed = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(completed, "{expression}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// arithmetic, conversions and loose/relational comparisons.
+/// arithmetic, conversions and comparison with strings.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
@@ -191,10 +431,12 @@ fn bigint_deferred_operations_fail_explicitly() {
         "-1n",
         "+1n",
         "~1n",
-        "1n < 2n",
-        "1n < 2",
-        "1 < 2n",
-        "1n == 1n",
+        "1n < '2'",
+        "'1' < 2n",
+        "1n == '1'",
+        "'1' == 1n",
+        "1n <= {valueOf() { return '2'; }}",
+        "({valueOf() { return '1'; }}) == 1n",
         "String(1n)",
         "let x = 1n; x++",
         "({})[1n]",

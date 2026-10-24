@@ -264,15 +264,18 @@
 //! UTF-16 code units (a proper prefix is smaller; the `Ord` of
 //! [`JsString`](crate::value::JsString)), so `"10" < "9"` and
 //! `"\u{10000}" < "\u{FFFF}"` hold. Any other pair of primitives converts
-//! with ToNumber (strings by StringToNumber) and compares as numbers, where
+//! numerically (strings by StringToNumber) and compares exactly, preserving
+//! BigInts (clj-quickjs-197); BigInt/String pairs explicitly require the
+//! deferred StringToBigInt conversion. For the supported numeric pairs,
 //! a NaN makes all four false. `CompareGt` is IsLessThan with the operands
 //! swapped; `CompareLe` and `CompareGe` negate `CompareGt` and `CompareLt`
 //! except that NaN still gives false. Objects first use resumable
 //! ToPrimitive with hint number, left before right (before any swap).
-//! Conversion steps are poll points; the primitive path allocates nothing.
-//! The compiler emits them when neither operand is statically a number;
-//! with a static number on either side two strings are impossible, so it
-//! keeps `ToNumber`/`ToNumberPair` and the number-only `Lt`, `Gt`, `Le`, `Ge`.
+//! Conversion steps are poll points; primitive comparison allocates no heap
+//! object (mixed BigInt/Number comparison uses bounded temporary limb storage).
+//! The compiler emits them unless both operands are statically Numbers;
+//! unknown operands may be BigInts. Two static Numbers use the number-only
+//! `Lt`, `Gt`, `Le`, `Ge`.
 //!
 //! Opcode `0x4E`, `Typeof`, is JavaScript `typeof` (clj-quickjs-69; ECMAScript
 //! TypeofOperator, QuickJS `js_operator_typeof`, `research/quickjs/quickjs.c`,

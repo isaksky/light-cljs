@@ -366,3 +366,15 @@ The arbitrary-precision literal examples use the upstream mathematical
 constants; Rust code and synthetic source test bodies were written afresh,
 without copying QuickJS code or test bodies. The 1 Mbit size policy follows
 the user decision recorded in `docs/architecture.md`.
+
+## BigInt comparisons (clj-quickjs-197)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_compare_bigint`,
+`js_relational_slow`, `js_eq_slow`) at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Rust comparison code was written afresh. `bigint_relational_and_loose_equality`
+in `tests/js_source.rs` adapts the ten-comparison matrices from
+`research/quickjs/tests/test_bigint.js::test_less` and `test_eq` and the
+large-number equality cases of `test_bigint3`; its full QuickJS copyright
+and MIT permission notice is retained on that test. Additional signed,
+coercion and suspension fixtures are synthetic, not light-cljs output.

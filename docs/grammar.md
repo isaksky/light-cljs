@@ -3165,7 +3165,7 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 BigInt primitive; `for-in` over it performs no iterations.
 
 Explicit gaps: BigInt arithmetic, unary minus/update, bitwise operations,
-relational/loose comparisons, `BigInt()`, JavaScript string/Number conversions,
+comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
 wrappers, literal property names and BigInt property keys remain assigned to
 later pellets. Available but deferred operators/conversions throw
 UnsupportedOperand naming BigInt; mixing BigInt and Number in arithmetic
@@ -3202,3 +3202,22 @@ Until resizable buffers are supported, an object-valued second constructor
 argument fails explicitly with `UnsupportedOperand` after length coercion;
 primitive options are ignored. `ArrayBuffer.length` is 1, `transfer.length` is 0,
 `slice.length` is 2, and both accessor functions have length 0.
+
+### BigInt comparisons (clj-quickjs-197)
+
+Lexical grammar: comparisons use the existing BigInt literals and operator tokens.
+Execution: `<`, `<=`, `>`, `>=`, `==` and `!=` compare BigInts by exact value.
+Mixed BigInt/Number comparisons preserve both mathematical values, including
+fractional Numbers: `2n < 2.1`, `2.1 < 3n`,
+`9007199254740993n > 9007199254740992`, and
+`100000000000000000001n != 1e20` are true. NaN makes all relational operators
+and `==` false; infinities are ordered beyond every BigInt. `0n == -0` is true.
+Booleans convert to Numbers; `1n == true` is true. Null/undefined equal no
+BigInt, while relational comparison converts them to 0/NaN. Symbols compare
+unequal and throw TypeError for relational operators. Object operands use
+resumable ToPrimitive (number hint for relational operators, default for
+equality), retaining source conversion order and exceptions.
+
+Explicit gaps: BigInt/String comparisons throw UnsupportedOperand pending
+StringToBigInt (clj-quickjs-201), including strings returned by ToPrimitive.
+Strict equality continues to distinguish Number and BigInt.

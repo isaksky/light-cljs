@@ -4523,8 +4523,8 @@ keys use canonical integer equality/hashing, distinct from Number keys.
 
 Strict equality compares mathematical integer values; ToBoolean is false only
 for zero; `typeof` and diagnostic type names are `bigint`. Mixed BigInt/Number
-arithmetic throws TypeError. Other deferred numeric operators, loose and
-relational equality, ToString, wrappers and property-key conversion fail
+arithmetic throws TypeError. Other deferred numeric operators, comparisons
+with strings, ToString, wrappers and property-key conversion fail
 explicitly with UnsupportedOperand naming BigInt. JSON serialization rejects
 BigInt with TypeError. `Rooted::bigint` and `Scope::bigint` return an immutable
 root-free `JsBigInt`, inspectable as decimal (`Display`) or sign/magnitude.
@@ -4589,3 +4589,26 @@ to buffer ordinary stores, including non-enumerable properties. A per-thread,
 test-only reservation hook forces `try_reserve_exact` to return a capacity error
 without exhausting memory, covering RangeError mapping and preservation of
 source bytes, descriptors, length and attached state on failed transfers.
+
+## Exact BigInt comparisons (clj-quickjs-197)
+
+`JsBigInt::Ord` compares signs, magnitude lengths, then high limbs first,
+borrowing large bodies and using two scratch limbs for inline values. It
+preserves the canonical construction boundary and agrees with value equality.
+`cmp_number` decodes the finite f64 significand and binary exponent, constructs
+its exact truncated integer (at most 1024 bits), and compares as integers. A
+fractional remainder breaks integer ties toward the Number's sign. It never
+rounds a BigInt to f64; subnormals, negative zero, NaN and infinities retain
+their mathematical comparison rules. Temporary storage is bounded by the
+Number format; the existing one-instruction leaf cost and 1 Mbit cap remain.
+
+The primitive relational and loose-equality paths use these comparisons,
+including Boolean-to-Number conversion. Nullish loose equality and Symbol
+inequality retain their existing rules; relational Symbol conversion throws
+TypeError. Existing native conversion frames handle object operands before
+the leaf comparison, with number/default hints and source-order conversion.
+They retain BigInt primitives across yield, dependency wait, GC and migration;
+no new heap edges or continuation kind are introduced. BigInt/String pairs
+explicitly fail with UnsupportedOperand until StringToBigInt lands in
+clj-quickjs-201. Tests cover all acceptance rows, signed/limb boundaries,
+every normal integer power of two, the largest f64, and resumable coercion.

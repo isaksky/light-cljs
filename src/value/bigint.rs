@@ -3,6 +3,7 @@
 //! through normalization, so each mathematical value has exactly one form.
 //! In-tree arithmetic uses little-endian base-2^32 limbs; no external crate.
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
 
@@ -44,7 +45,112 @@ impl From<i64> for JsBigInt {
     }
 }
 
+impl Ord for JsBigInt {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if let (Repr::Small(a), Repr::Small(b)) = (&self.0, &other.0) {
+            return a.cmp(b);
+        }
+        let (mut a, mut b) = ([0; 2], [0; 2]);
+        let (negative_a, a) = self.magnitude(&mut a);
+        let (negative_b, b) = other.magnitude(&mut b);
+        match negative_b.cmp(&negative_a) {
+            Ordering::Equal => {
+                let order = a
+                    .len()
+                    .cmp(&b.len())
+                    .then_with(|| a.iter().rev().cmp(b.iter().rev()));
+                if negative_a { order.reverse() } else { order }
+            }
+            order => order,
+        }
+    }
+}
+
+impl PartialOrd for JsBigInt {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl JsBigInt {
+    /// Borrow canonical limbs, using caller-owned scratch space for inline values.
+    fn magnitude<'a>(&'a self, small: &'a mut [u32; 2]) -> (bool, &'a [u32]) {
+        match &self.0 {
+            Repr::Small(value) => {
+                let magnitude = value.unsigned_abs();
+                *small = [magnitude as u32, (magnitude >> 32) as u32];
+                let len = if small[1] != 0 {
+                    2
+                } else {
+                    usize::from(small[0] != 0)
+                };
+                (*value < 0, &small[..len])
+            }
+            Repr::Large { negative, limbs } => (*negative, limbs),
+        }
+    }
+
+    /// Compare by exact mathematical value, without rounding this integer to
+    /// f64. NaN is unordered; infinities lie beyond every finite integer.
+    pub fn cmp_number(&self, number: f64) -> Option<Ordering> {
+        if number.is_nan() {
+            return None;
+        }
+        if number.is_infinite() {
+            return Some(if number.is_sign_negative() {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            });
+        }
+        // Decode |number| = significand * 2^exponent, including subnormals.
+        // The integer part needs at most 1024 bits, far below our BigInt cap.
+        let bits = number.to_bits();
+        let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
+        let mut significand = bits & ((1u64 << 52) - 1);
+        if biased_exponent != 0 {
+            significand |= 1u64 << 52;
+        }
+        let exponent = biased_exponent.max(1) - 1023 - 52;
+        let (limbs, fractional) = if exponent < 0 {
+            let shift = (-exponent) as u32;
+            let integer = significand.checked_shr(shift).unwrap_or(0);
+            (
+                vec![integer as u32, (integer >> 32) as u32],
+                if shift >= 64 {
+                    significand != 0
+                } else {
+                    significand & ((1u64 << shift) - 1) != 0
+                },
+            )
+        } else {
+            let words = exponent as usize / 32;
+            let shift = exponent as u32 % 32;
+            let mut limbs = vec![0; words + 3];
+            for (i, limb) in [significand as u32, (significand >> 32) as u32]
+                .into_iter()
+                .enumerate()
+            {
+                let shifted = (limb as u64) << shift;
+                limbs[words + i] |= shifted as u32;
+                limbs[words + i + 1] |= (shifted >> 32) as u32;
+            }
+            (limbs, false)
+        };
+        let integer = Self::from_sign_magnitude(number.is_sign_negative(), limbs)
+            .expect("finite f64 integer part fits the BigInt cap");
+        let order = self.cmp(&integer);
+        Some(if order.is_eq() && fractional {
+            if number.is_sign_negative() {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        } else {
+            order
+        })
+    }
+
     /// Construct from little-endian unsigned limbs and a sign. Leading zero
     /// limbs and negative zero are normalized; values fitting i64 are inline.
     /// Every later arithmetic operation must use this checked boundary.
@@ -255,5 +361,86 @@ mod tests {
             JsBigInt::from_sign_magnitude(false, vec![1; MAX_BIGINT_BITS / 32 + 1]),
             Err(BigIntError::TooLarge)
         );
+    }
+
+    #[test]
+    fn signed_order_and_exact_number_comparison() {
+        let mut ordered = Vec::new();
+        for (negative, limbs) in [
+            (true, vec![0, 0, 1]),
+            (true, vec![1, 0x80000000]),
+            (true, vec![0, 0x80000000]),
+            (true, vec![1]),
+            (true, vec![0]),
+            (false, vec![1]),
+            (false, vec![u32::MAX, 0x7fffffff]),
+            (false, vec![0, 0x80000000]),
+            (false, vec![0, 0, 1]),
+        ] {
+            ordered.push(JsBigInt::from_sign_magnitude(negative, limbs).unwrap());
+        }
+        for (i, a) in ordered.iter().enumerate() {
+            for (j, b) in ordered.iter().enumerate() {
+                assert_eq!(a.cmp(b), i.cmp(&j), "{a}, {b}");
+            }
+            assert_eq!(a.cmp_number(f64::NAN), None);
+            assert_eq!(a.cmp_number(f64::INFINITY), Some(Ordering::Less));
+            assert_eq!(a.cmp_number(f64::NEG_INFINITY), Some(Ordering::Greater));
+        }
+        for (integer, number, expected) in [
+            (0, -0.0, Ordering::Equal),
+            (0, f64::from_bits(1), Ordering::Less),
+            (0, -f64::from_bits(1), Ordering::Greater),
+            (0, f64::MIN_POSITIVE, Ordering::Less),
+            (0, -f64::MIN_POSITIVE, Ordering::Greater),
+            (0, 0.5, Ordering::Less),
+            (0, -0.5, Ordering::Greater),
+            (2, 2.1, Ordering::Less),
+            (3, 2.1, Ordering::Greater),
+            (-2, -2.1, Ordering::Greater),
+            (-3, -2.1, Ordering::Less),
+            (i64::MIN, -9223372036854775808.0, Ordering::Equal),
+            (i64::MAX, 9223372036854775808.0, Ordering::Less),
+        ] {
+            assert_eq!(JsBigInt::from(integer).cmp_number(number), Some(expected));
+        }
+        // Every normal power of two at or above 1, and its neighbouring
+        // integers, exercise all shifts and limb alignments in f64 decoding.
+        for exponent in 0..=1023 {
+            let mut limbs = vec![0; exponent / 32 + 1];
+            limbs[exponent / 32] = 1 << (exponent % 32);
+            let power = JsBigInt::from_sign_magnitude(false, limbs.clone()).unwrap();
+            let number = f64::from_bits(((exponent + 1023) as u64) << 52);
+            assert_eq!(power.cmp_number(number), Some(Ordering::Equal));
+            let negative = JsBigInt::from_sign_magnitude(true, limbs.clone()).unwrap();
+            assert_eq!(negative.cmp_number(-number), Some(Ordering::Equal));
+            // 2^exponent - 1 and 2^exponent + 1, without BigInt arithmetic.
+            limbs[exponent / 32] -= 1;
+            for limb in &mut limbs[..exponent / 32] {
+                *limb = u32::MAX;
+            }
+            let below = JsBigInt::from_sign_magnitude(false, limbs).unwrap();
+            assert_eq!(below.cmp_number(number), Some(Ordering::Less));
+            let (_, mut above) = power.to_sign_magnitude();
+            above[0] |= 1;
+            if exponent == 0 {
+                above[0] = 2;
+            }
+            let above = JsBigInt::from_sign_magnitude(false, above).unwrap();
+            assert_eq!(above.cmp_number(number), Some(Ordering::Greater));
+        }
+        // The largest finite double is (2^53 - 1) * 2^971.
+        let mut max_limbs = vec![0; 32];
+        max_limbs[30] = 0xfffff800;
+        max_limbs[31] = u32::MAX;
+        let max = JsBigInt::from_sign_magnitude(false, max_limbs.clone()).unwrap();
+        assert_eq!(max.cmp_number(f64::MAX), Some(Ordering::Equal));
+        max_limbs[0] = 1;
+        let above = JsBigInt::from_sign_magnitude(false, max_limbs).unwrap();
+        assert_eq!(above.cmp_number(f64::MAX), Some(Ordering::Greater));
+        let cap =
+            JsBigInt::from_sign_magnitude(false, vec![u32::MAX; MAX_BIGINT_BITS / 32]).unwrap();
+        assert_eq!(cap.cmp_number(f64::MAX), Some(Ordering::Greater));
+        assert_eq!(cap.cmp_number(f64::INFINITY), Some(Ordering::Less));
     }
 }
