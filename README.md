@@ -2113,7 +2113,7 @@ Supported (`cargo test --test js_source instanceof_operator`,
 
 Deferred:
 
-- A function or error object as `v`, and a built-in method as `F`, fail with
+- A function or error object as `v` fails with
   `UnsupportedOperand` until `Function.prototype` (clj-quickjs-102) and `Error.prototype`
   (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet
   (clj-quickjs-72, the upstream corpus pellets). `Symbol.hasInstance` (symbols) and bound

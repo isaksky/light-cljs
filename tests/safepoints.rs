@@ -517,3 +517,40 @@ fn function_property_allocations_poll_for_collection() {
     let result = complete(worker.join().unwrap());
     assert_eq!(result.view(), ValueView::Number(10.0));
 }
+
+/// `instanceof` reads `f.prototype`, which may allocate a function's lazy
+/// prototype object (clj-quickjs-75), so it is a poll point: a collection
+/// requested just before it completes before the next host effect, with no
+/// other poll point between them, and the operands survive it. JavaScript
+/// source is a synthetic fixture, not light-cljs output.
+#[test]
+fn instanceof_lazy_prototype_allocation_polls_for_collection() {
+    let src = "let f = function () {}; let o = {}; let r = 0;\n\
+               __rt.effect(0, null); let b = o instanceof f; r = r + __rt.effect(1, null);\n\
+               b ? -1 : r + (Object.getPrototypeOf(new f()) === f.prototype ? 10 : 0)";
+    let exe = clj_quickjs::frontend::compile_script("polls", src).unwrap();
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let (at_tx, at_rx) = mpsc::channel();
+    let worker = {
+        let rt = rt.clone();
+        thread::spawn(move || {
+            let mut host = PollHost {
+                rt,
+                at_effect: at_tx,
+            };
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap()
+        })
+    };
+    at_rx.recv_timeout(HANDSHAKE).unwrap();
+    let requester = {
+        let rt = rt.clone();
+        thread::spawn(move || rt.request_collection().unwrap())
+    };
+    requester.join().unwrap();
+    assert_eq!(rt.heap_stats().collections, 1);
+    // Effect 1 saw the collection complete; `o` is not an instance; the
+    // prototype `instanceof` created is the one `new f()` uses.
+    let result = complete(worker.join().unwrap());
+    assert_eq!(result.view(), ValueView::Number(11.0));
+}

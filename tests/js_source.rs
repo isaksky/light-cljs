@@ -4848,9 +4848,14 @@ fn instanceof_operator() {
             "function F() {} F.prototype = 1; ({}) instanceof F",
             "operand 'prototype' property is not an object",
         ),
-        // Callable without a `prototype`: an arrow function.
+        // Callable without a `prototype`: an arrow function, a built-in
+        // method (it would inherit none from Function.prototype).
         (
             "const a = () => 1; ({}) instanceof a",
+            "operand 'prototype' property is not an object",
+        ),
+        (
+            "({}) instanceof Object.is",
             "operand 'prototype' property is not an object",
         ),
     ] {
@@ -4875,11 +4880,8 @@ fn instanceof_operator() {
     );
     // A function or error object on the chain needs Function.prototype
     // (clj-quickjs-102) or Error.prototype (clj-quickjs-230): an explicit
-    // UnsupportedOperand, as for Object.getPrototypeOf; so is reading the
-    // missing `prototype` of a built-in method, which would be looked up on
-    // Function.prototype.
+    // UnsupportedOperand, as for Object.getPrototypeOf.
     for src in [
-        "({}) instanceof Object.is",
         "function F() {} F instanceof Object",
         "let e; try { nope; } catch (x) { e = x; } e instanceof Object",
     ] {

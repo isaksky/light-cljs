@@ -2310,7 +2310,11 @@ Contract: `src/vm/prototype.rs` (`instance_of`), `src/vm/instr.rs`
 `@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance without
 bound functions (clj-quickjs-103): the right operand must be a callable
 object, a primitive left operand is `false`, `F.prototype` is read with
-the ordinary property walk and must be an object, and the chain is walked
+the ordinary property walk (for a built-in function, its own properties
+only: the walk would refuse to continue at the missing
+`Function.prototype`, but neither it nor `Object.prototype` has a
+`prototype` and both are immutable, so a miss is `undefined`) and must be
+an object, and the chain is walked
 with `[[GetPrototypeOf]]` (`prototype::get_prototype_of`), so its owner
 rules and its explicit `UnsupportedOperand` for functions and error
 objects apply unchanged and the walk follows clj-quickjs-102 and -230 when

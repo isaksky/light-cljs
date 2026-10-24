@@ -363,15 +363,28 @@ pub(crate) fn instance_of(
     if !matches!(target, Value::Object(_)) {
         return Err(invalid());
     }
-    match dispatch::callee(heap, target) {
-        Ok(_) => {}
+    let builtin = match dispatch::callee(heap, target) {
+        Ok(dispatch::Callee::Builtin(_)) => true,
+        Ok(dispatch::Callee::Code(..)) => false,
         Err(Fault::NotCallable(_)) => return Err(invalid()),
         Err(fault) => return Err(fault),
-    }
+    };
     let Value::Object(id) = *v else {
         return Ok(false);
     };
-    let prototype = property::get_field(heap, task, target, &JsString::from("prototype"))?;
+    let name = JsString::from("prototype");
+    let prototype = match *target {
+        // A built-in function without an own `prototype` (`Object.is`)
+        // would continue at `Function.prototype`, which the general walk
+        // refuses (`UnsupportedOperand`). Neither `Function.prototype` nor
+        // `Object.prototype` has a `prototype` property and both are
+        // immutable intrinsics, so the answer is `undefined`.
+        Value::Object(f) if builtin => {
+            property::get_own_property(heap, task, f, &property::Key::from_name(&name))?
+                .map_or(Value::Undefined, |p| p.value)
+        }
+        _ => property::get_field(heap, task, target, &name)?,
+    };
     let Value::Object(prototype) = prototype else {
         return Err(Fault::TypeError(
             "operand 'prototype' property is not an object".to_string(),
