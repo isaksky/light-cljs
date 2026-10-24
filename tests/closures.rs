@@ -515,6 +515,52 @@ fn another_task_cannot_use_a_closure_over_mutable_bindings() {
         }
     );
     assert_eq!(err.diagnostic().executable.as_ref(), "increment");
+
+    // Writes are refused too: `set` of f2 (`cell_set`), and a closure that
+    // initializes a binding it captured uninitialized (`cell_init`).
+    let mut asm = Assembler::new();
+    asm.function(&f2()).call(0).op(Opcode::Return);
+    let make_pair = asm.finish("make", 0, 0).unwrap();
+    let pair_owner = rt.spawn(&make_pair, &[]).unwrap();
+    let pair = complete(pair_owner.run().unwrap());
+    let mut asm = Assembler::new();
+    asm.captures(1)
+        .get_capture(0)
+        .constant(num(1.0))
+        .op(Opcode::CellInit)
+        .op(Opcode::Undefined)
+        .op(Opcode::Return);
+    let init = asm.finish("init", 0, 0).unwrap();
+    let mut asm = Assembler::new();
+    asm.op(Opcode::NewCell).function(&init).op(Opcode::Return);
+    let make_init = asm.finish("make", 0, 0).unwrap();
+    let init_owner = rt.spawn(&make_init, &[]).unwrap();
+    let init = complete(init_owner.run().unwrap());
+    // set(5) through the pair, or init().
+    let mut asm = Assembler::new();
+    asm.get_local(0)
+        .constant(num(0.0))
+        .op(Opcode::Nth)
+        .constant(num(5.0))
+        .call(1)
+        .op(Opcode::Return);
+    let call_set = asm.finish("call_set", 1, 1).unwrap();
+    for (exe, arg, owner, at) in [
+        (&call_set, &pair, &pair_owner, "set"),
+        (&call, &init, &init_owner, "init"),
+    ] {
+        let thief = rt.spawn(exe, &[arg]).unwrap();
+        let err = failed(thief.run().unwrap());
+        assert_eq!(
+            err.kind(),
+            VmErrorKind::ForeignBinding {
+                owner: owner.id(),
+                caller: thief.id(),
+            },
+            "{err}"
+        );
+        assert_eq!(err.diagnostic().executable.as_ref(), at);
+    }
 }
 
 #[test]
