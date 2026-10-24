@@ -21,6 +21,9 @@
 //! * `prototype`: prototype reflection, `Object.getPrototypeOf`,
 //!   `Object.setPrototypeOf`, `Object.create` and `__proto__` (appended by
 //!   clj-quickjs-121).
+//! * `integrity`: extensibility and the frozen integrity level,
+//!   `Object.preventExtensions`, `isExtensible`, `freeze` and `isFrozen`
+//!   (appended by clj-quickjs-122).
 
 pub mod asm;
 pub(crate) mod builtin;
@@ -31,6 +34,7 @@ pub mod executable;
 pub(crate) mod frames;
 pub(crate) mod function;
 pub mod instr;
+pub(crate) mod integrity;
 pub mod intrinsics;
 pub(crate) mod native;
 pub(crate) mod property;

@@ -21,13 +21,14 @@
 //! | Object | Kind | Own properties |
 //! |--------|------|----------------|
 //! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf`; the `__proto__` accessor is applied by the property walk, not stored (clj-quickjs-121, `crate::vm::prototype`) |
-//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119), `getPrototypeOf`, `setPrototypeOf`, `create` (clj-quickjs-121) |
+//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119), `getPrototypeOf`, `setPrototypeOf`, `create` (clj-quickjs-121), `preventExtensions`, `isExtensible`, `freeze`, `isFrozen` (clj-quickjs-122) |
 //! | `Object.is` | built-in function | `length` (2), `name` |
 //! | `Object.defineProperty` | built-in function | `length` (3), `name` |
 //! | `Object.getOwnPropertyDescriptor` | built-in function | `length` (2), `name` |
 //! | `Object.getPrototypeOf` | built-in function | `length` (1), `name` |
 //! | `Object.setPrototypeOf` | built-in function | `length` (2), `name` |
 //! | `Object.create` | built-in function | `length` (2), `name` |
+//! | `Object.preventExtensions`, `Object.isExtensible`, `Object.freeze`, `Object.isFrozen` (clj-quickjs-122) | built-in functions | `length` (1), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
 //! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
@@ -264,6 +265,10 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let get_prototype_of = builtin(heap, &mut all, Builtin::ObjectGetPrototypeOf, &[])?;
     let set_prototype_of = builtin(heap, &mut all, Builtin::ObjectSetPrototypeOf, &[])?;
     let create = builtin(heap, &mut all, Builtin::ObjectCreate, &[])?;
+    let prevent_extensions = builtin(heap, &mut all, Builtin::ObjectPreventExtensions, &[])?;
+    let is_extensible = builtin(heap, &mut all, Builtin::ObjectIsExtensible, &[])?;
+    let freeze = builtin(heap, &mut all, Builtin::ObjectFreeze, &[])?;
+    let is_frozen = builtin(heap, &mut all, Builtin::ObjectIsFrozen, &[])?;
 
     let mut prototype = OrdinaryObject::intrinsic(None);
     define(
@@ -299,6 +304,14 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             ("getPrototypeOf", get_prototype_of, PropertyFlags::METHOD),
             ("setPrototypeOf", set_prototype_of, PropertyFlags::METHOD),
             ("create", create, PropertyFlags::METHOD),
+            (
+                "preventExtensions",
+                prevent_extensions,
+                PropertyFlags::METHOD,
+            ),
+            ("isExtensible", is_extensible, PropertyFlags::METHOD),
+            ("freeze", freeze, PropertyFlags::METHOD),
+            ("isFrozen", is_frozen, PropertyFlags::METHOD),
         ],
     )?;
     // The one cycle: `Object.prototype.constructor` is `Object`.
@@ -450,7 +463,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 13);
+        assert_eq!(first.all.len(), 17);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

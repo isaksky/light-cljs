@@ -375,14 +375,14 @@ mod tests {
         ));
     }
 
-    /// A non-extensible object rejects a new prototype (clj-quickjs-122
-    /// will make one from source).
+    /// A non-extensible object rejects a new prototype (from source:
+    /// `tests/js_source.rs`, `object_extensibility`, clj-quickjs-122).
     #[test]
     fn non_extensible_objects_keep_their_prototype() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
         let mut object = OrdinaryObject::new(Some(task));
-        object.set_extensible_for_tests(false);
+        object.prevent_extensions();
         let id = heap.alloc(HeapObject::Plain(object)).unwrap();
         let other = plain(&heap, Some(task));
         assert!(set_prototype_of(&heap, task, id, None).is_ok());

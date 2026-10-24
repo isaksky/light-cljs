@@ -801,3 +801,109 @@ fn function_own_properties_follow_publication_rule() {
     // Nothing was attached, so it still publishes.
     rt.publish(&h).unwrap();
 }
+
+/// Extensibility and freezing across tasks (clj-quickjs-122;
+/// `src/vm/integrity.rs`): freezing does not change ownership, so a frozen
+/// object stays task-owned and is rejected by publication, and freezing a
+/// function gives it a task-owned property record, which makes it
+/// unpublishable. A published function is shared and immutable, so it
+/// reports itself not extensible and frozen, and freezing it again
+/// succeeds. Another task's object or recorded function is
+/// `ForeignObject`. JavaScript source is a synthetic fixture, not
+/// light-cljs output.
+#[test]
+fn freezing_keeps_ownership_and_published_functions_are_frozen() {
+    let rt = Runtime::new();
+    let run = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("integrity", src).unwrap(), &[])
+            .unwrap();
+        (complete(task.run().unwrap()), task.id())
+    };
+    // A frozen object, array or function is still task-owned.
+    let (o, producer) = run("Object.freeze({x: 1})");
+    assert_eq!(
+        not_shareable(rt.publish(&o).unwrap_err()),
+        (vec![], "object", Some(producer))
+    );
+    let (a, producer) = run("Object.freeze([1])");
+    assert_eq!(
+        not_shareable(rt.publish(&a).unwrap_err()),
+        (vec![], "array", Some(producer))
+    );
+    for src in [
+        "const h = () => 1; Object.freeze(h)",
+        "function h() {} Object.preventExtensions(h)",
+    ] {
+        let (h, producer) = run(src);
+        let (path, found, owner) = not_shareable(rt.publish(&h).unwrap_err());
+        assert_eq!(path[0], PathStep::FunctionProperties, "{src}");
+        assert_eq!((found, owner), ("object", Some(producer)), "{src}");
+    }
+
+    // A published function reports frozen; freezing it changes nothing.
+    let probe = compile_function(
+        "function probe(h) { return !Object.isExtensible(h) && Object.isFrozen(h) \
+         && Object.freeze(h) === h && Object.preventExtensions(h) === h \
+         && Object.isFrozen(h) && h() === 7; }",
+    )
+    .unwrap();
+    for src in ["function h() { return 7; } h", "const h = () => 7; h"] {
+        let (h, _) = run(src);
+        rt.publish(&h).unwrap();
+        let task = rt.spawn(&probe, &[&h]).unwrap();
+        assert_eq!(
+            complete(task.run().unwrap()).view(),
+            ValueView::Bool(true),
+            "{src}"
+        );
+        // Still publishable: nothing was attached.
+        rt.publish(&h).unwrap();
+    }
+
+    // Handed over unchecked (`spawn` does not check its arguments): only
+    // the owner changes or reads the integrity of its objects.
+    let (o, producer) = run("({x: 1})");
+    let (h, creator) = run("function h() {} h");
+    let (recorded, recorder) = run("const h = () => 1; h.x = 1; h");
+    for (src, arg, owner) in [
+        (
+            "function f(o) { return Object.isExtensible(o); }",
+            &o,
+            producer,
+        ),
+        ("function f(o) { return Object.isFrozen(o); }", &o, producer),
+        ("function f(o) { return Object.freeze(o); }", &o, producer),
+        (
+            "function f(o) { return Object.preventExtensions(o); }",
+            &h,
+            creator,
+        ),
+        (
+            "function f(o) { return Object.isFrozen(o); }",
+            &recorded,
+            recorder,
+        ),
+    ] {
+        let task = rt.spawn(&compile_function(src).unwrap(), &[arg]).unwrap();
+        match task.run().unwrap() {
+            RunOutcome::Failed(e) => assert_eq!(
+                e.kind(),
+                VmErrorKind::ForeignObject {
+                    owner: Some(owner),
+                    caller: task.id()
+                },
+                "{src}"
+            ),
+            other => panic!("{src}: expected ForeignObject, got {other:?}"),
+        }
+    }
+    // Another task's function without a record reads as extensible, and
+    // the failed change attached nothing: it still publishes.
+    let read =
+        compile_function("function f(h) { return Object.isExtensible(h) && !Object.isFrozen(h); }")
+            .unwrap();
+    let task = rt.spawn(&read, &[&h]).unwrap();
+    assert_eq!(complete(task.run().unwrap()).view(), ValueView::Bool(true));
+    rt.publish(&h).unwrap();
+}

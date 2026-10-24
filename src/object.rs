@@ -41,8 +41,11 @@
 //!   of built-in functions. An intrinsic object has no owner, every task
 //!   reads it, nothing changes it after the realm is built, and it is
 //!   classified [`Shareability::Persistent`](crate::value::share::Shareability).
-//! * **`[[Extensible]]`**: true until `Object.preventExtensions`
-//!   (clj-quickjs-122); adding a property to a non-extensible object fails.
+//! * **`[[Extensible]]`**: true until `Object.preventExtensions` or
+//!   `Object.freeze` (clj-quickjs-122, `crate::vm::integrity`) clears it,
+//!   for good; adding a property to a non-extensible object fails.
+//!   Freezing also makes every own property non-writable and
+//!   non-configurable; it does not change the owner.
 //!
 //! Reads and writes take only the heap's object-table lock (one short
 //! critical section per object visited), no per-object lock: only the owning
@@ -273,18 +276,42 @@ impl OrdinaryObject {
         self.extensible
     }
 
+    /// `[[PreventExtensions]]` (QuickJS `JS_PreventExtensions`): clear the
+    /// `[[Extensible]]` flag. It is never set again; existing properties
+    /// keep their attributes (clj-quickjs-122).
+    pub(crate) fn prevent_extensions(&mut self) {
+        self.extensible = false;
+    }
+
+    /// SetIntegrityLevel(frozen) (`Object.freeze`, clj-quickjs-122; QuickJS
+    /// `js_object_seal` with its freeze flag): not extensible, and every own
+    /// data property non-configurable and non-writable (`enumerable`
+    /// kept). Accessor properties (clj-quickjs-120) will become only
+    /// non-configurable.
+    pub(crate) fn freeze(&mut self) {
+        self.extensible = false;
+        for (_, property) in &mut self.entries {
+            property.flags.writable = false;
+            property.flags.configurable = false;
+        }
+    }
+
+    /// TestIntegrityLevel(frozen) (`Object.isFrozen`, clj-quickjs-122): not
+    /// extensible, and no own property is configurable or writable.
+    pub(crate) fn is_frozen(&self) -> bool {
+        !self.extensible
+            && self
+                .entries
+                .iter()
+                .all(|(_, p)| !p.flags.configurable && !p.flags.writable)
+    }
+
     /// Set the `[[Prototype]]` (`Object.setPrototypeOf`, `Object.create`,
     /// `__proto__`; clj-quickjs-121). The caller has made the checks of
     /// OrdinarySetPrototypeOf (owner, extensibility, no cycle:
     /// `crate::vm::prototype`); nothing changes a realm intrinsic's.
     pub(crate) fn set_prototype(&mut self, prototype: Option<ObjectId>) {
         self.prototype = prototype;
-    }
-
-    /// Set the `[[Extensible]]` flag (tests, until clj-quickjs-122).
-    #[cfg(test)]
-    pub(crate) fn set_extensible_for_tests(&mut self, extensible: bool) {
-        self.extensible = extensible;
     }
 
     fn position(&self, key: PropertyKey) -> Option<usize> {

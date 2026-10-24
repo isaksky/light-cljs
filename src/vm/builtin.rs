@@ -55,6 +55,8 @@
 //! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `undefined`/`null` `v`: catchable `TypeError`; a primitive, a function, a built-in function or an error object: `UnsupportedOperand` (wrapper objects, `Function.prototype` and `Error.prototype` do not exist yet) |
 //! | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | set the `[[Prototype]]` of the object `o` and return `o`; a primitive `o` is returned unchanged; `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a cycle, a built-in or non-extensible `o`: catchable `TypeError` |
 //! | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task with prototype `proto` (an object or `null`, else a catchable `TypeError`); a second argument other than `undefined`: `UnsupportedOperand` (`Object.defineProperties`) |
+//! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
+//! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -66,6 +68,7 @@ use crate::value::{JsString, Value};
 use crate::vm::descriptor;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
+use crate::vm::integrity;
 use crate::vm::prototype;
 
 /// Which built-in function: the Rust code a [`BuiltinFunction`] runs.
@@ -101,6 +104,18 @@ pub(crate) enum Builtin {
     ObjectSetPrototypeOf,
     /// `Object.create` (QuickJS `js_object_create`; clj-quickjs-121).
     ObjectCreate,
+    /// `Object.preventExtensions` (QuickJS `js_object_preventExtensions`;
+    /// clj-quickjs-122, `crate::vm::integrity`).
+    ObjectPreventExtensions,
+    /// `Object.isExtensible` (QuickJS `js_object_isExtensible`;
+    /// clj-quickjs-122).
+    ObjectIsExtensible,
+    /// `Object.freeze` (QuickJS `js_object_seal`, freeze flag;
+    /// clj-quickjs-122).
+    ObjectFreeze,
+    /// `Object.isFrozen` (QuickJS `js_object_isSealed`, frozen flag;
+    /// clj-quickjs-122).
+    ObjectIsFrozen,
 }
 
 impl Builtin {
@@ -118,6 +133,10 @@ impl Builtin {
             Builtin::ObjectGetPrototypeOf => "getPrototypeOf",
             Builtin::ObjectSetPrototypeOf => "setPrototypeOf",
             Builtin::ObjectCreate => "create",
+            Builtin::ObjectPreventExtensions => "preventExtensions",
+            Builtin::ObjectIsExtensible => "isExtensible",
+            Builtin::ObjectFreeze => "freeze",
+            Builtin::ObjectIsFrozen => "isFrozen",
         }
     }
 
@@ -133,6 +152,10 @@ impl Builtin {
             Builtin::ObjectGetOwnPropertyDescriptor => 2,
             Builtin::ObjectGetPrototypeOf => 1,
             Builtin::ObjectSetPrototypeOf | Builtin::ObjectCreate => 2,
+            Builtin::ObjectPreventExtensions
+            | Builtin::ObjectIsExtensible
+            | Builtin::ObjectFreeze
+            | Builtin::ObjectIsFrozen => 1,
         }
     }
 }
@@ -201,6 +224,10 @@ pub(crate) fn call(
         Builtin::ObjectGetPrototypeOf => prototype::object_get_prototype_of(heap, task, args),
         Builtin::ObjectSetPrototypeOf => prototype::object_set_prototype_of(heap, task, args),
         Builtin::ObjectCreate => prototype::object_create(heap, task, args),
+        Builtin::ObjectPreventExtensions => integrity::prevent_extensions(heap, task, &arg(0)),
+        Builtin::ObjectIsExtensible => integrity::is_extensible(heap, task, &arg(0)),
+        Builtin::ObjectFreeze => integrity::freeze(heap, task, &arg(0)),
+        Builtin::ObjectIsFrozen => integrity::is_frozen(heap, task, &arg(0)),
     }
 }
 

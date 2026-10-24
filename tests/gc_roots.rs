@@ -752,8 +752,9 @@ fn realm_intrinsics_retain() {
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
     // clj-quickjs-118, `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119,
-    // and `getPrototypeOf`, `setPrototypeOf` and `create`, clj-quickjs-121.)
-    assert_eq!(rt.heap_usage().objects.builtin, 11);
+    // `getPrototypeOf`, `setPrototypeOf` and `create`, clj-quickjs-121, and
+    // `preventExtensions`, `isExtensible`, `freeze` and `isFrozen`, clj-quickjs-122.)
+    assert_eq!(rt.heap_usage().objects.builtin, 15);
     assert_eq!(rt.heap_usage().objects.plain, 2);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

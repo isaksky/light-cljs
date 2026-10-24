@@ -6651,3 +6651,297 @@ fn prototype_reflection() {
         truth(src);
     }
 }
+
+/// Object extensibility and the frozen integrity level (clj-quickjs-122;
+/// `src/vm/integrity.rs`): `Object.isExtensible`, `Object.preventExtensions`,
+/// `Object.freeze` and `Object.isFrozen`. The first row follows the
+/// extensibility rows of `test` (line 124) of
+/// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8 (`var`
+/// written `let`, the asserts joined into one condition); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The rest
+/// are synthetic fixtures, not light-cljs output.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn object_extensibility() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    let sloppy_truth = |src: &str| assert_eq!(sloppy_eval(src), ValueView::Bool(true), "{src}");
+    let fails = |src: &str, kind: VmErrorKind, needle: &str| {
+        let (k, message, ..) = failure_at(src);
+        assert_eq!(k, kind, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    };
+    let type_error = |src: &str, needle: &str| fails(src, VmErrorKind::TypeError, needle);
+
+    // The upstream rows.
+    truth(
+        "let a = {x: 1}; let before = Object.isExtensible(a); Object.preventExtensions(a); \
+         let err = false; try { a.y = 2; } catch (e) { err = true; } \
+         before === true && Object.isExtensible(a) === false && typeof a.y === 'undefined' && err",
+    );
+
+    // preventExtensions returns its argument; existing properties stay
+    // writable and configurable.
+    let prevented = "let a = {x: 1}; let same = Object.preventExtensions(a) === a;";
+    truth(&format!("{prevented} same"));
+    truth(&format!("{prevented} a.x = 3; a.x === 3"));
+    truth(&format!(
+        "{prevented} Object.defineProperty(a, 'x', {{value: 4, enumerable: false}}); \
+         let d = Object.getOwnPropertyDescriptor(a, 'x'); \
+         d.value === 4 && d.writable && !d.enumerable && d.configurable && !Object.isFrozen(a)"
+    ));
+    // Adding a property: a catchable TypeError at the member expression in
+    // strict code, ignored in sloppy code; defineProperty always throws.
+    let (kind, message, line, column) =
+        failure_at("let a = {x: 1};\nObject.preventExtensions(a);\na.y = 2;");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "cannot add property 'y': the object is not extensible",
+            3,
+            2
+        )
+    );
+    type_error(
+        &format!("{prevented} a['k'] = 1;"),
+        "cannot add property 'k': the object is not extensible",
+    );
+    sloppy_truth(
+        "var a = {x: 1}; Object.preventExtensions(a); a.y = 2; a[0] = 1; \
+         a.y === undefined && a[0] === undefined && a.x === 1",
+    );
+    type_error(
+        &format!("{prevented} Object.defineProperty(a, 'w', {{value: 1}});"),
+        "cannot define property 'w': the object is not extensible",
+    );
+    truth(&format!(
+        "{prevented} let r = false; try {{ Object.defineProperty(a, 'w', {{value: 1}}); }} \
+         catch (e) {{ r = Object.getOwnPropertyDescriptor(a, 'w') === undefined; }} r"
+    ));
+    // A non-extensible object keeps its prototype (clj-quickjs-121):
+    // setting the same one succeeds, another one is a TypeError.
+    truth(&format!(
+        "{prevented} Object.setPrototypeOf(a, Object.prototype) === a"
+    ));
+    type_error(
+        &format!("{prevented} Object.setPrototypeOf(a, null);"),
+        "not extensible",
+    );
+    truth(&format!(
+        "{prevented} let r = false; try {{ Object.setPrototypeOf(a, {{}}); }} \
+         catch (e) {{ r = Object.getPrototypeOf(a) === Object.prototype; }} r"
+    ));
+    type_error(
+        &format!("{prevented} a.__proto__ = {{}};"),
+        "not extensible",
+    );
+    // `delete a.x` waits for the delete operator (clj-quickjs-124): it is
+    // rejected explicitly at compile time.
+    let e = compile_script(
+        "test",
+        "let a = {x: 1}; Object.preventExtensions(a); delete a.x;",
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+
+    // Primitives: not extensible, frozen, returned unchanged.
+    truth(
+        "Object.isExtensible(1) === false && Object.preventExtensions(1) === 1 \
+         && Object.isFrozen('s') && Object.freeze('s') === 's' && Object.isExtensible() === false \
+         && Object.freeze(null) === null && Object.isFrozen(undefined)",
+    );
+
+    // freeze.
+    let frozen = "let f = Object.freeze({x: 1});";
+    type_error(
+        &format!("{frozen} f.x = 2;"),
+        "cannot assign to read-only property 'x'",
+    );
+    truth(&format!(
+        "{frozen} let r = false; try {{ f.x = 2; }} catch (e) {{ r = f.x === 1; }} r"
+    ));
+    truth(&format!(
+        "{frozen} let d = Object.getOwnPropertyDescriptor(f, 'x'); \
+         Object.isFrozen(f) && !Object.isExtensible(f) && d.value === 1 && !d.writable \
+         && d.enumerable && !d.configurable"
+    ));
+    type_error(&format!("{frozen} f.y = 2;"), "not extensible");
+    type_error(
+        &format!("{frozen} Object.defineProperty(f, 'x', {{value: 2}});"),
+        "cannot define property 'x'",
+    );
+    truth(&format!(
+        "{frozen} Object.defineProperty(f, 'x', {{value: 1}}) === f && Object.freeze(f) === f"
+    ));
+    sloppy_truth("var f = Object.freeze({x: 1}); f.x = 2; f.y = 3; f.x === 1 && f.y === undefined");
+    truth("Object.isFrozen({}) === false");
+    truth("Object.isFrozen(Object.preventExtensions({}))");
+    truth("!Object.isFrozen(Object.preventExtensions({x: 1}))");
+    // Frozen by hand: every property read-only and non-configurable.
+    truth(
+        "let o = {}; Object.defineProperty(o, 'k', {value: 1}); \
+         let before = Object.isFrozen(o); Object.preventExtensions(o); !before && Object.isFrozen(o)",
+    );
+    truth(
+        "let o = {}; Object.defineProperty(o, 'k', {value: 1, writable: true}); \
+         Object.preventExtensions(o); !Object.isFrozen(o)",
+    );
+    // Freezing is shallow.
+    truth("let o = Object.freeze({inner: {n: 1}}); o.inner.n = 2; o.inner.n === 2");
+
+    // Arrays: a frozen array rejects index writes and `length` writes.
+    let array = "let a = Object.freeze([1, , 3]);";
+    type_error(
+        &format!("{array} a[0] = 9;"),
+        "cannot assign to read-only property '0'",
+    );
+    type_error(&format!("{array} a[1] = 9;"), "property '1'");
+    type_error(&format!("{array} a[7] = 9;"), "property '7'");
+    type_error(
+        &format!("{array} a.length = 0;"),
+        "cannot assign to read-only property 'length'",
+    );
+    type_error(&format!("{array} a.name = 1;"), "not extensible");
+    type_error(
+        &format!("{array} Object.defineProperty(a, 0, {{value: 2}});"),
+        "cannot define property '0'",
+    );
+    truth(&format!(
+        "{array} let d = Object.getOwnPropertyDescriptor(a, 0); \
+         let l = Object.getOwnPropertyDescriptor(a, 'length'); \
+         Object.isFrozen(a) && !Object.isExtensible(a) && a.length === 3 && a[0] === 1 \
+         && a[1] === undefined && !d.writable && d.enumerable && !d.configurable && !l.writable \
+         && Object.defineProperty(a, 0, {{value: 1}}) === a"
+    ));
+    sloppy_truth(
+        "var a = Object.freeze([1, 2]); a[0] = 9; a[5] = 9; a.length = 0; \
+         a[0] === 1 && a.length === 2 && a[5] === undefined",
+    );
+    // An element given its own attributes keeps `enumerable` when frozen.
+    truth(
+        "let a = [1, 2]; Object.defineProperty(a, 1, {enumerable: false}); Object.freeze(a); \
+         let d = Object.getOwnPropertyDescriptor(a, 1); \
+         !d.enumerable && !d.writable && !d.configurable && Object.isFrozen(a)",
+    );
+    // A non-extensible array keeps writable elements but takes no new ones.
+    truth(
+        "let a = [1]; Object.preventExtensions(a); a[0] = 5; let r = false; \
+         try { a[1] = 2; } catch (e) { r = true; } \
+         r && a[0] === 5 && a.length === 1 && !Object.isFrozen(a)",
+    );
+    // An array frozen by hand.
+    truth(
+        "let a = [1]; Object.defineProperty(a, 0, {writable: false, configurable: false}); \
+         Object.defineProperty(a, 'length', {writable: false}); \
+         let before = Object.isFrozen(a); Object.preventExtensions(a); !before && Object.isFrozen(a)",
+    );
+    truth("Object.isFrozen(Object.preventExtensions([])) === false");
+    // Named (non-index) properties of an array freeze too, and a writable
+    // one keeps a merely non-extensible array from being frozen.
+    let named = "let a = [1]; a.tag = 'x'; Object.freeze(a);";
+    type_error(
+        &format!("{named} a.tag = 'y';"),
+        "cannot assign to read-only property 'tag'",
+    );
+    truth(&format!(
+        "{named} let d = Object.getOwnPropertyDescriptor(a, 'tag'); \
+         !d.writable && d.enumerable && !d.configurable && a.tag === 'x' && Object.isFrozen(a)"
+    ));
+    truth(
+        "let a = []; a.tag = 'x'; Object.defineProperty(a, 'length', {writable: false}); \
+         Object.preventExtensions(a); !Object.isFrozen(a)",
+    );
+    truth(
+        "let a = []; Object.defineProperty(a, 'length', {writable: false}); \
+         Object.isFrozen(Object.preventExtensions(a))",
+    );
+
+    // Function objects (clj-quickjs-125): their property record holds the
+    // flag and the attributes.
+    truth("let g = () => 1; Object.isExtensible(g) && !Object.isFrozen(g)");
+    truth(
+        "let g = () => 1; g.x = 1; Object.freeze(g) === g && Object.isFrozen(g) \
+         && !Object.isExtensible(g) && g() === 1 && g.x === 1",
+    );
+    type_error(
+        "let g = () => 1; Object.freeze(g); g.x = 1;",
+        "not extensible",
+    );
+    type_error(
+        "let g = () => 1; g.x = 1; Object.freeze(g); g.x = 2;",
+        "read-only property 'x'",
+    );
+    // A constructor's lazy `prototype` exists before the record stops
+    // taking properties, and freezing makes it read-only.
+    truth(
+        "function F() {} Object.preventExtensions(F); let p = F.prototype; \
+         typeof p === 'object' && p.constructor === F && Object.getPrototypeOf(new F()) === p",
+    );
+    truth(
+        "function F() {} Object.freeze(F); \
+         let d = Object.getOwnPropertyDescriptor(F, 'prototype'); \
+         Object.isFrozen(F) && !d.writable && !d.configurable && d.value === F.prototype",
+    );
+    type_error(
+        "function F() {} Object.freeze(F); F.prototype = 1;",
+        "read-only property 'prototype'",
+    );
+
+    // Realm intrinsics are shared and immutable: they report their
+    // attributes, and changing them is a TypeError.
+    truth(
+        "Object.isExtensible(Object.prototype) && !Object.isFrozen(Object.prototype) \
+         && Object.isExtensible(Object) && !Object.isFrozen(Object.freeze)",
+    );
+    type_error("Object.freeze(Object.prototype);", "built-in object");
+    type_error("Object.preventExtensions(Object);", "built-in object");
+    type_error(
+        "Object.preventExtensions([].constructor.prototype);",
+        "built-in object",
+    );
+
+    // The runtime's own values have no properties and are not extensible:
+    // already frozen.
+    truth(
+        "let v = __rt.vector(1); let m = __rt.map('k', 1); \
+         !Object.isExtensible(v) && Object.isFrozen(v) && Object.freeze(v) === v \
+         && Object.preventExtensions(m) === m && Object.isFrozen(m) && !Object.isExtensible(m)",
+    );
+    truth(
+        "let b = __rt.vectorBuilder(); !Object.isExtensible(b) && Object.isFrozen(Object.freeze(b))",
+    );
+    // An error object's properties are clj-quickjs-230.
+    fails(
+        "let e = 0; try { null.x; } catch (caught) { e = caught; } Object.isFrozen(e);",
+        VmErrorKind::UnsupportedOperand,
+        "error object",
+    );
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#"let a = {x: 1}; Object.preventExtensions(a) === a && !Object.isExtensible(a) && Object.isExtensible({});"#,
+        r#"let b = {x: 1}; Object.preventExtensions(b); let r = false; try { b.y = 2; } catch (e) { r = b.y === undefined; } r;"#,
+        r#"let f = Object.freeze({x: 1}); let s = false; try { f.x = 2; } catch (e) { s = f.x === 1; } s && Object.isFrozen(f) && !Object.isFrozen({});"#,
+        r#"let q = Object.freeze([1, 2]); let t = false; try { q[0] = 3; } catch (e) { t = q[0] === 1; } t && Object.isFrozen(q);"#,
+        r#"Object.isExtensible(1) === false && Object.preventExtensions(1) === 1 && Object.isFrozen(__rt.vector());"#,
+    ] {
+        truth(src);
+    }
+}

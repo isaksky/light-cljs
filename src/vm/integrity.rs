@@ -1,0 +1,206 @@
+//! Extensibility and the frozen integrity level (clj-quickjs-122):
+//! `Object.isExtensible`, `Object.preventExtensions`, `Object.freeze` and
+//! `Object.isFrozen`, after QuickJS's `js_object_isExtensible`,
+//! `js_object_preventExtensions`, `JS_PreventExtensions`, `js_object_seal`
+//! and `js_object_isSealed` with their freeze flag
+//! (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8); written fresh over
+//! this runtime's object model (`crate::object`, `crate::object::array`,
+//! `crate::vm::function`).
+//!
+//! # What each value reports
+//!
+//! | Argument | `isExtensible` | `isFrozen` | `preventExtensions` / `freeze` |
+//! |----------|----------------|------------|--------------------------------|
+//! | a primitive | `false` | `true` | returns it unchanged |
+//! | ordinary object or array of the running task | its `[[Extensible]]` flag | not extensible and no own property (elements and `length` included) writable or configurable | clears the flag / also makes every own property non-writable and non-configurable; returns the object |
+//! | ordinary object created by the embedder (no owner) | as above | as above | `ForeignObject` (no task changes it) |
+//! | another task's object or array | `ForeignObject` | `ForeignObject` | `ForeignObject` |
+//! | realm intrinsic (`Object.prototype`, `Object`, ...) | its flag: `true` | `false` (its descriptors say writable/configurable) | catchable `TypeError`: built-in objects are shared and immutable |
+//! | unpublished function of the running task | its property record's flag (`true` without a record) | the record's level (`false` without one) | on the property record, created if needed (a constructor's `prototype` is created first), so the function can no longer be published |
+//! | published function | `false` | `true` | returns it: already frozen |
+//! | another task's unpublished function | `true` without a record, else `ForeignObject` | likewise (`false`) | `ForeignObject` |
+//! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `false` | `true` | returns it: already frozen |
+//! | error object | `UnsupportedOperand` (its properties are clj-quickjs-230) | `UnsupportedOperand` | `UnsupportedOperand` |
+//!
+//! The runtime's own heap values behave as objects with no own properties
+//! and no extensibility (`crate::vm::property`, "Which values have
+//! properties"), so they are already frozen. A published function is
+//! shared and immutable (`crate::vm::function`, "Own properties"), so it
+//! is frozen too. A realm intrinsic is immutable because it is shared, not
+//! because of its attributes, and reports its attributes as
+//! `Object.getOwnPropertyDescriptor` does (`docs/architecture.md`, "Realm
+//! intrinsics"); `Object.preventExtensions` on it is the `TypeError` of a
+//! `[[PreventExtensions]]` that returns false.
+//!
+//! **Freezing does not change ownership.** A frozen object or array stays
+//! task-owned (`Shareability::TaskOwned`), so the publication check still
+//! rejects it, and only its owner reads it. Freezing a function gives it a
+//! property record, which makes it unpublishable like any property write.
+//! A deeply frozen object is not turned into a shareable value.
+//!
+//! # Calls
+//!
+//! The four run to completion inside their call instruction
+//! (`crate::vm::builtin`, "Calls"): they call no JavaScript (there are no
+//! accessors or proxies yet) and allocate only a function's property record
+//! and lazy `prototype`, which are reachable from the function, an operand
+//! of the running frame, before the next safepoint.
+
+use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::ids::TaskId;
+use crate::value::Value;
+use crate::vm::dispatch::Fault;
+use crate::vm::exception::ErrorObject;
+use crate::vm::function::{self, IntegrityStore};
+
+/// Which integrity operation runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Level {
+    /// `[[PreventExtensions]]`.
+    NonExtensible,
+    /// SetIntegrityLevel(frozen).
+    Frozen,
+}
+
+/// `Object.isExtensible(v)`.
+pub(crate) fn is_extensible(heap: &Heap, task: TaskId, v: &Value) -> Result<Value, Fault> {
+    query(heap, task, v, Level::NonExtensible).map(|level| Value::Bool(!level))
+}
+
+/// `Object.isFrozen(v)`.
+pub(crate) fn is_frozen(heap: &Heap, task: TaskId, v: &Value) -> Result<Value, Fault> {
+    query(heap, task, v, Level::Frozen).map(Value::Bool)
+}
+
+/// `Object.preventExtensions(v)`: returns `v`.
+pub(crate) fn prevent_extensions(heap: &Heap, task: TaskId, v: &Value) -> Result<Value, Fault> {
+    change(heap, task, v, Level::NonExtensible).map(|()| v.clone())
+}
+
+/// `Object.freeze(v)`: returns `v`.
+pub(crate) fn freeze(heap: &Heap, task: TaskId, v: &Value) -> Result<Value, Fault> {
+    change(heap, task, v, Level::Frozen).map(|()| v.clone())
+}
+
+fn foreign(owner: Option<TaskId>, caller: TaskId) -> Fault {
+    Fault::ForeignObject { owner, caller }
+}
+
+fn error_object() -> Fault {
+    Fault::Unsupported(
+        "the extensibility of an error object is not supported: its properties are not supported"
+            .to_string(),
+    )
+}
+
+/// True if `object` has `level`: not extensible, or (`Frozen`) frozen.
+fn has_level(object: &crate::object::OrdinaryObject, level: Level) -> bool {
+    match level {
+        Level::NonExtensible => !object.extensible(),
+        Level::Frozen => object.is_frozen(),
+    }
+}
+
+/// Whether `v` has `level` (module docs, table), for the running task.
+fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fault> {
+    let Value::Object(id) = *v else {
+        // A primitive is not extensible and is frozen.
+        return Ok(true);
+    };
+    let id = match function_store(heap, id)? {
+        Some(IntegrityStore::Shared) => return Ok(true),
+        Some(IntegrityStore::Unrecorded) => return Ok(false),
+        Some(IntegrityStore::Record(record)) => record,
+        None => id,
+    };
+    let readable = |owner: Option<TaskId>| match owner {
+        Some(owner) if owner != task => Err(foreign(Some(owner), task)),
+        _ => Ok(()),
+    };
+    heap.read(id, |object| match object {
+        HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
+        HeapObject::Array(a) => readable(a.object().owner()).map(|()| match level {
+            Level::NonExtensible => !a.object().extensible(),
+            Level::Frozen => a.is_frozen(),
+        }),
+        HeapObject::Builtin(f) => Ok(has_level(&f.properties, level)),
+        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
+            Err(error_object())
+        }
+        HeapObject::Function(_) => Err(Fault::Internal("a function reached the integrity read")),
+        // No properties and not extensible.
+        _ => Ok(true),
+    })
+    // The argument is an operand of the running frame.
+    .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))
+}
+
+/// Give `v` `level` (module docs, table), for the running task.
+fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Fault> {
+    let Value::Object(id) = *v else {
+        return Ok(());
+    };
+    let id = if is_function(heap, id) {
+        match function::integrity_target(heap, task, id)? {
+            IntegrityStore::Record(record) => record,
+            IntegrityStore::Shared => return Ok(()),
+            IntegrityStore::Unrecorded => {
+                return Err(Fault::Internal("a function has no record to change"));
+            }
+        }
+    } else {
+        id
+    };
+    let immutable = || {
+        Fault::TypeError(
+            "cannot change the extensibility of a built-in object: built-in objects are shared \
+             by all tasks and immutable"
+                .to_string(),
+        )
+    };
+    let writable = |owner: Option<TaskId>| match owner {
+        Some(owner) if owner == task => Ok(()),
+        owner => Err(foreign(owner, task)),
+    };
+    heap.with_object_mut(id, |object| match object {
+        HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable()),
+        HeapObject::Builtin(_) => Err(immutable()),
+        HeapObject::Plain(o) => {
+            writable(o.owner())?;
+            match level {
+                Level::NonExtensible => o.prevent_extensions(),
+                Level::Frozen => o.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::Array(a) => {
+            writable(a.object().owner())?;
+            match level {
+                Level::NonExtensible => a.object_mut().prevent_extensions(),
+                Level::Frozen => a.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
+            Err(error_object())
+        }
+        HeapObject::Function(_) => Err(Fault::Internal("a function reached the integrity change")),
+        // Already frozen: no properties and not extensible.
+        _ => Ok(()),
+    })
+    .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))
+}
+
+fn is_function(heap: &Heap, id: ObjectId) -> bool {
+    heap.read(id, |o| matches!(o, HeapObject::Function(_)))
+        .unwrap_or(false)
+}
+
+/// The integrity store of `id` if it is a function object.
+fn function_store(heap: &Heap, id: ObjectId) -> Result<Option<IntegrityStore>, Fault> {
+    if is_function(heap, id) {
+        function::integrity_store(heap, id).map(Some)
+    } else {
+        Ok(None)
+    }
+}

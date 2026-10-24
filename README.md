@@ -2050,3 +2050,30 @@ Deferred:
   functions (`Function.prototype`, clj-quickjs-102) and error objects (clj-quickjs-230), and
   `Object.create`'s second argument (`Object.defineProperties`). `Object.getOwnPropertyNames`
   (clj-quickjs-123) and extensibility (clj-quickjs-122) are their own pellets.
+
+### `Object.preventExtensions`, `isExtensible`, `freeze` and `isFrozen` (clj-quickjs-122)
+
+Supported (`cargo test --test js_source object_extensibility`, `cargo test --test publication
+freezing_keeps_ownership_and_published_functions_are_frozen`, `cargo test --lib object::`;
+decision record in `docs/architecture.md`, "Extensibility and freezing"):
+
+- `Object.preventExtensions(o)` and `Object.isExtensible(o)` on the running task's objects,
+  arrays and functions; adding a property to a non-extensible object is a catchable `TypeError`
+  in strict code and ignored in sloppy code, `Object.defineProperty` of a new key and
+  `Object.setPrototypeOf` to another prototype are `TypeError`s; existing properties stay
+  writable and configurable.
+- `Object.freeze(o)` and `Object.isFrozen(o)`: every own property (array elements and `length`
+  included) becomes non-writable and non-configurable; freezing an array allocates nothing per
+  element.
+- Primitives are not extensible and frozen, and are returned unchanged. Vectors, maps and other
+  values without JavaScript properties, and published functions, report non-extensible and
+  frozen. Built-in objects report their attributes (`isExtensible(Object.prototype)` is `true`)
+  and changing them is a `TypeError`.
+
+Deferred:
+
+- Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
+  and freezing a function makes it unpublishable (it gets a property record).
+- `delete` on a non-extensible object (clj-quickjs-124) is not yet available; `Object.seal`,
+  `Object.isSealed` and `Reflect` are not provided; error objects fail with `UnsupportedOperand`
+  (clj-quickjs-230); accessor properties are clj-quickjs-120.

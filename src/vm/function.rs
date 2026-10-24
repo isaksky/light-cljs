@@ -395,6 +395,67 @@ pub(crate) fn own_store(
     Ok(info.record)
 }
 
+/// Where a function's `[[Extensible]]` flag and integrity level live
+/// (clj-quickjs-122; module docs, "Own properties").
+pub(crate) enum IntegrityStore {
+    /// Published: shared and immutable, so not extensible and frozen.
+    Shared,
+    /// No property record: extensible (a constructor's lazy `prototype`
+    /// is a writable own property).
+    Unrecorded,
+    /// The property record, an ordinary object of the function's owner:
+    /// its flag and attributes are the function's.
+    Record(ObjectId),
+}
+
+/// The store `Object.isExtensible` and `Object.isFrozen` read for
+/// `function`. Creates nothing.
+pub(crate) fn integrity_store(heap: &Heap, function: ObjectId) -> Result<IntegrityStore, Fault> {
+    let info = info(heap, function)?;
+    Ok(match (info.shared, info.record) {
+        (true, _) => IntegrityStore::Shared,
+        (false, Some(record)) => IntegrityStore::Record(record),
+        (false, None) => IntegrityStore::Unrecorded,
+    })
+}
+
+/// The store `Object.preventExtensions` and `Object.freeze` change for
+/// `task`: the property record, created if needed, with a constructor's
+/// `prototype` materialized first (so it exists as an own property before
+/// the record stops taking new ones), or [`IntegrityStore::Shared`] for a
+/// published function, which is already frozen. Another task's function
+/// is `ForeignObject`. Never [`IntegrityStore::Unrecorded`].
+pub(crate) fn integrity_target(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+) -> Result<IntegrityStore, Fault> {
+    integrity_target_from(heap, task, function, &info(heap, function)?)
+}
+
+/// [`integrity_target`] from the snapshot `info`, which a publication
+/// check may have overtaken (tests).
+fn integrity_target_from(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    info: &Info,
+) -> Result<IntegrityStore, Fault> {
+    if info.shared {
+        return Ok(IntegrityStore::Shared);
+    }
+    let record = match writable_record(heap, task, function, info, &Change::Integrity) {
+        Ok(record) => record,
+        // A publication check proved it shareable since `info` was read.
+        Err(_) if self::info(heap, function)?.shared => return Ok(IntegrityStore::Shared),
+        Err(fault) => return Err(fault),
+    };
+    if info.constructor {
+        materialize(heap, task, function, record)?;
+    }
+    Ok(IntegrityStore::Record(record))
+}
+
 fn change_target(
     heap: &Heap,
     task: TaskId,
@@ -432,6 +493,10 @@ enum Change<'k> {
     /// A write or definition of this property: the catchable `TypeError`
     /// of an immutable object, as for a realm intrinsic.
     Write(&'k Key),
+    /// `Object.preventExtensions` or `Object.freeze` (clj-quickjs-122). A
+    /// published function is already frozen, so [`integrity_target`] turns
+    /// this failure into success.
+    Integrity,
 }
 
 impl Change<'_> {
@@ -447,6 +512,11 @@ impl Change<'_> {
                 "cannot set property '{key}' of a published function: functions shared \
                  between tasks are immutable"
             )),
+            Change::Integrity => Fault::TypeError(
+                "cannot change the extensibility of a published function: functions shared \
+                 between tasks are immutable"
+                    .to_string(),
+            ),
         }
     }
 }
@@ -591,6 +661,48 @@ mod tests {
         // The cached verdicts still hold: republishing walks nothing new.
         assert_eq!(share::check(&heap, &holder), Ok(()));
         assert_eq!(heap.known_shareable(f), Some(true));
+    }
+
+    /// Publication wins the race against `Object.freeze` /
+    /// `Object.preventExtensions` (clj-quickjs-122): the snapshot says "not
+    /// shared", a check then proves the function shareable, the attach
+    /// refuses, and the change reports the function as already frozen
+    /// (`Shared`) instead of failing; nothing is attached.
+    #[test]
+    fn publication_wins_before_integrity_change() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let f = function(&heap, "function f() {}");
+        let stale = info(&heap, f).ok().expect("a live function");
+        assert!(!stale.shared && stale.record.is_none());
+
+        let holder = crate::collections::new_vector(&heap, &[Value::Object(f)]).unwrap();
+        assert_eq!(share::check(&heap, &holder), Ok(()));
+        assert!(matches!(
+            integrity_target_from(&heap, OWNER, f, &stale),
+            Ok(IntegrityStore::Shared)
+        ));
+        assert!(matches!(
+            integrity_store(&heap, f),
+            Ok(IntegrityStore::Shared)
+        ));
+        assert_eq!(record(&heap, f), None, "nothing attached");
+        assert_eq!(share::check(&heap, &holder), Ok(()));
+        assert_eq!(heap.known_shareable(f), Some(true));
+
+        // Without the race the owner gets a record with the prototype.
+        let g = function(&heap, "function g() {}");
+        let fresh = info(&heap, g).ok().expect("a live function");
+        let Ok(IntegrityStore::Record(r)) = integrity_target_from(&heap, OWNER, g, &fresh) else {
+            panic!("expected the property record");
+        };
+        assert_eq!(record(&heap, g), Some(r));
+        assert!(
+            record_own(&heap, OWNER, r, "prototype")
+                .ok()
+                .flatten()
+                .is_some()
+        );
     }
 
     /// The lazy `prototype` through the production read path: one object,

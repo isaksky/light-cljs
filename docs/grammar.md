@@ -28,7 +28,9 @@ exists (clj-quickjs-117; see "Built-in globals" under "Execution"), with
 `Object.defineProperty` and `Object.getOwnPropertyDescriptor` for data
 property attributes (clj-quickjs-119), and with `Object.getPrototypeOf`,
 `Object.setPrototypeOf`, `Object.create`, `o.__proto__` and a literal's
-`__proto__: value` for prototypes (clj-quickjs-121).
+`__proto__: value` for prototypes (clj-quickjs-121), and with
+`Object.preventExtensions`, `Object.isExtensible`, `Object.freeze` and
+`Object.isFrozen` for extensibility (clj-quickjs-122).
 `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
@@ -476,6 +478,21 @@ checks left to later stages:
   (`Object.setPrototypeOf(Object.prototype, {})` is a `TypeError`,
   clj-quickjs-121). An ordinary object may still shadow an inherited
   method with its own property (`o.toString = f`).
+  `Object.preventExtensions` and `Object.freeze` on a built-in object
+  throw the same `TypeError` (clj-quickjs-122), while
+  `Object.isExtensible` reports its `[[Extensible]]` flag (`true`) and
+  `Object.isFrozen` `false`, as its descriptors do.
+- **Freezing does not change ownership** (clj-quickjs-122,
+  `docs/architecture.md`, "Extensibility and freezing"). A frozen object
+  or array is still owned by the task that made it: other tasks cannot
+  read it and it cannot be published (`Runtime::publish`), even when
+  frozen deeply. Freezing a function (or making it non-extensible) gives
+  it a task-owned property record, so it can no longer be published,
+  like any property write on it; a published function is already
+  immutable and reports itself non-extensible and frozen. Vectors, maps
+  and the runtime's other values without JavaScript properties are
+  frozen. `Object.seal`/`isSealed` and `Reflect.preventExtensions` are
+  not provided; there are no accessors to freeze yet (clj-quickjs-120).
 - **Built-in globals cannot be assigned** until the global object exists
   (clj-quickjs-104): `Object = x` (also compound and `++`/`--`) is a
   compile-time `Unsupported` error. A lexical binding named `Object`
@@ -775,6 +792,9 @@ Executed, with JavaScript semantics:
 | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | sets the prototype of the object or array `o` to `proto` and returns `o`; a number, string or boolean `o` is returned unchanged. A `TypeError` (catchable, nothing changed) for an `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a `proto` whose chain leads back to `o` (a cycle), a built-in object (shared and immutable) and a value without JavaScript properties or a non-extensible object; setting the prototype `o` already has always succeeds (`Object.setPrototypeOf(Object.prototype, null)`). A function or error object fails with `UnsupportedOperand`; another task's object (as `o` or anywhere on `proto`'s chain) with `ForeignObject` |
 | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task whose prototype is `proto`, an object or `null` (`Object.create(null)` has no `toString`); anything else (`Object.create(1)`, `Object.create()`) is a catchable `TypeError`. A second argument other than `undefined` (`Object.defineProperties`) fails with `UnsupportedOperand` |
 | `o.__proto__`, `o.__proto__ = p` (clj-quickjs-121) | `Object.prototype`'s `__proto__` accessor, met when the read or write of `__proto__` (also `o["__proto__"]`) reaches `Object.prototype` without finding an own `__proto__` first: the read gives `Object.getPrototypeOf(o)`; the write sets the prototype like `Object.setPrototypeOf` when `p` is an object or `null` (its `TypeError`s are thrown in sloppy code too) and does nothing otherwise, and adds no own property, before the rule that built-in objects are immutable applies (`Object.prototype.__proto__ = null` is allowed); the assignment's value is `p`. An object whose chain does not reach `Object.prototype` (`Object.create(null)`) has an ordinary `__proto__` property, and an own `__proto__` data property shadows the accessor. The accessor is not stored (clj-quickjs-261): `Object.getOwnPropertyDescriptor(Object.prototype, "__proto__")` fails with `UnsupportedOperand` |
+| `Object.preventExtensions(o)` (clj-quickjs-122) | makes the object or array `o` non-extensible and returns `o`; a primitive (or no argument) is returned unchanged. Its existing properties stay writable, configurable and redefinable; adding one fails: `o.y = 1` and `o[k] = 1` are a catchable `TypeError` ("cannot add property 'y': the object is not extensible") at the member expression in strict code and do nothing in sloppy code, `Object.defineProperty` with a new key is always a `TypeError`, and so is `Object.setPrototypeOf(o, p)` (or `o.__proto__ = p`) with a different `p`. On an array it also forbids new elements (existing ones stay writable). A function gets a property record (its `prototype` created first), after which it cannot be published; a published function is returned unchanged (already immutable). A built-in object is a `TypeError` (shared and immutable); vectors, maps and other values without JavaScript properties are returned unchanged; another task's object fails with `ForeignObject`, an error object with `UnsupportedOperand` (clj-quickjs-230) |
+| `Object.freeze(o)` (clj-quickjs-122) | `Object.preventExtensions(o)`, then every own property becomes non-writable and non-configurable (`enumerable` kept), array elements and `length` included; returns `o`. Writes of its properties are then rejected like other read-only properties (strict `TypeError` "cannot assign to read-only property 'x'", sloppy no-op), as are `a.length = n` and any index write on a frozen array; `Object.defineProperty` accepts only same-value redefinitions. Freezing is shallow and does not change ownership: a frozen object stays task-owned. Primitives, built-ins, functions and the other kinds as for `preventExtensions` |
+| `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | `isExtensible`: the object's `[[Extensible]]` flag; `false` for a primitive (or no argument). `isFrozen`: `true` when the object is not extensible and no own property (elements and `length` included) is writable or configurable, however it got there; `true` for a primitive. A built-in object reports `true` / `false` (its descriptors are the standard ones; immutability comes from sharing). A function without a property record is extensible and not frozen; a published function, a vector, map, builder or other value without JavaScript properties is not extensible and frozen. Another task's object (or another task's function with a property record) fails with `ForeignObject`, an error object with `UnsupportedOperand` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
@@ -1389,6 +1409,17 @@ let q = {y: 2}; let s = {__proto__: q}; let t = {}; t.__proto__ = q; s.y === 2 &
 ```js reject Invalid 2:17
 // Only one `__proto__: v` may set a literal's prototype.
 ({__proto__: 1, __proto__: 2});
+```
+
+Extensibility and freezing (clj-quickjs-122); each line below evaluates
+to `true`:
+
+```js accept
+let a = {x: 1}; Object.preventExtensions(a) === a && !Object.isExtensible(a) && Object.isExtensible({});
+let b = {x: 1}; Object.preventExtensions(b); let r = false; try { b.y = 2; } catch (e) { r = b.y === undefined; } r;
+let f = Object.freeze({x: 1}); let s = false; try { f.x = 2; } catch (e) { s = f.x === 1; } s && Object.isFrozen(f) && !Object.isFrozen({});
+let q = Object.freeze([1, 2]); let t = false; try { q[0] = 3; } catch (e) { t = q[0] === 1; } t && Object.isFrozen(q);
+Object.isExtensible(1) === false && Object.preventExtensions(1) === 1 && Object.isFrozen(__rt.vector());
 ```
 
 Rejected (`kind line:column` of the reported position):

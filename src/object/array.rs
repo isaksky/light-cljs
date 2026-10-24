@@ -20,7 +20,9 @@
 //!   [`array_index`]), as data properties, writable, enumerable and
 //!   configurable unless `Object.defineProperty` gave them other attributes
 //!   (clj-quickjs-119; kept in a sorted map of the exceptions, empty for a
-//!   literal):
+//!   literal). `Object.freeze` (clj-quickjs-122) sets a `frozen` flag that
+//!   makes the default non-writable and non-configurable instead, so a
+//!   frozen array needs no entry per element:
 //!   - a **dense** vector for indices `0 .. dense.len()`, where `None` is a
 //!     hole (an absent property, not an `undefined` value);
 //!   - a **sparse** ordered map for indices at or beyond `dense.len()`.
@@ -102,13 +104,27 @@ pub(crate) struct ArrayObject {
     dense: Vec<Option<Value>>,
     sparse: BTreeMap<u32, Value>,
     length: u32,
-    /// The attributes of the elements that are not writable, enumerable and
-    /// configurable (`Object.defineProperty`, clj-quickjs-119); every other
-    /// element has all three.
+    /// The attributes of the elements whose attributes differ from the
+    /// default ([`ArrayObject::default_flags`]: writable, enumerable and
+    /// configurable, or [`FROZEN_ELEMENT`] once frozen), from
+    /// `Object.defineProperty` (clj-quickjs-119).
     attributes: BTreeMap<u32, PropertyFlags>,
     /// The `writable` attribute of `length` (`Object.defineProperty`).
     length_writable: bool,
+    /// Set by `Object.freeze` (clj-quickjs-122): every element is then
+    /// non-writable and non-configurable without a per-element entry, so
+    /// freezing a large array allocates nothing. Never cleared: a frozen
+    /// array is not extensible and its elements cannot be reconfigured.
+    frozen: bool,
 }
+
+/// The attributes of an element of a frozen array that was enumerable
+/// (every element not given other attributes by `Object.defineProperty`).
+pub(crate) const FROZEN_ELEMENT: PropertyFlags = PropertyFlags {
+    writable: false,
+    enumerable: true,
+    configurable: false,
+};
 
 impl ArrayObject {
     /// An empty array (length 0) with a null prototype, owned by `owner`.
@@ -120,6 +136,7 @@ impl ArrayObject {
             length: 0,
             attributes: BTreeMap::new(),
             length_writable: true,
+            frozen: false,
         }
     }
 
@@ -222,12 +239,50 @@ impl ArrayObject {
         SetOutcome::Done
     }
 
+    /// The attributes of an element `attributes` has no entry for.
+    fn default_flags(&self) -> PropertyFlags {
+        if self.frozen {
+            FROZEN_ELEMENT
+        } else {
+            PropertyFlags::DATA
+        }
+    }
+
     /// The attributes of a present element.
     fn element_flags(&self, index: u32) -> PropertyFlags {
         self.attributes
             .get(&index)
             .copied()
-            .unwrap_or(PropertyFlags::DATA)
+            .unwrap_or_else(|| self.default_flags())
+    }
+
+    /// SetIntegrityLevel(frozen) (`Object.freeze`, clj-quickjs-122): the
+    /// ordinary part frozen ([`OrdinaryObject::freeze`]), `length` read-only
+    /// and every element non-writable and non-configurable (`enumerable`
+    /// kept).
+    pub(crate) fn freeze(&mut self) {
+        self.object.freeze();
+        self.length_writable = false;
+        self.frozen = true;
+        self.attributes.retain(|_, flags| {
+            flags.writable = false;
+            flags.configurable = false;
+            *flags != FROZEN_ELEMENT
+        });
+    }
+
+    /// TestIntegrityLevel(frozen) (`Object.isFrozen`, clj-quickjs-122): the
+    /// ordinary part frozen, `length` read-only and no element writable or
+    /// configurable (also when `Object.defineProperty` made them so one by
+    /// one).
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.object.is_frozen()
+            && !self.length_writable
+            && (self.frozen
+                || self.elements().all(|(i, _)| {
+                    let flags = self.element_flags(i);
+                    !flags.writable && !flags.configurable
+                }))
     }
 
     /// The element `index` as a property (value and attributes), if present.
@@ -281,7 +336,7 @@ impl ArrayObject {
             Err(outcome) => return outcome,
         };
         self.store(index, property.value);
-        if property.flags == PropertyFlags::DATA {
+        if property.flags == self.default_flags() {
             self.attributes.remove(&index);
         } else {
             self.attributes.insert(index, property.flags);
@@ -415,6 +470,39 @@ mod tests {
         // No index exists past 2^32 - 2.
         assert!(!a.push(Some(n(0.0))));
         assert_eq!(a.length(), u32::MAX);
+    }
+
+    /// Freezing a large array allocates no per-element attributes, keeps
+    /// the attributes `defineProperty` gave, and blocks every change.
+    #[test]
+    fn freezing_needs_no_per_element_attributes() {
+        let mut a = ArrayObject::new(None);
+        for i in 0..1000 {
+            a.push(Some(n(f64::from(i))));
+        }
+        let hidden = PropertyDescriptor {
+            enumerable: Some(false),
+            ..PropertyDescriptor::default()
+        };
+        assert_eq!(a.define_element(3, &hidden), DefineOutcome::Done);
+        assert!(!a.is_frozen());
+        a.freeze();
+        assert!(a.is_frozen());
+        assert_eq!(a.attributes.len(), 1, "only the non-enumerable element");
+        assert_eq!(a.element(0).unwrap().flags, FROZEN_ELEMENT);
+        let three = a.element(3).unwrap().flags;
+        assert!(!three.writable && !three.enumerable && !three.configurable);
+        assert_eq!(a.set(0, n(-1.0)), SetOutcome::ReadOnly);
+        assert_eq!(a.set(1000, n(-1.0)), SetOutcome::ReadOnly);
+        assert!(!a.length_property().flags.writable);
+        // A same-value define is accepted and adds no entry.
+        let same = PropertyDescriptor {
+            value: Some(n(0.0)),
+            ..PropertyDescriptor::default()
+        };
+        assert_eq!(a.define_element(0, &same), DefineOutcome::Done);
+        assert_eq!(a.attributes.len(), 1);
+        assert_eq!(a.get(0), Some(&n(0.0)));
     }
 
     #[test]

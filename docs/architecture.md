@@ -1560,7 +1560,7 @@ for a write the right-hand side is evaluated first (PutValue).
   consult the chain (`SetOutcome::Inherited`; done, see "Realm intrinsics"
   and "Prototype reflection");
   `extensible` is cleared by `Object.preventExtensions`/`freeze`
-  (clj-quickjs-122); creation order is kept for enumeration, where integer
+  (clj-quickjs-122; done, see "Extensibility and freezing"); creation order is kept for enumeration, where integer
   keys must sort first (clj-quickjs-123); `delete` removes an entry and
   rebuilds the index (clj-quickjs-124); function objects, which are
   persistent today, need a separate task-owned property store for their
@@ -1599,7 +1599,9 @@ until the heap is dropped. Its objects are:
   `name`; `Object` also `prototype` and `is`). clj-quickjs-119 appended
   `Object.defineProperty` and `Object.getOwnPropertyDescriptor` ("Property
   attributes" below), clj-quickjs-121 `Object.getPrototypeOf`,
-  `Object.setPrototypeOf` and `Object.create` ("Prototype reflection").
+  `Object.setPrototypeOf` and `Object.create` ("Prototype reflection"),
+  clj-quickjs-122 `Object.preventExtensions`, `Object.isExtensible`,
+  `Object.freeze` and `Object.isFrozen` ("Extensibility and freezing").
 
 Every task reads them without any lock (an immutable copy of each
 intrinsic's properties and prototype is published with the realm, and
@@ -1704,7 +1706,7 @@ moment (a leaf lock, never taken by the collector).
   through the realm; built-in functions get it as their `[[Prototype]]`.
   Until it exists, reading a property a built-in function does not have
   itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's objects (thirteen since clj-quickjs-121) and its interned names live as long as the
+- The realm's objects (seventeen since clj-quickjs-122) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -1823,7 +1825,9 @@ the element or property is added.
   order (clj-quickjs-123), `delete a[i]` makes a hole (clj-quickjs-124),
   and a non-default element attribute (`defineProperty`, freezing) needs
   per-element flags or a move to a named property, which the sparse part
-  can take.
+  can take (clj-quickjs-119 added a sorted map of the exceptions;
+  clj-quickjs-122 a `frozen` flag that changes the default, so freezing
+  adds no entries: "Extensibility and freezing").
 - `Object.getPrototypeOf([])` names `Array.prototype` (clj-quickjs-121);
   an `Array` global (clj-quickjs-39) will give it its usual name. Its methods are
   added to the realm (`realm::build`, `Builtin`, append-only).
@@ -2146,6 +2150,99 @@ so they run inside their call instruction.
 - `Function.prototype` (clj-quickjs-102) will give functions a prototype
   to report and change; the cycle walk must then follow functions (and
   their records) whose prototype can change.
+
+## Extensibility and freezing (clj-quickjs-122)
+
+Contract: `src/vm/integrity.rs` (the four built-ins and the table of what
+each kind reports), `src/object.rs` (`OrdinaryObject::prevent_extensions`,
+`freeze`, `is_frozen`), `src/object/array.rs` (`ArrayObject::freeze`,
+`is_frozen`, the `frozen` flag), `src/vm/function.rs`
+(`integrity_store`, `integrity_target`). Semantics: `docs/grammar.md`,
+"Execution".
+
+**Decision.** The `[[Extensible]]` flag every ordinary object has carried
+since clj-quickjs-114 is cleared by `Object.preventExtensions` and
+`Object.freeze`, and never set again. Everything that adds a property
+already consulted it (`OrdinaryObject::set`/`add`/`define_own_property`,
+`ArrayObject::add`/`define_element`, `prototype::set_prototype_of`), so the
+strict `TypeError` / sloppy no-op of `[[Set]]` (clj-quickjs-119), the
+`defineProperty` `TypeError` and the `setPrototypeOf` `TypeError`
+(clj-quickjs-121) needed no new code. `Object.freeze` is ECMAScript's
+SetIntegrityLevel(frozen) applied to the stored attributes: every entry
+of an ordinary object becomes non-writable and non-configurable;
+`isFrozen` is TestIntegrityLevel over the same entries. The four are
+`Builtin` variants appended to the realm's `Object`; none runs JavaScript,
+so they run inside their call instruction.
+
+- **Frozen arrays need no per-element entries.** An array freezes its
+  ordinary part, makes `length` read-only and sets a `frozen` flag that
+  changes the default element attributes from all-true to
+  non-writable, enumerable, non-configurable; the sparse map of element
+  attributes keeps only the elements that differ from that default (those
+  `defineProperty` made non-enumerable). Freezing an array of a million
+  elements allocates nothing. The flag is never cleared: a frozen array
+  takes no new elements and its elements cannot be reconfigured. Every
+  write path (index, hole, past the end, `length`, named) already
+  rejects read-only and non-extensible cases.
+- **Functions keep the flag in their property record** (clj-quickjs-125).
+  A function without a record is extensible and not frozen. Making one
+  non-extensible or frozen creates the record and, for a constructor,
+  its lazy `prototype` first, so the own property exists before the
+  record stops taking new ones (otherwise its first read would fail).
+  The record is task-owned, so the function can no longer be published,
+  like after any property write. A published function is shared and
+  immutable, so it reports non-extensible and frozen, and freezing it
+  again succeeds without change; publication racing the change resolves
+  under the object-table lock as for writes (`Heap::mark_shareable_unless`),
+  and a change that lost the race reports the now-frozen function.
+- **Intrinsics report their attributes.** A realm intrinsic is immutable
+  because it is shared, not because of its attributes ("Realm
+  intrinsics"): `isExtensible(Object.prototype)` is `true` and
+  `isFrozen` `false`, as `getOwnPropertyDescriptor` reports writable,
+  configurable methods, while `preventExtensions` and `freeze` on one are
+  the `TypeError` of a `[[PreventExtensions]]` that returns false. The
+  realm's lock-free views stay exact.
+- **Values without JavaScript properties** (vectors, maps, occurrences,
+  builders, atoms, cells, non-error natives) already behave as objects
+  with no properties and no extensibility (`crate::vm::property`), so they
+  report non-extensible and frozen, and the two changes return them.
+  Error objects fail with `UnsupportedOperand` until their properties
+  exist (clj-quickjs-230).
+- **Freezing does not change ownership.** A frozen object or array is
+  still `Shareability::TaskOwned`: other tasks get `ForeignObject` and the
+  publication check rejects it, however deeply it is frozen. The pellet
+  does not ask for frozen objects to become shareable, and doing so would
+  need a publication rule for objects (identity, prototype links to
+  task-owned objects, the owner's later reads), which is a separate design.
+
+**Alternatives considered.**
+
+- *Per-element attribute entries for frozen arrays*: correct but
+  proportional to the array; the flag costs one byte and keeps
+  `defineProperty`'s exceptions map small.
+- *A non-extensible bit in the function object itself* (no record): would
+  keep an arrow function publishable after `Object.freeze`, but makes the
+  function object mutable after allocation, which the publication cache
+  relies on not happening, and a constructor needs its `prototype`
+  materialized (a task-owned object) anyway. Rejected; the record is the
+  single place a function's mutable property state lives.
+- *Reporting intrinsics as frozen*: would contradict the attributes
+  `getOwnPropertyDescriptor` reports for them (a frozen object cannot have
+  a writable property). Rejected.
+
+**Consequences.**
+
+- clj-quickjs-120: freezing an accessor property only makes it
+  non-configurable (accessors have no `writable`), and `isFrozen` must
+  skip `writable` for them.
+- clj-quickjs-124 (`delete`) must reject deleting the non-configurable
+  properties a frozen object has; nothing else is needed for
+  non-extensible objects, whose properties stay deletable.
+- clj-quickjs-101 (`length`/`name` of functions) must include them in a
+  frozen function's record; until then a frozen function's `isFrozen`
+  covers only its record's properties.
+- `Object.seal`/`isSealed` (not requested) would be the same two loops
+  with `writable` left alone.
 
 ## QuickJS references and provenance
 
@@ -2614,3 +2711,13 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_object_set___proto__`, the `__proto__` case of
   `js_parse_object_literal` and `CASE(OP_set_proto)` were consulted only,
   for semantics. No code was copied.
+- `tests/js_source.rs` `object_extensibility` (clj-quickjs-122): the
+  `Object.isExtensible(a)`, `Object.preventExtensions(a)`, `a.y = 2`
+  throws and `typeof a.y` rows of `test` (line 124) in
+  `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8.
+  Modified: `var` is `let` and the asserts are joined into one condition
+  checked by a Rust assertion. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_object_isExtensible`,
+  `js_object_preventExtensions`, `JS_PreventExtensions`, `js_object_seal`
+  and `js_object_isSealed` were consulted only, for semantics. No code
+  was copied.
