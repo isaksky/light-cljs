@@ -69,6 +69,42 @@ fn array_destructuring_protocol_and_abrupt_completion() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_destructuring_nested_iterator_close() {
+    for (action, inner_close, outer_close, expected) in [
+        (
+            "let [[x]] = outer;",
+            "return {};",
+            "return {};",
+            "caught === undefined",
+        ),
+        (
+            "let [[x = fail()]] = outer;",
+            "return {};",
+            "return {};",
+            "caught === 17",
+        ),
+        (
+            "let [[x = fail()]] = outer;",
+            "throw 18;",
+            "throw 19;",
+            "caught === 17",
+        ),
+        (
+            "let [[x]] = outer;",
+            "throw 18;",
+            "throw 19;",
+            "caught === 18",
+        ),
+    ] {
+        let source = format!(
+            "let log = ''; let inner = {{next() {{ return {{}}; }}, return() {{ log += 'i'; {inner_close} }} }}; inner[Symbol.iterator] = function() {{ return this; }}; let outer = {{next() {{ return {{value: inner}}; }}, return() {{ log += 'o'; {outer_close} }} }}; outer[Symbol.iterator] = function() {{ return this; }}; function fail() {{ throw 17; }} let caught; try {{ {action} }} catch(e) {{ caught = e; }} log === 'io' && {expected}"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Collect after every instruction,
 /// satisfy one dependency wait, and move the continuation to a new worker.
 #[test]
@@ -7467,6 +7503,13 @@ fn runtime_error_positions_follow_operator_tokens() {
     assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 7));
     let (kind, _, line, column) = failure_at("1 + (not_def = 1)");
     assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 6));
+    let (kind, message, line, column) = failure_at("const a = 0;\n[(a)] = [1];");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 3));
+    assert_eq!(message, "assignment to constant variable 'a'");
+    let (kind, message, line, column) = failure_at("\n[(a)] = [1]; let a;");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 3));
+    assert!(message.contains("'a'"), "{message}");
+    assert!(!message.contains("(a)"), "{message}");
 }
 
 #[test]

@@ -1990,8 +1990,9 @@ impl<'s> Lowerer<'s> {
                         self.out().op_u16(Opcode::SetLocal, b.slot, span);
                     }
                 } else {
-                    let access = self.resolve(&name.name);
-                    self.store(access, span)?;
+                    let at = self.name_span(&name.name, name.span);
+                    let access = self.resolve_reference(&name.name);
+                    self.store(access, at)?;
                     self.out().op(Opcode::Pop, span);
                 }
             }

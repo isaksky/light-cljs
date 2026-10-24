@@ -305,8 +305,52 @@ fn array_patterns() {
         "[...r,] = x",
         "let [a];",
         "function f([a, a]) {}",
+        "[(a = 1)] = []",
+        "[(o.x = 1)] = []",
+        "[(o[0] = 1)] = []",
+        "[([a] = [])] = []",
     ] {
         assert!(parse_script(src).is_err(), "{src}");
+    }
+    for src in [
+        "[(a) = 1] = []",
+        "[(a) = (1)] = []",
+        "[(o.x) = 1] = []",
+        "[(o[0]) = 1] = []",
+    ] {
+        parse_script(src).unwrap();
+    }
+    let error = super::compile_script_with("array-eval", "[eval] = [];", ScriptOptions::SLOPPY)
+        .unwrap_err();
+    assert_eq!(error.kind, SyntaxErrorKind::Unsupported);
+}
+
+/// Fixed parameter lists across growing bodies exercise directive handling
+/// without a parameter-name cloning pass for every statement. Directive checks
+/// now borrow pattern names only when a strict directive needs them.
+#[test]
+fn function_body_parameter_name_allocations() {
+    let params = (0..128)
+        .map(|i| format!("p{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    for statements in [1, 100, 10_000] {
+        for (head, directive, count, strict) in [
+            (params.clone(), "'use strict';", 128, true),
+            (format!("[head,tail],{params}"), "", 129, false),
+        ] {
+            let src = format!(
+                "function f({head}) {{ {directive} {} }}",
+                "0;".repeat(statements)
+            );
+            let script = parse_script_with(&src, ScriptOptions::SLOPPY).unwrap();
+            let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+                panic!("expected function");
+            };
+            assert_eq!(f.params.len(), count);
+            assert_eq!(f.body.len(), statements + usize::from(strict));
+            assert_eq!(f.strict, strict);
+        }
     }
 }
 

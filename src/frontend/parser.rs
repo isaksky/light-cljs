@@ -388,7 +388,7 @@ impl<'a> Parser<'a> {
         stmt: &Stmt,
         earlier: &[Stmt],
         name: Option<&Ident>,
-        params: &[Ident],
+        params: &[Pattern],
     ) -> PResult<bool> {
         let StmtKind::Expr(Expr {
             kind: ExprKind::String(_),
@@ -406,7 +406,7 @@ impl<'a> Parser<'a> {
             self.set_strict(true);
             if let Some(ident) = name
                 .into_iter()
-                .chain(params)
+                .chain(params.iter().flat_map(|p| p.names()))
                 .find(|i| STRICT_RESTRICTED.contains(&i.name.as_str()))
             {
                 return Err(self.error(
@@ -1388,8 +1388,7 @@ impl<'a> Parser<'a> {
             if prologue && !simple {
                 self.reject_use_strict(&stmt)?;
             }
-            let names: Vec<Ident> = params.iter().flat_map(|p| p.names()).cloned().collect();
-            prologue = prologue && self.directive(&stmt, &body, name, &names)?;
+            prologue = prologue && self.directive(&stmt, &body, name, params)?;
             body.push(stmt);
         }
         self.no_in = no_in;
@@ -1715,6 +1714,24 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn assignment_pattern(&self, expr: Expr) -> PResult<Pattern> {
         let span = expr.span;
+        // Assignment nodes end exactly at their RHS. Wrapping the whole
+        // assignment in parentheses extends only the outer span, whereas
+        // parentheses around the target or RHS are already in that child.
+        // Thus `[(a = 1)]` is invalid, while `[(a) = (1)]` is a default.
+        let value = match &expr.kind {
+            ExprKind::Assign { value, .. }
+            | ExprKind::AssignMember { value, .. }
+            | ExprKind::AssignIndex { value, .. }
+            | ExprKind::AssignPattern { value, .. } => Some(value),
+            _ => None,
+        };
+        if value.is_some_and(|value| span.end != value.span.end) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "a pattern or default cannot be parenthesized",
+            ));
+        }
         let kind = match expr.kind {
             ExprKind::Array(elements) => {
                 if !span.text(self.src).starts_with('[') {

@@ -6271,6 +6271,11 @@ and assignment expressions. Identifier, array, default and property-target nodes
 keep source spans and bounded heights. Binding-name traversal supplies scope
 analysis and var hoisting; property targets occur only in assignment patterns.
 This representation leaves object pattern traversal to clj-quickjs-132.
+An assignment ends at its RHS span; parentheses around the whole assignment
+extend only its outer span. Cover grammar conversion uses that distinction to
+reject `[(a = 1)]` while accepting `[(a) = 1]`, without enlarging AST nodes. Directive
+checking borrows parameter names only when a strict directive requires them;
+it does not clone parameter strings for every body statement.
 
 Lowering consumes one value with `pattern_store`, either initializing bindings
 or assigning references. Array consumers reuse the for-of/spread GetIterator,
