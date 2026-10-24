@@ -541,3 +541,143 @@ fn folds_nest_through_callbacks() {
     // (1 + (1 + 2) + (1 + 2 + 3)) * 10
     assert_eq!(number(&complete(resumed.run().unwrap())), 100.0);
 }
+
+/// Run `task` one instruction or native step per run to completion,
+/// collecting at every pause and recording whether all of `weak` survived.
+fn step_and_collect(rt: &Runtime, task: &Task, weak: &[WeakHandle]) -> (Rooted, Vec<bool>) {
+    let mut kept = Vec::new();
+    loop {
+        match task
+            .run_with(Budget::instructions(1), &mut Recorder::default())
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+                kept.push(weak.iter().all(WeakHandle::is_live));
+            }
+            RunOutcome::Complete(v) => return (v, kept),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+/// The callback and the heap-valued initial accumulator, like the vector,
+/// are reachable only from the fold's frame once `reduce` has started (its
+/// first pause is before the first callback is entered); they stay valid
+/// until the fold returns. The callback returns the accumulator unchanged, so
+/// the initializer is the accumulator throughout and the result.
+#[test]
+fn a_fold_alone_keeps_its_callback_and_initial_accumulator() {
+    let rt = Runtime::new();
+    let maker = compile_function(
+        "function maker() {\n  return function (acc, x) { return __rt.count(acc) + x > 0 ? acc : null; };\n}",
+    )
+    .unwrap();
+    let f = complete(rt.spawn(&maker, &[]).unwrap().run().unwrap());
+    let init = number_vector(&rt, &[0.0]);
+    let items = number_vector(&rt, &[1.0, 2.0]);
+    let weak = [f.downgrade(), init.downgrade(), items.downgrade()];
+    let exe = compile_function(
+        "function main(f, init, items) {
+  function first(a, b) { return a; }
+  return __rt.reduce(first(f, f = null), first(init, init = null), first(items, items = null));
+}",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[&f, &init, &items]).unwrap();
+    drop((f, init, items));
+    let (result, kept) = step_and_collect(&rt, &task, &weak);
+    assert!(
+        result.same_object(&weak[1].upgrade().unwrap()),
+        "init itself"
+    );
+    let (last, before) = kept.split_last().unwrap();
+    assert!(before.len() > 10 && before.iter().all(|&k| k), "{kept:?}");
+    assert!(!last, "released when the fold returned");
+}
+
+/// `needAll`'s definitions vector and its results so far are reachable only
+/// from its native frame while it waits; both survive collections at every
+/// wait, and the definitions are reclaimed once the task finishes.
+#[test]
+fn need_all_alone_keeps_its_definitions_and_results_while_waiting() {
+    let rt = Runtime::new();
+    let exe = compile_function(
+        "function main(defs) {
+  function first(a, b) { return a; }
+  return __rt.needAll(first(defs, defs = null), 3);
+}",
+    )
+    .unwrap();
+    let defs = number_vector(&rt, &[50.0, 51.0, 52.0]);
+    let weak = defs.downgrade();
+    let task = rt.spawn(&exe, &[&defs]).unwrap();
+    drop(defs);
+    let mut outcome = task.run().unwrap();
+    for def in [50, 51, 52] {
+        let pending = key(&rt, def, 3);
+        assert_eq!(waiting(outcome), pending);
+        let request = one_request(&task, pending);
+        rt.collect().unwrap();
+        assert!(weak.is_live(), "kept by the waiting needAll");
+        // A heap-valued result each time, so the results so far hold objects
+        // only the native frame reaches.
+        let value = number_vector(&rt, &[def as f64]);
+        let wakeups = rt
+            .complete(pending, request.producer(), Completion::Ready(&value))
+            .unwrap();
+        drop(value);
+        outcome = only_runnable(wakeups).run().unwrap();
+    }
+    let results = complete(outcome);
+    let firsts: Vec<f64> = rt.scope(|s| {
+        let v = s.local(&results).unwrap();
+        s.items(v)
+            .unwrap()
+            .into_iter()
+            .map(|r| match s.view(s.nth(r, 0).unwrap()) {
+                ValueView::Number(n) => n,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    });
+    assert_eq!(firsts, [50.0, 51.0, 52.0]);
+    rt.collect().unwrap();
+    assert!(!weak.is_live(), "reclaimed after the task");
+}
+
+/// Empty inputs complete from the first step: `reduce` returns its initial
+/// accumulator itself without calling the callback, `needAll` an empty
+/// vector without needing anything.
+#[test]
+fn empty_inputs_complete_without_callbacks_or_needs() {
+    let rt = Runtime::new();
+    let exe = compile_function(
+        "function main(init, empty) {
+  function f(acc, x) { __rt.effect(2, x); return x; }
+  return __rt.vector(__rt.reduce(f, init, empty), __rt.needAll(empty, 3));
+}",
+    )
+    .unwrap();
+    let init = rt.scope(|s| {
+        let o = s.new_object();
+        s.persist(o)
+    });
+    let empty = number_vector(&rt, &[]);
+    let task = rt.spawn(&exe, &[&init, &empty]).unwrap();
+    let mut host = Recorder::default();
+    let result = complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap());
+    assert!(host.effects.is_empty(), "no callback ran");
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        let items = s.items(v).unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(
+            s.persist(items[0]).same_object(&init),
+            "the initializer itself"
+        );
+        assert_eq!(s.count(items[1]).unwrap(), 0);
+    });
+    assert!(task.dependency_log().edges().is_empty());
+    assert!(task.take_producer_requests().is_empty());
+}

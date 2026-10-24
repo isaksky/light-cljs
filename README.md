@@ -132,9 +132,8 @@ Supported:
 
 Deferred:
 
-- Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
-  scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
-  only, not time or allocation.
+- Budgets count instructions (and resumable native steps, see
+  clj-quickjs-12 below) only, not time or allocation.
 
 ### Garbage collection (clj-quickjs-2)
 
