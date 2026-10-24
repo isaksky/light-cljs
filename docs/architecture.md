@@ -6035,7 +6035,9 @@ DST transitions. Non-ISO fallback parsing is described below (-185).
 ## Date fallback parser (clj-quickjs-185)
 
 After ISO failure, `date::Parser` switches to `FallbackParser` over the same
-immutable UTF-16 buffer. Its constant-size state contains scalar fields,
+immutable UTF-16 buffer. ISO suffix recognition includes `Z`, `±HH:mm` and
+`±HHmm` on date-only and time forms, so an ISO offset cannot be mistaken for
+a fallback signed year. Its constant-size fallback state contains scalar fields,
 three pending date numbers, presence flags and an explicit scan mode. Digits
 (including arbitrary leading zeroes), whitespace/separators, ignored words and
 nested comments advance incrementally; each native step allows 256 state

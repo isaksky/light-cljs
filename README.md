@@ -3250,10 +3250,10 @@ Date ISO parsing (clj-quickjs-184): `Date.parse(value)` performs resumable
 ToString with the string hint; single-argument `new Date(value)` parses a
 string returned by default-hint ToPrimitive and otherwise converts to Number.
 Accepted ISO forms are `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, optionally followed by
-`THH:mm`, `THH:mm:ss`, or `THH:mm:ss.f+`, with optional `Z` or `±HH:mm` on
-the time. Signed six-digit years work except `-000000`. Fractions of any length
-truncate to milliseconds. Date-only forms use UTC; time forms without an
-offset use the runtime's frozen host zone (UTC without a host), including its
+`THH:mm`, `THH:mm:ss`, or `THH:mm:ss.f+`, with optional `Z`, `±HH:mm` or
+`±HHmm` on the date or time. Signed six-digit years work except `-000000`.
+Fractions of any length truncate to milliseconds. Date-only forms use UTC;
+time forms without an offset use the runtime's frozen host zone (UTC without a host), including its
 existing DST gap/overlap rules. Fields are range-checked, `24:00` advances to
 the next day, and invalid or TimeClip-out-of-range input returns NaN (an invalid
 Date on construction). This supersedes earlier ISO parsing gaps. For non-ISO

@@ -177,25 +177,22 @@ impl IsoParser {
             units,
             next: self.next,
         };
-        if self.parsed.is_local {
-            if cursor.eat(b'Z') {
-                self.parsed.is_local = false;
-            } else {
-                let positive = cursor.eat(b'+');
-                let negative = !positive && cursor.eat(b'-');
-                if positive || negative {
-                    let hour = cursor.digits(2)?;
-                    if !cursor.eat(b':') {
-                        return None;
-                    }
-                    let minute = cursor.digits(2)?;
-                    if hour > 23 || minute > 59 {
-                        return None;
-                    }
-                    self.parsed.offset_minutes =
-                        (hour * 60 + minute) * if negative { -1 } else { 1 };
-                    self.parsed.is_local = false;
+        // QuickJS recognizes ISO zone suffixes on date-only forms too. They
+        // must win over the fallback's signed-year interpretation.
+        if cursor.eat(b'Z') {
+            self.parsed.is_local = false;
+        } else {
+            let positive = cursor.eat(b'+');
+            let negative = !positive && cursor.eat(b'-');
+            if positive || negative {
+                let hour = cursor.digits(2)?;
+                cursor.eat(b':');
+                let minute = cursor.digits(2)?;
+                if hour > 23 || minute > 59 {
+                    return None;
                 }
+                self.parsed.offset_minutes = (hour * 60 + minute) * if negative { -1 } else { 1 };
+                self.parsed.is_local = false;
             }
         }
         let [_, month, day, hour, minute, second, ms] = self.parsed.fields;

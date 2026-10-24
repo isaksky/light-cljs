@@ -4170,9 +4170,11 @@ The ISO grammar accepts four-digit years or signed six-digit expanded years
 after any of those date forms. Seconds `:ss` and then a fraction `.f+` are
 optional; all fractional digits are validated and only the first three
 contribute milliseconds, padding shorter fractions with zeros. A time may
-end in `Z` or `±HH:mm`. Without a time, omitted month/day are January/1 and the
-value is UTC. A time with no offset uses the runtime's local zone. There is
-no 1900 adjustment for parsed years 0–99. Month/day bounds are 1–12/1–31;
+end in `Z`, `±HH:mm` or `±HHmm`; these suffixes also apply directly to a
+date-only form. Without a time, omitted month/day are January/1 and the value
+uses UTC with any explicit offset applied. A time with no offset uses the
+runtime's local zone. There is no 1900 adjustment for parsed years 0–99.
+Month/day bounds are 1–12/1–31;
 calendar arithmetic balances days within those bounds across month ends.
 Hours/minutes/seconds must be at most 24/59/59, with hour 24 requiring zero
 minutes, seconds and milliseconds. Offset hours/minutes are at most 23/59.
@@ -4212,7 +4214,7 @@ non-strict handling drops excess rightmost digit pairs from compact offsets.
 Unicode minus U+2212 is recognized. Without an offset or abbreviation, even a
 date-only fallback form uses the runtime's local-to-UTC conversion and existing
 DST gap/overlap policy. Parsed fields then use the shared calendar arithmetic
-and TimeClip. Date string formats round-trip whole-second values.
+and TimeClip. `toString` and `toUTCString` round-trip whole-second values.
 
 Explicit gaps: this supersedes earlier non-ISO parsing gaps. It introduces no
 input-length cap or host clock/time-zone reads outside the embedding boundary.
