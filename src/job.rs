@@ -101,49 +101,58 @@ pub(crate) enum JobError {
 
 /// An opaque, owner-bound delivery capability. Only the callable's task
 /// creates it; a settling task may send shareable arguments through it but
-/// cannot inspect or execute the callable. A sender retains its callable,
-/// not the destination task. Future promise reaction records can own it.
+/// cannot inspect or execute the callable. The owning reaction record must
+/// trace this sender (or root its callable while held outside the heap).
+/// There is no persistent root or strong heap/task reference here, so an
+/// unreachable reaction/callable cycle can be reclaimed normally.
 #[derive(Clone, Debug)]
 pub(crate) struct JobSender {
     inbox: Weak<JobInbox>,
-    heap: Arc<Heap>,
-    callable: Rooted,
+    heap: Weak<Heap>,
+    callable: Value,
 }
 
 impl JobSender {
     #[cfg(test)]
     pub(crate) fn callable_for_test(&self) -> Value {
-        self.callable.value_in(&self.heap).unwrap()
+        self.callable.clone()
     }
     pub(crate) fn new(inbox: &Arc<JobInbox>, heap: &Arc<Heap>, callable: Value) -> Self {
         Self {
             inbox: Arc::downgrade(inbox),
-            heap: Arc::clone(heap),
-            callable: Rooted::new(heap, callable),
+            heap: Arc::downgrade(heap),
+            callable,
         }
     }
 
     /// Transfer only immutable/published arguments. No JavaScript, wake,
     /// host effect or callback executes here. A whole-task dependency wait
     /// stays parked: delivery alone never wakes or re-enters the task.
+    /// The caller keeps the sender's owning traced record live until this
+    /// returns, as for other internal APIs taking raw VM values.
     pub(crate) fn enqueue(&self, args: &[Rooted]) -> Result<(), JobError> {
-        let _access = self.heap.enter_mutator(Access::Op);
-        let args = args
-            .iter()
-            .map(|v| {
-                let v = v
-                    .value_in(&self.heap)
-                    .map_err(|_| JobError::ForeignRuntime)?;
-                share::check(&self.heap, &v).map_err(|_| JobError::NotShareable)?;
-                Ok(v)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         if args.len() >= usize::from(u16::MAX) {
             return Err(JobError::TooManyArguments);
         }
+        let heap = self.heap.upgrade().ok_or(JobError::Closed)?;
+        let _access = heap.enter_mutator(Access::Op);
+        let args = args
+            .iter()
+            .map(|v| {
+                let v = v.value_in(&heap).map_err(|_| JobError::ForeignRuntime)?;
+                share::check(&heap, &v).map_err(|_| JobError::NotShareable)?;
+                Ok(v)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.inbox.upgrade().ok_or(JobError::Closed)?.push(Job {
-            callable: self.callable.value_in(&self.heap).expect("sender heap"),
+            callable: self.callable.clone(),
             args,
         })
+    }
+}
+
+impl Trace for JobSender {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.callable.trace(visit);
     }
 }

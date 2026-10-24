@@ -4742,12 +4742,15 @@ and async resumes must target the activation's owning task.
 Cross-task delivery validates the arguments with the ordinary transitive
 publication check and rejects foreign-runtime handles. It enters heap access,
 then briefly locks inbox metadata to append; it runs no JavaScript or host
-callback and takes no task body or dependency-cell lock. A sender roots its
-callable until dropped, and holds only a weak inbox reference, so it does not
-keep the destination task alive. Engine callers should release reaction
-senders when the reaction is consumed. Delivery to a finished or dropped task
-returns `Closed`. Pending raw entries are traced as `TaskFrame` roots by the
-task root source, including when its executing body is skipped by the
+callback and takes no task body or dependency-cell lock. A sender contains a
+raw callable value and weak heap/inbox references. Its owning reaction record
+must trace it; an external Rust holder must explicitly root its callable
+until delivery finishes. Thus it keeps neither the destination task nor an
+unreachable reaction/callable cycle alive through hidden permanent roots.
+Engine callers should release reaction senders when the reaction is consumed.
+Delivery to a finished or dropped task returns `Closed`. Pending raw entries
+are traced as `TaskFrame` roots by the task root source, including when its
+executing body is skipped by the
 collector; active jobs and the saved body result are traced by `VmState` at
 safepoints. No queue operation or payload destruction executes user code in
 the collector pause.
@@ -4783,8 +4786,8 @@ queue is empty. An uncaught job exception reports `Failed(error)` and drops
 the tail. A failed body never starts jobs. Observing consumer cancellation
 closes admission and drops pending jobs before running the active activation's
 existing finally cleanup; cleanup can still yield. No queued job runs as
-cancellation cleanup. Sender-held callables remain roots until those senders
-are dropped, independently of pending-job cleanup.
+cancellation cleanup. Callable lifetime in an owning reaction record remains
+independent of pending-job cleanup and follows ordinary precise tracing.
 
 Tests in `src/task/job_tests.rs` use synthetic JavaScript fixtures and a
 crate-internal enqueue helper; they cover FIFO order, appended jobs, boundary

@@ -1,10 +1,28 @@
 //! Synthetic source fixtures for task-owned jobs; enqueue stays Rust-internal.
 use super::*;
 use crate::frontend::compile_script;
-use crate::job::JobSender;
+use crate::job::JobSender as RawJobSender;
 use crate::{Completion, Primitive, Runtime, ValueView};
 use std::sync::mpsc;
 use std::time::Duration;
+
+// Tests hold delivery capabilities outside a traced reaction record. Root
+// that record's one heap edge explicitly, as any external holder must.
+#[derive(Clone)]
+struct JobSender {
+    sender: RawJobSender,
+    _callable: Rooted,
+}
+
+impl JobSender {
+    fn enqueue(&self, args: &[Rooted]) -> Result<(), crate::job::JobError> {
+        self.sender.enqueue(args)
+    }
+
+    fn callable_for_test(&self) -> Value {
+        self.sender.callable_for_test()
+    }
+}
 
 #[derive(Default)]
 struct Effects(Vec<f64>);
@@ -49,7 +67,10 @@ fn setup(source: &str) -> (Runtime, Task, Vec<JobSender>, Effects) {
                     _ => None,
                 })
                 .flatten()?;
-            Some(guard.job_sender(value))
+            Some(JobSender {
+                _callable: Rooted::new(&task.0.heap, value.clone()),
+                sender: guard.job_sender(value),
+            })
         })
         .collect();
     drop(guard);
@@ -299,6 +320,11 @@ fn queue_roots_arguments_and_cancellation_releases_them() {
         .unwrap();
     let value = Rooted::new(&task.0.heap, Value::Object(object));
     let weak = value.downgrade();
+    let foreign = Runtime::new().root(Primitive::Number(1.0));
+    assert_eq!(
+        jobs[0].enqueue(&[foreign]),
+        Err(crate::job::JobError::ForeignRuntime)
+    );
     // Cross-task arguments must pass publication even though the callable
     // itself can capture this task's mutable state.
     assert_eq!(
@@ -511,4 +537,76 @@ fn cancellation_during_a_job_wait_runs_finally_and_discards_tail() {
         RunOutcome::Cancelled
     ));
     assert_eq!(host.0, [-1.0, 1.0]);
+}
+
+#[test]
+fn reaction_sender_edges_are_traced_without_permanent_roots() {
+    #[derive(Debug)]
+    struct Reaction(RawJobSender);
+    impl Trace for Reaction {
+        fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+            self.0.trace(visit);
+        }
+    }
+    impl crate::heap::NativePayload for Reaction {
+        fn shareability(&self) -> crate::value::share::Shareability {
+            crate::value::share::Shareability::TaskOwned
+        }
+    }
+    let rt = Runtime::new();
+    let code = crate::frontend::compile_function("function body() { let holder; function f() { return holder; } __rt.effect(0, -1); return 42; }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut host = Effects::default();
+    for _ in 0..1000 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host).unwrap(),
+            RunOutcome::Yielded
+        ));
+        if host.0 == [-1.0] {
+            break;
+        }
+    }
+    assert_eq!(host.0, [-1.0]);
+    let mut guard = task.try_begin_run().unwrap();
+    let f = guard.vm().unwrap().snapshot().2.into_iter().find(|v| matches!(v, Value::Object(id) if task.0.heap.read(*id, |o| matches!(o, crate::heap::HeapObject::Function(_))).unwrap_or(false))).unwrap();
+    let Value::Object(function) = f.clone() else {
+        unreachable!()
+    };
+    let holder = task
+        .0
+        .heap
+        .read(function, |o| match o {
+            crate::heap::HeapObject::Function(f) => f.captures[0].clone(),
+            _ => unreachable!(),
+        })
+        .unwrap();
+    let Value::Object(cell) = holder else {
+        unreachable!()
+    };
+    let reaction = task
+        .0
+        .heap
+        .alloc(crate::heap::HeapObject::Native(Box::new(Reaction(
+            guard.job_sender(f.clone()),
+        ))))
+        .unwrap();
+    task.0
+        .heap
+        .with_object_mut(cell, |o| match o {
+            crate::heap::HeapObject::Cell(c) => c.value = Some(Value::Object(reaction)),
+            _ => unreachable!(),
+        })
+        .unwrap();
+    let rooted = Rooted::new(&task.0.heap, Value::Object(reaction));
+    let weak = Rooted::new(&task.0.heap, f).downgrade();
+    drop(guard);
+    drop(task);
+    rt.collect().unwrap();
+    assert!(weak.is_live(), "reaction must trace its callable");
+    drop(rooted);
+    rt.collect().unwrap();
+    assert!(
+        !weak.is_live(),
+        "unreachable reaction/callable cycles must be reclaimed"
+    );
 }
