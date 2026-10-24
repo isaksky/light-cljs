@@ -293,11 +293,99 @@ fn promise_resolution_identity_throwers_and_getters() {
 }
 
 #[test]
+fn missing_fulfillment_handler_resolves_the_derived_promise() {
+    for handlers in ["", "null", "42, false"] {
+        let (result, effects) = run(&format!(
+            r#"
+                let reads = 0;
+                const value = {{get then() {{ if (++reads === 2) throw 7; }}}};
+                Promise.resolve(value).then({handlers}).catch(reason => {{
+                    __rt.effect(0, reason);
+                    __rt.effect(0, reads);
+                }});
+                __rt.effect(0, reads);
+                42;
+            "#
+        ));
+        assert_eq!(result, ValueView::Number(42.));
+        assert_eq!(effects, [1., 7., 2.].map(Primitive::Number));
+    }
+
+    let (_, effects) = run(r#"
+        let reads = 0;
+        const value = {get then() { reads++; return 3; }};
+        Promise.resolve(value).then().then(result => {
+            __rt.effect(0, result === value);
+            __rt.effect(0, reads);
+        });
+    "#);
+    assert_eq!(effects, [Primitive::Bool(true), Primitive::Number(2.)]);
+}
+
+#[test]
+fn missing_rejection_handler_preserves_thenable_reason() {
+    for handlers in ["", "null, 7"] {
+        for value in [
+            "{then(resolve) { __rt.effect(0, 99); resolve(1); }}",
+            "{get then() { __rt.effect(0, 99); throw 7; }}",
+        ] {
+            let (_, effects) = run(&format!(
+                "const reason = {value}; Promise.reject(reason).then({handlers}).catch(value => __rt.effect(0, value === reason));"
+            ));
+            assert_eq!(effects, [Primitive::Bool(true)]);
+        }
+    }
+}
+
+#[test]
+fn missing_fulfillment_handler_then_getter_waits_without_replay() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+            let reads = 0;
+            const value = {get then() {
+                if (++reads === 2) {
+                    __rt.effect(0, 1);
+                    __rt.need(246, 1);
+                    __rt.effect(0, reads);
+                    throw 7;
+                }
+            }};
+            Promise.resolve(value).then().catch(reason => __rt.effect(0, reason));
+            return 42;
+        }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.0, [Primitive::Number(1.)]);
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        tx.send((out, host)).unwrap();
+    });
+    let (out, host) = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    thread.join().unwrap();
+    let RunOutcome::Complete(value) = out else {
+        panic!("{out:?}")
+    };
+    assert_eq!(value.view(), ValueView::Number(42.));
+    assert_eq!(host.0, [1., 2., 7.].map(Primitive::Number));
+}
+
+#[test]
 fn thenable_adoption_fails_explicitly() {
     for source in [
         "Promise.resolve({then(resolve) { resolve(1); }});",
         "new Promise(resolve => resolve({get then() { return function() {}; }}));",
         "Promise.resolve(1).then(() => Promise.resolve(2));",
+        "let reads = 0; Promise.resolve({get then() { if (++reads === 2) return function() { __rt.effect(0, 99); }; }}).then();",
     ] {
         let rt = Runtime::new();
         let task = rt

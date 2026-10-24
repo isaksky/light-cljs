@@ -423,8 +423,18 @@ impl PromiseState {
                     &reaction.fulfilled
                 };
                 if dispatch::callee(heap, handler).is_err() {
-                    settle(heap, task, reaction.derived, result.rejected, result.value)?;
-                    return Ok(Action::Return(Value::Undefined));
+                    if result.rejected {
+                        settle(heap, task, reaction.derived, true, result.value)?;
+                        return Ok(Action::Return(Value::Undefined));
+                    }
+                    // Identity is a normal handler completion: resolve the
+                    // derived promise, including its observable `then` lookup.
+                    *self = Self::Resolve {
+                        promise: reaction.derived,
+                        value: result.value,
+                        stage: 0,
+                    };
+                    return Ok(Action::Continue);
                 }
                 *called = true;
                 Ok(Action::Call {
