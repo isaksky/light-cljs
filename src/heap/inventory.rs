@@ -106,11 +106,12 @@ enum Holder {
     KeptObjects,
     FinalizationRegistryEdges,
     ActiveFinalizationRegistries,
+    SegmenterSlots,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 46] = [
+const HOLDERS: [Holder; 47] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -157,6 +158,7 @@ const HOLDERS: [Holder; 46] = [
     Holder::KeptObjects,
     Holder::FinalizationRegistryEdges,
     Holder::ActiveFinalizationRegistries,
+    Holder::SegmenterSlots,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -204,6 +206,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
     use Holder::*;
     match category {
         RootCategory::PersistentHandle => &[
+            SegmenterSlots,
             IteratorSource,
             PromiseReactions,
             PromiseResults,
@@ -266,6 +269,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::PromiseReaction => &[PromiseReactions],
         ObjectKind::PromiseResolving => &[PromiseResolvingFunctions],
         ObjectKind::PlainObject => &[
+            SegmenterSlots,
             IteratorSource,
             PersistentHandle,
             ObjectProperty,
@@ -324,6 +328,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::SegmenterSlots => Coverage {
+            retains: (Inventory, "segmenter_slots_retain_and_reclaim"),
+            reclaims: (Inventory, "segmenter_slots_retain_and_reclaim"),
+        },
         Holder::FinalizationRegistryEdges => Coverage {
             retains: (
                 Gc,
@@ -604,6 +612,53 @@ fn builtin_iterator_source_retains_and_reclaims() {
     drop(held);
     assert_eq!(heap.request_collection().unwrap().reclaimed, 2);
     assert_stale(&heap, &[source_id, cursor_id]);
+}
+
+#[test]
+fn segmenter_slots_retain_and_reclaim() {
+    use crate::{intl::segmenter::Data, object::OrdinaryObject, value::JsString};
+    for iterator in [false, true] {
+        let heap = Arc::new(Heap::default());
+        let task = crate::ids::TaskId::from_raw(1);
+        let service = heap
+            .alloc(HeapObject::Plain(
+                OrdinaryObject::new(Some(task)).with_segmenter(Data::Segmenter {
+                    locale: "en".into(),
+                    word: false,
+                }),
+            ))
+            .unwrap();
+        let input = JsString::from("𠮷野家");
+        let data = if iterator {
+            Data::Iterator {
+                segmenter: Value::Object(service),
+                input: input.clone(),
+                text: input,
+                index: 2,
+            }
+        } else {
+            Data::Segments {
+                segmenter: Value::Object(service),
+                input: input.clone(),
+                text: input,
+            }
+        };
+        let holder = heap
+            .alloc(HeapObject::Plain(
+                OrdinaryObject::new(Some(task)).with_segmenter(data),
+            ))
+            .unwrap();
+        let root = Rooted::new(&heap, Value::Object(holder));
+        assert_eq!(heap.request_collection().unwrap().reclaimed, 0);
+        assert!(
+            heap.is_live(service),
+            "the private slot is the service's only holder"
+        );
+        assert!(heap.is_live(holder));
+        drop(root);
+        assert_eq!(heap.request_collection().unwrap().reclaimed, 2);
+        assert_stale(&heap, &[service, holder]);
+    }
 }
 
 /// `return constant[0]`, with an object constant. Loaded code only has
@@ -937,7 +992,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 300); // Includes ListFormat (-220), FinalizationRegistry (-177) and RelativeTimeFormat (-221).
+    assert_eq!(ids.len(), 310); // Includes Segmenter (-222), its Segments and iterator prototypes.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

@@ -315,6 +315,7 @@ public API cannot reach.
 
 | typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
 | built-in iterator source internal slot | `PersistentHandle` (`PlainObject` cursor → source array) | `builtin_iterator_source_retains_and_reclaims` *(lib)* | `builtin_iterator_source_retains_and_reclaims` *(lib)* |
+| Segments and Segment Iterator internal segmenter slots | `PersistentHandle` (`PlainObject` → Segmenter service) | `segmenter_slots_retain_and_reclaim` *(lib)* | `segmenter_slots_retain_and_reclaim` *(lib)* |
 | bounded unhandled Promise/reason queue | `TaskFrame` (task inbox, including after completion) | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* |
 | WeakRef ordinary properties and prototype | `PersistentHandle` (`WeakRef`) | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* |
 | task kept objects for the active job | `TaskFrame`, running or suspended task state | `kept_objects_survive_need_wait` *(tests/gc.rs)* | `weak_ref_cleared_after_job_and_collection` *(tests/gc.rs)* |
