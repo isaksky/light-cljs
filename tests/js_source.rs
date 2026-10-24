@@ -4064,6 +4064,26 @@ fn math_sum_precise() {
 }
 
 #[test]
+fn math_sum_precise_iterator_protocol_errors_and_exhaustion() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let c = 0, error = {}, o = {next() { return {get done() { throw error; }}; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e === error; } ok && c === 0",
+        "let c = 0, error = {}, o = {next() { return {get value() { throw error; }}; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e === error; } ok && c === 0",
+        "let c = 0, o = {next() { return 1; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Math.sumPrecise(o); } catch(e) { ok = e instanceof TypeError; } ok && c === 0",
+        "let n = 0, o = {next() { n++; return {done: true, get value() { throw 99; }}; }, get return() { throw 98; }}; o[Symbol.iterator] = function() { return this; }; 1 / Math.sumPrecise(o) === -Infinity && n === 1",
+        "let n = 0, o = {get next() { n++; return function() { Object.defineProperty(o, 'next', {value: function() { throw 99; }, configurable: true}); return {done: n++ > 3, value: 1}; }; }}; o[Symbol.iterator] = function() { return this; }; Math.sumPrecise(o) === 3 && n === 5",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for cleanup in ["return {};", "return 1;", "throw 99;"] {
+        let src = format!(
+            "let n = 0, c = 0, o = {{next() {{ n++; return {{value: 'bad'}}; }}, return() {{ c++; {cleanup} }} }}; o[Symbol.iterator] = function() {{ return this; }}; let ok = false; try {{ Math.sumPrecise(o); }} catch(e) {{ ok = e instanceof TypeError; }} ok && n === 1 && c === 1"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
 fn math_basic_functions() {
     for src in [
         "Math.floor(1.4) === 1 && Math.ceil(1.4) === 2",

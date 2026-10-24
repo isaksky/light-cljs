@@ -956,6 +956,7 @@ fn realm_intrinsics_retain() {
         "Math.pow",
         "Math.sqrt",
         "Math.log2",
+        "Math.sumPrecise",
         "Array.prototype.join",
         "Uint8Array.prototype.set",
         "Uint8Array.prototype.fill",
@@ -1100,7 +1101,8 @@ fn realm_intrinsics_retain() {
     // Number.prototype.toExponential/toPrecision add two built-ins (-151).
     // DateTimeFormat adds one prototype and five built-ins (-215).
     // Indirect eval adds one built-in function (-106).
-    assert_eq!(rt.heap_usage().objects.builtin, 232);
+    // Math.sumPrecise adds one built-in function (-158).
+    assert_eq!(rt.heap_usage().objects.builtin, 233);
     assert_eq!(rt.heap_usage().objects.plain, 43);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

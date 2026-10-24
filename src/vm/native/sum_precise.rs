@@ -354,6 +354,11 @@ mod tests {
         ));
         assert_eq!(state.sum.finish(), 1.0);
         assert_eq!(state.count, MAX_COUNT);
+        state.stage = Stage::Done;
+        assert!(matches!(
+            state.step(&heap, task, Input::CallResult(Value::Bool(true))),
+            Ok(Action::Return(Value::Number(1.0)))
+        ));
         for value in [Value::Number(1.0), Value::Undefined] {
             state.stage = Stage::Add;
             state.result = value;
@@ -363,6 +368,67 @@ mod tests {
                 Err(Fault::RangeError(_))
             ));
         }
+
+        // Drive the same catch/close actions used by the trampoline. The
+        // sentinel stands for the engine's RangeError object, whose identity
+        // must be retained while return is called exactly once.
+        let realm = crate::realm::intrinsics(&heap).unwrap();
+        let method = Value::Object(realm.object);
+        let mut iterator = crate::object::OrdinaryObject::new(Some(task));
+        let key = heap
+            .keys()
+            .intern(&crate::value::JsString::from("return"))
+            .unwrap();
+        iterator.define_with(key, method.clone(), crate::object::PropertyFlags::DATA);
+        state.iterator = Value::Object(
+            heap.alloc(crate::heap::HeapObject::Plain(iterator))
+                .unwrap(),
+        );
+        state.failed(crate::vm::exception::Exception {
+            value: Value::Number(17.0),
+            error: Box::new(crate::error::VmError {
+                kind: crate::error::VmErrorKind::RangeError,
+                message: "sumPrecise has too many elements".into(),
+                diagnostic: crate::error::Diagnostic {
+                    executable: "sum-precise-limit".into(),
+                    task,
+                    world: crate::ids::WorldId::INITIAL,
+                    instruction: 0,
+                    byte_offset: None,
+                    opcode: None,
+                    source: None,
+                    call_chain: vec![],
+                },
+            }),
+        });
+        let Ok(Action::Call { callee, this, args }) = state.step(&heap, task, Input::Start) else {
+            panic!("expected return call");
+        };
+        assert_eq!(callee, method);
+        assert_eq!(this, state.iterator);
+        assert!(args.is_empty());
+        let result = crate::vm::builtin::call(
+            &heap,
+            task,
+            crate::vm::builtin::Builtin::Object,
+            &this,
+            &args,
+        )
+        .unwrap_or_else(|_| panic!("Object() failed"));
+        assert!(matches!(
+            state.step(&heap, task, Input::CallResult(result)),
+            Ok(Action::Continue)
+        ));
+        let Err(Fault::Rethrow(exception)) = state.step(&heap, task, Input::Start) else {
+            panic!("expected original error");
+        };
+        assert_eq!(exception.value, Value::Number(17.0));
+        assert_eq!(
+            exception.error.kind(),
+            crate::error::VmErrorKind::RangeError
+        );
+        assert_eq!(state.sum.finish(), 1.0);
+        assert!(!state.catches());
     }
 
     #[test]
