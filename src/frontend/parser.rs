@@ -1451,7 +1451,8 @@ impl<'a> Parser<'a> {
 
     /// The identifier binding `left` names, as the target of an assignment
     /// or of `++`/`--` (`use_`, which selects the diagnostics); anything
-    /// else is rejected.
+    /// else is rejected. (`++`/`--` of a property other than an intrinsic
+    /// never gets here: [`Self::update`] takes it first, clj-quickjs-76.)
     #[inline(never)]
     fn simple_target(&self, left: &Expr, use_: TargetUse) -> PResult<Ident> {
         let text = strip_parens(left.span.text(self.src));
@@ -1754,11 +1755,26 @@ impl<'a> Parser<'a> {
     }
 
     /// The UpdateExpression `++operand` / `operand++` (or `--`): the
-    /// operand must be an identifier binding, possibly parenthesized
-    /// (property targets are not supported yet), else the error
-    /// [`Self::simple_target`] gives.
+    /// operand must be an identifier binding or a property reference
+    /// `o.p` / `o[k]` (clj-quickjs-76), possibly parenthesized, else the
+    /// error [`Self::simple_target`] gives (a property of the reserved
+    /// intrinsic binding is a `ReservedWord` error there).
     #[inline(never)]
     fn update(&self, op: UpdateOp, prefix: bool, operand: Expr, op_span: Span) -> PResult<Expr> {
+        if matches!(&operand.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object))
+            || matches!(&operand.kind, ExprKind::Index { .. })
+        {
+            let span = op_span.to(operand.span);
+            return self.expr(
+                ExprKind::UpdateProperty {
+                    op,
+                    prefix,
+                    target: Box::new(operand),
+                    op_span,
+                },
+                span,
+            );
+        }
         let target = self.simple_target(&operand, TargetUse::Update)?;
         self.expr(
             ExprKind::Update {

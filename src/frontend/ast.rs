@@ -381,6 +381,7 @@ impl Expr {
                 value,
                 ..
             } => object.height.max(index.height).max(value.height),
+            ExprKind::UpdateProperty { target, .. } => target.height,
         };
         Expr {
             kind,
@@ -452,7 +453,7 @@ pub enum ExprKind {
         op_span: Span,
     },
     /// `++x`, `x++`, `--x` or `x--` on an identifier binding (property
-    /// targets are not supported yet). The target may be parenthesized.
+    /// targets are [`ExprKind::UpdateProperty`]). The target may be parenthesized.
     Update {
         op: UpdateOp,
         /// `++x` / `--x` (the value is the new one) rather than `x++` /
@@ -530,6 +531,22 @@ pub enum ExprKind {
         value: Box<Expr>,
         /// The member's `[` token, where run-time failures of the write
         /// are reported.
+        op_span: Span,
+    },
+    /// `++o.p`, `o.p++`, `--o[k]`, `o[k]--` (clj-quickjs-76): `target` is an
+    /// [`ExprKind::Member`] (whose object is not the reserved intrinsic
+    /// binding) or an [`ExprKind::Index`], possibly parenthesized. The base
+    /// and the key are evaluated once; the property is read, converted with
+    /// ToNumber, incremented or decremented and written back (strictly);
+    /// the value is the new number (prefix) or the converted old one
+    /// (postfix).
+    UpdateProperty {
+        op: UpdateOp,
+        prefix: bool,
+        target: Box<Expr>,
+        /// The `++` / `--` token, where failures of the conversion and the
+        /// arithmetic are reported (the read and the write are reported at
+        /// the member's `.` or `[`).
         op_span: Span,
     },
 }

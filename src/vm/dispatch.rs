@@ -867,6 +867,31 @@ fn step(
             property::put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
             state.push(v);
         }
+        Instr::Dup2 => {
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(2)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let (a, b) = (ops[start].clone(), ops[start + 1].clone());
+            state.push(a);
+            state.push(b);
+        }
+        Instr::ToPropertyKey => {
+            // `o[k]` read and then written (`o[k]++`, clj-quickjs-76): the
+            // base check and the key conversion run once, before the read.
+            // The converted key re-converts to itself in `GetElem` and
+            // `PutElem` (an index as a number, any other name as a string),
+            // so the conversion stays the only observable one.
+            let key = state.pop()?;
+            let base = state.operands().last().cloned();
+            let base = base.ok_or(Fault::Internal("operand stack underflow"))?;
+            let key = match property::element_key(&base, &key, false)? {
+                property::Key::Index(index) => Value::Number(f64::from(index)),
+                property::Key::Name(name) => Value::String(name),
+            };
+            state.push(key);
+        }
         Instr::NewArray => {
             // Pushed in the same instruction, like `NewObject`: no
             // collection can run in between.
@@ -1205,6 +1230,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::DefineField(_)
         | Instr::AppendElement
         | Instr::AppendHole
+        // Copy or convert operands only (clj-quickjs-76).
+        | Instr::Dup2
+        | Instr::ToPropertyKey
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

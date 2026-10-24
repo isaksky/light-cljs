@@ -470,6 +470,8 @@ impl Executable {
                 Opcode::AppendHole => Instr::AppendHole,
                 Opcode::GetElem => Instr::GetElem,
                 Opcode::PutElem => Instr::PutElem,
+                Opcode::Dup2 => Instr::Dup2,
+                Opcode::ToPropertyKey => Instr::ToPropertyKey,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

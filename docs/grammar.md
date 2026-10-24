@@ -33,7 +33,8 @@ execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 jumps out of `try` statements that run their finally blocks on the way
 (clj-quickjs-79). Labelled statements and labelled `break`/`continue`
 (clj-quickjs-82) parse and execute. Prefix and postfix `++`/`--` on identifier bindings
-(clj-quickjs-64) parse and execute. `switch` statements (clj-quickjs-83)
+(clj-quickjs-64) and on properties `o.p` and `o[k]` (clj-quickjs-76) parse and
+execute. `switch` statements (clj-quickjs-83)
 parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`,
 `>>>=`) on identifier bindings (clj-quickjs-84) parses and executes; the
@@ -179,12 +180,12 @@ Notes on the grammar:
   `a ** -b ** c` are rejected `Invalid` at the `**`; `(-2) ** 2`,
   `-(2 ** 2)` and `2 ** -2` are valid. An update expression may be the
   base: `++a ** 2` and `a++ ** 2` are valid.
-- `++`/`--` (clj-quickjs-64) take an identifier binding, possibly
-  parenthesized (`(a)++`); any other operand is an early error (`Invalid`:
+- `++`/`--` (clj-quickjs-64) take an identifier binding or a property
+  `o.p` / `o[k]` (clj-quickjs-76), possibly parenthesized (`(a)++`,
+  `(o.p)++`); any other operand is an early error (`Invalid`:
   `1++`, `(a + b)++`, `f()++`, `++a++`, `++-a`). `undefined`, `NaN` and
   `Infinity` are `ReservedWord`, as for assignment, and so is an intrinsic
-  of `__rt` (`__rt.count++`); a property (`a.b++`) is `Unsupported` until
-  property references exist. A postfix update ends a member/call chain:
+  of `__rt` (`__rt.count++`). A postfix update ends a member/call chain:
   `a++()` and `a++.b` are syntax errors, and `a--b` is `a--` followed by
   `b` (`UnexpectedToken` at `b`). `- -a` is two negations, `--a` one
   decrement.
@@ -288,8 +289,9 @@ Notes on the grammar:
   newline `[0]` is one member expression, as in JavaScript. A call of a
   computed property, `a[k](...)`, is a method call like `a.m(...)`
   (clj-quickjs-117: the base is evaluated once and passed as the
-  receiver), and compound assignment and `++`/`--` of a computed property
-  are `Unsupported`, as for `a.b` (clj-quickjs-260, -76).
+  receiver), `++`/`--` of a computed property is supported as for `a.b`
+  (clj-quickjs-76), and compound assignment to one is `Unsupported`, as for
+  `a.b` (clj-quickjs-260).
 - `const` requires an initializer.
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
   scoped to the whole loop (a `const` needs an initializer here too). For-in
@@ -346,7 +348,7 @@ Every form below is rejected where it starts. Error kinds:
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233), methods `{m() {}}`, getters and setters, `async` and generator methods, `__proto__: v` (it sets the prototype) | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
 | `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
-| compound assignment to a property (`a.b += 1`, `a[0] += 1`, clj-quickjs-260), `++`/`--` on a property (`a.b++`, `a[0]++`, clj-quickjs-76) | Unsupported |
+| compound assignment to a property (`a.b += 1`, `a[0] += 1`, clj-quickjs-260) | Unsupported |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
@@ -399,9 +401,9 @@ checks left to later stages:
   passes can rely on that bound.
 - **Objects have only data properties** (clj-quickjs-114). Getters,
   setters, methods, computed keys and `__proto__: v` in literals,
-  `delete`, and `++`/`--` and compound assignment on properties are
-  rejected explicitly (their pellets: -233, -120, -121, -124, -126, -76,
-  -260).
+  `delete`, and compound assignment on properties are rejected
+  explicitly (their pellets: -233, -120, -121, -124, -126, -260);
+  `++`/`--` on properties execute (clj-quickjs-76).
   An object literal inherits from `Object.prototype` (clj-quickjs-117);
   an embedder-made object (`Scope::new_object`) has a null prototype.
   Their attributes (`writable`, `enumerable`, `configurable`) are set
@@ -723,6 +725,7 @@ Executed, with JavaScript semantics:
 | `o[k]` (clj-quickjs-115, -118) | evaluates `o`, then `k`, then converts `k` by ToPropertyKey (see "Explicit gaps") and reads as `o.name` does: on an ordinary object the key string names the property (`o[1]`, `o["1"]` and `o[1.0]` are one property, `o["01"]` another); on an array an array index (the canonical decimal string of an integer `0` to `2^32 - 2`, from a string or a number: `a[1]`, `a["1"]`, `a[-0]`) names an element, `length` its length, any other key an ordinary property; failures as for `o.name`, at the `[`. Lowered to `get_elem` |
 | `o[k] = v` (clj-quickjs-115, -118) | evaluates `o`, `k`, then `v`, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`), converts `k` and writes as `o.name = v` does; writing an array index at or beyond an array's `length` sets `length` to that index plus one (`let a = [1]; a[3] = 4` gives length 4 with holes at 1 and 2), and any other key adds an ordinary property without changing `length`; assigning an array's `length` fails with `UnsupportedOperand` (clj-quickjs-39). The expression's value is `v`. Lowered to `put_elem` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
+| `++o.p`, `o.p--`, `++o[k]`, `o[k]--` (clj-quickjs-76) | evaluates `o` once and, for `o[k]`, `k` once, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`) and converts `k` with ToPropertyKey once; reads the property as `o.p` does (an absent one is `undefined`, so `let o = {}; o.x++` is NaN and writes NaN), ToNumber, adds or subtracts 1 and writes as `o.p = v` does (strict: a failed write is a `TypeError`); a prefix update's value is the new number, a postfix update's the old one converted (`let a = [true]; a[0]++` is 1, `a[0]` is 2). Lowered to `get_field`/`put_field` with the base `dup`ed, or to `to_property_key` (new, `0x5D`), `dup2` (new, `0x5C`), `get_elem` and `put_elem`; a postfix update keeps the old number in a scratch local across the write. The read, the checks and the write are reported at the `.`/`[`, the conversion at the `++`/`--` |
 | `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
@@ -892,7 +895,7 @@ in operators, and so on):
 | `++`/`--`, prefix or postfix, and compound assignment `x op= v` | the `++`/`--` or `op=` token, for the conversion and the operator |
 | a call `f(a)`, including `__rt.name(...)` intrinsics (a need's wait, a native's failure) | the call's `(` |
 | a caller frame in the call chain (`CallSite::source`), also for `Task::source_location` of a task suspended in a call | that call's `(` |
-| a member access `o.name`, read or write (clj-quickjs-114) | the `.` (`[` for a computed access) |
+| a member access `o.name`, read or write (clj-quickjs-114) | the `.` (`[` for a computed access); for `o.p++` and `o[k]--` (clj-quickjs-76) the read, the base check and the key conversion and the write are reported there, the number conversion and the arithmetic at the `++`/`--` |
 | a reference to, assignment to or update of a binding (ReferenceError, temporal dead zone, `const` TypeError) | the identifier |
 
 For example (each script compiles; the comment gives where it fails at run
@@ -1404,8 +1407,14 @@ x = f`template`;
 x = `a\1`;
 ```
 
+```js accept
+// `++`/`--` on properties (clj-quickjs-76): the base and the key once.
+let o = {n: 0}, a = [1, 2], i = 0;
+o.n++; --o['n']; a[i++]++; ++(a[i]);
+```
+
 ```js reject Unsupported 1:1
-a.b++;
+a.b += 1;
 ```
 
 ```js reject Invalid 1:1
@@ -1601,7 +1610,10 @@ the notice. For `++`/`--` (clj-quickjs-64): `js_parse_unary` (the
 before a postfix operator), `OP_inc` / `OP_post_inc` and `js_post_inc_slow`
 (the old value converted with ToNumeric); the four identifier groups of
 `test_inc_dec` in `test_language.js` are adapted in `tests/js_source.rs`
-`update_expressions_on_bindings`, with the notice. For loose
+`update_expressions_on_bindings`, with the notice. Its member groups
+(clj-quickjs-76) are adapted in `update_expressions_on_properties`, with the
+notice; `to_propkey2` and `dup2` in `js_parse_postfix_expr` show the
+reference evaluated once. For loose
 equality (clj-quickjs-60): `js_eq_slow` (a boolean operand converted with
 ToNumber); the `null`/`undefined`/boolean cases of `test_eq` in
 `test_language.js` are adapted in `tests/js_source.rs`

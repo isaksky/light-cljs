@@ -266,8 +266,8 @@
 //! and `Typeof` instead of the ReferenceError a plain read throws.
 //!
 //! Opcodes `0x4F`–`0x51` (`GetField`, `PutField`, `DefineField`,
-//! clj-quickjs-114) and `0x57`–`0x5B` (clj-quickjs-118) are property
-//! access; their contract is in `crate::vm::property`:
+//! clj-quickjs-114) and `0x57`–`0x5B` (clj-quickjs-118, with `0x5C`–`0x5D` of
+//! clj-quickjs-76) are property access; their contract is in `crate::vm::property`:
 //!
 //! | Opcode          | Byte | Operand            | Stack (before → after) | Meaning |
 //! |-----------------|------|--------------------|------------------------|---------|
@@ -276,6 +276,8 @@
 //! | `AppendHole`    | 0x59 | –                  | arr → arr              | skip index `length` of an array literal (a hole) |
 //! | `GetElem`       | 0x5A | –                  | o k → v                | `o[k]`: ToPropertyKey(k), then `[[Get]]` |
 //! | `PutElem`       | 0x5B | –                  | o k v → v              | `o[k] = v`: ToPropertyKey(k), then `[[Set]]` (strict) |
+//! | `Dup2`          | 0x5C | –                  | a b → a b a b          | duplicate the top two (a computed reference read before it is written, clj-quickjs-76) |
+//! | `ToPropertyKey` | 0x5D | –                  | o k → o key            | `undefined`/`null` o is a `TypeError` (a read), else ToPropertyKey(k) once: an array index as a number, any other key as a string (clj-quickjs-76) |
 //!
 //! `NewArray` allocates (and builds the realm on first use, for
 //! `Array.prototype`), so it is a poll point, as `NewObjectLiteral` is; the
@@ -438,6 +440,8 @@ pub enum Opcode {
     AppendHole = 0x59,
     GetElem = 0x5A,
     PutElem = 0x5B,
+    Dup2 = 0x5C,
+    ToPropertyKey = 0x5D,
 }
 
 /// Operand encoding of an opcode.
@@ -584,6 +588,8 @@ impl Opcode {
             0x59 => AppendHole,
             0x5A => GetElem,
             0x5B => PutElem,
+            0x5C => Dup2,
+            0x5D => ToPropertyKey,
             _ => return None,
         })
     }
@@ -683,6 +689,8 @@ impl Opcode {
             AppendHole => "append_hole",
             GetElem => "get_elem",
             PutElem => "put_elem",
+            Dup2 => "dup2",
+            ToPropertyKey => "to_property_key",
         }
     }
 
@@ -708,7 +716,9 @@ impl Opcode {
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
-            | AppendElement | AppendHole | GetElem | PutElem => OperandKind::None,
+            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey => {
+                OperandKind::None
+            }
         }
     }
 }
@@ -849,6 +859,8 @@ pub(crate) enum Instr {
     AppendHole,
     GetElem,
     PutElem,
+    Dup2,
+    ToPropertyKey,
 }
 
 impl Instr {
@@ -945,6 +957,8 @@ impl Instr {
             Instr::AppendHole => Opcode::AppendHole,
             Instr::GetElem => Opcode::GetElem,
             Instr::PutElem => Opcode::PutElem,
+            Instr::Dup2 => Opcode::Dup2,
+            Instr::ToPropertyKey => Opcode::ToPropertyKey,
         }
     }
 
@@ -970,6 +984,8 @@ impl Instr {
             | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
             PutField(_) | DefineField(_) | AppendElement | GetElem => (2, 1),
             PutElem => (3, 1),
+            Dup2 => (2, 4),
+            ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
@@ -995,6 +1011,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 91);
+        assert_eq!(assigned, 93);
     }
 }

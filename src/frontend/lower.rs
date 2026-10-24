@@ -339,6 +339,17 @@ enum Access {
     Unsupported(&'static str),
 }
 
+/// A property reference on the operand stack
+/// (`Lowerer::property_reference`, clj-quickjs-76), with the `.` or `[`
+/// token its read and write are reported at.
+#[derive(Clone, Copy, Debug)]
+enum PropertyRef {
+    /// `o.p`: `o` on the stack; the name's constant-pool index.
+    Field(u16, Span),
+    /// `o[k]`: `o` and the converted key on the stack.
+    Elem(Span),
+}
+
 /// Constant-pool deduplication key. Numbers compare by bit pattern, so `0`
 /// and `-0` (and distinct NaN payloads) stay distinct constants.
 #[derive(PartialEq, Eq, Hash)]
@@ -2132,6 +2143,12 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::PutElem, *op_span);
                 Ok(())
             }
+            ExprKind::UpdateProperty {
+                op,
+                prefix,
+                target,
+                op_span,
+            } => self.update_property(*op, *prefix, target, *op_span),
             _ => Err(self.internal(e.span, "not a property expression")),
         }
     }
@@ -2266,6 +2283,107 @@ impl<'s> Lowerer<'s> {
         self.expr(value)?;
         let index = self.name_index(&property.name, property.span)?;
         self.out().op_u16(Opcode::PutField, index, op_span);
+        Ok(())
+    }
+
+    /// A property reference that is read and then written (`o.p++`,
+    /// `o[k]--`; compound assignment to a property, clj-quickjs-260, is to
+    /// reuse it): evaluates the base once and, for `o[k]`, the key once,
+    /// followed by `ToPropertyKey` (the base's `undefined`/`null` check and
+    /// the only key conversion), leaving `o` or `o key` on the stack. Then
+    /// [`Self::reference_get`] pushes the property's value above them and
+    /// [`Self::reference_put`] writes the value on top and leaves it.
+    /// `target` is an [`ExprKind::Member`] whose object is not the reserved
+    /// intrinsic binding (the parser rejects that one) or an
+    /// [`ExprKind::Index`].
+    #[inline(never)]
+    fn property_reference(&mut self, target: &Expr) -> Result<PropertyRef, SyntaxError> {
+        match &target.kind {
+            ExprKind::Member {
+                object,
+                property,
+                op_span,
+            } => {
+                self.expr(object)?;
+                let name = self.name_index(&property.name, property.span)?;
+                Ok(PropertyRef::Field(name, *op_span))
+            }
+            ExprKind::Index {
+                object,
+                index,
+                op_span,
+            } => {
+                self.expr(object)?;
+                self.expr(index)?;
+                self.out().op(Opcode::ToPropertyKey, *op_span);
+                Ok(PropertyRef::Elem(*op_span))
+            }
+            _ => Err(self.internal(target.span, "not a property reference")),
+        }
+    }
+
+    /// Reads the reference [`Self::property_reference`] left (`o` or
+    /// `o key` → the same, then the value), reported at the `.` or `[`.
+    fn reference_get(&mut self, r: PropertyRef) {
+        match r {
+            PropertyRef::Field(name, at) => {
+                self.out().op(Opcode::Dup, at);
+                self.out().op_u16(Opcode::GetField, name, at);
+            }
+            PropertyRef::Elem(at) => {
+                self.out().op(Opcode::Dup2, at);
+                self.out().op(Opcode::GetElem, at);
+            }
+        }
+    }
+
+    /// Writes the value on top to the reference below it (`o v` or
+    /// `o key v` → `v`), strictly, reported at the `.` or `[`.
+    fn reference_put(&mut self, r: PropertyRef) {
+        match r {
+            PropertyRef::Field(name, at) => self.out().op_u16(Opcode::PutField, name, at),
+            PropertyRef::Elem(at) => self.out().op(Opcode::PutElem, at),
+        }
+    }
+
+    /// `++o.p`, `o.p++`, `--o[k]`, `o[k]--` (clj-quickjs-76; QuickJS
+    /// `js_parse_postfix_expr` / `js_parse_unary` lvalue handling): the
+    /// reference once, its value, ToNumber, add or subtract 1, the write.
+    /// A postfix update keeps the converted old value in a scratch local
+    /// across the write (it is a number, so the local retains no object)
+    /// and gives it instead of the written one. The conversion and the
+    /// arithmetic are reported at the `++`/`--`.
+    #[inline(never)]
+    fn update_property(
+        &mut self,
+        op: UpdateOp,
+        prefix: bool,
+        target: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        let r = self.property_reference(target)?;
+        self.reference_get(r);
+        self.out().op(Opcode::ToNumber, op_span);
+        let old = if prefix {
+            None
+        } else {
+            let tmp = self.temp(op_span)?;
+            self.out().op(Opcode::Dup, op_span);
+            self.out().op_u16(Opcode::SetLocal, tmp, op_span);
+            Some(tmp)
+        };
+        self.constant(Primitive::Number(1.0), op_span)?;
+        let arith = match op {
+            UpdateOp::Inc => Opcode::Add,
+            UpdateOp::Dec => Opcode::Sub,
+        };
+        self.out().op(arith, op_span);
+        self.reference_put(r);
+        if let Some(tmp) = old {
+            self.out().op(Opcode::Pop, op_span);
+            self.out().op_u16(Opcode::GetLocal, tmp, op_span);
+            self.cur_mut().next_slot -= 1;
+        }
         Ok(())
     }
 
@@ -2477,7 +2595,8 @@ impl<'s> Lowerer<'s> {
             | ExprKind::Template { .. }
             | ExprKind::Array(_)
             | ExprKind::Index { .. }
-            | ExprKind::AssignIndex { .. } => {
+            | ExprKind::AssignIndex { .. }
+            | ExprKind::UpdateProperty { .. } => {
                 self.property_expr(e)?;
             }
             ExprKind::Function(f) => {
@@ -2850,7 +2969,7 @@ fn is_number(e: &Expr) -> bool {
         // concatenate; the other compound operators are numeric.
         ExprKind::CompoundAssign { op, .. } => *op != BinaryOp::Add,
         ExprKind::Sequence { right, .. } => is_number(right),
-        ExprKind::Update { .. } => true,
+        ExprKind::Update { .. } | ExprKind::UpdateProperty { .. } => true,
         _ => false,
     }
 }

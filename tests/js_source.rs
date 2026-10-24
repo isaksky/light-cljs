@@ -3759,6 +3759,142 @@ fn update_expressions_on_bindings() {
     );
 }
 
+/// Prefix and postfix `++`/`--` on property references `o.p` and `o[k]`
+/// (clj-quickjs-76). The first seven cases are adapted from the member
+/// groups of `test_inc_dec` in `research/quickjs/tests/test_language.js`,
+/// revision 7d1c13c5d8f8 (`a = {x:true}` becomes `let a = {x: true}`, and
+/// `assert(a.x, 2)` / `assert(r === 1 && a.x === 2, true)` the script's
+/// value); see `docs/architecture.md`, "QuickJS references and
+/// provenance". The other cases are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn update_expressions_on_properties() {
+    // `test_inc_dec`, member groups.
+    for src in [
+        "let a = {x: true}; a.x++; a.x === 2",
+        "let a = {x: true}; a.x--; a.x === 0",
+        "let a = [true]; a[0]++; a[0] === 2",
+        "let a, r; a = {x: true}; r = a.x++; r === 1 && a.x === 2",
+        "let a, r; a = {x: true}; r = a.x--; r === 1 && a.x === 0",
+        "let a, r; a = [true]; r = a[0]++; r === 1 && a[0] === 2",
+        "let a, r; a = [true]; r = a[0]--; r === 1 && a[0] === 0",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        // The key and the base are evaluated once.
+        "let i = 0; const a = [1, 1]; a[i = i + 1]++; i === 1 && a[1] === 2",
+        "let a = [0, 0], i = 0; a[i++]++; i === 1 && a[0] === 1 && a[1] === 0",
+        "let n = 0; const o = {x: 1}; function get() { n = n + 1; return o; } \
+         get().x++; n === 1 && o.x === 2",
+        "let n = 0; const o = {x: 1}; const get = () => { n++; return o; }; \
+         let r = --get()['x']; n === 1 && r === 0 && o.x === 0",
+        // Prefix updates give the new number.
+        "let o = {p: true}; let r = ++o.p; r === 2 && o.p === 2",
+        "let o = {p: 1}; let r = --o['p']; r === 0 && o.p === 0",
+        // Parenthesized targets, chains and nested references.
+        "let o = {p: 1}; (o.p)++; ++(o['p']); --((o).p); o.p === 2",
+        "let o = {a: {b: [1, 2]}}; o.a.b[1]++; ++o['a'].b[0]; o.a.b[0] === 2 && o.a.b[1] === 3",
+        "let a = [[5]]; a[0][a[0][0]++ - 5]--; a[0][0] === 5",
+        // A string key that is an array index, and a numeric name.
+        "let a = [0]; a['0']++; a[0] === 1",
+        "let o = {}; o[1.5] = 1; o[1.5]++; o['1.5'] === 2",
+        // Writing past an array's end extends it (the value is NaN).
+        "let a = []; a[2]++; a.length === 3",
+        // A loop counter in an object.
+        "let o = {n: 0}; for (let i = 0; i < 5; i++) o.n++; o.n === 5",
+        // Postfix binds tighter than binary operators.
+        "let o = {a: 1, b: 1}; let c = o.a+++o.b; c === 2 && o.a === 2 && o.b === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // An absent property reads as undefined: NaN is yielded and written.
+    assert!(num("let o = {}; o.x++").is_nan());
+    assert!(num("let o = {}; o.x++; o.x").is_nan());
+    assert!(num("let o = {}; ++o['y']").is_nan());
+    // The old value keeps its sign: `-0` is returned as `-0`.
+    assert_eq!(num("let o = {z: -0}; o.z--").to_bits(), (-0.0f64).to_bits());
+    assert_eq!(num("let o = {n: null}; o.n++; o.n"), 1.0);
+
+    // A `null`/`undefined` base is a catchable TypeError, reported at the
+    // member's `.` or `[`, before the key is converted or anything written.
+    let (kind, message, line, column) = failure_at("let o = null;\no.x++;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::TypeError, 2, 2),
+        "{message}"
+    );
+    let (kind, _, line, column) = failure_at("null.x++");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 1, 5));
+    let (kind, _, line, column) = failure_at("let u;\n--u[0];");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 4));
+    assert_eq!(
+        failure("let u; let k = {}; u[k]++").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        string("let r = 'none'; try { null.x++; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        string("let r = 'none', u; try { --u['k']; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    // An object value needs ToPrimitive (deferred, clj-quickjs-70); the
+    // conversion fails at the operator token.
+    let (kind, _, line, column) = failure_at("let o = {p: {}};\no.p ++;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 5)
+    );
+    // Intrinsics of the reserved binding stay compile errors.
+    for src in ["__rt.count++;", "--__rt.count;", "__rt.count.x++;"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{src}: {e}");
+    }
+
+    // `o[k]` converts its key once, with `to_property_key`, and reads with
+    // the reference duplicated; `o.p` duplicates its base.
+    let ops = opcodes(&exe("let o = {}, k = 'p'; o[k]++;"));
+    for op in [
+        Opcode::ToPropertyKey,
+        Opcode::Dup2,
+        Opcode::GetElem,
+        Opcode::ToNumber,
+        Opcode::PutElem,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    let ops = opcodes(&exe("let o = {}; ++o.p;"));
+    for op in [Opcode::Dup, Opcode::GetField, Opcode::Add, Opcode::PutField] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    // An update's value is a number: no second conversion.
+    let ops = opcodes(&exe("let o = {p: 1}; -o.p++"));
+    assert_eq!(
+        ops.iter().filter(|op| **op == Opcode::ToNumber).count(),
+        1,
+        "{ops:?}"
+    );
+}
+
 /// Compound assignment on identifier bindings (clj-quickjs-84): read, then
 /// the right operand, then the binary operator's own instructions, then the
 /// store.
@@ -4650,18 +4786,21 @@ fn computed_member_access() {
     );
 
     // Explicitly unsupported, never a wrong value: an object key needs
-    // ToPrimitive (clj-quickjs-70); compound assignment and `++`/`--` of a
-    // property are their own pellets (clj-quickjs-260, clj-quickjs-76).
-    for src in ["let o = {};\no[{}];", "let o = {};\no[o] = 1;"] {
+    // ToPrimitive (clj-quickjs-70); compound assignment to a property is
+    // its own pellet (clj-quickjs-260; `++`/`--` are clj-quickjs-76).
+    for src in [
+        "let o = {};\no[{}];",
+        "let o = {};\no[o] = 1;",
+        "let o = {};\no[o]++;",
+    ] {
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains("ToPrimitive"), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
     }
-    for src in ["let o = {}; o['x'] += 1;", "let o = {}; o['x']++;"] {
-        let e = compile_script("t", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-    }
+    let src = "let o = {}; o['x'] += 1;";
+    let e = compile_script("t", src).unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
 }
 
 /// Function own properties and the lazy `prototype` object

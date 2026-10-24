@@ -82,6 +82,16 @@ fn render_expr(e: &Expr) -> String {
             let fix = if *prefix { "pre" } else { "post" };
             format!("({fix}{op} {})", target.name)
         }
+        ExprKind::UpdateProperty {
+            op, prefix, target, ..
+        } => {
+            let op = match op {
+                UpdateOp::Inc => "++",
+                UpdateOp::Dec => "--",
+            };
+            let fix = if *prefix { "pre" } else { "post" };
+            format!("({fix}{op} {})", render_expr(target))
+        }
         ExprKind::Assign { target, value } => {
             format!("(= {} {})", target.name, render_expr(value))
         }
@@ -1116,7 +1126,7 @@ fn update_expressions() {
     assert_eq!((op_span.start, op_span.end), (5, 7));
     assert_eq!((target.span.start, target.span.end), (2, 5));
 
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
     // The operand must be an identifier binding (early errors).
     rejects_with("1++;", Invalid, 1, 1, "increment/decrement operand");
     rejects_with("--1;", Invalid, 1, 3, "increment/decrement operand");
@@ -1134,28 +1144,32 @@ fn update_expressions() {
     // The reserved intrinsic binding's intrinsics, like assignment.
     rejects_with("__rt.count++;", ReservedWord, 1, 1, "__rt");
     rejects_with("++__rt.count;", ReservedWord, 1, 3, "__rt");
-    // Property targets are a later pellet (clj-quickjs-76).
-    rejects_with(
-        "a.b++;",
-        Unsupported,
-        1,
-        1,
-        "increment and decrement of properties",
+    rejects("__rt[0]++;", ReservedWord, 1, 5);
+    // Property targets (clj-quickjs-76), possibly parenthesized.
+    assert_eq!(ast("a.b++;"), "(post++ (. a b))");
+    assert_eq!(ast("--a.b;"), "(pre-- (. a b))");
+    assert_eq!(ast("a[0]++;"), "(post++ ([] a 0))");
+    assert_eq!(ast("++(a[i++]);"), "(pre++ ([] a (post++ i)))");
+    assert_eq!(ast("(a.b).c--;"), "(post-- (. (. a b) c))");
+    assert_eq!(
+        ast("f().x++ + -a[0]--;"),
+        "(+ (post++ (. (call f) x)) (neg (post-- ([] a 0))))"
     );
-    rejects_with(
-        "--a.b;",
-        Unsupported,
-        1,
-        3,
-        "increment and decrement of properties",
-    );
-    rejects_with(
-        "a[0]++;",
-        Unsupported,
-        1,
-        1,
-        "increment and decrement of properties",
-    );
+    let script = parse_script("  (o[k])++;").unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    assert_eq!((e.span.start, e.span.end), (2, 10));
+    let ExprKind::UpdateProperty {
+        target, op_span, ..
+    } = &e.kind
+    else {
+        panic!("not a property update")
+    };
+    assert_eq!((op_span.start, op_span.end), (8, 10));
+    assert_eq!((target.span.start, target.span.end), (2, 8));
+    rejects_with("a.b++ = 1;", Invalid, 1, 1, "assignment target");
+    rejects("a[0]++.b;", UnexpectedToken, 1, 7);
     // The result of a postfix update is not a callee or member object, and
     // two operands need an operator between them.
     rejects("a++();", UnexpectedToken, 1, 4);
@@ -1321,13 +1335,8 @@ fn property_assignment() {
         1,
         "compound assignment to properties",
     );
-    rejects_with(
-        "a.b++;",
-        Unsupported,
-        1,
-        1,
-        "increment and decrement of properties",
-    );
+    // `++`/`--` on a property (clj-quickjs-76).
+    assert_eq!(ast("a.b++;"), "(post++ (. a b))");
     rejects_with("__rt.x = 1;", ReservedWord, 1, 1, "cannot be assigned");
 }
 
@@ -2867,7 +2876,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
         ("delete x.y;", 1, 1, "delete"),
-        ("++x.y;", 1, 3, "increment and decrement of properties"),
+        ("x.y += 1;", 1, 1, "compound assignment to properties"),
         ("x = [...a];", 1, 6, "spread elements"),
         ("[a] = b;", 1, 1, "destructuring assignment"),
         ("f(...a);", 1, 3, "spread"),

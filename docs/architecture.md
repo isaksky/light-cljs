@@ -1741,7 +1741,12 @@ Array literals compile to `NewArray` (`0x57`), then per element its
 value and `AppendElement` (`0x58`), or `AppendHole` (`0x59`) for an
 elision; computed member access to `GetElem` (`0x5A`) and `PutElem`
 (`0x5B`), which run ToPropertyKey on the key operand; `o[k](...)` is a
-method call (`Dup`, `GetElem`, `CallMethod`). Only `NewArray` allocates a
+method call (`Dup`, `GetElem`, `CallMethod`). `o[k]++` (clj-quickjs-76) adds
+`ToPropertyKey` (`0x5D`: o k → o key, the base check and the one key
+conversion) and `Dup2` (`0x5C`), so the reference is read with `GetElem`
+and written with `PutElem` without evaluating or converting the key again;
+the converted key (an index as a number, any other name as a string)
+converts to itself, so the later conversions are unobservable. Only `NewArray` allocates a
 heap object (a poll point; it also builds the realm on first use);
 element storage grows outside the object table, as property storage
 does.
@@ -2211,6 +2216,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/quickjs.c` `js_parse_unary` (`TOK_INC`/`TOK_DEC`),
   `js_parse_postfix_expr`, `OP_inc` / `OP_post_inc` and `js_post_inc_slow`
   were consulted only. No code was copied.
+- `tests/js_source.rs` `update_expressions_on_properties` (clj-quickjs-76):
+  the seven member groups of `test_inc_dec` (line 141) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `a = {x:true}` is
+  `let a = {x: true}` (and `var a, r` is `let a, r`), and each
+  `assert(v, expected)` is the script's value checked by a Rust assertion.
+  The test carries the full notice. `research/quickjs/quickjs.c`
+  `js_parse_postfix_expr`, `js_parse_unary` (lvalue handling, `to_propkey2`,
+  `dup2`, `insert3`), `OP_post_inc` and `js_post_inc_slow` were consulted
+  only. No code was copied.
 - `src/frontend/tests.rs` `number_literal_member_access` (clj-quickjs-48):
   the six cases of `test_number_literals` (line 667) of
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8

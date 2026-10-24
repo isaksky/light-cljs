@@ -1334,9 +1334,28 @@ Supported (`cargo test --lib frontend::tests::update_expressions`,
 
 Deferred:
 
-- `++`/`--` on properties (`a.b++` is `Unsupported`; clj-quickjs-76);
-  object operands wait for ToPrimitive (they fail with
+- (`++`/`--` on properties: clj-quickjs-76, below.) Object operands wait for ToPrimitive (they fail with
   `UnsupportedOperand`). (Compound assignment: clj-quickjs-84, below.)
+
+### `++`/`--` on properties (clj-quickjs-76)
+
+Supported (`cargo test --lib frontend::tests::update_expressions`,
+`cargo test --test js_source update_expressions_on_properties`):
+
+- Prefix and postfix `++`/`--` on `o.p` and `o[k]`, possibly
+  parenthesized: the base and the key are evaluated once, the base is
+  checked (`undefined`/`null` is a catchable `TypeError`) and the key
+  converted with ToPropertyKey once, the property is read (absent:
+  `undefined`, so `let o = {}; o.x++` is NaN), converted with ToNumber,
+  incremented or decremented and written back as `o.p = v` writes. A
+  prefix update yields the new number, a postfix one the old number. New
+  opcodes `Dup2` (`0x5C`) and `ToPropertyKey` (`0x5D`). The member cases
+  of QuickJS `test_inc_dec` are adapted with the license notice.
+
+Deferred:
+
+- Compound assignment on properties (clj-quickjs-260); a property value or
+  key that is an object waits for ToPrimitive (`UnsupportedOperand`).
 
 ### `do`-`while` loops (clj-quickjs-80)
 
@@ -1660,9 +1679,10 @@ Deferred:
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
   Getters/setters, methods, computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below), `delete`,
-  `__proto__`, property `++`/`--` and compound assignment; properties of
-  error objects and primitives fail with `UnsupportedOperand` (function
-  properties: clj-quickjs-125, below).
+  `__proto__`, compound assignment on properties (clj-quickjs-260; property
+  `++`/`--`: clj-quickjs-76, above); properties of error objects and
+  primitives fail with `UnsupportedOperand` (function properties:
+  clj-quickjs-125, below).
 
 ### Computed member access (clj-quickjs-115)
 
