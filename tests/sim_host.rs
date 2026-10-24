@@ -908,3 +908,126 @@ fn cancellation_removes_the_stale_wait_but_keeps_the_use() {
     assert_eq!(host.graph().uses(stalled.task), [alias]);
     assert!(host.cycles().is_empty());
 }
+
+/// a waits on b, b on c, and c needs d, then a. d's Rust work cancels b
+/// from outside the host's bookkeeping and keeps the wake IDs instead of
+/// handing them to `SimHost::wake`, so the graph still holds a's wait on b
+/// when c demands a. The candidate cycle c → a → b → c runs through a
+/// cancelled cell: it is not genuine and must not be reported. Once the
+/// wakes arrive, the cancellation propagates as ordinary input errors.
+#[test]
+fn external_settlement_breaks_a_candidate_cycle() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let b_key: Arc<std::sync::Mutex<Option<DependencyKey>>> = Arc::default();
+    let held_wakes: Arc<std::sync::Mutex<Vec<TaskId>>> = Arc::default();
+    let mut spec = WorldSpec::new();
+    spec.define(CONFIG, "a").produce(
+        CONFIG,
+        INITIALIZED,
+        pass_through().needing(USER, INITIALIZED),
+    );
+    spec.define(USER, "b").produce(
+        USER,
+        INITIALIZED,
+        pass_through().needing(PARITY, INITIALIZED),
+    );
+    spec.define(PARITY, "c").produce(
+        PARITY,
+        INITIALIZED,
+        pass_through()
+            .needing(IS_EVEN, INITIALIZED)
+            .needing(CONFIG, INITIALIZED),
+    );
+    let (cancel, held) = (Arc::clone(&b_key), Arc::clone(&held_wakes));
+    spec.define(IS_EVEN, "d").produce(
+        IS_EVEN,
+        INITIALIZED,
+        Producer::rust(move |rt, _| {
+            let b = cancel.lock().unwrap().expect("b's key is set");
+            let woken = rt.cancel_cell(b).map_err(|e| e.to_string())?;
+            held.lock().unwrap().extend(woken.task_ids());
+            Ok(rt.root(Primitive::Number(0.0)))
+        }),
+    );
+    let w = host.add_world(spec);
+    let key = |def| DependencyKey::new(w, def, INITIALIZED);
+    let (a, b, c) = (key(CONFIG), key(USER), key(PARITY));
+    *b_key.lock().unwrap() = Some(b);
+
+    let first = host.need(w, CONFIG, INITIALIZED);
+    // c parked on a (a's producer still parked on b): no cycle reported.
+    assert_eq!(first.result.unwrap_err(), SimError::Stalled { waiting: a });
+    assert!(host.cycles().is_empty(), "{:?}", host.cycles());
+    assert!(matches!(rt.cell_status(b), CellStatus::Cancelled));
+    let held = std::mem::take(&mut *held_wakes.lock().unwrap());
+    assert_eq!(held.len(), 1, "a's producer was b's only waiter");
+
+    host.wake(&held);
+    host.run_until_idle();
+    assert!(host.cycles().is_empty());
+    assert_eq!(
+        host.failure(a),
+        Some(&SimError::InputCancelled { key: a, input: b })
+    );
+    assert_eq!(
+        host.failure(c),
+        Some(&SimError::InputFailed { key: c, input: a })
+    );
+    assert_eq!((host.parked(), host.graph().active_waits()), (0, 0));
+}
+
+/// The demand that closes the cycle is a call: a's callable needs b's
+/// initializer, which invokes a. Requesting a's callable makes b's call
+/// demand the newest, so b's own cell fails with the cycle.
+#[test]
+fn a_call_demand_that_closes_a_cycle_fails_its_produced_cell() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let mut spec = WorldSpec::new();
+    let f = compile_function("function a(n) { return n; }").unwrap();
+    spec.define(CONFIG, "a").produce(
+        CONFIG,
+        CALLABLE,
+        Producer::callable(f, None).needing(USER, INITIALIZED),
+    );
+    spec.define(USER, "b").produce(
+        USER,
+        INITIALIZED,
+        Producer::invoke(CONFIG, Primitive::Number(1.0)),
+    );
+    let w = host.add_world(spec);
+    let a = DependencyKey::new(w, CONFIG, CALLABLE);
+    let b = DependencyKey::new(w, USER, INITIALIZED);
+
+    let answer = host.need(w, CONFIG, CALLABLE);
+    assert_eq!(
+        answer.result.unwrap_err(),
+        SimError::InputFailed { key: a, input: b }
+    );
+    let cycles = host.cycles();
+    assert_eq!(cycles.len(), 1);
+    let cycle = cycles[0].clone();
+    assert_eq!(cycle.keys(), [a, b]);
+    let steps = cycle.steps();
+    assert_eq!(
+        steps[0].site.description,
+        "b.initialized: call of a.callable"
+    );
+    assert_eq!(steps[1].site.description, "a.callable: input 0");
+    assert_eq!(
+        host.failure(b),
+        Some(&SimError::WaitCycle {
+            key: b,
+            cycle: cycle.clone()
+        })
+    );
+    assert!(matches!(rt.cell_status(a), CellStatus::Failed(_)));
+    assert!(matches!(rt.cell_status(b), CellStatus::Failed(_)));
+    let (b_job, a_job) = (steps[0].task, steps[1].task);
+    assert_eq!(host.graph().uses(b_job), [a]);
+    assert_eq!(host.graph().uses(a_job), [b]);
+    assert_eq!(host.producer_log(b).unwrap().waiting(), None);
+    assert_eq!(activations(&host), 0);
+    assert_eq!((host.parked(), host.graph().active_waits()), (0, 0));
+}

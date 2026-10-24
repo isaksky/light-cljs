@@ -64,6 +64,11 @@
 //!   A wait recorded after the resolution adds no edge (`resolve` marks the
 //!   key; cells never return to pending), and one recorded before is removed
 //!   by it, so neither order leaves a stale edge.
+//!
+//! A scheduler that cannot see every settlement (an embedder completing or
+//! cancelling cells behind its back) must revalidate a returned cycle
+//! against the cells before acting on it: resolve the keys that are
+//! already terminal and retry the wait. The simulated host does this.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

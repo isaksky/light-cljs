@@ -111,6 +111,10 @@
 //! settles it (just before the completion) and a parked job's wait when it
 //! is woken, including by a completion or cancellation from outside the
 //! host ([`SimHost::wake`]).
+//! A settlement outside the host is only seen when its wakes arrive, so
+//! before refusing a demand the host checks each key of the candidate
+//! cycle against the runtime's cells; settled ones are resolved in the
+//! graph and the wait is retried, so a reported cycle is all pending.
 //!
 //! A need whose wait would close a cycle (the producer of the awaited key is,
 //! through a chain of active waits, waiting on this job's own key) is a
@@ -132,8 +136,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::dep::{
-    CompleteError, Completion, DemandSite, DependencyGraph, DependencyLog, Need, ProducerRequest,
-    WaitCycle,
+    CellStatus, CompleteError, Completion, DemandSite, DependencyGraph, DependencyLog, Need,
+    ProducerRequest, WaitCycle,
 };
 use crate::heap::Rooted;
 use crate::ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WorldId};
@@ -781,7 +785,7 @@ impl SimHost {
             Need::Cancelled => Got::Cancelled(key),
             Need::Waiting { key, produce } => {
                 let site = self.demand_site(site, key);
-                match self.graph.wait(task.id(), key, site) {
+                match self.wait_checked(task.id(), key, site) {
                     Ok(()) => Got::Pending(key, produce),
                     Err(cycle) => {
                         // Refused: the job will not park on `key`, so it must
@@ -799,6 +803,38 @@ impl SimHost {
                         Got::Cycle(cycle)
                     }
                 }
+            }
+        }
+    }
+
+    /// Record `task`'s wait on `key`, refusing it only for a genuine cycle.
+    /// A cell on a candidate cycle may already have been settled outside the
+    /// host (an embedder's completion or cancellation whose wakes have not
+    /// reached [`SimHost::wake`] yet), leaving stale edges in the graph. So
+    /// every key of a candidate is checked against the runtime: terminal
+    /// ones are resolved in the graph and the wait is retried. Each retry
+    /// resolves at least one key, so this terminates.
+    fn wait_checked(
+        &mut self,
+        task: TaskId,
+        key: DependencyKey,
+        site: DemandSite,
+    ) -> Result<(), WaitCycle> {
+        loop {
+            let cycle = match self.graph.wait(task, key, site.clone()) {
+                Ok(()) => return Ok(()),
+                Err(cycle) => cycle,
+            };
+            let settled: Vec<DependencyKey> = cycle
+                .keys()
+                .into_iter()
+                .filter(|&k| !matches!(self.rt.cell_status(k), CellStatus::Pending { .. }))
+                .collect();
+            if settled.is_empty() {
+                return Err(cycle);
+            }
+            for k in settled {
+                self.graph.resolve(k);
             }
         }
     }
