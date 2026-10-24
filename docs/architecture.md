@@ -4912,7 +4912,7 @@ including `supportedLocalesOf`. Other formatting services remain deferred.
 | Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. Decimal/percent/currency JS NumberFormat and its supportedLocalesOf consume the number data; other formatting services, compact formatting and date/time formatting remain deferred. |
 | Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; Locale maximize/minimize consumes them (clj-quickjs-211). |
 | Calendar/hour preferences, week data, script directions | Snapshot-wide supplemental tables retained for later Locale/date consumers. |
-| Display names | Exactly `en` and `fr` data; other requested languages must be reported unsupported by that service, then resolve through its available default/root (`en`). They must not claim translated names for the whole numbers/date locale set. |
+| Display names | Exactly `en` and `fr` translated data; DisplayNames (-223) preserves the shared test-locale resolution and supportedLocalesOf metadata required by its QuickJS acceptance rows, with English name-data fallback for other resolved languages. This refines the initial service-coverage policy without claiming additional translations. |
 | Plural rules | Not in `locale-data.c`: rules are code in `intl/pluralrules.c`; later PluralRules work must port/test the rules for the advertised locales. |
 | List, relative time, duration units | Not exported locale tables: patterns/rules live in `intl/listformat.c`, `intl/relativetimeformat.c`, `intl/durationformat.c`. Later service pellets adapt/test those snapshot rules for their supported subset and explicitly expose missing coverage. No additional CLDR source is currently selected. |
 | Collation and segmentation | Small snapshot rules in `intl/collator.c` and `intl/segmenter.c`; complete UCA/DUCET and UAX #29 break datasets are absent. Later pellets own rule coverage and must pin any additional required inputs. |
@@ -7753,3 +7753,30 @@ consumes at most one scalar. `containing` scans from zero with the same rules;
 or migrate between steps, including within a single enormous grapheme or word.
 The cursor commits its next position only when its result is ready. Iterator
 creation and resolved-options allocation are bounded leaf operations.
+
+### Intl.DisplayNames code names (clj-quickjs-223)
+
+DisplayNames appends five realm intrinsics (prototype, constructor and three
+methods). Ordinary instances have a boxed immutable payload of Rust strings
+and static option spellings, with no heap edges. Their properties remain
+owned by the constructing task, including after Object.freeze. Receiver
+checks enforce ownership before code coercion. Native saved stages trace
+locale readers, options, the receiver and code across getters/ToString,
+waits, collection and migration. Options are read in localeMatcher, style,
+type, fallback order; languageDisplay is read only for language instances.
+Calendar types longer than 32 UTF-16 units use UnitCursor and bounded lowercase
+rope chunks; no generated calendar key or alias can match such a long code.
+
+The existing verified `data/display_names.rs` already contains all snapshot
+English/French code-name and language pools, emitted by `repack-intl.pl`.
+The new safe reader checks alternating NUL-separated code/name pairs; a
+consumer test checks all seven pools for both languages, including UTF-8 and
+terminal sentinels. No generation changes or manual table copies are needed.
+Language pools remain available to -224. Short/narrow region lookup tries the
+short pool before the full pool; other types use the snapshot's single pool.
+The shared service locale set preserves QuickJS's required `de` metadata and
+supportedLocalesOf output, while name lookup explicitly falls back to English
+when the resolved language has no data. This acceptance requirement refines
+the earlier -209 policy row: translated-name coverage remains exactly en/fr.
+Calendar aliases use canonical Unicode types with the snapshot's legacy data
+keys. Lowercase currencies intentionally throw under the pinned-output policy.

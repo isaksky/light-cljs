@@ -24939,3 +24939,287 @@ fn intl_segmenter_ownership_and_default_locale() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Name rows adapt QuickJS
+/// tests/test_intl.js::test_displayNames (MIT notice already retained above).
+#[test]
+fn intl_display_names_codes() {
+    for source in [
+        "let d=new Intl.DisplayNames('en',{type:'region'}); d.of('US') === 'United States' && d.of('001') === 'world' && d.of('us') === 'United States'",
+        "new Intl.DisplayNames('en',{type:'script'}).of('Latn') === 'Latin'",
+        "let d=new Intl.DisplayNames('en',{type:'calendar'}); d.of('gregory') === 'Gregorian Calendar' && d.of('islamic-umalqura') === 'Hijri Calendar (Umm al-Qura)'",
+        "let d=new Intl.DisplayNames('en',{type:'dateTimeField'}); d.of('year') === 'year' && d.of('timeZoneName') === 'time zone'",
+        "let d=new Intl.DisplayNames('en',{type:'currency'}); d.of('USD') === 'US Dollar' && d.of('EUR') === 'Euro'",
+        "let d=new Intl.DisplayNames('en',{type:'currency',fallback:'none'}); d.of('USD') === 'US Dollar' && d.of('ZZZ') === undefined",
+        "new Intl.DisplayNames('en',{type:'currency',fallback:'code'}).of('ZZZ') === 'ZZZ'",
+        "let d=new Intl.DisplayNames('fr',{type:'region'}); d.of('US') === 'États-Unis' && d.of('FR') === 'France'",
+        "let d=new Intl.DisplayNames('fr',{type:'currency'}); d.of('USD') === 'dollar des États-Unis' && d.of('EUR') === 'euro'",
+        "let o=new Intl.DisplayNames('de',{type:'region',style:'short'}).resolvedOptions(); o.locale === 'de' && o.style === 'short' && o.type === 'region' && o.fallback === 'code' && !('languageDisplay' in o)",
+        "let a=Intl.DisplayNames.supportedLocalesOf(['en','de','xx']); a.length === 2 && a[0] === 'en' && a[1] === 'de'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    // Pinned QuickJS expected-output policy intentionally rejects lowercase usd.
+    for (source, error) in [
+        (
+            "new Intl.DisplayNames('en',{type:'region'}).of('00')",
+            "RangeError",
+        ),
+        (
+            "new Intl.DisplayNames('en',{type:'currency'}).of('usd')",
+            "RangeError",
+        ),
+        (
+            "new Intl.DisplayNames('en',{type:'currency'}).of('US')",
+            "RangeError",
+        ),
+        ("new Intl.DisplayNames('en')", "TypeError"),
+        ("new Intl.DisplayNames('en',{})", "TypeError"),
+        ("new Intl.DisplayNames('en',{type:'bogus'})", "RangeError"),
+        (
+            "new Intl.DisplayNames('en',{type:'dateTimeField'}).of('bogus')",
+            "RangeError",
+        ),
+    ] {
+        let test = format!(
+            "let caught=false; try {{{source};}} catch(e){{caught=e instanceof {error};}} caught"
+        );
+        assert_eq!(eval(&test), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_display_names_validation_and_options() {
+    for source in [
+        "let d=new Intl.DisplayNames('en',{type:'script'}); d.of('lATN') === 'Latin' && d.of('qAAA') === 'Qaaa'",
+        "let d=new Intl.DisplayNames('en',{type:'region',style:'short'}); d.of('US') === 'US' && d.of('FR') === 'France'",
+        "new Intl.DisplayNames('en',{type:'region',style:'narrow'}).of('GB') === 'UK'",
+        "new Intl.DisplayNames('fr-CA',{type:'script'}).of('latn') === 'latin'",
+        "new Intl.DisplayNames('de',{type:'region'}).of('US') === 'United States'",
+        "let d=new Intl.DisplayNames('en',{type:'calendar'}); d.of('GREGORY') === 'Gregorian Calendar' && d.of('ethioaa') === 'Ethiopic Amete Alem Calendar' && d.of('ISLAMICC') === d.of('islamic-civil') && d.of('FOOBAR') === 'foobar'",
+        "let d=new Intl.DisplayNames('en',{type:'calendar',fallback:'none'}); d.of('foobar') === undefined",
+        "let d=new Intl.DisplayNames('en',{type:'region',get languageDisplay(){throw 99;}}); d.of('US') === 'United States'",
+        "let d=new Intl.DisplayNames('en',{type:'language',languageDisplay:'standard'}); d.resolvedOptions().languageDisplay === 'standard'",
+        "let d=new Intl.DisplayNames('en',{type:'region'}); d[Symbol.toStringTag] === 'Intl.DisplayNames' && Object.getPrototypeOf(d) === Intl.DisplayNames.prototype && d.of({toString(){return 'US';}}) === 'United States'",
+        "Intl.DisplayNames.length === 2 && Intl.DisplayNames.prototype.of.length === 1 && Intl.DisplayNames.prototype.resolvedOptions.length === 0 && Intl.DisplayNames.supportedLocalesOf.length === 1",
+        "let d=Object.getOwnPropertyDescriptor(Intl.DisplayNames.prototype,Symbol.toStringTag); !d.writable && !d.enumerable && d.configurable",
+        "let log='';let d=new Intl.DisplayNames('en',{get localeMatcher(){log+='m';return 'lookup';},get style(){log+='s';return 'long';},get type(){log+='t';return 'region';},get fallback(){log+='f';return 'none';},get languageDisplay(){log+='l';return 'standard';}});log === 'mstf' && d.resolvedOptions().fallback === 'none'",
+        "let a=Intl.DisplayNames.supportedLocalesOf(['fr-CA','en-u-nu-arab','xx','fr-CA'],{localeMatcher:'lookup'}); a.length === 2 && a[0] === 'fr-CA' && a[1] === 'en-u-nu-arab'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "new Intl.DisplayNames('en',{type:'region'}).of('U1')",
+        "new Intl.DisplayNames('en',{type:'region'}).of('USA')",
+        "new Intl.DisplayNames('en',{type:'region'}).of('US\\0')",
+        "new Intl.DisplayNames('en',{type:'region'}).of('éé')",
+        "new Intl.DisplayNames('en',{type:'script'}).of('Lat')",
+        "new Intl.DisplayNames('en',{type:'script'}).of('L4tn')",
+        "new Intl.DisplayNames('en',{type:'calendar'}).of('ab')",
+        "new Intl.DisplayNames('en',{type:'calendar'}).of('abcdefghi')",
+        "new Intl.DisplayNames('en',{type:'calendar'}).of('abc--def')",
+        "new Intl.DisplayNames('en',{type:'calendar'}).of('abc-def-')",
+        "new Intl.DisplayNames('en',{type:'calendar'}).of('abc_foo')",
+        "new Intl.DisplayNames('en',{type:'dateTimeField'}).of('Year')",
+        "new Intl.DisplayNames('en',{type:'region',localeMatcher:'bogus'})",
+        "new Intl.DisplayNames('en',{type:'region',style:'bogus'})",
+        "new Intl.DisplayNames('en',{type:'region',fallback:'bogus'})",
+        "new Intl.DisplayNames('en',{type:'language',languageDisplay:'bogus'})",
+        "Intl.DisplayNames.supportedLocalesOf('en',{localeMatcher:'bogus'})",
+    ] {
+        let check = format!(
+            "let caught=false;try {{{source};}}catch(e){{caught=e instanceof RangeError;}}caught"
+        );
+        assert_eq!(eval(&check), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "Intl.DisplayNames('en',{type:'region'})",
+        "new Intl.DisplayNames('en',null)",
+        "new Intl.DisplayNames('en',1)",
+        "Intl.DisplayNames.prototype.of.call({},'US')",
+        "Intl.DisplayNames.prototype.resolvedOptions.call({})",
+        "Intl.DisplayNames.prototype.of.call({},{toString(){throw 99;}})",
+        "new Intl.DisplayNames('en',{type:'region'}).of(Symbol())",
+        "new Intl.DisplayNames('en',{type:'language'}).of('en')",
+    ] {
+        let check = format!(
+            "let caught=false;try {{{source};}}catch(e){{caught=e instanceof TypeError;}}caught"
+        );
+        assert_eq!(eval(&check), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Every callback waits once; GC
+/// and worker migration happen between instructions and at each wait.
+#[test]
+fn intl_display_names_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let d=new Intl.DisplayNames({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'FR';}},
+            {get type(){log+='k';__rt.need(3,1);return {toString(){log+='s';__rt.need(4,1);return 'currency';}};}});
+        let name=d.of({toString(){log+='c';__rt.need(5,1);return 'USD';}});
+        name === 'dollar des États-Unis' && log === 'ltksc'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 5);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 5);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("DisplayNames continuation did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_display_names_host_and_ownership() {
+    struct LocaleHost(usize);
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            self.0 += 1;
+            "fr".into()
+        }
+    }
+    let rt = Runtime::new();
+    let mut host = LocaleHost(0);
+    for (source, calls) in [
+        (
+            "let d=new Intl.DisplayNames(undefined,{type:'region'});d.resolvedOptions().locale === 'fr' && d.of('US') === 'États-Unis'",
+            1,
+        ),
+        (
+            "new Intl.DisplayNames('en',{type:'region'}).of('US') === 'United States'",
+            0,
+        ),
+        ("Intl.DisplayNames.supportedLocalesOf('xx').length === 0", 0),
+    ] {
+        host.0 = 0;
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert!(
+            matches!(outcome,RunOutcome::Complete(v) if v.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+        assert_eq!(host.0, calls);
+        assert!(task.dependency_log().edges().is_empty());
+    }
+    for source in [
+        "new Intl.DisplayNames('en',{type:'region'})",
+        "Object.freeze(new Intl.DisplayNames('en',{type:'region'}))",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("DisplayNames construction");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "Intl.DisplayNames.prototype.of.call(value,'US')",
+            "Intl.DisplayNames.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            assert!(
+                matches!(rt.spawn(&code,&[&value]).unwrap().run().unwrap(),RunOutcome::Failed(e) if matches!(e.kind(),VmErrorKind::ForeignObject{..}))
+            );
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Long unknown calendar types are
+/// canonicalized over budgeted steps, including ropes and GC between steps.
+#[test]
+fn intl_display_names_long_calendar_budget() {
+    struct Phase(u8);
+    impl Host for Phase {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = call.op as u8;
+            Ok(Primitive::Undefined)
+        }
+    }
+    let rt = Runtime::new();
+    let mut upper = clj_quickjs::JsString::from("ABC");
+    for _ in 0..600 {
+        upper = upper.concat(&clj_quickjs::JsString::from("-DEF")).unwrap();
+    }
+    let upper = rt.root(Primitive::String(upper));
+    let lower = rt.root(Primitive::String(clj_quickjs::JsString::from(
+        format!("abc{}", "-def".repeat(600)).as_str(),
+    )));
+    for fallback in ["code", "none"] {
+        let source = format!(
+            "function f(text,expected){{let d=new Intl.DisplayNames('en',{{type:'calendar',fallback:'{fallback}'}});__rt.effect(1,0);let result=d.of(text);__rt.effect(2,0);return result === {};}}",
+            if fallback == "code" {
+                "expected"
+            } else {
+                "undefined"
+            }
+        );
+        let task = rt
+            .spawn(&compile_function(&source).unwrap(), &[&upper, &lower])
+            .unwrap();
+        let mut phase = Phase(0);
+        let mut code_yields = 0;
+        let mut complete = false;
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(1), &mut phase).unwrap() {
+                RunOutcome::Yielded => {
+                    if phase.0 == 1 {
+                        code_yields += 1;
+                        rt.collect().unwrap();
+                    }
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete);
+        assert!(code_yields >= 20, "{code_yields}");
+    }
+    for suffix in ["-AB", "-ABCDEFGHI", "-", "-ééé"] {
+        let source = format!(
+            "let code='ABC';for(let i=0;i<40;i++){{code+='-DEF';}}code+='{suffix}';let caught=false;try{{new Intl.DisplayNames('en',{{type:'calendar'}}).of(code);}}catch(e){{caught=e instanceof RangeError;}}caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{suffix}");
+    }
+}

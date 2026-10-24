@@ -5582,3 +5582,19 @@ Explicit gaps: sentence granularity throws RangeError. Grapheme and word
 boundaries use the pinned QuickJS heuristic documented in architecture, with
 regional-indicator pairs corrected; they do not implement complete UAX #29 or
 dictionary segmentation. Public properties cannot change the internal slots.
+
+### Execution: Intl.DisplayNames code names (clj-quickjs-223)
+
+`new Intl.DisplayNames(locales, options)` requires options and type. Supported
+types are region, script, currency, calendar and dateTimeField; style is
+long/short/narrow and fallback is code/none. `of` converts its argument to a
+string, validates and canonicalizes the code, then returns an English/French
+snapshot name or the selected missing-name fallback. The agreed test locale
+set is recognized; languages without translated pools use English name data.
+`resolvedOptions`, `supportedLocalesOf`, and Symbol.toStringTag are exposed.
+Calling the constructor without new throws TypeError. Option getters and code
+coercions use ordinary resumable calls; calendar validation is budgeted.
+
+Explicit gaps: `type: 'language'` can be constructed with dialect/standard
+languageDisplay but its `of` throws a documented TypeError until -224. Generic
+Object.prototype.toString consumption of Symbol.toStringTag remains deferred.

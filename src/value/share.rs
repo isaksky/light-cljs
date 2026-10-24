@@ -211,7 +211,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Generator(_) | HeapObject::AsyncState(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
-        // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules, Intl.Collator, Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.Segmenter, Segments, Segment Iterators and
+        // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules, Intl.Collator, Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.DisplayNames, Intl.Segmenter, Segments, Segment Iterators and
         // RegExp instances and Number/String/Symbol wrappers have task-owned ordinary properties.
         HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,

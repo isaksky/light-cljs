@@ -324,9 +324,22 @@ pub(crate) struct OrdinaryObject {
     // Immutable Rust strings/static tables only; no additional GC edges.
     relative_time_format: Option<Box<crate::intl::relative_time_format::RelativeTimeFormat>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
+    // Immutable Rust strings only; ordinary properties remain task-owned.
+    display_names: Option<Box<crate::intl::display_names::DisplayNames>>,
 }
 
 impl OrdinaryObject {
+    pub(crate) fn with_display_names(
+        mut self,
+        data: crate::intl::display_names::DisplayNames,
+    ) -> Self {
+        self.display_names = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn display_names(&self) -> Option<&crate::intl::display_names::DisplayNames> {
+        self.display_names.as_deref()
+    }
+
     pub(crate) fn with_segmenter(mut self, data: crate::intl::segmenter::Data) -> Self {
         self.segmenter = Some(Box::new(data));
         self
@@ -381,6 +394,7 @@ impl OrdinaryObject {
 
             relative_time_format: None,
             segmenter: None,
+            display_names: None,
         }
     }
 

@@ -429,6 +429,7 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_segmenter_prototype: ObjectId,
     pub(crate) intl_segments_prototype: ObjectId,
     pub(crate) intl_segment_iterator_prototype: ObjectId,
+    pub(crate) intl_display_names_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1273,6 +1274,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_relative_time_format_intrinsics(&mut b, object_prototype, intl)?;
     let (intl_segmenter_prototype, intl_segments_prototype, intl_segment_iterator_prototype) =
         intl_segmenter_intrinsics(&mut b, object_prototype, iterator_prototype, intl)?;
+    let intl_display_names_prototype =
+        intl_display_names_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1365,6 +1368,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_segmenter_prototype,
         intl_segments_prototype,
         intl_segment_iterator_prototype,
+        intl_display_names_prototype,
     })
 }
 
@@ -2474,6 +2478,51 @@ fn intl_segmenter_intrinsics(
     Some((prototype, segments, iterator))
 }
 
+fn intl_display_names_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlDisplayNames,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "DisplayNames", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlDisplayNamesSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which) in [
+        ("of", Builtin::IntlDisplayNamesOf),
+        ("resolvedOptions", Builtin::IntlDisplayNamesResolvedOptions),
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, name, method, PropertyFlags::METHOD)?;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.DisplayNames")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(prototype)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2591,7 +2640,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 310); // Includes Segmenter (-222), its Segments and iterator prototypes.
+        assert_eq!(first.all.len(), 315); // Includes Segmenter (-222) and DisplayNames (-223).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

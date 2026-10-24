@@ -3852,3 +3852,24 @@ The runtime reuses the generated Unicode 17.0.0 combining-class table and
 pinned QuickJS heuristic, with regional indicators paired correctly.
 Deferred: full UAX #29 break rules and dictionary word segmentation; sentence
 requests throw RangeError. See architecture for the exact heuristic limits.
+
+### Intl.DisplayNames code names (clj-quickjs-223)
+
+Supported: `new Intl.DisplayNames(locales, options)` with required `type`,
+`style`, `fallback`, `localeMatcher`, `of(code)`, `resolvedOptions`,
+`supportedLocalesOf`, and the `Intl.DisplayNames` symbol tag. Region, script,
+currency, calendar and dateTimeField names use the verified snapshot's English
+and French tables; the other agreed test locales retain their resolved locale
+and use English name data. This preserves QuickJS's `de` metadata and
+supported-locales rows without claiming German translations. Regions/scripts
+and calendar types canonicalize their codes. Malformed codes throw RangeError;
+the pinned QuickJS policy rejects lowercase currency codes. Unknown valid codes
+return the canonical code or undefined for `fallback: 'none'`. Getters and
+ToString callbacks can yield, wait, collect and migrate; long calendar types
+are validated and canonicalized in bounded steps. Host defaults use the shared
+leaf locale boundary.
+
+Deferred to clj-quickjs-224: language names and dialect display; constructing
+`type: 'language'` processes `languageDisplay`, but `of` throws an explicit
+TypeError. The symbol tag is readable directly; generic
+`Object.prototype.toString` tag consumption retains its existing explicit gap.

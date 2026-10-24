@@ -1205,3 +1205,14 @@ MIT notice in that test file applies. Regional-indicator pairing is corrected;
 all UAX #29 and sentence limitations are documented in architecture/grammar.
 The existing generated combining-class data and provenance are reused without
 changes; the Unicode notice remains in `docs/UNICODE-LICENSE`.
+
+### Intl.DisplayNames code names (clj-quickjs-223)
+
+Semantic references: `research/quickjs/intl/displaynames.c` and
+`research/quickjs/intl/intl.c::js_intl_find_display_name`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The new `js_source` code-name
+rows adapt `research/quickjs/tests/test_intl.js::test_displayNames`; the
+QuickJS MIT notice is retained in that test file. Runtime code is written
+fresh in Rust. Name data reuses `src/intl/data/display_names.rs`, already
+exported and repacked by `scripts/quickjs-data/`; its provenance, QuickJS
+license and `docs/UNICODE-LICENSE` remain applicable and unchanged.

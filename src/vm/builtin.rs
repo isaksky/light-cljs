@@ -425,6 +425,11 @@ pub(crate) enum Builtin {
     IntlSegmentsContaining,
     IntlSegmentsIterator,
     IntlSegmentIteratorNext,
+
+    IntlDisplayNames,
+    IntlDisplayNamesOf,
+    IntlDisplayNamesResolvedOptions,
+    IntlDisplayNamesSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -489,6 +494,10 @@ impl Builtin {
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
             Builtin::IntlRelativeTimeFormat => "RelativeTimeFormat",
+            Builtin::IntlDisplayNames => "DisplayNames",
+            Builtin::IntlDisplayNamesOf => "of",
+            Builtin::IntlDisplayNamesResolvedOptions => "resolvedOptions",
+            Builtin::IntlDisplayNamesSupportedLocales => "supportedLocalesOf",
             Builtin::IntlRelativeTimeFormatFormat => "format",
             Builtin::IntlRelativeTimeFormatToParts => "formatToParts",
             Builtin::IntlRelativeTimeFormatResolvedOptions => "resolvedOptions",
@@ -728,6 +737,9 @@ impl Builtin {
             Builtin::IntlRelativeTimeFormat | Builtin::IntlRelativeTimeFormatResolvedOptions => 0,
             Builtin::IntlRelativeTimeFormatFormat | Builtin::IntlRelativeTimeFormatToParts => 2,
             Builtin::IntlRelativeTimeFormatSupportedLocales => 1,
+            Builtin::IntlDisplayNames => 2,
+            Builtin::IntlDisplayNamesOf | Builtin::IntlDisplayNamesSupportedLocales => 1,
+            Builtin::IntlDisplayNamesResolvedOptions => 0,
             Builtin::IntlCollator
             | Builtin::IntlCollatorGetCompare
             | Builtin::IntlCollatorResolvedOptions => 0,
@@ -941,6 +953,13 @@ pub(crate) fn call(
         }
         Builtin::IntlDateTimeFormatResolvedOptions => {
             crate::intl::date_time_format::record(heap, task, this)?.resolved(heap, task)
+        }
+        Builtin::IntlDisplayNames => Err(Fault::TypeError("Intl.DisplayNames requires new".into())),
+        Builtin::IntlDisplayNamesOf | Builtin::IntlDisplayNamesSupportedLocales => {
+            Err(Fault::Internal("DisplayNames requires native frame"))
+        }
+        Builtin::IntlDisplayNamesResolvedOptions => {
+            crate::intl::display_names::record(heap, task, this)?.resolved(heap, task)
         }
         Builtin::IntlRelativeTimeFormat => Err(Fault::TypeError(
             "Intl.RelativeTimeFormat requires new".into(),
