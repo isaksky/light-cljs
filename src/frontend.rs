@@ -34,6 +34,7 @@ pub mod ast;
 mod intrinsics;
 pub mod lexer;
 mod lower;
+mod module;
 mod parser;
 mod unicode_ident;
 
@@ -43,6 +44,8 @@ mod tests;
 use std::fmt;
 
 use crate::vm::Executable;
+
+pub use module::{ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry, ModuleRecord};
 
 /// Nesting budget, in units: each nesting construct (parentheses, blocks,
 /// functions, prefix operators, statement bodies, links of operator, member
@@ -192,6 +195,13 @@ pub fn line_column(source: &str, offset: usize) -> (u32, u32) {
 /// input containing an unsupported or malformed form.
 pub fn parse_script(source: &str) -> Result<ast::Script, SyntaxError> {
     parse_script_with(source, ScriptOptions::STRICT)
+}
+
+/// Parse a module as strict code and construct its immutable static record.
+/// This performs module early-error checks, without loading, linking, or
+/// executing anything. The CLI and script compilation remain script-only.
+pub fn parse_module(source: &str) -> Result<ast::Module, SyntaxError> {
+    parser::Parser::new(source, true).parse_module()
 }
 
 /// [`parse_script`] with the top level in the mode `options` gives.

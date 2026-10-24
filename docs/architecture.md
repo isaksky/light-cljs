@@ -7420,3 +7420,39 @@ Literal prefix and unit/suffix parts surround those number parts. Only numeric
 parts receive the canonical singular unit. Joining the parts reproduces format,
 including the snapshot's space before CJK unit strings. The agreed locale
 subset and existing NumberFormat/PluralRules limitations still apply.
+
+## Static module parsing (clj-quickjs-251)
+
+`frontend::parse_module` selects the strict Module grammar; the script parser,
+script compiler and CLI retain their script goal. The parser reuses ordinary
+statement, pattern, function and expression parsing, records static declarations,
+and validates module bindings and exports before returning. Function declarations
+at module scope are lexical. Exported imports are partitioned into indirect
+exports, except namespace imports, which remain local. Requests are deduplicated
+by cooked UTF-16 specifier content while retaining first-occurrence order.
+
+`frontend::ModuleRecord` (also `frontend::ast::Module`) wraps immutable Rust-owned
+body syntax and static tables in one `Arc`. Clones share the complete record;
+accessors expose only shared slices. It contains no GC handles, mutable bindings,
+resolver, instances, world/version, or task state and is `Send + Sync`. This is
+an explicit immutable code/syntax storage boundary, not a JavaScript heap object.
+Default function declarations are distinguished from expressions in the body;
+anonymous defaults use ECMA-262's inaccessible `*default*` binding name.
+
+Loading, linking and execution are deferred. A later embedder cache can associate
+records with world/version while keeping instances per task. Static requests do
+not create dependency edges. This parser neither fetches sources nor starts tasks;
+it imposes no filesystem resolution policy and does not accept top-level await.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c` functions
+`js_parse_import`, `js_parse_export`, `js_parse_from_clause`, `add_import`,
+`add_export_entry`, `add_req_module_entry`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, were consulted as semantic references;
+no C implementation is adapted. Under "QuickJS references and provenance", the
+parse-only fixtures `tests/fixtures/modules/{test_cyclic_import,fixture_cyclic_import,
+assert,hello_module,fib_module}.js` copy complete sources from
+`research/quickjs/tests/{test_cyclic_import,fixture_cyclic_import,assert}.js` and
+`research/quickjs/examples/{hello_module,fib_module}.js` at that revision, with the
+full QuickJS license prepended to each. The original source bodies are unchanged.
+`frontend::tests::module_records_of_quickjs_cases` checks their exact static tables;
+these fixtures do not claim module execution support.

@@ -14,6 +14,25 @@
 use super::Span;
 use crate::value::JsString;
 
+/// A parsed module and its static tables, immutable and cheaply shareable.
+pub type Module = super::ModuleRecord;
+
+/// Module body syntax after static import/export wrappers are recorded.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModuleItem {
+    Statement(Stmt),
+    DefaultExport(DefaultExport),
+}
+
+/// Default declarations preserve their hoisting distinction from expressions.
+/// Named declarations bind their own name; anonymous declarations and
+/// expressions bind the inaccessible `*default*` local name in the record.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DefaultExport {
+    Function(Function),
+    Expression(Expr),
+}
+
 /// A whole script: a statement list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {

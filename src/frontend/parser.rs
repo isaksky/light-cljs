@@ -23,6 +23,8 @@ use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
 type PResult<T> = Result<T, SyntaxError>;
 
+mod modules;
+
 /// A formal parameter list: the names, and per name its default value, if
 /// any.
 type Params = (Vec<Pattern>, Vec<Option<Expr>>);
@@ -90,6 +92,7 @@ pub(super) struct Parser<'a> {
     /// literals by mode (clj-quickjs-51) and is kept in step with it
     /// ([`Self::set_strict`]).
     strict: bool,
+    module_goal: bool,
     in_function: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
@@ -153,6 +156,7 @@ impl<'a> Parser<'a> {
             prev_end: 0,
             depth: 0,
             strict,
+            module_goal: false,
             in_function: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
@@ -703,6 +707,9 @@ impl<'a> Parser<'a> {
     fn statement_start_error(&self) -> Option<SyntaxError> {
         let span = self.tok.span;
         match &self.tok.kind {
+            TokenKind::Keyword(Keyword::Import | Keyword::Export) if self.module_goal => {
+                Some(self.misplaced_module_declaration())
+            }
             TokenKind::Identifier(_) if self.at_async_function() => Some(self.error(
                 SyntaxErrorKind::Invalid, span,
                 "an async function declaration requires a statement list",
@@ -3062,6 +3069,9 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_prefix(&self) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
+            TokenKind::Keyword(Keyword::Await) if self.module_goal && !self.in_function => {
+                Err(self.unsupported(span, "top-level `await` is"))
+            }
             TokenKind::Keyword(Keyword::Await) => {
                 Err(self.unsupported(span, "`await` (async functions) is"))
             }
@@ -3461,6 +3471,9 @@ impl<'a> Parser<'a> {
     fn primary_error(&self) -> SyntaxError {
         let span = self.tok.span;
         match &self.tok.kind {
+            TokenKind::Keyword(Keyword::Import | Keyword::Export) if self.module_goal => {
+                self.misplaced_module_declaration()
+            }
             TokenKind::Punct(Punct::Ellipsis) => self.unsupported(span, "spread syntax is"),
             TokenKind::Keyword(k) => {
                 if let Some(what) = unsupported_expression_keyword(*k) {

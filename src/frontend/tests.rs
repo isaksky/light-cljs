@@ -10,6 +10,7 @@
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
 //! `test_unicode_ident` (notice in `tests/js_source.rs`
 //! `identifiers_are_not_normalized`).
+//! The five module fixtures are complete licensed QuickJS source copies.
 
 use super::ast::{
     BinaryOp, ChainLinkKind, Expr, ExprKind, Function, FunctionKind, LogicalOp, Pattern,
@@ -20,6 +21,413 @@ use super::{
     MAX_NESTING, ScriptOptions, SyntaxError, SyntaxErrorKind, compile_script, line_column,
     parse_script, parse_script_with,
 };
+
+#[test]
+fn module_import_and_export_entries() {
+    use super::{ImportName, parse_module};
+    let source = "import d, {a, b as c, default as e} from 's';\n\
+                  import d2, * as ns from 't'; import 's';\n\
+                  export {a, c as renamed, ns, later}; const later = 1; export const own = 2;";
+    let module = parse_module(source).unwrap();
+    assert!(module.is_strict());
+    assert_eq!(module.requested_modules(), &["s", "t"]);
+    let imports: Vec<_> = module
+        .import_entries()
+        .iter()
+        .map(|e| {
+            (
+                e.specifier.to_string_lossy(),
+                e.import_name.clone(),
+                e.local_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("s".into(), ImportName::Name("default".into()), "d"),
+            ("s".into(), ImportName::Name("a".into()), "a"),
+            ("s".into(), ImportName::Name("b".into()), "c"),
+            ("s".into(), ImportName::Name("default".into()), "e"),
+            ("t".into(), ImportName::Name("default".into()), "d2"),
+            ("t".into(), ImportName::Namespace, "ns"),
+        ]
+    );
+    let local: Vec<_> = module
+        .local_export_entries()
+        .iter()
+        .map(|e| (e.export_name.as_str(), e.local_name.as_str()))
+        .collect();
+    assert_eq!(local, [("ns", "ns"), ("later", "later"), ("own", "own")]);
+    let indirect: Vec<_> = module
+        .indirect_export_entries()
+        .iter()
+        .map(|e| {
+            (
+                e.specifier.to_string_lossy(),
+                e.import_name.as_str(),
+                e.export_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        indirect,
+        [("s".into(), "a", "a"), ("s".into(), "b", "renamed")]
+    );
+    for entry in module.import_entries() {
+        assert_eq!(entry.span.text(source), entry.local_name);
+    }
+    let clone = module.clone();
+    assert!(std::ptr::eq(module.body(), clone.body()));
+    assert!(std::ptr::eq(
+        module.import_entries(),
+        clone.import_entries()
+    ));
+    fn shareable<T: Send + Sync>() {}
+    shareable::<super::ModuleRecord>();
+}
+
+#[test]
+fn module_records_of_quickjs_cases() {
+    use super::{ImportName, parse_module};
+    // Complete parse-only copies, with QuickJS's license in each fixture.
+    // Bodies are unmodified, including var, instanceof, and arguments.
+    let cases = [
+        (
+            include_str!("../../tests/fixtures/modules/test_cyclic_import.js"),
+            vec!["./assert.js", "./fixture_cyclic_import.js"],
+            vec![
+                ("./assert.js", "assert", "assert"),
+                ("./fixture_cyclic_import.js", "f", "f"),
+            ],
+            vec![("g", "g")],
+            vec![("./fixture_cyclic_import.js", "f", "f")],
+        ),
+        (
+            include_str!("../../tests/fixtures/modules/fixture_cyclic_import.js"),
+            vec!["./test_cyclic_import.js"],
+            vec![("./test_cyclic_import.js", "*", "a")],
+            vec![("f", "f")],
+            vec![],
+        ),
+        (
+            include_str!("../../tests/fixtures/modules/assert.js"),
+            vec![],
+            vec![],
+            vec![
+                ("assert", "assert"),
+                ("assertThrows", "assertThrows"),
+                ("assertArrayEquals", "assertArrayEquals"),
+            ],
+            vec![],
+        ),
+        (
+            include_str!("../../tests/fixtures/modules/hello_module.js"),
+            vec!["./fib_module.js", "./message.json"],
+            vec![
+                ("./fib_module.js", "fib", "fib"),
+                ("./message.json", "default", "msg"),
+            ],
+            vec![],
+            vec![],
+        ),
+        (
+            include_str!("../../tests/fixtures/modules/fib_module.js"),
+            vec![],
+            vec![],
+            vec![("fib", "fib")],
+            vec![],
+        ),
+    ];
+    for (source, requests, imports, locals, indirect) in cases {
+        let module = parse_module(source).unwrap();
+        assert_eq!(module.requested_modules(), requests);
+        let actual_imports: Vec<_> = module
+            .import_entries()
+            .iter()
+            .map(|e| {
+                (
+                    e.specifier.to_string_lossy(),
+                    match &e.import_name {
+                        ImportName::Name(n) => n.as_str(),
+                        ImportName::Namespace => "*",
+                    },
+                    e.local_name.as_str(),
+                )
+            })
+            .collect();
+        let imports: Vec<_> = imports
+            .into_iter()
+            .map(|(s, n, l)| (s.to_owned(), n, l))
+            .collect();
+        assert_eq!(actual_imports, imports);
+        let actual_locals: Vec<_> = module
+            .local_export_entries()
+            .iter()
+            .map(|e| (e.export_name.as_str(), e.local_name.as_str()))
+            .collect();
+        assert_eq!(actual_locals, locals);
+        let actual_indirect: Vec<_> = module
+            .indirect_export_entries()
+            .iter()
+            .map(|e| {
+                (
+                    e.specifier.to_string_lossy(),
+                    e.import_name.as_str(),
+                    e.export_name.as_str(),
+                )
+            })
+            .collect();
+        let indirect: Vec<_> = indirect
+            .into_iter()
+            .map(|(s, n, e)| (s.to_owned(), n, e))
+            .collect();
+        assert_eq!(actual_indirect, indirect);
+        assert_eq!(module.span(), super::Span::new(0, source.len()));
+    }
+}
+
+#[test]
+fn module_syntax_rejections() {
+    use super::SyntaxErrorKind::{Invalid, Unsupported};
+    let cases = [
+        ("export * from 's';", Unsupported, 1, 8, "export *"),
+        (
+            "export * as ns from 's';",
+            Unsupported,
+            1,
+            8,
+            "export * as ns",
+        ),
+        (
+            "export {x} from 's';",
+            Unsupported,
+            1,
+            12,
+            "export {x} from",
+        ),
+        (
+            "import {'x' as x} from 's';",
+            Unsupported,
+            1,
+            9,
+            "string-literal",
+        ),
+        (
+            "let x; export {x as 'name'};",
+            Unsupported,
+            1,
+            21,
+            "string-literal",
+        ),
+        (
+            "import 's' with {};",
+            Unsupported,
+            1,
+            12,
+            "import attributes",
+        ),
+        (
+            "import {a} from 's' with {};",
+            Unsupported,
+            1,
+            21,
+            "import attributes",
+        ),
+        ("await 1;", Unsupported, 1, 1, "await"),
+        ("import('s');", Unsupported, 1, 1, "import()"),
+        ("const x = import('s');", Unsupported, 1, 11, "import()"),
+        ("import.meta;", Unsupported, 1, 1, "import.meta"),
+        ("let m = import.meta;", Unsupported, 1, 9, "import.meta"),
+        ("{ import 's'; }", Invalid, 1, 3, "module top level"),
+        (
+            "function f(){ export const x=1; }",
+            Invalid,
+            1,
+            15,
+            "module top level",
+        ),
+        (
+            "import {a} from 's';\nimport {b as a} from 't';",
+            Invalid,
+            2,
+            14,
+            "already declared",
+        ),
+        (
+            "import d from 's';\nconst d = 1;",
+            Invalid,
+            2,
+            7,
+            "already declared",
+        ),
+        (
+            "let d;\nimport d from 's';",
+            Invalid,
+            2,
+            8,
+            "already declared",
+        ),
+        (
+            "import {a} from 's';\n{var a;}",
+            Invalid,
+            2,
+            6,
+            "already declared",
+        ),
+        (
+            "import f from 's';\nfunction f() {}",
+            Invalid,
+            2,
+            10,
+            "already declared",
+        ),
+        (
+            "function f(){}\nfunction f(){}",
+            Invalid,
+            2,
+            10,
+            "already declared",
+        ),
+        ("let x;\nvar x;", Invalid, 2, 5, "already declared"),
+        (
+            "const a=1;\nexport {a};\nexport {a as a};",
+            Invalid,
+            3,
+            14,
+            "duplicate exported",
+        ),
+        (
+            "export const a=1;\nexport {a};",
+            Invalid,
+            2,
+            9,
+            "duplicate exported",
+        ),
+        ("export {x};", Invalid, 1, 9, "not declared"),
+        ("{let x;}\nexport {x};", Invalid, 2, 9, "not declared"),
+        (
+            "function f(){var x;}\nexport {x};",
+            Invalid,
+            2,
+            9,
+            "not declared",
+        ),
+        (
+            "let x;\nexport {x as default};\nexport default 1;",
+            Invalid,
+            3,
+            8,
+            "duplicate exported",
+        ),
+        ("import {if} from 's';", Invalid, 1, 9, "import binding"),
+        (
+            r"import {\u0069f} from 's';",
+            Invalid,
+            1,
+            9,
+            "import binding",
+        ),
+        (
+            r"import {x as \u0069f} from 's';",
+            Invalid,
+            1,
+            14,
+            "reserved word",
+        ),
+        (
+            "import a, {b as a} from 's';",
+            Invalid,
+            1,
+            17,
+            "already declared",
+        ),
+        (
+            "import {x as for} from 's';",
+            Invalid,
+            1,
+            14,
+            "reserved word",
+        ),
+        ("import eval from 's';", Invalid, 1, 8, "strict mode"),
+        (
+            "import * as arguments from 's';",
+            Invalid,
+            1,
+            13,
+            "strict mode",
+        ),
+    ];
+    for (source, kind, line, column, message) in cases {
+        let error = super::parse_module(source).expect_err(source);
+        assert_eq!(
+            (error.kind, error.line, error.column),
+            (kind, line, column),
+            "{source}: {error}"
+        );
+        assert!(error.message.contains(message), "{source}: {error}");
+    }
+}
+
+#[test]
+fn module_default_exports_and_scope() {
+    use super::ast::{DefaultExport, ModuleItem};
+    use super::parse_module;
+    for (source, local_name, declaration) in [
+        ("export default function f(){}; export {f};", "f", true),
+        ("export default function(){}", "*default*", true),
+        ("export default function* g(){yield 1;}", "g", true),
+        ("export default async function f(){await 1;}", "f", true),
+        (
+            "export default async function(){await 1;}",
+            "*default*",
+            true,
+        ),
+        ("export default 1 + 2;", "*default*", false),
+        ("export default () => 1;", "*default*", false),
+        ("export default (function f(){});", "*default*", false),
+    ] {
+        let module = parse_module(source).unwrap();
+        let export = &module.local_export_entries()[0];
+        assert_eq!(
+            (&*export.export_name, &*export.local_name),
+            ("default", local_name)
+        );
+        assert_eq!(
+            matches!(
+                module.body()[0],
+                ModuleItem::DefaultExport(DefaultExport::Function(_))
+            ),
+            declaration
+        );
+    }
+    for source in [
+        "export {f}; import {f} from 's';",
+        "export {x}; if (true) {var x;}",
+        "export let {a: x, b: [y]} = value;",
+        "export var x; var x;",
+        "export {}; import {} from 's';",
+        "import {if as x, default as d, as as alias, from} from 's'; export {x as if, d as default};",
+        r"import {\u0069f as x} from 's'; export {x as \u0069f};",
+    ] {
+        parse_module(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    }
+    for source in [
+        "let eval;",
+        "010;",
+        "function f(a,a){}",
+        "with (x) {}",
+        "delete x;",
+    ] {
+        let module_error = parse_module(source).expect_err(source);
+        assert_eq!(module_error, parse_script(source).expect_err(source));
+    }
+    let module =
+        parse_module(r"import 's'; import '\u0073'; import '\uD800'; import '\uD801';").unwrap();
+    assert_eq!(module.requested_modules().len(), 3);
+    assert_eq!(module.requested_modules()[1].code_units(), &[0xd800]);
+    assert_eq!(module.requested_modules()[2].code_units(), &[0xd801]);
+}
 
 // ----- S-expression rendering of the AST ------------------------------------
 
@@ -4925,6 +5333,19 @@ fn grammar_doc_examples() {
             ["accept"] => {
                 parse_script(&src).unwrap_or_else(|e| panic!("doc example {src:?}: {e}"));
                 accepted += 1;
+            }
+            ["module-accept"] => {
+                super::parse_module(&src).unwrap_or_else(|e| panic!("doc example {src:?}: {e}"));
+                accepted += 1;
+            }
+            ["module-reject", kind, position] => {
+                let e = super::parse_module(&src).expect_err(&src);
+                assert_eq!(
+                    format!("{:?} {}:{}", e.kind, e.line, e.column),
+                    format!("{kind} {position}"),
+                    "doc example {src:?} gave {e}"
+                );
+                rejected += 1;
             }
             ["compile-reject", kind, position] => {
                 parse_script(&src).unwrap_or_else(|e| panic!("doc example {src:?}: {e}"));

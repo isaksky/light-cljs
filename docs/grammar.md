@@ -10,6 +10,8 @@ agreement by tests: every `js accept` example below must parse, every
 compile that way (`frontend::tests::grammar_doc_examples`). Examples marked
 `js sloppy-accept` / `js sloppy-reject` are parsed as non-strict code
 (`ScriptOptions::SLOPPY`); all others are strict.
+Examples marked `js module-accept` / `js module-reject` use the always-strict
+`frontend::parse_module` goal and validate its static module record.
 
 Status: regular expression literals compile and execute with the RegExp
 object support of clj-quickjs-188 and Unicode mode of clj-quickjs-190.
@@ -490,7 +492,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | Form | Kind |
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
-| class inheritance (`extends`), fields, static initialization blocks, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
+| class inheritance (`extends`), fields, static initialization blocks, `new.target` (clj-quickjs-99), `super`, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| module `export *`, `export * as ns from`, `export {x} from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
 | object spread `...` (in an object literal) | Unsupported |
@@ -516,6 +519,10 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
 sloppy declaration hoisting deferred to clj-quickjs-108.
+
+Module source parses into static records (see "Modules"). Module loading,
+resolution, linking, evaluation, namespaces, cycles and JSON module instances
+remain deferred; the CLI and `compile_script` still take scripts only.
 
 Derived classes, `super` and class fields remain deferred (clj-quickjs-137/138/139).
 Constructor rejection messages use the source spelling of an identifier or
@@ -971,6 +978,9 @@ delete a[o];
 ```
 
 ## Execution
+
+`parse_module` only parses and checks module static semantics. It produces no
+executable and performs no host work; module evaluation is deferred.
 
 Optional links `a?.b`, `a?.[key]` and `a?.(args)` (clj-quickjs-134) test only
 for null and undefined. A nullish link skips the whole remaining member/call
@@ -5215,3 +5225,137 @@ selects past; numeric auto can replace a number with a snapshot literal.
 Explicit gaps: relative-time coverage follows the agreed Intl locale subset
 and QuickJS snapshot phrases, including its fallbacks and spacing. No extra
 CLDR patterns or ±2 auto phrases are invented where the snapshot has none.
+
+## Modules (clj-quickjs-251)
+
+`frontend::parse_module(source) -> Result<ast::Module, SyntaxError>` parses the
+module goal, always strict, and returns an immutable `ModuleRecord`. It uses
+the existing statement/expression parser for module bodies. Static declarations
+are allowed only at the module top level. Scripts continue to reject them.
+
+The record exposes the body and span, requested specifiers in first-occurrence
+source order (deduplicated by cooked UTF-16 value), import entries with local
+binding spans, local exports, and indirect exports. Export lists may precede
+bindings. Exporting a named/default import becomes an indirect export using
+its original imported name; exporting a namespace import remains local.
+Imports are static requests, not recorded runtime dependency edges.
+
+Supported import declarations (specifier strings, optional semicolons and
+trailing commas in named lists):
+
+```js module-accept
+import {a, b as c} from 'named';
+import d from 'default';
+import * as ns from 'namespace';
+import e, {f} from 'combined';
+import g, * as other from 'combined-namespace';
+import 'side-effect';
+export {a, c as renamed, d, ns};
+```
+
+Exported declarations include functions (ordinary, generator and async),
+`var`, `let` and `const` (including binding patterns). Default exports accept
+an assignment expression, or a named/anonymous function declaration. A named
+default declaration binds its name locally; an expression or anonymous
+declaration has the inaccessible `*default*` record binding. Default function
+declarations remain distinct from default expressions in the body AST so a
+later linker can apply their hoisting semantics.
+
+```js module-accept
+export function f(x) { return x + 1; }
+export let a = 1;
+export const b = 2;
+export var c;
+export {a as alias, b as default};
+```
+
+```js module-accept
+export default function named() { return 1; }
+export {named};
+```
+
+```js module-accept
+export default function() { return 1; }
+```
+
+```js module-accept
+export default {answer: 42};
+```
+
+Duplicate exported names, repeated import bindings, imports conflicting with
+module declarations (including `var` in nested statements), repeated module
+lexical declarations, and unresolvable local exports are `Invalid`. Reserved
+import binding names are also `Invalid`. Module functions are lexical bindings;
+repeated `var` declarations may share a binding. Nested block bindings and
+bindings inside functions cannot satisfy a local export.
+
+```js module-reject Invalid 2:14
+import {a} from 's';
+import {b as a} from 't';
+```
+
+```js module-reject Invalid 2:7
+import a from 's';
+const a = 1;
+```
+
+```js module-reject Invalid 2:14
+const a = 1; export {a};
+export {a as a};
+```
+
+```js module-reject Invalid 1:9
+export {missing};
+```
+
+```js module-reject Invalid 1:14
+import {x as for} from 's';
+```
+
+```js module-reject Invalid 1:3
+{ import 's'; }
+```
+
+```js module-reject Invalid 1:15
+function f(){ export const x = 1; }
+```
+
+The remaining module syntax fails explicitly with `Unsupported` naming the
+form. Import attributes apply equally to side-effect and binding imports.
+Loading, resolution, linking and execution remain outside this parse API.
+
+```js module-reject Unsupported 1:8
+export * from 's';
+```
+
+```js module-reject Unsupported 1:8
+export * as ns from 's';
+```
+
+```js module-reject Unsupported 1:12
+export {x} from 's';
+```
+
+```js module-reject Unsupported 1:9
+import {'x' as x} from 's';
+```
+
+```js module-reject Unsupported 1:14
+export {x as 'name'};
+```
+
+```js module-reject Unsupported 1:12
+import 's' with {type: 'json'};
+```
+
+```js module-reject Unsupported 1:1
+await 1;
+```
+
+```js module-reject Unsupported 1:1
+import('s');
+```
+
+```js module-reject Unsupported 1:1
+import.meta;
+```
