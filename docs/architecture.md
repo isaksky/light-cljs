@@ -1510,10 +1510,19 @@ for a write the right-hand side is evaluated first (PutValue).
   looked up at run time). A per-task or per-code key cache is a later
   optimization.
 - Interned names are never removed: the table grows with the number of
-  distinct names ever defined in the runtime. That is bounded by the
-  program text while names come only from code (this slice); computed keys
-  (clj-quickjs-115) make it data-dependent, so key reclamation by the
-  collector must come with them.
+  distinct names ever written in the runtime (a write interns its name
+  before it looks at the object, so a write that then fails interns too).
+  Computed keys (clj-quickjs-115) make that data-dependent
+  (`o["k" + i] = i` in a loop interns one name per iteration). Decision
+  (clj-quickjs-115): computed access ships without key reclamation, and
+  the growth is documented as an explicit gap (`docs/grammar.md`,
+  "Property names are never forgotten"). Reads (`GetField`, `GetElem`)
+  only look names up and array indices on arrays are never interned, so
+  only writes of new names grow the table, by one entry per distinct
+  name (not per object). Reclaiming unused names needs the collector to
+  mark the keys of every live object, the realm and any key an operation
+  holds across a safepoint, and to reissue an id only after a full
+  mark: that is clj-quickjs-259.
 - The storage leaves room for the later pellets: the entry's value becomes
   a data/accessor enum for getters and setters (clj-quickjs-119/-120);
   `prototype` gets set by `Object.prototype` and `Object.create`
@@ -1787,12 +1796,14 @@ the element or property is added.
   truncation is a `Vec::truncate` plus a sparse `split_off`.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
-  arrays never do). Key reclamation by the collector is still owed
+  arrays never do). Key reclamation by the collector is clj-quickjs-259
   ("Ordinary objects", Consequences).
-- Computed access as clj-quickjs-115 specifies it is partly covered here:
-  `a[k]` and `a[k] = v` with primitive keys on every base. Object keys
-  (ToPrimitive, clj-quickjs-70) fail with `UnsupportedOperand`, and
-  `o[k](...)` is a method call passing `o` (clj-quickjs-117's `CallMethod`).
+- These instructions are all of computed member access
+  (clj-quickjs-115 added its tests and documentation, no new
+  representation): `a[k]` and `a[k] = v` with primitive keys on every
+  base. Object keys (ToPrimitive, clj-quickjs-70) fail with
+  `UnsupportedOperand`, and `o[k](...)` is a method call passing `o`
+  (clj-quickjs-117's `CallMethod`).
 
 ## QuickJS references and provenance
 

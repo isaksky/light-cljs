@@ -1658,10 +1658,33 @@ Supported (`cargo test --lib frontend::tests::object_literals`,
 Deferred:
 
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
-  Getters/setters, methods, computed keys in literals (`o[k]` with a
-  primitive key is clj-quickjs-118, below), `delete`,
+  Getters/setters, methods, computed keys in literals (clj-quickjs-233;
+  `o[k]` is clj-quickjs-115, below), `delete`,
   `__proto__`, property `++`/`--` and compound assignment; properties of
   functions, error objects and primitives fail with `UnsupportedOperand`.
+
+### Computed member access (clj-quickjs-115)
+
+Supported (`cargo test --lib frontend::tests::computed_member_access`,
+`cargo test --test js_source computed_member_access`,
+`cargo test --lib vm::property::tests::computed_keys_convert_by_to_property_key`):
+
+- `o[k]` reads, `o[k] = v` writes and `o[k](...)` method calls in member
+  and call chains (`a[b][c]`, `a.b[c].d`, `a[b](c)`), on ordinary objects
+  and arrays, with ToPropertyKey of primitive keys: `o[1]` is `o["1"]`,
+  `o[-0]` is `o["0"]`, `o[1.5]` is `o["1.5"]`, `o[true]` is `o.true`.
+- Evaluation order base, key, right-hand side; an `undefined`/`null` base
+  throws a catchable `TypeError`.
+
+Deferred:
+
+- Object keys (ToPrimitive, clj-quickjs-70) and symbol keys
+  (clj-quickjs-127) fail explicitly; primitive and function bases fail
+  with `UnsupportedOperand` (clj-quickjs-73, -125); compound assignment
+  and `++`/`--` of a property (clj-quickjs-260, -76); optional chaining.
+- Interned property names are never reclaimed, so writing many distinct
+  computed keys grows the runtime's key table (clj-quickjs-259;
+  `docs/grammar.md`, "Explicit gaps").
 
 ### Directive prologues and sloppy compilation (clj-quickjs-95)
 
@@ -1823,7 +1846,7 @@ Deferred:
 ### Array literals and array objects (clj-quickjs-118)
 
 Supported (`cargo test --lib frontend::tests::array_literals`,
-`cargo test --lib frontend::tests::computed_member_access_for_arrays`,
+`cargo test --lib frontend::tests::computed_member_access`,
 `cargo test --lib object::array`,
 `cargo test --test js_source array_literals`,
 `cargo test --test publication publishing_an_array_is_rejected_with_index_path`,
@@ -1839,8 +1862,7 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
   by the collector; rejected by publication with an `[index]` path step;
   another task's access fails with `VmErrorKind::ForeignObject`.
 - Computed member access with primitive keys (ToPropertyKey: `a[1]` is
-  `a["1"]`, `a[-0]` is `a["0"]`) on objects and arrays, as far as arrays
-  need it (the rest is clj-quickjs-115).
+  `a["1"]`, `a[-0]` is `a["0"]`) on objects and arrays (clj-quickjs-115, above).
 - `Array.prototype` (a realm intrinsic inheriting from `Object.prototype`)
   as every array's prototype; `a[k](...)` as a method call.
 

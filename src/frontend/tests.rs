@@ -1372,19 +1372,21 @@ fn array_literals() {
     rejects("x = [1,", UnexpectedEnd, 1, 8);
 }
 
-/// Computed member access `a[k]` and assignment `a[k] = v`, as the array
-/// pellet needs them (clj-quickjs-118; the rest of computed access is
-/// clj-quickjs-115). A computed callee is a method call, rejected when
-/// lowered; compound assignment and `++`/`--` of a computed property stay
-/// rejected, and `__rt` cannot be indexed.
+/// Computed member access `a[k]` and assignment `a[k] = v` in member and
+/// call chains (clj-quickjs-115; parsed since clj-quickjs-118). A computed
+/// callee is a method call; compound assignment and `++`/`--` of a computed
+/// property stay rejected (clj-quickjs-260, -76), and `__rt` cannot be
+/// indexed.
 #[test]
-fn computed_member_access_for_arrays() {
+fn computed_member_access() {
     use SyntaxErrorKind::{ReservedWord, Unsupported};
     assert_eq!(ast("a[b];"), "([] a b)");
     assert_eq!(ast("a[b][c];"), "([] ([] a b) c)");
     assert_eq!(ast("a.b[c].d;"), "(. ([] (. a b) c) d)");
     assert_eq!(ast("a[b, c];"), "([] a (, b c))");
     assert_eq!(ast("a[b](c);"), "(call ([] a b) c)");
+    assert_eq!(ast("a.b[c](d);"), "(call ([] (. a b) c) d)");
+    assert_eq!(ast("a[b].c = d;"), "(= (. ([] a b) c) d)");
     assert_eq!(ast("a[b] = c;"), "(= ([] a b) c)");
     assert_eq!(
         ast("(a[b]) = c = d[e] = f;"),

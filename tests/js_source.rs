@@ -4525,11 +4525,151 @@ fn object_intrinsics_reject_what_they_do_not_support() {
     assert_eq!(num("let Object = 1; Object = 2; Object"), 2.0);
 }
 
+/// Computed member access `o[k]` and `o[k] = v` on ordinary objects
+/// (clj-quickjs-115; the instructions came with arrays, clj-quickjs-118):
+/// the key goes through ToPropertyKey, so a number and its Number::toString
+/// name the same property, and the base, the key and the right-hand side
+/// evaluate in that order. Synthetic fixtures, not light-cljs output.
+#[test]
+fn computed_member_access() {
+    // The acceptance rows, one script: each key reads back under its
+    // canonical name.
+    assert_eq!(
+        num("let o = {}; let r = 0; \
+             o[\"x\"] = 1; r = r * 10 + o.x; \
+             o[1] = 2; r = r * 10 + o[\"1\"]; \
+             o[1.5] = 3; r = r * 10 + o[\"1.5\"]; \
+             o[-0] = 4; r = r * 10 + o[\"0\"]; \
+             o[true] = 5; r = r * 10 + o.true; \
+             o[undefined] = 6; r = r * 10 + o.undefined; \
+             let k = \"y\"; o[k] = 7; r = r * 10 + o.y; \
+             r"),
+        1234567.0
+    );
+    // ... and the other way round: a name reads back under a computed key.
+    for (src, expected) in [
+        ("let o = {x: 1}; o['x']", 1.0),
+        ("let o = {}; o['1'] = 2; o[1]", 2.0),
+        ("let o = {}; o.true = 3; o[true]", 3.0),
+        ("let o = {}; o['1.5'] = 4; o[3 / 2]", 4.0),
+        ("let o = {}; o[0] = 5; o[-0]", 5.0),
+        ("let o = {}; o[false] = 6; o.false", 6.0),
+        ("let o = {}; o[null] = 7; o.null", 7.0),
+        ("let o = {}; o[0 / 0] = 8; o.NaN", 8.0),
+        ("let o = {}; o[1 / 0] = 9; o['Infinity']", 9.0),
+        ("let o = {}; o[1e21] = 10; o['1e+21']", 10.0),
+        ("let o = {}; o[0.1] = 11; o['0.1']", 11.0),
+        ("let o = {}; o[-1] = 12; o['-1']", 12.0),
+        ("let o = {}; o['a' + 'b'] = 13; o.ab", 13.0),
+        // A comma key evaluates both and uses the last.
+        ("let o = {x: 14}; o[(0, 'x')]", 14.0),
+        // The value of an assignment is the assigned value.
+        ("let o = {}; (o['z'] = 15) + o.z", 30.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    // Distinct strings are distinct keys, even when they denote one number.
+    assert_eq!(
+        eval("let o = {}; o['01'] = 1; o[1] === undefined && o['01'] === 1"),
+        ValueView::Bool(true)
+    );
+    // Missing keys read undefined; inherited ones read along the chain;
+    // an own computed write shadows an inherited property.
+    for src in [
+        "({})['nope'] === undefined",
+        "({})[7] === undefined",
+        "({})['toString'] === Object.prototype.toString",
+        "let o = {}; o['toString'] = 1; o.toString === 1 && ({}).toString !== 1",
+        "let o = {m: function () { return this; }}; let k = 'm'; o[k]() === o",
+        // Chains: `a[b][c]`, `a.b[c].d`, `a[b](c)`.
+        "let o = {p: {q: 3}}; o['p']['q'] === 3",
+        "let o = {a: {b: {c: 4}}}; let k = 'b'; o.a[k].c === 4",
+        "let o = {f: function (n) { return n + 1; }}; o['f'](1) === 2",
+        "let o = {}; o['p'] = {}; o['p']['q'] = 5; o.p.q === 5",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // The `docs/grammar.md` example lines, each true.
+    for line in [
+        "let o = {}; o[1] = \"one\"; o[\"1\"] === \"one\" && o[1.5] === undefined;",
+        "let p = {}; p[-0] = 0; p[true] = 1; p[\"0\"] === 0 && p.true === 1 && p[undefined] === undefined;",
+        "let q = {}; let k = \"y\"; q[k] = 7; q.y === 7 && ({})[\"toString\"] === Object.prototype.toString;",
+    ] {
+        assert_eq!(eval(line), ValueView::Bool(true), "{line}");
+    }
+
+    // `null[0]` throws a TypeError, caught by `catch`.
+    assert_eq!(
+        string("let r = 'none'; try { null[0]; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        failure_at("null[0];"),
+        (
+            VmErrorKind::TypeError,
+            "cannot read property '0' of null".to_string(),
+            1,
+            5
+        )
+    );
+    assert_eq!(
+        failure_at("let u;\nu['k'] = 1;"),
+        (
+            VmErrorKind::TypeError,
+            "cannot set property 'k' of undefined".to_string(),
+            2,
+            2
+        )
+    );
+
+    // Order: the base, then the key, then the right-hand side, each once;
+    // the log is captured by the closures.
+    assert_eq!(
+        string(
+            "function run() { \
+               let log = ''; let o = {}; \
+               let f = () => { log = log + 'f'; return o; }; \
+               let g = () => { log = log + 'g'; return 'k'; }; \
+               let h = () => { log = log + 'h'; return 1; }; \
+               f()[g()] = h(); \
+               return log + o.k; \
+             } run()"
+        ),
+        "fgh1"
+    );
+    assert_eq!(
+        string(
+            "function run() { \
+               let log = ''; let o = {k: 2}; \
+               let f = () => { log = log + 'f'; return o; }; \
+               let g = () => { log = log + 'g'; return 'k'; }; \
+               return log + f()[g()] + log; \
+             } run()"
+        ),
+        "2fg"
+    );
+
+    // Explicitly unsupported, never a wrong value: an object key needs
+    // ToPrimitive (clj-quickjs-70); compound assignment and `++`/`--` of a
+    // property are their own pellets (clj-quickjs-260, clj-quickjs-76).
+    for src in ["let o = {};\no[{}];", "let o = {};\no[o] = 1;"] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains("ToPrimitive"), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+    for src in ["let o = {}; o['x'] += 1;", "let o = {}; o['x']++;"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+    }
+}
+
 /// Array literals and array objects (clj-quickjs-118): elisions are holes
 /// (absent elements), one final comma adds nothing, `length` follows the
 /// greatest index written, elements are evaluated left to right, and every
 /// literal is a new task-owned object. Computed member access `a[k]` is
-/// covered as far as arrays need it (clj-quickjs-115 owns the rest).
+/// covered here as far as arrays need it (on ordinary objects:
+/// `computed_member_access`, clj-quickjs-115).
 /// Arrays inherit from the realm intrinsic `Array.prototype` (no methods
 /// yet; `Object.getPrototypeOf` is the reflection pellet's), which
 /// inherits from `Object.prototype` (clj-quickjs-117).
