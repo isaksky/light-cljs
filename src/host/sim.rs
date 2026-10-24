@@ -708,13 +708,16 @@ impl SimHost {
                     .complete(key, request.producer(), Completion::Ready(value)),
                 Err(error) => {
                     let code = self.rt.root(Primitive::Number(error.code()));
-                    self.failures.insert(key, error.clone());
                     self.rt
                         .complete(key, request.producer(), Completion::Failed(&code))
                 }
             };
             match completed {
                 Ok(woken) => {
+                    // Recorded before any woken job runs and reads it.
+                    if let Err(error) = &result {
+                        self.failures.insert(key, error.clone());
+                    }
                     self.events.push(SimEvent::Settled {
                         key,
                         ok: result.is_ok(),
