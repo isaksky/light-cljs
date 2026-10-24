@@ -326,6 +326,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
         | HeapObject::PromiseReaction(_)
         | HeapObject::PromiseResolving(_) => Ok(Raw::default()),
         HeapObject::Promise(_) => Ok(Raw::default()),
+        HeapObject::Generator(g) => {
+            readable(g.object.owner())?;
+            Ok(Raw {
+                named: named(&g.object),
+                ..Raw::default()
+            })
+        }
     }
 }
 

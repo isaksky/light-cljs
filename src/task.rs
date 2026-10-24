@@ -516,6 +516,7 @@ fn cleanup_cancelled(task: &TaskInner, body: &mut TaskBody) {
     task.jobs.close();
     dep::withdraw(&task.deps, &task.log, task.id);
     if let TaskBody::Ready(vm) = body {
+        crate::vm::native::discard(&mut vm.natives, 0, &task.heap);
         vm.builders.release_all(&task.heap, task.id);
     }
     *body = TaskBody::Finished;
@@ -1111,6 +1112,7 @@ impl RunGuard<'_> {
     /// up (a second observation, a `need` inside a finally block, ends it);
     /// the caller then ends the run with terminal cleanup.
     fn begin_cleanup(&mut self) -> bool {
+        let heap = self.task.heap.clone();
         self.task.jobs.close();
         dep::withdraw(&self.task.deps, &self.task.log, self.task.id);
         self.subscribed = None;
@@ -1122,7 +1124,7 @@ impl RunGuard<'_> {
         }
         vm.cancelling = true;
         vm.pending_need = None;
-        vm.unwind_cancel()
+        vm.unwind_cancel(&heap)
     }
 
     /// Observe the cancellation: terminal cleanup, then end the execution.

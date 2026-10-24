@@ -3303,3 +3303,18 @@ Deferred: custom/subclass and bound constructor receivers through
 `Array.from` and nonconstructor receivers produce plain arrays. Boolean and
 Symbol wrapper prototypes remain unavailable; their primitives produce empty
 arrays.
+
+### Generator execution (clj-quickjs-243)
+
+Generator declarations, expressions and methods create task-owned objects with
+`next(value)`. Calls bind arguments and evaluate parameter defaults, leaving the
+body unexecuted. `yield value` returns `{value, done: false}`; the following
+`next(value)` supplies the yield expression's result. Return and fallthrough
+complete the generator, and later calls return `{value: undefined, done: true}`.
+Uncaught exceptions complete it and propagate to the caller; re-entrant next and
+incompatible receivers throw TypeError. Activations detach into traced heap
+storage between yields and reattach to ordinary VM frames, preserving dependency
+waits, budgets, collection and worker migration. Publication and foreign-task
+access are rejected. Deferred: `yield*`, generator `return`/`throw`, async/await.
+Generator objects inherit the shared iterator identity protocol and can be
+consumed by `for...of` (clj-quickjs-237).

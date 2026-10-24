@@ -89,6 +89,101 @@ fn spread_protocol_errors_and_order() {
     }
 }
 
+#[test]
+fn generator_next_and_yield() {
+    // QuickJS test_generator semantic adaptation, tests/test_builtin.js:
+    // Copyright (c) 2017-2021 Fabrice Bellard
+    // Copyright (c) 2017-2021 Charlie Gordon
+    // Permission is hereby granted, free of charge, to any person obtaining a copy
+    // of this software and associated documentation files (the "Software"), to deal
+    // in the Software without restriction, including without limitation the rights
+    // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    // copies of the Software, and to permit persons to whom the Software is
+    // furnished to do so, subject to the following conditions:
+    // The above copyright notice and this permission notice shall be included in
+    // all copies or substantial portions of the Software.
+    // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    // THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+    // THE SOFTWARE.
+    // Synthetic fixture, not light-cljs output. The four f() rows follow
+    // QuickJS tests/test_builtin.js test_generator at 7d1c13c5d8f8;
+    // rewritten assertions and `let` bindings, rather than copied text.
+    assert_eq!(
+        eval(
+            r#"
+        let calls = 0;
+        function* f(arg) {
+            calls++;
+            if (arg !== 9) throw 'argument';
+            yield 1;
+            let ret = yield 2;
+            if (ret !== 'next_arg') throw 'resume argument';
+            return 3;
+        }
+        let g = f(9);
+        if (calls !== 0) throw 'eager body';
+        let a = g.next(99);
+        let b = g.next();
+        let c = g.next('next_arg');
+        let d = g.next();
+        if (a.value !== 1 || a.done !== false || b.value !== 2 || b.done !== false ||
+            c.value !== 3 || c.done !== true || d.value !== undefined || d.done !== true)
+            throw 'rows';
+        function* empty(x) { return x; }
+        let e = empty(7).next();
+        if (e.value !== 7 || !e.done) throw 'empty';
+        let h = f(9), i = f(9);
+        if (h.next().value !== 1 || i.next().value !== 1 || h.next().value !== 2)
+            throw 'independence';
+        let reentrant;
+        function* reenter() {
+            try { reentrant.next(); } catch(e) { yield e instanceof TypeError; }
+        }
+        reentrant = reenter();
+        if (reentrant.next().value !== true) throw 'reentrant';
+        function* broken() { throw 42; }
+        let bad = broken(), caught = 0;
+        try { bad.next(); } catch(e) { caught = e; }
+        let end = bad.next();
+        if (caught !== 42 || end.value !== undefined || !end.done) throw 'throw';
+        let wrong = 0;
+        try { g.next.call({}); } catch(e) { wrong = e instanceof TypeError; }
+        if (!wrong) throw 'receiver';
+        let expr = function*(x) { yield x; };
+        if (expr(8).next().value !== 8) throw 'expression';
+        true
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn generator_call_protocols_and_prototypes() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let n=0; function* g(x=++n) { yield x; } let a=g(); n===1 && a.next().value===1",
+        "function* g() { yield arguments[1]+this.n; } g.call({n:3},0,4).next().value===7",
+        "function* g(x) { yield x; } g.apply(null,[4]).next().value===4 && g.bind(null,5)().next().value===5",
+        "function* g(x) { yield x; } __rt.reduce((a,x)=>a+g(x).next().value,0,__rt.vector(1,2))===3",
+        "function* g() {} let a=g(); Object.getPrototypeOf(a)===g.prototype && Object.getPrototypeOf(g.prototype).next===a.next",
+        "function* g() {} let p={x:3}; g.prototype=p; Object.getPrototypeOf(g())===p",
+        "function* g() {} let next=g().next; g.prototype=0; next.call(g()).done",
+        "function* g() {} let a=g(); a.x=2; Object.defineProperty(a,'y',{value:3}); Object.keys(a)[0]==='x' && a.x+a.y===5 && delete a.x && !('x' in a)",
+        "function* g() { yield 1; } let a=g(); Object.freeze(a); Object.isFrozen(a) && a.next().value===1",
+        "let caught=false; try { new (function*(){})(); } catch(e) { caught=e instanceof TypeError; } caught",
+        "let o={*g(x) { yield this.n+x; },n:2}; o.g(5).next().value===7",
+        "function* g() { yield 2; yield 3; } let it=g(); it[Symbol.iterator]()===it && Object.getPrototypeOf(Object.getPrototypeOf(g.prototype))===Object.getPrototypeOf(Object.getPrototypeOf([].values()))",
+        "function* g() { yield 2; yield 3; } let sum=0; for (let n of g()) { sum+=n; } sum===5",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn array_from_iterables_and_array_likes() {

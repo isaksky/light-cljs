@@ -6041,3 +6041,53 @@ fail pending subclass support; Array/nonconstructor receivers create ordinary
 arrays. Boolean/Symbol primitive wrappers have no prototype support yet.
 The Array.from built-in and intrinsic allocation are appended to their existing
 registries, preserving earlier intrinsic identities.
+
+## Detachable task-owned activations and generators (clj-quickjs-243)
+
+A generator is a task-owned heap object with ordinary properties, an owner task,
+and one of SuspendedStart, SuspendedYield, Executing or Completed. Suspended
+states own a `DetachedActivation`: shared `Arc<Code>`, the callee, receiver,
+program counter, retained arguments, locals and operands, handlers (including
+pending completions) and native frames. Frame indices, handler heights and native
+stack/depth indices are relative to the saved origin. Detaching moves storage
+out of `VmState`; attaching rebases it above the caller after resource checks.
+This activation container is independent of the generator protocol and can be
+reused for async suspension without retaining a Rust stack or worker identity.
+
+The compiler emits a generator marker, normal parameter initialization and an
+initial suspension instruction before body execution. Default expressions thus
+run at call time, including through ordinary resumable callbacks and dependency
+waits. Initial suspension allocates the generator with the function's object
+`prototype`, or the realm's generator prototype for a non-object property.
+Generator functions have a lazy own prototype but remain non-constructors.
+`next` uses a native boundary: attach, run ordinary VM frames, then return an
+ordinary iterator result. Yield saves the activation and delivers a value;
+return completes it. A native exception boundary lets inner catch/finally run
+before completing the generator and rethrowing to the next caller. Cancellation
+runs attached finally blocks and completes abandoned generator boundaries.
+Detached generators are inert traced objects; attached frames retain ordinary
+`__rt.need`, budget, safepoint, migration and cancellation behavior.
+
+`Trace` follows saved arguments, locals, operands, handlers, native frames, code,
+callee, receiver and ordinary properties. Executing objects are retained by the
+native boundary; unreachable suspended objects and their saved values are
+collected together. `classify` marks generators TaskOwned; publication rejects
+this kind and reports its owner, and foreign property access/next is rejected
+with the existing ForeignObject/ForeignBinding policy. Freezing their ordinary
+properties does not freeze their execution state or make them shareable.
+
+QuickJS references and provenance: semantic comparison with
+`research/quickjs/quickjs.c` `async_func_init`, `async_func_resume`,
+`js_generator_function_call`, `js_generator_next`, `OP_initial_yield`, `OP_yield`
+and `js_create_iterator_result`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The four next-result rows from
+`research/quickjs/tests/test_builtin.js` `test_generator` are expressed as new
+synthetic assertions in `tests/js_source.rs::generator_next_and_yield`, with let
+bindings and one combined failure check. No upstream source/test text copied.
+Generator return/throw methods and delegated yield remain deferred.
+
+The generator prototype inherits the existing `%IteratorPrototype%` installed by
+clj-quickjs-237, including its identity `[Symbol.iterator]`. The realm builder
+returns that shared prototype with its array/string iterator prototypes; no
+second iterator identity or iterator prototype is allocated. Generator objects
+therefore work with the existing resumable GetIterator/for-of protocol.

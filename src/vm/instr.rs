@@ -111,6 +111,9 @@
 //! | `CallMethodSpread` | 0x78 | – | this f args → result | packed call preserving receiver |
 //! | `ConstructSpread` | 0x79 | – | f args → result | packed constructor call |
 //! | `CheckSpreadArguments` | 0x7A | – | args → args | RangeError above 65,535 elements |
+//! | `GeneratorStart` | 0x7B | – | – | mark non-constructor generator code before parameter initialization |
+//! | `GeneratorYield` | 0x7C | – | yielded → resumed | detach activation; next supplies the resumed operand |
+//! | `GeneratorInitialYield` | 0x7D | – | – | detach initialized activation and return a fresh generator to its caller |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -593,6 +596,9 @@ pub enum Opcode {
     CallMethodSpread = 0x78,
     ConstructSpread = 0x79,
     CheckSpreadArguments = 0x7A,
+    GeneratorStart = 0x7B,
+    GeneratorYield = 0x7C,
+    GeneratorInitialYield = 0x7D,
 }
 
 /// Operand encoding of an opcode.
@@ -749,6 +755,9 @@ impl Opcode {
             0x63 => ForInStart,
             0x64 => ForInNext,
             0x65 => NewArguments,
+            0x7B => GeneratorStart,
+            0x7C => GeneratorYield,
+            0x7D => GeneratorInitialYield,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -879,6 +888,9 @@ impl Opcode {
             ForInStart => "for_in_start",
             ForInNext => "for_in_next",
             NewArguments => "new_arguments",
+            GeneratorStart => "generator_start",
+            GeneratorYield => "generator_yield",
+            GeneratorInitialYield => "generator_initial_yield",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -941,6 +953,7 @@ impl Opcode {
             | Dec | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
                 OperandKind::None
             }
+            GeneratorStart | GeneratorYield | GeneratorInitialYield => OperandKind::None,
         }
     }
 }
@@ -1115,6 +1128,9 @@ pub(crate) enum Instr {
     CallMethodSpread,
     ConstructSpread,
     CheckSpreadArguments,
+    GeneratorStart,
+    GeneratorYield,
+    GeneratorInitialYield,
 }
 
 impl Instr {
@@ -1221,6 +1237,9 @@ impl Instr {
             Instr::ForInStart => Opcode::ForInStart,
             Instr::ForInNext => Opcode::ForInNext,
             Instr::NewArguments => Opcode::NewArguments,
+            Instr::GeneratorStart => Opcode::GeneratorStart,
+            Instr::GeneratorYield => Opcode::GeneratorYield,
+            Instr::GeneratorInitialYield => Opcode::GeneratorInitialYield,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1257,7 +1276,11 @@ impl Instr {
             GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             PutGlobal(_) => (1, 1),
-            DeclareGlobalVar(_) | DeclareGlobalFunction(_) => (0, 0),
+            DeclareGlobalVar(_)
+            | DeclareGlobalFunction(_)
+            | GeneratorStart
+            | GeneratorInitialYield => (0, 0),
+            GeneratorYield => (1, 1),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
@@ -1308,6 +1331,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 122);
+        assert_eq!(assigned, 125);
     }
 }

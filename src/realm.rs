@@ -396,6 +396,7 @@ pub(crate) struct Intrinsics {
     pub(crate) string_iterator_prototype: ObjectId,
 
     pub(crate) intl_plural_rules_prototype: ObjectId,
+    pub(crate) generator_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1039,13 +1040,14 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
     date_string_intrinsics(&mut b, date_prototype)?;
-    let (array_iterator_prototype, string_iterator_prototype) = iterator_intrinsics(
-        &mut b,
-        object_prototype,
-        array_prototype,
-        string_prototype,
-        typed_array_prototypes[0],
-    )?;
+    let (iterator_prototype, array_iterator_prototype, string_iterator_prototype) =
+        iterator_intrinsics(
+            &mut b,
+            object_prototype,
+            array_prototype,
+            string_prototype,
+            typed_array_prototypes[0],
+        )?;
 
     for method in [Builtin::BigIntAsIntN, Builtin::BigIntAsUintN] {
         let function = b.function(method, &[])?;
@@ -1058,6 +1060,14 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(date, "parse", date_parse, PropertyFlags::METHOD)?;
     let array_from = b.function(Builtin::ArrayFrom, &[])?;
     b.add(array, "from", array_from, PropertyFlags::METHOD)?;
+
+
+    let generator_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        iterator_prototype,
+    ))))?;
+    b.all.push(generator_prototype);
+    let next = b.function(Builtin::GeneratorNext, &[])?;
+    b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1131,6 +1141,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_number_format_prototype,
         intl_number_format_bound,
         intl_plural_rules_prototype,
+        generator_prototype,
     })
 }
 
@@ -1238,7 +1249,7 @@ fn iterator_intrinsics(
     array: ObjectId,
     string: ObjectId,
     typed_array: ObjectId,
-) -> Option<(ObjectId, ObjectId)> {
+) -> Option<(ObjectId, ObjectId, ObjectId)> {
     let heap = b.heap;
     let key = heap
         .keys()
@@ -1293,7 +1304,7 @@ fn iterator_intrinsics(
             b.add(prototype, "values", function, PropertyFlags::METHOD)?;
         }
     }
-    Some((prototypes[0], prototypes[1]))
+    Some((iterator, prototypes[0], prototypes[1]))
 }
 
 /// Append the Map constructor/prototype cycle and its ordinary accessor.

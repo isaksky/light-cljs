@@ -417,6 +417,10 @@ enum NativeState {
         parser: Box<super::date::Parser>,
         construct: bool,
     },
+    Generator {
+        id: ObjectId,
+        failed: Option<Value>,
+    },
     BigIntFormat(Box<crate::value::bigint::BigIntToString>),
     Iterator(Box<iterator::State>),
     BigIntParse {
@@ -695,11 +699,49 @@ pub(crate) struct NativeFrame {
     state: NativeState,
 }
 
+pub(crate) fn detach(
+    natives: &mut Vec<NativeFrame>,
+    depth: usize,
+    base: usize,
+) -> Vec<NativeFrame> {
+    let at = natives.partition_point(|n| n.depth < depth);
+    let mut saved = natives.split_off(at);
+    for n in &mut saved {
+        n.depth -= depth;
+        n.base -= base;
+    }
+    saved
+}
+
+impl NativeFrame {
+    pub(crate) fn depth(&self) -> usize {
+        self.depth
+    }
+}
+
+pub(crate) fn reattach(natives: &mut [NativeFrame], depth: usize, base: usize) {
+    for n in natives {
+        n.depth += depth;
+        n.base += base;
+    }
+}
+
+pub(crate) fn generator_boundary(state: &VmState) -> Option<ObjectId> {
+    state.natives.last().and_then(|n| match n.state {
+        NativeState::Generator { id, .. } if n.depth + 1 == state.depth() => Some(id),
+        _ => None,
+    })
+}
+
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
+            NativeState::Generator { id, failed } => {
+                visit(*id);
+                failed.iter().for_each(|v| v.trace(visit));
+            }
             NativeState::TypedArray(array) => array.trace(visit),
             NativeState::Promise(p) => p.trace(visit),
             NativeState::StringSplit { out, .. } => out.trace(visit),
@@ -825,6 +867,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
         | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow | CallSpread
         | CallMethodSpread | ConstructSpread | CheckSpreadArguments => false,
+        GeneratorStart | GeneratorYield | GeneratorInitialYield => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -999,6 +1042,33 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::GeneratorNext {
+        let id = super::generator::receiver(heap, state.diag.task, this)?;
+        let value = args.first().cloned().unwrap_or(Value::Undefined);
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Generator { id, failed: None })?;
+        state.push_handler(super::exception::HandlerKind::NativeCatch {
+            native: state.natives.len() - 1,
+        })?;
+        let boundary_index = state.natives.len() - 1;
+        if super::generator::resume(heap, state, id, value)? {
+            let boundary = state
+                .natives
+                .get_mut(boundary_index)
+                .ok_or(Fault::Internal("missing generator boundary"))?;
+            boundary.awaiting = Awaiting::CallResult;
+        } else {
+            state.pop_native_catch(state.natives.len() - 1);
+            state.natives.pop();
+            state.push(super::generator::result(
+                heap,
+                state.diag.task,
+                Value::Undefined,
+                true,
+            )?);
+        }
+        return Ok(true);
+    }
     if which == Builtin::BigInt
         && !construct
         && let Some(Value::String(text)) = args.first()
@@ -1833,8 +1903,13 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
 /// Cancellation unwinds to a finally handler of frame index `frame`: drop
 /// every pending native it passes without running any native code (module
 /// docs, "Errors", cancellation).
-pub(crate) fn discard(natives: &mut Vec<NativeFrame>, frame: usize) {
+pub(crate) fn discard(natives: &mut Vec<NativeFrame>, frame: usize, heap: &Heap) {
     let kept = natives.partition_point(|n| n.depth <= frame);
+    for native in &natives[kept..] {
+        if let NativeState::Generator { id, .. } = native.state {
+            super::generator::complete(heap, id);
+        }
+    }
     natives.truncate(kept);
 }
 
@@ -1988,7 +2063,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 (Callee::Builtin(which), call) => {
                     set_awaiting(state, Awaiting::CallResult)?;
                     if start_builtin(heap, state, which, &call.this, &call.args, false, 0)? {
-                        return Ok(Flow::Next);
+                        return Ok(Flow::FrameChanged);
                     }
                     // Runs to completion (`crate::vm::builtin`); no safepoint
                     // falls between here and the push that roots its result.
@@ -2040,6 +2115,7 @@ pub(crate) fn catch(
     match &mut frame.state {
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
+        NativeState::Generator { failed, .. } => *failed = Some(exception.value),
         _ => return Err("invalid native catch"),
     }
     frame.awaiting = Awaiting::Nothing;
@@ -2213,6 +2289,22 @@ impl NativeState {
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
         match self {
+            NativeState::Generator { id, failed } => {
+                if let Some(error) = failed.take() {
+                    super::generator::complete(heap, *id);
+                    return Err(Fault::Thrown(error));
+                }
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("generator expected result"));
+                };
+                let yielded = heap.read(*id, |o| matches!(o, crate::heap::HeapObject::Generator(g) if matches!(g.state, super::generator::State::SuspendedYield(_)))).unwrap_or(false);
+                if !yielded {
+                    super::generator::complete(heap, *id);
+                }
+                Ok(Action::Return(super::generator::result(
+                    heap, task, value, !yielded,
+                )?))
+            }
             NativeState::BigIntFormat(formatter) => Ok(match formatter.advance() {
                 Some(text) => Action::Return(Value::String(text)),
                 None => Action::Continue,
@@ -3371,6 +3463,7 @@ impl NativeState {
                 NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
                 | NativeState::Iterator(_)
+                | NativeState::Generator { .. }
                 | NativeState::TypedArray(_)
                 | NativeState::Promise(_)
                 | NativeState::Error(_)
@@ -3813,7 +3906,7 @@ mod tests {
             unwind(&mut natives, frame).unwrap();
             assert_eq!(depths(&natives), kept, "raise to frame {frame}");
             let mut natives = stack();
-            discard(&mut natives, frame);
+            discard(&mut natives, frame, &Heap::default());
             assert_eq!(depths(&natives), kept, "cancel to frame {frame}");
         }
         let mut reduce = stack().pop().unwrap().state;

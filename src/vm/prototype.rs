@@ -99,6 +99,9 @@ pub(crate) fn get_prototype_of(
         .read(id, |object| match object {
             HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
             HeapObject::Promise(p) => Ok(Some(Some(p.prototype))),
+            HeapObject::Generator(g) => {
+                readable(&g.object, task).map(|()| Some(g.object.prototype()))
+            }
             HeapObject::JsMap(m) => {
                 readable(m.object(), task).map(|()| Some(m.object().prototype()))
             }
@@ -159,6 +162,7 @@ pub(crate) fn set_prototype_of(
         HeapObject::JsMap(m) => writable(m.object()),
 
         HeapObject::ArrayBuffer(b) => writable(&b.object),
+        HeapObject::Generator(g) => writable(&g.object),
         HeapObject::TypedArray(a) => writable(&a.object),
         HeapObject::Array(a) => writable(a.object()),
         HeapObject::Builtin(_) => immutable(),
@@ -190,6 +194,10 @@ pub(crate) fn set_prototype_of(
         }
         HeapObject::ArrayBuffer(b) => {
             b.object.set_prototype(proto);
+            Ok(())
+        }
+        HeapObject::Generator(g) => {
+            g.object.set_prototype(proto);
             Ok(())
         }
         HeapObject::TypedArray(a) => {
@@ -225,6 +233,9 @@ fn check_chain(
         proto = heap
             .read(p, |object| match object {
                 HeapObject::Plain(o) => readable(o, task).map(|()| o.prototype()),
+                HeapObject::Generator(g) => {
+                    readable(&g.object, task).map(|()| g.object.prototype())
+                }
                 HeapObject::JsMap(m) => readable(m.object(), task).map(|()| m.object().prototype()),
 
                 HeapObject::ArrayBuffer(b) => {

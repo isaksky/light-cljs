@@ -348,7 +348,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
         HeapObject::Function(f) => Ok(Info {
             owner: f.owner,
             record: f.properties,
-            constructor: f.code.constructor,
+            constructor: f.code.constructor || f.code.is_generator(),
             shared: known,
             defaults: None,
             code: Some(f.code.clone()),
@@ -909,8 +909,16 @@ fn materialize(
     }
     let constructor = intern(heap, "constructor")?;
     let prototype_key = intern(heap, "prototype")?;
-    let mut prototype = OrdinaryObject::with_prototype(task, object_prototype(heap)?);
-    prototype.define_with(constructor, Value::Object(function), PropertyFlags::METHOD);
+    let generator = info(heap, function)?.code.is_some_and(|c| c.is_generator());
+    let parent = if generator {
+        super::generator::prototype(heap)?
+    } else {
+        object_prototype(heap)?
+    };
+    let mut prototype = OrdinaryObject::with_prototype(task, parent);
+    if !generator {
+        prototype.define_with(constructor, Value::Object(function), PropertyFlags::METHOD);
+    }
     let prototype = heap
         .alloc(HeapObject::Plain(prototype))
         .map(Value::Object)

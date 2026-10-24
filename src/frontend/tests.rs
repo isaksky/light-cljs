@@ -1689,9 +1689,13 @@ fn object_literals() {
     rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
     for src in ["({async m() {}});", "({*g() {}});"] {
         parse_script(src).unwrap();
-        let e = compile_script("method", src).unwrap_err();
-        assert_eq!(e.kind, Unsupported);
-        assert_eq!(e.span.start, 2);
+        if src.contains("async") {
+            let e = compile_script("method", src).unwrap_err();
+            assert_eq!(e.kind, Unsupported);
+            assert_eq!(e.span.start, 2);
+        } else {
+            compile_script("method", src).unwrap();
+        }
     }
     // `__proto__: value` sets the prototype (clj-quickjs-121): only one per
     // literal, whether written as a name or a string.
@@ -3802,9 +3806,13 @@ fn generator_and_async_syntax() {
         assert_eq!(render_stmt(&f.body[1]), format!("({operator} 1)"));
         assert!(matches!(f.body[2].kind, StmtKind::Lexical(_)));
         assert_eq!(render_stmt(&f.body[3]), format!("({operator} 2)"));
-        let e = compile_script("syntax", &src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
-        assert_eq!(e.span.start, 0);
+        if operator == "yield" {
+            compile_script("syntax", &src).unwrap();
+        } else {
+            let e = compile_script("syntax", &src).unwrap_err();
+            assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
+            assert_eq!(e.span.start, 0);
+        }
     }
     for src in ["async () => {}\n() => {}", "async x => {}\n() => {}"] {
         assert_eq!(parse_script(src).unwrap().body.len(), 2);
@@ -3820,9 +3828,7 @@ fn generator_and_async_syntax() {
     assert_eq!(f.body.len(), 2);
     assert_eq!(render_stmt(&f.body[0]), "(yield)");
     assert_eq!(render_stmt(&f.body[1]), "1");
-    let e = compile_script("syntax", "function* g() { yield\n1 }").unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
-    assert_eq!(e.span.start, 0);
+    compile_script("syntax", "function* g() { yield\n1 }").unwrap();
     assert!(parse_script("yield 1").is_err());
     assert!(parse_script("await 1").is_err());
 }
@@ -3897,13 +3903,21 @@ fn generator_async_context_and_precedence() {
             (generator, asynchronous),
             "{src}"
         );
-        let e = compile_script("syntax", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-        assert_eq!(e.span.start, start, "{src}: {e}");
-        assert!(
-            e.message
-                .contains(if generator { "generator" } else { "async" })
-        );
+        if generator && !asynchronous && !src.contains("yield *") {
+            compile_script("syntax", src).unwrap();
+        } else {
+            let e = compile_script("syntax", src).unwrap_err();
+            assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+            assert_eq!(
+                e.span.start,
+                src.find("yield *").unwrap_or(start),
+                "{src}: {e}"
+            );
+            assert!(
+                e.message
+                    .contains(if asynchronous { "async" } else { "yield" })
+            );
+        }
     }
     for src in [
         "function* g(x = yield 1) {}",
@@ -4018,9 +4032,7 @@ fn generator_async_review_regressions() {
             ));
             assert_eq!(e.span.text(src), "yield");
         }
-        let e = compile_script("syntax", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
-        assert_eq!(e.span.start, 0);
+        compile_script("syntax", src).unwrap();
     }
     // Contextual async preserves a declaration's regexp lexical goal in
     // cover grammar lookahead. Async expressions still end an operand.
@@ -4037,6 +4049,10 @@ fn generator_async_review_regressions() {
         r"(x = {async *\u0069f() {}}) => x",
     ] {
         parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        if !src.contains("async") {
+            compile_script("syntax", src).unwrap();
+            continue;
+        }
         let e = compile_script("syntax", src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
         let start = if src.starts_with("async") {
@@ -4379,8 +4395,8 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
     std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
-            // These functions parse at every accepted depth, but compilation
-            // must reject execution explicitly at the enclosing function.
+            // Generator functions compile at every accepted depth; async
+            // functions and delegated yield remain explicitly unsupported.
             for (name, make) in syntax_makers {
                 let mut deepest = 0;
                 for n in 1..=MAX_NESTING {
@@ -4388,8 +4404,16 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                     match parse_script(&src) {
                         Ok(_) => {
                             deepest = n;
-                            let e = compile_script(name, &src).unwrap_err();
-                            assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{name}: {e}");
+                            if src.contains("async")
+                                || src.contains("yield*")
+                                || src.contains("yield *")
+                            {
+                                let e = compile_script(name, &src).unwrap_err();
+                                assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{name}: {e}");
+                            } else {
+                                compile_script(name, &src)
+                                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                            }
                         }
                         Err(e) if e.kind == SyntaxErrorKind::TooDeep => break,
                         Err(e) => panic!("{name} at depth {n}: {e}"),

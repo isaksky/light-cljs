@@ -396,6 +396,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Promise(_)
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => "object",
+                HeapObject::Generator(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -551,7 +552,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
                 false,
                 popped,
             )? {
-                return Ok(Flow::Next);
+                return Ok(Flow::FrameChanged);
             }
             let result = builtin::call(heap, task, which, &forward.this, &forward.args)?;
             state.replace(popped, result)?;
@@ -1641,6 +1642,15 @@ pub(crate) fn step(
                 state.top_mut().pc = target as usize;
             }
         }
+        Instr::GeneratorStart => {}
+        Instr::GeneratorInitialYield => {
+            super::generator::create(heap, state)?;
+            return Ok(Flow::FrameChanged);
+        }
+        Instr::GeneratorYield => {
+            super::generator::suspend(heap, state)?;
+            return Ok(Flow::FrameChanged);
+        }
         Instr::Return => {
             let v = state.pop()?;
             return return_flow(state, v);
@@ -1657,7 +1667,7 @@ pub(crate) fn step(
             // `end_finally` already continued at the resume point.
             Completion::Jump(_) => {}
             // Cancellation unwinding goes on to the next finally block.
-            Completion::Cancel if state.unwind_cancel() => return Ok(Flow::FrameChanged),
+            Completion::Cancel if state.unwind_cancel(heap) => return Ok(Flow::FrameChanged),
             Completion::Cancel => return Ok(Flow::CleanupEnded),
         },
         Instr::CallFinally => state.call_finally()?,
@@ -1912,6 +1922,7 @@ pub(crate) fn step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
+        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.

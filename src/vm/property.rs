@@ -429,8 +429,8 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
     };
     match object {
         HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
+        HeapObject::Generator(g) => readable(&g.object).map(|()| Visit::Store(&g.object)),
         HeapObject::JsMap(m) => readable(m.object()).map(|()| Visit::Store(m.object())),
-
         HeapObject::ArrayBuffer(b) => readable(&b.object).map(|()| Visit::Store(&b.object)),
         HeapObject::TypedArray(a) => readable(&a.object).map(|()| Visit::Store(&a.object)),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
@@ -823,6 +823,10 @@ fn store(
             check_write(&b.object, task)?;
             named(&mut b.object)
         }
+        HeapObject::Generator(b) => {
+            check_write(&b.object, task)?;
+            named(&mut b.object)
+        }
         HeapObject::TypedArray(a) => {
             check_write(&a.object, task)?;
             named(&mut a.object)
@@ -994,6 +998,9 @@ pub(crate) fn prepare_put(
             )),
 
             (HeapObject::ArrayBuffer(b), _) => {
+                Ok(added(chain_key.is_some_and(|k| b.object.add(k, value))))
+            }
+            (HeapObject::Generator(b), _) => {
                 Ok(added(chain_key.is_some_and(|k| b.object.add(k, value))))
             }
             (HeapObject::TypedArray(a), _) => {
@@ -1342,6 +1349,10 @@ pub(crate) fn define_own_property(
             check_write(&b.object, task)?;
             named(&mut b.object)
         }
+        HeapObject::Generator(b) => {
+            check_write(&b.object, task)?;
+            named(&mut b.object)
+        }
         HeapObject::TypedArray(a) => {
             check_write(&a.object, task)?;
             named(&mut a.object)
@@ -1586,6 +1597,10 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             })
         }
         HeapObject::ArrayBuffer(b) => {
+            check_write(&b.object, task)?;
+            Ok(named(&mut b.object))
+        }
+        HeapObject::Generator(b) => {
             check_write(&b.object, task)?;
             Ok(named(&mut b.object))
         }

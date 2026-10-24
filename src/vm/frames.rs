@@ -131,6 +131,34 @@ pub(crate) struct Frame {
     pub(crate) base: usize,
 }
 
+/// A movable activation. All indices are relative to its frame/stack origin;
+/// it owns no worker state or Rust stack. Also suitable for async resumes.
+#[derive(Debug)]
+pub(crate) struct DetachedActivation {
+    frame: Frame,
+    stack: Vec<Value>,
+    handlers: Vec<Handler>,
+    natives: Vec<NativeFrame>,
+}
+
+impl Trace for DetachedActivation {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        if let Some(id) = self.frame.callee {
+            visit(id);
+        }
+        self.frame.this.trace(visit);
+        self.frame.code.trace(visit);
+        self.frame
+            .arguments
+            .iter()
+            .flatten()
+            .for_each(|v| v.trace(visit));
+        self.stack.iter().for_each(|v| v.trace(visit));
+        self.handlers.iter().for_each(|h| h.trace(visit));
+        self.natives.iter().for_each(|n| n.trace(visit));
+    }
+}
+
 impl Frame {
     /// Index in the value stack of this frame's first operand.
     fn floor(&self) -> usize {
@@ -229,6 +257,100 @@ fn bind_args(stack: &mut Vec<Value>, base: usize, code: &Code, argc: usize) {
 }
 
 impl VmState {
+    pub(crate) fn detach_activation(&mut self) -> Result<DetachedActivation, Fault> {
+        let index = self.frame_index();
+        let mut frame = if let Some(frame) = self.calls.pop() {
+            frame
+        } else {
+            // Embedders may spawn a compiled generator function directly.
+            // Leave a tiny return trampoline as the task's entry frame.
+            let mut asm = crate::vm::Assembler::new();
+            asm.get_local(0).op(crate::vm::Opcode::Return);
+            let code = asm
+                .finish("<activation result>", 1, 1)
+                .expect("return trampoline")
+                .0;
+            std::mem::replace(
+                &mut self.entry,
+                Frame {
+                    code,
+                    callee: None,
+                    this: Value::Undefined,
+                    construct: false,
+                    arguments: None,
+                    pc: 1,
+                    base: 0,
+                },
+            )
+        };
+        let base = frame.base;
+        let stack = self.stack.split_off(base);
+        let first = self.handlers.partition_point(|h| h.frame < index);
+        let mut handlers = self.handlers.split_off(first);
+        let native_origin = self.natives.partition_point(|n| n.depth() < index + 1);
+        for h in &mut handlers {
+            h.frame -= index;
+            h.height -= base;
+            if let HandlerKind::NativeCatch { native } = &mut h.kind {
+                *native -= native_origin;
+            }
+        }
+        let natives = native::detach(&mut self.natives, index + 1, base);
+        self.pending_arguments -= frame.arguments.as_ref().map_or(0, Vec::len);
+        frame.base = 0;
+        if index == 0 {
+            self.stack.push(Value::Undefined);
+        }
+        Ok(DetachedActivation {
+            frame,
+            stack,
+            handlers,
+            natives,
+        })
+    }
+
+    /// Check before removing a saved activation from its heap owner.
+    pub(crate) fn check_activation(&self, saved: &DetachedActivation) -> Result<(), Fault> {
+        let needed = self
+            .stack
+            .len()
+            .saturating_add(usize::from(saved.frame.code.locals))
+            .saturating_add(saved.frame.code.max_stack)
+            .saturating_add(saved.frame.arguments.as_ref().map_or(0, Vec::len))
+            .saturating_add(self.pending_arguments);
+        if self.depth() >= self.limits.max_call_depth.max(1)
+            || needed > self.limits.max_stack_values
+            || self.handlers.len().saturating_add(saved.handlers.len())
+                > self.limits.max_stack_values
+            || self.natives.len().saturating_add(saved.natives.len())
+                > self.limits.max_call_depth.max(1)
+        {
+            return Err(Fault::StackOverflow(
+                "resuming activation exceeds VM limits".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn attach_activation(&mut self, mut saved: DetachedActivation) {
+        native::assert_no_borrow("attaching an activation");
+        let base = self.stack.len();
+        let index = self.depth();
+        saved.frame.base = base;
+        self.pending_arguments += saved.frame.arguments.as_ref().map_or(0, Vec::len);
+        for h in &mut saved.handlers {
+            h.frame += index;
+            h.height += base;
+            if let HandlerKind::NativeCatch { native } = &mut h.kind {
+                *native += self.natives.len();
+            }
+        }
+        native::reattach(&mut saved.natives, index + 1, base);
+        self.stack.extend(saved.stack);
+        self.calls.push(saved.frame);
+        self.handlers.extend(saved.handlers);
+        self.natives.extend(saved.natives);
+    }
     /// Fresh state at instruction 0 of `code`, with `args` bound to its
     /// parameters (see `bind_args`).
     pub(crate) fn new(
@@ -825,7 +947,7 @@ impl VmState {
     /// (`crate::vm::native`, "Errors"). Returns true if a finally block runs
     /// next; false when none is left or the next one contradicts the
     /// frames: the cleanup is over.
-    pub(crate) fn unwind_cancel(&mut self) -> bool {
+    pub(crate) fn unwind_cancel(&mut self, heap: &crate::heap::Heap) -> bool {
         while let Some(h) = self.handlers.pop() {
             let HandlerKind::Finally { target } = h.kind else {
                 continue;
@@ -837,7 +959,7 @@ impl VmState {
             if h.frame > self.calls.len() || above < h.height {
                 return false;
             }
-            native::discard(&mut self.natives, h.frame);
+            native::discard(&mut self.natives, h.frame, heap);
             self.truncate_calls(h.frame);
             if h.height < self.top().floor() {
                 return false;
@@ -850,6 +972,7 @@ impl VmState {
             });
             return true;
         }
+        native::discard(&mut self.natives, 0, heap);
         false
     }
 

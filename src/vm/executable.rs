@@ -114,6 +114,12 @@ pub(crate) struct Code {
     pub(crate) debug: Option<DebugInfo>,
 }
 
+impl Code {
+    pub(crate) fn is_generator(&self) -> bool {
+        matches!(self.instrs.first(), Some(Instr::GeneratorStart))
+    }
+}
+
 /// Iterative teardown: a function tree may be nested arbitrarily deep (each
 /// level is a separate load), so dropping the last handle to a chain must not
 /// recurse once per level on the Rust stack. Child tables of uniquely owned
@@ -521,6 +527,9 @@ impl Executable {
                 Opcode::ForInStart => Instr::ForInStart,
                 Opcode::ForInNext => Instr::ForInNext,
                 Opcode::NewArguments => Instr::NewArguments,
+                Opcode::GeneratorStart => Instr::GeneratorStart,
+                Opcode::GeneratorYield => Instr::GeneratorYield,
+                Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
 
                 Opcode::GetGlobalObject => Instr::GetGlobalObject,
                 Opcode::GetGlobal => Instr::GetGlobal(operand as u16),

@@ -218,7 +218,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         };
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
-        lower.cur_mut().constructor = true;
+        lower.cur_mut().constructor = !function.generator;
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -1521,21 +1521,26 @@ impl<'s> Lowerer<'s> {
     /// ECMAScript FunctionDeclarationInstantiation and QuickJS
     /// `js_parse_function_decl2` (`has_parameter_expressions`).
     fn function_body(&mut self, f: &Function) -> Result<(), SyntaxError> {
-        if f.generator || f.asynchronous {
+        if f.asynchronous {
             return Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 f.span,
-                if f.generator {
-                    "generator functions cannot be executed yet"
-                } else {
-                    "async functions cannot be executed yet"
-                },
+                "async functions cannot be executed yet",
             ));
         }
+        if f.generator {
+            self.out().op(Opcode::GeneratorStart, f.span);
+        }
         if !f.has_defaults() {
+            if f.generator {
+                self.out().op(Opcode::GeneratorInitialYield, f.span);
+            }
             return self.statement_list(&f.body, &f.params, true);
         }
         self.parameter_scope(f)?;
+        if f.generator {
+            self.out().op(Opcode::GeneratorInitialYield, f.span);
+        }
         self.cur_mut().var_scope = 1;
         self.statement_list(&f.body, &[], true)?;
         self.cur_mut().var_scope = 0;
@@ -1682,7 +1687,7 @@ impl<'s> Lowerer<'s> {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
         self.enter_function(self_name, false, f.strict);
-        self.cur_mut().constructor = f.kind == FunctionKind::Ordinary;
+        self.cur_mut().constructor = f.kind == FunctionKind::Ordinary && !f.generator;
         self.cur_mut().own_arguments = matches!(
             f.kind,
             FunctionKind::Ordinary
@@ -3168,10 +3173,23 @@ impl<'s> Lowerer<'s> {
             } => self.compound_assign_property(*op, target, value, *op_span),
             ExprKind::Function(f) => self.function_expr(f),
             ExprKind::Spread(_) => Err(self.internal(span, "spread outside element list")),
+
+            ExprKind::Yield {
+                value,
+                delegate: false,
+            } => {
+                if let Some(value) = value {
+                    self.expr(value)?;
+                } else {
+                    self.out().op(Opcode::Undefined, span);
+                }
+                self.out().op(Opcode::GeneratorYield, span);
+                Ok(())
+            }
             ExprKind::Yield { .. } | ExprKind::Await(_) => Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 e.span,
-                "yield/await cannot be executed yet",
+                "delegated yield/await cannot be executed yet",
             )),
             ExprKind::Sequence { left, right } => self.sequence(left, right, span),
             ExprKind::Delete { operand, op_span } => self.delete(operand, *op_span),

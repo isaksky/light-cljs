@@ -207,6 +207,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
             Shareability::ConcurrentReference
         }
         HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
+        HeapObject::Generator(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
         // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules and
@@ -237,6 +238,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
     match object {
         HeapObject::Builder(b) => Some(b.owner()),
         HeapObject::Cell(c) => Some(c.owner),
+        HeapObject::Generator(g) => Some(g.owner),
         HeapObject::Plain(o) => o.owner(),
         HeapObject::Array(a) => a.object().owner(),
         HeapObject::JsMap(m) => m.object().owner(),

@@ -21,6 +21,24 @@ fn complete(outcome: RunOutcome) -> Rooted {
     }
 }
 
+#[test]
+fn generators_are_task_owned() {
+    // Synthetic fixture, not light-cljs output. Directly spawning compiled
+    // generator code also returns an unexecuted generator object.
+    let rt = Runtime::new();
+    let exe = compile_function("function* g() { throw 'body must stay lazy'; }").unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let g = complete(task.run().unwrap());
+    let (_, found, owner) = not_shareable(rt.publish(&g).unwrap_err());
+    assert_eq!(found, "generator");
+    assert_eq!(owner, Some(task.id()));
+    let caller = compile_function("function use(g) { return g.next(); }").unwrap();
+    let RunOutcome::Failed(error) = rt.spawn(&caller, &[&g]).unwrap().run().unwrap() else {
+        panic!("foreign generator must fail")
+    };
+    assert!(matches!(error.kind(), VmErrorKind::ForeignObject { .. }));
+}
+
 fn num(n: f64) -> Primitive {
     Primitive::Number(n)
 }

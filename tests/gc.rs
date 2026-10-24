@@ -24,6 +24,50 @@ fn complete(outcome: RunOutcome) -> Rooted {
     }
 }
 
+#[test]
+fn suspended_generator_is_traced_and_reclaimed() {
+    // Synthetic source fixture, not light-cljs output. Only the saved
+    // activation retains `held` after the first next returns.
+    use clj_quickjs::frontend::compile_script;
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "generator-roots",
+        r#"
+        let g = (function*() { let held = {n: 17}; yield 0; return held; })();
+        g.next();
+        __rt.need(90, 1);
+        let value = g.next().value;
+        if (value.n !== 17) throw 'lost local';
+        g = null; value = null;
+        __rt.need(91, 1);
+        1
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    rt.collect().unwrap();
+    let before = rt.heap_stats().objects;
+    let counts = rt.heap_usage().objects;
+    assert_eq!(counts.generator, 1);
+    let requests = task.take_producer_requests();
+    let request = &requests[0];
+    let ready = rt.root(Primitive::Number(0.0));
+    let resumed = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap()
+        .into_runnable();
+    assert!(matches!(resumed[0].run().unwrap(), RunOutcome::Waiting(_)));
+    let collected = rt.collect().unwrap();
+    assert!(collected.reclaimed >= 2);
+    assert!(rt.heap_stats().objects < before);
+    assert_eq!(rt.heap_usage().objects.generator, 0);
+}
+
 fn new_rooted_object(rt: &Runtime) -> Rooted {
     rt.scope(|s| {
         let o = s.new_object();

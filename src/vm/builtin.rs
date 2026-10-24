@@ -364,6 +364,9 @@ pub(crate) enum Builtin {
     MapForEach,
 
     ArrayFrom,
+
+
+    GeneratorNext,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -468,6 +471,7 @@ impl Builtin {
             Builtin::PromiseResolve => "resolve",
             Builtin::PromiseReject => "reject",
             Builtin::PromiseThen => "then",
+            Builtin::GeneratorNext => "next",
             Builtin::PromiseCatch => "catch",
             Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
@@ -625,6 +629,7 @@ impl Builtin {
             | Builtin::RegExpFlag(_) => 0,
 
             Builtin::PromiseThen => 2,
+            Builtin::GeneratorNext => 1,
             Builtin::Promise
             | Builtin::PromiseResolve
             | Builtin::PromiseReject
@@ -822,6 +827,7 @@ pub(crate) fn call(
             crate::vm::native::regexp::getter(heap, task, which, this)
         }
 
+        Builtin::GeneratorNext => Err(Fault::Internal("generator next requires VM state")),
         Builtin::Promise
         | Builtin::PromiseResolve
         | Builtin::PromiseReject
@@ -1746,6 +1752,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => Ok("Object"),
                 HeapObject::Promise(_) => Ok("Promise"),
+                HeapObject::Generator(_) => Ok("Generator"),
             })
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),

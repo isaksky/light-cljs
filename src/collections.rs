@@ -249,6 +249,7 @@ fn body(heap: &Heap, v: &Value) -> Body {
 pub(crate) fn object_name(object: &HeapObject) -> &'static str {
     match object {
         HeapObject::Promise(_) => "Promise",
+        HeapObject::Generator(_) => "generator",
         HeapObject::PromiseReaction(_) => "promise reaction",
         HeapObject::PromiseResolving(_) => "promise resolving functions",
         HeapObject::Plain(_) => "object",

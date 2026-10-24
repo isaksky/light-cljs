@@ -4,7 +4,7 @@
 //! Parentheses are not represented: a parenthesized expression is its inner
 //! expression, with a span that covers the parentheses. The tree only
 //! contains parsed forms; lowering explicitly rejects syntax whose execution
-//! is deferred, including generator and async functions.
+//! is deferred for async functions; generator execution uses detachable activations.
 //!
 //! Every [`Stmt`], [`Function`] and [`Expr`] records its `height` (nodes on
 //! the longest path down to a leaf, itself included). The parser rejects
@@ -297,7 +297,7 @@ pub struct Declarator {
 pub struct Function {
     /// The syntax that produced it.
     pub kind: FunctionKind,
-    /// Syntax-only until resumable generator/async execution is implemented.
+    /// Generator code creates detachable task-owned activations.
     pub generator: bool,
     pub asynchronous: bool,
     /// Always present for a declaration; optional for an expression;

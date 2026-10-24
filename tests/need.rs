@@ -141,6 +141,69 @@ fn spread_builtin_calls_wait_and_resume() {
 }
 
 #[test]
+fn generator_body_waits_and_resumes() {
+    // Synthetic fixture, not light-cljs output. `g` is retained by a local
+    // while its attached activation waits; collection also sees detached locals.
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "generator-wait",
+        r#"
+        function* f() {
+            let held = {n: 2};
+            yield held.n;
+            let n = __rt.need(5, 3);
+            yield n + held.n;
+            return 11;
+        }
+        let g = f();
+        let a = g.next();
+        let b = g.next();
+        let c = g.next();
+        if (a.done || b.done || !c.done) throw 'done';
+        a.value + b.value + c.value
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let expected = key(&rt, NUMBER);
+    for step in 0..1000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            outcome => {
+                assert_eq!(waiting(outcome), expected);
+                break;
+            }
+        }
+        assert!(step < 999, "never reached need");
+    }
+    let request = one_request(&task, expected);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+    let value = thread::spawn(move || number(run(&resumed, &mut host)))
+        .join()
+        .unwrap();
+    assert_eq!(value, 22.0);
+}
+
+#[test]
+fn generator_cancellation_runs_finally() {
+    // Synthetic fixture, not light-cljs output.
+    let rt = Runtime::new();
+    let exe = compile_script("generator-cancel", "function* f() { try { yield 1; __rt.need(5,3); } finally { __rt.effect(2,9); } } let g=f(); g.next(); g.next();").unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    assert_eq!(waiting(run(&task, &mut host)), key(&rt, NUMBER));
+    let Cancel::Runnable(cancelled) = task.cancel() else {
+        panic!("runnable cancellation")
+    };
+    assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+    assert_eq!(host.reports, [9.0]);
+}
+
+#[test]
 fn getter_waits_on_dependency_and_resumes() {
     // Synthetic fixtures, not light-cljs output. Each row exercises a
     // different property continuation with the same wait/migration/GC path.

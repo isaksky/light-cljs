@@ -118,8 +118,10 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
         HeapObject::JsMap(m) => readable(m.object().owner()).map(|()| has_level(m.object(), level)),
-
         HeapObject::ArrayBuffer(b) => {
+            readable(b.object.owner()).map(|()| has_level(&b.object, level))
+        }
+        HeapObject::Generator(b) => {
             readable(b.object.owner()).map(|()| has_level(&b.object, level))
         }
         HeapObject::TypedArray(a) => {
@@ -201,8 +203,15 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             }
             Ok(())
         }
-
         HeapObject::ArrayBuffer(b) => {
+            writable(b.object.owner())?;
+            match level {
+                Level::NonExtensible => b.object.prevent_extensions(),
+                Level::Frozen => b.object.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::Generator(b) => {
             writable(b.object.owner())?;
             match level {
                 Level::NonExtensible => b.object.prevent_extensions(),

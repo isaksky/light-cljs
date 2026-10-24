@@ -156,6 +156,7 @@ pub(crate) enum ObjectKind {
     Promise,
     PromiseReaction,
     PromiseResolving,
+    Generator,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -229,6 +230,7 @@ pub(crate) enum HeapObject {
     Promise(crate::vm::promise::Promise),
     PromiseReaction(crate::vm::promise::Reaction),
     PromiseResolving(crate::vm::promise::Resolving),
+    Generator(Box<crate::vm::generator::Generator>),
 }
 
 impl HeapObject {
@@ -259,6 +261,7 @@ impl HeapObject {
             HeapObject::Promise(_) => ObjectKind::Promise,
             HeapObject::PromiseReaction(_) => ObjectKind::PromiseReaction,
             HeapObject::PromiseResolving(_) => ObjectKind::PromiseResolving,
+            HeapObject::Generator(_) => ObjectKind::Generator,
         }
     }
 }
@@ -284,6 +287,7 @@ impl Trace for HeapObject {
             HeapObject::Promise(p) => p.trace(visit),
             HeapObject::PromiseReaction(r) => r.trace(visit),
             HeapObject::PromiseResolving(r) => r.trace(visit),
+            HeapObject::Generator(g) => g.trace(visit),
         }
     }
 }

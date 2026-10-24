@@ -62,6 +62,7 @@ pub struct ObjectCounts {
     pub promise: usize,
     pub promise_reaction: usize,
     pub promise_resolving: usize,
+    pub generator: usize,
 }
 
 impl ObjectCounts {
@@ -85,6 +86,7 @@ impl ObjectCounts {
             + self.promise
             + self.promise_reaction
             + self.promise_resolving
+            + self.generator
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -108,6 +110,7 @@ impl ObjectCounts {
             HeapObject::Promise(_) => &mut self.promise,
             HeapObject::PromiseReaction(_) => &mut self.promise_reaction,
             HeapObject::PromiseResolving(_) => &mut self.promise_resolving,
+            HeapObject::Generator(_) => &mut self.generator,
         };
         *n += 1;
     }

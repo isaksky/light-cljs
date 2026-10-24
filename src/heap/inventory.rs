@@ -95,11 +95,12 @@ enum Holder {
     PromiseResults,
     PromiseResolvingFunctions,
     IteratorSource,
+    SuspendedGenerator,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 35] = [
+const HOLDERS: [Holder; 36] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -135,6 +136,7 @@ const HOLDERS: [Holder; 35] = [
     Holder::PromiseResults,
     Holder::PromiseResolvingFunctions,
     Holder::IteratorSource,
+    Holder::SuspendedGenerator,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -150,7 +152,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 18] = [
+const KINDS: [ObjectKind; 19] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -169,6 +171,7 @@ const KINDS: [ObjectKind; 18] = [
     ObjectKind::Promise,
     ObjectKind::PromiseReaction,
     ObjectKind::PromiseResolving,
+    ObjectKind::Generator,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -197,6 +200,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
+            SuspendedGenerator,
             RunningFrame,
             SuspendedFrame,
             PendingNeedFrame,
@@ -221,6 +225,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
+        ObjectKind::Generator => &[SuspendedGenerator],
         ObjectKind::Promise => &[PromiseReactions, PromiseResults],
         ObjectKind::PromiseReaction => &[PromiseReactions],
         ObjectKind::PromiseResolving => &[PromiseResolvingFunctions],
@@ -352,6 +357,10 @@ fn coverage(holder: Holder) -> Coverage {
             "closure_environment_reclaims",
         ),
         Holder::BindingCell => public("binding_cell_retains", "binding_cell_reclaims"),
+        Holder::SuspendedGenerator => Coverage {
+            retains: (Gc, "suspended_generator_is_traced_and_reclaimed"),
+            reclaims: (Gc, "suspended_generator_is_traced_and_reclaimed"),
+        },
         Holder::PersistentCollectionEdges => public(
             "persistent_collection_edges_retain",
             "persistent_collection_edges_reclaim",
