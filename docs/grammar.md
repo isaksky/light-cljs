@@ -3632,6 +3632,9 @@ yield, dependency waits, collection and migration without replay.
 String scans use 256-comparison KMP steps; each regexp search retains the
 1,000,000-step matcher bound. Before flattening, receiver/search/replacement
 strings and callback result strings are limited to 65,536 code units each.
+The same bound applies to lastIndex strings after resumable ToPrimitive,
+before numeric conversion scans or flattens them (global regexps overwrite
+the original lastIndex with zero first).
 An aggregate 1,000,000-unit allowance bounds capture storage, substring
 copying, substitution parsing/name comparisons and output across all steps.
 Exhaustion throws catchable RangeError, including output expansion.

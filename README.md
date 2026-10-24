@@ -3039,6 +3039,7 @@ Dispatch uses the internal RegExp brand and flags; Symbol.replace and custom
 exec/flags hooks, generic RegExp replacement, match/search and the previously
 deferred flags remain deferred. String scans yield in 256-comparison batches;
 regexp searches retain the matcher step limit. Strings supplied to replacement
-and callback results are capped at 65,536 code units; aggregate capture,
-substitution and output work at 1,000,000 units. Limits throw catchable
+and callback results are capped at 65,536 code units. `lastIndex` numeric
+conversion checks that same string bound after ToPrimitive. Aggregate capture,
+substitution and output work is capped at 1,000,000 units. Limits throw catchable
 RangeError. Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source string_replace -- --test-threads=3`.

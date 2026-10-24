@@ -16801,6 +16801,7 @@ fn string_replace_wait_yield_collect_and_migrate() {
         "'abc'.replace({toString(){count++; __rt.need(189,1); return 'b';}}, 'X') === 'aXc'",
         "'abc'.replaceAll('b', {toString(){count++; __rt.need(189,1); return 'X';}}) === 'aXc'",
         "let r = /b/; r.lastIndex = {valueOf(){count++; __rt.need(189,1); return 0;}};| 'abc'.replace(r,'X') === 'aXc'",
+        "let r = /b/; r.lastIndex = {valueOf(){count++; __rt.need(189,1); return ''.padEnd(65537,'0');}}; let caught = false; try { 'abc'.replace(r,'X'); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('Number conversion limit') >= 0; }| caught",
         "let captured = {text:'X'};| 'abc'.replace(/(?<x>b)(z)?/, (m,b,z,p,s,g) => { count++; __rt.need(189,1); return captured.text + g.x + p + s + String(z); }) === 'aXb1abcundefinedc'",
         "'abc'.replaceAll('b', () => ({get toString(){count++; __rt.need(189,1); return () => 'X';}})) === 'aXc'",
         "let caught = false; try { 'abc'.replace(/b/, () => { count++; __rt.need(189,1); throw 42; }); } catch(e) { caught = e === 42; }| caught",
@@ -16890,4 +16891,31 @@ fn string_replace_limits_and_budgeted_scans() {
         }
     }
     panic!("replacement scan exceeded instruction bound");
+}
+
+/// Synthetic fixtures, not light-cljs output. The limit is applied after
+/// resumable ToPrimitive and before leaf StringToNumber scans or flattens.
+#[test]
+fn string_replace_last_index_conversion_is_bounded() {
+    for source in [
+        "let r = /b/; r.lastIndex = ''.padEnd(65537,'0'); let caught = false; try { 'abc'.replace(r,'X'); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('Number conversion limit of 65536') >= 0; } caught",
+        "let r = /b/y; r.lastIndex = {valueOf(){return {};}, toString(){return ''.padEnd(65537,'0');}}; let caught = false; try { 'abc'.replace(r,'X'); } catch(e) { caught = e instanceof RangeError; } caught",
+        "let r = /b/; r.lastIndex = ''.padEnd(65536,'0'); 'abc'.replace(r,'X') === 'aXc'",
+        "let r = /b/g; r.lastIndex = ''.padEnd(65537,'0'); 'abc'.replace(r,'X') === 'aXc' && r.lastIndex === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Capture ranges are charged
+/// during collection, before any replacer can observe a partial result.
+#[test]
+fn string_replace_capture_storage_limit() {
+    for source in [
+        "let r = new RegExp(''.padEnd(1000, '()'), 'g'); let calls = 0; let caught = false; try { ''.padEnd(2000, 'a').replace(r, () => {calls++; return '';}); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('string replacement work limit') >= 0; } caught && calls === 0",
+        "let r = new RegExp(''.padEnd(1000, '()'), 'g'); let caught = false; try { ''.padEnd(2000, 'a').replaceAll(r, ''); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('string replacement work limit') >= 0; } caught",
+        "let r = new RegExp(''.padEnd(1000, '()'), 'g'); let calls = 0; let text = ''.padEnd(10, 'a'); text.replace(r, () => {calls++; return '';}) === text && calls === 11 && r.lastIndex === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
 }

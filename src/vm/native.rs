@@ -2629,7 +2629,7 @@ impl NativeState {
                             && text.len() > *limit
                         {
                             return Err(Fault::RangeError(format!(
-                                "JSON.stringify Number conversion limit of {limit} UTF-16 units exceeded"
+                                "Number conversion limit of {limit} UTF-16 units exceeded"
                             )));
                         }
                         dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))

@@ -170,7 +170,7 @@ impl State {
                 // ToLength can still invoke JavaScript when its value is an object.
                 let last = property::get(heap, task, &self.search, &object::key("lastIndex"))?;
                 self.phase = Phase::LastNumber;
-                Ok(Action::ToNumber(last))
+                Ok(Action::ToNumberLimited(last, MAX_ARGUMENT_UNITS))
             }
             Phase::LastNumber => {
                 self.next = usize::try_from(super::to_length(&v)?).unwrap_or(usize::MAX);

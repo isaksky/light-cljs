@@ -5320,6 +5320,9 @@ GetSubstitution work share a 1,000,000-unit aggregate allowance, including
 capture-range storage, callback substring copying, name comparisons and
 output. Receiver/search/replacement and callback result strings are checked
 against 65,536 units before flattening. These documented implementation
-limits throw catchable RangeError; no dependency or instruction budget can
-turn exhaustion into a successful partial replacement. Realm/GC inventory
+limits also apply to lastIndex strings, including strings returned by a
+suspending ToPrimitive, through the shared Action::ToNumberLimited path
+before leaf StringToNumber. Limits throw catchable RangeError; no dependency
+or instruction budget can turn exhaustion into a successful partial
+replacement. Realm/GC inventory
 counts grow by the two additional immutable built-in functions.
