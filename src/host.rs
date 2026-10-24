@@ -27,6 +27,11 @@
 //! never re-executed when the task yields and is run again; an effect that has
 //! not run yet runs on a later run. If the host returns an error the task
 //! fails ([`VmErrorKind::HostEffect`](crate::VmErrorKind::HostEffect)).
+//!
+//! The simulated compiler host of worlds, result kinds and producers is the
+//! [`sim`] submodule; it drives tasks from outside and is not a leaf effect.
+
+pub mod sim;
 
 use std::cell::Cell;
 
