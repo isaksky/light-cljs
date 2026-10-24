@@ -21,6 +21,7 @@
 //! | `JumpIfFalse`   | 0x0E | u32 byte offset    | v →                    | branch if ToBoolean(v) is false |
 //! | `Return`        | 0x0F | –                  | v →                    | complete the task with v |
 //! | `NewObject`     | 0x10 | –                  | → obj                  | allocate a fresh plain object |
+//! | `HostEffect`    | 0x11 | u16 host op        | arg → result           | leaf host effect (see [`crate::host`]) |
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -57,6 +58,7 @@ pub enum Opcode {
     JumpIfFalse = 0x0E,
     Return = 0x0F,
     NewObject = 0x10,
+    HostEffect = 0x11,
 }
 
 /// Operand encoding of an opcode.
@@ -69,13 +71,15 @@ pub(crate) enum OperandKind {
     Local,
     /// u32 absolute byte offset of the branch target.
     Target,
+    /// u16 host-defined operation selector, passed through to the host.
+    HostOp,
 }
 
 impl OperandKind {
     pub(crate) fn size(self) -> usize {
         match self {
             OperandKind::None => 0,
-            OperandKind::Const | OperandKind::Local => 2,
+            OperandKind::Const | OperandKind::Local | OperandKind::HostOp => 2,
             OperandKind::Target => 4,
         }
     }
@@ -102,6 +106,7 @@ impl Opcode {
             0x0E => JumpIfFalse,
             0x0F => Return,
             0x10 => NewObject,
+            0x11 => HostEffect,
             _ => return None,
         })
     }
@@ -126,6 +131,7 @@ impl Opcode {
             JumpIfFalse => "jump_if_false",
             Return => "return",
             NewObject => "new_object",
+            HostEffect => "host_effect",
         }
     }
 
@@ -135,6 +141,7 @@ impl Opcode {
             Const => OperandKind::Const,
             GetLocal | SetLocal => OperandKind::Local,
             Jump | JumpIfFalse => OperandKind::Target,
+            HostEffect => OperandKind::HostOp,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject => {
                 OperandKind::None
             }
@@ -149,7 +156,7 @@ impl Opcode {
             SetLocal | Pop | JumpIfFalse | Return => (1, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq => (2, 1),
-            Not => (1, 1),
+            Not | HostEffect => (1, 1),
             Jump => (0, 0),
         }
     }
@@ -174,6 +181,7 @@ pub(crate) enum Instr {
     JumpIfFalse(u32),
     Return,
     NewObject,
+    HostEffect(u16),
 }
 
 impl Instr {
@@ -195,6 +203,7 @@ impl Instr {
             Instr::JumpIfFalse(_) => Opcode::JumpIfFalse,
             Instr::Return => Opcode::Return,
             Instr::NewObject => Opcode::NewObject,
+            Instr::HostEffect(_) => Opcode::HostEffect,
         }
     }
 }
@@ -213,6 +222,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 16);
+        assert_eq!(assigned, 17);
     }
 }

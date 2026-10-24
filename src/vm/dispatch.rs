@@ -1,7 +1,7 @@
 //! The interpreter loop.
 //!
 //! [`execute`] runs a task's [`VmState`] against shared, validated [`Code`]
-//! until the task returns or fails. All state it mutates is the task-owned
+//! until the task returns, fails, or exhausts its execution budget. All state it mutates is the task-owned
 //! `VmState`; it keeps no Rust references into the operand stack or locals
 //! across instructions, and nothing is held on the Rust stack that a later
 //! run would need (`docs/design.md` §§3, 10). The instruction position is
@@ -12,11 +12,17 @@
 //! stack underflow, and the loop still re-checks them, failing the task with
 //! [`VmErrorKind::Internal`] if an invariant is ever broken.
 //!
-//! Runs are unbounded in this slice; execution budgets and the `Yielded`
-//! outcome arrive with pellet clj-quickjs-16.
+//! **Budget and yield.** The budget counts instructions. It is checked only
+//! *between* instructions: when it is exhausted the loop returns
+//! [`Exit::Yield`] with `frame.pc` naming the next instruction (possibly a
+//! branch target just jumped to) and the operands and locals as that
+//! instruction expects them. Every instruction, including `HostEffect`, runs
+//! to completion within one run, so a later run continues exactly where this
+//! one stopped and never replays an executed instruction or its effect.
 
 use crate::error::{Diagnostic, VmError, VmErrorKind};
 use crate::heap::{Heap, ObjectKind};
+use crate::host::{Host, HostCall, call_leaf};
 use crate::value::Value;
 use crate::vm::executable::Code;
 use crate::vm::frames::VmState;
@@ -27,12 +33,16 @@ use crate::vm::instr::{Instr, Opcode};
 pub(crate) enum Exit {
     Return(Value),
     Fail(VmError),
+    /// The budget ran out; the task can be run again.
+    Yield,
 }
 
 /// A failure before diagnostic context is attached.
 enum Fault {
     Unsupported(String),
     Internal(&'static str),
+    /// The host reported an error from a leaf effect.
+    Host(String),
 }
 
 fn pop(operands: &mut Vec<Value>) -> Result<Value, Fault> {
@@ -64,6 +74,7 @@ fn step(
     state: &mut VmState,
     code: &Code,
     heap: &Heap,
+    host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Option<Value>, Fault> {
     let frame = &mut state.frame;
@@ -123,19 +134,50 @@ fn step(
         }
         Instr::Return => return pop(ops).map(Some),
         Instr::NewObject => ops.push(Value::Object(heap.alloc(ObjectKind::PlainObject))),
+        Instr::HostEffect(op) => {
+            let v = pop(ops)?;
+            let arg = v.to_primitive().ok_or_else(|| {
+                Fault::Unsupported(format!(
+                    "host_effect takes a primitive argument, got {}",
+                    v.type_name()
+                ))
+            })?;
+            let call = HostCall {
+                task: state.diag.task,
+                op,
+                arg,
+            };
+            // No reference into the task's VM storage is live across the
+            // host call (`ops` is not used after this point).
+            let result = call_leaf(host, call).map_err(Fault::Host)?;
+            state.frame.operands.push(Value::from(result));
+        }
     }
     Ok(None)
 }
 
-/// Run until the task returns or fails.
-pub(crate) fn execute(state: &mut VmState, code: &Code, heap: &Heap) -> Exit {
+/// Run until the task returns or fails, or until `budget` instructions have
+/// executed (`None`: unlimited).
+pub(crate) fn execute(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    host: &mut dyn Host,
+    mut budget: Option<u64>,
+) -> Exit {
     loop {
+        if let Some(left) = &mut budget {
+            if *left == 0 {
+                return Exit::Yield;
+            }
+            *left -= 1;
+        }
         let pc = state.frame.pc;
         let instr = code.instrs.get(pc).copied();
         let result = match instr {
             Some(instr) => {
                 state.frame.pc = pc + 1;
-                step(state, code, heap, instr)
+                step(state, code, heap, host, instr)
             }
             None => Err(Fault::Internal("instruction position out of range")),
         };
@@ -144,6 +186,7 @@ pub(crate) fn execute(state: &mut VmState, code: &Code, heap: &Heap) -> Exit {
             Ok(Some(value)) => return Exit::Return(value),
             Err(Fault::Unsupported(m)) => (VmErrorKind::UnsupportedOperand, m),
             Err(Fault::Internal(m)) => (VmErrorKind::Internal, m.to_string()),
+            Err(Fault::Host(m)) => (VmErrorKind::HostEffect, m),
         };
         return Exit::Fail(VmError {
             kind,

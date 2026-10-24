@@ -15,6 +15,9 @@ cargo build --all-targets
 cargo test --all-targets          # unit + integration tests
 cargo test --doc                  # doc tests, including compile-fail handle tests
 cargo run                         # early VM test program (hand-assembled bytecode)
+cargo run --example resumable_counter   # budgeted yield/resume with a host counter
+cargo test --lib resume_tests     # yield/resume and host-effect unit tests
+cargo test --test resumable       # resume on another embedder thread
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -25,7 +28,8 @@ Library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Modules:
 `runtime` (embedding entry point), `task` (task state, execution guard, run
 outcomes), `vm` (instruction format, executable validation, task-owned frames,
 dispatch, test assembler), `heap` (object identity, roots and scoped handles,
-tracing contract), `value`, `ids`, `error`. See the `lib.rs` crate docs.
+tracing contract), `value`, `ids`, `error`, `host` (leaf host effects). See
+the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
 
@@ -55,10 +59,35 @@ Deferred (explicitly not implemented):
 
 - JavaScript source: programs are hand-assembled bytecode (`Assembler`), an
   early VM test tool, not JavaScript source support.
-- `Waiting` and `Yielded` outcomes are reserved but never produced; runs are
-  unbounded (no execution budget yet).
+- `Waiting` is reserved but never produced (`Yielded` and budgets: see
+  clj-quickjs-16 below).
 - Garbage collection: the heap is a temporary non-reclaiming stub. Tracing
   hooks exist; no collector runs.
 - Arithmetic on non-number operands fails with `UnsupportedOperand` instead of
   applying JavaScript coercions. No strings, properties, calls, closures,
   exceptions, collections, atoms or dependency cells yet.
+
+### Budgeted yield and leaf host effects (clj-quickjs-16)
+
+Supported:
+
+- `Task::run_with(Budget, &mut dyn Host)`: a run executes at most
+  `Budget::instructions(n)` instructions and returns `RunOutcome::Yielded` when
+  the budget runs out. Instruction position, operands and locals stay in the
+  task; the next run, on any thread, continues at the saved instruction
+  (including a branch target). The budget is checked only between
+  instructions, so no instruction or effect is ever replayed.
+- `host_effect op` (opcode `0x11`): a non-reentrant leaf host effect through the
+  `Host` trait. It takes and returns primitives only, cannot reenter the VM
+  (`RunError::InsideHostEffect`), open a heap scope, or suspend. Host errors
+  fail the task (`VmErrorKind::HostEffect`); `Task::run` supplies no host.
+- Example: `cargo run --example resumable_counter` round-robins two tasks with
+  a budget of 5 instructions and prints the host counter once per effect.
+  Hand-assembled bytecode: an early VM test, not JavaScript source support.
+
+Deferred:
+
+- `Waiting(key)` and dependency waits (pellets clj-quickjs-6, -23, -7).
+- Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
+  scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
+  only, not time or allocation.

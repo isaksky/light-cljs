@@ -68,6 +68,17 @@ impl Value {
         }
     }
 
+    /// The value as a root-free primitive; `None` for heap references.
+    pub(crate) fn to_primitive(self) -> Option<Primitive> {
+        match self {
+            Value::Undefined => Some(Primitive::Undefined),
+            Value::Null => Some(Primitive::Null),
+            Value::Bool(b) => Some(Primitive::Bool(b)),
+            Value::Number(n) => Some(Primitive::Number(n)),
+            Value::Object(_) => None,
+        }
+    }
+
     /// The embedder-visible view of this value.
     pub(crate) fn view(self) -> ValueView {
         match self {

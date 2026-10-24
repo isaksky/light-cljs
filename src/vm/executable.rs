@@ -215,6 +215,7 @@ impl Executable {
                 Opcode::JumpIfFalse => Instr::JumpIfFalse(target()?),
                 Opcode::Return => Instr::Return,
                 Opcode::NewObject => Instr::NewObject,
+                Opcode::HostEffect => Instr::HostEffect(operand as u16),
             });
         }
 

@@ -13,14 +13,23 @@
 //! The guard is a per-task `Mutex` acquired with `try_lock`; it is never
 //! waited on and never held across a suspension (runs return before any
 //! wait), so it is an ownership token rather than a lock that serializes work.
+//!
+//! **Budgeted runs.** [`Task::run_with`] takes a [`Budget`] and a
+//! [`Host`]. When the budget runs out the run returns
+//! [`RunOutcome::Yielded`], releases the guard, and leaves the task `Ready`
+//! with its VM state saved; running it again (on any thread) continues at the
+//! saved instruction. No Rust stack frame survives between runs.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use crate::error::VmError;
+use crate::error::{VmError, VmErrorKind};
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, ObjectId, Rooted};
+use crate::host::{Host, NoHost};
 use crate::ids::{TaskId, WaitKey, WorldId};
+#[cfg(test)]
+use crate::value::Value;
 use crate::vm::Executable;
 use crate::vm::dispatch::{Exit, execute};
 use crate::vm::frames::VmState;
@@ -36,9 +45,29 @@ pub enum RunOutcome {
     /// Reserved: the task is suspended waiting on a dependency. Not produced
     /// by this slice (dependency cells are pellet clj-quickjs-6 and later).
     Waiting(WaitKey),
-    /// Reserved: the task stopped on its execution budget and can be run
-    /// again. Not produced by this slice (pellet clj-quickjs-16).
+    /// The task used up its execution [`Budget`] before finishing. Its
+    /// instruction position, operands and locals are saved in the task; the
+    /// next run (on any thread) continues at the saved instruction.
     Yielded,
+}
+
+/// How many instructions one run may execute before it returns
+/// [`RunOutcome::Yielded`].
+///
+/// The budget is checked between instructions only, so every instruction
+/// (including a leaf host effect) executes completely in exactly one run. A
+/// budget of zero yields immediately without executing anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budget(Option<u64>);
+
+impl Budget {
+    /// Run until the task completes or fails.
+    pub const UNLIMITED: Budget = Budget(None);
+
+    /// Execute at most `n` instructions in this run.
+    pub const fn instructions(n: u64) -> Budget {
+        Budget(Some(n))
+    }
 }
 
 /// Why a run could not start.
@@ -51,6 +80,9 @@ pub enum RunError {
     /// A previous run panicked while holding the guard, so the task state may
     /// be inconsistent. The VM does not panic by design; this is defensive.
     Poisoned,
+    /// The calling thread is inside a leaf host effect, which may not reenter
+    /// the VM (see [`crate::host`]).
+    InsideHostEffect,
 }
 
 impl fmt::Display for RunError {
@@ -59,6 +91,7 @@ impl fmt::Display for RunError {
             RunError::AlreadyRunning => "task is already running",
             RunError::Finished => "task has finished",
             RunError::Poisoned => "task state is poisoned by an earlier panic",
+            RunError::InsideHostEffect => "a host effect may not reenter the VM",
         })
     }
 }
@@ -157,6 +190,9 @@ impl Task {
 
     /// Acquire the execution guard without blocking.
     pub fn try_begin_run(&self) -> Result<RunGuard<'_>, RunError> {
+        if crate::host::inside_effect() {
+            return Err(RunError::InsideHostEffect);
+        }
         let body = match self.0.body.try_lock() {
             Ok(body) => body,
             Err(TryLockError::WouldBlock) => return Err(RunError::AlreadyRunning),
@@ -171,9 +207,30 @@ impl Task {
         }
     }
 
-    /// Acquire the guard and run on the calling thread.
+    /// Acquire the guard and run on the calling thread with an unlimited
+    /// budget and no host (host effects fail the task).
     pub fn run(&self) -> Result<RunOutcome, RunError> {
         Ok(self.try_begin_run()?.run())
+    }
+
+    /// Acquire the guard and run on the calling thread for at most `budget`
+    /// instructions, sending leaf host effects to `host`.
+    pub fn run_with(&self, budget: Budget, host: &mut dyn Host) -> Result<RunOutcome, RunError> {
+        Ok(self.try_begin_run()?.run_with(budget, host))
+    }
+
+    /// The saved instruction position (index of the next instruction) and the
+    /// saved operands and locals, or `None` while running or finished.
+    #[cfg(test)]
+    pub(crate) fn saved_state(&self) -> Option<(usize, Vec<Value>, Vec<Value>)> {
+        match &*self.0.body.try_lock().ok()? {
+            TaskBody::Ready(vm) => Some((
+                vm.frame.pc,
+                vm.frame.operands.clone(),
+                vm.frame.locals.to_vec(),
+            )),
+            TaskBody::Finished => None,
+        }
     }
 
     /// Visit heap references in the task's VM state; `false` if the state is
@@ -198,15 +255,42 @@ impl RunGuard<'_> {
     }
 
     /// Execute until the task returns or fails, then release the guard.
-    pub fn run(mut self) -> RunOutcome {
+    /// Unlimited budget, no host: see [`Task::run`].
+    pub fn run(self) -> RunOutcome {
+        self.run_with(Budget::UNLIMITED, &mut NoHost)
+    }
+
+    /// Execute until the task returns or fails or `budget` is used up, then
+    /// release the guard. See [`Task::run_with`].
+    pub fn run_with(mut self, budget: Budget, host: &mut dyn Host) -> RunOutcome {
         let TaskBody::Ready(vm) = &mut *self.body else {
             // `try_begin_run` only hands out guards for ready tasks, and only
-            // `run` (which consumes the guard) changes the body.
-            return RunOutcome::Failed(unreachable_finished(self.task));
+            // `run_with` (which consumes the guard) changes the body.
+            return RunOutcome::Failed(guard_failure(
+                self.task,
+                VmErrorKind::Internal,
+                "run guard held for a finished task",
+                0,
+            ));
         };
-        let outcome = match execute(vm, &self.task.executable.0, &self.task.heap) {
+        if crate::host::inside_effect() {
+            // Reached only with a guard acquired before the effect started
+            // (`try_begin_run` refuses inside an effect). Fail this task rather
+            // than reenter the VM from a leaf effect.
+            let error = guard_failure(
+                self.task,
+                VmErrorKind::HostEffect,
+                "a host effect may not reenter the VM",
+                vm.frame.pc,
+            );
+            *self.body = TaskBody::Finished;
+            return RunOutcome::Failed(error);
+        }
+        let outcome = match execute(vm, &self.task.executable.0, &self.task.heap, host, budget.0) {
             Exit::Return(value) => RunOutcome::Complete(Rooted::new(&self.task.heap, value)),
             Exit::Fail(error) => RunOutcome::Failed(error),
+            // The VM state stays in the task; dropping the guard releases it.
+            Exit::Yield => return RunOutcome::Yielded,
         };
         // Completion or failure releases the task's frames; a returned value
         // stays alive through its persistent root, not through the task.
@@ -216,17 +300,18 @@ impl RunGuard<'_> {
 }
 
 #[cold]
-fn unreachable_finished(task: &TaskInner) -> VmError {
+fn guard_failure(task: &TaskInner, kind: VmErrorKind, message: &str, pc: usize) -> VmError {
+    let code = &task.executable.0;
     VmError {
-        kind: crate::error::VmErrorKind::Internal,
-        message: "run guard held for a finished task".to_string(),
+        kind,
+        message: message.to_string(),
         diagnostic: crate::error::Diagnostic {
-            executable: task.executable.0.name.clone(),
+            executable: code.name.clone(),
             task: task.id,
             world: task.world,
-            instruction: 0,
-            byte_offset: None,
-            opcode: None,
+            instruction: pc,
+            byte_offset: code.offsets.get(pc).copied(),
+            opcode: code.instrs.get(pc).map(|i| i.opcode()),
         },
     }
 }
@@ -235,7 +320,7 @@ fn unreachable_finished(task: &TaskInner) -> VmError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::VmErrorKind;
+
     use crate::value::{Primitive, ValueView};
     use crate::vm::executable::Code;
     use crate::vm::instr::Instr;
@@ -512,5 +597,381 @@ mod tests {
             e.kind,
             ValidationErrorKind::BadBranchTarget { target: u32::MAX }
         );
+    }
+}
+
+/// Budgeted yield/resume and leaf host effects. Early VM tests: hand-assembled
+/// bytecode, not JavaScript source support.
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use crate::host::HostCall;
+    use crate::value::{Primitive, ValueView};
+    use crate::vm::{Assembler, Opcode};
+    use crate::{Runtime, TaskId};
+
+    fn num(n: f64) -> Value {
+        Value::Number(n)
+    }
+
+    fn complete(outcome: RunOutcome) -> ValueView {
+        match outcome {
+            RunOutcome::Complete(v) => v.view(),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    fn failed(outcome: RunOutcome) -> VmError {
+        match outcome {
+            RunOutcome::Failed(e) => e,
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    fn yielded(outcome: RunOutcome) {
+        assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+    }
+
+    /// Host whose effect increments a counter and returns its new value.
+    #[derive(Default)]
+    struct Counter {
+        log: Vec<HostCall>,
+    }
+
+    impl Host for Counter {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.log.push(call);
+            Ok(Primitive::Number(self.log.len() as f64))
+        }
+    }
+
+    impl Counter {
+        fn args_of(&self, task: TaskId) -> Vec<f64> {
+            self.log
+                .iter()
+                .filter(|c| c.task == task)
+                .map(|c| match c.arg {
+                    Primitive::Number(n) => n,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        }
+    }
+
+    const EFFECT_OP: u16 = 7;
+    /// Instruction index of the loop head (`top`) in [`effect_loop`].
+    const TOP: usize = 4;
+    /// Instruction index of the loop exit (`done`) in [`effect_loop`].
+    const DONE: usize = 16;
+
+    /// `function f(n) { let i = 0, last; while (i < n) { last = effect(i); i = i + 1; } return last; }`
+    ///
+    /// Locals: 0 = n, 1 = i, 2 = last. Executes `4 + 12 n + 6` instructions.
+    fn effect_loop() -> Executable {
+        let mut asm = Assembler::new();
+        let (top, done) = (asm.label(), asm.label());
+        asm.constant(Primitive::Number(0.0)).set_local(1); // 0, 1
+        asm.op(Opcode::Undefined).set_local(2); // 2, 3
+        asm.bind(top); // 4
+        asm.get_local(1).get_local(0).op(Opcode::Lt); // 4, 5, 6
+        asm.jump_if_false(done); // 7
+        asm.get_local(1).host_effect(EFFECT_OP).set_local(2); // 8, 9, 10
+        asm.get_local(1)
+            .constant(Primitive::Number(1.0))
+            .op(Opcode::Add)
+            .set_local(1); // 11..14
+        asm.jump(top); // 15
+        asm.bind(done); // 16
+        asm.get_local(2).op(Opcode::Return); // 16, 17
+        asm.finish("effect-loop", 1, 3).unwrap()
+    }
+
+    fn effect_loop_len(n: u64) -> u64 {
+        4 + 12 * n + 6
+    }
+
+    #[test]
+    fn yield_resumes_at_the_saved_instruction() {
+        // (2 + 3) -> local 0; return local0 * 4
+        let mut asm = Assembler::new();
+        asm.constant(Primitive::Number(2.0))
+            .constant(Primitive::Number(3.0))
+            .op(Opcode::Add)
+            .set_local(0);
+        asm.get_local(0)
+            .constant(Primitive::Number(4.0))
+            .op(Opcode::Mul)
+            .op(Opcode::Return);
+        let exe = asm.finish("straight", 0, 1).unwrap();
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        let mut host = Counter::default();
+
+        yielded(task.run_with(Budget::instructions(2), &mut host).unwrap());
+        assert_eq!(task.status(), TaskStatus::Ready);
+        let (pc, operands, locals) = task.saved_state().unwrap();
+        assert_eq!(pc, 2);
+        assert_eq!(operands, vec![num(2.0), num(3.0)]);
+        assert_eq!(locals, vec![Value::Undefined]);
+
+        yielded(task.run_with(Budget::instructions(3), &mut host).unwrap());
+        let (pc, operands, locals) = task.saved_state().unwrap();
+        assert_eq!(pc, 5);
+        assert_eq!(operands, vec![num(5.0)]);
+        assert_eq!(locals, vec![num(5.0)]);
+
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert_eq!(complete(outcome), ValueView::Number(20.0));
+        assert_eq!(task.status(), TaskStatus::Finished);
+        assert!(task.saved_state().is_none());
+    }
+
+    #[test]
+    fn zero_budget_yields_without_progress() {
+        let rt = Runtime::new();
+        let n = rt.root(Primitive::Number(1.0));
+        let task = rt.spawn(&effect_loop(), &[&n]).unwrap();
+        let mut host = Counter::default();
+        for _ in 0..3 {
+            yielded(task.run_with(Budget::instructions(0), &mut host).unwrap());
+            assert_eq!(task.saved_state().unwrap().0, 0);
+        }
+        assert!(host.log.is_empty());
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert_eq!(complete(outcome), ValueView::Number(1.0));
+    }
+
+    /// Every possible yield point: for each budget, the run sequence executes
+    /// each instruction exactly once (the run count is exact) and each effect
+    /// exactly once, in program order.
+    #[test]
+    fn host_effects_run_once_across_yields() {
+        let n = 4;
+        let total = effect_loop_len(n);
+        let rt = Runtime::new();
+        let exe = effect_loop();
+        let arg = rt.root(Primitive::Number(n as f64));
+        for b in 1..=total + 1 {
+            let task = rt.spawn(&exe, &[&arg]).unwrap();
+            let mut host = Counter::default();
+            let mut runs = 0;
+            let result = loop {
+                runs += 1;
+                match task.run_with(Budget::instructions(b), &mut host).unwrap() {
+                    RunOutcome::Yielded => continue,
+                    other => break complete(other),
+                }
+            };
+            assert_eq!(runs, total.div_ceil(b), "budget {b}");
+            assert_eq!(
+                host.args_of(task.id()),
+                vec![0.0, 1.0, 2.0, 3.0],
+                "budget {b}"
+            );
+            assert!(host.log.iter().all(|c| c.op == EFFECT_OP));
+            // The last effect returned the counter value 4.
+            assert_eq!(result, ValueView::Number(4.0), "budget {b}");
+        }
+    }
+
+    #[test]
+    fn budget_exhaustion_at_branch_targets() {
+        let rt = Runtime::new();
+        let one = rt.root(Primitive::Number(1.0));
+        let task = rt.spawn(&effect_loop(), &[&one]).unwrap();
+        let mut host = Counter::default();
+
+        // Setup plus one iteration ends with the backward `jump top`.
+        yielded(task.run_with(Budget::instructions(16), &mut host).unwrap());
+        let (pc, operands, locals) = task.saved_state().unwrap();
+        assert_eq!(pc, TOP, "stopped at the backward branch target");
+        assert!(operands.is_empty());
+        assert_eq!(locals, vec![num(1.0), num(1.0), num(1.0)]);
+        assert_eq!(host.log.len(), 1);
+
+        // `1 < 1` is false: the taken `jump_if_false` lands on `done`.
+        yielded(task.run_with(Budget::instructions(4), &mut host).unwrap());
+        let (pc, operands, _) = task.saved_state().unwrap();
+        assert_eq!(pc, DONE, "stopped at the forward branch target");
+        assert!(operands.is_empty());
+
+        let outcome = task.run_with(Budget::instructions(2), &mut host).unwrap();
+        assert_eq!(complete(outcome), ValueView::Number(1.0));
+        assert_eq!(host.log.len(), 1, "no effect replayed after branch yields");
+    }
+
+    #[test]
+    fn independent_tasks_resume_in_interleaved_order() {
+        let rt = Runtime::new();
+        let exe = effect_loop();
+        let sizes = [2.0, 3.0, 5.0];
+        let roots: Vec<Rooted> = sizes
+            .iter()
+            .map(|&n| rt.root(Primitive::Number(n)))
+            .collect();
+        let tasks: Vec<Task> = roots
+            .iter()
+            .map(|r| rt.spawn(&exe, &[r]).unwrap())
+            .collect();
+        let mut host = Counter::default();
+        let mut results: Vec<Option<ValueView>> = vec![None; tasks.len()];
+        let mut round = 0;
+        while results.iter().any(Option::is_none) {
+            // Rotate and alternate direction so the run order differs per round.
+            let mut order: Vec<usize> = (0..tasks.len())
+                .map(|i| (i + round) % tasks.len())
+                .collect();
+            if round % 2 == 1 {
+                order.reverse();
+            }
+            for i in order {
+                if results[i].is_some() {
+                    continue;
+                }
+                match tasks[i]
+                    .run_with(Budget::instructions(7), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {}
+                    other => results[i] = Some(complete(other)),
+                }
+            }
+            round += 1;
+            assert!(round < 100, "tasks failed to finish");
+        }
+        for (task, &n) in tasks.iter().zip(&sizes) {
+            let expected: Vec<f64> = (0..n as usize).map(|i| i as f64).collect();
+            assert_eq!(host.args_of(task.id()), expected);
+        }
+        // Effects really interleaved: the log does not run task by task.
+        let switches = host
+            .log
+            .windows(2)
+            .filter(|w| w[0].task != w[1].task)
+            .count();
+        assert!(switches > tasks.len(), "{switches} switches");
+        assert_eq!(host.log.len(), 10);
+        // Each task's result is the shared counter value at its last effect.
+        for (i, task) in tasks.iter().enumerate() {
+            let last = host.log.iter().rposition(|c| c.task == task.id()).unwrap();
+            assert_eq!(results[i], Some(ValueView::Number((last + 1) as f64)));
+        }
+    }
+
+    #[test]
+    fn yielded_state_stays_traceable_and_owned_by_the_task() {
+        let rt = Runtime::new();
+        let mut asm = Assembler::new();
+        asm.op(Opcode::NewObject).set_local(0);
+        asm.get_local(0).op(Opcode::Return);
+        let task = rt.spawn(&asm.finish("hold", 0, 1).unwrap(), &[]).unwrap();
+        yielded(
+            task.run_with(Budget::instructions(2), &mut Counter::default())
+                .unwrap(),
+        );
+        let mut seen = Vec::new();
+        assert!(task.trace_frames(&mut |o| seen.push(o)));
+        assert_eq!(
+            seen.len(),
+            1,
+            "the object is reachable from the saved locals"
+        );
+        let r = match task.run().unwrap() {
+            RunOutcome::Complete(r) => r,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(r.view(), ValueView::Object);
+        assert_eq!(rt.heap_stats().objects, 1);
+    }
+
+    #[test]
+    fn host_errors_and_missing_host_fail_the_task() {
+        struct Refuse;
+        impl Host for Refuse {
+            fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+                Err(format!("refused op {}", call.op))
+            }
+        }
+        let rt = Runtime::new();
+        let one = rt.root(Primitive::Number(1.0));
+        let task = rt.spawn(&effect_loop(), &[&one]).unwrap();
+        let err = failed(task.run_with(Budget::UNLIMITED, &mut Refuse).unwrap());
+        assert_eq!(err.kind(), VmErrorKind::HostEffect);
+        assert_eq!(err.message(), "refused op 7");
+        assert_eq!(err.diagnostic().instruction, 9);
+        assert_eq!(err.diagnostic().opcode, Some(Opcode::HostEffect));
+        assert_eq!(task.status(), TaskStatus::Finished);
+
+        let task = rt.spawn(&effect_loop(), &[&one]).unwrap();
+        let err = failed(task.run().unwrap());
+        assert_eq!(err.kind(), VmErrorKind::HostEffect);
+        assert!(err.message().contains("no host"), "{}", err.message());
+    }
+
+    #[test]
+    fn host_effect_rejects_object_arguments_before_calling_the_host() {
+        let rt = Runtime::new();
+        let mut asm = Assembler::new();
+        asm.op(Opcode::NewObject).host_effect(0).op(Opcode::Return);
+        let task = rt
+            .spawn(&asm.finish("obj-effect", 0, 0).unwrap(), &[])
+            .unwrap();
+        let mut host = Counter::default();
+        let err = failed(task.run_with(Budget::UNLIMITED, &mut host).unwrap());
+        assert_eq!(err.kind(), VmErrorKind::UnsupportedOperand);
+        assert!(host.log.is_empty());
+    }
+
+    #[test]
+    fn host_effects_cannot_reenter_the_vm_or_open_heap_scopes() {
+        struct Reenter<'t> {
+            rt: Runtime,
+            own: Task,
+            other: Task,
+            other_guard: Option<RunGuard<'t>>,
+            seen: Vec<String>,
+        }
+        impl Host for Reenter<'_> {
+            fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+                self.seen.push(format!("{:?}", self.own.run().err()));
+                self.seen.push(format!("{:?}", self.other.run().err()));
+                let guard = self.other_guard.take().unwrap();
+                self.seen.push(format!("{:?}", failed(guard.run()).kind()));
+                let rt = self.rt.clone();
+                let scope = std::panic::catch_unwind(move || rt.scope(|_| ()));
+                self.seen.push(format!("scope ok: {}", scope.is_ok()));
+                Ok(Primitive::Null)
+            }
+        }
+        let rt = Runtime::new();
+        let one = rt.root(Primitive::Number(1.0));
+        let exe = effect_loop();
+        let own = rt.spawn(&exe, &[&one]).unwrap();
+        let other = rt.spawn(&exe, &[&one]).unwrap();
+        let third = rt.spawn(&exe, &[&one]).unwrap();
+        let mut host = Reenter {
+            rt: rt.clone(),
+            own: own.clone(),
+            other: other.clone(),
+            other_guard: Some(third.try_begin_run().unwrap()),
+            seen: Vec::new(),
+        };
+        let outcome = own.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert_eq!(complete(outcome), ValueView::Null);
+        assert_eq!(
+            host.seen,
+            [
+                "Some(InsideHostEffect)",
+                "Some(InsideHostEffect)",
+                "HostEffect",
+                "scope ok: false",
+            ]
+        );
+        // The untouched task is still runnable once no effect is executing;
+        // the one entered through a pre-acquired guard was failed.
+        drop(host);
+        assert_eq!(other.status(), TaskStatus::Ready);
+        assert_eq!(third.status(), TaskStatus::Finished);
+        rt.scope(|_| ());
     }
 }

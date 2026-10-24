@@ -98,6 +98,11 @@ impl Assembler {
         self.op(Opcode::SetLocal).u16(index)
     }
 
+    /// Emit `HostEffect` with the host-defined operation selector `op`.
+    pub fn host_effect(&mut self, op: u16) -> &mut Self {
+        self.op(Opcode::HostEffect).u16(op)
+    }
+
     pub fn jump(&mut self, label: Label) -> &mut Self {
         self.branch(Opcode::Jump, label)
     }

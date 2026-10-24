@@ -50,7 +50,16 @@ impl Runtime {
 
     /// Open a scope for host access to heap values. [`Local`](crate::Local)
     /// handles created in it cannot escape `f`; see [`crate::heap::roots`].
+    ///
+    /// # Panics
+    ///
+    /// When called from inside a leaf host effect, which may not access or
+    /// allocate heap values (see [`crate::host`]).
     pub fn scope<R>(&self, f: impl for<'s> FnOnce(&Scope<'s>) -> R) -> R {
+        assert!(
+            !crate::host::inside_effect(),
+            "a leaf host effect may not open a heap scope"
+        );
         let scope = Scope::new(&self.0.heap);
         f(&scope)
     }

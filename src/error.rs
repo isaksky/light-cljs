@@ -20,6 +20,9 @@ pub enum VmErrorKind {
     /// A VM invariant was violated at run time. Validation makes this
     /// unreachable; it exists so a bug fails the task instead of panicking.
     Internal,
+    /// A leaf host effect reported an error, or the run had no host
+    /// ([`Task::run`](crate::Task::run) supplies none).
+    HostEffect,
 }
 
 /// Where a failure happened.
