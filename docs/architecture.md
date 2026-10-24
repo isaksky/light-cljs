@@ -2780,6 +2780,27 @@ those of ordinary objects; virtual properties introduce no heap edges.
   catchability and preserved-identity cases are synthetic fixtures, not
   light-cljs output. Existing lowering and VM behavior satisfy these cases;
   no engine change is required.
+
+- Resource-management fixture (clj-quickjs-242):
+  `tests/fixtures/js/quickjs_test_language_using.js` extracts lines 1-32 and
+  677-993 of `research/quickjs/tests/test_language.js`, with calls from
+  1022-1023, at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+  (VERSION 2026-06-04). The fixture retains the full QuickJS MIT notice from
+  `research/quickjs/LICENSE`. Helpers and `test_await_using` are unchanged.
+  `test_using` is adapted: the writes to
+  `SuppressedError.prototype.constructor` at upstream lines 866-869 and 882
+  are wrapped in `assert_throws(TypeError, function() {...})`, honoring the
+  immutable-intrinsics user decision from clj-quickjs-234. Every original
+  assertion and expected value is retained; no other upstream lines change.
+  `tests/exceptions.rs::quickjs_using_cases_pass` compiles in sloppy mode and
+  runs bounded instruction slices, collecting between yields. It requires
+  normal completion and an empty unhandled-rejection report at quiescence.
+  The negative control changes one sync expectation and one async expectation
+  independently. The async control observes the Error and its exact assertion
+  message through a host effect in the final catch before rethrowing the same
+  Error, then requires one unhandled rejection. These are synthetic fixtures,
+  not light-cljs output. No engine representation or syntax is changed.
+
 - Sloppy function-expression name stores (clj-quickjs-96):
   `tests/js_functions.rs::sloppy_assignment_to_function_expression_name_is_ignored`
   adapts the two non-eval sloppy cases of

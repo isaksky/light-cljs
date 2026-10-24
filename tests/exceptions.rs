@@ -1,7 +1,8 @@
 //! `throw`, `try`/`catch`/`finally` and completion records compiled from
 //! JavaScript source (clj-quickjs-11). Programs are JavaScript source:
-//! inline synthetic snippets (not light-cljs output) and one adapted QuickJS
-//! test (`fixtures/js/quickjs_test_loop_try_catch.js`, with its notice).
+//! inline synthetic snippets (not light-cljs output) and adapted QuickJS
+//! tests (`fixtures/js/quickjs_test_{loop_try_catch,language_using}.js`,
+//! each with its notice).
 //!
 //! Effects are observed through a recording host: `__rt.effect(1, x)` logs
 //! `x` and returns it.
@@ -122,6 +123,90 @@ fn quickjs_try_catch_fixture_detects_a_wrong_result() {
         e.message(),
         "uncaught exception: Error: assertion failed: got |tfag|, expected |tfgx| (catch)"
     );
+}
+
+// Adapted QuickJS text; synthetic fixture, not light-cljs output.
+// test_using wraps its two SuppressedError.prototype.constructor assignments
+// in assert_throws(TypeError, ...), respecting immutable realm intrinsics
+// (user decision, clj-quickjs-234). Original assertions/expected values remain.
+// test_await_using and all helpers are unmodified upstream text.
+const QUICKJS_USING: &str = include_str!("fixtures/js/quickjs_test_language_using.js");
+
+fn run_quickjs_using(
+    rt: &Runtime,
+    src: &str,
+    host: &mut dyn Host,
+) -> (RunOutcome, clj_quickjs::UnhandledRejections) {
+    // Preserve upstream's non-strict script mode (clj-quickjs-95).
+    let executable = compile_script_with("quickjs_test_language_using", src, ScriptOptions::SLOPPY)
+        .expect("the QuickJS fixture compiles");
+    assert!(!executable.is_strict());
+    let task = rt.spawn(&executable, &[]).unwrap();
+    // Complete includes draining Promise jobs. Collect between short slices
+    // to exercise resource records, errors and async disposal continuations.
+    for _ in 0..10_000 {
+        let outcome = task.run_with(Budget::instructions(100), host).unwrap();
+        if matches!(outcome, RunOutcome::Yielded) {
+            rt.collect().unwrap();
+        } else {
+            return (outcome, task.unhandled_rejections());
+        }
+    }
+    panic!("using fixture exceeded its instruction bound");
+}
+
+#[test]
+fn quickjs_using_cases_pass() {
+    let rt = Runtime::new();
+    let (outcome, report) = run_quickjs_using(&rt, QUICKJS_USING, &mut Log::default());
+    let RunOutcome::Complete(value) = outcome else {
+        panic!("expected normal fixture completion, got {outcome:?}");
+    };
+    // The last expression is the Promise returned by the upstream catch call.
+    assert_eq!(value.view(), ValueView::Object);
+    assert!(report.entries.is_empty(), "{report:?}");
+    assert_eq!(report.dropped, 0);
+}
+
+#[test]
+fn quickjs_using_fixture_detects_a_wrong_result() {
+    let rt = Runtime::new();
+    let sync_assertion = "assert(disposed, 1);";
+    // Change only the first such assertion (null/undefined resources).
+    assert_eq!(QUICKJS_USING.matches(sync_assertion).count(), 3);
+    let broken = QUICKJS_USING.replacen(sync_assertion, "assert(disposed, 2);", 1);
+    let (outcome, report) = run_quickjs_using(&rt, &broken, &mut Log::default());
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("expected an uncaught assertion Error, got {outcome:?}");
+    };
+    assert_eq!(error.kind(), VmErrorKind::Thrown);
+    assert!(
+        error.message().contains("Error: assertion failed"),
+        "{error}"
+    );
+    assert!(report.entries.is_empty(), "{report:?}");
+    assert_eq!(report.dropped, 0);
+
+    let async_assertion = "assert(ok, true);";
+    assert_eq!(QUICKJS_USING.matches(async_assertion).count(), 1);
+    let broken = QUICKJS_USING.replace(async_assertion, "assert(ok, false);");
+    // Observe the assertion Error inside its owning task, then rethrow the
+    // same value just as the original catch does. Explicit JS Error values
+    // have no Rooted::error diagnostic and cannot be read by another task.
+    let catch = ".catch(e => { throw e; });";
+    assert_eq!(broken.matches(catch).count(), 1);
+    let broken = broken.replace(
+        catch,
+        ".catch(e => { __rt.effect(1, e instanceof Error && e.message === 'assertion failed: got |true|, expected |false|' ? 1 : 0); throw e; });",
+    );
+    let rt = Runtime::new();
+    let mut log = Log::default();
+    let (outcome, report) = run_quickjs_using(&rt, &broken, &mut log);
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(report.entries.len(), 1, "{report:?}");
+    assert_eq!(report.dropped, 0);
+    assert_eq!(report.entries[0].reason.view(), ValueView::Object);
+    assert_eq!(log.0, vec![1.0], "rejection is the assertion Error");
 }
 
 #[test]

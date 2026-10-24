@@ -1357,3 +1357,16 @@ These are adapted QuickJS test text, synthetic fixtures, not light-cljs output.
 `tests/quickjs_objects.rs::quickjs_object_cases_run_unmodified` checks embedded
 upstream line counts and runs all eleven cases independently with the original
 script modes, bounded instruction slices and collection between slices.
+
+### Resource-management fixture (clj-quickjs-242)
+
+`tests/fixtures/js/quickjs_test_language_using.js` adapts lines 1-32 and 677-993,
+with calls from 1022-1023, of `research/quickjs/tests/test_language.js` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04). Its header
+retains the full copyright/MIT notice from `research/quickjs/LICENSE` and lists
+the only adaptations: wrapping the two `SuppressedError.prototype.constructor`
+assignments in TypeError assertions because realm intrinsics remain immutable.
+All original assertions and expected values are unchanged; helpers and
+`test_await_using` are byte-for-byte upstream. The Rust driver in
+`tests/exceptions.rs` is original. This is synthetic fixture text, not
+light-cljs output; no QuickJS implementation code is copied or wrapped.
