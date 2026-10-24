@@ -1594,3 +1594,47 @@ fn array_from_iterator_waits_on_dependency() {
         assert_eq!(task.dependency_log().edges(), &[expected]);
     }
 }
+
+/// Synthetic fixture, not light-cljs output. Dependency failure is an
+/// exception from the mapper; consumer cancellation discards the native
+/// boundary and executes only the callback's ordinary finally cleanup.
+#[test]
+fn array_from_mapper_failure_and_cancellation() {
+    let src = "let o = {next() { return {value: 1}; }, return() { __rt.effect(2, 5); return {}; }}; o[Symbol.iterator] = function() { return this; }; let caught = 0; try { Array.from(o, function() { try { __rt.need(5, 3); } finally { __rt.effect(2, 9); } }); } catch(e) { caught = 17; } caught";
+    let rt = Runtime::new();
+    let exe = compile_script("array-from-failure", src).unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let expected = key(&rt, NUMBER);
+    assert_eq!(waiting(run(&task, &mut host)), expected);
+    let request = one_request(&task, expected);
+    let error = rt.root(Primitive::Number(42.0));
+    let wakeups = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Failed(&error),
+        )
+        .unwrap();
+    rt.collect().unwrap();
+    assert_eq!(number(run(&only_runnable(wakeups), &mut host)), 17.0);
+    assert_eq!(host.reports, [9.0, 5.0]);
+
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let expected = key(&rt, NUMBER);
+    assert_eq!(waiting(run(&task, &mut host)), expected);
+    let request = one_request(&task, expected);
+    let Cancel::Runnable(cancelled) = task.cancel() else {
+        panic!("runnable cancellation");
+    };
+    assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+    assert_eq!(host.reports, [9.0]);
+    rt.collect().unwrap();
+    assert!(
+        publish_number(&rt, &request, 7.0)
+            .into_runnable()
+            .is_empty()
+    );
+}
