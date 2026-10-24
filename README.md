@@ -2707,8 +2707,8 @@ string. Description conversion can yield, wait, survive GC and migrate.
 Tests: `cargo test --test js_source symbol_`,
 `cargo test --test publication symbols_publish_with_identity`,
 `cargo test --lib vm::keys::tests::symbol_keys_follow_all_strings_in_creation_order`.
-Symbol.prototype, wrappers, other well-known symbols and
-protocol dispatch remain deferred.
+Symbol.prototype and wrappers are supported below (clj-quickjs-129).
+Other well-known symbols and general protocol dispatch remain deferred.
 
 ### JSON.stringify (clj-quickjs-160/-161)
 
@@ -2739,7 +2739,8 @@ registry owns its immutable symbol leaves until runtime heap drop, across GC.
 Tests: `cargo test --test js_source symbol_registry`,
 `cargo test --test executor symbol_registry_is_shared_across_tasks`, and
 `cargo test --test gc_roots symbol_registry_retains_unreferenced_symbols_across_collection`.
-Symbol wrappers and further well-known protocols remain deferred above.
+Symbol wrappers are supported below (clj-quickjs-129); further well-known
+protocols remain deferred above.
 
 JavaScript Map (clj-quickjs-169): `new Map()` (also null/undefined), `set`,
 `get`, `has`, `delete`, `clear` and the inherited `size` getter are supported.
@@ -3336,9 +3337,8 @@ existing array limit. Tests: `cargo test --test js_source array_from_` and
 `cargo test --test need array_from_iterator_waits_on_dependency`.
 Deferred: custom/subclass and bound constructor receivers through
 `Array.from.call(C, ...)` explicitly fail with UnsupportedOperand. Ordinary
-`Array.from` and nonconstructor receivers produce plain arrays. Boolean and
-Symbol wrapper prototypes remain unavailable; their primitives produce empty
-arrays.
+`Array.from` and nonconstructor receivers produce plain arrays. Boolean
+wrappers remain unavailable; Boolean and Symbol primitives produce empty arrays.
 
 ### Generator execution (clj-quickjs-243)
 
@@ -3395,7 +3395,7 @@ resumable comparator, returning the receiver. Undefined values precede trailing
 holes; inherited indices are included. Comparators, coercions, getters and
 setters may wait, yield and migrate. Snapshot collection, merging, string
 flattening/comparison, writes and deletion are budgeted native steps.
-Deferred: typed-array `sort`, `toSorted`, and Boolean/Symbol/BigInt receiver
+Deferred: typed-array `sort`, `toSorted`, and Boolean/BigInt receiver
 wrappers (explicit UnsupportedOperand, as for generic array string methods).
 
 ### Generator operands and exception handlers (clj-quickjs-244)
@@ -3652,3 +3652,31 @@ Checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_ref -- --test-threa
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_ref -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc kept_objects -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --test publication weak_refs -- --test-threads=3`.
+
+
+### Symbol prototype and wrappers (clj-quickjs-129)
+
+Symbol primitives inherit `Symbol.prototype` for reads and calls, preserving
+primitive `this` without allocating a wrapper. `toString()` returns the UTF-16
+safe descriptive string; `valueOf()` and `[Symbol.toPrimitive]()` return the
+symbol; the `description` getter distinguishes missing and empty descriptions.
+Incompatible receivers, including `Symbol.prototype` itself, throw TypeError.
+`Symbol.prototype.constructor` is `Symbol`.
+
+`Object(symbol)` creates a fresh task-owned ordinary object with immutable
+`[[SymbolData]]` and prototype `Symbol.prototype`; `typeof` is `"object"`.
+Wrappers support ordinary properties, prototype changes and freezing; publication
+rejects them and foreign tasks cannot read them. Their internal symbol identity
+participates in precise GC, including WeakMap key liveness.
+
+`String(symbol)` gives `"Symbol(description)"`. Implicit symbol string/numeric
+conversion and `String(Object(symbol))` throw TypeError. Symbol wrappers consult
+`[Symbol.toPrimitive]` before ordinary conversion methods, using resumable getter
+and callback frames. General object protocol dispatch, generic
+`Object.prototype.toString` tag consumption and Boolean/BigInt wrappers remain
+explicit gaps.
+
+Tests: `cargo test --test js_source symbol_`,
+`cargo test --test js_source primitive_wrappers_survive_wait_collection_and_migration`,
+`cargo test --test gc weak_map_symbol_keys_follow_traced_reachability`,
+`cargo test --test gc_roots realm_intrinsics_retain`.

@@ -336,12 +336,12 @@ pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
 /// Where a read of `key` on the primitive `base` continues once its
 /// wrapper's own properties ([`string_own_property`]) lack it (module docs,
 /// "Primitive bases"): `Number.prototype` for a number, `String.prototype`
-/// for a string, building the realm if needed. A boolean fails with
+/// for a string, `Symbol.prototype` for a symbol, building the realm if needed. A boolean fails with
 /// `UnsupportedOperand` until `Boolean.prototype` exists (clj-quickjs-39);
 /// `undefined`/`null` are a catchable `TypeError`.
 fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
     let intrinsics = match base {
-        Value::Number(_) | Value::String(_) | Value::BigInt(_) => {
+        Value::Number(_) | Value::String(_) | Value::BigInt(_) | Value::Symbol(_) => {
             realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         }
         _ => return Err(primitive_base(base, key, Access::Read)),
@@ -916,7 +916,11 @@ pub(crate) fn prepare_put(
     let Value::Object(mut id) = *base else {
         if matches!(
             base,
-            Value::Number(_) | Value::String(_) | Value::Bool(_) | Value::BigInt(_)
+            Value::Number(_)
+                | Value::String(_)
+                | Value::Bool(_)
+                | Value::BigInt(_)
+                | Value::Symbol(_)
         ) && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
         {
             // Boolean.prototype is not implemented yet. Its standard own

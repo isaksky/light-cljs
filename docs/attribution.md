@@ -1041,3 +1041,17 @@ synthetic timer fixtures exercise collections after job boundaries. Other fixtur
 are synthetic, not light-cljs output. `js_weakref_constructor`,
 `js_weakref_deref`, `js_weakref_is_target` and `js_weakref_proto_funcs` in
 `research/quickjs/quickjs.c` were semantic references only; no C code was ported.
+
+
+## Symbol prototype and wrappers (clj-quickjs-129)
+
+The descriptive-string, valueOf and wrapper rows in
+`tests/js_source.rs::symbol_prototype_and_wrappers` adapt
+`research/quickjs/tests/test_builtin.js::test_symbol` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS MIT copyright/license notice is retained in the same Rust
+file above `string_code_unit_access`. Other cases are synthetic fixtures,
+not light-cljs output. The implementation independently follows the semantics
+of `js_thisSymbolValue`, `js_symbol_toString`, `js_symbol_valueOf`,
+`js_symbol_get_description`, `js_symbol_proto_funcs` and `JS_ToObject` in
+`research/quickjs/quickjs.c` at that revision; no C source was copied.

@@ -398,6 +398,12 @@ pub(crate) enum Builtin {
     SimClearTimeout,
     WeakRef,
     WeakRefDeref,
+
+
+    SymbolPrototypeToString,
+    SymbolPrototypeValueOf,
+    SymbolPrototypeDescription,
+    SymbolPrototypeToPrimitive,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -532,6 +538,10 @@ impl Builtin {
             Builtin::Symbol => "Symbol",
             Builtin::SymbolFor => "for",
             Builtin::SymbolKeyFor => "keyFor",
+            Builtin::SymbolPrototypeToString => "toString",
+            Builtin::SymbolPrototypeValueOf => "valueOf",
+            Builtin::SymbolPrototypeDescription => "get description",
+            Builtin::SymbolPrototypeToPrimitive => "[Symbol.toPrimitive]",
             Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
@@ -712,6 +722,10 @@ impl Builtin {
 
             Builtin::Symbol => 0,
             Builtin::SymbolFor | Builtin::SymbolKeyFor => 1,
+            Builtin::SymbolPrototypeToString
+            | Builtin::SymbolPrototypeValueOf
+            | Builtin::SymbolPrototypeDescription => 0,
+            Builtin::SymbolPrototypeToPrimitive => 1,
             Builtin::ObjectIs => 2,
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
@@ -999,6 +1013,7 @@ pub(crate) fn call(
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
             v @ Value::Object(_) => Ok(v),
+            v @ Value::Symbol(_) => symbol_wrapper(heap, task, &v),
             v => Err(Fault::Unsupported(format!(
                 "Object() of a {} needs a wrapper object, which is not supported",
                 v.type_name()
@@ -1026,6 +1041,7 @@ pub(crate) fn call(
                 this.type_name()
             ))),
             Value::Object(_) => Ok(this.clone()),
+            Value::Symbol(_) => symbol_wrapper(heap, task, this),
             v => Err(Fault::Unsupported(format!(
                 "valueOf on a {} needs a wrapper object, which is not supported",
                 v.type_name()
@@ -1084,6 +1100,17 @@ pub(crate) fn call(
                 .unwrap_or(Value::Undefined)),
             _ => Err(Fault::TypeError("Symbol.keyFor requires a symbol".into())),
         },
+        Builtin::SymbolPrototypeToString => {
+            symbol_descriptive_string(&this_symbol_value(heap, task, this)?).map(Value::String)
+        }
+        Builtin::SymbolPrototypeValueOf | Builtin::SymbolPrototypeToPrimitive => {
+            this_symbol_value(heap, task, this).map(Value::Symbol)
+        }
+        Builtin::SymbolPrototypeDescription => Ok(this_symbol_value(heap, task, this)?
+            .description()
+            .cloned()
+            .map(Value::String)
+            .unwrap_or(Value::Undefined)),
         Builtin::BigIntPrototypeToString => Err(Fault::Internal(
             "BigInt formatting requires a resumable frame",
         )),
@@ -1540,6 +1567,41 @@ fn this_string_value(
     }
 }
 
+fn symbol_descriptive_string(symbol: &crate::value::JsSymbol) -> Result<JsString, Fault> {
+    JsString::from("Symbol(")
+        .concat(symbol.description().unwrap_or(&JsString::from("")))
+        .and_then(|s| s.concat(&JsString::from(")")))
+        .ok_or(Fault::OutOfMemory("string too long"))
+}
+
+/// thisSymbolValue accepts a symbol or its own branded wrapper, never a prototype slot.
+fn this_symbol_value(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+) -> Result<crate::value::JsSymbol, Fault> {
+    if let Value::Symbol(symbol) = this {
+        return Ok(symbol.clone());
+    }
+    match wrapper_data(heap, task, this)? {
+        Some(PrimitiveData::Symbol(symbol)) => Ok(symbol),
+        _ => Err(Fault::TypeError("not a symbol".into())),
+    }
+}
+
+/// ToObject(symbol), following the task-owned Number/String wrapper pattern.
+fn symbol_wrapper(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
+    let Value::Symbol(symbol) = value else {
+        return Err(Fault::Internal("not a symbol primitive"));
+    };
+    let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let object = OrdinaryObject::with_prototype(task, realm.symbol_prototype)
+        .with_primitive_data(PrimitiveData::Symbol(symbol.clone()));
+    heap.alloc(HeapObject::Plain(object))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
 /// Inspect the receiver's own internal slots, never its prototype's slots.
 /// Owned wrappers obey the same read boundary as their ordinary properties.
 pub(super) fn wrapper_data(
@@ -1620,13 +1682,7 @@ pub(crate) fn primitive_constructor(
             None => 0.0,
         }),
         Builtin::String => Value::String(match args.first() {
-            Some(Value::Symbol(s)) if !construct => {
-                let prefix = JsString::from("Symbol(");
-                prefix
-                    .concat(s.description().unwrap_or(&JsString::from("")))
-                    .and_then(|s| s.concat(&JsString::from(")")))
-                    .ok_or(Fault::OutOfMemory("string too long"))?
-            }
+            Some(Value::Symbol(s)) if !construct => symbol_descriptive_string(s)?,
             Some(value) => to_js_string(value)?,
             None => JsString::from(""),
         }),
@@ -1681,9 +1737,7 @@ pub(crate) fn array_string_receiver(
         Value::Bool(_) => Err(Fault::Unsupported(
             "Boolean wrapper objects are not supported".into(),
         )),
-        Value::Symbol(_) => Err(Fault::Unsupported(
-            "Symbol wrapper objects are not supported".into(),
-        )),
+        Value::Symbol(_) => symbol_wrapper(heap, task, this),
         Value::BigInt(_) => Err(Fault::Unsupported(
             "BigInt wrapper objects are not supported".into(),
         )),
@@ -1927,6 +1981,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",
+                    Some(PrimitiveData::Symbol(_)) => "Symbol",
                     None => "Object",
                 }),
                 HeapObject::Vector(_)

@@ -261,12 +261,12 @@ pub(crate) enum SetOutcome {
     Setter(Value),
 }
 
-/// The internal data of a Number or String wrapper (clj-quickjs-72).
-/// Neither variant has heap edges: strings own immutable `JsString` storage.
+/// Immutable internal wrapper data. Symbols report identity edges for weak-key GC.
 #[derive(Clone, Debug)]
 pub(crate) enum PrimitiveData {
     Number(f64),
     String(JsString),
+    Symbol(crate::value::JsSymbol),
 }
 
 /// Keep service slots behind one pointer so adding a service does not enlarge
@@ -295,7 +295,7 @@ pub(crate) struct OrdinaryObject {
     /// Key to position in `entries`; present once there are more than
     /// [`INDEX_THRESHOLD`] entries.
     index: Option<HashMap<PropertyKey, u32>>,
-    /// `[[NumberData]]` / `[[StringData]]`, initialized before allocation.
+    /// `[[NumberData]]` / `[[StringData]]` / `[[SymbolData]]`, initialized before allocation.
     primitive_data: Option<PrimitiveData>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
@@ -894,7 +894,10 @@ impl Trace for OrdinaryObject {
         if let Some(iterator) = &self.iterator {
             iterator.trace(visit);
         }
-        // PrimitiveData and DateValue contain only f64 / JsString, with no heap edges.
+        if let Some(PrimitiveData::Symbol(symbol)) = &self.primitive_data {
+            visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
+        }
+        // Other primitive data and DateValue have no heap edges.
         // locale_data owns Rust strings and also contains no heap edges.
         // NumberFormat options own strings/static data; the cached bound
         // callable is a heap edge, including its cycle back to this object.

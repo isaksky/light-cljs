@@ -3321,10 +3321,10 @@ with identical values in every task. String(symbol) returns
 ToString (including templates and concatenation) and ToNumber throw catchable
 TypeError. Source positions use the existing operator-token convention.
 
-Explicit gaps: Symbol.prototype, primitive property reads/wrappers,
-additional well-known symbols and their protocol dispatch remain
-deferred. Exposing Symbol.toPrimitive and Symbol.hasInstance does not yet make
-coercion or instanceof consult them; iteration protocols remain separate work.
+Symbol.prototype, primitive property reads and wrappers are supported below
+(clj-quickjs-129). Explicit gaps: additional well-known symbols and general
+protocol dispatch remain deferred. Symbol wrappers consult Symbol.toPrimitive;
+other objects and instanceof do not yet consult the corresponding protocols.
 Computed keys in object literals execute (clj-quickjs-233).
 
 Synthetic fixtures, not light-cljs output:
@@ -3434,7 +3434,8 @@ either method throws TypeError. Registry entries survive GC and live until
 the runtime heap is dropped. Separate runtimes own separate registries.
 
 Rejected forms and explicit gaps: the existing syntax rejections are unchanged;
-Symbol wrappers and well-known protocol dispatch remain deferred above.
+Symbol wrappers are supported below (clj-quickjs-129); general well-known
+protocol dispatch remains deferred above.
 The shared realm's existing immutable-intrinsic policy applies to both methods.
 
 Synthetic fixture, not light-cljs output:
@@ -4509,8 +4510,8 @@ Array-like lengths use resumable ToNumber then ToLength, with RangeError above
 
 Explicit gaps: `Array.from.call(C, ...)` with custom/subclass or bound
 constructors fails explicitly with UnsupportedOperand pending subclass support.
-Array and nonconstructor receivers return plain arrays. Boolean and Symbol
-wrapper prototypes are unavailable in the subset; those primitives have no
+Array and nonconstructor receivers return plain arrays. Boolean wrappers
+are unavailable; Boolean and Symbol primitives have no
 observable length/iterator and produce empty arrays. Async iteration and
 `Array.fromAsync` remain unsupported.
 
@@ -4571,12 +4572,12 @@ values compare after all defined values without invoking the comparator.
 Sorted values are written back with throwing Set operations, then remaining
 indices are deleted with throwing Delete operations; length is preserved and
 the receiver is returned. Object coercions, accessors and callbacks execute as
-resumable VM calls. Array-like object receivers and Number/String wrappers
+resumable VM calls. Array-like object receivers and Number/String/Symbol wrappers
 are supported. Long default comparisons flatten ropes and compare in bounded
 chunks, beyond the general synchronous rope limitation above.
 
 Explicit gaps: typed-array `sort` and `toSorted` remain deferred. Generic sort
-on Boolean/Symbol/BigInt primitives explicitly rejects unavailable wrappers.
+on Boolean/BigInt primitives explicitly rejects unavailable wrappers.
 
 ## Generator suspension examples (clj-quickjs-244)
 
@@ -4949,3 +4950,42 @@ instances. With optional simulated host bindings installed, `std.gc()` preserves
 the active job's kept objects, and `os.setTimeout()` starts a later job after
 the kept set clears. This adds no FinalizationRegistry API (-177) or automatic
 collection trigger.
+
+### Symbol prototype and wrapper execution (clj-quickjs-129)
+
+Syntax uses existing member access and calls: `symbol.toString()`,
+`symbol.valueOf()`, `symbol.description`, `symbol[Symbol.toPrimitive](hint)`
+and `Object(symbol)`. No grammar or rejected syntax changes are needed;
+`new Symbol()` remains accepted syntax that throws TypeError at runtime.
+
+Execution: primitive reads start at the immutable realm `Symbol.prototype`
+with primitive `this`. `toString` returns `Symbol(description)` without losing
+UTF-16 code units; `valueOf` and `[Symbol.toPrimitive]` return the symbol.
+The description getter returns undefined only for a missing description.
+These methods also accept branded Symbol wrappers; other receivers, including
+Symbol.prototype and objects merely inheriting from it, throw TypeError.
+`Object(symbol)` creates distinct mutable task-owned objects with `typeof`
+`"object"`, an immutable internal symbol slot and the Symbol prototype.
+
+Conversion on Symbol wrappers reads/calls `[Symbol.toPrimitive]` with the
+`string`, `number` or `default` hint in ordinary resumable VM frames. A nullish
+method falls back to ordinary conversion; non-callable methods and object
+results throw TypeError. `String(symbol)` alone permits direct descriptive
+conversion. Implicit ToString/ToNumber of a symbol, including the symbol
+returned by default wrapper conversion, throws catchable TypeError at the
+existing operator-token position.
+
+Explicit gaps: general object Symbol.toPrimitive dispatch and general
+Object.prototype.toString Symbol.toStringTag consumption remain deferred.
+Boolean/BigInt wrappers and sloppy-function receiver boxing remain deferred.
+
+Synthetic fixture, not light-cljs output:
+
+```js accept
+let sym = Symbol('d');
+let boxed = Object(sym);
+sym.toString() === 'Symbol(d)' && String(sym) === 'Symbol(d)';
+boxed.valueOf() === sym && boxed.description === 'd';
+Object.getPrototypeOf(boxed) === Symbol.prototype;
+Symbol().description === undefined && typeof boxed === 'object';
+```

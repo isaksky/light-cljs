@@ -856,7 +856,7 @@ impl Stringifier {
                         self.stage = S::SpaceConverted;
                         return Ok(A::ToString(self.space.clone()));
                     }
-                    None => {}
+                    None | Some(PrimitiveData::Symbol(_)) => {}
                 }
                 self.set_gap();
             }
@@ -940,7 +940,7 @@ impl Stringifier {
                         self.stage = S::Converted;
                         return Ok(A::ToString(self.value.clone()));
                     }
-                    None => {}
+                    None | Some(PrimitiveData::Symbol(_)) => {}
                 }
             }
             S::Converted => {

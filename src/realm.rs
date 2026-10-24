@@ -45,6 +45,7 @@
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
+//! | `Symbol.prototype` (clj-quickjs-129) | ordinary intrinsic without primitive data; symbol reads start here | `constructor`, `toString`, `valueOf`, `description` getter, non-writable `[Symbol.toPrimitive]` and `[Symbol.toStringTag]` |
 //! | String code-unit methods (clj-quickjs-143) | built-in functions | `String.prototype` has `charAt`, `charCodeAt`, `codePointAt`; `String` has `fromCharCode`, `fromCodePoint`; all have `length` (1), `name` |
 //! | String extraction/combination (clj-quickjs-145) | built-in functions | `String.prototype` has `substring`, `slice` (length 2), `concat`, `padStart`, `padEnd` (length 1); each has `name` |
 //! | `parseInt`, `parseFloat` (clj-quickjs-148) | built-in functions, also on `Number` with the same identities | `length` (2, 1), `name` |
@@ -416,6 +417,7 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_collator_bound: ObjectId,
     pub(crate) intl_date_time_format_prototype: ObjectId,
     pub(crate) intl_date_time_format_bound: ObjectId,
+    pub(crate) symbol_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -466,7 +468,8 @@ impl Intrinsics {
     /// The prototype a property access on the primitive `v` starts at, as
     /// if on its wrapper object, which is not allocated (clj-quickjs-73;
     /// QuickJS `JS_GetPrototypePrimitive`): `Number.prototype` for a
-    /// number, `String.prototype` for a string, `BigInt.prototype` for a BigInt.
+    /// number, `String.prototype` for a string, `BigInt.prototype` for a BigInt,
+    /// `Symbol.prototype` for a symbol.
     /// `None` for anything else
     /// (objects, `undefined`, `null`, and booleans until `Boolean.prototype`
     /// exists, clj-quickjs-39).
@@ -475,6 +478,7 @@ impl Intrinsics {
             Value::Number(_) => Some(self.number_prototype),
             Value::String(_) => Some(self.string_prototype),
             Value::BigInt(_) => Some(self.bigint_prototype),
+            Value::Symbol(_) => Some(self.symbol_prototype),
             _ => None,
         }
     }
@@ -1013,7 +1017,67 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let parse = b.function(Builtin::JsonParse, &[])?;
     b.add(json, "parse", parse, PropertyFlags::METHOD)?;
 
-    let symbol = b.function(Builtin::Symbol, &[])?;
+    let symbol_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(symbol_prototype);
+    let symbol = b.function(
+        Builtin::Symbol,
+        &[("prototype", symbol_prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(
+        symbol_prototype,
+        "constructor",
+        symbol,
+        PropertyFlags::METHOD,
+    )?;
+    for which in [
+        Builtin::SymbolPrototypeToString,
+        Builtin::SymbolPrototypeValueOf,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(
+            symbol_prototype,
+            which.name(),
+            method,
+            PropertyFlags::METHOD,
+        )?;
+    }
+    let getter = b.function(Builtin::SymbolPrototypeDescription, &[])?;
+    let description = heap.keys().intern(&JsString::from("description"))?;
+    let to_primitive = b.function(Builtin::SymbolPrototypeToPrimitive, &[])?;
+    let to_primitive_key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toPrimitive"))?;
+    let tag_key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(symbol_prototype, |object| {
+        let HeapObject::Plain(o) = object else {
+            return false;
+        };
+        o.define_own_property(
+            description,
+            &PropertyDescriptor {
+                get: Some(Value::Object(getter)),
+                set: Some(Value::Undefined),
+                enumerable: Some(false),
+                configurable: Some(true),
+                ..PropertyDescriptor::default()
+            },
+        ) == DefineOutcome::Done
+            && o.define_with(
+                to_primitive_key,
+                Value::Object(to_primitive),
+                PropertyFlags::FUNCTION_INFO,
+            )
+            && o.define_with(
+                tag_key,
+                Value::String(JsString::from("Symbol")),
+                PropertyFlags::FUNCTION_INFO,
+            )
+    })?
+    .then_some(())?;
     let symbol_for = b.function(Builtin::SymbolFor, &[])?;
     b.add(symbol, "for", symbol_for, PropertyFlags::METHOD)?;
     let symbol_key_for = b.function(Builtin::SymbolKeyFor, &[])?;
@@ -1265,6 +1329,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_collator_bound,
         intl_date_time_format_prototype,
         intl_date_time_format_bound,
+        symbol_prototype,
     })
 }
 

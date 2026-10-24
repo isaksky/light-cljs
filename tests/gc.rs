@@ -980,6 +980,7 @@ fn weak_map_symbol_keys_follow_traced_reachability() {
         "(function() { let o = {}; o[s] = 1; return o; })()",
         "{symbol: s}",
         "new Map().set(s, 1)",
+        "Object(s)",
         "function() { return s; }",
     ] {
         let rt = Runtime::new();
@@ -1007,6 +1008,7 @@ fn weak_map_symbol_keys_follow_traced_reachability() {
     }
     for value in [
         "s",
+        "Object(s)",
         "{symbol: s}",
         "(function() { let o = {}; o[s] = s; return o; })()",
     ] {

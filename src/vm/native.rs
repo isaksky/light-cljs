@@ -351,6 +351,40 @@ enum Hint {
     String,
 }
 
+/// Symbol wrappers consult @@toPrimitive before the ordinary method pair.
+/// General shared-object protocol dispatch remains deferred.
+#[derive(Clone, Copy, Debug)]
+enum SymbolMethod {
+    Pending,
+    Ordinary,
+    Getter,
+    Call,
+}
+
+fn call_symbol_method(
+    heap: &Heap,
+    stage: &mut SymbolMethod,
+    callee: Value,
+    receiver: Value,
+    hint: Hint,
+) -> Result<Action, Fault> {
+    if matches!(callee, Value::Null | Value::Undefined) {
+        *stage = SymbolMethod::Ordinary;
+        return Ok(Action::Continue);
+    }
+    dispatch::callee(heap, &callee)?;
+    *stage = SymbolMethod::Call;
+    Ok(Action::Call {
+        callee,
+        this: receiver,
+        args: vec![Value::String(JsString::from(match hint {
+            Hint::Default => "default",
+            Hint::Number => "number",
+            Hint::String => "string",
+        }))],
+    })
+}
+
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
@@ -538,6 +572,7 @@ enum NativeState {
         hint: Hint,
         method: usize,
         method_get: bool,
+        symbol_method: SymbolMethod,
     },
     StringSearch(crate::value::string::StringSearch),
     StringBuild(crate::value::string::StringBuild),
@@ -1005,6 +1040,7 @@ pub(crate) fn typed_array_write(
             hint: Hint::Number,
             method: 0,
             method_get: false,
+            symbol_method: SymbolMethod::Pending,
         },
     )?;
     Ok(true)
@@ -1115,6 +1151,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             hint,
             method: 0,
             method_get: false,
+            symbol_method: SymbolMethod::Pending,
         },
     });
     Ok(true)
@@ -1997,6 +2034,7 @@ fn start_builtin_slow(
             hint,
             method: 0,
             method_get: false,
+            symbol_method: SymbolMethod::Pending,
         },
     });
     Ok(true)
@@ -2291,6 +2329,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                     hint,
                     method: 0,
                     method_get: false,
+                    symbol_method: SymbolMethod::Pending,
                 },
             )?;
             Ok(Flow::Next)
@@ -3016,6 +3055,7 @@ impl NativeState {
                             hint: Hint::Number,
                             method: 0,
                             method_get: false,
+                            symbol_method: SymbolMethod::Pending,
                         };
                         Ok(Action::Continue)
                     }
@@ -3231,6 +3271,7 @@ impl NativeState {
                 hint,
                 method,
                 method_get,
+                symbol_method,
             } => {
                 if let Some(pending) = formatter {
                     let Some(text) = pending.advance() else {
@@ -3242,7 +3283,25 @@ impl NativeState {
                 match input {
                     Input::Start => {}
                     Input::CallResult(v) => {
-                        if *method_get {
+                        if matches!(symbol_method, SymbolMethod::Getter) {
+                            return call_symbol_method(
+                                heap,
+                                symbol_method,
+                                v,
+                                operands[*next].clone(),
+                                *hint,
+                            );
+                        }
+                        if matches!(symbol_method, SymbolMethod::Call) {
+                            if matches!(v, Value::Object(_)) {
+                                return Err(Fault::TypeError(
+                                    "cannot convert object to primitive value".into(),
+                                ));
+                            }
+                            operands[*next] = v;
+                            *symbol_method = SymbolMethod::Pending;
+                            *method = 0;
+                        } else if *method_get {
                             *method_get = false;
                             if dispatch::callee(heap, &v).is_ok() {
                                 return Ok(Action::Call {
@@ -3254,6 +3313,7 @@ impl NativeState {
                         } else if !matches!(v, Value::Object(_)) {
                             operands[*next] = v;
                             *method = 0;
+                            *symbol_method = SymbolMethod::Pending;
                         }
                     }
                     Input::Dependency(_) => {
@@ -3400,6 +3460,37 @@ impl NativeState {
                         }
                         *next += 1;
                         continue;
+                    }
+                    if matches!(symbol_method, SymbolMethod::Pending) {
+                        *symbol_method = SymbolMethod::Ordinary;
+                        if matches!(
+                            builtin::wrapper_data(heap, task, receiver)?,
+                            Some(crate::object::PrimitiveData::Symbol(_))
+                        ) {
+                            let key = property::Key::Symbol(crate::value::symbol::well_known(
+                                "toPrimitive",
+                            ));
+                            match property::read(heap, task, receiver, &key)? {
+                                Some(property::Read::Getter(callee)) => {
+                                    *symbol_method = SymbolMethod::Getter;
+                                    return Ok(Action::Call {
+                                        callee,
+                                        this: receiver.clone(),
+                                        args: vec![],
+                                    });
+                                }
+                                Some(property::Read::Value(callee)) => {
+                                    return call_symbol_method(
+                                        heap,
+                                        symbol_method,
+                                        callee,
+                                        receiver.clone(),
+                                        *hint,
+                                    );
+                                }
+                                None => {}
+                            }
+                        }
                     }
                     while *method < 2 {
                         if matches!(hint, Hint::Default)
@@ -3950,6 +4041,7 @@ mod tests {
         let pending = |concat_len| NativeState::Convert {
             formatter: None,
             method_get: false,
+            symbol_method: SymbolMethod::Pending,
             target: ConvertTarget::StringBuiltin {
                 which: builtin::Builtin::StringPrototypeConcat,
                 access: true,

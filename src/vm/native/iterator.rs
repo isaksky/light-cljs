@@ -312,7 +312,7 @@ impl State {
                 self.step(heap, task, Input::CallResult(method))
             }
             Stage::Method => {
-                if matches!(self.source, Value::Bool(_) | Value::Symbol(_)) {
+                if matches!(self.source, Value::Bool(_)) {
                     return Err(Fault::TypeError("value is not iterable".into()));
                 }
                 self.read(
@@ -366,9 +366,7 @@ impl State {
                 if self.done {
                     return self.result(heap, task, Value::Undefined, true);
                 }
-                if self.kind == Kind::Array
-                    && matches!(self.source, Value::Bool(_) | Value::Symbol(_))
-                {
+                if self.kind == Kind::Array && matches!(self.source, Value::Bool(_)) {
                     return self.result(heap, task, Value::Undefined, true);
                 }
                 if self.kind == Kind::String {

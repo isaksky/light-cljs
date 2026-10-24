@@ -4399,7 +4399,7 @@ String(symbol) alone uses the descriptive `Symbol(description)` string without
 losing UTF-16 code units; String(object) still uses ordinary ToString, even
 when that object's conversion returns a symbol.
 
-Symbol.prototype, wrappers, further well-known symbols
+Further well-known symbols
 and well-known protocol dispatch are deferred to their own pellets. This change
 exposes the three identities without changing iteration, instanceof or
 OrdinaryToPrimitive protocol lookup.
@@ -4513,7 +4513,8 @@ frames, including through dependency waits, GC and migration. The completed
 primitive undergoes ToString before registry access, so returning a symbol
 throws TypeError and returning undefined names the string "undefined".
 `keyFor` validates its argument without coercion before looking up its identity.
-Symbol.prototype and well-known protocol integration remain separate work.
+Symbol.prototype is supported below (clj-quickjs-129); general well-known
+protocol integration remains separate work.
 
 ## JavaScript Map objects (clj-quickjs-169)
 
@@ -6211,7 +6212,8 @@ Array-like lengths above the existing u32 array limit fail before reading any
 indices; arrays grow one element at a time rather than allocating the entire
 length up front. Custom/subclass and bound constructor receivers explicitly
 fail pending subclass support; Array/nonconstructor receivers create ordinary
-arrays. Boolean/Symbol primitive wrappers have no prototype support yet.
+arrays. Boolean primitive wrappers have no prototype support yet; Symbol
+prototype access is supported (clj-quickjs-129).
 The Array.from built-in and intrinsic allocation are appended to their existing
 registries, preserving earlier intrinsic identities.
 
@@ -7099,3 +7101,46 @@ start after the preceding job's kept set clears; jobs queued by a timer drain
 before the next timer, each with a fresh kept set. Tests cover object and symbol
 targets at these boundaries and collection during a timer's dependency wait,
 followed by migration. WeakRef itself adds no substitute host globals.
+
+
+## Symbol prototype and wrapper storage (clj-quickjs-129)
+
+`PrimitiveData::Symbol` appends immutable `[[SymbolData]]` to the existing
+Number/String wrapper representation in `OrdinaryObject` (`HeapObject::Plain`).
+`Object(symbol)` and supported ToObject consumers allocate an ordinary object
+owned by the current task with `Symbol.prototype`. No new heap kind or opcode
+is needed. `value::share::classify` continues to reject ordinary wrappers as
+task-owned even when frozen; `builtin::wrapper_data` enforces ownership before
+reading internal data. Prototype changes do not change the internal brand.
+
+The precise ordinary-object trace reports the stored symbol's `TraceEdge::Symbol`
+identity in addition to ordinary property/prototype edges. This keeps ephemeron
+values alive while a reachable wrapper retains their symbol key, and permits
+collection once the wrapper dies, including wrapper/value cycles. The immutable
+symbol body still uses the existing Arc storage boundary; Arc counts are not
+collector roots.
+
+The realm appends Symbol.prototype and four builtin functions: toString,
+valueOf, the description getter and [Symbol.toPrimitive]. The prototype is an
+ordinary immutable intrinsic without [[SymbolData]], so borrowing its branded
+methods on itself throws TypeError. Its constructor points back to Symbol.
+Description is a non-enumerable configurable accessor; [Symbol.toPrimitive]
+and [Symbol.toStringTag] are non-writable, non-enumerable, configurable data
+properties. All functions and the prototype enter the existing realm root
+inventory. Primitive property access starts at this prototype and retains the
+primitive receiver, allocating no temporary wrapper.
+
+`native::Convert` saves the Symbol-wrapper exotic lookup/getter/call stage.
+Only branded Symbol wrappers enter this protocol path; general shared-object
+Symbol.toPrimitive dispatch stays deferred. Each getter/method runs via an
+ordinary VM call action with the original receiver and hint, and can yield,
+wait, survive collection and migrate. Nullish methods fall back to the ordinary
+method pair; object results throw. String's direct primitive-symbol exception
+continues to apply only before object conversion. Descriptive strings reuse
+UTF-16 JsString concatenation rather than Rust display formatting.
+
+QuickJS semantic references (no C code copied): research/quickjs/quickjs.c
+`js_thisSymbolValue`, `js_symbol_toString`, `js_symbol_valueOf`,
+`js_symbol_get_description`, `js_symbol_proto_funcs`, `JS_ToObject`, revision
+7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. Adapted test rows and their retained
+license notice are recorded in docs/attribution.md.

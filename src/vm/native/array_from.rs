@@ -131,9 +131,9 @@ impl State {
         stage: Stage,
     ) -> Result<Action, Fault> {
         self.stage = stage;
-        // Boolean/Symbol prototypes are outside the current subset. Their
+        // Boolean prototypes are outside the current subset. Their
         // wrappers have neither length nor @@iterator; no getter is lost.
-        let read = if matches!(base, Value::Bool(_) | Value::Symbol(_)) {
+        let read = if matches!(base, Value::Bool(_)) {
             None
         } else {
             property::read(heap, task, &base, &key)?

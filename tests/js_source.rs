@@ -15983,7 +15983,11 @@ fn primitive_wrappers_survive_wait_collection_and_migration() {
         other => panic!("expected Complete, got {other:?}"),
     }
 
-    for constructor in ["new Number(7)", "new String('abc')"] {
+    for constructor in [
+        "new Number(7)",
+        "new String('abc')",
+        "Object(Symbol('abc'))",
+    ] {
         let owner = rt.spawn(&exe(constructor), &[]).unwrap();
         let RunOutcome::Complete(wrapper) = owner.run().unwrap() else {
             panic!("wrapper construction failed");
@@ -17060,6 +17064,108 @@ fn symbol_values() {
 /// Synthetic fixtures, not light-cljs output. The first row adapts
 /// QuickJS test_builtin.js::test_symbol at 7d1c13c5d8f8; its full MIT notice
 /// is retained at string_code_unit_access in this file.
+#[test]
+fn symbol_prototype_and_wrappers() {
+    for src in [
+        "let a = Symbol('abc'); String(a) === 'Symbol(abc)'",
+        "let a = Symbol('aaa'); a.valueOf() === a && a.toString() === 'Symbol(aaa)'",
+        "let a = Symbol('aaa'); let b = Object(a); b.valueOf() === a && b.toString() === 'Symbol(aaa)'",
+        "Symbol().toString() === 'Symbol()' && Symbol('').toString() === 'Symbol()' && Symbol('\\uD800').toString() === 'Symbol(\\uD800)'",
+        "Symbol('d').description === 'd' && Symbol().description === undefined && Symbol('').description === ''",
+        "let a = Symbol(); Object(a) !== Object(a) && typeof Object(a) === 'object' && Object(Object(a)).valueOf() === a",
+        "let a = Symbol('d'); let b = Object(a); b.description === 'd' && Object.getPrototypeOf(b) === Symbol.prototype && Object.getPrototypeOf(a) === Symbol.prototype && a.__proto__ === Symbol.prototype && Symbol.prototype.constructor === Symbol && Object.getPrototypeOf(Symbol.prototype) === Object.prototype",
+        "let a = Symbol(); let b = Object(a); a[Symbol.toPrimitive]('string') === a && b[Symbol.toPrimitive]('number') === a && b == a && a == b && b != Object(a)",
+        "let a = Symbol('d'); let b = Object(a); b.toString = function() { throw 'wrong toString'; }; b.valueOf = function() { throw 'wrong valueOf'; }; b == a && ({[b]: 7})[a] === 7",
+        "let d = Object.getOwnPropertyDescriptor(Symbol.prototype, 'description'); typeof d.get === 'function' && d.get.name === 'get description' && d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Symbol.prototype, Symbol.toPrimitive); !d.writable && !d.enumerable && d.configurable && d.value.name === '[Symbol.toPrimitive]' && d.value.length === 1",
+        "let d = Object.getOwnPropertyDescriptor(Symbol, 'prototype'); !d.writable && !d.enumerable && !d.configurable && Symbol.prototype.toString.length === 0 && Symbol.prototype.valueOf.length === 0",
+        "let s = Symbol('x'); Object.prototype.valueOf.call(s).valueOf() === s && Array.prototype.join.call(s) === '' && JSON.stringify(Object(s)) === '{}'",
+        "let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {value: null}); b.toString = function() { return 'fallback'; }; String(b) === 'fallback'",
+        "let b = Object(Symbol()); let p = {[Symbol.toPrimitive](hint) { return hint; }}; Object.setPrototypeOf(b, p); String(b) === 'string' && b + '' === 'default'",
+        "let s = Symbol('x'); let b = Object(s); b.x = 7; Object.freeze(b); Object.isFrozen(b) && b.x === 7 && b.valueOf() === s && b instanceof Symbol && Array.prototype.sort.call(s).valueOf() === s",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "Symbol.prototype.valueOf.call(1)",
+        "Symbol.prototype.toString.call({})",
+        "Symbol.prototype.valueOf()",
+        "Symbol.prototype.description",
+        "Object.getOwnPropertyDescriptor(Symbol.prototype, 'description').get.call({})",
+        "Symbol.prototype[Symbol.toPrimitive].call('s')",
+        "Symbol.prototype.valueOf.call(Object.create(Symbol.prototype))",
+        "Symbol.prototype.valueOf.call(new Number(1))",
+        "String(Object(Symbol('x')))",
+        "'' + Object(Symbol('x'))",
+        "`${Object(Symbol())}`",
+        "Number(Object(Symbol()))",
+        "new String(Object(Symbol()))",
+        "Symbol.keyFor(Object(Symbol.for('x')))",
+        "let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {value: 1}); String(b)",
+        "let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {value() { return {}; }}); String(b)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Each exotic getter and method
+/// suspends once; the wrapper keeps both its symbol and child alive.
+#[test]
+fn symbol_wrapper_conversion_waits_yields_collects_and_migrates() {
+    let rt = Runtime::new();
+    let source = r"
+        let b = Object(Symbol('held')); b.child = {n: 7}; let log = '';
+        Object.defineProperty(b, Symbol.toPrimitive, {get() {
+            log += 'g'; __rt.need(129, 1);
+            return function(hint) {
+                log += hint; __rt.need(129, 2);
+                return this.child.n + this.description.length;
+            };
+        }});
+        Number(b) === 11 && log === 'gnumber' && b.valueOf().description === 'held'
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Null);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("symbol wrapper conversion did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Registry rows adapt QuickJS
+/// test_builtin.js::test_symbol; see the license notice cited above.
 #[test]
 fn symbol_registry() {
     for src in [
