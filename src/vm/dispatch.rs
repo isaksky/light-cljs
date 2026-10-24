@@ -258,7 +258,7 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
 /// `"undefined"`, `"null"`, `"true"` / `"false"`, Number::toString in radix
 /// 10 ([`number_to_string`]), and a string itself (the same body). Objects
 /// are converted with hint string by native::Convert before this helper.
-fn to_js_string(v: &Value) -> Result<JsString, Fault> {
+pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
         Value::Undefined => JsString::from("undefined"),
@@ -527,8 +527,9 @@ fn prepend_args(bound: &mut Vec<Value>, args: Vec<Value>, max_args: usize) -> Re
 /// `Construct argc` (clj-quickjs-71; ECMAScript EvaluateNew steps 7-8,
 /// OrdinaryCreateFromConstructor; QuickJS `JS_CallConstructorInternal` and
 /// `js_get_prototype_from_ctor`, revision 7d1c13c5d8f8): the constructor and
-/// the arguments are the top operands. Only a function object whose code is
-/// an ordinary function is a constructor; anything else is a TypeError. The
+/// the arguments are the top operands. Number/String construct wrappers
+/// (clj-quickjs-72); otherwise only an ordinary function is a constructor.
+/// Anything else is a TypeError. For ordinary functions, the
 /// new object inherits from `f.prototype` when that is an object, else from
 /// `Object.prototype`, and becomes the `this` of a construct frame entered
 /// like a call; `VmState::leave` applies the return-override rule.
@@ -555,6 +556,14 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String))) => {
+            let [_, args @ ..] = top_operands(state, argc + 1)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            let result = builtin::primitive_constructor(heap, task, which, args, true)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
         Ok(_) => return Err(not_a_constructor(&f, "function")),
         Err(Fault::NotCallable(what)) => return Err(not_a_constructor(&f, what)),
         Err(fault) => return Err(fault),

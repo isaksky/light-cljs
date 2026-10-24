@@ -2580,11 +2580,11 @@ an unchanged live-object count), the same functions on every task
 (`(1).toString === Number.prototype.toString` everywhere), and the realm is
 built by the first primitive read, so `GetField`/`GetElem` stay poll points.
 The prototypes are ordinary intrinsics inheriting from `Object.prototype`
-rather than exotic Number/String objects; the two methods treat them as
-holding `+0` and `""` (`String.prototype` has its own `length` 0), and clj-quickjs-72 adds `[[NumberData]]` /
-`[[StringData]]` for wrapper objects. `Number` and `String` are built-in
-globals now (operands 1 and 2 of `get_builtin_global`) whose calls fail
-explicitly until clj-quickjs-72, so `Number.prototype` is reachable by name.
+with `[[NumberData]]` / `[[StringData]]` holding `+0` / `""`
+(`String.prototype` has its own `length` 0), added by clj-quickjs-72.
+`Number` and `String` are built-in globals (operands 1 and 2 of
+`get_builtin_global`); their constructors and current conversion limitations
+are described in "Number and String wrapper data" below.
 
 ## QuickJS references and provenance
 
@@ -3291,3 +3291,42 @@ the unvisited right operand and unrelated property values. Exceptions and
 cancellation use the same unwind/discard path as reduce and needAll.
 Symbols, wrappers and resumable conversions inside leaf built-ins remain
 with their own pellets.
+
+## Number and String wrapper data (clj-quickjs-72, partial)
+
+`OrdinaryObject` has an optional, typed `PrimitiveData` slot (`Number(f64)`
+or `String(JsString)`), initialized before allocation and immutable thereafter.
+`HeapObject::Plain` still handles property storage, ownership, prototype edges,
+integrity, publication classification and tracing. This avoids a new heap kind
+and duplicated dispatch for ordinary wrapper properties. It costs one optional
+primitive-data field in each ordinary store. The alternatives were distinct
+Number/String heap kinds (more property dispatch and inventory cases), or a
+JavaScript property (incorrect: user-visible and forgeable). The prototypes
+are intrinsic ordinary stores with the same slots, containing +0 / `""`, so
+thisNumberValue/thisStringValue inspect internal data instead of comparing
+against intrinsic identities. Inheriting a prototype never inherits its slot.
+
+Only the owning task may access an allocated wrapper's primitive data;
+intrinsic prototypes remain shared and immutable. No new root category or
+object kind is needed. The collector traces each ordinary store's properties
+and prototype as before. PrimitiveData has no heap edges: f64 is inline and
+JsString uses the existing immutable Arc storage boundary. The source test
+`primitive_wrappers_survive_wait_collection_and_migration` forces collection
+while wrappers and nested properties are held across a wait, resumes on another
+thread, verifies data, rejects publication and foreign reads, then checks
+reclamation after the last root is dropped.
+
+Calls and construction accept primitive arguments through the existing pure
+ToNumber/ToString helpers. They run within one instruction while their arguments
+remain on the traced operand stack; the result replaces the operands before
+any poll. Object arguments and implicit wrapper operands still fail explicitly:
+they need clj-quickjs-70's resumable ToPrimitive, which is absent on master.
+No constructor runs a JavaScript callback on the Rust stack. String exotic
+own properties and own-key enumeration are explicitly deferred to -142.
+
+Semantic references only (no upstream code or test text copied):
+`research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_number_constructor`,
+`js_string_constructor`, `js_thisNumberValue`, `js_thisStringValue`;
+`research/quickjs/tests/test_language.js`, `test_eq`, identifies the implicit
+conversion acceptance cases still blocked by clj-quickjs-70.

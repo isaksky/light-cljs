@@ -39,7 +39,7 @@
 //! | `Array` (global name, clj-quickjs-155; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
-//! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
+//! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
 //! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
@@ -111,7 +111,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
-use crate::object::{OrdinaryObject, Property, PropertyFlags, PropertyKey};
+use crate::object::{OrdinaryObject, PrimitiveData, Property, PropertyFlags, PropertyKey};
 use crate::value::{JsString, Value};
 use crate::vm::builtin::{Builtin, BuiltinFunction};
 
@@ -123,10 +123,10 @@ pub(crate) enum Global {
     /// `Object`, the Object constructor.
     Object = 0,
     /// `Number`, the Number constructor (clj-quickjs-73: it carries
-    /// `Number.prototype` and fails when called until clj-quickjs-72).
+    /// `Number.prototype`, callable and constructible).
     Number = 1,
     /// `String`, the String constructor (clj-quickjs-73: it carries
-    /// `String.prototype` and fails when called until clj-quickjs-72).
+    /// `String.prototype`, callable and constructible).
     String = 2,
     /// `Function` (clj-quickjs-102): a stub constructor that fails when
     /// called (clj-quickjs-111), reachable for `Function.prototype`.
@@ -206,9 +206,9 @@ pub(crate) struct Intrinsics {
     /// `String.prototype`: a property read on a string primitive starts
     /// here (clj-quickjs-73).
     pub(crate) string_prototype: ObjectId,
-    /// The `Number` constructor (fails when called until clj-quickjs-72).
+    /// The `Number` constructor.
     number: ObjectId,
-    /// The `String` constructor (fails when called until clj-quickjs-72).
+    /// The `String` constructor.
     string: ObjectId,
 }
 
@@ -506,11 +506,10 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 /// ordinary object inheriting from `Object.prototype` with `constructor`,
 /// `toString` and `valueOf`. ECMAScript makes `Number.prototype` a Number
 /// object holding `+0` and `String.prototype` a String object holding `""`;
-/// the methods treat these two receivers so (`crate::vm::builtin`), and
+/// these primitives live in the ordinary store's internal data slots, and
 /// `String.prototype` has the own `length` 0 of the String object for `""`
 /// (not writable, enumerable or configurable). The constructor is a
-/// built-in function with `prototype` that fails when called until
-/// clj-quickjs-72.
+/// callable, constructible built-in function (clj-quickjs-72).
 fn primitive_prototype(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
@@ -520,6 +519,11 @@ fn primitive_prototype(
     let to_string_id = b.function(to_string, &[])?;
     let value_of = b.function(value_of, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    prototype = prototype.with_primitive_data(match constructor {
+        Builtin::Number => PrimitiveData::Number(0.0),
+        Builtin::String => PrimitiveData::String(JsString::from("")),
+        _ => return None,
+    });
     if to_string == Builtin::StringPrototypeToString {
         let length = heap.keys().intern(&JsString::from("length"))?;
         let flags = PropertyFlags {

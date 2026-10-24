@@ -83,9 +83,9 @@
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72); `getOwnPropertyNames` of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-261) |
-//! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or `Number.prototype` (`+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
-//! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or `String.prototype` (`""`); any other receiver: catchable `TypeError` |
-//! | `Number(...)`, `String(...)` (clj-quickjs-73; global names that carry the prototypes) | `UnsupportedOperand` until the constructors exist (clj-quickjs-72) |
+//! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
+//! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
+//! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert a primitive argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments await resumable ToPrimitive (clj-quickjs-70) |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
@@ -96,12 +96,12 @@ use crate::atom::same_value;
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
-use crate::object::OrdinaryObject;
+use crate::object::{OrdinaryObject, PrimitiveData};
 use crate::realm;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Value};
 use crate::vm::descriptor;
-use crate::vm::dispatch::Fault;
+use crate::vm::dispatch::{Fault, to_js_string, to_number};
 use crate::vm::exception::ErrorObject;
 use crate::vm::integrity;
 use crate::vm::keys::{self, KeyFilter};
@@ -159,8 +159,7 @@ pub(crate) enum Builtin {
     /// `Object.getOwnPropertyNames` (QuickJS
     /// `js_object_getOwnPropertyNames`; clj-quickjs-123).
     ObjectGetOwnPropertyNames,
-    /// `Number` (clj-quickjs-73): the global that carries
-    /// `Number.prototype`; fails when called until clj-quickjs-72.
+    /// `Number` (clj-quickjs-72): ToNumber, or a wrapper when constructed.
     Number,
     /// `Number.prototype.toString` (QuickJS `js_number_toString`;
     /// clj-quickjs-73), radix 10 only.
@@ -168,8 +167,7 @@ pub(crate) enum Builtin {
     /// `Number.prototype.valueOf` (QuickJS `js_number_valueOf`;
     /// clj-quickjs-73).
     NumberPrototypeValueOf,
-    /// `String` (clj-quickjs-73): the global that carries
-    /// `String.prototype`; fails when called until clj-quickjs-72.
+    /// `String` (clj-quickjs-72): ToString, or a wrapper when constructed.
     String,
     /// `String.prototype.toString` (QuickJS `js_string_toString`;
     /// clj-quickjs-73).
@@ -346,12 +344,9 @@ pub(crate) fn call(
         | Builtin::ReflectApply => {
             Err(Fault::Internal("a forwarding built-in was called directly"))
         }
-        Builtin::Number | Builtin::String => Err(Fault::Unsupported(format!(
-            "calling the {} constructor is not supported",
-            which.name()
-        ))),
+        Builtin::Number | Builtin::String => primitive_constructor(heap, task, which, args, false),
         Builtin::NumberPrototypeToString => {
-            let n = this_number_value(heap, this, "toString")?;
+            let n = this_number_value(heap, task, this, "toString")?;
             match arg(0) {
                 Value::Undefined => {}
                 Value::Number(10.0) => {}
@@ -365,49 +360,110 @@ pub(crate) fn call(
             Ok(Value::String(JsString::from(number_to_string(n).as_str())))
         }
         Builtin::NumberPrototypeValueOf => {
-            this_number_value(heap, this, "valueOf").map(Value::Number)
+            this_number_value(heap, task, this, "valueOf").map(Value::Number)
         }
         Builtin::StringPrototypeToString | Builtin::StringPrototypeValueOf => {
-            this_string_value(heap, this, which.name()).map(Value::String)
+            this_string_value(heap, task, this, which.name()).map(Value::String)
         }
     }
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a
-/// number receiver is itself; `Number.prototype`, a Number object holding
-/// `+0` in ECMAScript, is `0`. Number wrapper objects are clj-quickjs-72;
-/// any other receiver is a catchable `TypeError`.
-fn this_number_value(heap: &Heap, this: &Value, method: &str) -> Result<f64, Fault> {
-    match this {
-        Value::Number(n) => Ok(*n),
-        Value::Object(id) if is_intrinsic(heap, *id, |r| r.number_prototype) => Ok(0.0),
-        other => Err(Fault::TypeError(format!(
+/// number receiver is itself; a Number wrapper yields its [[NumberData]],
+/// including `Number.prototype`'s +0. Other receivers throw a TypeError.
+fn this_number_value(heap: &Heap, task: TaskId, this: &Value, method: &str) -> Result<f64, Fault> {
+    if let Value::Number(n) = this {
+        return Ok(*n);
+    }
+    match wrapper_data(heap, task, this)? {
+        Some(PrimitiveData::Number(n)) => Ok(n),
+        _ => Err(Fault::TypeError(format!(
             "Number.prototype.{method} requires that 'this' be a Number, not {}",
-            describe_receiver(other)
+            describe_receiver(this)
         ))),
     }
 }
 
 /// thisStringValue (ECMAScript §22.1.3; QuickJS `js_thisStringValue`): a
-/// string receiver is itself; `String.prototype` (a String object holding
-/// `""`) is `""`. String wrapper objects are clj-quickjs-72; any other
-/// receiver is a catchable `TypeError`.
-fn this_string_value(heap: &Heap, this: &Value, method: &str) -> Result<JsString, Fault> {
-    match this {
-        Value::String(s) => Ok(s.clone()),
-        Value::Object(id) if is_intrinsic(heap, *id, |r| r.string_prototype) => {
-            Ok(JsString::from(""))
-        }
-        other => Err(Fault::TypeError(format!(
+/// string receiver is itself; a String wrapper yields its [[StringData]],
+/// including `String.prototype`'s "". Other receivers throw a TypeError.
+fn this_string_value(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    method: &str,
+) -> Result<JsString, Fault> {
+    if let Value::String(s) = this {
+        return Ok(s.clone());
+    }
+    match wrapper_data(heap, task, this)? {
+        Some(PrimitiveData::String(s)) => Ok(s),
+        _ => Err(Fault::TypeError(format!(
             "String.prototype.{method} requires that 'this' be a String, not {}",
-            describe_receiver(other)
+            describe_receiver(this)
         ))),
     }
 }
 
-/// True when `id` is the realm intrinsic `which` selects.
-fn is_intrinsic(heap: &Heap, id: ObjectId, which: fn(&realm::Intrinsics) -> ObjectId) -> bool {
-    heap.realm().get().is_some_and(|r| which(r) == id)
+/// Inspect the receiver's own internal slots, never its prototype's slots.
+/// Owned wrappers obey the same read boundary as their ordinary properties.
+fn wrapper_data(heap: &Heap, task: TaskId, this: &Value) -> Result<Option<PrimitiveData>, Fault> {
+    let Value::Object(id) = this else {
+        return Ok(None);
+    };
+    heap.read(*id, |object| match object {
+        HeapObject::Plain(o) => {
+            if let Some(owner) = o.owner()
+                && owner != task
+            {
+                return Err(Fault::ForeignObject {
+                    owner: Some(owner),
+                    caller: task,
+                });
+            }
+            Ok(o.primitive_data().cloned())
+        }
+        _ => Ok(None),
+    })
+    .unwrap_or(Err(Fault::Internal("wrapper receiver was reclaimed")))
+}
+
+/// Call or construct Number/String. Argument conversion currently accepts
+/// primitives; object arguments await resumable ToPrimitive (clj-quickjs-70).
+/// All arguments stay rooted on the calling frame's operand stack. The result
+/// replaces them before any safepoint, so allocation needs no temporary root.
+pub(crate) fn primitive_constructor(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    args: &[Value],
+    construct: bool,
+) -> Result<Value, Fault> {
+    let value = match which {
+        Builtin::Number => Value::Number(match args.first() {
+            Some(value) => to_number(value)?,
+            None => 0.0,
+        }),
+        Builtin::String => Value::String(match args.first() {
+            Some(value) => to_js_string(value)?,
+            None => JsString::from(""),
+        }),
+        _ => return Err(Fault::Internal("not a primitive constructor")),
+    };
+    if !construct {
+        return Ok(value);
+    }
+    let exhausted = || Fault::OutOfMemory("heap object table exhausted");
+    let realm = realm::intrinsics(heap).ok_or_else(exhausted)?;
+    let (prototype, data) = match value {
+        Value::Number(n) => (realm.number_prototype, PrimitiveData::Number(n)),
+        Value::String(s) => (realm.string_prototype, PrimitiveData::String(s)),
+        _ => return Err(Fault::Internal("not a wrapper primitive")),
+    };
+    let object = OrdinaryObject::with_prototype(task, prototype).with_primitive_data(data);
+    heap.alloc(HeapObject::Plain(object))
+        .map(Value::Object)
+        .ok_or_else(exhausted)
 }
 
 /// A receiver's kind for a thisNumberValue/thisStringValue message.
@@ -615,8 +671,12 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
                         Ok("Object")
                     }
                 }
-                HeapObject::Plain(_)
-                | HeapObject::Vector(_)
+                HeapObject::Plain(o) => Ok(match o.primitive_data() {
+                    Some(PrimitiveData::Number(_)) => "Number",
+                    Some(PrimitiveData::String(_)) => "String",
+                    None => "Object",
+                }),
+                HeapObject::Vector(_)
                 | HeapObject::Map(_)
                 | HeapObject::Occurrence(_)
                 | HeapObject::Builder(_)
@@ -663,5 +723,32 @@ mod tests {
             assert_eq!(tag(&heap, &primitive), "unsupported");
         }
         assert_eq!(tag(&heap, &Value::Null), "[object Null]");
+    }
+
+    #[test]
+    fn wrapper_internal_data_checks_the_owner() {
+        let heap = Heap::default();
+        let owner = TaskId::from_raw(1);
+        let caller = TaskId::from_raw(2);
+        for (constructor, method, argument) in [
+            (
+                Builtin::Number,
+                Builtin::NumberPrototypeValueOf,
+                Value::Number(7.0),
+            ),
+            (
+                Builtin::String,
+                Builtin::StringPrototypeToString,
+                Value::String(JsString::from("abc")),
+            ),
+        ] {
+            let wrapper = primitive_constructor(&heap, owner, constructor, &[argument], true)
+                .unwrap_or_else(|_| panic!("construction failed"));
+            assert!(matches!(
+                call(&heap, caller, method, &wrapper, &[]),
+                Err(Fault::ForeignObject { owner: Some(id), caller: task }) if id == owner && task == caller
+            ));
+            assert!(call(&heap, owner, method, &wrapper, &[]).is_ok());
+        }
     }
 }

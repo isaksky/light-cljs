@@ -209,7 +209,15 @@ pub(crate) enum SetOutcome {
     Inherited,
 }
 
-/// Storage of an ordinary object. See the module docs.
+/// The internal data of a Number or String wrapper (clj-quickjs-72).
+/// Neither variant has heap edges: strings own immutable `JsString` storage.
+#[derive(Clone, Debug)]
+pub(crate) enum PrimitiveData {
+    Number(f64),
+    String(JsString),
+}
+
+/// Storage of an ordinary object, optionally with immutable primitive data.
 #[derive(Debug)]
 pub(crate) struct OrdinaryObject {
     owner: Option<TaskId>,
@@ -221,6 +229,8 @@ pub(crate) struct OrdinaryObject {
     /// Key to position in `entries`; present once there are more than
     /// [`INDEX_THRESHOLD`] entries.
     index: Option<HashMap<PropertyKey, u32>>,
+    /// `[[NumberData]]` / `[[StringData]]`, initialized before allocation.
+    primitive_data: Option<PrimitiveData>,
 }
 
 impl OrdinaryObject {
@@ -234,6 +244,7 @@ impl OrdinaryObject {
             extensible: true,
             entries: Vec::new(),
             index: None,
+            primitive_data: None,
         }
     }
 
@@ -266,6 +277,17 @@ impl OrdinaryObject {
     /// True for a realm intrinsic (module docs).
     pub(crate) fn is_intrinsic(&self) -> bool {
         self.intrinsic
+    }
+
+    /// Initialize a wrapper before publishing its identity to the heap.
+    pub(crate) fn with_primitive_data(mut self, data: PrimitiveData) -> OrdinaryObject {
+        self.primitive_data = Some(data);
+        self
+    }
+
+    /// A wrapper's internal data, independent of its JavaScript prototype.
+    pub(crate) fn primitive_data(&self) -> Option<&PrimitiveData> {
+        self.primitive_data.as_ref()
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.
@@ -601,6 +623,7 @@ pub(crate) enum DeleteOutcome {
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        // PrimitiveData contains only f64 / JsString, with no heap edges.
         for (_, property) in &self.entries {
             property.value.trace(visit);
         }

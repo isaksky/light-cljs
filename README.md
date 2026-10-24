@@ -2270,7 +2270,7 @@ Supported (`cargo test --test js_source methods_on_primitive_bases`,
 
 Deferred:
 
-- Calling `Number(v)` / `String(v)` and wrapper objects (clj-quickjs-72), a string's own
+- A string's own
   `length` and indices (clj-quickjs-142), boolean bases (`Boolean.prototype`), radixes other
   than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
   with `UnsupportedOperand` (an absent method reads `undefined`).
@@ -2377,3 +2377,24 @@ runtime collections with no conversion methods throw TypeError. Leaf built-ins
 still reject object conversion arguments (for example descriptor keys,
 array lengths and apply's argument-list length); these require their own
 resumable built-in paths.
+
+### Number and String wrapper constructors (clj-quickjs-72, partial)
+
+Supported (`cargo test --test js_source primitive_wrapper`):
+
+- `Number(v)` / `String(v)` convert primitive arguments using ToNumber /
+  ToString; no argument gives 0 / `""`.
+- `new Number(v)` / `new String(v)` allocate distinct task-owned objects
+  holding `[[NumberData]]` / `[[StringData]]`, inheriting from the matching
+  prototype. Their `valueOf()` / `toString()` return the stored primitive;
+  an incompatible receiver throws a catchable TypeError. Ordinary own
+  properties, prototype changes, freezing, identity and `instanceof` work.
+- Wrapper data and own properties survive waits, collection and migration.
+  Publication rejects wrappers; another task cannot read or mutate them.
+
+Deferred: implicit wrapper conversion (`new Number(1) == 1`, wrapper `+`)
+requires clj-quickjs-70, as do object arguments to `Number` / `String`.
+String wrapper `length`, indices and own-key enumeration explicitly fail
+until clj-quickjs-142. Boolean wrappers, other radixes and Number constants
+remain deferred. ToObject integration for `Object(primitive)`, reflection
+on primitives and sloppy-mode `this` remains unsupported.

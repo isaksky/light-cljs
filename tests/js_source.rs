@@ -8622,8 +8622,8 @@ fn methods_on_primitive_bases() {
 
     // Explicitly unsupported until their pellets: a string's own `length`
     // and indices (clj-quickjs-142), boolean properties (clj-quickjs-39),
-    // radixes other than 10 (clj-quickjs-39), calling the constructors
-    // (clj-quickjs-72). Not catchable: no JavaScript sees a wrong answer.
+    // radixes other than 10 (clj-quickjs-39).
+    // Not catchable: no JavaScript sees a wrong answer.
     for (src, needle) in [
         (
             "let s = 'abc';\ns.length;",
@@ -8640,8 +8640,6 @@ fn methods_on_primitive_bases() {
         ("let b = true;\nb.toString();", "of a boolean"),
         ("let n = 1;\nn.toString(2);", "radix other than 10"),
         ("let n = 1;\nn.toString('10');", "radix other than 10"),
-        ("let n = 1;\nNumber(n);", "Number constructor"),
-        ("let n = 1;\nString(n);", "String constructor"),
     ] {
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
@@ -9158,5 +9156,152 @@ fn objects_compare_after_to_primitive() {
             );
             assert_eq!(eval(&src), ValueView::Bool(expected), "{src}");
         }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Implicit wrapper conversion
+/// awaits OrdinaryToPrimitive (clj-quickjs-70); these exercise the constructors
+/// and thisNumberValue/thisStringValue directly (clj-quickjs-72).
+#[test]
+fn primitive_wrapper_constructors_and_methods() {
+    for src in [
+        "Number('0x10') === 16 && Number() === 0 && Number(undefined) !== Number(undefined)",
+        "Object.is(Number(-0), -0) && Number(null) === 0 && Number(true) === 1",
+        "String() === '' && String(undefined) === 'undefined' && String(null) === 'null'",
+        "String(1e21) === '1e+21' && String(-0) === '0' && String(false) === 'false'",
+        "typeof new Number(1) === 'object' && typeof new String('abc') === 'object'",
+        "new Number(1) !== 1 && new Number(1) !== new Number(1)",
+        "new String('abc') !== new String('abc')",
+        "new Number(1) != new Number(1) && new String('abc') != new String('abc')",
+        "let n = new Number(1); n == n && n === n",
+        "(new Number(5)).valueOf() + 1 === 6 && (new String('a')).valueOf() + 'b' === 'ab'",
+        "(new Number()).valueOf() === 0 && (new String()).valueOf() === ''",
+        "let n = (new Number(undefined)).valueOf(); n !== n && (new String(undefined)).valueOf() === 'undefined'",
+        "(new Number('0x10')).toString() === '16' && (new String(null)).toString() === 'null'",
+        "Object.is((new Number(-0)).valueOf(), -0) && (new Number(1e21)).toString(10) === '1e+21'",
+        "Object.getPrototypeOf(new Number(1)) === Number.prototype && Object.getPrototypeOf(new String('x')) === String.prototype",
+        "new Number(1) instanceof Number && new String('a') instanceof String && !(({}) instanceof String)",
+        "Number.prototype.valueOf() === 0 && String.prototype.valueOf() === ''",
+        "let n = new Number(1); n.x = 2; n.x === 2 && n.constructor === Number",
+        "let s = new String('a'); s.x = 3; s.x === 3 && s.constructor === String",
+        "let n = new Number(2); Object.freeze(n); Object.isFrozen(n) && n.valueOf() === 2",
+        "let n = new Number(2); Object.setPrototypeOf(n, null); n.v = Number.prototype.valueOf; n.v() === 2",
+        "let r = 0; let o = {v: Number.prototype.valueOf}; try { o.v(); } catch (e) { r = 1; } o.v = String.prototype.toString; try { o.v(); } catch (e) { r = r + 10; } r === 11",
+        "let n = new Number(1); n.v = String.prototype.valueOf; let r = false; try { n.v(); } catch (e) { r = true; } r",
+        "let s = new String('a'); s.v = Number.prototype.toString; let r = false; try { s.v(); } catch (e) { r = true; } r",
+        "let n = Object.create(Number.prototype); let r = false; try { n.valueOf(); } catch (e) { r = true; } r",
+        "let s = Object.create(String.prototype); let r = false; try { s.valueOf(); } catch (e) { r = true; } r",
+        "let n = new Number(1); n.tag = Object.prototype.toString; n.tag() === '[object Number]'",
+        "let s = new String('a'); s.tag = Object.prototype.toString; s.tag() === '[object String]'",
+        "let n = new Number(3); n.valueOf = function () { return 4; }; n.valueOf() === 4 && n.toString() === '3'",
+        "let s = new String('a'); s.valueOf = function () { return 'b'; }; s.valueOf() === 'b' && s.toString() === 'a'",
+        r"(new String('\u{d800}')).valueOf() === '\u{d800}'",
+        "let log = ''; Number(1, log = log + 'n'); new String('x', log = log + 's'); log === 'ns'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn primitive_wrappers_report_deferred_conversions_and_string_properties() {
+    // clj-quickjs-70 owns implicit OrdinaryToPrimitive, including wrapper
+    // operands. Do not silently unbox and bypass an own valueOf/toString.
+    for src in [
+        "new Number(1) == 1",
+        "2 == new Number(2)",
+        "new String('abc') == 'abc'",
+        "new Number(5) + 1",
+        "new String('a') + 'b'",
+        "Number({valueOf: function () { return 1; }})",
+        "String({toString: function () { return 'a'; }})",
+        "new Number({valueOf: function () { return 1; }})",
+        "new String({toString: function () { return 'a'; }})",
+    ] {
+        let error = failure(src);
+        assert_eq!(
+            error.kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}: {error}"
+        );
+        assert!(error.message().contains("ToPrimitive"), "{src}: {error}");
+    }
+    // The string exotic properties belong to clj-quickjs-142. A wrapper
+    // must not answer the inherited String.prototype.length = 0 or permit
+    // overwriting indices while that implementation is missing.
+    for src in [
+        "(new String('abc')).length",
+        "(new String('abc'))[0]",
+        "let s = new String('abc'); s[0] = 'x'",
+        "let s = new String('abc'); delete s.length",
+        "Object.getOwnPropertyDescriptor(new String('abc'), '0')",
+        "Object.defineProperty(new String('abc'), '0', {value: 'x'})",
+        "Object.keys(new String('abc'))",
+        "Object.getOwnPropertyNames(new String(''))",
+        "for (let k in new String('abc')) {}",
+        "'length' in new String('abc')",
+        "Object.create(new String('abc')).length",
+    ] {
+        let error = failure(src);
+        assert_eq!(
+            error.kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}: {error}"
+        );
+        assert!(error.message().contains("string wrapper"), "{src}: {error}");
+    }
+    for (src, column) in [
+        ("let o = {};\nNumber(o)", 7),
+        ("let o = {};\nString(o)", 7),
+        ("let o = {};\nnew Number(o)", 1),
+        ("let o = {};\nnew String(o)", 1),
+    ] {
+        let (kind, _, line, actual_column) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+        assert_eq!((line, actual_column), (2, column), "{src}");
+    }
+}
+
+#[test]
+fn primitive_wrappers_survive_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let script = exe(r"let n = new Number(-0); let s = new String('\uD800x');
+          n.child = {v: 7}; s.peer = n; __rt.need(72, 1);
+          Object.is(s.peer.valueOf(), -0) && s.valueOf() === '\uD800x'
+          && s.peer.child.v === 7 && s.toString() === '\uD800x'");
+    let task = rt.spawn(&script, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    let request = task.take_producer_requests().pop().unwrap();
+    rt.collect().unwrap();
+    let value = rt.root(Primitive::Number(0.0));
+    let wakeups = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&value))
+        .unwrap();
+    let runnable = wakeups.into_runnable().pop().unwrap();
+    let result = std::thread::spawn(move || runnable.run().unwrap())
+        .join()
+        .unwrap();
+    match result {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+
+    for constructor in ["new Number(7)", "new String('abc')"] {
+        let owner = rt.spawn(&exe(constructor), &[]).unwrap();
+        let RunOutcome::Complete(wrapper) = owner.run().unwrap() else {
+            panic!("wrapper construction failed");
+        };
+        assert!(rt.publish(&wrapper).is_err(), "{constructor} published");
+        let read = compile_function("function reader(o) { return o.valueOf(); }").unwrap();
+        let intruder = rt.spawn(&read, &[&wrapper]).unwrap();
+        match intruder.run().unwrap() {
+            RunOutcome::Failed(e) => assert!(matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+            other => panic!("expected ForeignObject, got {other:?}"),
+        }
+        let weak = wrapper.downgrade();
+        rt.collect().unwrap();
+        assert!(weak.upgrade().is_ok());
+        drop((wrapper, owner, intruder));
+        rt.collect().unwrap();
+        assert!(weak.upgrade().is_err());
     }
 }

@@ -263,6 +263,17 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
     match object {
         HeapObject::Plain(o) => {
             readable(o.owner())?;
+            if !o.is_intrinsic()
+                && matches!(
+                    o.primitive_data(),
+                    Some(crate::object::PrimitiveData::String(_))
+                )
+            {
+                return Err(Fault::Unsupported(
+                    "string wrapper own keys need length and index properties, which are not supported"
+                        .to_string(),
+                ));
+            }
             Ok(Raw {
                 named: named(o),
                 ..Raw::default()

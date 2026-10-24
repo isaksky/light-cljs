@@ -423,7 +423,8 @@ enum Lookup {
 /// The own named property of the store `o`, or where to continue.
 /// (`Function.prototype`, the one store whose misses can fail, is an
 /// intrinsic and always read through its view.)
-fn read_store(o: &OrdinaryObject, interned: Interned) -> Result<Lookup, Fault> {
+fn read_store(o: &OrdinaryObject, key: &Key, interned: Interned) -> Result<Lookup, Fault> {
+    check_string_wrapper_property(o, key)?;
     let Some(k) = interned else {
         return Ok(Lookup::NeedsName);
     };
@@ -431,6 +432,20 @@ fn read_store(o: &OrdinaryObject, interned: Interned) -> Result<Lookup, Fault> {
         Some(property) => Ok(Lookup::Found(property.value.clone())),
         None => Ok(Lookup::Next(o.prototype())),
     }
+}
+
+/// String exotic own properties await clj-quickjs-142. In particular do
+/// not expose String.prototype.length (0) as a nonempty wrapper's length.
+fn check_string_wrapper_property(o: &OrdinaryObject, key: &Key) -> Result<(), Fault> {
+    if !o.is_intrinsic()
+        && let Some(crate::object::PrimitiveData::String(s)) = o.primitive_data()
+        && (key.is_length() || matches!(key, Key::Index(i) if (*i as usize) < s.len()))
+    {
+        return Err(Fault::Unsupported(
+            "string wrapper length and index properties are not supported".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// `base[key]` for the running task `task` (`[[Get]]`; QuickJS `get_field`
@@ -566,14 +581,14 @@ fn lookup(
         }
         let step = heap
             .read(id, |object| match visit(object, task)? {
-                Visit::Store(o) => read_store(o, interned),
+                Visit::Store(o) => read_store(o, key, interned),
                 Visit::Array(a) => match key {
                     Key::Index(index) => Ok(match a.get(*index) {
                         Some(value) => Lookup::Found(value.clone()),
                         None => Lookup::Next(a.object().prototype()),
                     }),
                     _ if key.is_length() => Ok(Lookup::Found(Value::Number(f64::from(a.length())))),
-                    Key::Name(_) => read_store(a.object(), interned),
+                    Key::Name(_) => read_store(a.object(), key, interned),
                 },
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
@@ -678,6 +693,7 @@ fn store(
     value: &Value,
 ) -> Result<Stored, Fault> {
     let named = |o: &mut OrdinaryObject| {
+        check_string_wrapper_property(o, key)?;
         let Some(k) = interned else {
             return Ok(Stored::NeedsName);
         };
@@ -916,10 +932,13 @@ fn check_inherited(
                 },
             }
         }
-        let in_store = |o: &OrdinaryObject| match k.and_then(|k| o.get_own(k)) {
-            Some(property) if !property.flags.writable => Err(read_only(key)),
-            Some(_) => Ok(Walk::Next(None)),
-            None => Ok(Walk::Next(o.prototype())),
+        let in_store = |o: &OrdinaryObject| {
+            check_string_wrapper_property(o, key)?;
+            match k.and_then(|k| o.get_own(k)) {
+                Some(property) if !property.flags.writable => Err(read_only(key)),
+                Some(_) => Ok(Walk::Next(None)),
+                None => Ok(Walk::Next(o.prototype())),
+            }
         };
         let next = heap
             .read(id, |object| match visit(object, task)? {
@@ -1106,6 +1125,7 @@ pub(crate) fn define_own_property(
         false => Some(intern(heap, &key.to_name())?),
     };
     let named = |o: &mut OrdinaryObject| {
+        check_string_wrapper_property(o, key)?;
         let k = interned.ok_or(Fault::Internal("a property name was not interned"))?;
         defined(o.define_own_property(k, desc), key)
     };
@@ -1209,7 +1229,10 @@ pub(crate) fn get_own_property(
     }
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
-        Visit::Store(o) => Ok(named(o)),
+        Visit::Store(o) => {
+            check_string_wrapper_property(o, key)?;
+            Ok(named(o))
+        }
         Visit::Array(a) => Ok(match key {
             Key::Index(index) => a.element(*index),
             _ if key.is_length() => Some(a.length_property()),
@@ -1321,6 +1344,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
         HeapObject::Builtin(f) => shared(&f.properties),
         HeapObject::Plain(o) => {
             check_write(o, task)?;
+            check_string_wrapper_property(o, key)?;
             Ok(named(o))
         }
         HeapObject::Array(a) => {
