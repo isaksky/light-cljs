@@ -27,8 +27,8 @@
 //!   value with a getter/setter pair in the same entry.
 //! * **`[[Prototype]]`**, an object or null: `Object.prototype` for an
 //!   object literal or an `Object()` result (clj-quickjs-117,
-//!   [`crate::realm`]), null for an embedder-created object and for
-//!   `Object.prototype` itself. `Object.setPrototypeOf` and `__proto__` are
+//!   [`crate::realm`]), null for an object made by the `NewObject`
+//!   instruction or by the embedder, and for `Object.prototype` itself. `Object.setPrototypeOf` and `__proto__` are
 //!   clj-quickjs-121. Reads walk it; a write of a property the object does
 //!   not have itself consults it (`crate::vm::property`).
 //! * **Intrinsic**: true only for the realm's shared, immutable intrinsic

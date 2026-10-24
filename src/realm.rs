@@ -8,8 +8,8 @@
 //! # One shared realm per runtime
 //!
 //! Each heap (one per [`Runtime`](crate::Runtime)) has at most one realm,
-//! built the first time an instruction needs it (`NewObject`, for the
-//! prototype of a literal, or `GetBuiltinGlobal`) and kept until the heap
+//! built the first time an instruction needs it (`NewObjectLiteral`, for
+//! the prototype of a literal, or `GetBuiltinGlobal`) and kept until the heap
 //! is dropped. Every task of the runtime sees the same intrinsic objects,
 //! with the same identities (`({}).toString === Object.prototype.toString`
 //! in every task, and a closure that captured `Object` in one task calls the
