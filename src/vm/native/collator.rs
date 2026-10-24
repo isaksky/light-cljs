@@ -53,7 +53,7 @@ pub(super) struct State {
     subtag_len: usize,
 }
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(list) = &self.list {
             list.trace(visit);
         }
