@@ -898,6 +898,15 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let intl_locale_prototype = intl_locale_intrinsics(&mut b, object_prototype, intl)?;
     let (typed_array_prototypes, typed_array_constructors) =
         typed_array_intrinsics(&mut b, object_prototype)?;
+    for method in [Builtin::IntlLocaleMaximize, Builtin::IntlLocaleMinimize] {
+        let function = b.function(method, &[])?;
+        b.add(
+            intl_locale_prototype,
+            method.name(),
+            function,
+            PropertyFlags::METHOD,
+        )?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1209,10 +1218,6 @@ fn intl_locale_intrinsics(
         _ => false,
     })?
     .then_some(())?;
-    for method in [Builtin::IntlLocaleMaximize, Builtin::IntlLocaleMinimize] {
-        let function = b.function(method, &[])?;
-        b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;
-    }
     Some(prototype)
 }
 
