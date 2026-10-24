@@ -10,4 +10,5 @@ fi
 perl scripts/quickjs-data/repack-unicode.pl "$@"
 cp "$4/unicode_ident.rs" src/frontend/unicode_ident.rs
 cp "$4/case_fold_data.rs" src/regexp/case_fold_data.rs
+cp "$4/property_data.rs" src/regexp/property_data.rs
 cp "$4/provenance.txt" src/regexp/case_fold_provenance.txt

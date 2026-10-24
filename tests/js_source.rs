@@ -16438,6 +16438,15 @@ fn bigint_bitwise_and_shift_size_limits() {
 }
 
 #[test]
+fn regexp_property_escapes() {
+    // Synthetic fixture, not light-cljs output. QuickJS rows retain their notice.
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_properties.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_case_insensitive_unicode() {
     // Synthetic fixture, not light-cljs output. The two replacement rows are
     // adapted from QuickJS; see the fixture's copyright and attribution.

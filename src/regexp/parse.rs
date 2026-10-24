@@ -77,7 +77,7 @@ impl Flags {
 /// Parse pattern text without literal delimiters. No lossy conversion to UTF-8
 /// occurs. The result owns its arena and has no heap/GC edges. Both parsing and
 /// dropping nested groups are iterative. Quantifier counts above u64::MAX are
-/// rejected explicitly; Unicode property escapes and v grammar are deferred.
+/// rejected explicitly; Script property escapes and v grammar are deferred.
 pub fn parse(pattern: &JsString, flags: &JsString) -> Result<Pattern, SyntaxError> {
     let flags_value = Flags::parse(flags)?;
     if flags_value.unicode_sets {
@@ -732,10 +732,23 @@ impl<'a> Parser<'a> {
                 }
             }
             112 | 80 if self.flags.unicode => {
-                return Err(error(
-                    start,
-                    "Unicode property escapes are not supported yet",
-                ));
+                if !self.eat(123) {
+                    return Err(error(start, "invalid Unicode property escape"));
+                }
+                let mut name = String::new();
+                while let Some(c @ (48..=57 | 65..=90 | 97..=122 | 95 | 61)) = self.peek() {
+                    name.push(char::from_u32(u32::from(c)).unwrap());
+                    self.pos += 1;
+                }
+                if !self.eat(125) {
+                    return Err(error(start, "invalid Unicode property escape"));
+                }
+                let property = super::property::lookup(&name)
+                    .ok_or_else(|| error(start, "unknown or unsupported Unicode property"))?;
+                return Ok(ClassMember::Property {
+                    property,
+                    inverted: unit == 80,
+                });
             }
             _ if !self.flags.unicode
                 || matches!(
@@ -1224,7 +1237,8 @@ mod tests {
             pattern("[a]", "v").unwrap_err().message,
             "v flag patterns are not supported yet"
         );
-        assert_eq!(pattern(r"\p{ASCII}", "u").unwrap_err().offset, 0);
+        assert!(pattern(r"\p{ASCII}", "u").is_ok());
+        assert_eq!(pattern(r"\p{sc=Greek}", "u").unwrap_err().offset, 0);
         let p = pattern("(?im-s:a)", "").unwrap();
         let [
             Node::Modifiers {

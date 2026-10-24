@@ -200,9 +200,9 @@ service code is linked or executed. The repacker includes the three immutable
 statics in `numbers.rs`. Verification includes numbering indices, non-BMP digit
 blocks, algorithmic zero slots and Han decimal digits.
 
-## Unicode identifiers and RegExp simple folding
+## Unicode identifiers, RegExp simple folding and property escapes
 
-`repack-unicode.pl` uses the verified import's `case_conv_*` and ID table
+`repack-unicode.pl` uses the verified import's `case_conv_*`, alias pools and ID table
 snapshot as the starting data. It checks the input hashes again and compiles
 the pinned `libunicode.c` solely as an offline reference decoder. It emits
 safe immutable Rust mappings/ranges, not a linked C runtime. The extra decoder
@@ -231,6 +231,13 @@ curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt \
   -o target/ucd-17/CaseFolding.txt
 curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt \
   -o target/ucd-17/DerivedCoreProperties.txt
+for file in UnicodeData.txt PropList.txt DerivedNormalizationProps.txt; do
+  curl -fsSL "https://www.unicode.org/Public/17.0.0/ucd/$file" -o "target/ucd-17/$file"
+done
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBinaryProperties.txt \
+  -o target/ucd-17/DerivedBinaryProperties.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt \
+  -o target/ucd-17/emoji-data.txt
 nix develop --command bash scripts/quickjs-data/verify.sh \
   /home/dev/projects/clj-quickjs/research/quickjs target/unicode-import
 nix develop --command bash scripts/gen-unicode-ident.sh \
@@ -242,8 +249,22 @@ nix develop --command bash scripts/quickjs-data/verify.sh \
 
 The optional third verification argument also checks byte-identical repeated
 expansion and provenance, compares the actual installed Rust folding and
-identifier consumers across all 1,114,112 code points against the reference,
+identifier and property consumers across all 1,114,112 code points against the reference,
 and rejects deliberately corrupted decoded values and changed UCD inputs.
 It must be run after installing regenerated data. RegExp semantics are covered
 separately by `cargo test --lib regexp::` and
 `cargo test --test js_source regexp_case_insensitive_unicode -- --exact`.
+
+The same command installs `src/regexp/property_data.rs`. It contains all 53
+ECMA-262 binary properties and 38 General_Category values; exact aliases come
+from the verified NUL-separated pools. QuickJS-only binary names are filtered
+by an explicit ECMAScript allowlist. Script/Script_Extensions and v string
+properties remain rejected, with language-level tests pinning that scope.
+Every raw set (including derived binary properties) is independently compared
+with pinned Unicode 17.0.0 UCD input. The offline decoder's intervals are
+intersected with U+0000..U+10FFFF, including lone surrogates. Compact ranges
+for extra folded targets are generated separately for members and nonmembers,
+preserving u-mode complement-before-folding semantics. Verification covers
+all aliases, positive/complement membership and both iu images across the
+entire domain, and rejects an intentionally corrupted property bit. Run the
+language tests with `cargo test --test js_source regexp_property_escapes -- --exact`.

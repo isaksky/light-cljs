@@ -3209,8 +3209,9 @@ non-Unicode forms, and strict u-mode parsing with surrogate-pair joining.
 Errors include messages and UTF-16 offsets (flag errors index the flags).
 Quantifier counts above u64::MAX fail explicitly.
 
-Explicit gaps: v patterns and Unicode property escapes are deferred to
-clj-quickjs-194/-192. Pattern validation at literal sites remains
+Explicit gaps: v patterns and Script/Script_Extensions property escapes remain
+deferred. Binary and General_Category property escapes execute in u mode
+(clj-quickjs-192). Pattern validation at literal sites remains
 clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects and methods execute (clj-quickjs-188);
 Unicode matching executes (clj-quickjs-190); case-insensitive matching remains deferred.
 
@@ -3827,7 +3828,7 @@ a pair maps back to the lead before matching; an unpaired trail is unchanged.
 `exec` preserves empty-match end offsets; global `replace`/`replaceAll` advance
 empty matches by a whole code point. Step exhaustion remains catchable RangeError.
 
-Explicit gaps: non-Unicode i folding, property escapes, v grammar, d indices and
+Explicit gaps: non-Unicode i folding, Script properties, v grammar, d indices and
 lookbehind remain deferred. Unicode mode adds no size limits or dependencies.
 
 ```js accept
@@ -3949,7 +3950,7 @@ capture names now use the same verified Unicode 17.0.0 version. Expansion
 and matching preserve the catchable work limit and UTF-16 result offsets.
 
 Explicit gaps: plain i and scoped i without u throw catchable SyntaxError;
-property escapes, v sets, d indices and lookbehind remain deferred.
+Script properties, v sets, d indices and lookbehind remain deferred.
 
 ```js accept
 /k/iu.test('\u212A') && /[a-z]/iu.test('\u017F');
@@ -4017,3 +4018,29 @@ integers, and do not implement English ordinal selection). Category names and
 the six upstream integer rows retain the QuickJS strings. No existing
 NumberFormat output changes. Inherited toStringTag consumption by
 Object.prototype.toString remains unsupported as for NumberFormat and Locale.
+
+### Unicode RegExp property escapes (clj-quickjs-192)
+
+Execution: in u patterns, `\p{Name}` / `\P{Name}` accept the 53 binary
+properties in ECMA-262's Binary Unicode property aliases table, or any of the
+38 General_Category values and aliases. Categories also accept `gc=Value`
+and `General_Category=Value`. Spellings are exact, including lowercase aliases
+such as `digit`, `cntrl`, `punct`, and `space`; loose casing, spaces, Is prefixes,
+binary `Name=Yes` and unknown values throw catchable SyntaxError. Property sets
+work as standalone atoms and class members, but cannot be range endpoints.
+Lone surrogates participate in Cs, Any and other applicable code-point sets.
+Without u, p/P are identity escapes, so `/\p{L}/.test('p{L}')` is true.
+
+In iu (also scoped i inside u), `\P` complements the property before simple
+folding. This differs from class inversion: `/\P{Lower}/iu.test('a')` is true,
+while `/[^\p{Lower}]/iu.test('a')` is false. Matching retains the catchable
+step budget and UTF-16 offsets.
+
+Explicit gaps: Script, sc, Script_Extensions and scx deliberately throw
+SyntaxError. The v flag and Unicode string properties remain deferred.
+
+```js accept
+/\p{General_Category=Uppercase_Letter}/u.test('A');
+/\p{Lowercase}/u.test('\u{1D41A}');
+/[\p{Nd}x]/u.test('x') && /\P{Lower}/iu.test('a');
+```

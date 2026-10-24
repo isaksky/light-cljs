@@ -4486,7 +4486,8 @@ for the matcher. This follows ECMAScript's
 Scoped modifiers permit an empty removal list when additions are present.
 Quantifier counts have an explicit u64 implementation limit and overflow
 returns a positioned error. Flags `dgimsuvy` are validated, but v patterns
-and u-mode property escapes fail explicitly pending clj-quickjs-194/-192.
+fail explicitly pending clj-quickjs-194. Binary and General_Category property
+escapes execute in u mode (clj-quickjs-192); Script properties remain deferred.
 This parser introduces no JavaScript RegExp objects. Literal-site
 early errors must reuse it in clj-quickjs-56. The matcher in clj-quickjs-187
 is a leaf operation with a documented step limit and an error on exhaustion,
@@ -5838,3 +5839,29 @@ predicates were checked against Unicode CLDR release-48 supplemental plural and
 ordinal rules, separately from the snapshot's unverified CLDR provenance; see
 attribution. Standard notation and default halfExpand rounding are explicit;
 compact/scientific exponents and additional rounding controls are deferred.
+
+## Unicode RegExp property sets (clj-quickjs-192)
+
+The shared Unicode 17.0.0 repacker consumes the verified export's NUL-separated
+binary/General_Category alias pools and expands their compressed and derived
+sets with the pinned offline QuickJS decoder. Only ECMA-262's 53 binary
+properties and all 38 category values are exposed. Every set is independently
+compared across U+0000..U+10FFFF with pinned UnicodeData, DerivedCoreProperties,
+PropList, DerivedBinaryProperties, DerivedNormalizationProps and emoji-data.
+QuickJS range sentinels above U+10FFFF are clipped to the ECMAScript domain.
+Script/Script_Extensions remain rejected, consistently with the -191 policy.
+
+`src/regexp/property_data.rs` holds sorted inclusive ranges and exact aliases.
+Each set also stores canonical targets contributed by nonidentity folds of
+members and of nonmembers separately. The matcher canonicalizes its input,
+tests raw membership (or its complement), and unions the appropriate folded
+contributions. This implements complement-before-folding for P without
+changing outer class inversion or expanding a property at runtime. Each
+property member costs one existing search step and at most two bounded binary
+searches over immutable ranges. Compilation retains a small validated property
+identity in the IR and creates no heap edges or dependencies.
+
+The optional UCD verification in `scripts/quickjs-data/verify.sh` compares every
+installed Rust property, complement and iu image against the full-domain
+reference, checks every alias, proves corruption detection and repeats the
+expansion byte-for-byte. Ordinary Cargo builds need only checked-in Rust data.

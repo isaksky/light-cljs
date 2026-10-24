@@ -719,3 +719,18 @@ Copyright © 1991-2025 Unicode, Inc.; SPDX-License-Identifier: Unicode-3.0;
 the applicable notice is reproduced in [UNICODE-LICENSE](UNICODE-LICENSE).
 This separately identified rule reference does not assert a CLDR release for
 the QuickJS locale snapshot. No C/C++ code or external runtime is linked.
+
+## Unicode RegExp property escapes (clj-quickjs-192)
+
+`tests/fixtures/js/regexp_properties.js` adapts the five property replacement
+rows from `research/quickjs/tests/test_builtin.js::test_regexp` (lines 769–774)
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` and retains the MIT
+notice. `libunicode.c::unicode_prop`, `unicode_general_category` and the
+NUL-separated alias pools in `libunicode-table.h` at that revision supply
+only offline reference decoding/data for the existing verified exporter.
+`src/regexp/property_data.rs` retains QuickJS and Unicode notices; hashes and
+regeneration are shared with folding/identifiers in
+`src/regexp/case_fold_provenance.txt` and `scripts/quickjs-data/README.md`.
+The independently pinned Unicode 17.0.0 UCD files are covered by
+`docs/UNICODE-LICENSE`. ECMAScript property spellings follow
+https://tc39.es/ecma262/multipage/text-processing.html#table-binary-unicode-properties.

@@ -2740,7 +2740,7 @@ quantifiers, classes, Annex B escapes and strict u-mode parsing, preserving
 lone surrogates. Run `cargo test --lib regexp::parse::tests::`.
 
 Deferred: literal-site early errors,
-v grammar and Unicode property escapes. Quantifier counts above u64::MAX
+v grammar and Script/Script_Extensions property escapes. Quantifier counts above u64::MAX
 return an explicit error. See `docs/architecture.md`, "Regular expression
 pattern IR", and `docs/grammar.md` for the API boundary.
 
@@ -3182,7 +3182,7 @@ boundaries, backreferences and scoped i. Classes close under folding before
 negation: `"aAbBcC".replace(/[^b]/gui, "X")` returns `"XXbBXX"`.
 Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
-Property escapes, v sets, d indices and lookbehind remain deferred. Test:
+Script properties, v sets, d indices and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
 
 ### Intl.PluralRules (clj-quickjs-212)
@@ -3205,3 +3205,16 @@ These additional option properties are not consumed. Generic
 an existing explicit gap; instances expose `Symbol.toStringTag` directly.
 Check: `cargo test --test js_source intl_plural_rules -- --test-threads=3`;
 `cargo test --test sim_host intl_default_locale_resolution -- --test-threads=3`.
+
+### Unicode RegExp property escapes (clj-quickjs-192)
+
+Supported: `\p{...}` and `\P{...}` in u mode, alone or inside classes, for all
+53 ECMAScript binary properties and 38 General_Category values with exact
+aliases (`Lower`, `Lu`, `gc=Lu`, `General_Category=Uppercase_Letter`). Unicode
+17.0.0 data shares the folding/identifier generator and has complete-domain
+verification against QuickJS and pinned UCD inputs. In iu, property complements
+are taken before folding; `/\P{Lower}/iu` matches lowercase letters too.
+Without u, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
+Deferred: Script/Script_Extensions (including sc/scx) throw SyntaxError; v sets
+and string properties remain unsupported. Run:
+`CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_property_escapes -- --exact --test-threads=3`.

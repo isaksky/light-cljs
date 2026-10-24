@@ -209,6 +209,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                         ClassMember::Literal(c) => *c > max_character,
                         ClassMember::Range(a, b) => a > b || *b > max_character,
                         ClassMember::Escape(_) => false,
+                        ClassMember::Property { .. } => !pattern.flags.unicode,
                     } {
                         return Err(MatchError::InvalidPattern);
                     }
@@ -543,6 +544,9 @@ impl Machine {
                                 ClassMember::Literal(literal) => c == *literal,
                                 ClassMember::Range(a, b) => (*a..=*b).contains(&c),
                                 ClassMember::Escape(escape) => class_escape(*escape, c),
+                                ClassMember::Property { property, inverted } => {
+                                    property.contains(c, *inverted, *ignore_case)
+                                }
                             };
                             if found {
                                 break;

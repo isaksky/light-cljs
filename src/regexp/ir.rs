@@ -76,6 +76,10 @@ pub enum ClassMember {
     Literal(u32),
     Range(u32, u32),
     Escape(ClassEscape),
+    Property {
+        property: super::property::UnicodeProperty,
+        inverted: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
