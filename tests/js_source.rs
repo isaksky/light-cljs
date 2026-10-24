@@ -95,6 +95,7 @@ fn bigint_literals_and_strict_equality() {
         "515377520732011331036461129765621272702107522001n === 515377520732011331036461129765621272702107522001n",
         "0x5a4653ca673768565b41f775d6947d55cf3813d1n === 515377520732011331036461129765621272702107522001n",
         "0xffffffffffffffffn === 18446744073709551615n",
+        "0o77777777777n === 8589934591n",
         "0o17n === 15n && 0b101n === 5n && 0n === 0n",
         "1n !== 1 && !(1n === 1) && typeof 1n === 'bigint'",
         "(0n ? 1 : 2) === 2 && (1n ? 1 : 2) === 1 && !0n && !!1n",
@@ -103,6 +104,8 @@ fn bigint_literals_and_strict_equality() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
+    let octal = format!("0o{}n === 79228162514264337593543950335n", "7".repeat(32));
+    assert_eq!(eval(&octal), ValueView::Bool(true));
     let rt = Runtime::new();
     let task = rt
         .spawn(
@@ -194,6 +197,11 @@ fn bigint_deferred_operations_fail_explicitly() {
         "1n == 1n",
         "String(1n)",
         "let x = 1n; x++",
+        "({})[1n]",
+        "let o = {}; o[1n] = 3",
+        "Object(1n)",
+        "Object.prototype.valueOf.call(1n)",
+        "Object.prototype.toString.call(1n)",
     ] {
         let error = failure(src);
         assert_eq!(
@@ -222,6 +230,24 @@ fn bigint_deferred_operations_fail_explicitly() {
         assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
     }
     assert_eq!(failure("JSON.stringify(1n)").kind(), VmErrorKind::TypeError);
+    assert_eq!(
+        eval(
+            "let caught = false; try { 1n + 1; } catch (e) { caught = e instanceof TypeError; } caught"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Primitive enumeration has no
+/// own keys, including when the primitive has a shared large-integer body.
+#[test]
+fn bigint_primitive_key_enumeration() {
+    for value in ["1n", "515377520732011331036461129765621272702107522001n"] {
+        let src = format!(
+            "let n = {value}; let count = 0; for (let k in n) count++; count === 0 && Object.keys(n).length === 0 && Object.getOwnPropertyNames(n).length === 0"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output. The first two rows adapt

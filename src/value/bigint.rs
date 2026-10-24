@@ -227,6 +227,20 @@ mod tests {
             let n = JsBigInt::from_digits(&digits, radix).unwrap();
             assert_eq!(JsBigInt::from_digits(&n.to_string(), 10).unwrap(), n);
         }
+        // Independent u128 expectations exercise nonzero octal spill bits
+        // across each of the first three 32-bit limb boundaries.
+        for digits in [11, 22, 32, 42] {
+            let octal = "7".repeat(digits);
+            let expected = ((1u128 << (digits * 3)) - 1).to_string();
+            assert_eq!(
+                JsBigInt::from_digits(&octal, 8).unwrap().to_string(),
+                expected
+            );
+        }
+        assert_eq!(
+            JsBigInt::from_digits("40000000000", 8).unwrap().to_string(),
+            "4294967296"
+        );
     }
 
     #[test]

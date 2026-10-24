@@ -3161,6 +3161,8 @@ never equate a BigInt with a Number. `typeof` is `"bigint"`. Only `0n` is falsy,
 including for `if`, `!`, `&&`, `||` and `?:`. BigInts publish across tasks and
 survive collection inside persistent vectors/maps. Persistent map keys compare
 and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
+`Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
+BigInt primitive; `for-in` over it performs no iterations.
 
 Explicit gaps: BigInt arithmetic, unary minus/update, bitwise operations,
 relational/loose comparisons, `BigInt()`, JavaScript string/Number conversions,
