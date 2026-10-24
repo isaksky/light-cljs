@@ -18651,6 +18651,7 @@ fn intl_number_format_currency_options_and_percent_scaling() {
         "new Intl.NumberFormat('de',{style:'currency',currency:'EUR',currencySign:'accounting'}).format(-1) === '-1,00\u{00a0}€'",
         "new Intl.NumberFormat('ar',{style:'currency',currency:'EUR'}).format(-1) === '\u{200f}-1.00\u{00a0}€'",
         "new Intl.NumberFormat('ar',{style:'currency',currency:'EUR',currencySign:'accounting'}).format(-1) === '(\u{061c}1.00€)'",
+        "let f=new Intl.NumberFormat('ar',{style:'currency',currency:'EUR',currencySign:'accounting'}).format; f(1) === '\u{061c}1.00€' && f(0) === '\u{061c}0.00€'",
         "new Intl.NumberFormat('ar',{style:'percent'}).format(-0.5) === '\u{200e}-50\u{200e}%\u{200e}'",
         "new Intl.NumberFormat('tr',{style:'percent'}).format(-0.5) === '-%50'",
         "let n=new Intl.NumberFormat('en',{style:'currency',currency:'EUR',currencyDisplay:'code'}); n.format(1) === 'EUR1.00' && n.resolvedOptions().currencyDisplay === 'code'",
