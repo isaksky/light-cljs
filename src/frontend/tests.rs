@@ -1681,9 +1681,10 @@ fn object_literal_methods() {
     }
     // Method strictness must not leak to the surrounding sloppy script,
     // including the token lexed immediately after the method's closing brace.
-    let sloppy = parse_script_with("({m() {}})\n010", ScriptOptions::SLOPPY).unwrap();
+    let sloppy =
+        parse_script_with("({m() { 'use strict'; }})\n010", ScriptOptions::SLOPPY).unwrap();
     assert!(!sloppy.strict);
-    assert!(parse_script_with("({m() { return 010; }})", ScriptOptions::SLOPPY).is_err());
+    assert!(parse_script_with("({m() { return 010; }})", ScriptOptions::SLOPPY).is_ok());
     parse_script("({m(a = this) { return a; }, n() {}})").unwrap();
 }
 

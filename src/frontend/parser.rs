@@ -1846,7 +1846,6 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let outer_strict = self.strict;
-        self.set_strict(true);
         let outer_this = std::mem::replace(&mut self.this_allowed, true);
         let (params, defaults) = self.parse_formal_parameters()?;
         let outer_function = std::mem::replace(&mut self.in_function, true);

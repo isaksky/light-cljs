@@ -5599,8 +5599,7 @@ fn object_literal_methods() {
     );
 }
 
-/// Synthetic fixture, not light-cljs output: method strictness is independent
-/// of the script's selected mode.
+/// Synthetic fixtures, not light-cljs output: methods inherit strictness.
 #[test]
 fn object_literal_methods_in_sloppy_scripts() {
     let source = "let f = ({m() { return this; }}).m; f()";
@@ -5608,12 +5607,84 @@ fn object_literal_methods_in_sloppy_scripts() {
     assert!(!exe.is_strict());
     let spec = exe.to_spec();
     assert_eq!(spec.functions.len(), 1);
-    assert!(spec.functions[0].is_strict());
+    assert!(!spec.functions[0].is_strict());
     assert!(!spec.functions[0].to_spec().constructor);
-    let RunOutcome::Complete(value) = run(&exe, &[]) else {
-        panic!("method must complete")
-    };
-    assert_eq!(value.view(), ValueView::Undefined);
+    // Global-object substitution is explicitly unsupported (clj-quickjs-104).
+    for source in [source, "({m() { return this; }}).m.call(undefined)"] {
+        let exe = compile_script_with("sloppy-method", source, ScriptOptions::SLOPPY).unwrap();
+        let RunOutcome::Failed(error) = run(&exe, &[]) else {
+            panic!("sloppy this substitution must fail: {source}")
+        };
+        assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand, "{source}");
+        assert!(error.message().contains("sloppy-mode"), "{error}");
+    }
+    for source in [
+        "({m() { return 010; }}).m() === 8",
+        "({m(a = 010) { return a; }}).m() === 8",
+        "let o = {m() { return this; }}; o.m() === o && o.m.call(o) === o",
+        "({m() { 'use strict'; return this; }}).m.call(undefined) === undefined",
+        "({m() { 'use strict'; return this; }}).m.call(42) === 42",
+        "let o = {m() { 'use strict'; }, n(a = 010) { return a; }}; o.n() === 8",
+    ] {
+        let exe = compile_script_with("sloppy-method", source, ScriptOptions::SLOPPY).unwrap();
+        match run(&exe, &[]) {
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true), "{source}")
+            }
+            other => panic!("{source}: expected Complete, got {other:?}"),
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: scripts, enclosing functions
+/// and method-local directives all enforce strict-mode early errors.
+#[test]
+fn object_literal_methods_inherit_strictness() {
+    for (source, options) in [
+        ("({m() { return 010; }}).m()", ScriptOptions::STRICT),
+        (
+            "'use strict'; ({m() { return 010; }}).m()",
+            ScriptOptions::SLOPPY,
+        ),
+        (
+            "function f() { 'use strict'; return {m() { return 010; }}; }",
+            ScriptOptions::SLOPPY,
+        ),
+        (
+            "({m() { 'use strict'; return 010; }})",
+            ScriptOptions::SLOPPY,
+        ),
+        ("({m(a = 010) {}})", ScriptOptions::STRICT),
+    ] {
+        let error = compile_script_with("strict-method", source, options).unwrap_err();
+        assert_eq!(
+            error.kind,
+            SyntaxErrorKind::InvalidToken,
+            "{source}: {error}"
+        );
+    }
+    for (source, options) in [
+        (
+            "({m() { return this; }}).m.call(undefined)",
+            ScriptOptions::STRICT,
+        ),
+        (
+            "'use strict'; ({m() { return this; }}).m.call(undefined)",
+            ScriptOptions::SLOPPY,
+        ),
+        (
+            "function f() { 'use strict'; return {m() { return this; }}; } f().m.call(undefined)",
+            ScriptOptions::SLOPPY,
+        ),
+    ] {
+        let exe = compile_script_with("strict-method", source, options).unwrap();
+        match run(&exe, &[]) {
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Undefined, "{source}")
+            }
+            other => panic!("{source}: expected Complete, got {other:?}"),
+        }
+    }
 }
 
 /// Corrupted bytecode must account for a method's extra home-object operand.
