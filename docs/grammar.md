@@ -448,8 +448,8 @@ are still covered by the computed-key rejection below.
 
 ## Explicit gaps
 
-`Intl` provides locale identifiers (clj-quickjs-209/-210); formatting service
-constructors, likely-subtag maximize/minimize, Locale information methods and
+`Intl` provides locale identifiers and likely-subtag maximize/minimize
+(clj-quickjs-209/-210/-211); formatting service constructors, Locale information methods and
 service `supportedLocalesOf` remain deferred. Canonical-tag locale data lookup
 is currently a Rust API, not JS formatting.
 
@@ -887,6 +887,15 @@ check internal-slot branding, independently of the current prototype. The tag
 descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent string fields return
 `undefined`; absent numeric returns `false`, matching the pinned snapshot. `variants` and
 `firstDayOfWeek` options and general `@@toStringTag` consumption remain deferred.
+
+`Intl.Locale.prototype.maximize()` and `minimize()` return a fresh Locale using
+the intrinsic Locale prototype (clj-quickjs-211). They read branded internal
+slots, preserve variants, Unicode attributes/keywords, other extensions and
+private use, and throw TypeError on non-Locale receivers. Maximize fills missing
+language/script/region from the pinned likely-subtag table; minimize tries
+language alone, language-region, then language-script, retaining the first that
+maximizes to the same triple. Unmatched identifiers remain unchanged. These leaf
+methods perform no user coercion or property access and cannot be constructed.
 
 String `+`, `+=`, template interpolation and `String.prototype.concat` use
 immutable ropes above 32 UTF-16 units (clj-quickjs-146). Repeated append or

@@ -254,5 +254,6 @@ mod tests {
     }
 }
 
+pub mod likely;
 pub(crate) mod locale;
 pub mod tag;

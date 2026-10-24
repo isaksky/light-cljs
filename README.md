@@ -2821,13 +2821,23 @@ Malformed tags/options throw RangeError; invalid argument kinds and receivers
 throw TypeError. Unknown well-formed tags such as `xx` remain valid identifiers;
 they do not advertise extra formatting-data coverage.
 
-Deferred: `maximize`/`minimize`, Locale information methods, `variants` and
+Deferred: Locale information methods, `variants` and
 `firstDayOfWeek` constructor options, service locale resolution and
 `supportedLocalesOf`. Alias rules follow the selected pinned QuickJS cases,
 with `co-phonebook` accepted and normalized to `co-phonebk` as required by this
 pellet. Locale's absent `numeric` getter returns `false` as in that snapshot.
 General `Object.prototype.toString` consumption of Locale's tag shares the
 existing deferred `@@toStringTag` behavior.
+
+### Locale likely subtags (clj-quickjs-211)
+
+Supported: `Intl.Locale.prototype.maximize()` and `minimize()` return fresh
+Locale objects, preserve variants and every extension, and reject non-Locale
+receivers with TypeError. They use all 7,788 pinned likely-subtag entries as
+supplemental data without expanding the advertised service locale set.
+For example, `en` maximizes to `en-Latn-US`; `zh-Hant` minimizes to `zh-TW`.
+Lookup and unknown-subtag behavior reproduce the pinned QuickJS strings:
+`und` maximizes to `en-Latn-US`, while unmatched `xx` stays `xx`.
 
 
 ### Task-owned job queue (clj-quickjs-174)

@@ -1209,6 +1209,10 @@ fn intl_locale_intrinsics(
         _ => false,
     })?
     .then_some(())?;
+    for method in [Builtin::IntlLocaleMaximize, Builtin::IntlLocaleMinimize] {
+        let function = b.function(method, &[])?;
+        b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;
+    }
     Some(prototype)
 }
 
@@ -1483,7 +1487,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 144); // Includes Locale and integer typed arrays.
+        assert_eq!(first.all.len(), 146); // Includes Locale maximize/minimize and integer typed arrays.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

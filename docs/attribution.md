@@ -475,3 +475,17 @@ and shift assertions of `research/quickjs/tests/test_bigint.js::test_bigint1`
 and `test_bigint3`, comparing string-conversion cases by exact integer value.
 Its full QuickJS copyright and MIT permission notice is retained on the test.
 Other new cases are synthetic fixtures, not light-cljs output.
+
+## Locale likely subtags (clj-quickjs-211)
+
+`src/intl/likely.rs` and the leaf methods in `src/intl/locale.rs` were written
+afresh using `research/quickjs/intl/locale.c` (`likely_subtags_lookup`,
+`locale_add_likely_subtags`, `locale_minimize_base`, `js_locale_maximize`,
+`js_locale_minimize`) as semantic references at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The required nine maximize/five minimize rows in the pure unit test
+`likely_subtags_add_and_remove` and source test `intl_locale_maximize_minimize`
+adapt `research/quickjs/tests/test_intl.js::test_locale` at that revision. The
+QuickJS copyright and MIT permission notice precedes each test; additional
+fixtures are synthetic, not light-cljs output. The unchanged supplemental data
+retains its QuickJS and Unicode notices described above.

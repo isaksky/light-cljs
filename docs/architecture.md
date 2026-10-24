@@ -4653,7 +4653,7 @@ are the later language-tag and service pellets; this is a data lookup API.
 | Service/input | Snapshot coverage and policy |
 | --- | --- |
 | Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. JS services remain deferred. |
-| Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; maximize/minimize is deferred. |
+| Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; Locale maximize/minimize consumes them (clj-quickjs-211). |
 | Calendar/hour preferences, week data, script directions | Snapshot-wide supplemental tables retained for later Locale/date consumers. |
 | Display names | Exactly `en` and `fr` data; other requested languages must be reported unsupported by that service, then resolve through its available default/root (`en`). They must not claim translated names for the whole numbers/date locale set. |
 | Plural rules | Not in `locale-data.c`: rules are code in `intl/pluralrules.c`; later PluralRules work must port/test the rules for the advertised locales. |
@@ -4916,7 +4916,7 @@ The shared list operation returns the ordinary array consumed by the public
 Locale's namespace/prototype functions and branded accessors are appended to the
 realm, including `Symbol.toStringTag = 'Intl.Locale'`. The existing restriction
 on intrinsic mutation still applies. General Object.prototype.toString tag
-consumption remains deferred. Likely-subtag operations, information methods,
+consumption remains deferred. Information methods,
 `variants`/`firstDayOfWeek` options and formatting service resolution belong to
 later pellets. Numeric absent from the tag/options yields `false`, matching
 the pinned QuickJS getter rather than assuming another engine's output.
@@ -5019,3 +5019,33 @@ conversion order and Number semantics remain in force; no opcode, dependency
 or heap kind is added. Source tests include conversion waits, instruction
 budget yields, collection and migration, plus cap-boundary and native i128
 comparisons for complement carries, signs, rounding and word-aligned shifts.
+
+## Locale likely subtags (clj-quickjs-211)
+
+`intl::likely::{maximize,minimize}` are pure operations on parsed `LanguageTag`
+records. `lookup` performs a binary search over the existing, complete 7,788-row
+likely-subtag table, separately reading the key and value from each embedded-NUL
+byte pool through checked UTF-8 accessors. Tests verify ordering and lookup of
+every row independently from the semantic Add/Remove Likely Subtags tests. No
+data conversion or generated representation changes are needed.
+
+Expected strings follow `intl/locale.c` at the pinned QuickJS revision, including
+its search details: a specified language/script/region triple is already maximal;
+otherwise try `und-script-region` when language is unspecified, then
+`language-script`, `language-region`, and `language` (using `und` for an
+unspecified language). `Zzzz` and `ZZ` count as missing script/region. An unknown
+language has no fallback to `und-script`, and a failed search leaves the original
+identifier intact. This deliberately follows the agreed QuickJS-output policy
+where the pellet's generic UTS 35 lookup-order description differs from that
+snapshot. Explicit subtags win over inferred data. Minimize first maximizes, then
+tries language alone, language-region and language-script, checking each by
+maximizing again. Variants and every extension survive both operations.
+
+Two appended realm methods call these functions as leaf built-ins. The brand
+and ownership check clones the immutable record before any allocation, then a
+fresh ordinary task-owned Locale uses the intrinsic prototype. No JavaScript
+getters, overridden constructors or coercions run; no continuation, heap kind or
+GC edge is added. Existing ordinary-object tracing and publication rules apply
+to the result. The realm retention assertion increases from 124 to 126 to count
+the two new function objects. Formatting service negotiation and
+`supportedLocalesOf` remain with clj-quickjs-212.

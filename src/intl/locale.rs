@@ -127,3 +127,29 @@ pub(crate) fn inspect(
         .map(|s| Value::String(JsString::from(s.as_str())))
         .unwrap_or(Value::Undefined))
 }
+
+/// Create a new Locale from immutable slots, without user property access or
+/// coercion. The allocation uses the realm's Locale prototype, as construction
+/// does, and therefore never calls an overridden constructor or string method.
+pub(crate) fn likely_subtags(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    minimize: bool,
+) -> Result<Value, Fault> {
+    let tag = record(heap, task, this)?
+        .ok_or_else(|| Fault::TypeError("Intl.Locale receiver required".into()))?;
+    let tag = if minimize {
+        super::likely::minimize(&tag)
+    } else {
+        super::likely::maximize(&tag)
+    };
+    let prototype = crate::realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .intl_locale_prototype;
+    let object =
+        crate::object::OrdinaryObject::with_prototype(task, prototype).with_locale_data(tag);
+    heap.alloc(HeapObject::Plain(object))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap exhausted"))
+}

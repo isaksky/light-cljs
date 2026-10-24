@@ -285,6 +285,9 @@ pub(crate) enum Builtin {
     TypedArrayLength,
     TypedArrayByteLength,
     TypedArrayByteOffset,
+
+    IntlLocaleMaximize,
+    IntlLocaleMinimize,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -338,6 +341,9 @@ impl Builtin {
             Builtin::TypedArrayLength => "get length",
             Builtin::TypedArrayByteLength => "get byteLength",
             Builtin::TypedArrayByteOffset => "get byteOffset",
+
+            Builtin::IntlLocaleMaximize => "maximize",
+            Builtin::IntlLocaleMinimize => "minimize",
             Builtin::ArrayBuffer => "ArrayBuffer",
             Builtin::ArrayBufferByteLength => "get byteLength",
             Builtin::ArrayBufferDetached => "get detached",
@@ -428,14 +434,17 @@ impl Builtin {
     pub(crate) fn length(self) -> u32 {
         match self {
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
-            Builtin::IntlLocaleToString | Builtin::IntlLocaleGet(_) => 0,
-
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
             Builtin::TypedArrayBuffer
             | Builtin::TypedArrayLength
             | Builtin::TypedArrayByteLength
             | Builtin::TypedArrayByteOffset => 0,
+
+            Builtin::IntlLocaleToString
+            | Builtin::IntlLocaleGet(_)
+            | Builtin::IntlLocaleMaximize
+            | Builtin::IntlLocaleMinimize => 0,
             Builtin::ArrayBuffer => 1,
             Builtin::ArrayBufferByteLength
             | Builtin::ArrayBufferDetached
@@ -539,6 +548,14 @@ pub(crate) fn call(
             Err(Fault::Internal("locale lists require a resumable frame"))
         }
         Builtin::IntlLocaleToString => crate::intl::locale::inspect(heap, task, this, None),
+        Builtin::IntlLocaleMaximize | Builtin::IntlLocaleMinimize => {
+            crate::intl::locale::likely_subtags(
+                heap,
+                task,
+                this,
+                which == Builtin::IntlLocaleMinimize,
+            )
+        }
         Builtin::IntlLocaleGet(field) => {
             crate::intl::locale::inspect(heap, task, this, Some(field))
         }

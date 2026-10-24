@@ -14795,6 +14795,95 @@ fn intl_locale_construct_and_canonicalize() {
     );
 }
 
+/// Adapted test_locale rows from QuickJS tests/test_intl.js, revision
+/// 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. Synthetic fixture, not light-cljs output.
+///
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn intl_locale_maximize_minimize() {
+    for (method, rows) in [
+        (
+            "maximize",
+            &[
+                ("en", "en-Latn-US"),
+                ("de", "de-Latn-DE"),
+                ("ja", "ja-Jpan-JP"),
+                ("zh", "zh-Hans-CN"),
+                ("zh-Hant", "zh-Hant-TW"),
+                ("ru", "ru-Cyrl-RU"),
+                ("fr", "fr-Latn-FR"),
+                ("ar", "ar-Arab-EG"),
+                ("pt-BR", "pt-Latn-BR"),
+            ][..],
+        ),
+        (
+            "minimize",
+            &[
+                ("en", "en"),
+                ("de", "de"),
+                ("ja", "ja"),
+                ("zh-Hant", "zh-TW"),
+                ("en-GB", "en-GB"),
+            ][..],
+        ),
+    ] {
+        for (tag, expected) in rows {
+            let source = format!("new Intl.Locale('{tag}').{method}().toString() === '{expected}'");
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+    for source in [
+        "new Intl.Locale('en-u-ca-gregory').maximize().toString() === 'en-Latn-US-u-ca-gregory'",
+        "new Intl.Locale('zh-Hant-u-ca-gregory').minimize().toString() === 'zh-TW-u-ca-gregory'",
+        "let l = new Intl.Locale('en'); let m = l.maximize(); let n = l.minimize(); m !== l && n !== l && m !== n && l.toString() === 'en' && m instanceof Intl.Locale && Object.getPrototypeOf(m) === Intl.Locale.prototype",
+        "let l = new Intl.Locale('de-1901-a-foobar-u-attr-ca-gregory-kn-x-private'); l.maximize().toString() === 'de-Latn-DE-1901-a-foobar-u-attr-ca-gregory-kn-x-private' && l.maximize().minimize().toString() === l.toString()",
+        "let l = new Intl.Locale('en'); l.toString = function(){throw 9;}; l.maximize().toString() === 'en-Latn-US'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for method in ["maximize", "minimize"] {
+        for receiver in [
+            "{}",
+            "null",
+            "'en'",
+            "Intl.Locale.prototype",
+            "Object.create(Intl.Locale.prototype)",
+        ] {
+            let source = format!(
+                "let caught = false; try {{ Intl.Locale.prototype.{method}.call({receiver}); }} catch(e) {{ caught = e instanceof TypeError; }} caught"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+        let source = format!(
+            "let d = Object.getOwnPropertyDescriptor(Intl.Locale.prototype, '{method}'); d.value.name === '{method}' && d.value.length === 0 && d.writable && !d.enumerable && d.configurable"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        let source = format!(
+            "let caught = false; try {{ new Intl.Locale.prototype.{method}(); }} catch(e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn intl_locale_options_lists_and_brand_checks() {
@@ -14931,6 +15020,8 @@ fn intl_locale_task_ownership() {
     for body in [
         "value.language",
         "Intl.Locale.prototype.toString.call(value)",
+        "Intl.Locale.prototype.maximize.call(value)",
+        "Intl.Locale.prototype.minimize.call(value)",
         "Object.getOwnPropertyDescriptor(Intl.Locale.prototype,'region').get.call(value)",
         "new Intl.Locale(value)",
         "Intl.getCanonicalLocales(value)",
