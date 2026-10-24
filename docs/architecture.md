@@ -2794,7 +2794,9 @@ those of ordinary objects; virtual properties introduce no heap edges.
   assertion and expected value is retained; no other upstream lines change.
   `tests/exceptions.rs::quickjs_using_cases_pass` compiles in sloppy mode and
   runs bounded instruction slices, collecting between yields. It requires
-  normal completion and an empty unhandled-rejection report at quiescence.
+  normal completion, no suspended async activations, and an empty
+  unhandled-rejection report at quiescence. A never-settling final await is
+  rejected by a separate negative control.
   The negative control changes one sync expectation and one async expectation
   independently. The async control observes the Error and its exact assertion
   message through a host effect in the final catch before rethrowing the same

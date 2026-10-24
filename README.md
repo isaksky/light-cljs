@@ -4128,12 +4128,14 @@ Verify with
 
 Supported fixture coverage: `tests/exceptions.rs` runs the complete pinned
 QuickJS `test_using` and `test_await_using` with their original helpers and
-assertions in sloppy mode, draining jobs and checking unhandled rejections.
+assertions in sloppy mode, draining jobs and checking unhandled rejections
+and suspended async activations.
 `test_using` is adapted to assert TypeError for both writes to the immutable
 `SuppressedError.prototype.constructor`; `test_await_using` is unmodified.
 The fixture header lists the two adaptations and retains the QuickJS license.
 A negative control verifies sync assertion failure and an async unhandled
-assertion rejection. Synthetic fixture, not light-cljs output.
+assertion rejection; another rejects a never-settling final await.
+Synthetic fixture, not light-cljs output.
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test exceptions quickjs_using -- --test-threads=3

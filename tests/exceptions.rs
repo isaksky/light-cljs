@@ -149,6 +149,13 @@ fn run_quickjs_using(
         if matches!(outcome, RunOutcome::Yielded) {
             rt.collect().unwrap();
         } else {
+            if matches!(outcome, RunOutcome::Complete(_)) {
+                let suspended = task.suspended_async_activations();
+                assert!(
+                    suspended.is_empty(),
+                    "using fixture left suspended async activations: {suspended:?}"
+                );
+            }
             return (outcome, task.unhandled_rejections());
         }
     }
@@ -207,6 +214,18 @@ fn quickjs_using_fixture_detects_a_wrong_result() {
     assert_eq!(report.dropped, 0);
     assert_eq!(report.entries[0].reason.view(), ValueView::Object);
     assert_eq!(log.0, vec![1.0], "rejection is the assertion Error");
+}
+
+#[test]
+#[should_panic(expected = "using fixture left suspended async activations")]
+fn quickjs_using_fixture_detects_an_unfinished_async_case() {
+    let last_await = "var result = await stack.disposeAsync();";
+    assert_eq!(QUICKJS_USING.matches(last_await).count(), 1);
+    // The script and jobs can finish with no rejection even though the last
+    // async assertion never runs. The fixture runner must reject that state.
+    let unfinished = QUICKJS_USING.replace(last_await, "var result = await new Promise(() => {});");
+    let rt = Runtime::new();
+    run_quickjs_using(&rt, &unfinished, &mut Log::default());
 }
 
 #[test]

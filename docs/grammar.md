@@ -6645,8 +6645,9 @@ Syntax, Execution, Exceptions and Rejected forms are unchanged. The source
 fixture `tests/fixtures/js/quickjs_test_language_using.js` exercises the existing
 `using`, `for (using ... of ...)`, `await using`, DisposableStack and
 AsyncDisposableStack support in upstream's sloppy script mode. The harness
-collects between budget slices and checks unhandled rejections after all jobs
-drain; a normal script result alone cannot establish async assertion success.
+collects between budget slices and checks unhandled rejections and suspended
+async activations after all jobs drain; a normal script result alone cannot
+establish async assertion success.
 
 `test_await_using` and the helpers are unmodified. `test_using` wraps its two
 `SuppressedError.prototype.constructor` writes in TypeError assertions, keeping
