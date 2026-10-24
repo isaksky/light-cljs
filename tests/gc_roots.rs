@@ -1056,7 +1056,8 @@ fn realm_intrinsics_retain() {
     // String replacement adds two built-in functions (-189).
     // BigInt conversion adds two built-in methods (-202).
     // Promise adds one prototype and five built-ins (-246).
-    assert_eq!(rt.heap_usage().objects.builtin, 170);
+    // Local Date fields and host inputs add seventeen built-ins (-182).
+    assert_eq!(rt.heap_usage().objects.builtin, 187);
     assert_eq!(rt.heap_usage().objects.plain, 34);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
