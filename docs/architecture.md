@@ -4074,3 +4074,24 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
 `js_native_error_proto_funcs` were consulted for semantics. Rust code and
 synthetic fixtures in `tests/js_source.rs` were written fresh; no upstream
 source or test text was copied.
+
+## Math.sqrt and Math.log2 (clj-quickjs-205)
+
+The realm adds two rooted built-in functions to its existing Math namespace.
+`Builtin::MathSqrt` and `Builtin::MathLog2` are appended to the built-in enum;
+there is no new heap kind, opcode, or global slot. Both have name/length
+metadata and the existing method descriptor flags. Primitive operands use
+`builtin::math`; object operands enter the existing traced `native::Convert`
+continuation with a number hint, so getters and coercion callbacks may wait,
+yield, collect and migrate without retaining a Rust frame.
+
+Square root uses `f64::sqrt`, which is correctly rounded and preserves -0.
+Log2 detects positive finite powers of two directly from binary64 exponent
+and significand bits. Normal powers return exponent minus 1023; subnormal
+powers return the lone significand bit's position minus 1074. Other inputs
+use `f64::log2`, including its IEEE special values. Non-power-of-two accuracy
+is platform/Rust-version dependent, not a claim of correct rounding; source
+tests pin log2(10) to 3.321928094887362 and ceil(2000 * log2(10)) to 6644.
+Source tests check every representable power of two, edge cases, descriptors,
+conversion failures, and coercion across waits/GC/worker migration. The realm
+and GC inventory expectations increase by exactly two intrinsic functions.

@@ -2718,3 +2718,32 @@ RangeError('m').toString() === 'RangeError: m';
 Object.getPrototypeOf(URIError) === Error && Object.getPrototypeOf(URIError.prototype) === Error.prototype;
 InternalError.prototype.toString === Error.prototype.toString;
 ```
+
+### Math.sqrt and Math.log2 (clj-quickjs-205)
+
+Lexical grammar: no new syntax; both are ordinary Math member calls.
+Execution: `sqrt` and `log2` have length 1 and non-enumerable, writable,
+configurable descriptors. They ignore the receiver and extra arguments;
+missing arguments become undefined. Both use ToNumber, including resumable
+number-hint ToPrimitive for objects and catchable conversion errors.
+`Math.sqrt` uses correctly rounded binary64 square root, preserves signed
+zero, returns NaN for negative inputs and NaN, and preserves +Infinity.
+`Math.log2` returns exact integer exponents for all representable positive
+powers of two, including subnormals; either signed zero gives -Infinity,
+negative inputs and NaN give NaN, +Infinity gives +Infinity, and 1 gives +0.
+
+Synthetic fixtures, not light-cljs output:
+
+```js
+Math.sqrt(2) === 1.4142135623730951;
+Math.log2(2 ** -1074) === -1074;
+Math.log2(10) === 3.321928094887362;
+Math.ceil(2000 * Math.log2(10)) === 6644;
+```
+
+Explicit gaps: non-power-of-two `log2` uses Rust's platform math operation;
+its precision can vary by platform and Rust version and is not guaranteed
+correctly rounded. The value for 10 and the digit-sizing expression above
+are pinned by source tests on the tested platform. Other Math methods and
+constants remain tracked by their own pellets. The existing shared realm
+immutability policy also applies to these methods.

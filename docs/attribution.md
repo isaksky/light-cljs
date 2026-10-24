@@ -229,3 +229,13 @@ The first two rows in `tests/js_source.rs::array_constructor_and_is_array`
 adapt `research/quickjs/tests/test_builtin.js::test_array` at that revision.
 Its full copyright and MIT permission notice is retained on `array_push`
 in that test file. Other fixtures are synthetic, not light-cljs output.
+
+## Math.sqrt and Math.log2 (clj-quickjs-205)
+
+Consulted `js_math_funcs` in `research/quickjs/quickjs.c`,
+`research/quickjs/tests/test_bigint.js` (`test_bigint1`, `compute_pi`), and
+`research/quickjs/examples/pi_bigint.js` (`main`) at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04) as semantic
+references for unary Math methods and pi digit sizing. No implementation or
+test body was copied; the new source fixtures are synthetic, not light-cljs
+output. Numeric work uses Rust binary64 operations and exponent inspection.

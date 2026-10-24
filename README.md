@@ -2634,3 +2634,14 @@ including Error's resumable message conversion, cause getters and captured stack
 constructors inherit from Error, their prototypes from Error.prototype,
 and instances support both `instanceof` checks and inherited `toString`.
 Tests: `cargo test --test js_source native_error`.
+
+### Math.sqrt and Math.log2 (clj-quickjs-205)
+
+Supported: unary `Math.sqrt` and `Math.log2`, with ToNumber coercion,
+resumable object conversion, length 1, and ordinary Math method descriptors.
+Square root is correctly rounded and preserves -0. Log2 is exact for every
+representable positive power of two, including subnormals. Non-power-of-two
+log2 precision depends on the platform and Rust version; source tests pin
+`Math.log2(10) === 3.321928094887362` and the pi digit-sizing expression
+`Math.ceil(2000 * Math.log2(10)) === 6644`.
+Run `cargo test --test js_source math_`.

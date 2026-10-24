@@ -247,6 +247,9 @@ pub(crate) enum Builtin {
     NativeError(NativeErrorKind),
     /// Number exponentiation shared with `**` (clj-quickjs-164).
     MathPow,
+    /// Unary IEEE Math methods (clj-quickjs-205).
+    MathSqrt,
+    MathLog2,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -345,6 +348,8 @@ impl Builtin {
             Builtin::MathFround => "fround",
             Builtin::MathHypot => "hypot",
             Builtin::MathPow => "pow",
+            Builtin::MathSqrt => "sqrt",
+            Builtin::MathLog2 => "log2",
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -405,6 +410,7 @@ impl Builtin {
             Builtin::ParseFloat => 1,
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
+            Builtin::MathSqrt | Builtin::MathLog2 => 1,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -457,7 +463,9 @@ pub(crate) fn call(
         | Builtin::MathAbs
         | Builtin::MathImul
         | Builtin::MathPow
-        | Builtin::MathFround => math(which, args),
+        | Builtin::MathFround
+        | Builtin::MathSqrt
+        | Builtin::MathLog2 => math(which, args),
         Builtin::MathHypot => Err(Fault::Internal("hypot requires a budgeted native frame")),
         Builtin::ObjectPrototypeToString => {
             let tag = to_string_tag(heap, this)?;
@@ -565,6 +573,8 @@ pub(super) fn math(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
             let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
             super::dispatch::exponentiate(x, y)
         }
+        Builtin::MathSqrt => x.sqrt(),
+        Builtin::MathLog2 => math_log2(x),
         Builtin::MathImul => {
             let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
             f64::from(super::dispatch::to_int32(x).wrapping_mul(super::dispatch::to_int32(y)))
@@ -572,6 +582,23 @@ pub(super) fn math(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
         _ => return Err(Fault::Internal("not a fixed-arity Math operation")),
     };
     Ok(Value::Number(result))
+}
+
+/// Powers of two are exact, including subnormals; other inputs use the
+/// platform's log2, whose precision can vary across platforms/Rust versions.
+fn math_log2(x: f64) -> f64 {
+    if x > 0.0 && x.is_finite() {
+        let bits = x.to_bits();
+        let exponent = (bits >> 52) as i32;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        if exponent != 0 && fraction == 0 {
+            return f64::from(exponent - 1023);
+        }
+        if exponent == 0 && fraction.is_power_of_two() {
+            return f64::from(fraction.trailing_zeros() as i32 - 1074);
+        }
+    }
+    x.log2()
 }
 
 /// Global predicates receive a primitive after resumable ToPrimitive;

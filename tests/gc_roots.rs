@@ -862,6 +862,8 @@ fn realm_intrinsics_retain() {
         "Math.fround",
         "Math.hypot",
         "Math.pow",
+        "Math.sqrt",
+        "Math.log2",
         "Array.prototype.join",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
@@ -914,7 +916,8 @@ fn realm_intrinsics_retain() {
     // String.prototype.split, clj-quickjs-157, Array.isArray, clj-quickjs-153,
     // seven NativeError constructors and prototypes, clj-quickjs-229,
     // and Math.pow, clj-quickjs-164.
-    assert_eq!(rt.heap_usage().objects.builtin, 71);
+    // Two unary Math functions were added by clj-quickjs-205.
+    assert_eq!(rt.heap_usage().objects.builtin, 73);
     assert_eq!(rt.heap_usage().objects.plain, 14);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

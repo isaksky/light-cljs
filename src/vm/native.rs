@@ -921,6 +921,8 @@ pub(crate) fn start_builtin(
         | Builtin::MathImul
         | Builtin::MathPow
         | Builtin::MathFround
+        | Builtin::MathSqrt
+        | Builtin::MathLog2
         | Builtin::MathHypot
             if !construct =>
         {

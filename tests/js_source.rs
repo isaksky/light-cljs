@@ -130,6 +130,48 @@ fn math_pow() {
     assert_eq!(failure("new Math.pow(2, 3)").kind(), VmErrorKind::TypeError);
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn math_sqrt_and_log2() {
+    for src in [
+        "Math.sqrt(4) === 2 && Math.sqrt(2) === 1.4142135623730951",
+        "1 / Math.sqrt(-0) === -Infinity && 1 / Math.sqrt(0) === Infinity",
+        "Number.isNaN(Math.sqrt(-1)) && Number.isNaN(Math.sqrt(-Infinity)) && Number.isNaN(Math.sqrt(NaN))",
+        "Math.sqrt(Infinity) === Infinity && Math.sqrt(Number.MIN_VALUE) === 2 ** -537",
+        "Math.log2(8) === 3 && Math.log2(2 ** -1074) === -1074",
+        "Math.log2(10) === 3.321928094887362 && Math.ceil(2000 * Math.log2(10)) === 6644",
+        "Math.log2(0) === -Infinity && Math.log2(-0) === -Infinity",
+        "Number.isNaN(Math.log2(-1)) && Number.isNaN(Math.log2(-Infinity)) && Number.isNaN(Math.log2(NaN))",
+        "Math.log2(Infinity) === Infinity && 1 / Math.log2(1) === Infinity",
+        "Number.isNaN(Math.sqrt()) && Number.isNaN(Math.log2()) && Number.isNaN(Math.sqrt(undefined))",
+        "Math.sqrt('9') === 3 && Math.sqrt(null) === 0 && Math.log2(true) === 0 && Math.log2(null) === -Infinity",
+        "Math.sqrt.call(null, '16') === 4 && Math.log2.apply(null, [32]) === 5 && Math.sqrt.bind(null, 25)() === 5",
+        "let log = ''; let o = {valueOf() {log += 'v'; return {};}, toString() {log += 's'; return '16';}}; Math.sqrt(o) === 4 && Math.log2(o) === 4 && log === 'vsvs'",
+        "let o = {valueOf() {throw 42;}}; Math.sqrt(4, o) === 2 && Math.log2(8, o) === 3",
+        "let ok = true; for (let e = -1074; e <= 1023; e++) { if (Math.log2(2 ** e) !== e) {ok = false;} } ok",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for name in ["sqrt", "log2"] {
+        let src = format!(
+            "let f = Math.{name}; let d = Object.getOwnPropertyDescriptor(Math, '{name}'); d.value === f && d.writable && !d.enumerable && d.configurable && f.length === 1 && f.name === '{name}' && Object.getPrototypeOf(f) === Function.prototype"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        assert_eq!(
+            failure(&format!("new Math.{name}()")).kind(),
+            VmErrorKind::TypeError
+        );
+        assert_eq!(
+            failure(&format!("Math.{name}(Object.create(null))")).kind(),
+            VmErrorKind::TypeError
+        );
+        let src = format!(
+            "let caught = false; try {{ Math.{name}({{valueOf() {{throw 42;}}}}); }} catch(e) {{caught = e === 42;}} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first rows adapt test_math
 /// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
 /// and MIT permission notice is retained on string_code_unit_access below.
@@ -270,6 +312,8 @@ fn math_coercion_waits_yields_collects_and_migrates() {
         ("Math.ceil.call(null, v(-2.5, 152)) === -2", "152,"),
         ("Math.abs.apply(null, [v(-2.5, 152)]) === 2.5", "152,"),
         ("Math.fround.bind(null, v(1.5, 152))() === 1.5", "152,"),
+        ("Math.sqrt(v(4, 152)) === 2", "152,"),
+        ("Math.log2.call(null, v(8, 152)) === 3", "152,"),
         ("Math.imul(v(-2, 152), v(4, 153)) === -8", "152,153,"),
         ("Math.pow(v(2, 152), v(3, 153)) === 8", "152,153,"),
         ("Math.pow(NaN, v(0, 152)) === 1", "152,"),
