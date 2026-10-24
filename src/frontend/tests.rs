@@ -189,7 +189,7 @@ fn module_records_of_quickjs_cases() {
 
 #[test]
 fn module_syntax_rejections() {
-    use super::SyntaxErrorKind::{Invalid, Unsupported};
+    use super::SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
     let cases = [
         ("export * from 's';", Unsupported, 1, 8, "export *"),
         (
@@ -321,6 +321,21 @@ fn module_syntax_rejections() {
             "duplicate exported",
         ),
         ("import {if} from 's';", Invalid, 1, 9, "import binding"),
+        (r"import \u0069f from 's';", Invalid, 1, 8, "reserved word"),
+        (
+            r"import * as \u0069f from 's';",
+            Invalid,
+            1,
+            13,
+            "reserved word",
+        ),
+        (
+            "import 's';\n\\u0069f;",
+            ReservedWord,
+            2,
+            1,
+            "reserved word",
+        ),
         (
             r"import {\u0069f} from 's';",
             Invalid,

@@ -148,13 +148,7 @@ impl Parser<'_> {
         let mut body = Vec::new();
         while self.tok.kind != TokenKind::Eof {
             if self.is_keyword(Keyword::Import) {
-                self.parse_import_declaration(&mut tables)
-                    .map_err(|mut e| {
-                        if e.kind == SyntaxErrorKind::ReservedWord {
-                            e.kind = SyntaxErrorKind::Invalid;
-                        }
-                        e
-                    })?;
+                self.parse_import_declaration(&mut tables)?;
             } else if self.is_keyword(Keyword::Export) {
                 if let Some(item) = self.parse_export_declaration(&mut tables)? {
                     body.push(item);
@@ -183,8 +177,17 @@ impl Parser<'_> {
     }
 
     fn check_import_binding(&self, ident: &Ident) -> PResult<()> {
-        if Keyword::from_text(&ident.name).is_some()
-            || RESERVED_CONSTANTS.contains(&ident.name.as_str())
+        if Keyword::from_text(&ident.name).is_some() {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                ident.span,
+                format!(
+                    "`{}` is a reserved word and cannot be used as an import binding name",
+                    ident.name
+                ),
+            ));
+        }
+        if RESERVED_CONSTANTS.contains(&ident.name.as_str())
             || STRICT_RESTRICTED.contains(&ident.name.as_str())
         {
             return Err(self.error(
@@ -240,6 +243,10 @@ impl Parser<'_> {
 
     fn parse_import_declaration(&mut self, tables: &mut Tables) -> PResult<()> {
         let start = self.tok.span;
+        // Lex binding names as IdentifierNames first, so escaped keywords
+        // reach the binding check instead of failing during lookahead. Never
+        // reclassify a lexical error fetched after the declaration's `;`.
+        self.lexer.expect_property_name();
         self.advance()?;
         if self.is_punct(Punct::LParen) {
             return Err(self.unsupported(start, "dynamic `import()` is"));
@@ -263,6 +270,7 @@ impl Parser<'_> {
             }
         }
         if self.eat_punct(Punct::Star)? {
+            self.lexer.expect_property_name();
             self.expect_module_word("as")?;
             let local = self.parse_import_binding()?;
             bindings.push((ImportName::Namespace, local));
@@ -272,6 +280,7 @@ impl Parser<'_> {
             while !self.is_punct(Punct::RBrace) {
                 let imported = self.parse_module_name()?;
                 let local = if self.is_module_word("as") {
+                    self.lexer.expect_property_name();
                     self.advance()?;
                     self.parse_import_binding()?
                 } else {
