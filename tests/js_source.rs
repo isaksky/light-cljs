@@ -9035,6 +9035,14 @@ fn objects_convert_with_to_primitive() {
     );
     assert_eq!(string("function f() {} `${f}`"), "[object Function]");
     assert_eq!(
+        string("function f() {} `${f.bind(null)}`"),
+        "[object Function]"
+    );
+    assert_eq!(
+        num("function f(a) { return this.n + a; } let o = {valueOf: f.bind({n: 4}, 3)}; o * 2"),
+        14.0
+    );
+    assert_eq!(
         string("({valueOf: Object.prototype.toString}) + ''"),
         "[object Object]"
     );

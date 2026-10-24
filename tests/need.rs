@@ -1029,3 +1029,36 @@ fn to_primitive_property_key_wait_preserves_assignment_operands() {
     assert_eq!(number(outcome), 7.0);
     assert_eq!(host.reports, [1.0]);
 }
+
+#[test]
+fn to_primitive_bound_method_waits_with_its_bound_receiver() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "bound conversion",
+        r#"
+        function method(offset) {
+            __rt.effect(2, this.n);
+            return offset + this.n + __rt.need(5, 3);
+        }
+        let o = {n: 99};
+        o.valueOf = method.bind({n: 4}, 3);
+        o * 2;
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    assert_eq!(waiting(run(&task, &mut host)), key(&rt, NUMBER));
+    assert_eq!(host.reports, [4.0]);
+    rt.collect().unwrap();
+    let request = one_request(&task, key(&rt, NUMBER));
+    let resumed = only_runnable(publish_number(&rt, &request, 2.0));
+    let (outcome, host) = thread::spawn(move || {
+        rt.collect().unwrap();
+        (run(&resumed, &mut host), host)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(outcome), 18.0);
+    assert_eq!(host.reports, [4.0]);
+}
