@@ -57,6 +57,8 @@ cargo test --test e2e             # the same scenario, asserted
 cargo test --test native_fold     # resumable natives: a fold whose callback waits, needAll, GC
 cargo test --lib vm::native::     # leaf versus resumable natives, step accounting
 cargo test --test exception_waits # waits inside handlers, catchable dependency failures, cancellation cleanup
+cargo test --test concurrency     # bounded adversarial concurrency and cross-feature suite
+cargo test --test concurrency seeded   # only the seeded repeated schedules
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -975,3 +977,53 @@ Deferred:
 - Error objects still have no properties (`message`, `cause` are not
   readable from JavaScript); a cancellation cleanup that ends early reports
   only `Cancelled`, not why.
+
+### Concurrency regression suite (clj-quickjs-14)
+
+`tests/concurrency/` (module docs list the guarantees; the harness is
+`tests/concurrency/harness.rs`). Run `cargo test --test concurrency`.
+
+Supported (tested, not new runtime behavior):
+
+- A bounded harness over the production runtime and the two-worker
+  executor: a recording driver and hosts, gates inside host effects and
+  between a driver's `RunGuard::need` and `RunGuard::park`, migration and
+  seeded placement hooks. Every wait is bounded (20 s per wait, 90 s per
+  scenario); a hang, a gate never opened, a task left parked (lost wakeup)
+  or a broken invariant fails with the harness notes and executor events.
+  Self-tests prove each detection. Nothing sleeps; time only bounds.
+- Invariants checked after every scenario: no task in two drivers at once,
+  dispatch/release alternation on one worker, increasing execution
+  numbers, one terminal release, effects only inside their task's runs, no
+  task left queued or parked.
+- Wake/park/cancel matrix: publish `Ready`/`Failed`, cancel the cell,
+  cancel the consumer, duplicate and spurious wakes, and publication plus
+  cancellation, each before registration, subscribed-but-not-parked, and
+  parked (with a collection while parked); plus a completion racing a
+  consumer cancellation (exactly one enqueues; the run is cancelled).
+- Sixteen waiters with a racing host claim (one producer), world and
+  result-kind isolation with cross-producer rejection, terminal stability
+  of cells and tasks, ready reads recording edges, no effect replay, and
+  24 seeded schedules mixing plain, cancelled-before-need and
+  cancelled-while-parked consumers with a racing publication.
+- Cross-feature: a fold callback suspended inside `try`/`finally`, and a
+  fold inside a `finally` with a pending `return`, collected and migrated
+  at every suspension (cleanup once, after the last result; identities
+  kept; input reclaimed after); an atom replaced three times by a native
+  job while a parked task holds an earlier read (old read survives,
+  unheld intermediates are reclaimed, fresh load sees the newest); deep
+  recursion and mutually recursive published callables waiting across
+  migration with no cycle reported, versus a genuine two-producer wait
+  cycle reported by `DependencyGraph` and settled by failing the newest
+  demand's result; a producer failure racing the cancellation of half of
+  eight waiters guarded by `catch`/`finally` (cancelled ones run finally
+  once and no catch; the others are woken once, migrate and catch the
+  failure at the need).
+
+Deferred:
+
+- Single-task exception, cancellation-cleanup and native-unwinding cases
+  stay with clj-quickjs-27 (`tests/exception_waits.rs`) and -28; the GC
+  root inventory is clj-quickjs-31. Windows inside one cell critical section
+  (between the fast-path read and subscription) stay with the hook-forced
+  unit tests (`src/task/handoff_tests.rs`); here they are only raced.

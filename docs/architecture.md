@@ -1061,6 +1061,35 @@ unwinding") and `src/task.rs` ("Cancellation and finally blocks"). Design:
   one) and `src/task/need_tests.rs` (hook-forced cancellation inside the
   need and the park windows).
 
+## Concurrency regression suite (clj-quickjs-14)
+
+`tests/concurrency/` (guarantees in `main.rs`, harness contract in
+`harness.rs`). Design: `design.md` §15. Test code only: it composes the
+production task state word, cells, executor, VM `need`, collector, atoms and
+resumable natives, and adds no runtime hooks.
+
+- **Windows without crate-private hooks.** Integration tests cannot use the
+  `cfg(test)` `HookPoint`s, so windows are opened from outside: a gate inside
+  a leaf host effect holds a run just before its `__rt.need` (before
+  registration); a driver that needs through `RunGuard::need` and blocks
+  before `RunGuard::park` holds the subscribed-but-not-parked window that a
+  VM `need` closes inside one instruction; executor events mark a parked
+  task; blocker tasks gated on every worker keep a woken task queued, so an
+  action's outcome is decided by the actions, not by timing. The window
+  inside the cell lock remains with `src/task/handoff_tests.rs`.
+- **Bounded harness.** Each scenario runs on its own thread under a whole-
+  scenario bound; every wait inside it (events, notes, gates, outcomes,
+  shutdown) has a per-wait bound. On failure or hang the harness notes (one
+  totally ordered log of run starts/ends, effects, gates, claimed requests)
+  and the executor record are dumped. After the body it checks the
+  invariants and that nothing is left queued or parked.
+- **Seeded schedules** fix a scenario's shape and placements per seed; the
+  threads still race and only interleaving-independent facts are asserted.
+- **Wait cycles** use `DependencyGraph` on the test side, fed from the
+  executor's real `Waiting` releases (the executor has no producer
+  bindings); the settlement policy is the simulated host's: fail the
+  newest demand's own result.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
