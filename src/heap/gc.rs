@@ -330,7 +330,10 @@ mod tests {
                 let any: &mut dyn Any = &mut **p;
                 any.downcast_mut::<Edges>().unwrap().edges = edges;
             }
-            HeapObject::Plain => panic!("not a native object"),
+            HeapObject::Plain
+            | HeapObject::Vector(_)
+            | HeapObject::Map(_)
+            | HeapObject::Occurrence(_) => panic!("not a native object"),
         })
         .expect("live object");
     }

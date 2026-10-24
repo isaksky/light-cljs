@@ -37,6 +37,10 @@
 //! running it (`RootCategory::ExecutableConstant`); they are primitives only
 //! in this slice. Task VM state is owned by the task and traced as a root
 //! source while the task handle exists.
+//! Persistent collections ([`crate::collections`]) are heap objects whose
+//! bodies are immutable `Arc` trie nodes outside the object table, shared
+//! between versions; the owning object's `Trace` reports every heap edge in
+//! its trie, and reads take the `objects` lock only to clone the body's `Arc`.
 
 pub mod gc;
 pub mod roots;
@@ -50,6 +54,8 @@ use gc::{GcState, RootSource, SourceRegistry, Trace};
 pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
 
+use crate::collections::{Occurrence, PMap, PVector};
+
 /// Stable identity of a heap object: slot index plus the slot's generation
 /// at allocation time. Crate-private: see the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -59,6 +65,12 @@ pub(crate) struct ObjectId {
 }
 
 impl ObjectId {
+    /// The identity as one integer: stable for the object's lifetime and
+    /// never reused for another object (the slot generation differs).
+    pub(crate) fn to_bits(self) -> u64 {
+        (u64::from(self.index) << 32) | u64::from(self.generation)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_index(index: u32) -> Self {
         ObjectId {
@@ -82,6 +94,13 @@ pub(crate) enum ObjectKind {
     /// reported by its [`Trace`] implementation (the analogue of a QuickJS
     /// class `gc_mark` hook).
     Native,
+    /// A persistent vector ([`crate::collections`]).
+    Vector,
+    /// A persistent map ([`crate::collections`]).
+    Map,
+    /// A syntax occurrence: a value plus its source provenance
+    /// ([`crate::collections`]).
+    Occurrence,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -103,6 +122,12 @@ pub(crate) enum HeapObject {
     /// (clj-quickjs-12) and later native kinds construct it.
     #[allow(dead_code)]
     Native(Box<dyn NativePayload>),
+    /// Persistent collections and occurrences: immutable once allocated.
+    /// Their bodies are independently owned immutable `Arc` storage whose
+    /// heap edges are reported by `Trace` (see [`crate::collections`]).
+    Vector(PVector),
+    Map(PMap),
+    Occurrence(Occurrence),
 }
 
 impl HeapObject {
@@ -111,6 +136,9 @@ impl HeapObject {
         match self {
             HeapObject::Plain => ObjectKind::PlainObject,
             HeapObject::Native(_) => ObjectKind::Native,
+            HeapObject::Vector(_) => ObjectKind::Vector,
+            HeapObject::Map(_) => ObjectKind::Map,
+            HeapObject::Occurrence(_) => ObjectKind::Occurrence,
         }
     }
 }
@@ -120,6 +148,9 @@ impl Trace for HeapObject {
         match self {
             HeapObject::Plain => {}
             HeapObject::Native(payload) => payload.trace(visit),
+            HeapObject::Vector(v) => v.trace(visit),
+            HeapObject::Map(m) => m.trace(visit),
+            HeapObject::Occurrence(o) => o.trace(visit),
         }
     }
 }
@@ -279,6 +310,14 @@ impl Heap {
     /// True when `id` names a live (not reclaimed) object of this heap.
     pub(crate) fn is_live(&self, id: ObjectId) -> bool {
         lock(&self.objects).slot(id).is_some()
+    }
+
+    /// Run `f` on a live object under the object lock; `None` if `id` is
+    /// stale or foreign. `f` must not touch the heap (it would deadlock) and
+    /// should only copy out what it needs (for collections: an `Arc` clone of
+    /// the immutable body), so the lock is held briefly.
+    pub(crate) fn read<R>(&self, id: ObjectId, f: impl FnOnce(&HeapObject) -> R) -> Option<R> {
+        lock(&self.objects).slot(id)?.object.as_deref().map(f)
     }
 
     /// The kind of a live object, or `None` if `id` is stale or foreign.

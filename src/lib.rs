@@ -30,6 +30,7 @@
 //! | `ids` | private task/world/dependency identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
+//! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
 //!
 //! The module list is append-only per pellet.
 //!
@@ -41,6 +42,7 @@
 //! mark/sweep that runs only when no task run or foreign scope is active
 //! (cooperative safepoints are deferred; see [`heap::gc`]).
 
+pub mod collections;
 mod error;
 pub mod heap;
 pub mod host;
@@ -50,6 +52,7 @@ pub mod task;
 mod value;
 pub mod vm;
 
+pub use collections::{CollectionError, PersistentKind, Provenance};
 pub use error::{Diagnostic, VmError, VmErrorKind};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,

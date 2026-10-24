@@ -20,6 +20,8 @@ cargo test --lib resume_tests     # yield/resume and host-effect unit tests
 cargo test --test resumable       # resume on another embedder thread
 cargo test --test gc              # collection through the embedding API
 cargo test --lib heap::           # collector, native payloads, root categories
+cargo test --test collections     # persistent vectors/maps, identity, provenance
+cargo test --lib collections::    # trie internals, structural sharing, key contract
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -31,7 +33,8 @@ Library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Modules:
 guard, run outcomes), `vm` (instruction format, executable validation,
 task-owned frames, dispatch, test assembler), `heap` (object identity, roots,
 scoped and weak handles, tracing contract, mark/sweep collector), `value`,
-`ids`, `error`, `host` (leaf host effects). See
+`ids`, `error`, `host` (leaf host effects), `collections` (persistent
+vectors, maps and occurrences). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
@@ -129,3 +132,37 @@ Deferred:
   allocation buffers.
 - Heap-object constants in executables: the constant-pool edge is traced,
   but loaded code still accepts only primitive constants.
+
+### Persistent collections and occurrences (clj-quickjs-3)
+
+Supported:
+
+- Persistent vectors (32-way radix trie) and maps (hash array mapped trie)
+  as heap objects, plus syntax occurrences (a value with a `Provenance`).
+  Embedder API on `Scope`: `new_vector`, `new_map`, `new_occurrence`,
+  `count`, `nth`, `get`, `assoc`, `dissoc`, `conj`, `pop`, `items`,
+  `entries`, `occurrence_value`, `provenance`, `persistent_kind`,
+  `value_equals`. The full contract (index and key rules, errors, equality)
+  is in the `collections` module docs (`src/collections.rs`) and
+  [`docs/architecture.md`](docs/architecture.md).
+- Updates never change their input and copy only the root-to-change path;
+  untouched trie nodes and every unreplaced element (including nested
+  collections) are shared by identity, before and after collection. No-op
+  updates return the original object.
+- Map keys compare by SameValueZero (objects, including collections, by
+  identity) with a private hash: no user code runs during lookups.
+- Value equality (structural, provenance-blind), identity (`===`,
+  `same_object`) and provenance are separate; equal scalars at different
+  source locations are distinct occurrence objects.
+- Collections pass to tasks as `Rooted` arguments and come back as results
+  with the same identity (`cargo test --test collections`).
+
+Deferred:
+
+- VM intrinsics for collections and transient builders (clj-quickjs-19):
+  bytecode can pass, store, `===`-compare and return collections but not
+  inspect or build them.
+- Publication rules for collections containing mutable objects
+  (clj-quickjs-18).
+- Strings/keywords/symbols, structural map keys, ordered maps, sets, lists,
+  and JavaScript property access on collections.

@@ -366,7 +366,14 @@ impl<'s> Scope<'s> {
         }
     }
 
-    fn push(&self, value: Value) -> Local<'s> {
+    /// The heap this scope accesses (crate-internal native operations).
+    pub(crate) fn heap(&self) -> &Heap {
+        self.heap
+    }
+
+    /// Register `value` as a local of this scope. The caller guarantees it
+    /// is live (see [`Scope::new_object`]).
+    pub(crate) fn new_local(&self, value: Value) -> Local<'s> {
         let mut scopes = self.heap.scopes();
         let locals = scopes.locals(self.slot);
         locals.push(value);
@@ -376,7 +383,24 @@ impl<'s> Scope<'s> {
         }
     }
 
-    fn get(&self, local: Local<'s>) -> Value {
+    /// Register several live values as locals under one lock acquisition.
+    pub(crate) fn new_locals(&self, values: impl IntoIterator<Item = Value>) -> Vec<Local<'s>> {
+        let mut scopes = self.heap.scopes();
+        let locals = scopes.locals(self.slot);
+        values
+            .into_iter()
+            .map(|value| {
+                locals.push(value);
+                Local {
+                    index: locals.len() - 1,
+                    _brand: PhantomData,
+                }
+            })
+            .collect()
+    }
+
+    /// The raw value of a local of this scope.
+    pub(crate) fn local_value(&self, local: Local<'s>) -> Value {
         // The brand guarantees `local` was created by this scope, and the
         // local list only grows while the scope is open, so the index exists.
         self.heap.scopes().locals(self.slot)[local.index]
@@ -395,30 +419,30 @@ impl<'s> Scope<'s> {
         // No collection can run between the allocation and the push: other
         // threads cannot collect while this scope is open, and this thread is
         // busy here.
-        self.push(Value::Object(id))
+        self.new_local(Value::Object(id))
     }
 
     /// Wrap a primitive as a local handle.
     pub fn primitive(&self, p: Primitive) -> Local<'s> {
-        self.push(p.into())
+        self.new_local(p.into())
     }
 
     /// Access a persistent root's value within this scope.
     pub fn local(&self, rooted: &Rooted) -> Result<Local<'s>, HandleError> {
         let value = rooted.value_in(self.heap)?;
-        Ok(self.push(value))
+        Ok(self.new_local(value))
     }
 
     /// Create a persistent root for a local value so it can leave the scope.
     pub fn persist(&self, local: Local<'s>) -> Rooted {
-        Rooted::new(self.heap, self.get(local))
+        Rooted::new(self.heap, self.local_value(local))
     }
 
     /// A non-rooting handle to a local value.
     pub fn downgrade(&self, local: Local<'s>) -> WeakHandle {
         WeakHandle {
             heap: Arc::clone(self.heap),
-            value: self.get(local),
+            value: self.local_value(local),
         }
     }
 
@@ -432,28 +456,28 @@ impl<'s> Scope<'s> {
             return Err(HandleError::Reclaimed);
         }
         // Still live when pushed: see `new_object`.
-        Ok(self.push(weak.value))
+        Ok(self.new_local(weak.value))
     }
 
     /// Root-free view of a local value.
     pub fn view(&self, local: Local<'s>) -> ValueView {
-        self.get(local).view()
+        self.local_value(local).view()
     }
 
     /// True only when both locals reference the same heap object.
     pub fn same_object(&self, a: Local<'s>, b: Local<'s>) -> bool {
-        self.get(a).same_object(self.get(b))
+        self.local_value(a).same_object(self.local_value(b))
     }
 
     /// JavaScript `===` between two locals.
     pub fn strict_equals(&self, a: Local<'s>, b: Local<'s>) -> bool {
-        self.get(a).strict_equals(self.get(b))
+        self.local_value(a).strict_equals(self.local_value(b))
     }
 
     /// The raw value of a local (crate tests).
     #[cfg(test)]
     pub(crate) fn raw(&self, local: Local<'s>) -> Value {
-        self.get(local)
+        self.local_value(local)
     }
 }
 

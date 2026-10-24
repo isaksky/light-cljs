@@ -131,6 +131,41 @@ collected by a precise, nonmoving, stop-the-world mark/sweep
 Cooperative safepoints (collection that waits for running mutators to reach
 poll points) are pellet clj-quickjs-17.
 
+## Persistent collections (clj-quickjs-3)
+
+`src/collections.rs` (contract and embedder API on `Scope`),
+`src/collections/vector.rs` (32-way radix trie), `src/collections/map.rs`
+(HAMT). Design: `design.md` §§4–5.
+
+- **Objects and bodies.** A vector, map or occurrence is one heap object
+  (`ObjectKind::{Vector, Map, Occurrence}`) with ordinary stable identity.
+  Its body is a tree of immutable `Arc` nodes outside the object table: the
+  documented immutable-storage boundary. Nodes are shared between versions
+  and have no identity of their own; the owning object's `Trace` walks its
+  trie and reports every element, key and value, so all heap edges go
+  through the collector's tracing boundary.
+- **Updates** (`assoc`, `dissoc`, `conj`, `pop`) allocate one new object and
+  path-copy O(log32 n) nodes; everything else, including nested collections,
+  is shared by identity. A no-op update returns the original object.
+- **Reads** take the `objects` lock once to clone the body's `Arc`, then walk
+  the trie with no lock: no per-node locking. Map keys use SameValueZero
+  (objects by identity) and a fixed private hash, so internal lookups never
+  run user hashing, equality, getters or protocol code.
+- **Equality, identity, provenance.** `===`/`same_object` is identity;
+  `value_equals` is structural (iterative, provenance-blind: an occurrence
+  equals its value); provenance lives only in occurrence objects, one per
+  source location, never keyed by a scalar value.
+- **Crate-internal layer.** Every `Scope` method wraps a `pub(crate)`
+  function over raw values and `&Heap` (`new_vector`, `nth`, `get`,
+  `assoc`, `index_from_value`, `value_equals`, ...). VM intrinsics
+  (clj-quickjs-19) are meant to call these directly; their callers must be
+  registered mutators (run guard or scope) so a freshly allocated result is
+  stored before any collection can start.
+- **Open for later pellets.** Publication rules (clj-quickjs-18) must
+  classify these kinds as shareable only when their contents are; transient
+  builders (clj-quickjs-19) can build a `PVector`/`PMap` body privately and
+  allocate the heap object on freeze.
+
 ## Task/dependency continuation shape (planned)
 
 Dependency waits reuse the same mechanism as `Yielded`: the task returns from
@@ -171,6 +206,12 @@ references only:
   collector (object edges, bytecode constants, class mark hooks). QuickJS's
   reference counting, cycle removal and running-stack exemption are not used;
   `research/quickjs/doc/quickjs.texi`, "Garbage collection", for the contrast.
+- `research/quickjs/quickjs.h` `JSClassDef.gc_mark` versus
+  `JSClassExoticMethods`: native edge tracing versus user-extensible property
+  hooks. Persistent collections report their edges like a `gc_mark` hook but
+  route no private bookkeeping (lookup, hashing, equality) through
+  user-extensible hooks. QuickJS has no persistent collections; none of its
+  code is used for them.
 
 No QuickJS source, tests or encodings were copied or adapted, so no QuickJS
 license header applies to this repository's code yet. Any future adapted
