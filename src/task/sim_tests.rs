@@ -385,3 +385,202 @@ fn timers_accept_native_and_bound_callbacks() {
     assert_eq!(finish(&task, &mut effects), ValueView::Number(42.0));
     assert_eq!(effects.0, [7.0]);
 }
+
+#[test]
+fn timer_delay_conversion_can_wait_and_migrate() {
+    let rt = Runtime::new();
+    let task = task(
+        &rt,
+        "os.setTimeout((function(capture) { return function() { __rt.effect(0, capture.answer); }; })({answer: 2}), {valueOf() { __rt.effect(0, 10); let delay = __rt.need(1751, 1); __rt.effect(0, 11); return delay; }}); os.setTimeout(function() { __rt.effect(0, 1); }, 0); __rt.effect(0, 0); 42;",
+    );
+    let key = crate::DependencyKey::new(
+        rt.world(),
+        crate::DependencyId::new(1751),
+        crate::ResultKind::new(1),
+    );
+    let producer = rt.claim(key).unwrap();
+    let mut effects = Effects::default();
+    assert!(
+        matches!(task.run_with(Budget::UNLIMITED, &mut effects).unwrap(), RunOutcome::Waiting(k) if k == key)
+    );
+    assert_eq!(
+        effects.0,
+        [10.0],
+        "conversion suspends before timer registration or firing"
+    );
+    rt.request_collection().unwrap();
+    let delay = rt.root(Primitive::Number(2.0));
+    let wakes = rt
+        .complete(key, producer.producer(), crate::Completion::Ready(&delay))
+        .unwrap();
+    assert_eq!(wakes.into_runnable().len(), 1);
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let value = finish(&task, &mut effects);
+        send.send((value, effects.0)).unwrap();
+    });
+    let (value, effects) = receive
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("delay conversion must resume on another worker");
+    assert_eq!(value, ValueView::Number(42.0));
+    assert_eq!(effects, [10.0, 11.0, 0.0, 1.0, 2.0]);
+}
+
+#[test]
+fn timer_delay_boundaries_and_virtual_time_overflow() {
+    let rt = Runtime::new();
+    let task = task(
+        &rt,
+        "os.setTimeout(function() { __rt.effect(0, 1); }, 1.9); os.setTimeout(function() { __rt.effect(0, 2); }, 1.1); os.setTimeout(function() { __rt.effect(0, 3); }); os.setTimeout(function() { __rt.effect(0, 4); }, 0); let rejected = 0; try { os.setTimeout(function() { __rt.effect(0, 99); }, 9007199254740992); } catch(e) { if(e instanceof RangeError) rejected++; } os.setTimeout(function() { __rt.effect(0, 5); try { os.setTimeout(function() { __rt.effect(0, 99); }, 1); } catch(e) { if(e instanceof RangeError) __rt.effect(0, 6); } }, 9007199254740991); __rt.effect(0, 0); rejected;",
+    );
+    let mut effects = Effects::default();
+    assert_eq!(finish(&task, &mut effects), ValueView::Number(1.0));
+    assert_eq!(effects.0, [0.0, 3.0, 4.0, 1.0, 2.0, 5.0, 6.0]);
+}
+
+#[test]
+fn gc_point_waits_for_explicit_collection_notifications() {
+    use crate::heap::gc::{CollectionObserver, CollectionReport, ConditionalVisitor, WeakSlot};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    #[derive(Debug)]
+    struct Notifying(WeakSlot);
+    impl Trace for Notifying {
+        fn trace(&self, _: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {}
+        fn trace_conditional(&mut self, visitor: &mut dyn ConditionalVisitor) {
+            self.0.trace_conditional(visitor);
+        }
+    }
+    impl crate::heap::NativePayload for Notifying {
+        fn shareability(&self) -> crate::value::share::Shareability {
+            crate::value::share::Shareability::TaskOwned
+        }
+    }
+    struct QueueAfterGate {
+        sender: crate::job::JobSender,
+        _callable: Rooted,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        log: Arc<Mutex<Vec<f64>>>,
+    }
+    impl CollectionObserver for QueueAfterGate {
+        fn collected(&self, report: &CollectionReport) {
+            if !report.cleared_weak_slots.is_empty() {
+                self.entered.send(()).unwrap();
+                // A bounded gate on the test driver, outside heap access.
+                self.release.lock().unwrap().recv_timeout(TIMEOUT).unwrap();
+                self.sender.enqueue(&[]).unwrap();
+                self.log.lock().unwrap().push(100.0);
+            }
+        }
+    }
+    struct Log(Arc<Mutex<Vec<f64>>>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            let Primitive::Number(value) = call.arg else {
+                panic!("number expected")
+            };
+            self.0.lock().unwrap().push(value);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let rt = Runtime::new();
+    let task = task(
+        &rt,
+        "function cleanup() { __rt.effect(0, 3); } var target = {}; __rt.effect(0, 0); target = null; __rt.effect(0, 1); std.gc(); __rt.effect(0, 2); 42;",
+    );
+    let heap = task.0.heap.clone();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut host = Log(log.clone());
+    for _ in 0..1000 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host).unwrap(),
+            RunOutcome::Yielded
+        ));
+        if *log.lock().unwrap() == [0.0] {
+            break;
+        }
+    }
+    assert_eq!(*log.lock().unwrap(), [0.0]);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (_owner, observer) = {
+        let mut guard = task.try_begin_run().unwrap();
+        let global = guard.vm().unwrap().global_object.unwrap();
+        let get = |name: &str| {
+            let key = heap.keys().lookup(&crate::JsString::from(name)).unwrap();
+            heap.read(global, |object| match object {
+                crate::heap::HeapObject::Plain(object) => {
+                    object.get_own(key).unwrap().value.clone()
+                }
+                _ => unreachable!(),
+            })
+            .unwrap()
+        };
+        let Value::Object(target) = get("target") else {
+            panic!("object expected")
+        };
+        let callback = get("cleanup");
+        let owner = heap
+            .alloc(crate::heap::HeapObject::Native(Box::new(Notifying(
+                WeakSlot::notifying(target, 175),
+            ))))
+            .unwrap();
+        let observer = Arc::new(QueueAfterGate {
+            sender: guard.job_sender(callback.clone()),
+            _callable: Rooted::new(&heap, callback),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            log: log.clone(),
+        });
+        (Rooted::new(&heap, Value::Object(owner)), observer)
+    };
+    rt.observe_collections(Arc::downgrade(&observer) as _);
+    for _ in 0..1000 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host).unwrap(),
+            RunOutcome::Yielded
+        ));
+        if *log.lock().unwrap() == [0.0, 1.0] {
+            break;
+        }
+    }
+    assert_eq!(*log.lock().unwrap(), [0.0, 1.0]);
+    let (collected_tx, collected_rx) = mpsc::channel();
+    let collector = {
+        let rt = rt.clone();
+        std::thread::spawn(move || {
+            collected_tx.send(rt.request_collection()).unwrap();
+        })
+    };
+    entered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("explicit collection must reach gated delivery");
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let runner = std::thread::spawn(move || {
+        finished_tx.send(finish(&task, &mut host)).unwrap();
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    while heap.notification_waiters_for_test() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "collection point must wait for the older explicit notification"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        *log.lock().unwrap(),
+        [0.0, 1.0],
+        "next statement has not executed"
+    );
+    release_tx.send(()).unwrap();
+    collected_rx.recv_timeout(TIMEOUT).unwrap().unwrap();
+    assert_eq!(
+        finished_rx.recv_timeout(TIMEOUT).unwrap(),
+        ValueView::Number(42.0)
+    );
+    collector.join().unwrap();
+    runner.join().unwrap();
+    assert_eq!(*log.lock().unwrap(), [0.0, 1.0, 100.0, 2.0, 3.0]);
+}

@@ -6982,8 +6982,15 @@ has no heap edges, and its short locks never span collection or notification
 processing. Observer panic releases batch waiters with failure. Reentry into
 a collection point from the collecting thread's own observer is refused.
 The public `Runtime::request_collection` contract remains unchanged:
-independent explicit calls each collect. FinalizationRegistry's consumer of
-these notifications is separate work.
+independent explicit calls each collect. Every collection registers a delivery
+completion record before releasing the pause, including explicit embedder
+collections. Before publishing batch success, a collection point snapshots
+and awaits still-active deliveries outside heap access. Thus it also waits
+for an older explicit collection whose weak slots were already cleared.
+Observers remain concurrent and may request reentrant explicit collections;
+they must not wait on runtime task progress. Collection points from an active
+observer are refused to avoid waiting on their own report. FinalizationRegistry's
+consumer of these notifications is separate work.
 
 Collection-driver temporaries stay in a separate helper, and optional host
 state is boxed, preserving ordinary execution on 64 KiB worker stacks.

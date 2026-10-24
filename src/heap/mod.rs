@@ -502,6 +502,9 @@ pub(crate) struct Heap {
     /// In-flight task collection-point batch; no heap edges. This metadata
     /// lock is never held across a rendezvous, notification or wait.
     point_batch: Mutex<Weak<gc::PointBatch>>,
+    /// All post-pause deliveries, including explicit embedder collections.
+    /// Weak entries carry no heap edges and are pruned on registration.
+    notifications: Mutex<Vec<Weak<gc::NotificationDelivery>>>,
     /// True while a collection request is pending: what VM polls read.
     /// Written only under the `gc` lock.
     requested: AtomicBool,

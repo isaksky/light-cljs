@@ -684,7 +684,9 @@ pub trait CollectionObserver: Send + Sync {
     /// rendezvous has ended and no heap lock is held: other threads may
     /// already be running again, and reports of concurrent collections may
     /// arrive out of order (see [`CollectionReport::number`]). It must not
-    /// block on another mutator; it may take its own locks.
+    /// block on runtime task progress; collection points await earlier
+    /// report delivery. It may take its own locks, allocate, or request a
+    /// reentrant explicit collection.
     fn collected(&self, report: &CollectionReport);
 }
 
@@ -778,6 +780,46 @@ struct FinishPoint<'h> {
 
 thread_local! {
     static IN_POINT_REQUEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static IN_NOTIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Completion of one report's delivery, registered before releasing the
+/// world. It contains no heap references and does not serialize observers.
+#[derive(Debug, Default)]
+pub(crate) struct NotificationDelivery {
+    done: Mutex<bool>,
+    changed: std::sync::Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+impl NotificationDelivery {
+    fn wait(&self) {
+        let mut done = lock(&self.done);
+        #[cfg(test)]
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        while !*done {
+            done = self
+                .changed
+                .wait(done)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        #[cfg(test)]
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct DeliveringNotification {
+    delivery: Arc<NotificationDelivery>,
+    was_delivering: bool,
+}
+
+impl Drop for DeliveringNotification {
+    fn drop(&mut self) {
+        *lock(&self.delivery.done) = true;
+        self.delivery.changed.notify_all();
+        IN_NOTIFICATION.with(|active| active.set(self.was_delivering));
+    }
 }
 
 struct PointRequestMark;
@@ -822,7 +864,8 @@ impl Heap {
     pub(crate) fn collection_point_ticket(&self) -> Result<PointTicket, CollectError> {
         // Post-pause observers cannot join a request whose delivery is
         // still on their own stack.
-        if IN_POINT_REQUEST.with(std::cell::Cell::get) {
+        if IN_POINT_REQUEST.with(std::cell::Cell::get) || IN_NOTIFICATION.with(std::cell::Cell::get)
+        {
             return Err(CollectError::MutatorActive);
         }
         let gc = lock(&self.gc);
@@ -885,6 +928,18 @@ impl Heap {
                 previous.wait()?;
             }
             finish.result = self.request_collection();
+            if finish.result.is_ok() {
+                // An earlier explicit collection may have cleared the slot
+                // whose notification this task needs. Its observer can still
+                // be running after our own sweep and delivery have finished.
+                let pending: Vec<_> = lock(&self.notifications)
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .collect();
+                for delivery in pending {
+                    delivery.wait();
+                }
+            }
             // request_collection returns only after all post-pause observers
             // consumed the notifications. Publish completion afterwards.
             finish.result
@@ -1217,12 +1272,33 @@ impl Heap {
             stats,
             cleared_weak_slots,
         };
+        // Register before the pause ends: a later collection point cannot
+        // miss a report between its sweep and post-pause observer delivery.
+        let delivery = Arc::new(NotificationDelivery::default());
+        {
+            let mut pending = lock(&self.notifications);
+            pending.retain(|entry| entry.strong_count() > 0);
+            pending.push(Arc::downgrade(&delivery));
+        }
+        let _delivery = DeliveringNotification {
+            delivery,
+            was_delivering: IN_NOTIFICATION.with(|active| active.replace(true)),
+        };
         drop((objects, registry, scopes, roots, world));
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, retired, sources));
         self.notify_observers(&report);
         stats
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notification_waiters_for_test(&self) -> usize {
+        lock(&self.notifications)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|delivery| delivery.waiting.load(Ordering::SeqCst))
+            .sum()
     }
 
     /// Give `report` to the live observers, with no heap lock held (the
