@@ -1323,6 +1323,23 @@ MIT license notices in both test modules apply. `research/quickjs/quickjs.c`
 read as semantic references. The Rust implementation is original; all other
 new fixtures are synthetic, not light-cljs output.
 
+### Unmodified function, scope and eval fixtures (clj-quickjs-113)
+
+`tests/fixtures/js/quickjs_test_closure.js` preserves the whole
+`research/quickjs/tests/test_closure.js` (lines 1-221).
+`quickjs_test_language_functions.js` preserves lines 1-38, 271-280,
+445-577 and 641-666 of `research/quickjs/tests/test_language.js`;
+`quickjs_test_builtin_functions.js` preserves lines 1-123 and 403-455
+of `research/quickjs/tests/test_builtin.js`. Revision:
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The selected bytes were compared against that checkout; adapted rows: none.
+Each fixture prepends a descriptive header and the full copyright/MIT notice
+from `research/quickjs/LICENSE`; the language and builtin fixtures append
+five and three calls respectively. Original caught `__loadScript` lines
+remain. These are adapted QuickJS test text, synthetic fixtures, not
+light-cljs output. `tests/quickjs_functions.rs` runs the complete closure
+file and each selected language/builtin case in its original script mode.
+
 ### Unmodified object, class and symbol fixtures (clj-quickjs-140)
 
 `tests/fixtures/js/quickjs_test_language_objects.js` preserves lines 1-32,

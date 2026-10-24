@@ -2752,6 +2752,24 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- Unmodified function, scope and eval fixtures (clj-quickjs-113):
+  `tests/fixtures/js/quickjs_test_closure.js` preserves the whole 221-line
+  `research/quickjs/tests/test_closure.js`, including its original calls.
+  `quickjs_test_language_functions.js` preserves lines 1-38, 271-280,
+  445-577 and 641-666 of `research/quickjs/tests/test_language.js`.
+  `quickjs_test_builtin_functions.js` preserves lines 1-123 and 403-455
+  of `research/quickjs/tests/test_builtin.js`. All use revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+  Selected bytes were compared against that checkout; adapted rows: none.
+  Only descriptive headers, the complete copyright/MIT notice from
+  `research/quickjs/LICENSE`, and five language / three builtin case calls
+  are added. The original caught `__loadScript` calls remain without a host
+  loader. These are adapted QuickJS test text, synthetic fixtures, not
+  light-cljs output. `tests/quickjs_functions.rs` checks embedded upstream
+  line counts and runs the closure file intact and each language/builtin
+  case independently, preserving sloppy/strict modes, with bounded
+  instruction slices and collection between slices. The rewritten
+  `quickjs_closure.js` remains a strict-subset regression.
 - Strict nested function-expression name stores (clj-quickjs-93):
   `tests/js_functions.rs::named_function_expression_name_is_immutable_in_nested_closures`
   adapts the strict nested-arrow case of

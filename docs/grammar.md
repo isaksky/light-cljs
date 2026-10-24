@@ -6592,6 +6592,23 @@ const f = function m() { "use strict"; m = 5; };
 let caught = false; try { f(); } catch (e) { caught = e instanceof TypeError; } caught;
 ```
 
+## Unmodified function, scope and eval fixtures (clj-quickjs-113)
+
+Execution: `tests/quickjs_functions.rs::quickjs_function_scope_cases_run_unmodified`
+runs the complete upstream `test_closure.js`, all five selected function/scope
+cases from `test_language.js`, and `test_function`, `test_eval2` and `test_eval`
+from `test_builtin.js`. The first two fixtures use sloppy script compilation;
+the builtin fixture retains its `"use strict"` directive. Each selected case
+executes its original assertions with bounded instruction slices and collection
+between slices. The caught `__loadScript` calls remain verbatim without a host
+loader. Selected source bytes are unchanged; adapted rows: none. The fixtures
+carry the QuickJS copyright/MIT notice and are synthetic fixtures, not
+light-cljs output (see `docs/architecture.md`, "QuickJS references and provenance").
+The older rewritten `quickjs_closure.js` remains a strict-subset regression.
+
+EBNF, rejected forms, explicit gaps and grammar accept/reject examples are
+unchanged: this pellet adds coverage of existing language behavior only.
+
 ## Strict function-name stores in nested closures (clj-quickjs-93)
 
 Syntax: existing `FunctionExpression`, arrow, block function declaration and
