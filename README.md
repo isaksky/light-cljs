@@ -2807,7 +2807,9 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Deferred: Intl formatting service constructors, general resumable
+Decimal `Intl.NumberFormat` and its `supportedLocalesOf` use the test locales
+above (clj-quickjs-213).
+Deferred: other Intl formatting service constructors, general resumable
 `@@toStringTag` reads, and full UCA/UAX #29 data.
 
 ### Locale identifiers (clj-quickjs-210)
@@ -2823,8 +2825,9 @@ throw TypeError. Unknown well-formed tags such as `xx` remain valid identifiers;
 they do not advertise extra formatting-data coverage.
 
 Deferred: Locale information methods, `variants` and
-`firstDayOfWeek` constructor options, service locale resolution and
-`supportedLocalesOf`. Alias rules follow the selected pinned QuickJS cases,
+`firstDayOfWeek` constructor options, and locale resolution and
+`supportedLocalesOf` for services other than NumberFormat. Alias rules follow
+the selected pinned QuickJS cases,
 with `co-phonebook` accepted and normalized to `co-phonebk` as required by this
 pellet. Locale's absent `numeric` getter returns `false` as in that snapshot.
 General `Object.prototype.toString` consumption of Locale's tag shares the
@@ -3125,8 +3128,10 @@ Deferred: percent/currency styles (clj-quickjs-214), other styles and notations
 (explicit RangeError), parts/range methods, ChainNumberFormat's legacy
 fallback receiver, and general Object.prototype.toString tag consumption.
 Both localeMatcher values currently use lookup over the policy's test locales.
-Decimal string input is bounded to 100,000 coefficient characters and exponent
+Valid decimal string input is bounded to 100,000 coefficient characters and exponent
 magnitude 10,000 (RangeError beyond those limits).
+Malformed strings produce localized NaN before resource checks; surrounding
+whitespace follows JavaScript's rules. BigInt decimal conversion is resumable.
 
 Numbering-system options and `nu` extensions use the pinned QuickJS names and
 digit mappings, including Arabic-Indic, fullwidth, Han decimal and non-BMP

@@ -449,9 +449,11 @@ are still covered by the computed-key rejection below.
 ## Explicit gaps
 
 `Intl` provides locale identifiers and likely-subtag maximize/minimize
-(clj-quickjs-209/-210/-211); formatting service constructors, Locale information methods and
-service `supportedLocalesOf` remain deferred. Canonical-tag locale data lookup
-is currently a Rust API, not JS formatting.
+(clj-quickjs-209/-210/-211), plus decimal `NumberFormat` with bound `format`,
+`resolvedOptions` and `supportedLocalesOf` over the policy's test locales
+(clj-quickjs-213). Other formatting service constructors and their
+`supportedLocalesOf`, Locale information methods, and NumberFormat's
+non-decimal styles and parts/range methods remain deferred.
 
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
@@ -862,7 +864,8 @@ delete a[o];
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
 and `new Intl()` throw catchable TypeErrors. The namespace follows shared
-intrinsic mutation restrictions. Formatting service constructors are not installed yet.
+intrinsic mutation restrictions. Decimal `Intl.NumberFormat` is installed;
+other formatting service constructors remain deferred.
 
 `Intl.getCanonicalLocales(locales)` canonicalizes a string, Locale, or array-like
 list, skipping absent indices and removing duplicates in first-occurrence order.
@@ -3823,4 +3826,7 @@ notations throw RangeError. Numbering-system options and nu extensions use the p
 unknown well-formed systems fall back to the selected system. Both matchers use lookup over the policy's test locales.
 Parts/range methods, ChainNumberFormat legacy receivers and general
 Object.prototype.toString tag consumption remain deferred. Decimal coefficient
-input over 100,000 characters or exponent magnitude over 10,000 throws RangeError.
+input over 100,000 characters or exponent magnitude over 10,000 throws RangeError
+when the numeric syntax is valid. Malformed strings produce localized NaN;
+surrounding whitespace follows JavaScript's rules. BigInt decimal conversion
+yields through the shared native conversion state.

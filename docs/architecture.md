@@ -4647,11 +4647,13 @@ and returns `None` for `xx` or any tag with no supported parent. It never
 silently substitutes another language. `resolve` tries the requested list,
 then the host default, then `en-US`/`en` as the final root. Tag validation,
 canonicalization, service availability and ECMA-402 option/extension resolution
-are the later language-tag and service pellets; this is a data lookup API.
+are layered above this data lookup API: Locale/getCanonicalLocales provide
+language-tag handling, and decimal NumberFormat provides service resolution,
+including `supportedLocalesOf`. Other formatting services remain deferred.
 
 | Service/input | Snapshot coverage and policy |
 | --- | --- |
-| Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. JS services remain deferred. |
+| Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. Decimal JS NumberFormat and its supportedLocalesOf consume the number data; other formatting services, currency/compact formatting and date/time formatting remain deferred. |
 | Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; Locale maximize/minimize consumes them (clj-quickjs-211). |
 | Calendar/hour preferences, week data, script directions | Snapshot-wide supplemental tables retained for later Locale/date consumers. |
 | Display names | Exactly `en` and `fr` data; other requested languages must be reported unsupported by that service, then resolve through its available default/root (`en`). They must not claim translated names for the whole numbers/date locale set. |
@@ -4668,7 +4670,8 @@ The default trait implementation and a run with no host use `en-US`.
 change between runs/tasks/worlds; locale reads are unrecorded effects, not
 recorded dependency edges. Embedders requiring replay reproducibility keep the
 setting stable for the relevant computation. No OS `LANG`/`setlocale` is read.
-Intl services will capture resolved locale in their immutable construction slots.
+NumberFormat captures its resolved locale in immutable construction slots;
+later Intl services follow the same host boundary.
 
 Expected output follows QuickJS strings: the upstream `tests/test_intl.js`
 rows run unmodified, including the date-component layouts with TODO alternatives,
@@ -5586,12 +5589,17 @@ Numbers reuse `value::string::number_to_string` before decimal rounding, matchin
 QuickJS's Intl mathematical-value path rather than scaling binary floats.
 Coefficient digits and point position support all nine rounding modes, including
 carry, significant digit padding and negative zero. BigInts and decimal strings
-bypass f64. Symbols/group sizes come from the existing pinned locale tables;
+bypass f64. BigInt arguments and options use the shared native ToString
+continuation before validation or formatting, so decimal conversion remains
+budgeted across collection and worker migration. Symbols/group sizes come from the existing pinned locale tables;
 auto groups four-digit Spanish numbers as QuickJS does, while min2 requires a
 two-digit leading group. The digit data extends the existing generated number
 tables; locale records remain unchanged. Input coefficients and exponents have
 explicit resource bounds (100,000 characters and magnitude
-10,000); oversized inputs throw RangeError. No dependencies or OS locale access.
+10,000); valid oversized inputs throw RangeError. JavaScript whitespace is
+trimmed with the shared StrWhiteSpace predicate, and malformed mantissas or
+exponents produce localized NaN before the resource checks or coefficient
+allocation. No dependencies or OS locale access.
 
 Percent/currency styles and nonstandard notations,
 formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
