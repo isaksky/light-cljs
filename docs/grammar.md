@@ -5994,8 +5994,10 @@ Syntax: class bodies accept `name = AssignmentExpression;` and `name;`, includin
 string, numeric and computed names, and their `static` forms. Initializers use
 strict expression grammar, with automatic semicolon insertion at a line break
 or closing brace. `get`, `set`, `async` and `static` can be field names when
-followed by `=`, `;` or `}`; accessor and async modifiers obey their line-break
-rules. `static` followed by another property name remains a static modifier,
+followed by `=`, `;` or `}`. Accessor definitions may put a line break between
+`get`/`set` and their property name; async modifiers cannot cross a line break.
+An escaped keyword may start the next field after an ASI boundary while it
+remains invalid as an initializer reference. `static` followed by another property name remains a static modifier,
 including across a line break.
 
 Execution: all computed keys are evaluated and converted once, in definition

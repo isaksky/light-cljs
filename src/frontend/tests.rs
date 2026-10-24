@@ -5766,6 +5766,23 @@ fn module_namespace_reexport_entries() {
 /// the QuickJS MIT notice retained above.
 #[test]
 fn class_fields() {
+    let script = parse_script("class C { get\nx() {} set\nx(v) {} static get\ny() {} }").unwrap();
+    let StmtKind::Lexical(d) = &script.body[0].kind else {
+        panic!()
+    };
+    let ExprKind::Class(c) = &d.declarators[0].init.as_ref().unwrap().kind else {
+        panic!()
+    };
+    assert_eq!(c.elements.len(), 3);
+    assert!(c.elements.iter().all(|e| !e.is_field));
+    assert!(c.elements[2].is_static);
+    for (element, kind) in c.elements.iter().zip([
+        FunctionKind::Getter,
+        FunctionKind::Setter,
+        FunctionKind::Getter,
+    ]) {
+        assert!(matches!(&element.property.value.kind, ExprKind::Function(f) if f.kind == kind));
+    }
     for (source, fields) in [
         (
             "class S { static x = 42; static y = S.x; static z = this.x; }",
@@ -5801,4 +5818,41 @@ fn class_fields() {
         );
     }
     parse_script("class R { x = function() { return arguments; }; }").unwrap();
+}
+
+#[test]
+fn class_fields_asi_escaped_names() {
+    for source in [
+        r"class C { a = 1
+            \u0069f = 2; }",
+        r"class C { a
+            \u0069f = 2; }",
+        r"class C { a = () => {}
+            \u0069f = 2; }",
+    ] {
+        let script = parse_script(source).unwrap();
+        let StmtKind::Lexical(d) = &script.body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Class(c) = &d.declarators[0].init.as_ref().unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(c.elements.len(), 2);
+        assert!(c.elements[1].property.name.is_named("if"));
+    }
+    for source in [
+        r"class C { a = 1 +
+            \u0069f; }",
+        r"class C { a = () => {
+            \u0069f: 1; }; }",
+        r"class C { a = () => { let
+            \u0069f = 1; }; }",
+        r"class C { a = (\u0069f); }",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::ReservedWord,
+            "{source}"
+        );
+    }
 }

@@ -8214,3 +8214,16 @@ restriction: a class expression evaluated in a parameter default may create
 instance/static initializers with direct eval. The initializer's fresh context
 ends the enclosing parameter restriction; parameter defaults inside its own
 nested arrows retain the existing explicit restriction.
+
+The constructor records its resolved initializer access in `FnCtx` at closure
+entry; lexical arrows capture that exact access. A nested class's computed keys
+or heritage may call the enclosing constructor's super without resolving through
+the nested class's still-uninitialized initializer binding. Derived super in a
+parameter default initializes fields before any later default executes, including
+when a field waits and resumes on a different worker.
+
+Class-body lexing retries escaped keyword names in IdentifierName mode at a
+newline where a field may end through ASI. Binding, reference and label parsing
+still reject the reserved spelling when the token belongs to an expression.
+This preserves both initialized/uninitialized fields before escaped names and
+multiline accessors without treating get/set as line-restricted modifiers.

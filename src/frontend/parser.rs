@@ -104,6 +104,7 @@ pub(super) struct Parser<'a> {
     super_call: bool,
     super_property: bool,
     class_initializer: bool,
+    class_field_asi: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -173,6 +174,7 @@ impl<'a> Parser<'a> {
             super_call: false,
             super_property: false,
             class_initializer: false,
+            class_field_asi: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -196,9 +198,29 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> PResult<Token> {
         let before = self.use_strict_candidate.map(|_| self.lexer.clone());
+        let field_before = self.class_field_asi.then(|| self.lexer.clone());
         let next = match self.lexer.next_token() {
             Ok(next) => next,
-            Err(e) => return Err(self.directive_lex_error(before, e)),
+            Err(e) => {
+                if e.kind == SyntaxErrorKind::ReservedWord
+                    && let Some(mut lexer) = field_before
+                {
+                    // A field may end at this newline. Retain IdentifierName
+                    // tokens until the parser chooses ASI or an expression;
+                    // reference/binding/label parsing still rejects keywords.
+                    lexer.expect_property_name();
+                    if let Ok(token) = lexer.next_token()
+                        && token.newline_before
+                    {
+                        self.lexer = lexer;
+                        token
+                    } else {
+                        return Err(self.directive_lex_error(before, e));
+                    }
+                } else {
+                    return Err(self.directive_lex_error(before, e));
+                }
+            }
         };
         let tok = std::mem::replace(&mut self.tok, next);
         self.prev_end = tok.span.end;
@@ -570,6 +592,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let outer_field_asi = std::mem::replace(&mut self.class_field_asi, true);
         self.lexer.expect_property_name();
         self.expect_punct(Punct::LBrace)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
@@ -650,6 +673,7 @@ impl<'a> Parser<'a> {
         }
         self.set_strict(outer_strict);
         self.advance()?;
+        self.class_field_asi = outer_field_asi;
         self.no_in = no_in;
         self.depth = saved;
         let span = self.span_from(start);
@@ -691,15 +715,14 @@ impl<'a> Parser<'a> {
                     && !generator
                     && !asynchronous
                     && self.peek_property_name().is_some_and(|t| {
-                        !t.newline_before
-                            && matches!(
-                                t.kind,
-                                TokenKind::Identifier(_)
-                                    | TokenKind::Keyword(_)
-                                    | TokenKind::String(_)
-                                    | TokenKind::Number(_)
-                                    | TokenKind::Punct(Punct::LBracket)
-                            )
+                        matches!(
+                            t.kind,
+                            TokenKind::Identifier(_)
+                                | TokenKind::Keyword(_)
+                                | TokenKind::String(_)
+                                | TokenKind::Number(_)
+                                | TokenKind::Punct(Punct::LBracket)
+                        )
                     }) =>
             {
                 Some(if n == "get" {
@@ -883,6 +906,7 @@ impl<'a> Parser<'a> {
         let outer = self.labels.len();
         let mut set = Vec::new();
         while let TokenKind::Identifier(name) = &self.tok.kind {
+            self.check_identifier_keyword(name)?;
             let label = Ident {
                 name: name.clone(),
                 span: self.tok.span,
@@ -1678,6 +1702,7 @@ impl<'a> Parser<'a> {
     fn parse_binding_identifier(&mut self, what: &str) -> PResult<Ident> {
         match &self.tok.kind {
             TokenKind::Identifier(name) => {
+                self.check_identifier_keyword(name)?;
                 if RESERVED_CONSTANTS.contains(&name.as_str()) {
                     return Err(self.error(
                         SyntaxErrorKind::ReservedWord,
@@ -3795,6 +3820,7 @@ impl<'a> Parser<'a> {
         let TokenKind::Identifier(name) = &self.tok.kind else {
             return Err(self.unexpected("an identifier"));
         };
+        self.check_identifier_keyword(name)?;
         if self.class_initializer && name == "arguments" {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
@@ -3813,6 +3839,17 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         Ok(Expr::new(kind, span))
+    }
+
+    fn check_identifier_keyword(&self, name: &str) -> PResult<()> {
+        if Keyword::from_text(name).is_some() {
+            return Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                self.tok.span,
+                "an escaped reserved word cannot be an identifier",
+            ));
+        }
+        Ok(())
     }
 
     /// The current token cannot start a supported expression.

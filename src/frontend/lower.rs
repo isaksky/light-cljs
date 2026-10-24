@@ -610,6 +610,9 @@ struct FnCtx {
     class_initializer: bool,
     /// Ordinary functions and base classes can be constructed.
     constructor_kind: ConstructorKind,
+    /// Resolved when the constructor closure is entered, before any nested
+    /// class scopes can shadow the inaccessible initializer name.
+    instance_fields: Option<Access>,
     /// Arrows inherit their nearest ordinary function's receiver.
     lexical_this: bool,
     /// Capture index for that receiver, shared by all its uses and any
@@ -872,6 +875,7 @@ impl<'s> Lowerer<'s> {
             own_arguments: false,
             class_initializer: false,
             constructor_kind: ConstructorKind::None,
+            instance_fields: None,
             lexical_this: false,
             this_capture: None,
             raw_this_capture: None,
@@ -2055,6 +2059,19 @@ impl<'s> Lowerer<'s> {
         Place::Capture(index)
     }
 
+    fn resolve_instance_fields(&mut self, level: usize, span: Span) -> Result<Access, SyntaxError> {
+        if let Some(access) = self.fns[level].instance_fields {
+            return Ok(access);
+        }
+        if level == 0 || !self.fns[level].lexical_this {
+            return Err(self.internal(span, "missing constructor field initializer"));
+        }
+        let parent = self.resolve_instance_fields(level - 1, span)?;
+        let access = self.capture_access(level, parent);
+        self.fns[level].instance_fields = Some(access);
+        Ok(access)
+    }
+
     /// Keep the receiver separate from the home object's current prototype.
     /// A method call retains a second receiver below the read's operands.
     fn super_base(&mut self, span: Span, method: bool) -> Result<(), SyntaxError> {
@@ -2104,7 +2121,8 @@ impl<'s> Lowerer<'s> {
         // Keep the super() expression's value while the method-like field
         // initializer runs as an ordinary, resumable VM activation.
         self.out().op(Opcode::Dup, span);
-        self.identifier("*instance-fields*", span)?;
+        let fields = self.resolve_instance_fields(level, span)?;
+        self.load(fields, span)?;
         self.out().op_u16(Opcode::CallMethod, 0, span);
         self.out().op(Opcode::Pop, span);
         Ok(())
@@ -2785,6 +2803,10 @@ impl<'s> Lowerer<'s> {
         let parent_initializer = self.cur().class_initializer;
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor_kind = constructor_kind(f);
+        if self.cur().constructor_kind.is_class() {
+            let fields = self.resolve("*instance-fields*");
+            self.cur_mut().instance_fields = Some(fields);
+        }
         self.cur_mut().own_arguments = matches!(
             f.kind,
             FunctionKind::Ordinary
@@ -2807,7 +2829,8 @@ impl<'s> Lowerer<'s> {
         }
         if f.kind == FunctionKind::ClassConstructor {
             self.out().op(Opcode::GetThis, f.span);
-            self.identifier("*instance-fields*", f.span)?;
+            let fields = self.resolve_instance_fields(self.fns.len() - 1, f.span)?;
+            self.load(fields, f.span)?;
             self.out().op_u16(Opcode::CallMethod, 0, f.span);
             self.out().op(Opcode::Pop, f.span);
         }

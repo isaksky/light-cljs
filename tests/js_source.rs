@@ -26298,6 +26298,8 @@ fn class_fields() {
         "let n = 0; class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { n++; return 7; }}; x = 8; } let c = new C(); c[0] === 7 && c.x === 8 && n === 1",
         "function f(C = class { x = eval('1'); }) { return new C().x; } f() === 1",
         "function f(C = class { static x = eval('1'); }) { return C.x; } f() === 1",
+        "class C { get\nx() { return 7; } set\nx(v) { this.y = v; } static get\nz() { return 8; } static set\nz(v) { this.y = v; } } let c = new C(); c.x = 9; C.z = 10; c.x === 7 && c.y === 9 && C.z === 8 && C.y === 10",
+        "class C { a = 1\n \\u0069f = 2; b\n \\u0077hile = 3; } let c = new C(); c.a === 1 && c.if === 2 && c.b === undefined && c.while === 3",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -26313,6 +26315,7 @@ fn class_fields_wait_collect_and_migrate() {
         "let n = 0; class C { [({toString() { n++; __rt.need(139,1); return 'x'; }})] = ++n; } let a = new C(); let b = new C(); a.x === 2 && b.x === 3 && n === 3",
         "let n = 0; class B { get x() { n++; return __rt.need(139,1); } } class C extends B { y = super.x; z = this.y; } let c = new C(); c.y === 7 && c.z === 7 && n === 1",
         "let n = 0; class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { n++; return __rt.need(139,1); }}; x = 8; } let c = new C(); c[0] === 7 && c.x === 8 && n === 1",
+        "let n = 0; class B { constructor() { this.x = 3; } } class C extends B { y = (++n, __rt.need(139,1) + this.x); constructor(a = super(), b = this.y) { this.z = b; } } let c = new C(); c.y === 10 && c.z === 10 && n === 1",
     ] {
         let rt = Runtime::new();
         let code = compile_script("fields.js", source).unwrap();
@@ -26385,4 +26388,30 @@ fn class_fields_on_small_worker_stack() {
             .unwrap();
         assert_eq!(value, ValueView::Bool(true), "{source}");
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. A nested class's class scope
+/// cannot replace the enclosing constructor's instance initializer context.
+#[test]
+fn class_fields_super_in_nested_class_keys() {
+    for source in [
+        "class B {} class D extends B { x = 7; constructor() { class Inner { [super()]() {} } } } new D().x === 7",
+        "class B {} class D extends B { x = 7; constructor() { class Inner { [(() => super())()]() {} } } } new D().x === 7",
+        "class B {} class D extends B { x = 7; constructor() { class Inner extends (super(), B) {} } } new D().x === 7",
+        "class B {} class D extends B { x = 7; constructor() { class Inner extends ((() => super())(), B) {} } } new D().x === 7",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. super() in a default initializes
+/// fields before the following parameter default reads the derived receiver.
+#[test]
+fn class_fields_super_in_parameter_defaults() {
+    assert_eq!(
+        eval(
+            "let n = 0; class B { constructor() { this.x = 7; } } class C extends B { y = (++n, this.x); constructor(a = super(), b = this.y) { this.z = b; this.same = a === this; } } let c = new C(); c.y === 7 && c.z === 7 && c.same && n === 1"
+        ),
+        ValueView::Bool(true)
+    );
 }
