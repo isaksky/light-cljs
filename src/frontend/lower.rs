@@ -1433,7 +1433,10 @@ impl<'s> Lowerer<'s> {
                     (!mutable).then(|| (name.name.clone(), SelfKind::Declaration { key: b.key }));
                 if b.global {
                     self.closure(f, None, None)?;
-                    let access = self.resolve(&name.name);
+                    // Declaration instantiation initializes the variable
+                    // binding, whereas references in eval code must still
+                    // consult any intervening object environments.
+                    let access = self.global_access(&name.name);
                     self.store(access, name.span)?;
                     self.out().op(Opcode::Pop, name.span);
                 } else if b.repr == Repr::Cell {
@@ -1771,7 +1774,6 @@ impl<'s> Lowerer<'s> {
             if level == 0
                 && self.sloppy_eval
                 && matches!(b.kind, BindingKind::Var | BindingKind::Function)
-                && !b.global
                 && self.fns[level].scopes[self.fns[level].var_scope]
                     .get(name)
                     .is_some_and(|body| body.key == b.key)

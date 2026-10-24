@@ -1467,6 +1467,42 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     )?;
     define(heap, &mut prototype, "push", push, PropertyFlags::METHOD)?;
     define(heap, &mut prototype, "join", join, PropertyFlags::METHOD)?;
+    // The standard record includes names even when the associated methods
+    // are not implemented yet. It has no Object.prototype fallbacks.
+    let mut unscopables = OrdinaryObject::intrinsic(None);
+    for name in [
+        "at",
+        "copyWithin",
+        "entries",
+        "fill",
+        "find",
+        "findIndex",
+        "findLast",
+        "findLastIndex",
+        "flat",
+        "flatMap",
+        "includes",
+        "keys",
+        "toReversed",
+        "toSorted",
+        "toSpliced",
+        "values",
+    ] {
+        let key = heap.keys().intern(&JsString::from(name))?;
+        unscopables.define(key, Value::Bool(true)).then_some(())?;
+    }
+    let unscopables = heap.alloc(HeapObject::Plain(unscopables))?;
+    b.all.push(unscopables);
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("unscopables"))?;
+    prototype
+        .define_with(
+            key,
+            Value::Object(unscopables),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
     b.all.push(id);
     // Close the constructor/prototype cycle before publishing the realm.
@@ -2795,7 +2831,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 331); // Includes DisposableStack (-239).
+        assert_eq!(first.all.len(), 332); // Includes Array unscopables (-110).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

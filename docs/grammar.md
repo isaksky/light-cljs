@@ -1054,13 +1054,17 @@ object, throwing TypeError for null or undefined. Identifier references in
 the body search its object environment before outer bindings; block lexical
 bindings and function parameters still shadow enclosing object environments.
 Each lookup checks inherited properties and then `Symbol.unscopables`; a
-truthy entry on an object-valued unscopables record hides that name. Reads,
+truthy entry on an object-valued unscopables record hides that name. The default
+Array.prototype record hides standard names such as `values`. Reads,
 assignments (including `var` initializers), updates, `typeof`, deletion and
 calls use that resolution. Calls found on the object receive it as `this`,
 including optional calls and tagged templates. Assignments select their
 reference before evaluating the RHS. Closures and direct eval retain the
-environment after the body ends and observe later object changes. Captured
-objects are traced and remain subject to publication checks. Getters and
+environment after the body ends and observe later object changes.
+Eval declarations create bindings in the caller's variable environment, even
+when an object property shadows the name. Their initializers assign through
+the object; hoisted function declarations initialize the variable binding.
+Captured objects are traced and remain subject to publication checks. Getters and
 setters run in resumable VM frames; collection between budget slices retains
 objects and selected references. Functions without eval or with retain static
 lookup; only references crossing an object environment use runtime lookup.

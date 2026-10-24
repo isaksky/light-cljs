@@ -2755,6 +2755,8 @@ those of ordinary objects; virtual properties introduce no heap edges.
   `tests/js_source.rs::with_statement_resolution` adapt
   `research/quickjs/tests/test_closure.js::test_with`; the file retains the
   QuickJS MIT notice. The label case follows `tests/test_language.js::test_labels`.
+  The default Array unscopables names were checked against
+  `js_array_unscopables_funcs` in `research/quickjs/quickjs.c`.
   Rust lowering, tracing and remaining fixtures are original. Object
   environments are raw traced captures, interleaved with static lexical
   scopes and eval's private cell-backed variable environments. Binding

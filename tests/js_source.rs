@@ -14810,13 +14810,14 @@ fn with_statement_resolution() {
             with (o1) {
                 if (x !== 'o1' || eval('x') !== 'o1') return false;
                 var f = function() {
-                    var o2 = {x:'o2'};
+                    o2 = {x:'o2'};
                     with (o2) {
                         return x === 'o2' && y === 'o1' && z === 'var_obj'
                             && eval('x') === 'o2' && eval('y') === 'o1'
                             && eval('z') === 'var_obj' && eval('eval("x")') === 'o2';
                     }
                 };
+                if (!f()) return false;
             }
             return f();
         } test()"#,
@@ -14944,6 +14945,49 @@ fn with_statement_accessors_wait_and_migrate() {
         }
     }
     panic!("with accessors did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn with_statement_array_unscopables() {
+    for source in [
+        "let values=42; with([]) { values===42 }",
+        "let values=42, a=[]; a.values=3; with(a) { values===42 }",
+        "with([]) { typeof values==='undefined' }",
+        "let d=Object.getOwnPropertyDescriptor(Array.prototype, Symbol.unscopables); !d.writable && !d.enumerable && d.configurable && Object.getPrototypeOf(d.value)===null && d.value.values===true && d.value.at===true && Object.keys(d.value).length===16",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn with_statement_global_eval() {
+    for source in [
+        "let o={x:1}; with(o){eval('var x=2');} o.x===2 && globalThis.x===undefined",
+        "with({x:1}){eval('var x; x===1')}",
+        "let f, o={x:1}; with(o){f=eval('var x; ()=>x');} o.x=3; f()===3",
+        "let o={x:1}; with(o){eval('function x(){return 3;}');} o.x===1 && globalThis.x()===3",
+        "let o={x:1}; with(o){eval('function x(){return 3;} x===1')}",
+        "let o={x:1}; with(o){eval('function x(){return 3;} var x=2');} o.x===2 && globalThis.x()===3",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn with_statement_scope_boundaries() {
+    for source in [
+        "let f; with({x:1}){f=function(x){return x===2 && eval('x')===2;};} f(2)",
+        "let f; with({x:1}){f=(x)=>x===2 && eval('x')===2;} f(2)",
+        "let f; with({x:1}){f=function(){var x=2; return x===2 && eval('x')===2;};} f()",
+        "let f; with({x:1}){f=function(a=x,b=eval('x')){var x=2; return a===1 && b===1 && x===2 && eval('x')===2;};} f()",
+        "let f; with({x:1}){f=function(a=()=>x,b=eval('()=>x')){var x=2; return a()===1 && b()===1 && x===2 && eval('x')===2;};} f()",
+        "let f; with({x:1}){f=(a=x,b=eval('x'))=>a===1 && b===1;} f()",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
 }
 
 /// `Object.defineProperty` and `Object.getOwnPropertyDescriptor` with data
