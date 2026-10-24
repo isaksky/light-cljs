@@ -16585,23 +16585,28 @@ fn typed_array_from_iterable() {
 #[test]
 fn typed_array_methods_budget() {
     // Synthetic fixture, not light-cljs output.
+    struct Started(bool);
+    impl Host for Started {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
     for source in [
-        "new Uint8Array(100000).join(',').length === 199999",
-        "let a = new Uint8Array(100000); a.fill(42); a[99999] === 42",
-        "let a = new Uint8Array(100000); let b = new Uint8Array(100000); b.fill(17); a.set(b); a[99999] === 17",
+        "let a = new Uint8Array(100000); __rt.effect(168,0); a.join(',').length === 199999",
+        "let a = new Uint8Array(100000); __rt.effect(168,0); a.fill(42); a[99999] === 42",
+        "let a = new Uint8Array(100000); let b = new Uint8Array(100000); b.fill(17); __rt.effect(168,0); a.set(b); a[99999] === 17",
     ] {
         let rt = Runtime::new();
         let task = rt.spawn(&exe(source), &[]).unwrap();
         let mut yields = 0;
         let mut complete = false;
+        let mut host = Started(false);
         for _ in 0..20000 {
-            match task
-                .run_with(Budget::instructions(100), &mut NoEffects)
-                .unwrap()
-            {
+            match task.run_with(Budget::instructions(100), &mut host).unwrap() {
                 RunOutcome::Yielded => {
-                    yields += 1;
-                    if yields == 1 {
+                    yields += usize::from(host.0);
+                    if host.0 && yields == 1 {
                         rt.collect().unwrap();
                     }
                 }
