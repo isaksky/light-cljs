@@ -69,9 +69,10 @@ use crate::collections::object_name;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
-use crate::value::Value;
-use crate::vm::dispatch::Fault;
+use crate::value::{JsString, Value};
+use crate::vm::dispatch::{self, Fault};
 use crate::vm::exception::ErrorObject;
+use crate::vm::property;
 
 /// The failure of reading another task's object.
 fn foreign(owner: Option<TaskId>, caller: TaskId) -> Fault {
@@ -335,6 +336,55 @@ pub(crate) fn set_literal_proto(
         )));
     };
     proto_setter(heap, task, id, value)
+}
+
+/// `v instanceof target` (`Instanceof`, clj-quickjs-75): ECMAScript
+/// InstanceofOperator and OrdinaryHasInstance, after QuickJS
+/// `JS_IsInstanceOf` and `JS_OrdinaryIsInstanceOf`. `target` must be an
+/// object (`Symbol.hasInstance` is not consulted: symbols do not exist yet)
+/// and callable; a primitive `v` is not an instance of anything; otherwise
+/// `target.prototype` must be an object and the answer is whether it is on
+/// `v`'s prototype chain, compared by identity. There are no bound
+/// functions yet, so no target forwards to another.
+///
+/// The walk only reads: each step is `[[GetPrototypeOf]]`
+/// ([`get_prototype_of`]), so its owner rules and its unsupported kinds
+/// (a function or error object on the chain needs `Function.prototype` or
+/// `Error.prototype`) apply. Chains are acyclic ([`set_prototype_of`]
+/// checks), so it ends. Reading `prototype` may allocate a function's lazy
+/// prototype object; the caller keeps `v` and `target` reachable.
+pub(crate) fn instance_of(
+    heap: &Heap,
+    task: TaskId,
+    v: &Value,
+    target: &Value,
+) -> Result<bool, Fault> {
+    let invalid = || Fault::TypeError("invalid 'instanceof' right operand".to_string());
+    if !matches!(target, Value::Object(_)) {
+        return Err(invalid());
+    }
+    match dispatch::callee(heap, target) {
+        Ok(_) => {}
+        Err(Fault::NotCallable(_)) => return Err(invalid()),
+        Err(fault) => return Err(fault),
+    }
+    let Value::Object(id) = *v else {
+        return Ok(false);
+    };
+    let prototype = property::get_field(heap, task, target, &JsString::from("prototype"))?;
+    let Value::Object(prototype) = prototype else {
+        return Err(Fault::TypeError(
+            "operand 'prototype' property is not an object".to_string(),
+        ));
+    };
+    let mut at = id;
+    while let Some(next) = get_prototype_of(heap, task, at)? {
+        if next == prototype {
+            return Ok(true);
+        }
+        at = next;
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

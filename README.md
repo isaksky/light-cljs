@@ -2099,3 +2099,22 @@ Deferred:
   `Object.prototype` (unstored `__proto__`, clj-quickjs-261) fail with `UnsupportedOperand`.
   Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`. Deleting and re-adding a key needs `delete` (clj-quickjs-124).
+
+### `instanceof` (clj-quickjs-75)
+
+Supported (`cargo test --test js_source instanceof_operator`,
+`cargo test --lib frontend::tests::binary_precedence_and_left_associativity`):
+
+- `v instanceof F` at relational precedence, lowered to the appended `instanceof` opcode
+  (`0x60`): a non-object or non-callable `F` is a catchable `TypeError`; a primitive `v` is
+  `false`; otherwise `F.prototype` must be an object (`TypeError`) and the result is whether it
+  is on `v`'s prototype chain (ordinary functions, `Object`, `[].constructor`, chains built with
+  `new`, `Object.create`, `Object.setPrototypeOf` or `G.prototype = new F()`).
+
+Deferred:
+
+- A function or error object as `v`, and a built-in method as `F`, fail with
+  `UnsupportedOperand` until `Function.prototype` (clj-quickjs-102) and `Error.prototype`
+  (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet
+  (clj-quickjs-72, the upstream corpus pellets). `Symbol.hasInstance` (symbols) and bound
+  functions (clj-quickjs-103) are not consulted.

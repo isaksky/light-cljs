@@ -4775,6 +4775,132 @@ fn new_operator_constructs_objects() {
     }
 }
 
+/// `v instanceof f` (clj-quickjs-75): InstanceofOperator and
+/// OrdinaryHasInstance, compiled to `instanceof`. The `({}) instanceof
+/// String` case of the pellet waits for the `String` constructor
+/// (clj-quickjs-72) and `e instanceof ReferenceError` for the Error
+/// constructors; `[].constructor` (the realm's `Array`) stands in for
+/// another built-in constructor. The `a instanceof Object` case is adapted
+/// from `test_op2` in `research/quickjs/tests/test_language.js`, revision
+/// 7d1c13c5d8f8 (QuickJS copyright and MIT license notice: see
+/// `loose_equality_with_a_boolean_left_operand`).
+#[test]
+fn instanceof_operator() {
+    let f = "function F() {} function G() {} G.prototype = new F();";
+    for src in [
+        "new F() instanceof F",
+        "!(({}) instanceof F)",
+        "!(1 instanceof F)",
+        "!('s' instanceof F) && !(undefined instanceof F) && !(null instanceof F)",
+        "({}) instanceof Object",
+        "new F() instanceof Object",
+        "!(new F() instanceof G)",
+        // A two-level chain: an instance of both, and of Object.
+        "const g = new G(); g instanceof G && g instanceof F && g instanceof Object",
+        "const c = Object.create(new F()); c instanceof F && c instanceof Object",
+        "const c = Object.create(G.prototype); c instanceof G && c instanceof F",
+        // A null-prototype object is an instance of nothing.
+        "!(Object.create(null) instanceof Object)",
+        // Arrays and the realm's Array constructor.
+        "const A = [].constructor; [] instanceof A && [] instanceof Object && !(({}) instanceof A)",
+        // The chain is read when the operator runs, by identity.
+        "const o = new F(); F.prototype = {}; !(o instanceof F) && new F() instanceof F",
+        "const p = {}; function H() {} H.prototype = p; Object.create(p) instanceof H",
+        "const o = {}; Object.setPrototypeOf(o, F.prototype); o instanceof F",
+        // A primitive left operand is false before `prototype` is read.
+        "F.prototype = 1; !(1 instanceof F)",
+        // Relational precedence: below `+`, above `==`, left-associative.
+        "new F() instanceof F == true",
+        "(0 + 1 instanceof F) === false",
+        "new F() instanceof F === true",
+        "(new F() instanceof F instanceof Object) === false",
+    ] {
+        assert_eq!(eval(&format!("{f} {src}")), ValueView::Bool(true), "{src}");
+    }
+    // The upstream `test_op2` case (`research/quickjs/tests/test_language.js`,
+    // revision 7d1c13c5d8f8), less its `String` row.
+    assert_eq!(
+        eval("let a = {}; a instanceof Object"),
+        ValueView::Bool(true)
+    );
+    // The right operand is evaluated before the check, the left one first.
+    assert_eq!(
+        string(
+            "let log = ''; function l() { log = log + 'l'; return {}; } \
+             function r() { log = log + 'r'; return 1; } \
+             try { l() instanceof r(); } catch (e) { log = log + 'e'; } log"
+        ),
+        "lre"
+    );
+    // Catchable TypeErrors, reported at the `instanceof` token.
+    for (src, message) in [
+        ("({}) instanceof 1", "invalid 'instanceof' right operand"),
+        ("({}) instanceof {}", "invalid 'instanceof' right operand"),
+        (
+            "1 instanceof undefined",
+            "invalid 'instanceof' right operand",
+        ),
+        (
+            "({}) instanceof __rt.vector()",
+            "invalid 'instanceof' right operand",
+        ),
+        (
+            "function F() {} F.prototype = 1; ({}) instanceof F",
+            "operand 'prototype' property is not an object",
+        ),
+        // Callable without a `prototype`: an arrow function.
+        (
+            "const a = () => 1; ({}) instanceof a",
+            "operand 'prototype' property is not an object",
+        ),
+    ] {
+        assert_eq!(
+            string(&format!(
+                "let r = 'none'; try {{ {src}; }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught",
+            "{src}"
+        );
+        let (kind, got, line, column) = failure_at(&format!("\n{src};"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{src}");
+        assert_eq!(got, message, "{src}");
+        let at = src.rfind("instanceof").unwrap() as u32 + 1;
+        assert_eq!((line, column), (2, at), "{src}");
+    }
+    // The pellet's `new Object() instanceof F` row: `new Object()` is
+    // itself a TypeError until `Object` is a constructor (clj-quickjs-71).
+    assert_eq!(
+        failure_at("function F() {} F.prototype = 1; new Object() instanceof F").0,
+        VmErrorKind::TypeError
+    );
+    // A function or error object on the chain needs Function.prototype
+    // (clj-quickjs-102) or Error.prototype (clj-quickjs-230): an explicit
+    // UnsupportedOperand, as for Object.getPrototypeOf; so is reading the
+    // missing `prototype` of a built-in method, which would be looked up on
+    // Function.prototype.
+    for src in [
+        "({}) instanceof Object.is",
+        "function F() {} F instanceof Object",
+        "let e; try { nope; } catch (x) { e = x; } e instanceof Object",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    // `instanceof` compiles to the `instanceof` opcode.
+    assert!(opcodes(&exe(&format!("{f} new F() instanceof F"))).contains(&Opcode::Instanceof));
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "function F() {} function G() {} G.prototype = new F(); new G() instanceof F && new G() instanceof G && !(new F() instanceof G);",
+        "function F() {} ({}) instanceof Object && !(1 instanceof F) && !(Object.create(null) instanceof Object) && Object.create(F.prototype) instanceof F;",
+        "let r = false; try { ({}) instanceof {}; } catch (e) { r = true; } r;",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// `Executable::to_spec` re-encodes the argument counts of `construct` and
 /// `call_method` (clj-quickjs-71): the reloaded script has the same bytes
 /// and computes the same value.

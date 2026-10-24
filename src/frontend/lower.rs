@@ -3015,6 +3015,11 @@ impl<'s> Lowerer<'s> {
             BinaryOp::Sar => Opcode::Sar,
             BinaryOp::UShr => Opcode::UShr,
             BinaryOp::Exp => Opcode::Pow,
+            // Operands of any type, no conversion (clj-quickjs-75).
+            BinaryOp::Instanceof => {
+                self.out().op(Opcode::Instanceof, span);
+                return;
+            }
             BinaryOp::LooseEq | BinaryOp::LooseNe | BinaryOp::StrictEq | BinaryOp::StrictNe => {
                 let (compare, negate) = match op {
                     BinaryOp::LooseEq => (Opcode::LooseEq, false),

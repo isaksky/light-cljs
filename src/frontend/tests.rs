@@ -219,6 +219,7 @@ fn binary_name(op: BinaryOp) -> &'static str {
         BinaryOp::Sar => ">>",
         BinaryOp::UShr => ">>>",
         BinaryOp::Exp => "**",
+        BinaryOp::Instanceof => "instanceof",
     }
 }
 
@@ -445,6 +446,18 @@ fn binary_precedence_and_left_associativity() {
     assert_eq!(ast("a !== b <= c;"), "(!== a (<= b c))");
     assert_eq!(ast("a || b && c || d;"), "(|| (|| a (&& b c)) d)");
     assert_eq!(ast("a && b === c;"), "(&& a (=== b c))");
+    // `instanceof` (clj-quickjs-75): relational, left-associative.
+    assert_eq!(
+        ast("a instanceof b instanceof c;"),
+        "(instanceof (instanceof a b) c)"
+    );
+    assert_eq!(
+        ast("a + b instanceof c < d === e;"),
+        "(=== (< (instanceof (+ a b) c) d) e)"
+    );
+    assert_eq!(ast("a << b instanceof c;"), "(instanceof (<< a b) c)");
+    assert_eq!(ast("!a instanceof b;"), "(instanceof (! a) b)");
+    assert_eq!(ast("a instanceof b && c;"), "(&& (instanceof a b) c)");
 }
 
 /// The comma operator (clj-quickjs-61): `Expression : Expression ,
@@ -3002,7 +3015,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
         ("x in y;", 1, 3, "in"),
-        ("x instanceof y;", 1, 3, "instanceof"),
         ("x = eval;", 1, 5, "eval"),
         ("function f() { return arguments; }", 1, 23, "arguments"),
     ];
@@ -3153,6 +3165,12 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("void", |n| format!("x = {}f();", "void ".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
+        ("instanceof", |n| {
+            format!("x = a{};", " instanceof b".repeat(n))
+        }),
+        ("nested instanceof", |n| {
+            format!("x = {}b{};", "a instanceof (".repeat(n), ")".repeat(n))
+        }),
         ("exponent", |n| format!("x = 1{};", " ** 1".repeat(n))),
         ("exponent of unary", |n| {
             format!("x = {}1{};", "2 ** -(".repeat(n), ")".repeat(n))

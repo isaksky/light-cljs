@@ -1862,7 +1862,7 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_binary(&self) -> PResult<()> {
         let what = match &self.tok.kind {
             TokenKind::Punct(p @ Punct::Nullish) => p.as_str(),
-            TokenKind::Keyword(k @ (Keyword::In | Keyword::Instanceof)) => k.as_str(),
+            TokenKind::Keyword(Keyword::In) => Keyword::In.as_str(),
             _ => return Ok(()),
         };
         Err(self.unsupported(self.tok.span, &format!("the `{what}` operator is")))
@@ -2355,8 +2355,10 @@ enum BinOrLogical {
 /// Precedence (higher binds tighter) of the supported binary operators.
 fn binary_op(kind: &TokenKind) -> Option<(u8, BinOrLogical)> {
     use BinOrLogical::{Binary, Logical};
-    let TokenKind::Punct(p) = kind else {
-        return None;
+    let p = match kind {
+        TokenKind::Punct(p) => p,
+        TokenKind::Keyword(Keyword::Instanceof) => return Some((7, Binary(BinaryOp::Instanceof))),
+        _ => return None,
     };
     Some(match p {
         Punct::PipePipe => (1, Logical(LogicalOp::Or)),

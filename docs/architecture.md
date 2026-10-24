@@ -2298,6 +2298,31 @@ result, a fresh array owned by the running task, last.
 - `Object.create`'s second argument and `Object.defineProperties`, `Object.assign`,
   `Object.entries`/`values` can use the same helper.
 
+## `instanceof` (clj-quickjs-75)
+
+Contract: `src/vm/prototype.rs` (`instance_of`), `src/vm/instr.rs`
+(`instanceof`, `0x60`). Semantics: `docs/grammar.md`, "Execution".
+
+**Decision.** `instanceof` is a binary operator at relational precedence
+(`BinaryOp::Instanceof`), lowered by the existing out-of-line
+`binary_expr` helper to one appended opcode, as QuickJS's
+`OP_instanceof`. The opcode is InstanceofOperator without the
+`@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance without
+bound functions (clj-quickjs-103): the right operand must be a callable
+object, a primitive left operand is `false`, `F.prototype` is read with
+the ordinary property walk and must be an object, and the chain is walked
+with `[[GetPrototypeOf]]` (`prototype::get_prototype_of`), so its owner
+rules and its explicit `UnsupportedOperand` for functions and error
+objects apply unchanged and the walk follows clj-quickjs-102 and -230 when
+they give those kinds prototypes. The walk only reads; chains are acyclic,
+so it ends. Reading `prototype` may create a function's lazy prototype
+object (and build the realm), so the opcode is a poll point and keeps
+both operands on the operand stack, traced, until it has the answer. It
+calls no JavaScript (no accessors yet), so nothing needs to be resumable
+inside it; once `@@hasInstance` or a `prototype` getter can run
+JavaScript, the instruction must become a call into a frame like
+`construct`.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -2788,3 +2813,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `num_keys_cmp`, `JS_GetOwnPropertyNames2`, `js_object_keys` and
   `js_object_getOwnPropertyNames` were consulted only, for semantics. No
   code was copied.
+- `tests/js_source.rs` `instanceof_operator` (clj-quickjs-75): the
+  `a = {}; (a instanceof Object)` case of `test_op2` (line 195) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: `let` declares `a`, the `assert` is a Rust assertion, and the
+  `a instanceof String` case waits for the `String` constructor
+  (clj-quickjs-72). The notice on
+  `loose_equality_with_a_boolean_left_operand` covers it.
+  `research/quickjs/quickjs.c` `js_operator_instanceof`,
+  `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf` and `OP_instanceof` were
+  consulted only, for semantics (the two TypeError messages are QuickJS's).
+  No code was copied.

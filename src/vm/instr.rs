@@ -291,6 +291,17 @@
 //! v is ignored. The compiler emits it for a literal's `__proto__: value`.
 //! It allocates nothing and runs no JavaScript, so it is not a poll point.
 //!
+//! Opcode `0x60`, `Instanceof` (clj-quickjs-75; QuickJS `OP_instanceof`,
+//! `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `v f → bool`, JavaScript
+//! `v instanceof f` (InstanceofOperator, OrdinaryHasInstance). `f` must be
+//! an object and callable, else a catchable `TypeError`; a primitive `v`
+//! is `false`; otherwise `f.prototype` must be an object (`TypeError`) and
+//! the result is whether it is on `v`'s prototype chain, by identity
+//! (`crate::vm::prototype::instance_of`). `Symbol.hasInstance` and bound
+//! functions do not exist yet. Reading `f.prototype` may create a
+//! function's lazy prototype object and build the realm, so it is a poll
+//! point; it runs no JavaScript.
+//!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
 //! the realm on first use, so it may allocate and is a poll point. Its
@@ -468,6 +479,7 @@ pub enum Opcode {
     ToPropertyKey = 0x5D,
     Construct = 0x5E,
     SetProto = 0x5F,
+    Instanceof = 0x60,
 }
 
 /// Operand encoding of an opcode.
@@ -618,6 +630,7 @@ impl Opcode {
             0x5D => ToPropertyKey,
             0x5E => Construct,
             0x5F => SetProto,
+            0x60 => Instanceof,
             _ => return None,
         })
     }
@@ -721,6 +734,7 @@ impl Opcode {
             ToPropertyKey => "to_property_key",
             Construct => "construct",
             SetProto => "set_proto",
+            Instanceof => "instanceof",
         }
     }
 
@@ -746,9 +760,8 @@ impl Opcode {
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
-            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto => {
-                OperandKind::None
-            }
+            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
+            | Instanceof => OperandKind::None,
         }
     }
 }
@@ -894,6 +907,7 @@ pub(crate) enum Instr {
     /// Argument count (the constructor is below the arguments).
     Construct(u16),
     SetProto,
+    Instanceof,
 }
 
 impl Instr {
@@ -994,6 +1008,7 @@ impl Instr {
             Instr::ToPropertyKey => Opcode::ToPropertyKey,
             Instr::Construct(_) => Opcode::Construct,
             Instr::SetProto => Opcode::SetProto,
+            Instr::Instanceof => Opcode::Instanceof,
         }
     }
 
@@ -1010,7 +1025,8 @@ impl Instr {
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
-            | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe => (2, 1),
+            | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe
+            | Instanceof => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -1047,6 +1063,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 95);
+        assert_eq!(assigned, 96);
     }
 }

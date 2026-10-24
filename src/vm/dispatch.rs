@@ -969,6 +969,15 @@ fn step(
             prototype::set_literal_proto(heap, state.diag.task, &object, &v)?;
             state.push(object);
         }
+        Instr::Instanceof => {
+            // Both operands stay on the stack (reachable) while `prototype`
+            // is read, which may allocate (`prototype::instance_of`).
+            let [v, f] = top_operands(state, 2)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            let result = prototype::instance_of(heap, state.diag.task, v, f)?;
+            state.replace(2, Value::Bool(result))?;
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1224,7 +1233,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // On a function object these may allocate its property record and
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).
-        Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem => true,
+        Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem
+        // Reads `f.prototype` (clj-quickjs-75).
+        | Instr::Instanceof => true,
         Instr::NewObject
         | Instr::NewObjectLiteral
         | Instr::NewArray
