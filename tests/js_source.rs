@@ -1072,7 +1072,7 @@ fn sloppy_eval_declares_vars_in_the_caller() {
         r#"var z=0; function f() { [z=eval('var z=1; 2')]=[undefined]; return z===1; } f() && z===2"#,
         r#"function f() { return eval('var [z=(delete z,2)]=[undefined]; typeof z') === 'undefined'; } f()"#,
         r#"function F() { const read=()=>z; eval('var z=new.target'); return read; } new F()() === F"#,
-        r#"function F() { eval('var z=1'); return eval('eval(\"new.target\")') === F && z === 1; } new F()"#,
+        r#"function F() { eval('var z=1'); this.ok=eval('eval(\"new.target\")') === F && z === 1; } new F().ok"#,
     ] {
         assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
     }
