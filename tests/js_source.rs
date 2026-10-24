@@ -91,6 +91,51 @@ fn spread_protocol_errors_and_order() {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn array_from_iterables_and_array_likes() {
+    for src in [
+        "let a = [1, 2, 3], b = Array.from(a); b !== a && b.length === 3 && b.join() === '1,2,3'",
+        "Array.from({length: 2, 0: 'a', 1: 'b'}).join() === 'a,b'",
+        "Array.from([1, 2], function(x, i) { return x * 10 + i; }).join() === '10,21'",
+        "Array.from([1, 2], function(x, i) { return this.n + x + i; }, {n: 5}).join() === '6,8'",
+        "let n = 0; let o = {}; o[Symbol.iterator] = function() { return {next() { n++; return {value: n, done: n > 3}; }}; }; let a = Array.from(o, function(x, i) { return n === i + 1 ? x : 99; }); a.join() === '1,2,3' && n === 4",
+        "let ok = false; try { Array.from([1], 5); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let n = 0, c = 0; let o = {next() { return {value: ++n}; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function(x) { if (x === 2) throw 17; return x; }); } catch(e) { ok = e === 17; } ok && n === 2 && c === 1",
+        "let reads = 0, o = {}; Object.defineProperty(o, Symbol.iterator, {get() { reads++; throw 99; }}); let ok = false; try { Array.from(o, null); } catch(e) { ok = e instanceof TypeError; } ok && reads === 0",
+        "Array.from('A\\u{1f600}B').length === 3 && Array.from(new Uint8Array([7, 8])).join() === '7,8'",
+        "let a = Array.from({length: 2.9, 1: 'x'}); a.length === 2 && Object.getOwnPropertyDescriptor(a, '0').writable && a[0] === undefined && a[1] === 'x'",
+        "Array.from({length: -1}).length === 0 && Array.from({length: NaN}).length === 0 && Array.from(5).length === 0 && Array.from(true).length === 0 && Array.from(Symbol()).length === 0",
+        "let ok = false; try { Array.from({length: Infinity}); } catch(e) { ok = e instanceof RangeError; } ok",
+        "let n = 0, o = {length: {valueOf() { n++; return 2; }}, 0: 3, 1: 4}; Array.from(o).join() === '3,4' && n === 1",
+        "let o = {length: 1, 0: 3}; o[Symbol.iterator] = null; Array.from(o)[0] === 3",
+        "let o = {length: 1}; o[Symbol.iterator] = 5; let ok = false; try { Array.from(o); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let c = 0, o = {next() { throw 17; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o); } catch(e) { ok = e === 17; } ok && c === 0",
+        "let c = 0, o = {next() { return {get done() { throw 17; }}; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o); } catch(e) { ok = e === 17; } ok && c === 0",
+        "let c = 0, o = {next() { return {get value() { throw 17; }}; }, return() { c++; return {}; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o); } catch(e) { ok = e === 17; } ok && c === 0",
+        "let c = 0, o = {next() { return {value: 1}; }, get return() { c++; throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function() { throw 17; }); } catch(e) { ok = e === 17; } ok && c === 1",
+        "let c = 0, o = {next() { return {value: 1}; }, return() { c++; throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function() { throw 17; }); } catch(e) { ok = e === 17; } ok && c === 1",
+        "let o = {next() { return {value: 1}; }, return() { return 5; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function() { throw 17; }); } catch(e) { ok = e === 17; } ok",
+        "let d = Object.getOwnPropertyDescriptor(Array, 'from'); Array.from.name === 'from' && Array.from.length === 1 && d.writable && d.configurable && !d.enumerable",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("Array.from.call(function C() {}, [1])").kind(),
+        VmErrorKind::UnsupportedOperand,
+    );
+}
+
+#[test]
+fn array_from_close_preserves_exception_diagnostics() {
+    // Synthetic fixture, not light-cljs output.
+    let src = "let it = {next() { return {value: 1}; }, return() { throw 99; }};\nit[Symbol.iterator] = function() { return this; };\nArray.from(it, function mapper() {\nthrow 17;\n});";
+    let error = failure(src);
+    assert_eq!(error.kind(), VmErrorKind::Thrown);
+    assert_eq!(error.diagnostic().source.unwrap().line, 4);
+    assert!(error.message().contains("17"));
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn promise_thenable_adoption() {
     #[derive(Default)]
     struct Log(Vec<Primitive>);

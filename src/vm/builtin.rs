@@ -362,6 +362,8 @@ pub(crate) enum Builtin {
 
     DateParse,
     MapForEach,
+
+    ArrayFrom,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -404,6 +406,7 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayFrom => "from",
             Builtin::ArrayValues | Builtin::TypedArrayValues => "values",
             Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
             Builtin::IteratorNext(_) => "next",
@@ -578,6 +581,7 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayFrom => 1,
             Builtin::ArrayValues
             | Builtin::TypedArrayValues
             | Builtin::StringIterator
@@ -746,6 +750,7 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayFrom => Err(Fault::Internal("Array.from requires a resumable frame")),
         Builtin::ArrayValues => {
             super::native::iterator::create(heap, task, this, super::native::iterator::Kind::Array)
         }

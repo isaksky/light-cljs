@@ -1017,6 +1017,7 @@ fn realm_intrinsics_retain() {
         "Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype, 'format').get",
         "Date.parse",
         "Map.prototype.forEach",
+        "Array.from",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1079,7 +1080,9 @@ fn realm_intrinsics_retain() {
     // PluralRules adds one prototype and four built-ins (-212).
     // ISO date parsing adds one built-in function (-184).
     // Map forEach adds one built-in method (-170).
-    assert_eq!(rt.heap_usage().objects.builtin, 210);
+
+    // Array.from adds one built-in function (-207).
+    assert_eq!(rt.heap_usage().objects.builtin, 211);
     assert_eq!(rt.heap_usage().objects.plain, 39);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

@@ -128,6 +128,7 @@ pub(crate) fn create(
 #[derive(Debug)]
 enum Stage {
     Method,
+    KnownMethod,
     Invoke,
     NextMethod,
     Record,
@@ -162,6 +163,15 @@ impl Trace for State {
 }
 
 impl State {
+    /// GetIterator with an already observed @@iterator method. Consumers
+    /// such as Array.from must select their fallback without reading twice.
+    pub(crate) fn with_method(source: Value, method: Value) -> Self {
+        Self {
+            stage: Stage::KnownMethod,
+            iterator: method,
+            ..Self::get_iterator(source)
+        }
+    }
     /// GetIterator's reusable resumable native operation. The caller can
     /// cache the returned record, then call its `next` with `iterator` as this.
     pub(crate) fn get_iterator(source: Value) -> Self {
@@ -295,6 +305,11 @@ impl State {
                     }),
                     None => Ok(Action::Continue),
                 }
+            }
+            Stage::KnownMethod => {
+                let method = self.iterator.clone();
+                self.stage = Stage::Invoke;
+                self.step(heap, task, Input::CallResult(method))
             }
             Stage::Method => {
                 if matches!(self.source, Value::Bool(_) | Value::Symbol(_)) {

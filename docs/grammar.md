@@ -4182,3 +4182,27 @@ exhaustion throws catchable RangeError before result allocation.
 
 Explicit gaps: `v` Unicode sets, lookbehind, non-Unicode ignore-case matching
 and the previously documented symbol-based dispatch remain deferred.
+
+## Array.from (clj-quickjs-207)
+
+Execution: `Array.from(items[, mapFn[, thisArg]])` validates the mapper first,
+then reads `items[Symbol.iterator]` once. A non-nullish method selects the shared
+GetIterator protocol; each next result must be an object, and `done` precedes
+`value`. Otherwise `ToLength(items.length)` selects indexed array-like reads,
+including inherited properties and getters. Each source value creates an own
+data element (including undefined for holes). Mapping calls
+`mapFn.call(thisArg, value, index)` before appending that element. Iterator
+exhaustion does not call `return`; mapper or element-creation exceptions close
+once and preserve the original exception over errors/results from `return`.
+Failures of next/done/value do not close. All getters and callbacks are ordinary
+resumable frames. Each element consumes native steps, including array-like
+holes. Null/undefined inputs and noncallable mappers/methods throw TypeError.
+Array-like lengths use resumable ToNumber then ToLength, with RangeError above
+`2^32 - 1`; iterable output has the same existing array length bound.
+
+Explicit gaps: `Array.from.call(C, ...)` with custom/subclass or bound
+constructors fails explicitly with UnsupportedOperand pending subclass support.
+Array and nonconstructor receivers return plain arrays. Boolean and Symbol
+wrapper prototypes are unavailable in the subset; those primitives have no
+observable length/iterator and produce empty arrays. Async iteration and
+`Array.fromAsync` remain unsupported.

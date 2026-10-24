@@ -219,6 +219,7 @@ mod intl;
 pub(crate) mod iterator;
 pub(crate) mod regexp;
 
+mod array_from;
 mod intl_service;
 mod number_format;
 mod plural_rules;
@@ -411,6 +412,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    ArrayFrom(Box<array_from::State>),
     DateParse {
         parser: Box<super::date::Parser>,
         construct: bool,
@@ -696,6 +698,7 @@ pub(crate) struct NativeFrame {
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
+            NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::TypedArray(array) => array.trace(visit),
             NativeState::Promise(p) => p.trace(visit),
@@ -1124,6 +1127,11 @@ pub(crate) fn start_builtin(
             Builtin::MapForEach => Some(NativeState::Iterator(Box::new(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
+
+            Builtin::ArrayFrom => Some(NativeState::ArrayFrom(Box::new(array_from::State::new(
+                this.clone(),
+                args,
+            )))),
             Builtin::IteratorNext(kind) => Some(NativeState::Iterator(Box::new(
                 iterator::State::next(heap, state.diag.task, this, kind)?,
             ))),
@@ -1868,6 +1876,16 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         (Awaiting::Dependency, Some(v)) => Input::Dependency(v),
         _ => Input::Start,
     };
+    let native_index = state.natives.len() - 1;
+    // These steps begin without a delivered operand, so the handler's
+    // height is exactly the native base. Other boundaries catch only calls.
+    if matches!(&state.natives[native_index].state,
+        NativeState::ArrayFrom(from) if from.catches_step())
+    {
+        state.push_handler(super::exception::HandlerKind::NativeCatch {
+            native: native_index,
+        })?;
+    }
     let frame = state
         .natives
         .last_mut()
@@ -1879,6 +1897,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             .state
             .step(heap, state.diag.task, &state.jobs, input, host)?
     };
+    state.pop_native_catch(native_index);
     state.truncate_operands(base)?;
     match action {
         Action::DefaultLocale => {
@@ -1952,7 +1971,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             if state
                 .natives
                 .last()
-                .is_some_and(|frame| matches!(&frame.state, NativeState::Promise(p) if p.catches()))
+                .is_some_and(|frame| frame.state.catches())
             {
                 state.push_handler(super::exception::HandlerKind::NativeCatch {
                     native: state.natives.len() - 1,
@@ -2008,22 +2027,21 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     }
 }
 
-/// A promise boundary consumes a callback's exception after JavaScript's
-/// own catch/finally handlers have run. Cancellation never calls this path.
+/// A native boundary consumes an exception after JavaScript's own
+/// catch/finally handlers have run. Array.from retains the full exception
+/// for IteratorClose; promises consume its value. Cancellation skips this.
 pub(crate) fn catch(
     natives: &mut Vec<NativeFrame>,
     index: usize,
-    value: Value,
+    exception: super::exception::Exception,
 ) -> Result<(), &'static str> {
     natives.truncate(index + 1);
     let frame = natives.get_mut(index).ok_or("native catch frame missing")?;
-    let NativeState::Promise(promise) = &mut frame.state else {
-        return Err("invalid native catch");
-    };
-    if !promise.catches() {
-        return Err("promise native cannot catch");
+    match &mut frame.state {
+        NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
+        NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
+        _ => return Err("invalid native catch"),
     }
-    promise.failed(value);
     frame.awaiting = Awaiting::Nothing;
     Ok(())
 }
@@ -2177,6 +2195,13 @@ fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
 }
 
 impl NativeState {
+    fn catches(&self) -> bool {
+        match self {
+            Self::Promise(promise) => promise.catches(),
+            Self::ArrayFrom(from) => from.catches(),
+            _ => false,
+        }
+    }
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
     fn step(
@@ -2228,6 +2253,7 @@ impl NativeState {
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            NativeState::ArrayFrom(from) => from.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
@@ -3343,6 +3369,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Reduce { .. }
+                | NativeState::ArrayFrom(_)
                 | NativeState::Iterator(_)
                 | NativeState::TypedArray(_)
                 | NativeState::Promise(_)

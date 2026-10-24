@@ -6011,3 +6011,33 @@ reference. This conservative charge applies even to unmatched/unnamed slots,
 bounds allocation by the existing capture bound and prevents the indices
 loop from escaping the search allowance. Exhaustion remains a catchable
 RangeError. Matching and result offsets retain UTF-16 semantics.
+
+## Resumable Array.from (clj-quickjs-207)
+
+`NativeState::ArrayFrom` holds the source, mapper/thisArg, output, iterator,
+cached next, current result, acquisition state and index in task-owned traced
+storage. It selects iterable versus array-like after one @@iterator read and
+uses `iterator::State::with_method`, the existing GetIterator continuation with
+that observed method. No second iterator protocol is introduced. Indexed
+reads, ToNumber of an object length, mapping, and return lookup/call yield
+trampoline actions. Output append is CreateDataProperty through the existing
+fresh-array append path; each element requires budgeted native steps.
+
+NativeCatch now also delivers the complete Exception to ArrayFrom after the
+callback's own catch/finally handlers. A boundary covers only mapper calls and
+output append, then return lookup/call during close; next/done/value failures
+propagate directly. Step failures at these boundaries are caught as well as
+callback failures. Close retains and traces the original Exception, ignores
+return errors/results, then rethrows with its original diagnostics. Cancellation
+still discards natives and never invokes native catch or iterator return.
+No Rust frame, heap lock or borrow survives a callback/wait. Tests collect
+between every instruction, wait inside every observable operation, and migrate
+to another host thread without replaying effects or losing output prefixes.
+
+Array-like lengths above the existing u32 array limit fail before reading any
+indices; arrays grow one element at a time rather than allocating the entire
+length up front. Custom/subclass and bound constructor receivers explicitly
+fail pending subclass support; Array/nonconstructor receivers create ordinary
+arrays. Boolean/Symbol primitive wrappers have no prototype support yet.
+The Array.from built-in and intrinsic allocation are appended to their existing
+registries, preserving earlier intrinsic identities.

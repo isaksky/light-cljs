@@ -1056,6 +1056,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let date_parse = b.function(Builtin::DateParse, &[])?;
     b.add(date, "parse", date_parse, PropertyFlags::METHOD)?;
+    let array_from = b.function(Builtin::ArrayFrom, &[])?;
+    b.add(array, "from", array_from, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all

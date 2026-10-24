@@ -1520,3 +1520,77 @@ fn array_join_resumes_without_repeating_conversions() {
         assert_eq!(task.dependency_log().edges(), &[expected]);
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. All observable calls in
+/// Array.from resume once, even when collected at every instruction and
+/// resumed on another thread. The result prefix is rooted by the native.
+#[test]
+fn array_from_iterator_waits_on_dependency() {
+    for src in [
+        "let n = 0, o = {next() { n++; __rt.effect(1, 3); let v = __rt.need(5, 3); return {value: n + v, done: n > 2}; }}; o[Symbol.iterator] = function() { return this; }; let a = Array.from(o); a.join() === '8,9' && n === 3",
+        "let n = 0, o = {}; Object.defineProperty(o, Symbol.iterator, {get() { n++; __rt.effect(1, 3); __rt.need(5, 3); return function() { return [1, 2].values(); }; }}); Array.from(o).join() === '1,2' && n === 1",
+        "let n = 0, o = {}; o[Symbol.iterator] = function() { n++; __rt.effect(1, 3); __rt.need(5, 3); return [1, 2].values(); }; Array.from(o).join() === '1,2' && n === 1",
+        "let n = 0, o = {get next() { n++; __rt.effect(1, 3); __rt.need(5, 3); return function() { return {done: true}; }; }}; o[Symbol.iterator] = function() { return this; }; Array.from(o).length === 0 && n === 1",
+        "let n = 0; let a = Array.from([{x: 1}, {x: 2}], function(v, i) { n++; if (i === 1) { __rt.effect(1, 3); __rt.need(5, 3); } return {x: this.x + v.x}; }, {x: 4}); a[0].x === 5 && a[1].x === 6 && n === 2",
+        "let n = 0, o = {get length() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }, 0: 'a', 1: 'b'}; Array.from(o).join() === 'a,b' && n === 1",
+        "let n = 0, o = {length: {valueOf() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }}, 0: 'a', 1: 'b'}; Array.from(o).join() === 'a,b' && n === 1",
+        "let n = 0, o = {length: 2, 0: {x: 1}, get 1() { n++; __rt.effect(1, 3); return {x: __rt.need(5, 3)}; }}; let a = Array.from(o); a[0].x === 1 && a[1].x === 7 && n === 1",
+        "let n = 0, c = 0, o = {next() { return {value: ++n}; }, return() { c++; __rt.effect(1, 3); __rt.need(5, 3); throw 99; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function(v) { if (v === 2) throw 17; return v; }); } catch(e) { ok = e === 17; } ok && c === 1 && n === 2",
+        "let c = 0, o = {next() { return {value: 1}; }, get return() { c++; __rt.effect(1, 3); __rt.need(5, 3); return function() { return {}; }; }}; o[Symbol.iterator] = function() { return this; }; let ok = false; try { Array.from(o, function() { throw {x: 17}; }); } catch(e) { ok = e.x === 17; } ok && c === 1",
+        "let n = 0, o = {next() { return {get done() { n++; if (n === 1) { __rt.effect(1, 3); __rt.need(5, 3); } return n > 1; }, value: 1}; }}; o[Symbol.iterator] = function() { return this; }; Array.from(o)[0] === 1 && n === 2",
+        "let n = 0, o = {next() { return ++n === 1 ? {get value() { __rt.effect(1, 3); return __rt.need(5, 3); }} : {done: true}; }}; o[Symbol.iterator] = function() { return this; }; Array.from(o)[0] === 7 && n === 2",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("array-from-wait", src).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut slices = 0;
+        loop {
+            slices += 1;
+            assert!(slices < 3000, "{src}");
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    break;
+                }
+            }
+        }
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        rt.collect().unwrap();
+        let worker_rt = rt.clone();
+        let (result, host) = thread::spawn(move || {
+            let mut host = host;
+            for _ in 0..3000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        worker_rt.collect().unwrap();
+                    }
+                    outcome => return (outcome, host),
+                }
+            }
+            panic!("Array.from did not complete");
+        })
+        .join()
+        .unwrap();
+        let RunOutcome::Complete(value) = result else {
+            panic!("unexpected {result:?}: {src}");
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+        let effects = if src.contains("let v = __rt.need") {
+            vec![3.0; 3]
+        } else {
+            vec![3.0]
+        };
+        assert_eq!(host.effects, effects, "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}

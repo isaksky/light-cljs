@@ -754,7 +754,7 @@ impl VmState {
             if let HandlerKind::NativeCatch { native } = h.kind {
                 self.truncate_calls(h.frame);
                 self.stack.truncate(h.height);
-                if let Err(message) = native::catch(&mut self.natives, native, exception.value) {
+                if let Err(message) = native::catch(&mut self.natives, native, exception) {
                     return Raised::Broken(message);
                 }
                 return Raised::Caught;

@@ -3285,3 +3285,21 @@ Unicode matching from inside a surrogate pair reports its lead offset.
 Indices allocation shares the existing search work limit. Patterns without
 `d` have no own `indices` property. Unicode sets (`v`) remain deferred.
 Run `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
+
+### `Array.from` (clj-quickjs-207)
+
+Supported: `Array.from(items[, mapFn[, thisArg]])` copies iterables using the
+shared synchronous iterator protocol, or reads `ToLength(items.length)` and
+each index when `Symbol.iterator` is nullish. Holes become own properties
+containing undefined. Mapping receives `(value, index)` with `thisArg`;
+noncallable mappers fail before reading the source. Mapper failures close the
+iterator once, preserving the original exception. Getters, callbacks, and
+iterator close can wait, yield, be collected around, and migrate; element work
+is budgeted. Array-like lengths above `2^32 - 1` throw RangeError, matching the
+existing array limit. Tests: `cargo test --test js_source array_from_` and
+`cargo test --test need array_from_iterator_waits_on_dependency`.
+Deferred: custom/subclass and bound constructor receivers through
+`Array.from.call(C, ...)` explicitly fail with UnsupportedOperand. Ordinary
+`Array.from` and nonconstructor receivers produce plain arrays. Boolean and
+Symbol wrapper prototypes remain unavailable; their primitives produce empty
+arrays.
