@@ -5308,8 +5308,8 @@ objects use resumable ToString. Matching collects immutable capture ranges
 before any replacer calls, so global lastIndex reaches zero before callbacks.
 The own non-configurable lastIndex data property uses strict writes and its
 value uses resumable ToLength, including nonglobal calls. Global empty-match
-advancement implements AdvanceStringIndex; supported flags currently select
-UTF-16 code units, with a surrogate-pair branch ready for Unicode matching.
+advancement implements AdvanceStringIndex: code points with u, UTF-16 code
+units otherwise (clj-quickjs-190).
 
 String searches reuse the existing incremental KMP prefix table and restart
 after each non-overlapping match, at most 256 comparisons per native step.

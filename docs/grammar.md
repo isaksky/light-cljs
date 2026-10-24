@@ -11,8 +11,9 @@ compile that way (`frontend::tests::grammar_doc_examples`). Examples marked
 `js sloppy-accept` / `js sloppy-reject` are parsed as non-strict code
 (`ScriptOptions::SLOPPY`); all others are strict.
 
-Status: regular expression literals compile and execute with the non-Unicode
-RegExp object support of clj-quickjs-188. Forms below parse and compile to
+Status: regular expression literals compile and execute with the RegExp
+object support of clj-quickjs-188 and Unicode mode of clj-quickjs-190.
+Forms below parse and compile to
 VM bytecode and execute (`frontend::compile_script`; see
 "Execution" below): literals (string values since clj-quickjs-65), bindings,
 operators, assignment, blocks, `if`/`else`, `while`, `do`-`while`
@@ -103,7 +104,7 @@ non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
 | Numbers | decimal integers, fractions (`1.5`, `.5`, `5.`), exponents (`1e-3`), `0x`/`0o`/`0b` integers; values are IEEE-754 doubles, correctly rounded; overflow gives `Infinity`; a member access may follow a literal (`0.1.a`, `0x1.a`, `.5.a`, `1..a`: the second `.` starts the access); in sloppy code only (clj-quickjs-51; ECMAScript B.1.1), a `0` followed by digits: all octal digits make a legacy octal integer (`017` is 15), which takes no fraction or exponent, so `01.a` is a member access; an `8` or `9` among them makes a decimal literal that may take a fraction and exponent (`08` is 8, `09.5`, `08e1`) | in strict code, legacy octal / leading zeros (`017`, `08`) at the `0`, also right after a `"use strict"` directive (`"use strict"; 010`); in sloppy code, a legacy octal integer followed by a fraction (`01.5` is `01` then `.5`, `UnexpectedToken`) or an exponent (`01e1`), and a `n` suffix or separator after a leading `0` (`01n`, `08n`, `0_1`, `08_1`: `InvalidToken`); numeric separators (`1_000`), a literal immediately followed by an identifier or digit (`3in`, `1.toString`, `0.a`), a number literal where a property name is expected (`0.1.2`), missing digits (`0x`, `1e`) |
 | Strings | `'...'` and `"..."` with escapes `\n \t \r \b \f \v \0 \xHH \uHHHH \u{H...}`, each `\u` escape is its UTF-16 code unit(s), so two surrogate escapes spell a pair (`"\u{dbff}\u{dfff}"` is U+10FFFF) and a lone surrogate escape (`\u{d800}`, a high surrogate before a non-surrogate) is a lone code unit (clj-quickjs-141), line continuations, identity escapes (`\'`, `\\`, `\q`), raw U+2028/U+2029; in sloppy code only (clj-quickjs-258; ECMAScript B.1.2), legacy octal escapes of at most three octal digits and value 0o377 (`"\07"` is U+0007, `"\101"` is `A`, `"\400"` is U+0020 then `0`; `\0` not followed by a digit is the null character in either mode) and `\8` `\9` (the characters `8` and `9`) | unterminated strings, raw LF/CR inside a string, malformed `\x`/`\u`; in strict code, octal escapes (`\07`, `\1`, `\08`) and `\8` `\9` at the `\`, also in a directive before a `"use strict"` directive (`"\07"; "use strict";`) and in the string right after one (`"use strict"; "\07"`) |
 | Template literals (clj-quickjs-57) | `` `...` `` with substitutions `${ Expression }`, nested to any depth within the nesting budget; one token per part (NoSubstitutionTemplate, TemplateHead, TemplateMiddle, TemplateTail): the `}` that closes a substitution (the first `}` not matching a `{` inside it) starts the next part. The text may contain raw line terminators (CR and CRLF read as LF, U+2028/U+2029 kept; they count for line numbers but not for ASI) and the escapes of string literals, except that a digit escape other than `\0` not followed by a digit is invalid in an untagged template in either mode (tagged parts instead have undefined cooked text); `` \` `` and `\$` are text. Each part keeps its cooked value (escapes decoded) and its raw value (escapes as written, CR and CRLF read as LF; for tagged templates, clj-quickjs-58) | unterminated (`UnexpectedEnd` at the backtick, or at the `}` of the open part); in untagged templates only: malformed `\x`/`\u` escapes, octal escapes (`\1`, `\07`, `\00`) and `\8` `\9` (`InvalidToken` at the `\`, also in sloppy code); a substitution that is not one Expression followed by `}` (`` `${}` ``, `` `${a b}` ``: `UnexpectedToken`) |
-| Regular expressions (clj-quickjs-55) | `/pattern/flags` where an operand is expected, including `/=/`; a slash inside `[...]` or escaped with `\` is pattern text. Escapes are preserved in the AST. Flags are IdentifierPart characters; `dgimsuyv` are supported spellings | a line terminator, even escaped (`InvalidToken`), or unterminated body/class/escape (`UnexpectedEnd`), at the opening `/`; duplicate/unknown/escaped flags and combining `u` with `v` (`Invalid` at the `/`). Pattern early errors remain clj-quickjs-56; literals execute with g/m/s/y and reject i/u/v/d at runtime |
+| Regular expressions (clj-quickjs-55) | `/pattern/flags` where an operand is expected, including `/=/`; a slash inside `[...]` or escaped with `\` is pattern text. Escapes are preserved in the AST. Flags are IdentifierPart characters; `dgimsuyv` are supported spellings | a line terminator, even escaped (`InvalidToken`), or unterminated body/class/escape (`UnexpectedEnd`), at the opening `/`; duplicate/unknown/escaped flags and combining `u` with `v` (`Invalid` at the `/`). Pattern early errors remain clj-quickjs-56; literals execute with g/m/s/u/y and reject i/v/d at runtime |
 | Punctuators | every ECMAScript punctuator is lexed by maximal munch (`a>>>=b` is `a`, `>>>=`, `b`) so the parser can name an unsupported operator precisely | other characters (`@`, `#`, ...) |
 
 ## Syntactic grammar
@@ -471,8 +472,9 @@ checks left to later stages:
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
   Pattern early errors remain clj-quickjs-56. RegExp objects and methods
-  execute with the bounded non-Unicode matcher (clj-quickjs-188); Unicode,
-  case folding, indices and string consumers remain clj-quickjs-189–194.
+  execute with bounded matching, including u mode (clj-quickjs-188/-190).
+  String replacement executes (clj-quickjs-189); case folding, property
+  escapes, indices and Unicode sets remain clj-quickjs-191–194.
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
@@ -3185,7 +3187,7 @@ Quantifier counts above u64::MAX fail explicitly.
 Explicit gaps: v patterns and Unicode property escapes are deferred to
 clj-quickjs-194/-192. Pattern validation at literal sites remains
 clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects and methods execute (clj-quickjs-188);
-Unicode/case-insensitive matching remains deferred.
+Unicode matching executes (clj-quickjs-190); case-insensitive matching remains deferred.
 
 ### BigInt values and literals (clj-quickjs-196)
 
@@ -3614,8 +3616,8 @@ Nonglobal regexps replace once; global regexps start at lastIndex zero,
 collect all matches before invoking replacers, advance past empty matches,
 and reset lastIndex to zero on the final failed match. Sticky/nonglobal
 lastIndex behavior follows `exec`. `replaceAll` rejects a nonglobal RegExp
-with a catchable TypeError. Captures, offsets and empty-match advancement
-use code units for currently supported non-Unicode patterns.
+with a catchable TypeError. Captures and offsets use UTF-16 code units;
+empty matches advance by code point with u and by code unit otherwise.
 
 String replacements expand `$$`, `$&`, `` $` ``, `$'`, `$n`, `$nn` and
 `$<name>`. Unmatched captures expand to empty strings; invalid numbered
