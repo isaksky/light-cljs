@@ -1269,3 +1269,17 @@ Other fixtures are synthetic, not light-cljs output. `js_method_set_home_object`
 `CASE(OP_get_super)`, `CASE(OP_get_super_value)` and `js_parse_postfix_expr` in
 `research/quickjs/quickjs.c` at that revision were semantic references. The Rust
 implementation was written afresh; no C implementation was copied or wrapped.
+### Unmodified operator source fixture (clj-quickjs-77)
+
+`tests/fixtures/js/quickjs_test_language_operators.js` preserves lines 1-32
+and 39-220 of `research/quickjs/tests/test_language.js` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), byte for
+byte. These contain `assert`, `assert_throws`, `test_op1`, `test_cvt`,
+`test_eq`, `test_inc_dec`, constructor `F` and `test_op2`, including the
+reserved-word property names. Only a descriptive header, the full
+copyright/MIT notice from `research/quickjs/LICENSE`, and five trailing
+case calls are added. Adapted rows: none. This is adapted QuickJS test
+text, a synthetic fixture, not light-cljs output. `tests/quickjs_language.rs`
+checks the embedded upstream line count, compiles once per case in upstream
+non-strict mode, and runs each independently with bounded instruction
+slices and collection between slices.

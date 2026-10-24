@@ -3960,3 +3960,23 @@ CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --t
 CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3
 ```
+
+### Unmodified QuickJS operator fixture (clj-quickjs-77)
+
+`tests/quickjs_language.rs::quickjs_operator_cases_run_unmodified` exercises
+`test_op1`, `test_cvt`, `test_eq`, `test_inc_dec` and `test_op2` from the
+pinned QuickJS `tests/test_language.js`. Both helpers, constructor `F` and
+all five case bodies and assertions are unchanged, including reserved-word
+object keys `if` and `async`. The test compiles each case independently in
+non-strict mode and collects between instruction-budget slices. This adds
+upstream coverage of the supported operators, conversions, equality,
+increment/decrement, constructors, `in`, `instanceof` and `typeof`.
+Current result: `test_op1`, `test_cvt`, `test_eq` and `test_inc_dec` pass;
+`test_op2` fails at `new Object` with a TypeError because Object construction
+is still deferred (clj-quickjs-280). The fixture retains every
+assertion and intentionally fails until that prerequisite lands. Other
+`test_language.js` cases remain outside this fixture.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --test quickjs_language quickjs_operator_cases_run_unmodified -- --exact --nocapture --test-threads=3
+```
