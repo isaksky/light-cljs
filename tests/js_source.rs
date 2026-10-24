@@ -15739,28 +15739,34 @@ fn map_receivers_properties_and_explicit_gaps() {
 #[test]
 fn maps_reject_access_from_another_task() {
     let rt = Runtime::new();
-    let owner = rt.spawn(&exe("new Map().set(1, 2)"), &[]).unwrap();
-    let RunOutcome::Complete(map) = owner.run().unwrap() else {
-        panic!("expected Map")
-    };
-    for body in [
-        "m.size",
-        "m.get(1)",
-        "m.set(1, 3)",
-        "Map.prototype.get.call(m, 1)",
-        "m.foo = 3",
-        "Object.keys(m)",
-        "Object.getPrototypeOf(m)",
-        "Object.isFrozen(m)",
-        "Object.freeze(m)",
-        "Object.prototype.toString.call(m)",
-    ] {
-        let code = compile_function(&format!("function read(m) {{ return {body}; }}")).unwrap();
-        let task = rt.spawn(&code, &[&map]).unwrap();
-        assert!(
-            matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
-            "{body}"
-        );
+    for source in ["new Map()", "new Map().set(1, 2)"] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(map) = owner.run().unwrap() else {
+            panic!("expected Map")
+        };
+        for body in [
+            "m.size",
+            "m.get(1)",
+            "m.set(1, 3)",
+            "Map.prototype.get.call(m, 1)",
+            // Borrow the method to bypass receiver-property access checks.
+            // A callback throw must never replace the native ownership error,
+            // and empty Maps must reject ownership before checking entries.
+            "Map.prototype.forEach.call(m, function() { throw 170; })",
+            "m.foo = 3",
+            "Object.keys(m)",
+            "Object.getPrototypeOf(m)",
+            "Object.isFrozen(m)",
+            "Object.freeze(m)",
+            "Object.prototype.toString.call(m)",
+        ] {
+            let code = compile_function(&format!("function read(m) {{ return {body}; }}")).unwrap();
+            let task = rt.spawn(&code, &[&map]).unwrap();
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+                "{source}: {body}"
+            );
+        }
     }
 }
 
