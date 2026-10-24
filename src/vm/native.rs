@@ -2937,7 +2937,7 @@ impl NativeState {
                     ConvertTarget::DateConstructor => {
                         if let Value::String(text) = &operands[0] {
                             *self = NativeState::DateParse {
-                                parser: Box::new(super::date::Parser::new(text.clone())),
+                                parser: Box::new(super::date::Parser::new(text.clone())?),
                                 construct: true,
                             };
                             Ok(Action::Continue)
@@ -2949,7 +2949,7 @@ impl NativeState {
                     ConvertTarget::DateParse => {
                         let text = dispatch::to_js_string(&operands[0])?;
                         *self = NativeState::DateParse {
-                            parser: Box::new(super::date::Parser::new(text)),
+                            parser: Box::new(super::date::Parser::new(text)?),
                             construct: false,
                         };
                         Ok(Action::Continue)

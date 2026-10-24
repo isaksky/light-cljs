@@ -18777,6 +18777,10 @@ fn date_parse_iso_strings() {
         let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(offset).unwrap());
         let mut sources = Vec::new();
         for (text, expected) in [
+            ("0000", -62167219200000_i64),
+            ("0001", -62135596800000),
+            ("0099", -59042995200000),
+            ("+000000-01-01T00:00Z", -62167219200000),
             ("2000", 946684800000_i64),
             ("2000-01", 946684800000),
             ("2000-01-01", 946684800000),

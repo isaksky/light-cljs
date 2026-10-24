@@ -5901,14 +5901,20 @@ OS locale access or dependency is added.
 calendar fields, an explicit offset, and a local-time flag. Fixed-width fields
 require constant work; arbitrary-length fractions validate at most 256 digits
 per native step and retain only truncated milliseconds. Total scan work is
-O(input length), with constant parser state and no new length limit. The
-immutable JsString may flatten a rope once in O(input length), as in the
-shared number parsers. No UTF-8/lossy conversion, NUL termination, or prefix
+O(input length), with constant ISO parser state and no new length limit.
+`value/string.rs::StringFlatten` prepares ropes in budgeted node/copy steps,
+using an explicitly linked traversal stack so deep trees cannot trigger an
+unbounded stack-buffer growth copy. Its output buffer is reserved once without
+filling units, as in StringBuild, and transferred to immutable storage without
+a final copy. Flat inputs share their existing storage. Rope preparation uses
+O(input length + tree depth) storage and visits every node, retaining children
+before releasing each parent to bound destruction of uniquely owned chains.
+No UTF-8/lossy conversion, NUL termination, or prefix
 truncation can discard a trailing invalid code unit.
 
 `date::Parser` is the shared string parsing entry point for `Date.parse` and
 single-argument string construction, ready for the fallback grammar in
-clj-quickjs-185. `NativeState::DateParse` holds only immutable string storage
+clj-quickjs-185. `NativeState::DateParse` holds immutable strings, Rust buffers
 and scalar parser state, with no collector edges. Conversion preceding it
 uses the existing traced Convert operands and resumable ToPrimitive method
 lookups/calls. Date.parse uses the string hint (including budgeted BigInt

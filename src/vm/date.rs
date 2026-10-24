@@ -49,27 +49,34 @@ impl ParsedDate {
 
 /// Date parsing entry point, shared by Date.parse and string construction.
 /// The fallback pellet can extend this dispatcher after ISO parsing fails.
-/// It owns only immutable string storage and scalar state, with no heap edges.
+/// It owns immutable strings, Rust buffers and scalar state, with no heap edges.
 #[derive(Debug)]
 pub(crate) struct Parser {
-    text: crate::value::JsString,
+    text: Option<crate::value::JsString>,
+    flatten: crate::value::string::StringFlatten,
     iso: IsoParser,
 }
 
 impl Parser {
-    pub(crate) fn new(text: crate::value::JsString) -> Self {
-        Self {
-            text,
+    pub(crate) fn new(text: crate::value::JsString) -> Result<Self, Fault> {
+        Ok(Self {
+            text: None,
+            flatten: crate::value::string::StringFlatten::new(text)
+                .ok_or(Fault::OutOfMemory("Date parse input allocation failed"))?,
             iso: IsoParser::default(),
-        }
+        })
     }
 
     /// At most `budget` fractional digits and constant-size calendar/zone
-    /// fields per step. Total O(input length), constant parser storage. As for
-    /// the shared number parsers, a rope may flatten once in O(input length).
+    /// fields per step. Rope traversal/copying is also budgeted. Total O(input
+    /// length) work; flat inputs share storage, ropes use an O(length) buffer.
     /// There is no date-string length cap; every trailing unit is validated.
     pub(crate) fn advance(&mut self, budget: usize) -> Option<Option<ParsedDate>> {
-        self.iso.advance(self.text.code_units(), budget)
+        let Some(text) = &self.text else {
+            self.text = self.flatten.advance(budget);
+            return None;
+        };
+        self.iso.advance(text.code_units(), budget)
     }
 }
 
@@ -708,6 +715,10 @@ mod tests {
     #[test]
     fn date_iso_parse_fields() {
         for (text, expected) in [
+            ("0000", -62167219200000.0),
+            ("0001", -62135596800000.0),
+            ("0099", -59042995200000.0),
+            ("+000000-01-01T00:00Z", -62167219200000.0),
             ("2000", 946684800000.0),
             ("2000-01", 946684800000.0),
             ("2000-01-01", 946684800000.0),
@@ -784,6 +795,35 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn date_iso_rope_budget() {
+        // Synthetic unflattened append chain. Traversal as well as copying
+        // must yield, even before the first calendar field can be scanned.
+        let mut text = crate::value::JsString::from("2000-01-01T00:00:00.123");
+        let zero = crate::value::JsString::from("0");
+        for _ in 0..8192 {
+            text = text.concat(&zero).unwrap();
+        }
+        text = text.concat(&crate::value::JsString::from("Z")).unwrap();
+        let mut parser = Parser::new(text).ok().expect("input allocation");
+        let before = crate::value::JsString::copied_code_units();
+        assert!(parser.advance(1).is_none());
+        assert!(crate::value::JsString::copied_code_units() - before <= 1);
+        for _ in 0..50000 {
+            let before = crate::value::JsString::copied_code_units();
+            let result = parser.advance(17);
+            assert!(crate::value::JsString::copied_code_units() - before <= 17);
+            if let Some(result) = result {
+                assert_eq!(
+                    result.unwrap().time(crate::host::TimeZone::UTC),
+                    946684800123.0
+                );
+                return;
+            }
+        }
+        panic!("bounded rope parse did not complete");
     }
 
     #[test]

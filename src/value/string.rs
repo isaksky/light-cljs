@@ -49,7 +49,8 @@
 //! retain their operands in O(1), with a cached length. The first contiguous
 //! read flattens iteratively into a cached flat string; subsequent reads share it.
 //! Both traversal and destruction are iterative, even for deep append/prepend
-//! chains. Flattening is synchronous O(length), not instruction-budgeted.
+//! chains. `code_units` flattening is synchronous O(length). `StringFlatten`
+//! supplies budgeted traversal/copying for consumers such as Date parsing.
 
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -265,6 +266,77 @@ impl JsString {
             h = h.wrapping_mul(0x0100_0000_01b3);
         }
         h ^ (self.len() as u64).rotate_left(32)
+    }
+}
+
+/// Incremental rope flattening for consumers that require a contiguous input.
+/// Each step visits one rope node, copies one unit, or releases one leaf.
+/// Flat inputs are reused. No heap edges or final buffer copy.
+#[derive(Debug)]
+pub(crate) struct StringFlatten {
+    // A linked stack avoids an input-sized reallocation/copy on a deep rope.
+    pending: std::collections::LinkedList<JsString>,
+    leaf: Option<(JsString, usize)>,
+    units: Vec<u16>,
+    ready: Option<JsString>,
+}
+
+impl StringFlatten {
+    pub(crate) fn new(text: JsString) -> Option<Self> {
+        let ready = match &text.0.storage {
+            Storage::Flat(_) => Some(text.clone()),
+            Storage::Rope(_) => None,
+        };
+        let mut units = Vec::new();
+        let mut pending = std::collections::LinkedList::new();
+        if ready.is_none() {
+            // Like StringBuild, reserve once without filling units, so no
+            // growing-buffer copy can escape a later advance's work budget.
+            units.try_reserve_exact(text.len()).ok()?;
+            pending.push_back(text);
+        }
+        Some(Self {
+            pending,
+            leaf: None,
+            units,
+            ready,
+        })
+    }
+
+    pub(crate) fn advance(&mut self, budget: usize) -> Option<JsString> {
+        if let Some(text) = self.ready.take() {
+            return Some(text);
+        }
+        for _ in 0..budget {
+            if let Some((text, next)) = &mut self.leaf {
+                // Only flat storage is installed in leaf, so this never
+                // calls code_units' synchronous rope traversal.
+                let Storage::Flat(units) = &text.0.storage else {
+                    unreachable!("flatten cursor leaf must be flat");
+                };
+                if let Some(&unit) = units.get(*next) {
+                    self.units.push(unit);
+                    record_copies(1);
+                    *next += 1;
+                } else {
+                    self.leaf = None;
+                }
+            } else if let Some(text) = self.pending.pop_back() {
+                match &text.0.storage {
+                    Storage::Flat(_) => self.leaf = Some((text, 0)),
+                    Storage::Rope(Some((left, right))) => {
+                        self.pending.push_back(right.clone());
+                        self.pending.push_back(left.clone());
+                    }
+                    Storage::Rope(None) => unreachable!("live rope retains its children"),
+                }
+                // Children are retained before releasing their parent, so
+                // consuming a uniquely owned chain also releases it in steps.
+            } else {
+                return JsString::from_owned_code_units(std::mem::take(&mut self.units));
+            }
+        }
+        None
     }
 }
 
