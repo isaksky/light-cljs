@@ -52,6 +52,8 @@ cargo test --test executor_gc     # collection under the executor: workers, nati
 cargo test --test need            # __rt.need: suspend at the need, resume without replay
 cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo test --test exceptions      # throw, try/catch/finally, completion records, yields inside handlers
+cargo run --example e2e           # end-to-end compiler-host scenario on two workers (prints its trace)
+cargo test --test e2e             # the same scenario, asserted
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -835,3 +837,58 @@ Deferred:
 - Error objects have no properties (`message`, `name`), no `Error`
   constructors or `instanceof`; strings cannot be thrown (no string values).
 - `break`/`continue` through finally blocks (no `break`/`continue` yet).
+
+### End-to-end compiler-host scenario (clj-quickjs-13)
+
+`cargo run --example e2e` runs the success scenario of `docs/design.md` §13
+and prints the host's trace and the executor's event record;
+`cargo test --test e2e` runs the same code (`examples/e2e/scenario.rs`) and
+asserts it. The JavaScript is the synthetic fixtures `examples/e2e/*.js`
+(not light-cljs output), compiled and run by this crate; no external
+compiler or C engine is used. Steps: Rust builds and roots one nested
+persistent form; two consumer tasks receive that same root on two pinned
+workers, run their pre-wait JavaScript and suspend at
+`__rt.need(7, 2)` (a callable that does not exist yet); each worker then
+runs an unrelated task; a worker forces a collection; only then a producer
+task runs `producer.js`, whose result (a function compiled by this
+runtime's frontend) the host publishes once; both consumers resume on the other worker, call
+the helper and return subtrees of the input.
+
+What the assertions prove (`tests/e2e.rs`), with §13's numbering:
+
+1. Parallel execution on two OS workers: both consumers are inside a host
+   effect at the same time (a bounded two-party rendezvous), on two
+   distinct worker threads; their first runs overlap in the event record.
+2. Shared persistent data: both consumers read the one Rust-built root;
+   each returns a subtree that is the *same object* as the one Rust
+   navigates to in that root, and not the same object as a structurally
+   equal copy (identity, not equality).
+3. Suspension without blocking a worker: after both runs end `Waiting`,
+   each worker runs an unrelated task to completion before the helper
+   exists; nothing of a consumer is dispatched between its wait and wake.
+4. Multiple consumers, one producer: the first need claimed the single
+   producer request, the cell's waiters are both consumers, and one
+   publication wakes both.
+5. No replay: each consumer's PRE and MEET effects ran once, before the
+   wait; it was dispatched exactly twice (execution 1 and 2).
+6. Migration: the placement hook sends each woken consumer to the other
+   worker, where it resumes (other OS thread) and completes.
+7. Collection while suspended: a worker-requested collection while both
+   consumers are parked reclaims garbage, the other worker is `Idle`, and
+   after resuming each consumer reads intact task-owned state kept only by
+   its frames (a transient builder, a fresh vector, live locals).
+
+Events carry world/definition/kind (`world#1/dep#7/kind#2`), task and
+worker identities, OS threads, and the suspension's source location in
+`consumer.js`; the tests check their order in the host trace and in the
+executor record.
+
+Not shown here (deferred):
+
+- Failure, cancellation and companion scenarios (§13 item 8 beyond
+  success, exception/finally state, native-to-JavaScript reentry): pellet
+  clj-quickjs-29.
+- The glue is example code: the host holds the producer request and runs
+  the producer when the scenario says so (it does not use `host::sim`'s
+  worlds and producers, whose callables are still host tokens), and the
+  executor still has no producer bindings or wait-cycle detection.

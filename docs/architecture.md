@@ -945,6 +945,33 @@ docs.
   and early VM tests in `src/vm/dispatch.rs` (stack checking of handler
   targets, mismatched handler instructions).
 
+## End-to-end scenario (clj-quickjs-13)
+
+`examples/e2e/scenario.rs` (module docs list the steps), shared by
+`cargo run --example e2e` and `tests/e2e.rs`. Design: `design.md` §13.
+
+- **Composition, not substitution.** Only public API: `Runtime`,
+  `exec::Executor` (two workers, placement hook, `schedule_collection`),
+  VM `__rt.need`, `Runtime::complete`, `frontend::compile_function`. The
+  consumers' control flow, the helper and the useful work are JavaScript
+  executed by the VM; Rust supplies the input, leaf effects (record, and a
+  bounded rendezvous), and scheduling decisions.
+- **Driver glue.** The VM driver plus what clj-quickjs-23 requires: after
+  every run it takes the run's producer requests
+  (`Task::take_producer_requests`, found through a task-id registry since a
+  `RunGuard` exposes only the id) and records the suspension with
+  `Task::source_location`. The host holds the one request until it decides
+  to run the producer task, then publishes its result and passes the
+  `Wakeups` to `Executor::wake`.
+- **Determinism.** Consumers are pinned to workers 0 and 1; a placement
+  hook sends woken tasks to the other worker; the host proceeds only on
+  recorded events (`wait_for`), terminal outcomes and the rendezvous.
+  Orders that are genuinely racy (which consumer claims the request, which
+  resumed consumer finishes first) are not asserted.
+- **Deferred.** Failure, cancellation and companion scenarios
+  (clj-quickjs-29); `host::sim` integration and executor-side cycle
+  detection.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
