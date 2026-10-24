@@ -649,3 +649,65 @@ fn atom_contents_are_traced_and_dead_atoms_are_reclaimed() {
     assert_eq!(atom_weak.upgrade().unwrap_err(), HandleError::Reclaimed);
     assert_eq!(rt.atom_load(&fresh).unwrap().view(), ValueView::Number(5.0));
 }
+
+#[test]
+fn a_scoped_load_retains_the_old_graph_until_the_scope_ends() {
+    let rt = Runtime::new();
+    let initial = vector(&rt, &[1.0, 2.0]);
+    let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+    let weak = initial.downgrade();
+    drop(initial);
+    rt.scope(|s| {
+        let atom = s.local(publisher.atom()).unwrap();
+        let held = s.atom_load(atom).unwrap();
+        publisher.publish(&vector(&rt, &[3.0])).unwrap();
+        // Collect on the scope's own thread: its locals are roots.
+        rt.collect().unwrap();
+        assert!(weak.is_live());
+        assert_eq!(s.count(held).unwrap(), 2);
+        let now = s.atom_load(atom).unwrap();
+        assert!(!s.same_object(held, now));
+        assert_eq!(s.view(s.nth(now, 0).unwrap()), ValueView::Number(3.0));
+    });
+    rt.collect().unwrap();
+    assert!(!weak.is_live(), "released with the scope");
+}
+
+#[test]
+fn a_vm_created_atom_survives_yield_and_collection_and_updates() {
+    let rt = Runtime::new();
+    let initial = vector(&rt, &[1.0]);
+    let next = vector(&rt, &[2.0]);
+    // let a = atom_new(arg0); /* yield */ atom_cas(a, arg0, arg1);
+    // return [a, atom_load(a)]
+    let exe = program("vm-atom", 2, 3, |asm| {
+        asm.get_local(0).op(Opcode::AtomNew).set_local(2);
+        asm.get_local(2)
+            .get_local(0)
+            .get_local(1)
+            .op(Opcode::AtomCas);
+        asm.set_local(1).op(Opcode::Pop);
+        asm.get_local(2).get_local(2).op(Opcode::AtomLoad);
+        asm.new_vector(2).op(Opcode::Return);
+    });
+    let task = rt.spawn(&exe, &[&initial, &next]).unwrap();
+    let first = task
+        .run_with(Budget::instructions(3), &mut NoEffects)
+        .unwrap();
+    assert!(matches!(first, RunOutcome::Yielded), "{first:?}");
+    drop(next);
+    rt.collect().unwrap();
+
+    let result = complete(task.run().unwrap());
+    let (atom, loaded) = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        let (atom, loaded) = (s.nth(r, 0).unwrap(), s.nth(r, 1).unwrap());
+        (s.persist(atom), s.persist(loaded))
+    });
+    // The created object is an atom (not its initial value) holding the
+    // value the task installed.
+    assert!(!atom.same_object(&initial));
+    assert!(rt.atom_load(&atom).unwrap().same_object(&loaded));
+    assert_eq!(items(&rt, &loaded), [ValueView::Number(2.0)]);
+    swapped(rt.atom_compare_and_set(&atom, &loaded, &initial));
+}

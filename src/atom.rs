@@ -167,7 +167,21 @@ pub(crate) struct AtomCell {
     /// Replaced boxes not yet known unreachable. Taken only by writers of
     /// this atom (after their store) and by `Drop`; never by readers or the
     /// collector.
-    retired: Mutex<Vec<Retired>>,
+    retired: Mutex<Retirement>,
+}
+
+/// The retire list of one atom.
+#[derive(Default)]
+struct Retirement {
+    boxes: Vec<Retired>,
+    /// The epoch of the last scan: every box retired at an earlier epoch has
+    /// been freed. A write scans only when its epoch is newer, so writes
+    /// within one epoch only push, and each box is examined once, by the
+    /// first write after the collection that makes it free.
+    scanned: u64,
+    /// Boxes examined by scans (tests: the work is linear in writes).
+    #[cfg(test)]
+    examined: usize,
 }
 
 impl fmt::Debug for AtomCell {
@@ -183,7 +197,7 @@ impl AtomCell {
         AtomCell {
             current: AtomicPtr::new(Box::into_raw(Box::new(initial))),
             single_writer,
-            retired: Mutex::new(Vec::new()),
+            retired: Mutex::new(Retirement::default()),
         }
     }
 
@@ -245,30 +259,46 @@ impl AtomCell {
     }
 
     /// Retire a box this writer just unlinked, and free every box retired
-    /// before the last completed collection.
+    /// before the last completed collection. Scans only when a collection
+    /// has completed since the last scan, so the work is linear in writes.
     fn retire(&self, epoch: u64, old: *mut Value) {
         let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
-        retired.retain(|r| {
-            if r.epoch < epoch {
-                // SAFETY: `r.ptr` was unlinked at epoch `r.epoch`, and a
-                // collection has completed since (`epoch` is this writer's
-                // registration epoch). That collection ran with no mutator
-                // registered, so every operation that could have loaded
-                // `r.ptr` (registered before it was unlinked) has finished,
-                // and later ones cannot load it. The list owned it.
-                drop(unsafe { Box::from_raw(r.ptr) });
-                false
-            } else {
-                true
+        let retired = &mut *retired;
+        if epoch > retired.scanned {
+            retired.scanned = epoch;
+            #[cfg(test)]
+            {
+                retired.examined += retired.boxes.len();
             }
-        });
-        retired.push(Retired { epoch, ptr: old });
+            retired.boxes.retain(|r| {
+                if r.epoch < epoch {
+                    // SAFETY: `r.ptr` was unlinked at epoch `r.epoch`, and a
+                    // collection has completed since (`epoch` is this
+                    // writer's registration epoch). That collection ran with
+                    // no mutator registered, so every operation that could
+                    // have loaded `r.ptr` (registered before it was
+                    // unlinked) has finished, and later ones cannot load it.
+                    // The list owned it.
+                    drop(unsafe { Box::from_raw(r.ptr) });
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        retired.boxes.push(Retired { epoch, ptr: old });
     }
 
     /// Retired boxes still held (tests).
     #[cfg(test)]
     fn retired_len(&self) -> usize {
-        self.retired.lock().unwrap().len()
+        self.retired.lock().unwrap().boxes.len()
+    }
+
+    /// Boxes examined by retire-list scans so far (tests).
+    #[cfg(test)]
+    fn examined(&self) -> usize {
+        self.retired.lock().unwrap().examined
     }
 }
 
@@ -291,7 +321,7 @@ impl Drop for AtomCell {
             .retired
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        for r in retired.drain(..) {
+        for r in retired.boxes.drain(..) {
             // SAFETY: as above; each retired box is owned by the list.
             drop(unsafe { Box::from_raw(r.ptr) });
         }
@@ -630,5 +660,111 @@ mod tests {
             Ok(CasOutcome::Conflict { .. })
         ));
         assert_eq!(cell.retired_len(), 1);
+    }
+
+    #[test]
+    fn retirement_work_is_linear_within_an_epoch() {
+        let rt = Runtime::new();
+        let n = |x| rt.root(crate::Primitive::Number(x));
+        let mut publisher = rt.new_single_writer_atom(&n(0.0)).unwrap();
+        let cell = cell_of(rt.heap(), publisher.atom());
+        for i in 0..1000 {
+            publisher.publish(&n(f64::from(i))).unwrap();
+        }
+        assert_eq!(cell.examined(), 0, "writes within one epoch only push");
+        assert_eq!(cell.retired_len(), 1000);
+        rt.collect().unwrap();
+        for i in 0..1000 {
+            publisher.publish(&n(f64::from(i))).unwrap();
+        }
+        assert_eq!(cell.examined(), 1000, "each retired box examined once");
+        assert_eq!(
+            cell.retired_len(),
+            1000,
+            "the first scan freed the old epoch's boxes"
+        );
+    }
+
+    /// A small persistent graph (a vector holding a vector).
+    fn graph(rt: &Runtime) -> Rooted {
+        rt.scope(|s| {
+            let one = s.primitive(crate::Primitive::Number(1.0));
+            let inner = s.new_vector(&[one]).unwrap();
+            let v = s.new_vector(&[inner]).unwrap();
+            s.persist(v)
+        })
+    }
+
+    #[test]
+    fn load_to_root_excludes_collection_until_the_value_is_rooted() {
+        let rt = Runtime::new();
+        let heap = rt.heap();
+        let initial = graph(&rt);
+        let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+        let weak = initial.downgrade();
+        drop(initial);
+        let atom = publisher.atom().value_in(heap).unwrap();
+        let replacement = graph(&rt);
+        let held = load(heap, atom, |v| {
+            // Between reading the pointer and rooting the value, another
+            // worker replaces it and tries to collect.
+            std::thread::scope(|t| {
+                t.spawn(|| {
+                    publisher.publish(&replacement).unwrap();
+                    assert_eq!(
+                        rt.collect().unwrap_err(),
+                        crate::CollectError::MutatorActive
+                    );
+                })
+                .join()
+                .unwrap()
+            });
+            Rooted::new(heap, v)
+        })
+        .unwrap();
+        rt.collect().unwrap();
+        assert!(held.same_object(&weak.upgrade().unwrap()), "rooted in time");
+        drop(held);
+        rt.collect().unwrap();
+        assert!(!weak.is_live(), "reclaimable once released");
+    }
+
+    #[test]
+    fn a_cas_conflict_roots_its_current_value_before_collection_can_run() {
+        let rt = Runtime::new();
+        let heap = rt.heap();
+        let initial = graph(&rt);
+        let atom = rt.new_atom(&initial).unwrap();
+        let weak = initial.downgrade();
+        drop(initial);
+        let atom = atom.value_in(heap).unwrap();
+        let (expected, new, replacement) = (graph(&rt), graph(&rt), graph(&rt));
+        let raw = |r: &Rooted| r.value_in(heap).unwrap();
+        let outcome = compare_and_set(heap, atom, raw(&expected), raw(&new), |current| {
+            std::thread::scope(|t| {
+                t.spawn(|| {
+                    // The unrooted `current` is still the atom's value:
+                    // replace it, then try to collect.
+                    let swapped = compare_and_set(heap, atom, current, raw(&replacement), |_| ());
+                    assert!(matches!(swapped, Ok(Ok(()))));
+                    assert_eq!(
+                        rt.collect().unwrap_err(),
+                        crate::CollectError::MutatorActive
+                    );
+                })
+                .join()
+                .unwrap()
+            });
+            Rooted::new(heap, current)
+        })
+        .unwrap();
+        let Err(current) = outcome else {
+            panic!("expected a conflict")
+        };
+        rt.collect().unwrap();
+        assert!(current.same_object(&weak.upgrade().unwrap()));
+        drop(current);
+        rt.collect().unwrap();
+        assert!(!weak.is_live());
     }
 }
