@@ -880,7 +880,14 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
         | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow | CallSpread
         | CallMethodSpread | ConstructSpread | CheckSpreadArguments => false,
-        GeneratorStart | GeneratorYield | GeneratorInitialYield | GeneratorYieldStar => false,
+        GeneratorStart
+        | GeneratorYield
+        | GeneratorInitialYield
+        | GeneratorYieldStar
+        | RequireCoercible
+        | OwnKeys
+        | IsEnumerable
+        | DefineElem => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)

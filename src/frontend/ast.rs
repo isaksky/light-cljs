@@ -52,6 +52,10 @@ pub enum PatternKind {
         value: Box<Expr>,
     },
     Target(Box<Expr>),
+    Object {
+        properties: Vec<(PropertyName, Pattern)>,
+        rest: Option<Box<Pattern>>,
+    },
 }
 
 impl Pattern {
@@ -85,6 +89,11 @@ impl Pattern {
                 }
             }
             PatternKind::Default { target, .. } => target.collect_names(names),
+            PatternKind::Object { properties, rest } => {
+                for p in properties.iter().map(|(_, p)| p).chain(rest.as_deref()) {
+                    p.collect_names(names);
+                }
+            }
             PatternKind::Target(_) => {}
         }
     }
@@ -481,9 +490,11 @@ impl Expr {
             ExprKind::Member { object, .. } => object.height,
             ExprKind::Function(f) => f.height,
             ExprKind::Sequence { left, right } => left.height.max(right.height),
-            ExprKind::Object(properties) => {
-                properties.iter().map(|p| p.value.height).max().unwrap_or(0)
-            }
+            ExprKind::Object(properties) => properties
+                .iter()
+                .map(|p| p.value.height.max(p.name.height()))
+                .max()
+                .unwrap_or(0),
             ExprKind::AssignMember { object, value, .. } => object.height.max(value.height),
             ExprKind::Template { tag, exprs, .. } => exprs
                 .iter()
@@ -784,15 +795,23 @@ pub enum PropertyName {
     String(crate::value::JsString),
     /// A numeric literal's value; the key is its ToString (`1.0` is `"1"`).
     Number(f64),
+    /// Computed key in an object pattern. Literal execution is deferred.
+    Computed(Box<Expr>),
 }
 
 impl PropertyName {
+    pub(crate) fn height(&self) -> usize {
+        match self {
+            Self::Computed(e) => e.height,
+            _ => 0,
+        }
+    }
     /// The name is `__proto__` (escapes decoded).
     pub fn is_proto(&self) -> bool {
         match self {
             PropertyName::Identifier(n) => n == "__proto__",
             PropertyName::String(s) => *s == "__proto__",
-            PropertyName::Number(_) => false,
+            PropertyName::Number(_) | PropertyName::Computed(_) => false,
         }
     }
 }

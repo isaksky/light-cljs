@@ -6298,7 +6298,7 @@ synthetic fixtures, not light-cljs output. No QuickJS implementation is copied.
 and assignment expressions. Identifier, array, default and property-target nodes
 keep source spans and bounded heights. Binding-name traversal supplies scope
 analysis and var hoisting; property targets occur only in assignment patterns.
-This representation leaves object pattern traversal to clj-quickjs-132.
+Object nodes extend this representation in clj-quickjs-132.
 An assignment ends at its RHS span; parentheses around the whole assignment
 extend only its outer span. Cover grammar conversion uses that distinction to
 reject `[(a = 1)]` while accepting `[(a) = 1]`, without enlarging AST nodes. Directive
@@ -6581,3 +6581,28 @@ digit-count conversion helper (4096 UTF-16 units before parsing/flattening).
 Unlike toFixed, these methods handle nonfinite values after count conversion
 but before range validation. Tests cover coercion exceptions, receiver ordering,
 one-instruction budgets, collection, waits and thread migration.
+
+## Object patterns (clj-quickjs-132)
+
+The shared Pattern AST includes ordered property-name/pattern pairs and optional
+rest. PropertyName adds a computed expression. Object assignment cover grammar
+converts literals recursively through the same pattern conversion as arrays.
+Cover-only shorthand defaults, computed names and rest retain deferred syntax
+errors until consumed as patterns; unconsumed forms still fail parsing. Rest
+uses a temporary Spread value inside the cover object with an unused empty
+property name. Binding-name collection traverses object values and rest, and
+the existing parameter slots, TDZ cells, catch scopes and var hoisting apply.
+
+Lowering stores the source and each converted exclusion key in traced frame
+locals. GetElem performs resumable Get; existing default/store lowering handles
+nested patterns and property targets. Source computed keys convert before the
+target reference is evaluated; target computed keys retain the array-pattern
+PutElem timing. Four appended instructions supply callback-free steps:
+RequireCoercible rejects null/undefined; OwnKeys snapshots all own keys into a
+private array, including symbols; IsEnumerable checks the current own descriptor;
+DefineElem creates an own data property on the new ordinary rest object. The
+copy loop uses GetElem between descriptor checks and definitions, so getters
+can suspend, mutate later properties, throw, or trigger GC without retaining a
+Rust stack. OwnKeys is an allocation poll point; the other new instructions
+allocate no heap objects. There are no new heap kinds or native continuations.
+Computed object literal execution and object spread remain deferred.

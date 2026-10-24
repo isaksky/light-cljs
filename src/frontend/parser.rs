@@ -72,6 +72,9 @@ const USE_STRICT: [&str; 2] = ["\"use strict\"", "'use strict'"];
 
 pub(super) struct Parser<'a> {
     src: &'a str,
+    // Cover-only object syntax is valid only when consumed as an assignment
+    // pattern. Keep errors until that conversion, including through arrays.
+    object_cover_errors: Vec<SyntaxError>,
     lexer: Lexer<'a>,
     /// The current (not yet consumed) token.
     tok: Token,
@@ -139,6 +142,7 @@ impl<'a> Parser<'a> {
         lexer.set_strict(strict);
         Parser {
             src,
+            object_cover_errors: Vec::new(),
             lexer,
             tok: Token {
                 kind: TokenKind::Eof,
@@ -359,6 +363,13 @@ impl<'a> Parser<'a> {
             let stmt = self.parse_body_item(prologue)?;
             prologue = prologue && self.directive(&stmt, &body, None, &[])?;
             body.push(stmt);
+        }
+        if let Some(error) = self
+            .object_cover_errors
+            .into_iter()
+            .min_by_key(|e| e.span.start)
+        {
+            return Err(error);
         }
         Ok(Script {
             body,
@@ -1262,6 +1273,9 @@ impl<'a> Parser<'a> {
 
     #[inline(never)]
     fn parse_binding_pattern(&mut self, what: &str) -> PResult<Pattern> {
+        if self.is_punct(Punct::LBrace) {
+            return self.parse_object_binding_pattern(what);
+        }
         if !self.is_punct(Punct::LBracket) {
             return self.parse_binding_identifier(what).map(Pattern::ident);
         }
@@ -1308,6 +1322,97 @@ impl<'a> Parser<'a> {
             span: self.span_from(start),
             height,
         })
+    }
+
+    #[inline(never)]
+    fn parse_object_binding_pattern(&mut self, what: &str) -> PResult<Pattern> {
+        let saved = self.depth;
+        self.deeper(cost::OBJECT)?;
+        let start = self.tok.span.start;
+        self.lexer.expect_property_name();
+        self.advance()?;
+        let mut properties = Vec::new();
+        let mut rest = None;
+        let mut height = 1;
+        while !self.is_punct(Punct::RBrace) {
+            if self.eat_punct(Punct::Ellipsis)? {
+                let p = Pattern::ident(self.parse_binding_identifier(what)?);
+                height = height.max(p.height + 1);
+                rest = Some(Box::new(p));
+                break;
+            }
+            let (name, mut target) = self.parse_object_binding_property(what)?;
+            if self.eat_punct(Punct::Assign)? {
+                let value = self.parse_assignment()?;
+                target = Pattern {
+                    span: target.span.to(value.span),
+                    height: target.height.max(value.height) + 1,
+                    kind: PatternKind::Default {
+                        target: Box::new(target),
+                        value: Box::new(value),
+                    },
+                };
+            }
+            height = height.max(name.height().max(target.height) + 1);
+            properties.push((name, target));
+            if self.is_punct(Punct::Comma) {
+                self.lexer.expect_property_name();
+            }
+            if !self.eat_punct(Punct::Comma)? {
+                break;
+            }
+        }
+        self.expect_punct(Punct::RBrace)?;
+        self.depth = saved;
+        self.check_height(height)?;
+        Ok(Pattern {
+            kind: PatternKind::Object { properties, rest },
+            span: self.span_from(start),
+            height,
+        })
+    }
+
+    #[inline(never)]
+    fn parse_object_binding_property(&mut self, what: &str) -> PResult<(PropertyName, Pattern)> {
+        if matches!(
+            self.tok.kind,
+            TokenKind::Identifier(_) | TokenKind::Keyword(_)
+        ) && !self
+            .peek_next()
+            .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Colon))
+        {
+            let ident = self.parse_binding_identifier(what)?;
+            return Ok((
+                PropertyName::Identifier(ident.name.clone()),
+                Pattern::ident(ident),
+            ));
+        }
+        let name = self.parse_pattern_key()?;
+        self.expect_punct(Punct::Colon)?;
+        Ok((name, self.parse_binding_pattern(what)?))
+    }
+
+    #[inline(never)]
+    fn parse_pattern_key(&mut self) -> PResult<PropertyName> {
+        if self.eat_punct(Punct::LBracket)? {
+            // A computed pattern key adds a recursive expression path through
+            // cover conversion beyond an ordinary object property's value.
+            let saved = self.depth;
+            self.deeper(2)?;
+            let key = self.parse_assignment()?;
+            self.expect_punct(Punct::RBracket)?;
+            self.depth = saved;
+            return Ok(PropertyName::Computed(Box::new(key)));
+        }
+        let name = match &self.tok.kind {
+            TokenKind::Identifier(n) => PropertyName::Identifier(n.clone()),
+            TokenKind::Keyword(k) => PropertyName::Identifier(k.as_str().into()),
+            TokenKind::String(s) => PropertyName::String(s.clone()),
+            TokenKind::Number(n) => PropertyName::Number(*n),
+            _ => return Err(self.unexpected("a property name")),
+        };
+        self.advance()?;
+        Ok(name)
     }
 
     /// Function declaration or expression, from the `function` keyword:
@@ -1678,7 +1783,9 @@ impl<'a> Parser<'a> {
         if is_property_target(&left) {
             return self.assign_member(left, saved);
         }
-        if matches!(&left.kind, ExprKind::Array(_)) && left.span.text(self.src).starts_with('[') {
+        if matches!(&left.kind, ExprKind::Array(_) | ExprKind::Object(_))
+            && matches!(left.span.text(self.src).chars().next(), Some('[' | '{'))
+        {
             return self.parse_pattern_assignment(left, saved);
         }
         let target = self.simple_target(&left, TargetUse::Assign)?;
@@ -1712,7 +1819,63 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn assignment_pattern(&self, expr: Expr) -> PResult<Pattern> {
+    fn object_assignment_pattern(
+        &mut self,
+        properties: Vec<PropertyDef>,
+        span: Span,
+    ) -> PResult<PatternKind> {
+        if !span.text(self.src).starts_with('{') {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "a nested pattern cannot be parenthesized",
+            ));
+        }
+        let count = properties.len();
+        let mut patterns = Vec::new();
+        let mut rest = None;
+        for (i, p) in properties.into_iter().enumerate() {
+            self.object_cover_errors.retain(|e| e.span != p.name_span);
+            if p.is_method() {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    p.name_span,
+                    "method in object pattern",
+                ));
+            }
+            if let ExprKind::Spread(target) = p.value.kind {
+                let mut tail = Lexer::new(&self.src[p.value.span.end..span.end]);
+                if i + 1 != count || tail.next_token()?.kind != TokenKind::Punct(Punct::RBrace) {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        p.name_span,
+                        "rest property must be last",
+                    ));
+                }
+                let target = self.assignment_pattern(*target)?;
+                if !matches!(
+                    target.kind,
+                    PatternKind::Identifier(_) | PatternKind::Target(_)
+                ) {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        target.span,
+                        "invalid object rest target",
+                    ));
+                }
+                rest = Some(Box::new(target));
+            } else {
+                patterns.push((p.name, self.assignment_pattern(p.value)?));
+            }
+        }
+        Ok(PatternKind::Object {
+            properties: patterns,
+            rest,
+        })
+    }
+
+    #[inline(never)]
+    fn assignment_pattern(&mut self, expr: Expr) -> PResult<Pattern> {
         let span = expr.span;
         // Assignment nodes end exactly at their RHS. Wrapping the whole
         // assignment in parentheses extends only the outer span, whereas
@@ -1733,6 +1896,7 @@ impl<'a> Parser<'a> {
             ));
         }
         let kind = match expr.kind {
+            ExprKind::Object(properties) => self.object_assignment_pattern(properties, span)?,
             ExprKind::Array(elements) => {
                 if !span.text(self.src).starts_with('[') {
                     return Err(self.error(
@@ -1844,6 +2008,15 @@ impl<'a> Parser<'a> {
             }
         };
         let height = match &kind {
+            PatternKind::Object { properties, rest } => {
+                properties
+                    .iter()
+                    .map(|(k, p)| k.height().max(p.height))
+                    .chain(rest.iter().map(|p| p.height))
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            }
             PatternKind::Identifier(_) => 1,
             PatternKind::Target(e) => e.height + 1,
             PatternKind::Default { target, value } => target.height.max(value.height) + 1,
@@ -2132,6 +2305,69 @@ impl<'a> Parser<'a> {
         self.expr(ExprKind::Object(properties), span)
     }
 
+    #[inline(never)]
+    fn parse_object_cover_property(&mut self) -> PResult<Option<PropertyDef>> {
+        let span = self.tok.span;
+        let cover = match &self.tok.kind {
+            TokenKind::Punct(Punct::Ellipsis) => {
+                Some(self.unsupported(span, "spread properties are"))
+            }
+            TokenKind::Punct(Punct::LBracket) => {
+                Some(self.unsupported(span, "computed property names are"))
+            }
+            TokenKind::Identifier(_)
+                if self
+                    .peek_next()
+                    .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Assign)) =>
+            {
+                Some(self.error(
+                    SyntaxErrorKind::Invalid,
+                    span,
+                    "a shorthand property initializer is only valid in a destructuring pattern",
+                ))
+            }
+            _ => None,
+        };
+        if let Some(error) = cover {
+            self.object_cover_errors.push(error);
+            if self.eat_punct(Punct::Ellipsis)? {
+                let value = self.parse_assignment()?;
+                let spread = self.expr(
+                    ExprKind::Spread(Box::new(value)),
+                    self.span_from(span.start),
+                )?;
+                return Ok(Some(PropertyDef {
+                    name: PropertyName::Identifier(String::new()),
+                    name_span: span,
+                    value: spread,
+                    shorthand: false,
+                }));
+            }
+            if self.is_punct(Punct::LBracket) {
+                let name = self.parse_pattern_key()?;
+                self.expect_punct(Punct::Colon)?;
+                let value = self.parse_assignment()?;
+                return Ok(Some(PropertyDef {
+                    name,
+                    name_span: span,
+                    value,
+                    shorthand: false,
+                }));
+            }
+            let value = self.parse_assignment()?;
+            let ExprKind::Assign { target, .. } = &value.kind else {
+                return Err(self.unexpected("a shorthand assignment"));
+            };
+            return Ok(Some(PropertyDef {
+                name: PropertyName::Identifier(target.name.clone()),
+                name_span: span,
+                value,
+                shorthand: true,
+            }));
+        }
+        Ok(None)
+    }
+
     /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
     /// (reserved words included), a string literal or a numeric literal.
@@ -2142,6 +2378,9 @@ impl<'a> Parser<'a> {
     /// same literal (`proto_seen`) is an early error.
     fn parse_property_definition(&mut self, proto_seen: &mut bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
+        if let Some(property) = self.parse_object_cover_property()? {
+            return Ok(property);
+        }
         let (generator, asynchronous) = self.parse_method_prefix()?;
         // An accessor's following token is an IdentifierName: even an
         // escaped reserved word is valid here. Probe in the same lexer
@@ -2237,7 +2476,7 @@ impl<'a> Parser<'a> {
         }
         if name.is_proto() {
             if *proto_seen {
-                return Err(self.error(
+                self.object_cover_errors.push(self.error(
                     SyntaxErrorKind::Invalid,
                     span,
                     "duplicate `__proto__` in an object literal: only one `__proto__: value` may set the prototype",

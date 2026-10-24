@@ -146,6 +146,7 @@ fn render_expr(e: &Expr) -> String {
                     PropertyName::Identifier(name) => name.clone(),
                     PropertyName::String(s) => format!("{s:?}"),
                     PropertyName::Number(n) => format!("{n}"),
+                    PropertyName::Computed(e) => format!("[{}]", render_expr(e)),
                 };
                 if p.shorthand {
                     out.push_str(&format!(" (shorthand {name} {})", render_expr(&p.value)));
@@ -256,6 +257,24 @@ fn render_pattern(p: &Pattern) -> String {
     match &p.kind {
         PatternKind::Identifier(i) => i.name.clone(),
         PatternKind::Target(e) => render_expr(e),
+        PatternKind::Object { properties, rest } => {
+            let mut parts: Vec<String> = properties
+                .iter()
+                .map(|(k, p)| {
+                    let key = match k {
+                        PropertyName::Identifier(n) => n.clone(),
+                        PropertyName::String(s) => format!("{s:?}"),
+                        PropertyName::Number(n) => format!("{n}"),
+                        PropertyName::Computed(e) => format!("[{}]", render_expr(e)),
+                    };
+                    format!("({key} {})", render_pattern(p))
+                })
+                .collect();
+            if let Some(rest) = rest {
+                parts.push(format!("(rest {})", render_pattern(rest)));
+            }
+            format!("(pattern-object {})", parts.join(" "))
+        }
         PatternKind::Default { target, value } => format!(
             "(default {} {})",
             render_pattern(target),
@@ -278,6 +297,34 @@ fn render_pattern(p: &Pattern) -> String {
                 }
             )
         }
+    }
+}
+
+#[test]
+fn object_patterns() {
+    let ast =
+        parse_script("let {a, b: c, d = 1, ...r} = x; ({a, b: o.x} = y); function f({a, b}) {}")
+            .unwrap();
+    let rendered = render_list("script", &ast.body);
+    for expected in [
+        "(pattern-object (a a) (b c) (d (default d 1)) (rest r))",
+        "(= (pattern-object (a a) (b (. o x))) y)",
+        "(function f ((pattern-object (a a) (b b))))",
+    ] {
+        assert!(rendered.contains(expected), "{rendered}");
+    }
+    for source in [
+        "({a: 1} = x)",
+        "let {...r,} = x",
+        "({...r,} = x)",
+        "let {...{a}} = x",
+        "({...r = {}} = x)",
+        "let {a};",
+        "function f({a, a}) {}",
+        "({a = 1})",
+        "({a: {b = 2}})",
+    ] {
+        assert!(parse_script(source).is_err(), "{source}");
     }
 }
 
@@ -2749,12 +2796,12 @@ fn arrow_functions_and_asi() {
     rejects_with("!(a) => a", UnexpectedToken, 1, 6, "parenthesized");
     rejects_with("f(a) => a", UnexpectedToken, 1, 6, "parenthesized");
     rejects_with("a.b => a", UnexpectedToken, 1, 5, "parenthesized");
-    // The parameter list holds plain binding identifiers only.
+    // Parameters accept binding patterns, but not arbitrary expressions.
     rejects("(1) => 1", UnexpectedToken, 1, 2);
     rejects("((a)) => 1", UnexpectedToken, 1, 2);
     rejects("(a b) => 1", UnexpectedToken, 1, 4);
     rejects_with("(...a) => 1", Unsupported, 1, 2, "rest parameters");
-    rejects_with("({ a }) => 1", Unsupported, 1, 2, "destructuring");
+    parse_script("({ a }) => 1").unwrap();
     rejects("(eval) => 1", ReservedWord, 1, 2);
     rejects("arguments => 1", ReservedWord, 1, 1);
     rejects("undefined => 1", ReservedWord, 1, 1);
@@ -3863,8 +3910,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = super.y;", 1, 5, "super"),
         ("x.y &&= 1;", 1, 5, "&&="),
         ("function f(...a) {}", 1, 12, "rest"),
-        ("let {a} = b;", 1, 5, "destructuring"),
-        ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
         ("x = eval;", 1, 5, "eval"),
     ];
@@ -4432,6 +4477,19 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("object literals", |n| {
             format!("x = {}1{};", "{a: ".repeat(n), "}".repeat(n))
+        }),
+        ("object binding patterns", |n| {
+            format!("let {}a{} = x;", "{x: ".repeat(n), "}".repeat(n))
+        }),
+        ("object assignment patterns", |n| {
+            format!("({}a{} = x);", "{x: ".repeat(n), "}".repeat(n))
+        }),
+        ("computed pattern keys", |n| {
+            format!(
+                "let {}1{} = x;",
+                "{[".repeat(n),
+                "]: a} = x".repeat(n.saturating_sub(1)) + "]: a}"
+            )
         }),
         ("object literal values", |n| {
             format!("x = {}1{};", "{a: 1, b: x.y = ".repeat(n), ", c}".repeat(n))

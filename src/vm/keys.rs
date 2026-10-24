@@ -456,6 +456,32 @@ fn string_own_keys(s: &JsString, filter: KeyFilter) -> Result<Vec<OwnKey>, Fault
     Ok(indices.chain(length).collect())
 }
 
+/// Snapshot all own keys for CopyDataProperties. Enumerability is checked
+/// later, immediately before each resumable Get, since earlier getters may
+/// delete properties or change their descriptors.
+pub(crate) fn rest_keys(heap: &Heap, task: TaskId, source: &Value) -> Result<Value, Fault> {
+    let keys = match source {
+        Value::Object(id) => own_property_keys(heap, task, *id, KeyFilter::All)?,
+        Value::String(s) => string_own_keys(s, KeyFilter::All)?,
+        Value::Null | Value::Undefined => {
+            return Err(Fault::TypeError(
+                "cannot destructure null or undefined".into(),
+            ));
+        }
+        _ => Vec::new(),
+    };
+    let array = super::property::new_array(heap, task)?;
+    for own in keys {
+        let value = match own.key {
+            Key::Index(i) => Value::Number(f64::from(i)),
+            Key::Name(n) => Value::String(n),
+            Key::Symbol(s) => Value::Symbol(s),
+        };
+        super::property::append(heap, task, &array, Some(value))?;
+    }
+    Ok(array)
+}
+
 /// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85, -86;
 /// QuickJS `JSForInIterator`, `build_for_in_iterator`,
 /// `js_for_in_prepare_prototype_chain_enum`, `js_for_in_next`): the object

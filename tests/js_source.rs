@@ -15,6 +15,57 @@ use clj_quickjs::{
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn object_destructuring() {
+    for source in [
+        "let {a, b: c, d = 4, ...r} = {a: 1, b: 2, e: 5}; a === 1 && c === 2 && d === 4 && r.e === 5 && !('a' in r)",
+        "let {b = 10} = {}; b === 10",
+        "let o = {}; ({x: o.y} = {x: 3}); o.y === 3",
+        "let {length} = 1; length === undefined",
+        "let n = 0; try { let {q} = null; } catch(e) { n = e instanceof TypeError; } n",
+        "let n = 0; let {x} = {get x() { n++; return 7; }}; n === 1 && x === 7",
+        "(({a, b}) => a + b)({a: 1, b: 2}) === 3 && (({a,b}) => 0).length === 1",
+        "let {a: [{b = 7}]} = {a: [{}]}; b === 7",
+        "let [{x: [a]}] = [{x: [9]}]; a === 9",
+        "var {a = 7} = {}; a === 7",
+        "function f({a} = {a: 7}) { return a; } f() === 7 && f.length === 0",
+        "let a; try { throw {x: 7}; } catch({x}) { a = () => x; } a() === 7",
+        "let n = 0; try { let {} = undefined; } catch(e) { n = e instanceof TypeError; } n",
+        "let {x = 7, y = 8} = {x: null, y: false}; x === null && y === false",
+        "let {0: a, length, ...r} = 'abc'; a === 'a' && length === 3 && r[1] === 'b' && r[2] === 'c' && !('0' in r) && !('length' in r)",
+        "let source = {a: 7}, a; let result = ({a} = source); result === source && a === 7",
+        "let a, r; ({a = 7, ...r} = {}); a === 7 && Object.keys(r).length === 0",
+        "let a; ({x: {y: [a = 7]}} = {x: {y: []}}); a === 7",
+        "let {f = function() {}} = {}; f.name === 'f'",
+        "let failed = false; try { let {a = b, b} = {}; } catch(e) { failed = e instanceof ReferenceError; } failed",
+        "let log = ''; let k = {toString() { log += 'k'; return 'x'; }}; let source = {get x() { log += 'g'; return undefined; }}; let dest = {}; function lhs() { log += 'l'; return 'y'; } function def() { log += 'd'; return 7; } ({[k]: dest[lhs()] = def()} = source); log === 'klgd' && dest.y === 7",
+        "let s = Symbol('s'), t = Symbol('t'); let o = {a: 1}; o[s] = 2; o[t] = 3; let {[s]: a, ...r} = o; a === 2 && r.a === 1 && r[t] === 3 && !(s in r)",
+        "let n = 0; let key = {toString() { n++; return 'a'; }}; let {[key]: a, ...r} = {a: 1, b: 2}; n === 1 && a === 1 && r.b === 2 && !('a' in r)",
+        "let o = {get a() { delete this.b; return 1; }, b: 2}; let {...r} = o; r.a === 1 && !('b' in r)",
+        "let o = {get a() { Object.defineProperty(this, 'b', {enumerable: false}); return 1; }, b: 2}; let {...r} = o; r.a === 1 && !('b' in r)",
+        "let o = {get a() { Object.defineProperty(this, 'b', {enumerable: true}); return 1; }}; Object.defineProperty(o, 'b', {value: 2, configurable: true}); let {...r} = o; r.a === 1 && r.b === 2",
+        "let o = {__proto__: {a: 7}, b: 8}; let {a, ...r} = o; a === 7 && r.b === 8 && !('a' in r)",
+        "let o = {get a() { this.c = 3; return 1; }, b: 2}; let {...r} = o; r.a === 1 && r.b === 2 && !('c' in r)",
+        "let proto = {z: 9}; let o = {__proto__: proto, a: 1}; Object.defineProperty(o, 'hidden', {value: 2}); let {...r} = o; r.a === 1 && !('z' in r) && !('hidden' in r) && Object.getPrototypeOf(r) === Object.prototype",
+        "let o = {}; Object.defineProperty(o, '__proto__', {value: 7, enumerable: true}); let {...r} = o; r.__proto__ === 7 && Object.getPrototypeOf(r) === Object.prototype",
+        "let n = 0; let o = {get a() { n++; return 1; }, get b() { n++; return 2; }}; let {a, ...r} = o; n === 2 && a === 1 && r.b === 2 && Object.getOwnPropertyDescriptor(r, 'b').get === undefined",
+        "let o = {}, r; ({...o.x} = {a: 7}); o.x.a === 7",
+        "let {['x']: a, ...r} = {x: 1, y: 2}; a === 1 && r.y === 2",
+        "let {1: a, ...r} = {1: 7, 2: 8}; a === 7 && !('1' in r) && r[2] === 8",
+        "let o = {b: 1, 2: 2, 1: 3, a: 4}; let {...r} = o; Object.keys(r).join(',') === '1,2,b,a'",
+        "let s = Symbol('s'); let o = {}; Object.defineProperty(o, s, {get() { return 7; }, enumerable: true}); let {...r} = o; r[s] === 7",
+        "let o = {}; Object.defineProperty(o, '__proto__', {value: 7, enumerable: true}); let {__proto__: a, __proto__: b, ...r} = o; a === 7 && b === 7 && Object.keys(r).length === 0",
+        "let a, b; let o = {}; Object.defineProperty(o, '__proto__', {value: 7}); ({__proto__: a, __proto__: b} = o); a === 7 && b === 7",
+        "let closed = 0; let it = {next() { return {value: {get a() { throw 17; }}}; }, return() { closed++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let error; try { let [{a}] = it; } catch(e) { error = e; } error === 17 && closed === 1",
+        "let log = ''; let k = {toString() { log += 'k'; return 'x'; }}; let o = {}; let src = {get a() { log += 'g'; return undefined; }}; function def() { log += 'd'; return 7; } ({a: o[k] = def()} = src); o.x === 7 && log === 'gdk'",
+        "let error = 0; let log = ''; function def() { log += 'd'; return 7; } try { ({a: null.x = def()} = {}); } catch(e) { error = e instanceof TypeError; } error && log === 'd'",
+    ] {
+        // Every fixture returns a boolean; binding names remain lexical.
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn array_destructuring() {
     for source in [
         "let [a, , b = 3, ...r] = [1, 2, undefined, 4, 5]; a === 1 && b === 3 && r.length === 2 && r[0] === 4",
@@ -110,8 +161,14 @@ fn array_destructuring_nested_iterator_close() {
 /// Synthetic fixtures, not light-cljs output. Collect after every instruction,
 /// satisfy one dependency wait, and move the continuation to a new worker.
 #[test]
-fn array_destructuring_waits_collects_and_migrates() {
+fn array_and_object_destructuring_waits_collects_and_migrates() {
     for source in [
+        "let n = 0; let {x} = {get x() { n++; __rt.need(131, 1); return 7; }}; x === 7 && n === 1",
+        "let n = 0; let o = {get a() { n++; __rt.need(131, 1); return 7; }}; let {...r} = o; r.a === 7 && n === 1",
+        "let s = Symbol('s'); let o = {}; o[s] = 7; let key = {toString() { __rt.need(131, 1); return 'x'; }}; let {[key]: a = 3, ...r} = o; a === 3 && r[s] === 7",
+        "let n = 0; let o = {set x(v) { __rt.need(131, 1); n = v; }}; ({a: o.x} = {a: 7}); n === 7",
+        "function f({a = __rt.need(131, 1)}) { return () => a; } f({})() === 7",
+        "function* f({a = 7}) { let {x = yield a} = {}; return x; } let it = f({}); let a = it.next(); let b = it.next(__rt.need(131, 1)); a.value === 7 && b.value === 7 && b.done",
         "let n = 0; let it = {next() { n++; __rt.need(131, 1); return {value: [7]}; }, return() { n += 10; return {}; }}; it[Symbol.iterator] = function() { return this; }; let [[a]] = it; a === 7 && n === 11",
         "let it = {next() { return {done: false, get value() { __rt.need(131, 1); return [7]; }}; }}; it[Symbol.iterator] = function() { return this; }; let [[a]] = it; a === 7",
         "let it = {next() { return {get done() { __rt.need(131, 1); return true; }}; }, return() { throw 99; }}; it[Symbol.iterator] = function() { return this; }; let [a = 7] = it; a === 7",

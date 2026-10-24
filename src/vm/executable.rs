@@ -531,6 +531,11 @@ impl Executable {
                 Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
                 Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
 
+                Opcode::DefineElem => Instr::DefineElem,
+                Opcode::IsEnumerable => Instr::IsEnumerable,
+                Opcode::OwnKeys => Instr::OwnKeys,
+                Opcode::RequireCoercible => Instr::RequireCoercible,
+
                 Opcode::GetGlobalObject => Instr::GetGlobalObject,
                 Opcode::GetGlobal => Instr::GetGlobal(operand as u16),
                 Opcode::GetGlobalOrUndefined => Instr::GetGlobalOrUndefined(operand as u16),

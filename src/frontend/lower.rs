@@ -2027,7 +2027,110 @@ impl<'s> Lowerer<'s> {
             PatternKind::Array { elements, rest } => {
                 self.array_pattern(elements, rest.as_deref(), initialize, span)?
             }
+            PatternKind::Object { properties, rest } => {
+                self.object_pattern(properties, rest.as_deref(), initialize, span)?
+            }
         }
+        Ok(())
+    }
+
+    /// Keep source and converted exclusion keys in traced locals. Reads and
+    /// writes are ordinary VM operations, so getters and setters can suspend.
+    #[inline(never)]
+    fn object_pattern(
+        &mut self,
+        properties: &[(PropertyName, Pattern)],
+        rest: Option<&Pattern>,
+        initialize: bool,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
+        let source = self.temp(span)?;
+        self.out().op(Opcode::RequireCoercible, span);
+        self.out().op_u16(Opcode::SetLocal, source, span);
+        let mut excluded = Vec::new();
+        for (name, target) in properties {
+            let key = self.temp(span)?;
+            self.out().op_u16(Opcode::GetLocal, source, span);
+            match name {
+                PropertyName::Computed(e) => self.expr(e)?,
+                PropertyName::Identifier(n) => {
+                    self.constant(Primitive::String(JsString::from(n.as_str())), span)?
+                }
+                PropertyName::String(s) => self.constant(Primitive::String(s.clone()), span)?,
+                PropertyName::Number(n) => self.constant(
+                    Primitive::String(JsString::from(number_to_string(*n).as_str())),
+                    span,
+                )?,
+            }
+            self.out().op(Opcode::ToPropertyKey, span);
+            self.out().op_u16(Opcode::SetLocal, key, span);
+            self.out().op(Opcode::Pop, span);
+            let prepared = self.pattern_reference(target)?;
+            self.out().op_u16(Opcode::GetLocal, source, span);
+            self.out().op_u16(Opcode::GetLocal, key, span);
+            self.out().op(Opcode::GetElem, span);
+            self.pattern_store(target, initialize, prepared)?;
+            excluded.push(key);
+        }
+        if let Some(rest) = rest {
+            let prepared = self.pattern_reference(rest)?;
+            let dest = self.temp(span)?;
+            let keys = self.temp(span)?;
+            let index = self.temp(span)?;
+            let key = self.temp(span)?;
+            self.out().op(Opcode::NewObjectLiteral, span);
+            self.out().op_u16(Opcode::SetLocal, dest, span);
+            self.out().op_u16(Opcode::GetLocal, source, span);
+            self.out().op(Opcode::OwnKeys, span);
+            self.out().op_u16(Opcode::SetLocal, keys, span);
+            self.constant(Primitive::Number(0.0), span)?;
+            self.out().op_u16(Opcode::SetLocal, index, span);
+            let start = self.out().label();
+            let skip = self.out().label();
+            let end = self.out().label();
+            self.out().bind(start);
+            self.out().op_u16(Opcode::GetLocal, index, span);
+            self.out().op_u16(Opcode::GetLocal, keys, span);
+            self.iterator_field("length", span)?;
+            self.out().op(Opcode::Lt, span);
+            self.out().branch(Opcode::JumpIfFalse, end, span);
+            self.out().op_u16(Opcode::GetLocal, keys, span);
+            self.out().op_u16(Opcode::GetLocal, index, span);
+            self.out().op(Opcode::GetElem, span);
+            self.out().op_u16(Opcode::SetLocal, key, span);
+            for excluded in excluded {
+                self.out().op_u16(Opcode::GetLocal, key, span);
+                self.out().op_u16(Opcode::GetLocal, excluded, span);
+                self.out().op(Opcode::StrictEq, span);
+                self.out().op(Opcode::Not, span);
+                self.out().branch(Opcode::JumpIfFalse, skip, span);
+            }
+            self.out().op_u16(Opcode::GetLocal, source, span);
+            self.out().op_u16(Opcode::GetLocal, key, span);
+            self.out().op(Opcode::IsEnumerable, span);
+            self.out().branch(Opcode::JumpIfFalse, skip, span);
+            self.out().op_u16(Opcode::GetLocal, dest, span);
+            self.out().op_u16(Opcode::GetLocal, key, span);
+            self.out().op_u16(Opcode::GetLocal, source, span);
+            self.out().op_u16(Opcode::GetLocal, key, span);
+            self.out().op(Opcode::GetElem, span);
+            self.out().op(Opcode::DefineElem, span);
+            self.out().op(Opcode::Pop, span);
+            self.out().bind(skip);
+            self.out().op_u16(Opcode::GetLocal, index, span);
+            self.out().op(Opcode::Inc, span);
+            self.out().op_u16(Opcode::SetLocal, index, span);
+            self.out().branch(Opcode::Jump, start, span);
+            self.out().bind(end);
+            self.out().op_u16(Opcode::GetLocal, dest, span);
+            self.pattern_store(rest, initialize, prepared)?;
+        }
+        for slot in saved..self.cur().next_slot {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot as u16, span);
+        }
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 
@@ -3378,6 +3481,9 @@ impl<'s> Lowerer<'s> {
                     PropertyName::Identifier(n) => JsString::from(n.as_str()),
                     PropertyName::String(n) => n.clone(),
                     PropertyName::Number(n) => JsString::from(number_to_string(*n).as_str()),
+                    PropertyName::Computed(_) => {
+                        return Err(self.internal(span, "unconverted object cover"));
+                    }
                 };
                 let name = match &property.value.kind {
                     ExprKind::Function(f) if f.kind == FunctionKind::Getter => {
@@ -3412,6 +3518,9 @@ impl<'s> Lowerer<'s> {
                 PropertyName::String(s) => self.string_index(s.clone(), property.name_span)?,
                 PropertyName::Number(n) => {
                     self.name_index(&number_to_string(*n), property.name_span)?
+                }
+                PropertyName::Computed(_) => {
+                    return Err(self.internal(span, "unconverted object cover"));
                 }
             };
             let opcode = match &property.value.kind {

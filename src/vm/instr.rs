@@ -115,6 +115,11 @@
 //! | `GeneratorYield` | 0x7C | – | yielded → resumed | detach activation; next supplies the resumed operand |
 //! | `GeneratorInitialYield` | 0x7D | – | – | detach initialized activation and return a fresh generator to its caller |
 //! | `GeneratorYieldStar` | 0x7E | – | result object → resumed | detach activation and return the iterator result object unchanged |
+
+//! | `RequireCoercible` | 0x7F | – | value → value | TypeError for null/undefined (object patterns) |
+//! | `OwnKeys` | 0x80 | – | source → keys | private array of own keys, including symbols, before rest copying |
+//! | `IsEnumerable` | 0x81 | – | source key → boolean | current own descriptor's enumerable flag; key is already converted |
+//! | `DefineElem` | 0x82 | – | object key value → object | define own writable/enumerable/configurable data property; key is already converted |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -601,6 +606,11 @@ pub enum Opcode {
     GeneratorYield = 0x7C,
     GeneratorInitialYield = 0x7D,
     GeneratorYieldStar = 0x7E,
+
+    RequireCoercible = 0x7F,
+    OwnKeys = 0x80,
+    IsEnumerable = 0x81,
+    DefineElem = 0x82,
 }
 
 /// Operand encoding of an opcode.
@@ -761,6 +771,11 @@ impl Opcode {
             0x7C => GeneratorYield,
             0x7D => GeneratorInitialYield,
             0x7E => GeneratorYieldStar,
+
+            0x82 => DefineElem,
+            0x81 => IsEnumerable,
+            0x80 => OwnKeys,
+            0x7F => RequireCoercible,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -895,6 +910,11 @@ impl Opcode {
             GeneratorYield => "generator_yield",
             GeneratorInitialYield => "generator_initial_yield",
             GeneratorYieldStar => "generator_yield_star",
+
+            DefineElem => "define_elem",
+            IsEnumerable => "is_enumerable",
+            OwnKeys => "own_keys",
+            RequireCoercible => "require_coercible",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -960,6 +980,11 @@ impl Opcode {
             GeneratorStart | GeneratorYield | GeneratorInitialYield | GeneratorYieldStar => {
                 OperandKind::None
             }
+
+            RequireCoercible => OperandKind::None,
+            OwnKeys => OperandKind::None,
+            IsEnumerable => OperandKind::None,
+            DefineElem => OperandKind::None,
         }
     }
 }
@@ -1138,6 +1163,11 @@ pub(crate) enum Instr {
     GeneratorYield,
     GeneratorInitialYield,
     GeneratorYieldStar,
+
+    RequireCoercible,
+    OwnKeys,
+    IsEnumerable,
+    DefineElem,
 }
 
 impl Instr {
@@ -1248,6 +1278,11 @@ impl Instr {
             Instr::GeneratorYield => Opcode::GeneratorYield,
             Instr::GeneratorInitialYield => Opcode::GeneratorInitialYield,
             Instr::GeneratorYieldStar => Opcode::GeneratorYieldStar,
+
+            Instr::DefineElem => Opcode::DefineElem,
+            Instr::IsEnumerable => Opcode::IsEnumerable,
+            Instr::OwnKeys => Opcode::OwnKeys,
+            Instr::RequireCoercible => Opcode::RequireCoercible,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1297,6 +1332,9 @@ impl Instr {
             | Instanceof | In => (2, 1),
             ForInStart | GetIterator | RequireObject => (1, 1),
             PendingThrow => (0, 1),
+            RequireCoercible | OwnKeys => (1, 1),
+            IsEnumerable => (2, 1),
+            DefineElem => (3, 1),
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
             CheckSpreadArguments => (1, 1),
@@ -1339,6 +1377,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 126);
+        assert_eq!(assigned, 130);
     }
 }

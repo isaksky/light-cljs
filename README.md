@@ -1192,7 +1192,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest and object destructuring parameters (defaults: clj-quickjs-100,
+- `async` arrows; rest parameters (defaults: clj-quickjs-100,
   below), `new.target` and `super` (rejected inside arrows).
   Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
@@ -2342,7 +2342,7 @@ Supported (`cargo test --test js_functions function_length_and_name`,
   0/empty-string fallback. Published functions are immutable and report
   non-configurable metadata descriptors without attaching a record.
 
-Deferred: rest and object destructuring parameters;
+Deferred: rest parameters;
 their syntax remains rejected. See `docs/architecture.md`, "Function own properties".
 
 ### `Array.prototype.push` (clj-quickjs-155)
@@ -3285,7 +3285,7 @@ iterator methods and getters may yield, wait on dependencies and migrate.
 Holes become own elements; method receivers are preserved. Argument lists
 above 65,535 values throw RangeError; task stack limits still apply.
 Compiler-reserved `__rt` intrinsics require static arguments. Object spread,
-rest parameters and object destructuring remain deferred. Verify with
+rest parameters remain deferred. Object patterns execute since clj-quickjs-132. Verify with
 `cargo test --test js_source spread_`, `cargo test --test need iterator_next_waits_on_dependency`
 and `cargo test --lib frontend::tests::spread_forms`.
 
@@ -3394,8 +3394,8 @@ ordinary/generator/arrow parameters and catch clauses. They support elisions, ne
 patterns, defaults for undefined values, rest arrays and property assignment
 targets. Patterns consume the shared synchronous iterator protocol and close
 live iterators on early completion or consumer errors. Iterator callbacks,
-defaults and setters can wait, yield and migrate. Object patterns, rest
-parameters and destructuring iteration heads remain deferred. Run:
+defaults and setters can wait, yield and migrate. Object patterns execute since
+clj-quickjs-132; rest parameters and destructuring iteration heads remain deferred. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source array_destructuring -- --test-threads=3`.
 
 ### Intl.Collator root order (clj-quickjs-218)
@@ -3459,3 +3459,15 @@ the key. Other supported Unicode keys still resolve independently.
 Deferred: additional locale/collation types, Azerbaijani locale coverage and
 full Turkish contextual uppercase folding beyond the pinned snapshot.
 Run `CARGO_BUILD_JOBS=3 cargo test --test js_source intl_collator -- --test-threads=3`.
+
+### Object destructuring (clj-quickjs-132)
+
+Object patterns execute in declarations, assignments, parameters and catch
+bindings, with shorthands, renaming, undefined-only defaults, computed source
+keys, nested array/object patterns and object rest. Rest copies own enumerable
+string and symbol properties in key order into a fresh ordinary object. Getters,
+setters and key conversions can wait, yield, collect and migrate. Null/undefined
+sources throw TypeError; other primitives use their property-read behavior.
+Object literal computed names, object spread, rest parameters and destructuring
+iteration heads remain deferred. Verify with
+`CARGO_BUILD_JOBS=3 cargo test --test js_source destructuring -- --test-threads=3`.
