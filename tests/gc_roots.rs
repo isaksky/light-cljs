@@ -1083,7 +1083,8 @@ fn realm_intrinsics_retain() {
     // Map forEach adds one built-in method (-170).
     // Array.from adds one built-in function (-207).
     // Generators add one prototype and its next built-in (-243).
-    assert_eq!(rt.heap_usage().objects.builtin, 212);
+    // Array.prototype.sort adds one built-in function (-208).
+    assert_eq!(rt.heap_usage().objects.builtin, 213);
     assert_eq!(rt.heap_usage().objects.plain, 40);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
