@@ -1174,6 +1174,122 @@ fn bitwise_operators_follow_to_int32() {
     );
 }
 
+/// The exponentiation operator `**` (clj-quickjs-63). `2 ** 8` is adapted
+/// from `test_op1` in `research/quickjs/tests/test_language.js`, revision
+/// 7d1c13c5d8f8 (`assert(2 ** 8, 256, ...)` as a Rust assertion); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The other
+/// cases are written for this project from ECMAScript's
+/// Number::exponentiate.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn exponent_operator() {
+    // `test_op1`.
+    assert_eq!(num("2 ** 8"), 256.0);
+    // Exact values, compared bit for bit (so `-0` and `+0` differ).
+    for (src, expected) in [
+        ("2 ** 3 ** 2", 512.0),
+        ("(2 ** 3) ** 2", 64.0),
+        ("(-2) ** 2", 4.0),
+        ("(-2) ** 3", -8.0),
+        ("2 ** -1", 0.5),
+        ("-(2 ** 2)", -4.0),
+        ("2 * 3 ** 2", 18.0),
+        ("NaN ** 0", 1.0),
+        ("NaN ** -0", 1.0),
+        ("0 ** -1", f64::INFINITY),
+        ("(-0) ** -1", f64::NEG_INFINITY),
+        ("(-0) ** -2", f64::INFINITY),
+        ("(-0) ** 2", 0.0),
+        ("(-0) ** 3", -0.0),
+        ("0 ** 0", 1.0),
+        ("Infinity ** -1", 0.0),
+        ("(-Infinity) ** 3", f64::NEG_INFINITY),
+        ("(-Infinity) ** -3", -0.0),
+        ("2 ** Infinity", f64::INFINITY),
+        ("0.5 ** Infinity", 0.0),
+        ("2 ** -Infinity", 0.0),
+        ("(-1) ** 2", 1.0),
+        ("1 ** 1e308", 1.0),
+        // ToNumber of the other primitives.
+        ("true ** 2", 1.0),
+        ("null ** 0", 1.0),
+        ("2 ** true", 2.0),
+        ("2 ** null", 1.0),
+        ("false ** false", 1.0),
+    ] {
+        let n = num(src);
+        assert_eq!(n.to_bits(), expected.to_bits(), "{src} gave {n}");
+    }
+    // NaN, including where IEEE 754 `pow` gives 1: a non-finite exponent
+    // with base 1 or -1.
+    for src in [
+        "(-8) ** (1 / 3)",
+        "1 ** Infinity",
+        "1 ** -Infinity",
+        "1 ** NaN",
+        "(-1) ** Infinity",
+        "(-1) ** -Infinity",
+        "(-1) ** NaN",
+        "NaN ** 1",
+        "2 ** NaN",
+        "2 ** undefined",
+    ] {
+        assert!(num(src).is_nan(), "{src} gave {}", num(src));
+    }
+    assert_eq!(num("undefined ** 0"), 1.0);
+
+    // Both operands are evaluated, left first, before any conversion.
+    assert_eq!(failure_at("nope ** 1").0, VmErrorKind::ReferenceError);
+    assert_eq!(failure_at("1 ** nope").0, VmErrorKind::ReferenceError);
+    assert_eq!(
+        failure_at("__rt.vector() ** nope").0,
+        VmErrorKind::ReferenceError
+    );
+    assert_eq!(
+        num("let x = 0; let y = (x = 2) ** (x = 3); y * 10 + x"),
+        83.0
+    );
+    // Right-associative at run time with bindings, inside functions.
+    assert_eq!(
+        num("const sq = (x) => x ** 2; let b = 2; sq(b ** b ** b) / 2 ** -1"),
+        512.0
+    );
+    // Objects need ToPrimitive, which is deferred.
+    for src in ["__rt.vector() ** 2", "2 ** __rt.vector()", "(() => 1) ** 0"] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    // One VM instruction, with no ToNumber for number operands.
+    let ops = opcodes(&exe("(2 ** -1) ** (1 ** ~2)"));
+    assert_eq!(ops.iter().filter(|op| **op == Opcode::Pow).count(), 3);
+    assert!(
+        !ops.contains(&Opcode::ToNumber) && !ops.contains(&Opcode::ToNumberPair),
+        "{ops:?}"
+    );
+    assert!(opcodes(&exe("let t = true; t ** 2")).contains(&Opcode::ToNumberPair));
+    assert!(opcodes(&exe("let t = true; 2 ** t")).contains(&Opcode::ToNumber));
+}
+
 #[test]
 fn compiler_constant_limit() {
     // 65,536 distinct constants fit the u16 index; the last one is read

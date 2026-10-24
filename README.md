@@ -1264,3 +1264,24 @@ Deferred:
   body or finally body) are rejected at compile time as `Unsupported`
   (clj-quickjs-79).
 - Labels (`break l;` is `Unsupported`), `do`-`while`, `for` and `switch`.
+
+### Exponentiation operator (clj-quickjs-63)
+
+Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
+`cargo test --test js_source exponent_operator`):
+
+- `**`, right-associative and binding tighter than `*`; its right operand
+  may be a unary expression (`2 ** -1`), its left operand may not be an
+  unparenthesized one (`-2 ** 2` is a SyntaxError of kind `Invalid` at the
+  `**`; write `(-2) ** 2` or `-(2 ** 2)`). Both operands are evaluated,
+  then converted with ToNumber (left first), then Number::exponentiate:
+  IEEE `pow` except that a NaN or ±Infinity exponent with base `1` or `-1`
+  gives NaN. Number-only opcode `pow` (`0x46`). `2 ** 8` is adapted from
+  QuickJS `test_op1` with the license notice.
+
+Deferred:
+
+- `**=` is still rejected by the parser (compound assignment); string
+  operands wait for StringToNumber (clj-quickjs-67) and object operands for
+  ToPrimitive (they fail with `UnsupportedOperand`). BigInt is outside the
+  subset.

@@ -68,7 +68,7 @@
 //! see [`super::intrinsics`] for the contract and the table.
 //!
 //! **Numbers.** `+ - * / %`, `< > <= >=`, the bitwise and shift operators
-//! `& | ^ << >> >>>` and unary `-`, `+`, `~` apply JavaScript ToNumber to
+//! `& | ^ << >> >>>`, `**` and unary `-`, `+`, `~` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
 //! before the number-only arithmetic instruction (which applies ToInt32 /
 //! ToUint32 itself for the bitwise ones); with no string values in
@@ -1583,6 +1583,7 @@ impl<'s> Lowerer<'s> {
             BinaryOp::Shl => Opcode::Shl,
             BinaryOp::Sar => Opcode::Sar,
             BinaryOp::UShr => Opcode::UShr,
+            BinaryOp::Exp => Opcode::Pow,
             BinaryOp::LooseEq | BinaryOp::LooseNe | BinaryOp::StrictEq | BinaryOp::StrictNe => {
                 let (compare, negate) = match op {
                     BinaryOp::LooseEq => (Opcode::LooseEq, false),
@@ -1627,6 +1628,7 @@ fn is_number(e: &Expr) -> bool {
                 | BinaryOp::Shl
                 | BinaryOp::Sar
                 | BinaryOp::UShr
+                | BinaryOp::Exp
         ),
         ExprKind::Conditional {
             consequent,

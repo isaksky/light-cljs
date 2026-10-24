@@ -74,6 +74,7 @@
 //! | `Sar`           | 0x43 | –                  | a b → `a >> b`         | ToInt32(a) shifted right, sign-filling |
 //! | `UShr`          | 0x44 | –                  | a b → `a >>> b`        | ToUint32(a) shifted right, zero-filling |
 //! | `BitNot`        | 0x45 | –                  | a → `~a`               | bitwise NOT of ToInt32(a) |
+//! | `Pow`           | 0x46 | –                  | a b → `a ** b`         | Number::exponentiate |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -177,12 +178,18 @@
 //! `and`/`or`/`xor`/`shl`/`sar`/`shr`/`not` opcodes
 //! (`research/quickjs/quickjs-opcode.h`); `UShr` is QuickJS's `shr`.
 //!
+//! Opcode `0x46` `Pow` is JavaScript's `**` (clj-quickjs-63), Number-only
+//! like the arithmetic opcodes. It computes Number::exponentiate: IEEE 754
+//! `pow`, except that a non-finite exponent with base `1` or `-1` gives NaN
+//! (`pow` gives 1 there, and also for `1 ** NaN`). It follows QuickJS's
+//! `pow` opcode and `js_pow` (`research/quickjs/quickjs.c`).
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
 //! next byte and are handled in every exhaustive match.
 //!
-//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le`, `Ge` and the
+//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le`, `Ge`, `Pow` and the
 //! bitwise and shift opcodes support Number operands only. Other operand types fail the task with
 //! [`VmErrorKind::UnsupportedOperand`](crate::VmErrorKind::UnsupportedOperand)
 //! rather than applying JavaScript's coercions; a compiler applies them
@@ -271,6 +278,7 @@ pub enum Opcode {
     Sar = 0x43,
     UShr = 0x44,
     BitNot = 0x45,
+    Pow = 0x46,
 }
 
 /// Operand encoding of an opcode.
@@ -388,6 +396,7 @@ impl Opcode {
             0x43 => Sar,
             0x44 => UShr,
             0x45 => BitNot,
+            0x46 => Pow,
             _ => return None,
         })
     }
@@ -465,6 +474,7 @@ impl Opcode {
             Sar => "sar",
             UShr => "ushr",
             BitNot => "bit_not",
+            Pow => "pow",
         }
     }
 
@@ -486,7 +496,7 @@ impl Opcode {
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
-            | UShr | BitNot => OperandKind::None,
+            | UShr | BitNot | Pow => OperandKind::None,
         }
     }
 }
@@ -600,6 +610,7 @@ pub(crate) enum Instr {
     Sar,
     UShr,
     BitNot,
+    Pow,
 }
 
 impl Instr {
@@ -674,6 +685,7 @@ impl Instr {
             Instr::Sar => Opcode::Sar,
             Instr::UShr => Opcode::UShr,
             Instr::BitNot => Opcode::BitNot,
+            Instr::Pow => Opcode::Pow,
         }
     }
 
@@ -689,7 +701,7 @@ impl Instr {
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
-            | Sar | UShr => (2, 1),
+            | Sar | UShr | Pow => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -720,6 +732,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 69);
+        assert_eq!(assigned, 70);
     }
 }

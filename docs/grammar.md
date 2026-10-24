@@ -96,7 +96,8 @@ Equality              = Relational { ( "==" | "!=" | "===" | "!==" ) Relational 
 Relational            = Shift { ( "<" | ">" | "<=" | ">=" ) Shift }
 Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
-Multiplicative        = Unary { ( "*" | "/" | "%" ) Unary }
+Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
+Exponentiation        = Unary | Call "**" Exponentiation
 Unary                 = ( "!" | "-" | "+" | "~" ) Unary | Call
 Call                  = Primary { Arguments | "." IdentifierName }
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
@@ -110,10 +111,15 @@ Notes on the grammar:
 - Precedence, loosest to tightest: the comma operator, assignment
   (right-associative), conditional (right-associative), `||`, `&&`, `|`,
   `^`, `&`, equality, relational, shift (`<<`, `>>`, `>>>`, clj-quickjs-62),
-  additive, multiplicative, prefix unary,
-  call/member. All binary operators and the comma operator are
-  left-associative. This is ECMAScript's ordering restricted to the
-  supported operators.
+  additive, multiplicative, exponentiation (`**`, clj-quickjs-63), prefix
+  unary, call/member. All binary operators but `**`, and the comma
+  operator, are left-associative; `**` is right-associative
+  (`2 ** 3 ** 2` is `2 ** (3 ** 2)`). This is ECMAScript's ordering
+  restricted to the supported operators.
+- The base of `**` cannot be a prefix-operator expression without
+  parentheses (ECMAScript's ExponentiationExpression): `-2 ** 2` and
+  `a ** -b ** c` are rejected `Invalid` at the `**`; `(-2) ** 2`,
+  `-(2 ** 2)` and `2 ** -2` are valid.
 - `ReturnStatement` is accepted only inside a function body.
 - `BreakStatement` and `ContinueStatement` (clj-quickjs-78) are accepted
   only inside the body of a `while` loop of the same function: a function
@@ -192,13 +198,13 @@ Every form below is rejected where it starts. Error kinds:
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
-| `typeof`, `void`, `delete`, `++`, `--`, `**`, `??`, `in`, `instanceof`, compound assignment (`+=`, `&&=`, `\|=`, `<<=`, `>>>=`, ...) | Unsupported |
+| `typeof`, `void`, `delete`, `++`, `--`, `??`, `in`, `instanceof`, compound assignment (`+=`, `**=`, `&&=`, `\|=`, `<<=`, `>>>=`, ...) | Unsupported |
 | assignment to a property (`a.b = 1`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
+| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -278,6 +284,7 @@ Executed, with JavaScript semantics:
 | `+ - * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign |
 | `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false) |
 | `&`, `\|`, `^`, `<<`, `>>`, `>>>` and unary `~` (clj-quickjs-62) | ToNumber of both operands (left first, after both are evaluated), then ToInt32 (NaN and ±Infinity are 0; truncate, wrap modulo 2^32), ToUint32 for the left operand of `>>>`; a shift count is `ToUint32(right) & 31`; the result is a 32-bit integer (unsigned for `>>>`), never `-0` |
+| `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
@@ -524,6 +531,11 @@ const lo = h & 0xFFFF, hi = h >>> 16, sign = ~h >> 31;
 ```
 
 ```js accept
+// Exponentiation (clj-quickjs-63): right-associative, tighter than `*`.
+const area = 3 * 2 ** 2, big = 2 ** 3 ** 2, half = (-2) ** -1, neg = -(2 ** 2);
+```
+
+```js accept
 #!/usr/bin/env qjs
 let x = 1;
 ```
@@ -580,6 +592,14 @@ a>>>=b
 
 ```js reject Unsupported 1:3
 h |= 1;
+```
+
+```js reject Invalid 1:4
+-2 ** 2;
+```
+
+```js reject Unsupported 1:3
+x **= 2;
 ```
 
 ```js reject ReservedWord 1:5
@@ -676,7 +696,11 @@ last is evaluated and dropped). For the bitwise and shift operators
 `JS_CallInternal` and `js_unary_arith_slow` (`~`); the run-time cases are
 adapted from `test_op1` and `test_cvt` of
 `research/quickjs/tests/test_language.js` in `tests/js_source.rs`
-`bitwise_operators_follow_to_int32`, with the notice. For Unicode
+`bitwise_operators_follow_to_int32`, with the notice. For the exponentiation
+operator (clj-quickjs-63): `js_parse_unary` (the `PF_POW_FORBIDDEN`
+restriction on a unary base), `js_pow` and `OP_pow`; `2 ** 8` in
+`tests/js_source.rs` `exponent_operator` is adapted from `test_op1`, with
+the notice. For Unicode
 identifiers (clj-quickjs-50): `next_token`'s `lre_js_is_ident_first` /
 `lre_js_is_ident_next` checks and `ident_realloc` (escapes decoded into the
 name, an escaped reserved word never a keyword); the tables here are

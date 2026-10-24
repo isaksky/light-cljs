@@ -391,6 +391,9 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `shl`, `sar`, `ushr`, `bit_not` (`0x3F`–`0x45`) after the same explicit
   ToNumber; the opcode applies ToInt32 / ToUint32 itself (a pure function
   of a Number), so the order of conversions JavaScript specifies is kept.
+  `**` (clj-quickjs-63) is the number-only opcode `pow` (`0x46`) after the
+  same ToNumber; it computes Number::exponentiate (IEEE `pow` with NaN for a
+  non-finite exponent on base ±1, as QuickJS's `js_pow`).
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -1367,3 +1370,10 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `close_scopes` (which enclosing loops and handlers a jump leaves, and the
   early errors). Here the compiler pops catch handlers of the task-owned
   handler stack with `pop_catch` before the jump. No code was copied.
+- `tests/js_source.rs` `exponent_operator` (clj-quickjs-63): the `2 ** 8`
+  case of `test_op1` (line 39) of `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
+  Modified: `assert(r, v)` is a Rust assertion on the expression's value.
+  The test carries the full notice. `research/quickjs/quickjs.c`
+  `js_parse_unary` (`PF_POW_FORBIDDEN`), `js_pow` and the `OP_pow` case of
+  `JS_CallInternal` were consulted only. No code was copied.

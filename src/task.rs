@@ -1525,9 +1525,10 @@ mod tests {
             a.constant(Primitive::Bool(true)).op(Neg);
         });
         assert_eq!(failed(neg).kind(), VmErrorKind::UnsupportedOperand);
-        // The bitwise and shift opcodes (clj-quickjs-62) are number-only
-        // too, in either operand position: no implicit ToNumber.
-        for op in [BitAnd, BitOr, BitXor, Shl, Sar, UShr] {
+        // The bitwise and shift opcodes (clj-quickjs-62) and `Pow`
+        // (clj-quickjs-63) are number-only too, in either operand position:
+        // no implicit ToNumber.
+        for op in [BitAnd, BitOr, BitXor, Shl, Sar, UShr, Pow] {
             for bad_left in [true, false] {
                 let e = failed(run(&|a| {
                     let (x, y) = if bad_left {

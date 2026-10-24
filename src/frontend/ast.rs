@@ -347,6 +347,8 @@ pub enum BinaryOp {
     Sar,
     /// `>>>`
     UShr,
+    /// `**`
+    Exp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -190,6 +190,19 @@ fn to_int32(x: f64) -> i32 {
     x.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
 }
 
+/// JavaScript Number::exponentiate (`x ** y`). IEEE 754 `pow` (which
+/// `f64::powf` is) agrees with it except where `pow` returns 1 although
+/// JavaScript requires NaN: a non-finite exponent (NaN or ±Infinity) with
+/// base `1` or `-1`. Every other NaN exponent already gives NaN from `pow`,
+/// and `NaN ** ±0` is 1 in both. This is QuickJS's `js_pow`.
+fn exponentiate(x: f64, y: f64) -> f64 {
+    if !y.is_finite() && x.abs() == 1.0 {
+        f64::NAN
+    } else {
+        x.powf(y)
+    }
+}
+
 /// JavaScript ToNumber for primitives. Objects need ToPrimitive, which is
 /// deferred, so they are rejected explicitly.
 fn to_number(v: Value) -> Result<f64, Fault> {
@@ -564,6 +577,12 @@ fn step(
                 )));
             }
         },
+        Instr::Pow => {
+            let b = state.pop()?;
+            let a = state.pop()?;
+            let (x, y) = numbers(instr.opcode(), a, b)?;
+            state.push(Value::Number(exponentiate(x, y)));
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -837,6 +856,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Sar
         | Instr::UShr
         | Instr::BitNot
+        | Instr::Pow
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

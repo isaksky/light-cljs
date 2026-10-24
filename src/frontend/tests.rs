@@ -53,6 +53,7 @@ fn render_expr(e: &Expr) -> String {
                 BinaryOp::Shl => "<<",
                 BinaryOp::Sar => ">>",
                 BinaryOp::UShr => ">>>",
+                BinaryOp::Exp => "**",
             };
             format!("({op} {} {})", render_expr(left), render_expr(right))
         }
@@ -471,7 +472,7 @@ fn bitwise_and_shift_precedence() {
     assert_eq!(ast("a & b & c;"), "(& (& a b) c)");
     assert_eq!(ast("a << b >> c >>> d;"), "(>>> (>> (<< a b) c) d)");
     assert_eq!(ast("a >>> b * c - d;"), "(>>> a (- (* b c) d))");
-    // Compound forms, `**` and `??` stay rejected at the operator.
+    // Compound forms and `??` stay rejected at the operator.
     use SyntaxErrorKind::Unsupported;
     for (src, needle) in [
         ("a |= 1;", "|="),
@@ -483,7 +484,37 @@ fn bitwise_and_shift_precedence() {
     ] {
         rejects_with(src, Unsupported, 1, 3, needle);
     }
-    rejects_with("a | b ** c;", Unsupported, 1, 7, "**");
+    rejects_with("a | b ?? c;", Unsupported, 1, 7, "??");
+}
+
+/// The exponentiation operator (clj-quickjs-63): tighter than `*`,
+/// right-associative, a UnaryExpression on the right, and never an
+/// unparenthesized prefix-operator expression on the left.
+#[test]
+fn exponent_operator_syntax() {
+    assert_eq!(ast("2 ** 3 ** 2;"), "(** 2 (** 3 2))");
+    assert_eq!(ast("a * b ** c;"), "(* a (** b c))");
+    assert_eq!(ast("a ** b * c;"), "(* (** a b) c)");
+    assert_eq!(ast("-(a ** b);"), "(neg (** a b))");
+    assert_eq!(ast("(-a) ** b;"), "(** (neg a) b)");
+    assert_eq!(ast("a ** -b;"), "(** a (neg b))");
+    assert_eq!(ast("a ** f(b).c ** d;"), "(** a (** (. (call f b) c) d))");
+    assert_eq!(ast("a | b ** c;"), "(| a (** b c))");
+    assert_eq!(ast("x => x ** 2;"), ast("x => (x ** 2);"));
+    // A prefix-operator expression may not be the base: `Invalid` at `**`.
+    use SyntaxErrorKind::{Invalid, Unsupported};
+    rejects_with("-a ** b;", Invalid, 1, 4, "parenthesize");
+    rejects_with("!a ** b;", Invalid, 1, 4, "parenthesize");
+    rejects_with("+a ** b;", Invalid, 1, 4, "parenthesize");
+    rejects_with("~a ** b;", Invalid, 1, 4, "parenthesize");
+    rejects_with("- -a ** b;", Invalid, 1, 6, "parenthesize");
+    rejects_with("-2 ** 2;", Invalid, 1, 4, "parenthesize");
+    // Also in the exponent: `a ** -b ** c` has the unary `-b` as a base.
+    rejects_with("a ** -b ** c;", Invalid, 1, 9, "parenthesize");
+    // The other prefix operators stay unsupported before `**` is reached.
+    rejects_with("typeof a ** b;", Unsupported, 1, 1, "typeof");
+    // `**=` stays rejected (compound assignment).
+    rejects_with("a **= 2;", Unsupported, 1, 3, "**=");
 }
 
 #[test]
@@ -1101,7 +1132,7 @@ fn rejects_lexically_ambiguous_input() {
     rejects("1.5n", InvalidToken, 1, 4);
     // Maximal munch: these are single unsupported tokens.
     rejects_with("a>>>=b", Unsupported, 1, 2, ">>>=");
-    rejects_with("a ** b", Unsupported, 1, 3, "**");
+    rejects_with("a**=b", Unsupported, 1, 2, "**=");
     rejects_with("a ?? b", Unsupported, 1, 3, "??");
     rejects_with("a?.b", Unsupported, 1, 2, "optional chaining");
     rejects_with("a--b", Unsupported, 1, 2, "increment");

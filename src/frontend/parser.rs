@@ -863,9 +863,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Binary operators by precedence climbing; all are left-associative.
+    /// (`**` binds tighter than all of them and is right-associative; see
+    /// [`Self::parse_exponent`].)
     fn parse_binary(&mut self, min_prec: u8) -> PResult<Expr> {
         let saved = self.depth;
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_exponent()?;
         loop {
             self.reject_unsupported_binary()?;
             let Some((prec, op)) = binary_op(&self.tok.kind) else {
@@ -887,14 +889,47 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn reject_unsupported_binary(&self) -> PResult<()> {
         let what = match &self.tok.kind {
-            TokenKind::Punct(p @ (Punct::StarStar | Punct::Nullish)) => p.as_str(),
+            TokenKind::Punct(p @ Punct::Nullish) => p.as_str(),
             TokenKind::Keyword(k @ (Keyword::In | Keyword::Instanceof)) => k.as_str(),
             _ => return Ok(()),
         };
         Err(self.unsupported(self.tok.span, &format!("the `{what}` operator is")))
     }
 
+    /// ExponentiationExpression:
+    ///   UnaryExpression | CallExpression `**` ExponentiationExpression
+    ///
+    /// Right-associative, binding tighter than every other binary operator.
+    /// The left operand may not be an unparenthesized prefix-operator
+    /// expression: `-a ** b` is a SyntaxError (reported by
+    /// [`Self::parse_unary`] at the `**`), while `(-a) ** b`, `-(a ** b)`
+    /// and `a ** -b` are valid.
+    fn parse_exponent(&mut self) -> PResult<Expr> {
+        let base = self.parse_unary()?;
+        if !self.is_punct(Punct::StarStar) {
+            return Ok(base);
+        }
+        let saved = self.depth;
+        self.deeper(cost::OPERATOR)?;
+        self.advance()?;
+        let exponent = self.parse_exponent()?;
+        self.depth = saved;
+        let span = base.span.to(exponent.span);
+        self.expr(
+            ExprKind::Binary {
+                op: BinaryOp::Exp,
+                left: Box::new(base),
+                right: Box::new(exponent),
+            },
+            span,
+        )
+    }
+
     /// UnaryExpression: (`!` | `-` | `+` | `~`) UnaryExpression | CallExpression
+    ///
+    /// A prefix-operator expression followed by `**` is rejected here, at
+    /// the `**`: ECMAScript does not let a UnaryExpression be the base of
+    /// an exponentiation (`-2 ** 2` is ambiguous to a reader).
     fn parse_unary(&mut self) -> PResult<Expr> {
         let op = match &self.tok.kind {
             TokenKind::Punct(Punct::Bang) => UnaryOp::Not,
@@ -911,6 +946,13 @@ impl<'a> Parser<'a> {
         let start = self.advance()?.span.start;
         let operand = self.parse_unary()?;
         self.depth = saved;
+        if self.is_punct(Punct::StarStar) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "a unary expression cannot be the left operand of `**`; parenthesize it",
+            ));
+        }
         let span = Span::new(start, operand.span.end);
         self.expr(
             ExprKind::Unary {
