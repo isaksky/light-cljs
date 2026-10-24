@@ -57,6 +57,7 @@
 //! | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task with prototype `proto` (an object or `null`, else a catchable `TypeError`); a second argument other than `undefined`: `UnsupportedOperand` (`Object.defineProperties`) |
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
+//! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72); `getOwnPropertyNames` of a function or of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-101, -261) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -69,6 +70,7 @@ use crate::vm::descriptor;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::integrity;
+use crate::vm::keys::{self, KeyFilter};
 use crate::vm::prototype;
 
 /// Which built-in function: the Rust code a [`BuiltinFunction`] runs.
@@ -116,6 +118,12 @@ pub(crate) enum Builtin {
     /// `Object.isFrozen` (QuickJS `js_object_isSealed`, frozen flag;
     /// clj-quickjs-122).
     ObjectIsFrozen,
+    /// `Object.keys` (QuickJS `js_object_keys`; clj-quickjs-123,
+    /// `crate::vm::keys`).
+    ObjectKeys,
+    /// `Object.getOwnPropertyNames` (QuickJS
+    /// `js_object_getOwnPropertyNames`; clj-quickjs-123).
+    ObjectGetOwnPropertyNames,
 }
 
 impl Builtin {
@@ -137,6 +145,8 @@ impl Builtin {
             Builtin::ObjectIsExtensible => "isExtensible",
             Builtin::ObjectFreeze => "freeze",
             Builtin::ObjectIsFrozen => "isFrozen",
+            Builtin::ObjectKeys => "keys",
+            Builtin::ObjectGetOwnPropertyNames => "getOwnPropertyNames",
         }
     }
 
@@ -156,6 +166,7 @@ impl Builtin {
             | Builtin::ObjectIsExtensible
             | Builtin::ObjectFreeze
             | Builtin::ObjectIsFrozen => 1,
+            Builtin::ObjectKeys | Builtin::ObjectGetOwnPropertyNames => 1,
         }
     }
 }
@@ -228,6 +239,8 @@ pub(crate) fn call(
         Builtin::ObjectIsExtensible => integrity::is_extensible(heap, task, &arg(0)),
         Builtin::ObjectFreeze => integrity::freeze(heap, task, &arg(0)),
         Builtin::ObjectIsFrozen => integrity::is_frozen(heap, task, &arg(0)),
+        Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
+        Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
     }
 }
 

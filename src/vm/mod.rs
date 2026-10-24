@@ -24,6 +24,8 @@
 //! * `integrity`: extensibility and the frozen integrity level,
 //!   `Object.preventExtensions`, `isExtensible`, `freeze` and `isFrozen`
 //!   (appended by clj-quickjs-122).
+//! * `keys`: own-property key enumeration, `Object.keys` and
+//!   `Object.getOwnPropertyNames` (appended by clj-quickjs-123).
 
 pub mod asm;
 pub(crate) mod builtin;
@@ -36,6 +38,7 @@ pub(crate) mod function;
 pub mod instr;
 pub(crate) mod integrity;
 pub mod intrinsics;
+pub(crate) mod keys;
 pub(crate) mod native;
 pub(crate) mod property;
 pub(crate) mod prototype;

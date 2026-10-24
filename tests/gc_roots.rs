@@ -753,8 +753,9 @@ fn realm_intrinsics_retain() {
     // (`Array.prototype` and its `toString` and `constructor` too,
     // clj-quickjs-118, `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119,
     // `getPrototypeOf`, `setPrototypeOf` and `create`, clj-quickjs-121, and
-    // `preventExtensions`, `isExtensible`, `freeze` and `isFrozen`, clj-quickjs-122.)
-    assert_eq!(rt.heap_usage().objects.builtin, 15);
+    // `preventExtensions`, `isExtensible`, `freeze` and `isFrozen`, clj-quickjs-122,
+    // and `keys` and `getOwnPropertyNames`, clj-quickjs-123.)
+    assert_eq!(rt.heap_usage().objects.builtin, 17);
     assert_eq!(rt.heap_usage().objects.plain, 2);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

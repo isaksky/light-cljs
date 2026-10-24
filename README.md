@@ -2048,8 +2048,8 @@ Deferred:
   `UnsupportedOperand` until it becomes a stored accessor (clj-quickjs-120, then clj-quickjs-261);
   so do the prototypes of primitives (wrappers, clj-quickjs-72), functions and built-in
   functions (`Function.prototype`, clj-quickjs-102) and error objects (clj-quickjs-230), and
-  `Object.create`'s second argument (`Object.defineProperties`). `Object.getOwnPropertyNames`
-  (clj-quickjs-123) and extensibility (clj-quickjs-122) are their own pellets.
+  `Object.create`'s second argument (`Object.defineProperties`). Extensibility (clj-quickjs-122) and
+  `Object.getOwnPropertyNames` (clj-quickjs-123) have their own sections below.
 
 ### `Object.preventExtensions`, `isExtensible`, `freeze` and `isFrozen` (clj-quickjs-122)
 
@@ -2077,3 +2077,25 @@ Deferred:
 - `delete` on a non-extensible object (clj-quickjs-124) is not yet available; `Object.seal`,
   `Object.isSealed` and `Reflect` are not provided; error objects fail with `UnsupportedOperand`
   (clj-quickjs-230); accessor properties are clj-quickjs-120.
+
+### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
+
+Supported (`cargo test --test js_source own_property_key_order`, `cargo test --lib vm::keys`;
+decision record in `docs/architecture.md`, "Own-property keys"):
+
+- `Object.keys(o)` (enumerable keys) and `Object.getOwnPropertyNames(o)` (all string keys) return
+  a fresh array in ECMAScript order: array indices (`0 ..= 2^32 - 2`) ascending, then the other
+  names in creation order (an array's `length` first among them); holes and inherited properties
+  are not listed. Works on the running task's objects and arrays, embedder objects, built-in
+  objects and functions, and (`keys` only) function objects; values without JavaScript
+  properties list nothing. `undefined`/`null` throw a catchable `TypeError`.
+- The order is one helper (`vm::keys::own_property_keys`) for `for`-`in` (clj-quickjs-85) and
+  spread/rest copies to reuse.
+
+Deferred:
+
+- Primitive arguments (wrapper objects, clj-quickjs-72), error objects (clj-quickjs-230), and
+  `getOwnPropertyNames` of a function (own `length`/`name`, clj-quickjs-101) or of
+  `Object.prototype` (unstored `__proto__`, clj-quickjs-261) fail with `UnsupportedOperand`.
+  Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
+  `Object.entries`/`values`. Deleting and re-adding a key needs `delete` (clj-quickjs-124).

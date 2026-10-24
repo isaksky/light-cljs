@@ -28,9 +28,10 @@ exists (clj-quickjs-117; see "Built-in globals" under "Execution"), with
 `Object.defineProperty` and `Object.getOwnPropertyDescriptor` for data
 property attributes (clj-quickjs-119), and with `Object.getPrototypeOf`,
 `Object.setPrototypeOf`, `Object.create`, `o.__proto__` and a literal's
-`__proto__: value` for prototypes (clj-quickjs-121), and with
+`__proto__: value` for prototypes (clj-quickjs-121), with
 `Object.preventExtensions`, `Object.isExtensible`, `Object.freeze` and
-`Object.isFrozen` for extensibility (clj-quickjs-122).
+`Object.isFrozen` for extensibility (clj-quickjs-122), and with `Object.keys`
+and `Object.getOwnPropertyNames` for own-key enumeration (clj-quickjs-123).
 `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
@@ -427,8 +428,11 @@ checks left to later stages:
   with `Object.defineProperty` and read with
   `Object.getOwnPropertyDescriptor` (clj-quickjs-119); a descriptor with
   `get`/`set` fails with `UnsupportedOperand` until accessors exist
-  (clj-quickjs-120). Nothing reads `enumerable` yet (`for`-`in`,
-  `Object.keys`: clj-quickjs-85, -123).
+  (clj-quickjs-120). `Object.keys` lists only enumerable properties
+  (clj-quickjs-123); `for`-`in` is clj-quickjs-85. `Object.getOwnPropertyNames`
+  of a function (its own `length` and `name`, clj-quickjs-101) and of
+  `Object.prototype` (its unstored `__proto__`, clj-quickjs-261) fail with
+  `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist yet.
 - **Computed keys are primitives** (clj-quickjs-115, with the
   instructions of clj-quickjs-118). A key is converted by ToPropertyKey
   when the access runs, so for a write after the right-hand side has been
@@ -510,7 +514,9 @@ checks left to later stages:
 - **Built-in functions have no `Function.prototype` yet**
   (clj-quickjs-102): their own `length`, `name` (and for `Object`,
   `prototype`, `is`, `defineProperty`, `getOwnPropertyDescriptor`,
-  `getPrototypeOf`, `setPrototypeOf` and `create`) read normally, any other property read
+  `getPrototypeOf`, `setPrototypeOf`, `create`, `preventExtensions`,
+  `isExtensible`, `freeze`, `isFrozen`, `keys` and `getOwnPropertyNames`)
+  read normally, any other property read
   (`Object.call`, `Object.is.toString`) fails with `UnsupportedOperand`,
   and so does `Object.getPrototypeOf` of a function or built-in function.
   `Object(v)` of a number, string or boolean and
@@ -795,6 +801,7 @@ Executed, with JavaScript semantics:
 | `Object.preventExtensions(o)` (clj-quickjs-122) | makes the object or array `o` non-extensible and returns `o`; a primitive (or no argument) is returned unchanged. Its existing properties stay writable, configurable and redefinable; adding one fails: `o.y = 1` and `o[k] = 1` are a catchable `TypeError` ("cannot add property 'y': the object is not extensible") at the member expression in strict code and do nothing in sloppy code, `Object.defineProperty` with a new key is always a `TypeError`, and so is `Object.setPrototypeOf(o, p)` (or `o.__proto__ = p`) with a different `p`. On an array it also forbids new elements (existing ones stay writable). A function gets a property record (its `prototype` created first), after which it cannot be published; a published function is returned unchanged (already immutable). A built-in object is a `TypeError` (shared and immutable); vectors, maps and other values without JavaScript properties are returned unchanged; another task's object fails with `ForeignObject`, an error object with `UnsupportedOperand` (clj-quickjs-230) |
 | `Object.freeze(o)` (clj-quickjs-122) | `Object.preventExtensions(o)`, then every own property becomes non-writable and non-configurable (`enumerable` kept), array elements and `length` included; returns `o`. Writes of its properties are then rejected like other read-only properties (strict `TypeError` "cannot assign to read-only property 'x'", sloppy no-op), as are `a.length = n` and any index write on a frozen array; `Object.defineProperty` accepts only same-value redefinitions. Freezing is shallow and does not change ownership: a frozen object stays task-owned. Primitives, built-ins, functions and the other kinds as for `preventExtensions` |
 | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | `isExtensible`: the object's `[[Extensible]]` flag; `false` for a primitive (or no argument). `isFrozen`: `true` when the object is not extensible and no own property (elements and `length` included) is writable or configurable, however it got there; `true` for a primitive. A built-in object reports `true` / `false` (its descriptors are the standard ones; immutability comes from sharing). A function without a property record is extensible and not frozen; a published function, a vector, map, builder or other value without JavaScript properties is not extensible and frozen. Another task's object (or another task's function with a property record) fails with `ForeignObject`, an error object with `UnsupportedOperand` |
+| `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a new array (inheriting from `Array.prototype`) of the own string keys of `o`: `keys` the enumerable ones, `getOwnPropertyNames` all of them, in ECMAScript OrdinaryOwnPropertyKeys order: keys that are array indices (canonical integers `0 ..= 2^32 - 2`) ascending, then the other names in creation order (a redefinition keeps the first position; an array's `length` comes first among them). `Object.keys({b: 1, a: 2, 1: 3, 0: 4})` lists `0`, `1`, `b`, `a`; `Object.getOwnPropertyNames([ , 1])` lists `1`, `length` (holes are absent). Inherited properties are not listed. Built-in objects list their stored properties (`Object.keys(Object)` is empty); a function lists the enumerable properties assigned to it; vectors, maps and other values without JavaScript properties list none. `undefined`/`null` (or no argument) throw a catchable `TypeError`; a number, string or boolean (wrapper objects, clj-quickjs-72), an error object (clj-quickjs-230), and for `getOwnPropertyNames` a function (clj-quickjs-101) or `Object.prototype` (clj-quickjs-261) fail with `UnsupportedOperand`; another task's object with `ForeignObject` (`docs/architecture.md`, "Own-property keys") |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
@@ -1404,6 +1411,14 @@ let a = {x: 1}; let b = Object.create(a); Object.getPrototypeOf(b) === a && b.x 
 let c = {}; let e = Object.create(c); let r1 = false; try { Object.setPrototypeOf(c, e); } catch (err) { r1 = true; } r1;
 let n = Object.create(null); n.toString === undefined && Object.getPrototypeOf(Object.prototype) === null;
 let q = {y: 2}; let s = {__proto__: q}; let t = {}; t.__proto__ = q; s.y === 2 && t.__proto__ === q && ({}).__proto__ === Object.prototype;
+```
+
+Own-property keys (clj-quickjs-123); each line below evaluates to `true`:
+
+```js accept
+let k = Object.keys({b: 1, a: 2, 1: 3, 0: 4}); k.length === 4 && k[0] === "0" && k[1] === "1" && k[2] === "b" && k[3] === "a";
+let o = {a: 1}; Object.defineProperty(o, "h", {value: 2}); Object.keys(o).length === 1 && Object.getOwnPropertyNames(o)[1] === "h";
+let n = Object.getOwnPropertyNames([ , 1]); n.length === 2 && n[0] === "1" && n[1] === "length";
 ```
 
 ```js reject Invalid 2:17

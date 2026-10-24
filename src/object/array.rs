@@ -293,6 +293,14 @@ impl ArrayObject {
         })
     }
 
+    /// The present elements' indices with their `enumerable` attribute, in
+    /// ascending index order (own-key enumeration, clj-quickjs-123,
+    /// `crate::vm::keys`).
+    pub(crate) fn element_keys(&self) -> impl Iterator<Item = (u32, bool)> + '_ {
+        self.elements()
+            .map(|(index, _)| (index, self.element_flags(index).enumerable))
+    }
+
     /// The `length` property: writable (unless made read-only), not
     /// enumerable, not configurable.
     pub(crate) fn length_property(&self) -> Property {

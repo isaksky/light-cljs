@@ -1706,7 +1706,7 @@ moment (a leaf lock, never taken by the collector).
   through the realm; built-in functions get it as their `[[Prototype]]`.
   Until it exists, reading a property a built-in function does not have
   itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's objects (seventeen since clj-quickjs-122) and its interned names live as long as the
+- The realm's objects (nineteen since clj-quickjs-123) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -1925,8 +1925,8 @@ their call instruction like every built-in so far.
   replaces the `Accessor` outcome with real accessor definitions;
   `getOwnPropertyDescriptor` then reports `get`/`set` instead of
   `value`/`writable`.
-- `enumerable` is stored and reported but nothing enumerates yet
-  (`for`-`in`, `Object.keys`: clj-quickjs-85, -123).
+- `enumerable` is stored and reported; `Object.keys` enumerates with it
+  (clj-quickjs-123), and `for`-`in` (clj-quickjs-85) will.
 
 ## Function own properties (clj-quickjs-125)
 
@@ -2243,6 +2243,60 @@ so they run inside their call instruction.
   covers only its record's properties.
 - `Object.seal`/`isSealed` (not requested) would be the same two loops
   with `writable` left alone.
+## Own-property keys (clj-quickjs-123)
+
+Contract: `src/vm/keys.rs` (`own_property_keys`, `KeyFilter`, `OwnKey`,
+the `Object.keys` / `Object.getOwnPropertyNames` built-ins),
+`src/object/array.rs` (`ArrayObject::element_keys`), `src/vm/function.rs`
+(`property_record`). Semantics: `docs/grammar.md`, "Execution".
+
+**Decision.** Own-key order is computed when keys are enumerated, not kept
+by the storage. `own_property_keys` reads the target under one
+object-table lock, collecting array elements (already ascending: dense
+part, then sparse part), an array's `length`, and the interned keys of the
+ordinary store in creation order, each with its `enumerable` attribute.
+After the lock is released it names the interned keys in the property-key
+table, moves every name that is an array index (`array_index`) into the
+index list, sorts that list, and emits indices first, then the other
+names: ECMAScript OrdinaryOwnPropertyKeys (QuickJS
+`JS_GetOwnPropertyNamesInternal` and `num_keys_cmp` count and sort the
+same way). A key with no name would be a symbol (clj-quickjs-127) and is
+skipped, which is what both built-ins require. `for`-`in`
+(clj-quickjs-85, -86) and object spread/rest copies are expected to call
+`own_property_keys` with `KeyFilter::Enumerable` rather than walk storage
+themselves.
+
+`Object.keys` and `Object.getOwnPropertyNames` are `Builtin` variants
+appended to the realm's `Object` (nineteen intrinsics). Neither runs
+JavaScript, so both run inside their call instruction and allocate their
+result, a fresh array owned by the running task, last.
+
+**Alternatives considered.**
+
+- *Keep ordinary objects' entries sorted (indices first) on insertion*:
+  enumeration becomes a plain scan, but every insert of an index name
+  shifts entries and rebuilds the key index, and the creation order of the
+  remaining names must still be kept. Rejected: enumeration is rarer than
+  insertion, and an object with many index-named properties is usually an
+  array, whose elements are already in order.
+- *Cache each interned key's array-index value in the key table*: saves
+  parsing names on every enumeration but grows every key entry for a rare
+  case. Rejected for now; `array_index` is a bounded scan of at most ten
+  code units.
+
+**Consequences.**
+
+- `Object.getOwnPropertyNames` of a function fails with
+  `UnsupportedOperand` until functions have their own `length` and `name`
+  (clj-quickjs-101), and of `Object.prototype` until `__proto__` is stored
+  (clj-quickjs-261); `Object.keys` of either is exact, since none of the
+  missing properties is enumerable. Error objects fail until their
+  properties exist (clj-quickjs-230).
+- The `delete` operator (clj-quickjs-124) only has to remove the entry
+  (and rebuild the key index): a re-added key is pushed at the end, so it
+  then enumerates last.
+- `Object.create`'s second argument and `Object.defineProperties`, `Object.assign`,
+  `Object.entries`/`values` can use the same helper.
 
 ## QuickJS references and provenance
 
@@ -2721,3 +2775,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_object_preventExtensions`, `JS_PreventExtensions`, `js_object_seal`
   and `js_object_isSealed` were consulted only, for semantics. No code
   was copied.
+- `tests/js_source.rs` `own_property_key_order` (clj-quickjs-123): the
+  object literal and expected key list of `test_enum` (line 174) in
+  `research/quickjs/tests/test_builtin.js`, and the
+  `Object.getOwnPropertyNames(x).toString() === "0,length"` assertion of
+  `test_spread` (line 435) in `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8. Modified: the arrays are compared element by
+  element and by `length` instead of with `assert(tab, [...])` and
+  `toString` (clj-quickjs-39), and the spread `[ ...[ , ] ]` is written
+  `[ , 1]` (spread is its own pellet). The test carries the full notice.
+  `research/quickjs/quickjs.c` `JS_GetOwnPropertyNamesInternal`,
+  `num_keys_cmp`, `JS_GetOwnPropertyNames2`, `js_object_keys` and
+  `js_object_getOwnPropertyNames` were consulted only, for semantics. No
+  code was copied.

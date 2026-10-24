@@ -6530,7 +6530,8 @@ fn prototype_reflection() {
     truth(
         "let p = {x: 5}; let o = {}; let v = (o.__proto__ = p); \
          v === p && Object.getPrototypeOf(o) === p && o.x === 5 && o.__proto__ === p && \
-         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined",
+         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined && \
+         Object.getOwnPropertyNames(o).length === 0",
     );
     truth(
         "let p = {}; let o = Object.create(p); let v = (o.__proto__ = 1); \
@@ -6608,11 +6609,12 @@ fn prototype_reflection() {
         "accessor",
     );
 
-    // `__proto__: value` in a literal.
+    // `__proto__: value` in a literal; its own names list no `__proto__`
+    // (clj-quickjs-123).
     truth(
         "let p = {x: 3}; let o = {__proto__: p, y: 4}; \
          o.x === 3 && o.y === 4 && Object.getPrototypeOf(o) === p && \
-         Object.getOwnPropertyDescriptor(o, '__proto__') === undefined",
+         Object.getOwnPropertyNames(o).length === 1 && Object.getOwnPropertyNames(o)[0] === 'y'",
     );
     truth("let p = {x: 3}; ({\"__proto__\": p}).x === 3");
     truth("Object.getPrototypeOf({__proto__: null}) === null");
@@ -6941,6 +6943,234 @@ fn object_extensibility() {
         r#"let f = Object.freeze({x: 1}); let s = false; try { f.x = 2; } catch (e) { s = f.x === 1; } s && Object.isFrozen(f) && !Object.isFrozen({});"#,
         r#"let q = Object.freeze([1, 2]); let t = false; try { q[0] = 3; } catch (e) { t = q[0] === 1; } t && Object.isFrozen(q);"#,
         r#"Object.isExtensible(1) === false && Object.preventExtensions(1) === 1 && Object.isFrozen(__rt.vector());"#,
+    ] {
+        truth(src);
+    }
+}
+
+/// Own-property key enumeration (clj-quickjs-123; `src/vm/keys.rs`):
+/// `Object.keys` and `Object.getOwnPropertyNames` list array indices in
+/// ascending order, then the other string keys in creation order. The
+/// first row is `test_enum` (line 174) of
+/// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8 (the
+/// `assert(tab, [...])` written as a Rust comparison of the joined
+/// elements and the length, since `Array.prototype.toString` is
+/// clj-quickjs-39), and the `[ , 1]` row follows the
+/// `Object.getOwnPropertyNames(x)` assertion of `test_spread` (line 435) of
+/// `research/quickjs/tests/test_language.js` without the spread; see
+/// `docs/architecture.md`, "QuickJS references and provenance". The rest
+/// are synthetic fixtures, not light-cljs output.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn own_property_key_order() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    // `setup` then the key array `expr`, as "length:k0,k1,...," with a `!`
+    // after any element that is not a string.
+    let listed = |setup: &str, expr: &str| {
+        string(&format!(
+            "{setup} let k = {expr}; let s = k.length + ':'; \
+             for (let i = 0; i < k.length; i++) {{ \
+               s = s + k[i] + (typeof k[i] === 'string' ? ',' : '!,'); \
+             }} s"
+        ))
+    };
+    let fails = |src: &str, kind: VmErrorKind, needle: &str| {
+        let (k, message, ..) = failure_at(src);
+        assert_eq!(k, kind, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    };
+
+    // The upstream rows.
+    assert_eq!(
+        listed(
+            "var a, tab; \
+             a = {x:1, \
+                  \"18014398509481984\": 1, \
+                  \"9007199254740992\": 1, \
+                  \"9007199254740991\": 1, \
+                  \"4294967296\": 1, \
+                  \"4294967295\": 1, \
+                  y:1, \
+                  \"4294967294\": 1, \
+                  \"1\": 2}; \
+             tab = Object.keys(a);",
+            "tab"
+        ),
+        "9:1,4294967294,x,18014398509481984,9007199254740992,9007199254740991,\
+         4294967296,4294967295,y,"
+    );
+    assert_eq!(
+        listed("", "Object.getOwnPropertyNames([ , 1])"),
+        "2:1,length,"
+    );
+
+    // Index keys first, ascending; the rest in creation order.
+    assert_eq!(
+        listed("", "Object.keys({b: 1, a: 2, 1: 3, 0: 4})"),
+        "4:0,1,b,a,"
+    );
+    assert_eq!(
+        listed(
+            "let o = {}; o.x = 1; o[2] = 1; o['1'] = 1; o[-1] = 1; o[1.5] = 1; o['01'] = 1; \
+             o[4294967295] = 1; o[4294967294] = 1;",
+            "Object.keys(o)"
+        ),
+        "8:1,2,4294967294,x,-1,1.5,01,4294967295,"
+    );
+    // Above the key-index threshold of `crate::object` too.
+    let expected: String = (1..=20)
+        .map(|i| format!("{i},"))
+        .chain((1..=20).rev().map(|i| format!("p{i},")))
+        .collect();
+    assert_eq!(
+        listed(
+            "let o = {}; for (let i = 20; i > 0; i--) { o['p' + i] = i; o[i] = i; }",
+            "Object.keys(o)"
+        ),
+        format!("40:{expected}")
+    );
+    // A redefinition keeps the first position; inherited keys are not own.
+    assert_eq!(
+        listed(
+            "let o = {a: 1, b: 2}; o.a = 3; Object.defineProperty(o, 'a', {value: 4});",
+            "Object.keys(o)"
+        ),
+        "2:a,b,"
+    );
+    assert_eq!(
+        listed("let o = Object.create({a: 1}); o.b = 2;", "Object.keys(o)"),
+        "1:b,"
+    );
+
+    // Non-enumerable properties are names but not keys.
+    let hidden = "let o = {a: 1}; Object.defineProperty(o, 'h', {value: 2}); o.z = 3;";
+    assert_eq!(listed(hidden, "Object.keys(o)"), "2:a,z,");
+    assert_eq!(listed(hidden, "Object.getOwnPropertyNames(o)"), "3:a,h,z,");
+    // Freezing (clj-quickjs-122) keeps `enumerable`, so the keys stay.
+    assert_eq!(
+        listed("", "Object.keys(Object.freeze({a: 1, 1: 2}))"),
+        "2:1,a,"
+    );
+    assert_eq!(listed("", "Object.keys(Object.freeze([5, , 6]))"), "2:0,2,");
+
+    // Arrays: elements (holes absent, dense then sparse), `length`, names.
+    assert_eq!(listed("", "Object.keys([1, , 3])"), "2:0,2,");
+    let array = "let a = [1]; a.x = 2; a[5] = 3; a[4294967294] = 4; a[3000] = 5;";
+    assert_eq!(
+        listed(array, "Object.getOwnPropertyNames(a)"),
+        "6:0,5,3000,4294967294,length,x,"
+    );
+    assert_eq!(listed(array, "Object.keys(a)"), "5:0,5,3000,4294967294,x,");
+    assert_eq!(
+        listed(
+            "let a = [1, 2]; Object.defineProperty(a, 0, {enumerable: false});",
+            "Object.keys(a)"
+        ),
+        "1:1,"
+    );
+    assert_eq!(listed("", "Object.getOwnPropertyNames([])"), "1:length,");
+
+    // Results are fresh arrays.
+    truth(
+        "let o = {a: 1}; let k = Object.keys(o); \
+         k !== Object.keys(o) && Object.getPrototypeOf(k) === Object.getPrototypeOf([]) && \
+         (k[1] = 'b', k.length === 2) && Object.keys(o).length === 1",
+    );
+    truth(
+        "Object.keys.length === 1 && Object.keys.name === 'keys' && \
+         Object.getOwnPropertyNames.length === 1 && \
+         Object.getOwnPropertyNames.name === 'getOwnPropertyNames'",
+    );
+
+    // Built-in objects and functions.
+    assert_eq!(listed("", "Object.keys(Object)"), "0:");
+    assert_eq!(listed("", "Object.keys(Object.prototype)"), "0:");
+    truth(
+        "let n = Object.getOwnPropertyNames(Object); let has = false; \
+         for (let i = 0; i < n.length; i++) { if (n[i] === 'keys') has = true; } \
+         n[0] === 'length' && n[1] === 'name' && n[2] === 'prototype' && has",
+    );
+    fails(
+        "Object.getOwnPropertyNames(Object.prototype)",
+        VmErrorKind::UnsupportedOperand,
+        "__proto__",
+    );
+    // Function objects: their record's enumerable properties.
+    assert_eq!(
+        listed(
+            "let f = function () {}; f.b = 1; f.a = 2; f.prototype;",
+            "Object.keys(f)"
+        ),
+        "2:b,a,"
+    );
+    assert_eq!(listed("", "Object.keys(() => 1)"), "0:");
+    fails(
+        "Object.getOwnPropertyNames(function () {})",
+        VmErrorKind::UnsupportedOperand,
+        "length and name",
+    );
+    // Runtime values without JavaScript properties have no keys.
+    assert_eq!(listed("", "Object.keys(__rt.vector(1, 2))"), "0:");
+
+    // ToObject.
+    for call in ["Object.keys", "Object.getOwnPropertyNames"] {
+        for arg in ["null", "undefined", ""] {
+            fails(&format!("{call}({arg})"), VmErrorKind::TypeError, "convert");
+        }
+        assert_eq!(
+            string(&format!(
+                "let r = 'none'; try {{ {call}(null); }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught"
+        );
+        fails(
+            &format!("{call}('ab')"),
+            VmErrorKind::UnsupportedOperand,
+            "wrapper",
+        );
+        fails(
+            &format!("{call}(1)"),
+            VmErrorKind::UnsupportedOperand,
+            "wrapper",
+        );
+    }
+    fails(
+        "let k; try { null.x; } catch (e) { k = Object.keys(e); } k",
+        VmErrorKind::UnsupportedOperand,
+        "error object",
+    );
+
+    // Deleting and re-adding a key moves it to the end once `delete`
+    // executes (clj-quickjs-124); until then the program is rejected.
+    let e = compile_script(
+        "t",
+        "let o = {a: 1, b: 2}; delete o.a; o.a = 3; Object.keys(o);",
+    )
+    .unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "let k = Object.keys({b: 1, a: 2, 1: 3, 0: 4}); k.length === 4 && k[0] === \"0\" && k[1] === \"1\" && k[2] === \"b\" && k[3] === \"a\";",
+        "let o = {a: 1}; Object.defineProperty(o, \"h\", {value: 2}); Object.keys(o).length === 1 && Object.getOwnPropertyNames(o)[1] === \"h\";",
+        "let n = Object.getOwnPropertyNames([ , 1]); n.length === 2 && n[0] === \"1\" && n[1] === \"length\";",
     ] {
         truth(src);
     }

@@ -242,6 +242,12 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
     .unwrap_or(Err(Fault::Internal("function object was reclaimed")))
 }
 
+/// The function's property record, if it has one (own-key enumeration,
+/// `crate::vm::keys`, clj-quickjs-123).
+pub(crate) fn property_record(heap: &Heap, function: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    info(heap, function).map(|info| info.record)
+}
+
 fn exhausted() -> Fault {
     Fault::OutOfMemory("heap object table exhausted")
 }
