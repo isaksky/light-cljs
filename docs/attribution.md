@@ -251,6 +251,7 @@ same test file. Other cases are synthetic fixtures, not light-cljs output.
 `json_parse_value` and `json_next_token` in `research/quickjs/quickjs.c` at
 that revision were consulted as semantic references. The iterative Rust
 parser and continuation were written afresh; no C implementation was copied.
+
 ## Symbol primitives (clj-quickjs-127)
 
 `tests/js_source.rs::symbol_values` adapts the initial symbol-key property and

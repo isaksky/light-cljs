@@ -2678,6 +2678,7 @@ Callable revivers explicitly throw TypeError; reviver traversal and
 JSON.stringify remain deferred. See `docs/grammar.md` for details.
 
 Tests: `cargo test --test js_source json_parse`.
+
 ### Symbol primitives (clj-quickjs-127)
 
 `Symbol()` / `Symbol(description)` produce immutable, publishable primitives
