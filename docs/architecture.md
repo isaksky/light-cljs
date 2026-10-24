@@ -4875,10 +4875,9 @@ later cancellation cannot hide an oversized intermediate. BigInt/Number and
 other non-string primitive mixtures throw TypeError. BigInt ToString and the
 remaining numeric operators are supported by the later BigInt sections below.
 
-The Number constructor keeps a separate explicit UnsupportedOperand guard for
-BigInt until clj-quickjs-203: `Number(bigint)` is permitted by JavaScript and
-must not inherit the TypeError of unary plus/ToNumber. This guard also applies
-after an object's resumable ToPrimitive conversion and during construction.
+The Number constructor explicitly converts BigInt to binary64 (clj-quickjs-203),
+including after an object's resumable ToPrimitive conversion and during
+construction. Unary plus and other implicit ToNumber paths reject BigInt.
 
 ## Locale identifiers (clj-quickjs-210)
 
@@ -5531,3 +5530,26 @@ finite recorded transitions range from 1847-12-01T00:01:15Z through
 2037-11-01T10:00:00Z; individual zone ranges vary, and fixed zones contain only
 a sentinel record. Dates outside those ranges use the documented first/last
 offset policy, which may differ from real historical or future civil time.
+
+## BigInt to binary64 conversion (clj-quickjs-203)
+
+`JsBigInt::to_number` borrows the existing canonical sign/magnitude view,
+using stack scratch for inline values. Values of at most 53 bits convert
+exactly. Larger values extract the top 53 bits, a guard bit and a sticky bit
+from all remaining low limbs, then round once with ties to even. Significand
+carry advances the exponent, including overflow to signed Infinity. Magnitudes
+above 1024 bits immediately return signed Infinity; otherwise at most 32 limbs
+are inspected, without copying or allocating magnitude storage. Zero is +0.
+This bounded leaf computation needs no additional native continuation or heap
+roots. Exact BigInt/Number comparisons continue using `cmp_number`, without
+rounding either mathematical operand.
+
+`primitive_constructor` dispatches BigInt directly to this helper for both
+Number calls and construction, including after the existing resumable
+ToPrimitive native frame. Other primitives continue through `to_number`, whose
+BigInt TypeError is unchanged. All existing Math operations, global numeric
+predicates, Number methods, Date numeric setters and typed-array stores retain
+that rejection; `docs/grammar.md` lists the numeric entry points. Tests exercise
+rounding across every binary64 integer exponent, the overflow midpoint,
+Number wrappers and callback continuations across yields, dependency waits,
+collection and worker migration. No builtin/realm entries or heap kinds change.

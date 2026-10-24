@@ -156,7 +156,8 @@ pub(crate) enum Builtin {
     /// `Object.getOwnPropertyNames` (QuickJS
     /// `js_object_getOwnPropertyNames`; clj-quickjs-123).
     ObjectGetOwnPropertyNames,
-    /// `Number` (clj-quickjs-72): ToNumber, or a wrapper when constructed.
+    /// `Number` (clj-quickjs-72/-203): ToNumeric then round BigInt to binary64,
+    /// or a wrapper when constructed.
     Number,
     /// `Number.prototype.toString` (QuickJS `js_number_toString`;
     /// clj-quickjs-73/-149), radix 2..36.
@@ -1284,11 +1285,9 @@ pub(crate) fn primitive_constructor(
             _ => return Err(Fault::TypeError("cannot convert to BigInt".into())),
         },
         Builtin::Number => Value::Number(match args.first() {
-            // Number permits BigInt explicitly, unlike ToNumber. Keep the
-            // deferred conversion visible until clj-quickjs-203 implements it.
-            Some(Value::BigInt(_)) => {
-                return Err(Fault::Unsupported("Number(BigInt) is not supported".into()));
-            }
+            // Number uses ToNumeric and explicitly permits BigInt. All
+            // implicit numeric conversions keep using rejecting ToNumber.
+            Some(Value::BigInt(value)) => value.to_number(),
             Some(value) => to_number(value)?,
             None => 0.0,
         }),

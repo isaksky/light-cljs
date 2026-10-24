@@ -1056,7 +1056,7 @@ Executed, with JavaScript semantics:
 | `Function.prototype`, `Function` (clj-quickjs-102) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` are not supported yet (clj-quickjs-111): the call fails with `UnsupportedOperand`, `new` with a `TypeError` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
-| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumber / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper exposes virtual own `length` and code-unit indices (clj-quickjs-142), as described above. Other keys use ordinary storage. Boolean wrappers are deferred; Number predicates and constants are described below (clj-quickjs-147). |
+| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumeric with BigInt rounded to binary64 (clj-quickjs-203) / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper exposes virtual own `length` and code-unit indices (clj-quickjs-142), as described above. Other keys use ordinary storage. Boolean wrappers are deferred; Number predicates and constants are described below (clj-quickjs-147). |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
 | `__rt.name(args)` | the private VM operation of that intrinsic (see "Reserved intrinsic binding") |
 | Number predicates and constants (clj-quickjs-147) | globals `isNaN(v)` and `isFinite(v)` apply ToNumber, including resumable ToPrimitive with number hint for objects. `Number.isNaN`, `.isFinite`, `.isInteger` and `.isSafeInteger` return false for non-numbers without coercion. Integers must be finite; safe integers additionally have magnitude at most 9007199254740991. Each function has length 1. `Number` owns non-writable, non-enumerable, non-configurable constants `EPSILON` (2^-52), `MIN_VALUE` (smallest positive binary64 subnormal), `MAX_VALUE` (largest finite binary64), `MAX_SAFE_INTEGER` (2^53 - 1), `MIN_SAFE_INTEGER` (-(2^53 - 1)), `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY`. |
@@ -3210,9 +3210,9 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 `Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
 BigInt primitive; `for-in` over it performs no iterations.
 
-Explicit gaps: JavaScript string/Number conversions,
-wrappers, literal property names and BigInt property keys remain assigned to
-later pellets. Available but deferred operators/conversions throw
+Explicit gaps: wrappers and literal property names remain deferred.
+JavaScript string/Number conversions and BigInt property keys are supported
+by clj-quickjs-202/-203 below. Available but deferred operators/conversions throw
 UnsupportedOperand naming BigInt; mixing BigInt and Number in arithmetic
 throws TypeError. `JSON.stringify` rejects a BigInt with TypeError. Embedder
 inspection supports exact decimal digits and sign/magnitude independently of
@@ -3537,8 +3537,8 @@ yield through native continuations. Each advance handles at most 256 bounded
 scan/limb steps (a decimal group reads at most nine digits); an existing string
 rope may first flatten in linear time.
 
-Explicit gaps: BigInt wrapper objects, `Number(bigint)` and `asIntN`/`asUintN`
-remain with their sibling pellets. Prototype conversion is supported below.
+Explicit gaps: BigInt wrapper objects and `asIntN`/`asUintN` remain with their
+sibling pellets. Prototype and Number conversion are supported below.
 
 ### Execution: Date UTC field access (clj-quickjs-181)
 
@@ -3767,3 +3767,38 @@ before the jump. Explicit fixed-second offsets are also available to embedders.
 Explicit gaps: Date() string calls, parsing, non-ISO formatting, legacy year
 methods and Date's default primitive conversion remain deferred. No engine
 operation reads the OS clock or zone.
+
+### BigInt to Number and implicit ToNumber (clj-quickjs-203)
+
+Lexical grammar: existing BigInt literals and ordinary calls suffice; no new
+syntax. Execution: `Number(bigint)` and `new Number(bigint)` round the exact
+integer once to the nearest binary64 value, with ties to even. Carry into the
+next binade is supported; crossing the finite rounding boundary returns signed
+Infinity. BigInt zero converts to positive zero. Objects first complete
+resumable ToPrimitive with number hint, including getters, waits and fallback
+to `toString`, then use the same conversion.
+
+Implicit ToNumber continues to throw catchable TypeError for BigInt primitives
+and for BigInts returned by ToPrimitive. The currently implemented numeric
+intrinsic entry points are:
+
+| Entry point | BigInt rejection |
+| --- | --- |
+| `Math.floor`, `ceil`, `abs`, `imul`, `fround`, `hypot`, `pow`, `sqrt`, `log2` | every consumed numeric operand, in argument order; even `hypot(Infinity, 1n)` throws |
+| global `isNaN`, `isFinite` | first argument; `Number.isNaN`, `isFinite`, `isInteger`, `isSafeInteger` instead return false without coercion |
+| `Number.prototype.toString`, `valueOf` | BigInt receiver fails Number branding; `toString` also rejects a BigInt radix |
+| `Date` construction, `Date.UTC`, `setTime`, `setUTCFullYear`, `setUTCMonth`, `setUTCDate`, `setUTCHours`, `setUTCMinutes`, `setUTCSeconds`, `setUTCMilliseconds`, `setFullYear`, `setMonth`, `setDate`, `setHours`, `setMinutes`, `setSeconds`, `setMilliseconds` | each numeric field; a setter failure leaves the date unchanged unless argument coercion itself mutates it |
+| `Int8Array`, `Uint8Array`, `Uint8ClampedArray`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Float32Array`, `Float64Array` | lengths/offsets, source elements, indexed stores, `set` source elements/offset and `fill` value/start/end |
+| `ArrayBuffer`, `transfer`, `slice` | byte lengths and slice bounds |
+| `String.fromCharCode`, `fromCodePoint`; string `charAt`, `charCodeAt`, `codePointAt`, `indexOf`, `lastIndexOf`, `substring`, `slice`, `padStart`, `padEnd`, `split` | numeric code units/points, positions, target lengths and split limit |
+| global/Number `parseInt` | radix; its text argument and `parseFloat` use ToString and accept BigInt |
+| `BigInt.prototype.toString` | numeric radix |
+| generic array `push`, `join`, `toLocaleString`; function `apply`/`Reflect.apply`; `String.raw`; `Intl.getCanonicalLocales` | array-like `length` through ToLength; array `length` assignment/definition also rejects BigInt |
+| RegExp `exec`, `test`, and string replacement using global/sticky RegExp | `lastIndex` through ToLength when consumed |
+
+Ignored extra arguments are not coerced. Unary plus also rejects BigInt;
+BigInt arithmetic and comparisons retain their separate ToNumeric/exact-value
+rules. `Number` is the explicit numeric conversion exception.
+
+Explicit gaps: BigInt wrapper objects, `asIntN`/`asUintN`, and BigInt typed-array
+storage remain deferred. This adds no Number prototype methods or Math methods.

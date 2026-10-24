@@ -77,6 +77,55 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    /// Round to binary64 once, to nearest with ties to even. Overflow rounds
+    /// to signed infinity; canonical BigInt zero always gives positive zero.
+    /// Borrow the existing magnitude, and examine at most 1024 bits: larger
+    /// magnitudes are already beyond the finite binary64 range.
+    pub fn to_number(&self) -> f64 {
+        let mut small = [0; 2];
+        let (negative, limbs) = self.magnitude(&mut small);
+        let Some(high) = limbs.last() else {
+            return 0.0;
+        };
+        let bits = (limbs.len() - 1) * 32 + (32 - high.leading_zeros() as usize);
+        let sign = u64::from(negative) << 63;
+        if bits > 1024 {
+            return f64::from_bits(sign | f64::INFINITY.to_bits());
+        }
+        if bits <= 53 {
+            let integer = limbs[0] as u64 | ((limbs.get(1).copied().unwrap_or(0) as u64) << 32);
+            return if negative {
+                -(integer as f64)
+            } else {
+                integer as f64
+            };
+        }
+
+        let shift = bits - 53;
+        let bit = |index: usize| (limbs[index / 32] >> (index % 32)) & 1;
+        let mut significand = 0u64;
+        for index in (shift..bits).rev() {
+            significand = (significand << 1) | u64::from(bit(index));
+        }
+        let guard = shift - 1;
+        let sticky = limbs[..guard / 32].iter().any(|limb| *limb != 0)
+            || limbs[guard / 32] & ((1u32 << (guard % 32)) - 1) != 0;
+        if bit(guard) != 0 && (sticky || significand & 1 != 0) {
+            significand += 1;
+        }
+        let mut exponent = bits - 1;
+        if significand == 1u64 << 53 {
+            significand >>= 1;
+            exponent += 1;
+        }
+        if exponent > 1023 {
+            return f64::from_bits(sign | f64::INFINITY.to_bits());
+        }
+        f64::from_bits(
+            sign | (((exponent + 1023) as u64) << 52) | (significand & ((1u64 << 52) - 1)),
+        )
+    }
+
     /// Convert an integral finite binary64 Number exactly, including values
     /// outside i64 and canonical negative zero. Callers validate integrality.
     pub fn from_integral_number(number: f64) -> Option<Self> {
@@ -1026,6 +1075,31 @@ impl fmt::Display for JsBigInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_rounding_at_every_binary64_integer_exponent() {
+        // Independent binary64 bit-pattern expectations exercise guard and
+        // sticky bits on both sides of every limb boundary, including overflow.
+        for exponent in 53..=1023 {
+            for fraction in [0, 1, 2, 0x5_5555_5555_5555, (1u64 << 52) - 1] {
+                let bits = ((exponent + 1023) << 52) | fraction;
+                let number = f64::from_bits(bits);
+                let integer = JsBigInt::from_integral_number(number).unwrap();
+                assert_eq!(integer.to_number().to_bits(), bits);
+                let half = JsBigInt::from(1)
+                    .checked_shl(&JsBigInt::from((exponent - 53) as i64))
+                    .unwrap();
+                let tie = integer.checked_add(&half).unwrap();
+                let even = bits + (bits & 1);
+                assert_eq!(tie.to_number().to_bits(), even, "{exponent}, {fraction}");
+                assert_eq!(tie.negated().to_number().to_bits(), even | (1u64 << 63));
+                let below = tie.checked_sub(&JsBigInt::from(1)).unwrap();
+                let above = tie.checked_add(&JsBigInt::from(1)).unwrap();
+                assert_eq!(below.to_number().to_bits(), bits);
+                assert_eq!(above.to_number().to_bits(), bits + 1);
+            }
+        }
+    }
 
     #[test]
     fn radix_format_matches_unsigned_arithmetic() {

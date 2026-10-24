@@ -411,18 +411,11 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// Number conversion and wrapper objects.
+/// Synthetic fixtures, not light-cljs output. BigInt wrapper objects remain
+/// deferred; Number conversion is covered separately below.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "Number(1n)",
-        "new Number(1n)",
-        "Number({ valueOf() { return 1n; } })",
-        "new Number({ valueOf() { return 1n; } })",
-        "try { Number(1n); } catch (e) { 99; }",
-        "try { new Number(1n); } catch (e) { 99; }",
-        "try { Number({ valueOf() { return 1n; } }); } catch (e) { 99; }",
         "Object(1n)",
         "Object.prototype.valueOf.call(1n)",
         "Object.prototype.toString.call(1n)",
@@ -17107,5 +17100,242 @@ fn string_replace_capture_storage_limit() {
         "let r = new RegExp(''.padEnd(1000, '()'), 'g'); let calls = 0; let text = ''.padEnd(10, 'a'); text.replace(r, () => {calls++; return '';}) === text && calls === 11 && r.lastIndex === 0",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The first two rows adapt
+/// research/quickjs/tests/test_bigint.js::test_bigint3 at 7d1c13c5d8f8.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_to_number_conversion() {
+    for src in [
+        "Number(1n) === 1 && new Number(1n).valueOf() === 1",
+        "Number({ valueOf() { return 1n; } }) === 1 && new Number({ valueOf() { return 1n; } }).valueOf() === 1",
+        "let a = 0; let b = 0; let c = 0; try { a = Number(1n); } catch(e) { a = 99; } try { b = new Number(1n).valueOf(); } catch(e) { b = 99; } try { c = Number({valueOf() { return 1n; }}); } catch(e) { c = 99; } a === 1 && b === 1 && c === 1",
+        "Number(0xffffffffffffffffn) === 18446744073709552000",
+        "Number(-0xffffffffffffffffn) === -18446744073709552000",
+        "Number(9007199254740993n) === 9007199254740992",
+        "Number(9007199254740995n) === 9007199254740996",
+        "Number(18446744073709551615n) === 18446744073709551616",
+        "Number(2n ** 1024n) === Infinity && Number(-(2n ** 1024n)) === -Infinity",
+        "Number(0n) === 0 && 1 / Number(0n) === Infinity && 1 / Number(-0n) === Infinity",
+        "Number(123n) === 123 && Number(-123n) === -123",
+        "Number(-9007199254740993n) === -9007199254740992 && Number(-9007199254740995n) === -9007199254740996",
+        "Number(9223372036854775807n) === 9223372036854775808 && Number(-9223372036854775808n) === -9223372036854775808",
+        "Number((1n << 100n) + (1n << 47n)) === 2 ** 100",
+        "Number((1n << 100n) + (1n << 47n) + 1n) === 2 ** 100 + 2 ** 48",
+        "Number((1n << 100n) + (1n << 47n) - 1n) === 2 ** 100",
+        "Number((1n << 100n) + (3n << 47n)) === 2 ** 100 + 2 ** 49",
+        "Number((1n << 100n) - (1n << 46n)) === 2 ** 100",
+        "Number((1n << 100n) - (1n << 46n) - 1n) === 2 ** 100 - 2 ** 47",
+        "let max = ((1n << 53n) - 1n) << 971n; Number(max) === Number.MAX_VALUE && Number(max + (1n << 970n) - 1n) === Number.MAX_VALUE",
+        "let boundary = (1n << 1024n) - (1n << 970n); Number(boundary) === Infinity && Number(-boundary) === -Infinity && Number(-boundary + 1n) === -Number.MAX_VALUE",
+        "Number(1n << 10000n) === Infinity && Number(-(1n << 10000n)) === -Infinity",
+        "new Number(9007199254740995n).valueOf() === 9007199254740996",
+        "let calls = 0; let o = {valueOf() { calls++; return 9007199254740993n; }, toString() { throw 99; }}; Number(o) === 9007199254740992 && new Number(o).valueOf() === 9007199254740992 && calls === 2",
+        "let calls = 0; Number({valueOf() { calls++; return {}; }, toString() { calls++; return 123n; }}) === 123 && calls === 2",
+        "Math.ceil(Number(123n) / 10) === 13",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Every currently implemented
+/// Math operation, Number branding/predicates, Date numeric entry point and
+/// typed-array storage kind preserves the implicit ToNumber rejection.
+#[test]
+fn bigint_number_only_intrinsics_reject_implicit_conversion() {
+    let mut expressions = vec![
+        "+1n".to_owned(),
+        "isNaN(1n)".to_owned(),
+        "isFinite(1n)".to_owned(),
+        "Math.pow(1, 1n)".to_owned(),
+        "Math.imul(1, 1n)".to_owned(),
+        "Math.hypot(Infinity, 1n)".to_owned(),
+        "Number.prototype.toString.call(1n)".to_owned(),
+        "Number.prototype.valueOf.call(1n)".to_owned(),
+        "(123).toString(1n)".to_owned(),
+        "new Number(123).toString({valueOf() { return 1n; }})".to_owned(),
+        "new Date(1n)".to_owned(),
+        "new Date(2000, 1n)".to_owned(),
+        "Date.UTC(2000, 1n)".to_owned(),
+        "new Date(0).setTime(1n)".to_owned(),
+        "new Date(0).setUTCHours(1, 1n)".to_owned(),
+        "new Date(0).setHours(1, 1n)".to_owned(),
+        "new ArrayBuffer(1n)".to_owned(),
+        "new ArrayBuffer(8).slice(1n)".to_owned(),
+        "new ArrayBuffer(8).transfer(1n)".to_owned(),
+        "String.fromCharCode(1n)".to_owned(),
+        "String.fromCodePoint(1n)".to_owned(),
+        "'a'.charAt(1n)".to_owned(),
+        "'a'.charCodeAt(1n)".to_owned(),
+        "'a'.codePointAt(1n)".to_owned(),
+        "'a'.indexOf('a', 1n)".to_owned(),
+        "'a'.lastIndexOf('a', 1n)".to_owned(),
+        "'a'.substring(1n)".to_owned(),
+        "'a'.slice(1n)".to_owned(),
+        "'a'.padStart(1n)".to_owned(),
+        "'a'.padEnd(1n)".to_owned(),
+        "'a'.split('', 1n)".to_owned(),
+        "parseInt('10', 1n)".to_owned(),
+        "Number.parseInt('10', 1n)".to_owned(),
+        "BigInt.prototype.toString.call(123n, 1n)".to_owned(),
+        "let a = []; a.length = 1n".to_owned(),
+        "Object.defineProperty([], 'length', {value: 1n})".to_owned(),
+        "Array.prototype.push.call({length: 1n}, 0)".to_owned(),
+        "Array.prototype.join.call({length: 1n})".to_owned(),
+        "Array.prototype.toLocaleString.call({length: 1n})".to_owned(),
+        "(function() {}).apply(null, {length: 1n})".to_owned(),
+        "Reflect.apply(function() {}, null, {length: 1n})".to_owned(),
+        "String.raw({raw: {length: 1n}})".to_owned(),
+        "Intl.getCanonicalLocales({length: 1n})".to_owned(),
+        "let r = /a/g; r.lastIndex = 1n; r.exec('a')".to_owned(),
+        "let r = /a/y; r.lastIndex = 1n; r.test('a')".to_owned(),
+        "let r = /a/y; r.lastIndex = 1n; 'a'.replace(r, '')".to_owned(),
+    ];
+    for name in [
+        "floor", "ceil", "abs", "fround", "sqrt", "log2", "pow", "imul", "hypot",
+    ] {
+        expressions.push(format!("Math.{name}(1n)"));
+        expressions.push(format!("Math.{name}({{valueOf() {{ return 1n; }} }})"));
+    }
+    for name in [
+        "setUTCFullYear",
+        "setUTCMonth",
+        "setUTCDate",
+        "setUTCHours",
+        "setUTCMinutes",
+        "setUTCSeconds",
+        "setUTCMilliseconds",
+        "setFullYear",
+        "setMonth",
+        "setDate",
+        "setHours",
+        "setMinutes",
+        "setSeconds",
+        "setMilliseconds",
+    ] {
+        expressions.push(format!("new Date(0).{name}(1n)"));
+        expressions.push(format!(
+            "new Date(NaN).{name}({{valueOf() {{ return 1n; }} }})"
+        ));
+    }
+    for name in [
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+    ] {
+        for body in [
+            "new TYPE(1n)",
+            "new TYPE({length: 1n})",
+            "new TYPE(new ArrayBuffer(8), 1n)",
+            "new TYPE([1n])",
+            "new TYPE(1)[0] = 1n",
+            "new TYPE(1)[0] = {valueOf() { return 1n; }}",
+            "new TYPE(1).set([1n])",
+            "new TYPE(1).set([], 1n)",
+            "new TYPE(1).fill(1n)",
+            "new TYPE(1).fill(0, 1n)",
+            "new TYPE(1).fill(0, 0, 1n)",
+        ] {
+            expressions.push(body.replace("TYPE", name));
+        }
+    }
+    for expression in expressions {
+        let src = format!(
+            "let caught = false; try {{ {expression}; }} catch (e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{expression}");
+    }
+    for src in [
+        "!Number.isNaN(1n) && !Number.isFinite(1n) && !Number.isInteger(1n) && !Number.isSafeInteger(1n)",
+        "let calls = 0; let o = {valueOf() { calls++; return 1n; }}; !Number.isNaN(o) && !Number.isFinite(o) && !Number.isInteger(o) && !Number.isSafeInteger(o) && calls === 0",
+        "Math.floor(1, 2n) === 1 && isNaN(NaN, 1n) && isFinite(1, 1n)",
+        "parseInt(123n) === 123 && parseFloat(123n) === 123",
+        "let order = ''; let caught = false; try { Math.pow({valueOf() { order += 'a'; return 1n; }}, {valueOf() { order += 'b'; return 2; }}); } catch (e) { caught = e instanceof TypeError; } caught && order === 'a'",
+        "let d = new Date(0); let order = ''; let caught = false; try { d.setUTCHours({valueOf() { order += 'a'; return 1n; }}, {valueOf() { order += 'b'; return 2; }}); } catch (e) { caught = e instanceof TypeError; } caught && order === 'a' && d.getTime() === 0",
+        "let d = new Date(0); let order = ''; let caught = false; try { d.setHours({valueOf() { order += 'a'; return 1n; }}, {valueOf() { order += 'b'; return 2; }}); } catch (e) { caught = e instanceof TypeError; } caught && order === 'a' && d.getTime() === 0",
+        "let a = new Uint8Array([7]); let caught = false; try { a[0] = 1n; } catch(e) { caught = e instanceof TypeError; } caught && a[0] === 7",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Number's explicit conversion
+/// and implicit rejection retain ordinary continuations across callback waits.
+#[test]
+fn bigint_number_conversion_waits_collects_and_migrates() {
+    for expression in [
+        "Number(o) === 9007199254740996",
+        "new Number(o).valueOf() === 9007199254740996",
+        "(() => { try { Math.floor(o); } catch(e) { return e instanceof TypeError; } return false; })()",
+        "(() => { try { isNaN(o); } catch(e) { return e instanceof TypeError; } return false; })()",
+        "(() => { try { new Uint8Array(1)[0] = o; } catch(e) { return e instanceof TypeError; } return false; })()",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let calls = 0; let o = {{get valueOf() {{ calls++; __rt.need(2031, 1); return function() {{ calls++; __rt.need(2032, 1); return 9007199254740995n; }}; }}, toString() {{ throw 99; }} }}; let result = {expression}; result && calls === 2"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut completed = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 2, "{expression}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Null);
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waits, 2);
+                    completed = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(completed, "{expression}");
     }
 }

@@ -632,3 +632,14 @@ QuickJS notice accompanies it in `src/host/timezone/QUICKJS-LICENSE`, provenance
 and input hashes in `provenance.txt`; the Unicode data notice is retained in
 `docs/UNICODE-LICENSE`. Rule lookup, Date conversions and synthetic source
 tests are fresh Rust/JavaScript implementations; no QuickJS engine code is linked.
+
+## BigInt to Number (clj-quickjs-203)
+
+`tests/js_source.rs::bigint_to_number_conversion` adapts the two Number rows
+from `research/quickjs/tests/test_bigint.js::test_bigint3`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS MIT notice is retained beside the test; see
+`research/quickjs/LICENSE`. Remaining fixtures are synthetic, not light-cljs
+output. `js_bigint_to_float64` and `js_number_constructor` in
+`research/quickjs/quickjs.c` at that revision were semantic references.
+The Rust sign/magnitude rounding implementation was written independently.
