@@ -1066,6 +1066,9 @@ impl<'s> Lowerer<'s> {
     /// declared after an abrupt initializer are therefore never disposed.
     #[inline(never)]
     fn disposable_body(&mut self, body: &[Stmt]) -> Result<(), SyntaxError> {
+        let Some(first) = body.first() else {
+            return Ok(());
+        };
         let resources: Vec<_> = body
             .iter()
             .filter_map(|stmt| match &stmt.kind {
@@ -1074,7 +1077,7 @@ impl<'s> Lowerer<'s> {
             })
             .flat_map(|decl| decl.declarators.iter().map(|d| d.span))
             .collect();
-        self.disposable_scope(&resources, body[0].span, |this| {
+        self.disposable_scope(&resources, first.span, |this| {
             for stmt in body {
                 this.statement(stmt)?;
             }
