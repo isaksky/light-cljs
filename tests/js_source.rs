@@ -593,3 +593,135 @@ fn deep_expressions_compile_within_a_small_stack() {
     b.unwrap();
     assert_eq!(num(&vec!["1"; 241].join(" + ")), 241.0);
 }
+
+#[test]
+fn entry_function_name_references_are_rejected_until_function_values_exist() {
+    for (src, column) in [
+        ("function f() { return f === f; }", 23),
+        ("function f() { f = 1; }", 16),
+        ("function f(a) { { return a + f; } }", 30),
+    ] {
+        let e = compile_function(src).unwrap_err();
+        assert_eq!(
+            (e.kind, e.line, e.column),
+            (SyntaxErrorKind::Unsupported, 1, column),
+            "{src}"
+        );
+    }
+    // Shadowed by a parameter or a body binding, the name is an ordinary local.
+    let complete = |src: &str, args: &[Primitive]| match run(&compile_function(src).unwrap(), args)
+    {
+        RunOutcome::Complete(v) => v.view(),
+        other => panic!("{src}: {other:?}"),
+    };
+    let four = [Primitive::Number(4.0)];
+    assert_eq!(
+        complete("function f(f) { return f * 2; }", &four),
+        ValueView::Number(8.0)
+    );
+    assert_eq!(
+        complete("function f() { let f = 3; return f; }", &[]),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(
+        complete("function f() { { const f = 5; return f; } }", &[]),
+        ValueView::Number(5.0)
+    );
+}
+
+#[test]
+fn expression_evaluation_order_and_conditional_short_circuiting() {
+    // Operands are evaluated left to right; assignments have their value.
+    assert_eq!(
+        num("let x = 0; let y = (x = 1) + (x = 2); y * 10 + x"),
+        32.0
+    );
+    assert_eq!(
+        num("let x = 0; let y = (x = 5) - (x = 2); y * 10 + x"),
+        32.0
+    );
+    assert_eq!(num("let x = 1; let y = x * (x = 3); y * 10 + x"), 33.0);
+    assert_eq!(num("let a, b; a = b = 4; a + b"), 8.0);
+    assert_eq!(num("let x = 0; let t = (x = 1) < (x = 2); t ? x : -1"), 2.0);
+    // Only the selected branch of `?:` and `if` runs.
+    assert_eq!(num("true ? 7 : missing"), 7.0);
+    assert_eq!(num("false ? missing : 8"), 8.0);
+    assert_eq!(num("let x = 0; 1 ? (x = 1) : (x = 2); x"), 1.0);
+    assert_eq!(num("let x = 0; if (0) x = 1; else x = 2; x"), 2.0);
+    // `&&` / `||` evaluate the right side only when needed.
+    assert_eq!(
+        num("let x = 0; 1 && (x = 3); 0 && (x = 4); 1 || (x = 5); x"),
+        3.0
+    );
+    // A failing operand fails where it is, after the operands before it.
+    let (kind, _, line, column) = failure_at("let x = 0;\n(x = missing) + 1");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 6));
+}
+
+#[test]
+fn compiler_constant_limit() {
+    // 65,536 distinct constants fit the u16 index; the last one is read
+    // back correctly (a wrapped index would read constant 0).
+    let fits: String = (0..65_536).map(|i| format!("{i};")).collect();
+    assert_eq!(num(&fits), 65_535.0);
+    let over = format!("{fits}65536;");
+    let e = compile_script("t", &over).unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::TooLarge);
+    assert_eq!(e.span.text(&over), "65536");
+    // Repeated constants share one pool entry.
+    let repeated = "1;2;".repeat(40_000);
+    assert_eq!(num(&repeated), 2.0);
+    assert_eq!(exe(&repeated).to_spec().constants.len(), 2);
+}
+
+#[test]
+fn compiler_local_limit() {
+    // A script uses local 0 for its completion value, so 65,534 bindings
+    // can be live at once and the 65,535th is rejected.
+    let names = |n: usize, p: &str| {
+        (0..n)
+            .map(|i| format!("{p}{i} = {i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let fits = format!("let {}; a65533", names(65_534, "a"));
+    assert_eq!(exe(&fits).to_spec().locals, u16::MAX);
+    assert_eq!(num(&fits), 65_533.0);
+    let over = format!("let {};", names(65_535, "a"));
+    let e = compile_script("t", &over).unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::TooLarge);
+    assert_eq!(e.span.text(&over), "a65534");
+    // Sibling blocks reuse slots: two blocks of 40,000 bindings each fit.
+    let siblings = format!(
+        "{{ let {}; }} {{ let {}; b39999 }}",
+        names(40_000, "a"),
+        names(40_000, "b")
+    );
+    assert_eq!(exe(&siblings).to_spec().locals, 40_001);
+    assert_eq!(num(&siblings), 39_999.0);
+}
+
+#[test]
+fn parenthesized_binding_diagnostics_name_the_identifier() {
+    let cases = [
+        ("(missing)", "missing is not defined", 1, 2),
+        ("( /* x */\n  missing )", "missing is not defined", 2, 3),
+        (
+            "(early); let early = 1;",
+            "cannot access 'early' before initialization",
+            1,
+            2,
+        ),
+        (
+            "const c = 1;\n((c)) = 2;",
+            "assignment to constant variable 'c'",
+            2,
+            3,
+        ),
+        ("( /* gone */ gone ) = 1;", "gone is not defined", 1, 14),
+    ];
+    for (src, message, line, column) in cases {
+        let (_, m, l, c) = failure_at(src);
+        assert_eq!((m.as_str(), l, c), (message, line, column), "{src}");
+    }
+}

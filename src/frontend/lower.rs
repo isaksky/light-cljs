@@ -40,6 +40,7 @@ use super::ast::{
     BinaryOp, Expr, ExprKind, Function, Ident, LexicalKind, LogicalOp, Script, Stmt, StmtKind,
     UnaryOp,
 };
+use super::lexer::{Lexer, TokenKind};
 use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
 use crate::value::Primitive;
@@ -73,6 +74,17 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
             "too many parameters",
         ));
     }
+    if let Some(name) = &function.name {
+        // The declaration binds its name in the enclosing (script) scope.
+        let binding = Binding {
+            kind: BindingKind::EntryFunction,
+            slot: u16::MAX,
+            initialized: true,
+        };
+        lower
+            .scopes
+            .push(Scope::from([(name.name.clone(), binding)]));
+    }
     lower.statement_list(&function.body, &function.params)?;
     let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
     lower.out.op(Opcode::Undefined, end);
@@ -89,14 +101,20 @@ enum BindingKind {
     Let,
     Const,
     Param,
+    /// The entry function's own name (`compile_function`). Function values
+    /// are not supported yet, so using it is a compile error; it has no slot.
+    EntryFunction,
 }
 
 struct Binding {
-    name: String,
     kind: BindingKind,
     slot: u16,
     initialized: bool,
 }
+
+/// The bindings of one statement list, by name. A compiler-private map:
+/// lookups never run user code.
+type Scope = HashMap<String, Binding>;
 
 #[derive(Clone, Copy)]
 enum Resolved {
@@ -163,7 +181,7 @@ struct Lowerer<'s> {
     source: &'s str,
     out: Emitter,
     /// Innermost last.
-    scopes: Vec<Vec<Binding>>,
+    scopes: Vec<Scope>,
     next_slot: usize,
     max_slots: usize,
     /// The completion-value local of a script; `None` in a function.
@@ -254,7 +272,7 @@ impl<'s> Lowerer<'s> {
     /// lexical binding of `body`, then lower `body`.
     fn statement_list(&mut self, body: &[Stmt], params: &[Ident]) -> Result<(), SyntaxError> {
         let saved_slot = self.next_slot;
-        self.scopes.push(Vec::new());
+        self.scopes.push(Scope::new());
         for p in params {
             self.declare(p, BindingKind::Param)?;
         }
@@ -284,8 +302,8 @@ impl<'s> Lowerer<'s> {
     }
 
     fn declare(&mut self, name: &Ident, kind: BindingKind) -> Result<(), SyntaxError> {
-        let scope = self.scopes.last().map_or(&[][..], Vec::as_slice);
-        if let Some(prior) = scope.iter().find(|b| b.name == name.name) {
+        let prior = self.scopes.last().and_then(|scope| scope.get(&name.name));
+        if let Some(prior) = prior {
             let what = if prior.kind == BindingKind::Param {
                 "a parameter"
             } else {
@@ -308,13 +326,12 @@ impl<'s> Lowerer<'s> {
         self.next_slot += 1;
         self.max_slots = self.max_slots.max(self.next_slot);
         let binding = Binding {
-            name: name.name.clone(),
             kind,
             slot,
             initialized: kind == BindingKind::Param,
         };
         if let Some(scope) = self.scopes.last_mut() {
-            scope.push(binding);
+            scope.insert(name.name.clone(), binding);
         }
         Ok(())
     }
@@ -323,7 +340,7 @@ impl<'s> Lowerer<'s> {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.iter().find(|b| b.name == name))
+            .find_map(|scope| scope.get(name))
             .map_or(Resolved::Unresolvable, |b| Resolved::Local {
                 slot: b.slot,
                 kind: b.kind,
@@ -336,7 +353,7 @@ impl<'s> Lowerer<'s> {
         let binding = self
             .scopes
             .last_mut()
-            .and_then(|scope| scope.iter_mut().find(|b| b.name == name.name));
+            .and_then(|scope| scope.get_mut(&name.name));
         match binding {
             Some(b) => {
                 b.initialized = true;
@@ -348,6 +365,23 @@ impl<'s> Lowerer<'s> {
                 "declaration was not pre-declared",
             )),
         }
+    }
+
+    /// The span of the identifier token `name` within `span`, which may also
+    /// cover parentheses and comments around it (`( /* c */ x )`), so
+    /// diagnostics point at, and quote, the name itself.
+    fn name_span(&self, name: &str, span: Span) -> Span {
+        let mut lexer = Lexer::new(span.text(self.source));
+        while let Ok(token) = lexer.next_token() {
+            match token.kind {
+                TokenKind::Identifier(n) if n == name => {
+                    return Span::new(span.start + token.span.start, span.start + token.span.end);
+                }
+                TokenKind::Eof => break,
+                _ => {}
+            }
+        }
+        span
     }
 
     fn throw(&mut self, kind: ThrowKind, span: Span) {
@@ -480,15 +514,22 @@ impl<'s> Lowerer<'s> {
             ExprKind::Null => self.constant(Primitive::Null, span)?,
             ExprKind::Undefined => self.out.op(Opcode::Undefined, span),
             ExprKind::String(_) => return Err(self.unsupported(span, "a string value")),
-            ExprKind::Identifier(name) => match self.resolve(name) {
-                Resolved::Local {
-                    slot,
-                    initialized: true,
-                    ..
-                } => self.out.op_u16(Opcode::GetLocal, slot, span),
-                Resolved::Local { .. } => self.throw(ThrowKind::Uninitialized, span),
-                Resolved::Unresolvable => self.throw(ThrowKind::Unresolvable, span),
-            },
+            ExprKind::Identifier(name) => {
+                let at = self.name_span(name, span);
+                match self.resolve(name) {
+                    Resolved::Local {
+                        kind: BindingKind::EntryFunction,
+                        ..
+                    } => return Err(self.unsupported(at, "a reference to a function value")),
+                    Resolved::Local {
+                        slot,
+                        initialized: true,
+                        ..
+                    } => self.out.op_u16(Opcode::GetLocal, slot, at),
+                    Resolved::Local { .. } => self.throw(ThrowKind::Uninitialized, at),
+                    Resolved::Unresolvable => self.throw(ThrowKind::Unresolvable, at),
+                }
+            }
             ExprKind::Unary { op, operand } => {
                 self.expr(operand)?;
                 match op {
@@ -538,8 +579,12 @@ impl<'s> Lowerer<'s> {
             }
             ExprKind::Assign { target, value } => {
                 self.expr(value)?;
-                let at = target.span;
+                let at = self.name_span(&target.name, target.span);
                 match self.resolve(&target.name) {
+                    Resolved::Local {
+                        kind: BindingKind::EntryFunction,
+                        ..
+                    } => return Err(self.unsupported(at, "assignment to a function binding")),
                     Resolved::Local {
                         initialized: false, ..
                     } => {

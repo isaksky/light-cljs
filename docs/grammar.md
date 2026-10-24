@@ -204,7 +204,7 @@ Errors:
 | Situation | When | Reported as |
 |-----------|------|-------------|
 | A name declared twice in one block, script or function body (including a `let` that repeats a parameter) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
-| String values, calls, property access, function declarations and expressions | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| String values, calls, property access, function declarations and expressions, and (in `compile_function`) unshadowed uses of the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | More than 65,535 live bindings or 65,536 distinct constants | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading or assigning a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading or assigning a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
