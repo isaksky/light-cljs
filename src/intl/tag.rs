@@ -357,6 +357,13 @@ mod tests {
                 "en-u-kn-ms-uksystem-tz-cnsha",
             ),
             ("en-t-a0-names", "en-t-a0-prprname"),
+            ("en-fonipa-1996", "en-1996-fonipa"),
+            ("en-t-z0-foo-a0-bar", "en-t-a0-bar-z0-foo"),
+            ("en-u-foo-foo-ca-gregory-ca-buddhist", "en-u-foo-ca-gregory"),
+            (
+                "en-u-kb-yes-kc-yes-kh-yes-kk-yes-kn-yes",
+                "en-u-kb-kc-kh-kk-kn",
+            ),
             ("en-u-zzz-aaa-ca-islamicc", "en-u-aaa-zzz-ca-islamic-civil"),
             ("en-b-foo-a-bar-x-Z-A", "en-a-bar-b-foo-x-z-a"),
             ("ja-Latn-hepburn-heploc", "ja-Latn-alalc97"),

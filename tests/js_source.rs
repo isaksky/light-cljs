@@ -14520,6 +14520,8 @@ fn intl_locale_construct_and_canonicalize() {
 fn intl_locale_options_lists_and_brand_checks() {
     for source in [
         "Intl.getCanonicalLocales(true).length === 0 && Intl.getCanonicalLocales(Symbol()).length === 0 && Intl.getCanonicalLocales(1n).length === 0",
+        "new Intl.Locale('en-u-kn-yes').numeric === true && Intl.getCanonicalLocales(['en-u-kn-yes','en-u-kn']).join() === 'en-u-kn'",
+        "let l = new Intl.Locale('en-u-ca-co-hc-kf-nu'); l.calendar === '' && l.collation === '' && l.hourCycle === '' && l.caseFirst === '' && l.numberingSystem === ''",
         r#"let l = new Intl.Locale('en-u-ca-true-co-true-hc-true-kf-true-nu-true'); l.toString() === 'en-u-ca-co-hc-kf-nu' && l.calendar === '' && l.collation === '' && l.hourCycle === '' && l.caseFirst === '' && l.numberingSystem === '' && l.numeric === false"#,
         r#"let l = new Intl.Locale('EN-latn-us-u-ca-buddhist-co-dict-hc-h12-kf-lower-kn-false-nu-arab-x-Private', {language:'de', script:'CYRL', region:'gb', calendar:'islamicc', collation:'phonebk', hourCycle:'h23', caseFirst:'upper', numeric: {}, numberingSystem:'LATN'}); l.toString() === 'de-Cyrl-GB-u-ca-islamic-civil-co-phonebk-hc-h23-kf-upper-kn-nu-latn-x-private' && l.baseName === 'de-Cyrl-GB' && l.language === 'de' && l.script === 'Cyrl' && l.region === 'GB' && l.calendar === 'islamic-civil' && l.collation === 'phonebk' && l.hourCycle === 'h23' && l.caseFirst === 'upper' && l.numeric === true && l.numberingSystem === 'latn'"#,
         r#"let a = new Intl.Locale('en-u-kn'); a.toString = function() { throw 9; }; new Intl.Locale(a, {numeric: false}).toString() === 'en-u-kn-false' && Intl.getCanonicalLocales([a, 'en-u-kn-true']).join() === 'en-u-kn' && Intl.getCanonicalLocales(a)[0] === 'en-u-kn'"#,
@@ -14552,6 +14554,7 @@ fn intl_locale_options_lists_and_brand_checks() {
         "new Intl.Locale('en', Symbol())",
         "new Intl.Locale('en', 1n)",
         "new Intl.Locale('', null)",
+        "new Intl.Locale('', 5)",
         "new Intl.Locale('en', {region:Symbol()})",
         "new Intl.getCanonicalLocales('en')",
     ] {
