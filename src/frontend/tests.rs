@@ -1,7 +1,10 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start` and three scripts in
-//! `arrow_functions_and_asi` (each marked there, with the QuickJS notice).
+//! `arrow_functions_and_asi` (each marked there, with the QuickJS notice),
+//! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
+//! `test_unicode_ident` (notice in `tests/js_source.rs`
+//! `identifiers_are_not_normalized`).
 
 use super::ast::{
     BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Stmt, StmtKind, UnaryOp,
@@ -833,6 +836,130 @@ fn lexer_maximal_munch() {
     assert_eq!(kinds("**="), vec![p(StarStarAssign)]);
 }
 
+#[test]
+fn unicode_identifiers() {
+    use SyntaxErrorKind::{InvalidToken, ReservedWord, UnknownToken};
+    let name = |src: &str| {
+        let mut lexer = Lexer::new(src);
+        let token = lexer
+            .next_token()
+            .unwrap_or_else(|e| panic!("{src:?}: {e}"));
+        let next = lexer.next_token().unwrap();
+        assert_eq!(next.kind, TokenKind::Eof, "{src:?} is one token");
+        match token.kind {
+            TokenKind::Identifier(name) => name,
+            other => panic!("{src:?} lexed as {other:?}"),
+        }
+    };
+    // ID_Start / ID_Continue code points, with `$`, `_`, ZWNJ and ZWJ.
+    assert_eq!(name("Ãµ"), "\u{C3}\u{B5}");
+    assert_eq!(name("π"), "π");
+    assert_eq!(name("℮"), "℮"); // U+212E, Other_ID_Start
+    assert_eq!(name("𝒜"), "\u{1D49C}"); // outside the BMP
+    assert_eq!(name("é"), "é");
+    assert_eq!(name("x·"), "x\u{B7}"); // U+00B7, Other_ID_Continue
+    assert_eq!(name("e\u{301}"), "e\u{301}"); // combining mark, not normalized
+    assert_eq!(name("a\u{200C}b\u{200D}c"), "a\u{200C}b\u{200D}c");
+    assert_eq!(name("$_\u{2118}"), "$_\u{2118}");
+    // Escapes decode to code points; the name is the decoded text.
+    assert_eq!(name("x\\u{200C}y"), "x\u{200C}y");
+    assert_eq!(name("a\\u0062c"), "abc");
+    assert_eq!(name("\\u0061"), "a");
+    assert_eq!(name("\\u{1D49C}\\u{00000062}"), "\u{1D49C}b");
+    assert_eq!(name("x\\u0030"), "x0");
+    assert_eq!(name("\\u0024\\u005F"), "$_");
+    assert_eq!(ast("let a\\u0062c = 1; abc;"), ast("let abc = 1; abc;"));
+    assert_eq!(ast("let é = 1;"), "(let (é 1))");
+    assert_eq!(ast("let \\u0061 = 1;"), "(let (a 1))");
+    assert_eq!(
+        ast("f = (\\u0061, π) => \\u0061 + π;"),
+        ast("f = (a, π) => a + π;")
+    );
+    // Characters that cannot start, or continue, an identifier.
+    rejects("let € = 1;", UnknownToken, 1, 5);
+    rejects("let x€ = 1;", UnknownToken, 1, 6);
+    rejects("let \u{301}e = 1;", UnknownToken, 1, 5);
+    rejects("let \u{2E2F} = 1;", UnknownToken, 1, 5); // Pattern_Syntax, not ID_Start
+    rejects("3π", InvalidToken, 1, 2);
+    rejects("3\\u0061", InvalidToken, 1, 2);
+    // An escape must name a valid character for its place.
+    rejects_with(
+        "let \\u0030x = 1;",
+        InvalidToken,
+        1,
+        5,
+        "U+0030 cannot start",
+    );
+    rejects_with(
+        "let a\\u0020b = 1;",
+        InvalidToken,
+        1,
+        6,
+        "U+0020 cannot appear",
+    );
+    rejects("let \\u20AC = 1;", InvalidToken, 1, 5);
+    rejects("let a\\u{2E2F} = 1;", InvalidToken, 1, 6);
+    rejects("let \\u200C = 1;", InvalidToken, 1, 5); // ZWNJ continues only
+    rejects("let \\uD835\\uDC9C = 1;", InvalidToken, 1, 5); // no surrogates
+    rejects("let \\u{110000} = 1;", InvalidToken, 1, 5);
+    rejects("let \\u12 = 1;", InvalidToken, 1, 5);
+    rejects("let \\u{} = 1;", InvalidToken, 1, 5);
+    rejects("let \\x61 = 1;", InvalidToken, 1, 5);
+    rejects("let a\\ = 1;", InvalidToken, 1, 6);
+    rejects("\\", InvalidToken, 1, 1);
+    // A reserved word written with escapes is never the keyword: it is
+    // rejected where the word is reserved and an ordinary name after `.`.
+    rejects_with(
+        "l\\u0065t x = 1;",
+        ReservedWord,
+        1,
+        1,
+        "reserved word `let`",
+    );
+    rejects_with(
+        "let \\u0069f = 1;",
+        ReservedWord,
+        1,
+        5,
+        "reserved word `if`",
+    );
+    rejects("x = tru\\u0065;", ReservedWord, 1, 5);
+    rejects("\\u0061wait;", ReservedWord, 1, 1);
+    rejects("function f(\\u{79}ield) {}", ReservedWord, 1, 12);
+    assert_eq!(ast("x = a.l\\u0065t;"), ast("x = a.let;"));
+    assert_eq!(ast("x = a.\\u0069f.b;"), ast("x = a.if.b;"));
+    assert_eq!(ast("x = a. /* c */ \\u0069f;"), ast("x = a.if;"));
+    // Only the token right after `.` is a property name.
+    rejects("a.b; l\\u0065t;", ReservedWord, 1, 6);
+    rejects("a.\\u0069f \\u0069f", ReservedWord, 1, 11);
+    // Names compare by decoded code points: `__rt` with an escaped `_` is
+    // the reserved intrinsic binding.
+    rejects_with("__rt[0];", ReservedWord, 1, 5, "computed access");
+    rejects_with("\\u005f_rt[0];", ReservedWord, 1, 10, "computed access");
+}
+
+#[test]
+fn unicode_ident_tables_are_sorted_disjoint_ranges() {
+    use super::unicode_ident::{ID_CONTINUE, ID_START};
+    for table in [ID_START, ID_CONTINUE] {
+        assert!(
+            table
+                .iter()
+                .all(|&(lo, hi)| 0x80 <= lo && lo <= hi && hi <= 0x10FFFF)
+        );
+        assert!(table.iter().all(|&(lo, hi)| hi < 0xD800 || lo > 0xDFFF));
+        // Adjacent ranges would have been merged by the generator.
+        assert!(table.windows(2).all(|w| w[0].1 + 1 < w[1].0));
+    }
+    // ID_Start is a subset of ID_Continue (UAX #31).
+    for &(lo, hi) in ID_START {
+        assert!(
+            ID_CONTINUE.iter().any(|&(l, h)| l <= lo && hi <= h),
+            "{lo:X}..={hi:X}"
+        );
+    }
+}
+
 // ----- negative: lexical ambiguity -------------------------------------------
 
 #[test]
@@ -902,8 +1029,7 @@ fn rejects_lexically_ambiguous_input() {
     assert_eq!(ast("#!/usr/bin/env node"), "");
     rejects("x;\n#!/usr/bin/env node", UnknownToken, 2, 1);
     rejects("x.#y", UnknownToken, 1, 3);
-    rejects("let é = 1;", UnknownToken, 1, 5);
-    rejects_with("let \\u0061 = 1;", Unsupported, 1, 5, "escape");
+    // Unicode identifiers and identifier escapes: `unicode_identifiers`.
 }
 
 // ----- negative: truncated input -----------------------------------------------

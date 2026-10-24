@@ -1196,3 +1196,23 @@ Supported (`cargo test --lib frontend::tests::comma_operator`,
 Deferred:
 
 - Template substitutions (`` `${a, b}` ``) wait for template literals.
+
+### Unicode identifiers (clj-quickjs-50)
+
+Supported:
+
+- Identifiers made of Unicode `ID_Start` / `ID_Continue` code points (plus
+  `$`, `_`, ZWNJ, ZWJ), from Unicode 16.0 tables in
+  `src/frontend/unicode_ident.rs` (regenerate with
+  `scripts/gen-unicode-ident.sh`, which needs perl), and identifier escapes
+  `\uHHHH` / `\u{H...}`. Names are code point sequences compared without
+  normalization everywhere (binding resolution, the reserved `__rt`
+  binding). A reserved word written with escapes is rejected except as a
+  property name after `.`. Details: "Lexical grammar" in
+  [`docs/grammar.md`](docs/grammar.md).
+
+Deferred:
+
+- Diagnostics quote a name as written in the source (an escaped name is
+  quoted with its escapes), and the identifier tables follow Unicode 16.0
+  until regenerated.

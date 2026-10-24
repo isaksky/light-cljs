@@ -6,9 +6,19 @@
 //! the parser as one token and is rejected there with a precise diagnostic.
 //! A `/` is always lexed as the division punctuator: the parser decides from
 //! context whether a regular expression literal would have started, and
-//! rejects it. Template literals, BigInt literals, numeric separators,
-//! non-ASCII identifiers and identifier escapes are rejected here.
+//! rejects it. Template literals, BigInt literals and numeric separators are
+//! rejected here.
+//!
+//! Identifiers are Unicode: a start character is `ID_Start`, `$` or `_`, a
+//! later one `ID_Continue`, `$`, ZWNJ or ZWJ (ECMAScript §12.7; tables in
+//! `unicode_ident.rs`), and either may be written as a `\u` escape. A name is
+//! its code points after escapes are decoded, compared without
+//! normalization: `a\u0062c` is `abc`, while `Ãµ` (U+00C3 U+00B5) and `õ`
+//! (U+00F5) are different names.
 
+use std::cmp::Ordering;
+
+use super::unicode_ident::{ID_CONTINUE, ID_START};
 use super::{Span, SyntaxError, SyntaxErrorKind};
 
 /// A lexical token.
@@ -207,12 +217,38 @@ fn is_whitespace(c: char) -> bool {
     )
 }
 
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '$' || c == '_'
+/// Whether `c` lies in one of `table`'s sorted, disjoint, inclusive ranges.
+fn in_ranges(table: &[(u32, u32)], c: char) -> bool {
+    let cp = u32::from(c);
+    table
+        .binary_search_by(|&(lo, hi)| {
+            if hi < cp {
+                Ordering::Less
+            } else if lo > cp {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
+/// IdentifierStartChar: `ID_Start`, `$` or `_`.
+fn is_ident_start(c: char) -> bool {
+    if c.is_ascii() {
+        c.is_ascii_alphabetic() || c == '$' || c == '_'
+    } else {
+        in_ranges(ID_START, c)
+    }
+}
+
+/// IdentifierPartChar: `ID_Continue`, `$`, ZWNJ or ZWJ.
 fn is_ident_part(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '$' || c == '_'
+    if c.is_ascii() {
+        c.is_ascii_alphanumeric() || c == '$' || c == '_'
+    } else {
+        matches!(c, '\u{200C}' | '\u{200D}') || in_ranges(ID_CONTINUE, c)
+    }
 }
 
 /// The tokenizer. Cloning it is cheap and gives an independent cursor, which
@@ -221,6 +257,10 @@ fn is_ident_part(c: char) -> bool {
 pub struct Lexer<'a> {
     src: &'a str,
     pos: usize,
+    /// The previous token was `.`, so this one is an IdentifierName (a
+    /// property name), where a reserved word written with escapes is an
+    /// ordinary name. It is the subset's only IdentifierName position.
+    after_dot: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -234,7 +274,11 @@ impl<'a> Lexer<'a> {
         } else {
             0
         };
-        Lexer { src, pos }
+        Lexer {
+            src,
+            pos,
+            after_dot: false,
+        }
     }
 
     pub fn source(&self) -> &'a str {
@@ -329,7 +373,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let kind = match self.peek_char() {
             None => TokenKind::Eof,
-            Some(c) if is_ident_start(c) => self.lex_identifier(),
+            Some(c) if is_ident_start(c) || c == '\\' => self.lex_identifier()?,
             Some(c) if c.is_ascii_digit() => self.lex_number()?,
             Some('.') if self.peek_char_at(1).is_some_and(|c| c.is_ascii_digit()) => {
                 self.lex_number()?
@@ -340,20 +384,6 @@ impl<'a> Lexer<'a> {
                     start,
                     SyntaxErrorKind::Unsupported,
                     "template literals are not supported",
-                ));
-            }
-            Some('\\') => {
-                return Err(self.error_at(
-                    start,
-                    SyntaxErrorKind::Unsupported,
-                    "Unicode escape sequences in identifiers are not supported",
-                ));
-            }
-            Some(c) if !c.is_ascii() && c.is_alphabetic() => {
-                return Err(self.error_at(
-                    start,
-                    SyntaxErrorKind::UnknownToken,
-                    format!("non-ASCII identifier character {c:?} is not supported"),
                 ));
             }
             Some(c) => match self.lex_punct() {
@@ -367,6 +397,7 @@ impl<'a> Lexer<'a> {
                 }
             },
         };
+        self.after_dot = kind == TokenKind::Punct(Punct::Dot);
         Ok(Token {
             kind,
             span: Span::new(start, self.pos),
@@ -374,15 +405,85 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn lex_identifier(&mut self) -> TokenKind {
+    /// IdentifierName: start character, then part characters, each possibly
+    /// a `\u` escape. Without escapes, a reserved word is a keyword token.
+    /// With escapes it is never the keyword (ECMAScript §12.7.2): after `.`
+    /// it is an ordinary property name, and anywhere else, where the subset
+    /// always reserves it, it is rejected here.
+    fn lex_identifier(&mut self) -> Result<TokenKind, SyntaxError> {
         let start = self.pos;
-        while self.peek_char().is_some_and(is_ident_part) {
-            self.bump();
+        let mut name = String::new();
+        let mut escaped = false;
+        loop {
+            let first = self.pos == start;
+            let c = match self.peek_char() {
+                Some('\\') => {
+                    escaped = true;
+                    self.identifier_escape(first)?
+                }
+                Some(c)
+                    if (if first {
+                        is_ident_start(c)
+                    } else {
+                        is_ident_part(c)
+                    }) =>
+                {
+                    self.bump();
+                    c
+                }
+                _ => break,
+            };
+            name.push(c);
         }
-        let text = &self.src[start..self.pos];
-        match Keyword::from_text(text) {
-            Some(k) => TokenKind::Keyword(k),
-            None => TokenKind::Identifier(text.to_string()),
+        Ok(match Keyword::from_text(&name) {
+            None => TokenKind::Identifier(name),
+            Some(k) if !escaped => TokenKind::Keyword(k),
+            Some(_) if self.after_dot => TokenKind::Identifier(name),
+            Some(k) => {
+                return Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    Span::new(start, self.pos),
+                    format!(
+                        "`{}` is the reserved word `{}` written with escapes, which cannot be used as an identifier",
+                        &self.src[start..self.pos],
+                        k.as_str()
+                    ),
+                ));
+            }
+        })
+    }
+
+    /// A `\uHHHH` or `\u{H...}` escape in an identifier, at the backslash.
+    /// The code point must itself be a start character (`first`) or a part
+    /// character.
+    fn identifier_escape(&mut self, first: bool) -> Result<char, SyntaxError> {
+        let backslash = self.pos;
+        self.bump();
+        let value = if self.peek_char() == Some('u') {
+            self.bump();
+            self.unicode_escape_value()
+        } else {
+            None
+        };
+        let Some(value) = value else {
+            return Err(self.error_at(
+                backslash,
+                SyntaxErrorKind::InvalidToken,
+                "invalid escape in identifier: expected `\\uHHHH` or `\\u{H...}`",
+            ));
+        };
+        let span = Span::new(backslash, self.pos);
+        let valid = if first { is_ident_start } else { is_ident_part };
+        match char::from_u32(value).filter(|&c| valid(c)) {
+            Some(c) => Ok(c),
+            None => Err(self.error(
+                SyntaxErrorKind::InvalidToken,
+                span,
+                format!(
+                    "escaped code point U+{value:04X} cannot {} an identifier",
+                    if first { "start" } else { "appear in" }
+                ),
+            )),
         }
     }
 

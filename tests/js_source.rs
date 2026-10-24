@@ -356,6 +356,54 @@ fn hashbang_script_runs() {
 }
 
 #[test]
+fn identifiers_are_not_normalized() {
+    // Identifier names are code point sequences, compared without Unicode
+    // normalization: `Ãµ` (U+00C3 U+00B5) and `õ` (U+00F5) are different
+    // names. The `Ãµ` / `õ` case is adapted from `test_unicode_ident` in
+    // `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+    // (`let` for `var`; a ReferenceError for `typeof õ`, as `typeof` is not
+    // in the subset); see `docs/architecture.md`, "QuickJS references and
+    // provenance".
+    //
+    // QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+    // released under the MIT license: Permission is hereby granted, free of
+    // charge, to any person obtaining a copy of this software and associated
+    // documentation files (the "Software"), to deal in the Software without
+    // restriction, including without limitation the rights to use, copy,
+    // modify, merge, publish, distribute, sublicense, and/or sell copies of
+    // the Software, and to permit persons to whom the Software is furnished
+    // to do so, subject to the following conditions: The above copyright
+    // notice and this permission notice shall be included in all copies or
+    // substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+    // WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+    // LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+    // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+    // HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+    // AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+    // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    // SOFTWARE.
+    assert_eq!(num("let Ãµ = 3; Ãµ"), 3.0);
+    let (kind, message, line, column) = failure_at("let Ãµ = 3; õ");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "õ is not defined");
+    assert_eq!((line, column), (1, 13));
+    // Escapes are decoded before names are compared.
+    assert_eq!(num("let a\\u0062c = 2; abc"), 2.0);
+    assert_eq!(num("let abc = 2; a\\u{62}c + \\u0061bc"), 4.0);
+    assert_eq!(num("let \\u{C3}\\u{B5} = 5; Ãµ"), 5.0);
+    // Diagnostics quote the name as the source spells it.
+    let (kind, message, line, column) = failure_at("let \\u{C3}\\u{B5} = 5;\n\\u{F5}");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "\\u{F5} is not defined");
+    assert_eq!((line, column), (2, 1));
+    // Functions, parameters and closures resolve Unicode names alike.
+    assert_eq!(
+        num("function π\\u0393(r) { let τ = 2; return function() { return τ * r; }; } πΓ(3)()"),
+        6.0
+    );
+}
+
+#[test]
 fn unknown_names_fail_with_reference_errors_at_their_position() {
     let (kind, message, line, column) = failure_at("let a = 1;\na + missing");
     assert_eq!(kind, VmErrorKind::ReferenceError);

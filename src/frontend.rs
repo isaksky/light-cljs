@@ -30,6 +30,7 @@ mod intrinsics;
 pub mod lexer;
 mod lower;
 mod parser;
+mod unicode_ident;
 
 #[cfg(test)]
 mod tests;
@@ -75,7 +76,8 @@ impl Span {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyntaxErrorKind {
     /// A character or character sequence that is not a token of the subset
-    /// (for example `@`, `#`, or a non-ASCII identifier character).
+    /// (for example `@`, `#`, `€`, or a character that may continue but not
+    /// start an identifier).
     UnknownToken,
     /// A malformed token: an unterminated string or comment, a bad escape, or
     /// a malformed number literal.

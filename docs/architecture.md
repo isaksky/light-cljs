@@ -1324,3 +1324,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_parse_skip_parens_token`, `js_parse_assign_expr2` and
   `js_parse_function_decl2` (arrow detection and bodies). No code was
   copied.
+- `tests/js_source.rs` `identifiers_are_not_normalized` (clj-quickjs-50):
+  `test_unicode_ident` of `research/quickjs/tests/test_language.js` (line
+  634), revision 7d1c13c5d8f8, as JavaScript source compiled by this
+  frontend. Modified: `let` for `var`; `typeof õ` (not in the subset) is a
+  reference to `õ` that must fail with a ReferenceError; the declared name
+  is also read back. The test carries the full notice; the name `Ãµ` also
+  appears in `src/frontend/tests.rs` `unicode_identifiers`.
+  `research/quickjs/quickjs.c` `next_token` (`lre_js_is_ident_first` /
+  `lre_js_is_ident_next`) and `ident_realloc` were consulted only; the
+  identifier tables are generated from perl's Unicode database, not from
+  `libunicode-table.h`. No code was copied.
