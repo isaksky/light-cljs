@@ -2021,7 +2021,7 @@ impl<'s> Lowerer<'s> {
             // with no statically numeric operand decides at run time; with
             // one, ToNumber and a numeric comparison are IsLessThan.
             BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
-                if !is_number(left) && !is_number(right) =>
+                if !left_number && !right_number =>
             {
                 let compare = match op {
                     BinaryOp::Lt => Opcode::CompareLt,
