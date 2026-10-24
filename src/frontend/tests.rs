@@ -483,6 +483,47 @@ fn module_class_exports() {
     }
 }
 
+#[test]
+fn module_body_preserves_source_order() {
+    use super::ast::{DefaultExport, ModuleItem};
+    let source = "import 's'; const x=1; export function f(){return x;} export default x+2; f(); export {x};";
+    let module = super::parse_module(source).unwrap();
+    // Static imports and export lists add no executable body items.
+    let [
+        ModuleItem::Statement(decl),
+        ModuleItem::Statement(function),
+        ModuleItem::DefaultExport(DefaultExport::Expression(default)),
+        ModuleItem::Statement(call),
+    ] = module.body()
+    else {
+        panic!("unexpected module body: {:?}", module.body());
+    };
+    assert!(matches!(decl.kind, StmtKind::Lexical(_)));
+    assert_eq!(render_stmt(decl), "(const (x 1))");
+    let StmtKind::FunctionDecl(function) = &function.kind else {
+        panic!("exported function declaration was lost");
+    };
+    assert!(function.strict);
+    assert_eq!(render_function(function), "(function f () (return x))");
+    let ExprKind::Binary {
+        op: BinaryOp::Add,
+        left,
+        right,
+        ..
+    } = &default.kind
+    else {
+        panic!("default expression was lost: {default:?}");
+    };
+    assert!(matches!(&left.kind, ExprKind::Identifier(name) if name == "x"));
+    assert!(matches!(right.kind, ExprKind::Number(2.0)));
+    assert_eq!(default.span.text(source), "x+2");
+    assert!(matches!(call.kind, StmtKind::Expr(_)));
+    assert_eq!(render_stmt(call), "(call f)");
+    assert!(decl.span.start < function.span.start);
+    assert!(function.span.end < default.span.start);
+    assert!(default.span.end < call.span.start);
+}
+
 // ----- S-expression rendering of the AST ------------------------------------
 
 #[test]
