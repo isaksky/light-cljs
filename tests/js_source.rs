@@ -21554,3 +21554,59 @@ fn intl_date_time_format_ownership() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Jobs drain after the script.
+#[test]
+fn async_functions_and_await() {
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let cases = [
+        (
+            "let log=''; async function f() { log+='a'; await null; log+='c'; return 7; } let p=f(); log+='b'; if (!(p instanceof Promise)) throw 'promise'; p.then(x => { __rt.effect(0,log); __rt.effect(0,x); });",
+            vec![Primitive::String("abc".into()), Primitive::Number(7.)],
+        ),
+        (
+            "(async function() { throw 9; })().catch(e => __rt.effect(0,e));",
+            vec![Primitive::Number(9.)],
+        ),
+        (
+            "(async () => { try { await Promise.reject(1); } catch(e) { return e; } })().then(x => __rt.effect(0,x));",
+            vec![Primitive::Number(1.)],
+        ),
+        (
+            "let n=0; (async () => { try { return 2 + await 3; } finally { n++; } })().then(x => { __rt.effect(0,x); __rt.effect(0,n); });",
+            vec![Primitive::Number(5.), Primitive::Number(1.)],
+        ),
+        (
+            "let ticks=''; Promise.resolve().then(() => { ticks+='t'; }).then(() => { ticks+='u'; }); (async () => { ticks+='a'; await 0; ticks+='b'; await 0; ticks+='c'; })().then(() => __rt.effect(0,ticks));",
+            vec![Primitive::String("atbuc".into())],
+        ),
+        (
+            "let o={n:4,async m() { let f=async () => this.n + await 2; return await f(); }}; o.m().then(x => __rt.effect(0,x));",
+            vec![Primitive::Number(6.)],
+        ),
+        (
+            "(async function(x = (() => { throw 13; })()) {})().catch(e => __rt.effect(0,e));",
+            vec![Primitive::Number(13.)],
+        ),
+        (
+            "(async () => { try { return {then(resolve) { resolve(17); }}; } finally { await 0; } })().then(x => __rt.effect(0,x));",
+            vec![Primitive::Number(17.)],
+        ),
+    ];
+    for (source, expected) in cases {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut host = Log::default();
+        let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert!(matches!(out, RunOutcome::Complete(_)), "{source}: {out:?}");
+        assert_eq!(host.0, expected, "{source}");
+        assert!(task.suspended_async_activations().is_empty(), "{source}");
+    }
+}

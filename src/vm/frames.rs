@@ -222,6 +222,8 @@ pub(crate) struct VmState {
     pub(crate) jobs: std::sync::Weak<crate::job::JobInbox>,
     /// The script body's completion value, retained while jobs run.
     pub(crate) script_result: Option<Value>,
+    // Diagnostic identities only: deliberately not traced.
+    pub(crate) suspended_async: Vec<(ObjectId, String)>,
     /// Mutable global state belongs to the task, independently of workers.
     pub(crate) global_object: Option<ObjectId>,
     /// The frame the task started in.
@@ -375,6 +377,7 @@ impl VmState {
         VmState {
             jobs: std::sync::Weak::new(),
             script_result: None,
+            suspended_async: Vec::new(),
             global_object: None,
             entry: Frame {
                 code: Arc::clone(code),
@@ -458,6 +461,7 @@ impl VmState {
         next.jobs = self.jobs.clone();
         next.global_object = self.global_object.take();
         next.script_result = self.script_result.take();
+        next.suspended_async = std::mem::take(&mut self.suspended_async);
         next.builders = std::mem::take(&mut self.builders);
         *self = next;
     }

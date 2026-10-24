@@ -4,7 +4,7 @@
 //! Parentheses are not represented: a parenthesized expression is its inner
 //! expression, with a span that covers the parentheses. The tree only
 //! contains parsed forms; lowering explicitly rejects syntax whose execution
-//! is deferred for async functions; generator execution uses detachable activations.
+//! uses detachable activations for async functions and generators.
 //!
 //! Every [`Stmt`], [`Function`] and [`Expr`] records its `height` (nodes on
 //! the longest path down to a leaf, itself included). The parser rejects

@@ -1908,7 +1908,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => Ok("Object"),
                 HeapObject::Promise(_) => Ok("Promise"),
-                HeapObject::Generator(_) => Ok("Object"),
+                HeapObject::Generator(_) | HeapObject::AsyncState(_) => Ok("Object"),
             })
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),

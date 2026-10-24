@@ -313,7 +313,7 @@ Notes on the grammar:
   without parentheses: `1 + x => x`, `f(a) => a` and `() => {}()` are
   syntax errors, `(() => 1)()` is a call. Its body is a function body block
   (where `return` is allowed) or an AssignmentExpression, the value it
-  returns. `async` arrows parse (execution is deferred); `async => async` is an arrow
+  returns. `async` arrows execute through promise jobs (clj-quickjs-248); `async => async` is an arrow
   with a parameter named `async`.
 - Generator and async syntax (clj-quickjs-54): `function*`, `async function`,
   `async function*`, `async x => ...`, `async (x) => ...`, and object methods
@@ -469,7 +469,7 @@ Every form below is rejected where it starts. Error kinds:
 
 Yield expressions, including delegated `yield*`, inside generator bodies are executable,
 including binary operands and try/catch/finally bodies (clj-quickjs-244).
-The async forms listed below remain rejected.
+Async functions and await execute (clj-quickjs-248); async generators remain rejected.
 
 `Symbol()`, `Symbol.for(key)` and `Symbol.keyFor(sym)` use ordinary call syntax.
 `new Symbol()` is accepted syntax
@@ -480,7 +480,7 @@ are still covered by the computed-key rejection below.
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
-| execution of parsed async functions/arrows/methods (including `await`) | Unsupported at the function during compilation |
+| execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
 | optional chaining `?.`, object spread `...` (in an object literal) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233) | Unsupported |
@@ -509,7 +509,7 @@ conversion remains deferred (clj-quickjs-265).
 Generator `return(value)` and `throw(error)` are deferred.
 `return` and `throw` methods are absent from the generator prototype, so yield*
 does not yet forward abrupt resumes to its delegate (clj-quickjs-245). Async
-functions and `await` remain unsupported. Suspended generators cannot publish
+generators remain unsupported. Suspended generators cannot publish
 or cross tasks, including through immutable collections or shared references.
 Generator functions also cannot publish because their own property record is
 task-owned, as for an ordinary function whose prototype has been materialized.
@@ -1090,8 +1090,9 @@ Executed, with JavaScript semantics:
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
 | String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content. A string is a sequence of UTF-16 code units, lone surrogates included (clj-quickjs-141): `"\u{10ffff}" === "\u{dbff}\u{dfff}"` and `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"` are true, a lone surrogate equals only itself (not U+FFFD), and equality, map keys and `<` compare code units. The embedder reads the exact code units (`JsString::code_units`, or `Debug`, which writes a lone surrogate as `\u{d800}`; `cargo run` prints a string result that way) or lossy text (`Display`, `to_string_lossy`: U+FFFD) |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
+| Async functions and `await` (clj-quickjs-248) | synchronous entry returns a Promise at the first await or completion; intrinsic PromiseResolve and internal reactions resume the detachable activation in the owning task. Rejections throw at await; return adopts values and thenables. Pending operands and handlers are traced; dependency reads remain whole-task waits. Empty queues complete and report suspended function names without retaining their activations. Async generators remain deferred. |
 | `a + b * (yield c)` and yields in try/catch/finally (clj-quickjs-244) | pending operands stay on the saved activation's value stack without compiler spills. Handlers and normal/return/throw/jump completions are saved relative to the activation and rebased on next, preserving their values across GC and calls from different depths. Finally runs once when resumed control leaves the protected block; a yielding finally continues its pending completion after its last yield or dependency wait. |
-| `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant next and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods and async/await remain deferred; delegated yield executes (clj-quickjs-245). |
+| `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant next and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods and async generators remain deferred; delegated yield executes (clj-quickjs-245). |
 | `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
 | OrdinaryToPrimitive on object operands (clj-quickjs-70) | arithmetic, bitwise, unary and update operators use hint number; `+` and object/primitive `==` use hint default; templates and computed property keys use hint string. Number/default tries `valueOf`, then `toString`; string reverses that order. Non-callable methods are skipped; each method is called at most once with the original object as `this` and no arguments. The first primitive result wins; otherwise a catchable TypeError "cannot convert object to primitive value". Method exceptions propagate. Left conversion finishes before right conversion begins, after both expressions are evaluated. Equality between two objects uses identity; nullish equality never converts. Object.prototype.valueOf returns the object and Object.prototype.toString returns "[object Object]" for plain objects. A task-owned native continuation retains operands and progress across budget yields, dependency waits, GC and migration; cancellation drops it through the usual finally unwinding. No Rust interpreter recursion |
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. Object operands first use resumable ToPrimitive (clj-quickjs-70), left before right, with hint default. Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
@@ -1113,7 +1114,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
 | `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `get_global_object`, a name constant and `delete`, or constant `false` for a declarative binding; failures are reported at `delete` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
-| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super` and computed keys remain deferred; generator methods execute through detachable activations (clj-quickjs-243); async methods remain deferred. |
+| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super` and computed keys remain deferred; generator methods execute through detachable activations (clj-quickjs-243); async methods execute (clj-quickjs-248). |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property, else the one it inherits from `Function.prototype` (clj-quickjs-102: `call`, `apply`, `constructor`) and then `Object.prototype`, and fails with `UnsupportedOperand` for a standard `Function.prototype` name that does not exist yet (`bind`, `toString`, `arguments`, `caller`); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; a function object (clj-quickjs-125, `docs/architecture.md`, "Function own properties") gives its own property, else `prototype` of a `function` declaration or expression: an object created on first read (owned by the task, inheriting from `Object.prototype`, with `constructor` the function) and the same object afterwards (an arrow has none: `undefined`); `length` and `name` are initial own metadata (clj-quickjs-101); a missing `Function.prototype` name (`bind`, `toString`, `arguments`, `caller`) fail with `UnsupportedOperand`, any other name continues at `Function.prototype` (`f.call`, `f.apply`, `f.constructor === Function`, clj-quickjs-102) and then `Object.prototype`; a published function's `prototype` cannot be created (`UnsupportedOperand`); a number or string reads through `Number.prototype` / `String.prototype` (clj-quickjs-73, see `(1).toString()` below); a string's own `length` and code-unit indices are read before its prototype (clj-quickjs-142); caught engine-raised errors use ordinary Error instance properties (clj-quickjs-230); booleans fail with `UnsupportedOperand` until Boolean.prototype exists (clj-quickjs-39); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a function object gets the property in its task-owned property record (clj-quickjs-125), so it can no longer be published; a function that was published is shared and immutable (a catchable `TypeError`), one created by another task fails with `ForeignObject`; initial `length` and `name` reject writes as read-only, and a missing `Function.prototype` name fails with `UnsupportedOperand` unless the function has it as its own; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; a number, string or boolean base (clj-quickjs-73) takes no property: a catchable `TypeError` ("cannot create property 'x' on a number", "cannot assign to read-only property '0' of a string") in strict code, nothing in sloppy code, and `__proto__` runs the setter, which ignores a primitive; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
@@ -2199,7 +2200,7 @@ throw /x/;
 class Point {}
 ```
 
-```js compile-reject Unsupported 2:1
+```js accept
 let x = 1;
 async function f() {}
 ```
@@ -2440,13 +2441,13 @@ let x = 1;
 
 ## Generator and async syntax examples (clj-quickjs-54)
 
-These synthetic fixtures cover executable generators/delegation and deferred async forms.
+These synthetic fixtures cover executable generators, delegation and async functions; async generators remain deferred.
 
 ```js accept
 function* g() { yield 1; yield* xs; }
 ```
 
-```js compile-reject Unsupported 1:1
+```js accept
 async function f() { await 1; }
 ```
 
@@ -2458,15 +2459,15 @@ async function* g() { yield await 1; }
 let g = function* () { yield; };
 ```
 
-```js compile-reject Unsupported 1:9
+```js accept
 let f = async function () { await 1; };
 ```
 
-```js compile-reject Unsupported 1:1
+```js accept
 async x => await x
 ```
 
-```js compile-reject Unsupported 1:1
+```js accept
 async (x) => { return await x; }
 ```
 
@@ -2474,7 +2475,7 @@ async (x) => { return await x; }
 ({*m() { yield 1; }})
 ```
 
-```js compile-reject Unsupported 1:3
+```js accept
 ({async m() { await 1; }})
 ```
 
@@ -3500,8 +3501,8 @@ existing finally cleanup. An internal boundary hook runs after the body and
 after jobs for future WeakRef kept-object clearing.
 
 Explicit gaps: enqueue is crate-internal, with no new syntax or global API.
-Promises, async functions, FinalizationRegistry cleanup producers, WeakRef
-kept-object clearing and host timers are not implemented by this queue.
+Promise reactions and async resumes use this queue. FinalizationRegistry cleanup
+producers, WeakRef kept-object clearing and host timers remain deferred.
 Cross-task delivery transfers shareable arguments to an owner-registered
 callable without running JavaScript during publication. Future rejection
 reporting waits for quiescence after jobs and timers, not individual jobs.
@@ -3957,7 +3958,7 @@ fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
 the outer reaction: the adoption call and the inner forwarding reaction.
 Thenable calls can yield, wait, migrate and survive collection like reactions.
 
-Rejected forms: async/await and class syntax retain their existing explicit
+Rejected forms: async generators and class syntax retain their existing explicit
 rejections. Explicit gaps: subclass capabilities,
 species, combinators, `finally`, arbitrary Promise own properties and unhandled
 rejection reporting are deferred. Only the intrinsic Promise constructor is
@@ -4633,3 +4634,25 @@ Explicit gaps: calendars other than `gregory`, time fields (`dayPeriod`, `hour`,
 Named zones outside the host selection throw RangeError. No host clock means
 `format()` throws RangeError; NaN, infinities and out-of-TimeClip values do too.
 Time/style formatting belongs to -216/-217; formatToParts and ranges are deferred.
+
+## Async execution (clj-quickjs-248)
+
+Async declarations, function expressions, arrows and methods execute. Calls create
+an intrinsic Promise and run synchronously through parameters and the body to the
+first await. `await v` uses intrinsic PromiseResolve and internal PerformPromiseThen;
+even non-promises resume in a later FIFO job, on the activation's owning task.
+Native promises do not require a `then` property lookup. Thenables follow the
+existing resumable getter and resolve-thenable job protocol. Fulfilment is the
+expression's value; rejection throws at await. Return resolves (adopting promises
+and thenables); uncaught throw rejects. Operands and pending catch/finally
+completions survive suspension. Async arrows preserve lexical `this`.
+
+Dependency reads remain whole-task VM waits and run no jobs while Waiting.
+Await never parks a task. Once its inbox is empty, a task completes and reports
+suspended function names through `Task::suspended_async_activations()`. This list
+contains diagnostic strings only and does not retain saved activations.
+Explicit gaps: async generators and top-level await are unsupported.
+
+```js accept
+(async () => 2 + await 3)().then(x => __rt.effect(0, x));
+```

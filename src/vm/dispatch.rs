@@ -402,7 +402,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Promise(_)
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => "object",
-                HeapObject::Generator(_) => "object",
+                HeapObject::Generator(_) | HeapObject::AsyncState(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -1759,6 +1759,8 @@ pub(crate) fn step(
                 state.top_mut().pc = target as usize;
             }
         }
+        Instr::AsyncStart => return super::asynchronous::start(heap, state),
+        Instr::Await => return super::asynchronous::await_value(heap, state),
         Instr::GeneratorStart => {}
         Instr::GeneratorInitialYield | Instr::GeneratorYield | Instr::GeneratorYieldStar => {
             return super::generator::step(heap, state, instr);
@@ -2034,7 +2036,7 @@ pub(crate) fn step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
-        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar => true,
+        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.

@@ -99,11 +99,12 @@ enum Holder {
     WeakNotification,
     EphemeronValue,
     WeakMapEntries,
+    SuspendedAsync,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 39] = [
+const HOLDERS: [Holder; 40] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -143,6 +144,7 @@ const HOLDERS: [Holder; 39] = [
     Holder::WeakNotification,
     Holder::EphemeronValue,
     Holder::WeakMapEntries,
+    Holder::SuspendedAsync,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -159,7 +161,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 20] = [
+const KINDS: [ObjectKind; 21] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -180,6 +182,7 @@ const KINDS: [ObjectKind; 20] = [
     ObjectKind::PromiseResolving,
     ObjectKind::Generator,
     ObjectKind::WeakMap,
+    ObjectKind::AsyncState,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -211,6 +214,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
             SuspendedGenerator,
+            SuspendedAsync,
             RunningFrame,
             SuspendedFrame,
             PendingNeedFrame,
@@ -236,6 +240,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
+        ObjectKind::AsyncState => &[SuspendedAsync],
         ObjectKind::Generator => &[SuspendedGenerator],
         ObjectKind::Promise => &[PromiseReactions, PromiseResults],
         ObjectKind::PromiseReaction => &[PromiseReactions],
@@ -382,6 +387,10 @@ fn coverage(holder: Holder) -> Coverage {
             "closure_environment_reclaims",
         ),
         Holder::BindingCell => public("binding_cell_retains", "binding_cell_reclaims"),
+        Holder::SuspendedAsync => Coverage {
+            retains: (Gc, "test_async_gc_suspended_activation"),
+            reclaims: (Gc, "test_async_gc_suspended_activation"),
+        },
         Holder::SuspendedGenerator => Coverage {
             retains: (Gc, "suspended_generator_is_traced_and_reclaimed"),
             reclaims: (Gc, "suspended_generator_is_traced_and_reclaimed"),

@@ -259,6 +259,9 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             .collect()
     };
     match object {
+        HeapObject::AsyncState(_) => Err(Fault::TypeError(
+            "async state has no public properties".into(),
+        )),
         HeapObject::Plain(o) => {
             readable(o.owner())?;
             let mut raw = Raw {

@@ -28,6 +28,7 @@
 //!   `Object.getOwnPropertyNames` (appended by clj-quickjs-123).
 
 pub mod asm;
+pub(crate) mod asynchronous;
 pub(crate) mod builtin;
 pub(crate) mod date;
 pub(crate) mod descriptor;

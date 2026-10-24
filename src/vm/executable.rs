@@ -530,6 +530,8 @@ impl Executable {
                 Opcode::GeneratorYield => Instr::GeneratorYield,
                 Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
                 Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
+                Opcode::AsyncStart => Instr::AsyncStart,
+                Opcode::Await => Instr::Await,
 
                 Opcode::DefineElem => Instr::DefineElem,
                 Opcode::IsEnumerable => Instr::IsEnumerable,

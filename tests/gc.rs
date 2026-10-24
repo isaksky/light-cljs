@@ -980,3 +980,144 @@ fn weak_map_symbol_keys_in_descendant_code_are_traced() {
         "unrooted Executable handles are not GC roots"
     );
 }
+
+// The suspended-activation case adapts QuickJS tests/test_std.js,
+// test_async_gc, revision 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+/// Adapted test_async_gc, QuickJS tests/test_std.js at 7d1c13c5d8f8.
+/// Synthetic fixture, not light-cljs output. `keep` retains the pending
+/// promise until the done callback's collection point so the activation is
+/// reachable during collection. Runtime::collect substitutes for std.gc().
+#[test]
+fn test_async_gc_suspended_activation() {
+    use clj_quickjs::frontend::compile_function;
+    #[derive(Default)]
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Undefined)
+        }
+    }
+    let rt = Runtime::new();
+    // Initialize the realm before recording the baseline.
+    let warm = rt
+        .spawn(
+            &compile_function("function warm() { Promise.resolve(); }").unwrap(),
+            &[],
+        )
+        .unwrap();
+    drop(complete(warm.run().unwrap()));
+    drop(warm);
+    rt.collect().unwrap();
+    let baseline = rt.heap_stats().objects;
+    let object = rt.scope(|s| s.persist(s.new_object()));
+    let weak = object.downgrade();
+    let code = compile_function(
+        r#"function body(held) {
+        let keep;
+        (async function run() {
+            let obj = held;
+            let done = () => { obj; __rt.effect(0,1); keep = null; };
+            Promise.resolve().then(done);
+            const p = new Promise(() => {});
+            keep = p;
+            await p;
+        })();
+        return 42;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&object]).unwrap();
+    drop(object);
+    let mut host = Marker::default();
+    for _ in 0..2000 {
+        let out = task.run_with(Budget::instructions(1), &mut host).unwrap();
+        assert!(matches!(out, RunOutcome::Yielded), "{out:?}");
+        if host.0 {
+            break;
+        }
+    }
+    assert!(host.0, "done callback reached collection point");
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_usage().objects.async_state, 1);
+    assert!(weak.is_live());
+    let retained = rt.heap_stats().objects;
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()).view(),
+        ValueView::Number(42.)
+    );
+    assert_eq!(task.suspended_async_activations(), ["run"]);
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_usage().objects.async_state, 0);
+    assert!(!weak.is_live());
+    assert_eq!(rt.heap_usage().objects.promise, 0);
+    assert_eq!(rt.heap_stats().objects, baseline);
+    assert!(retained > baseline);
+}
+
+#[test]
+fn unreachable_async_cycle_can_be_collected_before_task_completion() {
+    // Synthetic fixture, not light-cljs output, matching test_async_gc's
+    // original topology: only done's closure retains obj, not its activation.
+    let rt = Runtime::new();
+    let object = rt.scope(|s| s.persist(s.new_object()));
+    let weak = object.downgrade();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(obj) {
+        (async function run() {
+            let done=()=>{ obj; __rt.need(248,7); return obj; };
+            Promise.resolve().then(done);
+            const p=new Promise(()=>{});
+            await p;
+        })();
+        return 42;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&object]).unwrap();
+    drop(object);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    rt.collect().unwrap();
+    assert!(weak.is_live(), "done still holds its captured object");
+    assert_eq!(
+        rt.heap_usage().objects.async_state,
+        0,
+        "unreachable suspended state is collectable"
+    );
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = rt.root(Primitive::Undefined);
+    let resumed = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap()
+        .into_runnable();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(complete(task.run().unwrap()).view(), ValueView::Number(42.));
+    assert_eq!(task.suspended_async_activations(), ["run"]);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+}

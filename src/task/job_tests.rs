@@ -936,3 +936,44 @@ fn builtin_job_callback_waits_and_resumes() {
     );
     assert_eq!(host.0, [-1.0, 1.0, 3.0]);
 }
+
+#[test]
+fn native_promise_await_uses_internal_reactions_without_then_lookup() {
+    let (_rt, task, _jobs, mut host) = setup(
+        r#"
+        var p=Promise.resolve(5);
+        var trap={get then() { __rt.effect(0,99); throw 'then lookup'; }};
+        __rt.effect(0,-1);
+        (async () => await p)().then(x => __rt.effect(0,x), () => __rt.effect(0,98));
+        42;
+    "#,
+    );
+    // Promise own/prototype mutation is outside the public subset. Give this
+    // native promise a trap prototype internally to distinguish internal
+    // PerformPromiseThen from an observable then lookup/call.
+    let mut guard = task.try_begin_run().unwrap();
+    let global = guard.vm().unwrap().global_object.unwrap();
+    let heap = &task.0.heap;
+    let get = |name: &str| {
+        let key = heap.keys().lookup(&name.into()).unwrap();
+        heap.read(global, |o| match o {
+            crate::heap::HeapObject::Plain(o) => o.get_own(key).unwrap().value.clone(),
+            _ => unreachable!(),
+        })
+        .unwrap()
+    };
+    let (Value::Object(p), Value::Object(trap)) = (get("p"), get("trap")) else {
+        panic!("objects")
+    };
+    heap.with_object_mut(p, |o| match o {
+        crate::heap::HeapObject::Promise(p) => p.prototype = trap,
+        _ => unreachable!(),
+    })
+    .unwrap();
+    drop(guard);
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        ValueView::Number(42.)
+    );
+    assert_eq!(host.0, [-1., 5.]);
+}

@@ -324,6 +324,12 @@ pub(crate) enum Action {
     /// The answer to a [`Failure`]: release the frame and let the exception
     /// unwind on to the handler below it. Never the result of a step.
     Unwind,
+    SuspendAsync(ObjectId),
+    ResumeAsync {
+        id: ObjectId,
+        rejected: bool,
+        value: Value,
+    },
 }
 
 /// ToPrimitive's preferred primitive type. Number and default share ordinary
@@ -422,6 +428,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Async(super::asynchronous::Boundary),
     ArrayFrom(Box<array_from::State>),
     DateParse {
         parser: Box<super::date::Parser>,
@@ -746,9 +753,40 @@ pub(crate) fn generator_boundary(state: &VmState) -> Option<ObjectId> {
     })
 }
 
+pub(crate) fn async_id(state: &VmState) -> Option<ObjectId> {
+    state.natives.last().and_then(|n| match &n.state {
+        NativeState::Async(a) if n.depth + 1 == state.depth() => Some(a.id),
+        _ => None,
+    })
+}
+
+pub(crate) fn async_boundary(
+    state: &mut VmState,
+    boundary: super::asynchronous::Boundary,
+) -> Result<(), Fault> {
+    push_native(state, NativeState::Async(boundary))?;
+    let index = state.natives.len() - 1;
+    if let Err(error) =
+        state.push_handler(super::exception::HandlerKind::NativeCatch { native: index })
+    {
+        state.natives.pop();
+        return Err(error);
+    }
+    state.natives[index].awaiting = Awaiting::CallResult;
+    Ok(())
+}
+
+pub(crate) fn await_promise(
+    state: &mut VmState,
+    promise: super::promise::PromiseState,
+) -> Result<(), Fault> {
+    push_native(state, NativeState::Promise(promise))
+}
+
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
+            NativeState::Async(a) => a.trace(visit),
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
@@ -890,7 +928,9 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | RequireCoercible
         | OwnKeys
         | IsEnumerable
-        | DefineElem => false,
+        | DefineElem
+        | AsyncStart
+        | Await => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -1962,6 +2002,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
                 natives.pop();
             }
             Action::Continue
+            | Action::SuspendAsync(_)
+            | Action::ResumeAsync { .. }
             | Action::SetProperty { .. }
             | Action::Call { .. }
             | Action::ToNumber(_)
@@ -2055,6 +2097,18 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     state.pop_native_catch(native_index);
     state.truncate_operands(base)?;
     match action {
+        Action::SuspendAsync(source) => {
+            state.natives.pop();
+            super::asynchronous::suspend(heap, state, source)
+        }
+        Action::ResumeAsync {
+            id,
+            rejected,
+            value,
+        } => {
+            state.natives.pop();
+            super::asynchronous::resume(heap, state, id, rejected, value)
+        }
         Action::DefaultLocale => {
             let locale = crate::intl::default_locale(Some(host));
             set_awaiting(state, Awaiting::CallResult)?;
@@ -2194,6 +2248,7 @@ pub(crate) fn catch(
     natives.truncate(index + 1);
     let frame = natives.get_mut(index).ok_or("native catch frame missing")?;
     match &mut frame.state {
+        NativeState::Async(a) => a.failed = Some(exception.value),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
@@ -2354,6 +2409,7 @@ fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
 impl NativeState {
     fn catches(&self) -> bool {
         match self {
+            Self::Async(_) => true,
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
             _ => false,
@@ -2370,6 +2426,7 @@ impl NativeState {
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
         match self {
+            NativeState::Async(a) => a.step(heap, input),
             NativeState::Generator { id, failed } => {
                 if let Some(error) = failed.take() {
                     super::generator::complete(heap, *id);
@@ -3570,6 +3627,7 @@ impl NativeState {
                 | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)
                 | NativeState::Generator { .. }
+                | NativeState::Async(_)
                 | NativeState::TypedArray(_)
                 | NativeState::Promise(_)
                 | NativeState::Error(_)

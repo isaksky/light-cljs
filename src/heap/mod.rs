@@ -158,6 +158,7 @@ pub(crate) enum ObjectKind {
     PromiseResolving,
     Generator,
     WeakMap,
+    AsyncState,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -237,6 +238,7 @@ pub(crate) enum HeapObject {
     PromiseResolving(crate::vm::promise::Resolving),
     Generator(Box<crate::vm::generator::Generator>),
     WeakMap(Box<crate::object::weak_map::WeakMapObject>),
+    AsyncState(Box<crate::vm::asynchronous::AsyncState>),
 }
 
 impl HeapObject {
@@ -269,6 +271,7 @@ impl HeapObject {
             HeapObject::PromiseReaction(_) => ObjectKind::PromiseReaction,
             HeapObject::PromiseResolving(_) => ObjectKind::PromiseResolving,
             HeapObject::Generator(_) => ObjectKind::Generator,
+            HeapObject::AsyncState(_) => ObjectKind::AsyncState,
         }
     }
 }
@@ -296,6 +299,7 @@ impl Trace for HeapObject {
             HeapObject::PromiseReaction(r) => r.trace(visit),
             HeapObject::PromiseResolving(r) => r.trace(visit),
             HeapObject::Generator(g) => g.trace(visit),
+            HeapObject::AsyncState(a) => a.trace(visit),
         }
     }
 
@@ -322,6 +326,7 @@ impl Trace for HeapObject {
             HeapObject::PromiseReaction(r) => r.trace_conditional(visit),
             HeapObject::PromiseResolving(r) => r.trace_conditional(visit),
             HeapObject::Generator(g) => g.trace_conditional(visit),
+            HeapObject::AsyncState(a) => a.trace_conditional(visit),
         }
     }
 }

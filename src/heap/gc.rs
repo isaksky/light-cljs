@@ -1556,7 +1556,8 @@ mod tests {
             | HeapObject::Promise(_)
             | HeapObject::PromiseReaction(_)
             | HeapObject::PromiseResolving(_)
-            | HeapObject::Generator(_) => {
+            | HeapObject::Generator(_)
+            | HeapObject::AsyncState(_) => {
                 panic!("not a native object")
             }
         })

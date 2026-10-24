@@ -1192,7 +1192,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest parameters (defaults: clj-quickjs-100,
+- Rest parameters (defaults: clj-quickjs-100,
   below), `new.target` and `super` (rejected inside arrows).
   Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
@@ -2468,7 +2468,7 @@ name from the key, and own `this` and unmapped `arguments`. They are strict in
 this subset, have no own `prototype`, and `new o.m()` throws TypeError.
 An immutable home-object reference retains the defining literal and prevents
 publication of the method through its task-owned home object. GC traces and
-reclaims method/literal cycles. Computed keys, async methods and `super` remain
+reclaims method/literal cycles. Computed keys and `super` remain
 deferred. Generator methods execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
@@ -2501,7 +2501,7 @@ Getters/setters, descriptor-field reads, conversion-method lookup,
 length/index operations run through traced native continuations and ordinary
 VM frames. They can yield, wait, migrate and unwind on cancellation; apply
 and push also support object-valued lengths through resumable ToPrimitive.
-Computed literal keys, super and async methods remain deferred. Generator methods
+Computed literal keys and super remain deferred. Async methods execute (clj-quickjs-248). Generator methods
 execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
@@ -2871,7 +2871,7 @@ tasks without executing JavaScript during publication. Dependency waits
 continue to suspend the whole task. The boundary hook is ready for WeakRef
 kept-object clearing. Details: `docs/architecture.md`, "Task-owned jobs".
 
-Deferred: JavaScript-visible enqueue APIs, promise reaction producers, async
+Deferred: JavaScript-visible enqueue APIs, promise reaction producers, async generator
 resumes, FinalizationRegistry producers, WeakRef kept-object clearing, timers
 and rejection reporting. The queue itself adds none of those built-ins.
 
@@ -3121,7 +3121,7 @@ JavaScript or waking a dependency wait. Task-owned results remain confined
 to their settling task; foreign reactions reject with TypeError.
 
 Deferred: Promise subclass
-capabilities/species, arbitrary own-property mutation on promises, async/await,
+capabilities/species, arbitrary own-property mutation on promises, async generators,
 combinators, finally and unhandled rejection reporting. Test with
 `cargo test --test promises -- --test-threads=3`.
 Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
@@ -3333,7 +3333,7 @@ Uncaught exceptions complete it and propagate to the caller; re-entrant next and
 incompatible receivers throw TypeError. Activations detach into traced heap
 storage between yields and reattach to ordinary VM frames, preserving dependency
 waits, budgets, collection and worker migration. Publication and foreign-task
-access are rejected. Deferred: generator `return`/`throw`, async/await.
+access are rejected. Deferred: generator `return`/`throw`, async generators.
 Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
 Generator functions eagerly create their own task-owned prototype records, so
@@ -3387,7 +3387,7 @@ completions across calls from different depths. For example,
 `try { return 1; } finally { yield 2; }` yields 2, then completes with 1.
 A resumed finally block may wait on `__rt.need`, survive collection and migrate
 to another worker before finishing its pending return or throw. Generator
-`return()`/`throw()` methods and async/await remain deferred; delegated `yield*`
+`return()`/`throw()` methods and async generators remain deferred; delegated `yield*`
 executes as described below.
 
 ### Array destructuring (clj-quickjs-131)
@@ -3492,3 +3492,20 @@ named zones other than the host-selected zone throw RangeError. The snapshot's
 59 transition records do not imply support for its 598-name inventory. Numeric
 and named components reproduce QuickJS strings, including its English field
 ordering for de/fr/ja and Russian genitive month names.
+
+### Async functions and await (clj-quickjs-248)
+
+Async declarations, expressions, arrows and object methods return Promises. Bodies
+run synchronously until await, including argument defaults. Await always resumes
+through a FIFO promise job on the calling task, preserving expression operands,
+catch/finally handlers, lexical arrow `this` and closures. Fulfilment supplies the
+await value; rejection throws there. Returns adopt promises/thenables and uncaught
+throws reject the returned promise. Native awaits use internal reactions without
+an observable `then` lookup. Thenable getters and callbacks can yield or wait.
+
+`__rt.need` remains a whole-task dependency wait before or after await; await
+itself never reports Waiting. A task drains its jobs and completes even with
+unsettled awaits. `Task::suspended_async_activations()` reports their function
+names after completion without retaining them. Detached states are task-owned,
+reachable through promise reactions, and collectable in unreachable cycles.
+Async generators and top-level await remain deferred.

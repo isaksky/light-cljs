@@ -3554,9 +3554,9 @@ allocates the closure with the literal below its captured values as its
 `FunctionObject::home_object`, preserving the literal on the operand stack for
 `define_field`. That field defines the usual writable, enumerable, configurable
 data property. A `__proto__() {}` method is a data property, including beside
-a `__proto__: value` prototype setter. Computed keys, accessors, async methods
-and `super` remain deferred in this slice. Generator methods execute through
-detachable activations (clj-quickjs-243 below).
+a `__proto__: value` prototype setter. Computed keys and `super` remain deferred in this slice. Generator methods
+execute through detachable activations (clj-quickjs-243 below); async methods
+execute through promise jobs (clj-quickjs-248 below).
 
 The home-object reference is immutable from allocation, separate from captures
 and the optional property record chosen by clj-quickjs-125. Function objects
@@ -6668,3 +6668,38 @@ use weekday, month, day, year, era ordering with QuickJS separators even where
 CLDR style patterns differ. Unsupported calendars, time fields, time zone names
 and styles fail with explicit RangeError. Formatting beyond Gregorian date
 components, formatToParts and range methods remain deferred.
+
+### Async activations and task completion (clj-quickjs-248)
+
+AsyncStart establishes a promise capability and an exception-catching native
+boundary below the function's ordinary VM frame, before parameter initialization.
+Await runs intrinsic PromiseResolve through resumable native frames, registers an
+internal PerformPromiseThen reaction, and moves the activation with the same
+`VmState::detach_activation` / `attach_activation` mechanism as generators. Saved
+operands, handlers (including finally completions) and native frames retain their
+relative indices and precise tracing. An AsyncState heap object is task-owned and
+never published; its traced edges are its saved activation and promise capability.
+A promise reaction is the only root path into a detached state. Its registering
+task runs the resume job; cross-task settlement only enqueues that opaque job.
+Rejection is raised in the reattached frame at await, before executing its next
+instruction. Completion resolves or rejects the function's promise through the
+existing resolver protocol, including resumable thenable adoption.
+
+The owning task drains its queue and completes even with suspended awaits. Its
+`suspended_async_activations()` diagnostic lists function names, including states
+already reclaimed as unreachable; bookkeeping never traces activation identities.
+No async job runs during a whole-task `__rt.need` wait. Await itself never changes
+the task to Waiting. Cancellation unwinds attached frames normally and drops queued
+jobs and detached state with the task's roots. An externally reachable pending
+promise can retain its reaction until settlement, as for ordinary reactions.
+
+QuickJS references and provenance: semantic references are `research/quickjs/quickjs.c`
+`async_func_init`, `js_async_function_call`, `js_async_function_resume`,
+`js_async_function_resolve_mark` and `CASE(OP_await)`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No C implementation was ported.
+`tests/gc.rs::test_async_gc_suspended_activation` adapts `research/quickjs/tests/test_std.js`
+`test_async_gc` at that revision and retains its license. Runtime::collect at a
+one-instruction budget boundary inside done substitutes for std.gc. A temporary
+reference to the awaited promise makes its activation reachable at that point;
+the host supplies obj to permit a weak-handle lifetime assertion. Dropping that
+reference and completing the task reclaims the activation, closures and promises.

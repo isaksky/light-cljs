@@ -459,6 +459,7 @@ pub(crate) struct TaskInner {
     /// lock; holds no heap values.
     produce: Mutex<Vec<ProducerRequest>>,
     jobs: Arc<crate::job::JobInbox>,
+    suspended_async: Mutex<Vec<String>>,
 }
 
 /// A task is a root source while any handle to it exists: its saved frames
@@ -622,11 +623,18 @@ impl Task {
             log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(Box::new(vm))),
             produce: Mutex::new(Vec::new()),
+            suspended_async: Mutex::new(Vec::new()),
             jobs,
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
         inner.heap.register_source(source);
         Task(inner)
+    }
+
+    /// Names of async activations still suspended when this task completed.
+    /// Diagnostic strings never retain activations or their captured values.
+    pub fn suspended_async_activations(&self) -> Vec<String> {
+        self.0.suspended_async.lock().unwrap().clone()
     }
 
     pub fn id(&self) -> TaskId {
@@ -1226,6 +1234,13 @@ impl RunGuard<'_> {
                         }
                         continue;
                     }
+                    *task.suspended_async.lock().unwrap() = self
+                        .vm()
+                        .expect("live activation")
+                        .suspended_async
+                        .iter()
+                        .map(|(_, name)| name.clone())
+                        .collect();
                     break Exit::Return(
                         self.vm()
                             .expect("live activation")

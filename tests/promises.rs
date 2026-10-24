@@ -918,3 +918,233 @@ fn promise_dependency_failure_rejects_after_resume() {
     );
     assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
 }
+
+#[test]
+fn async_function_needs_and_awaits() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+        async function f() {
+            __rt.effect(0, 'first');
+            let a = __rt.need(248,1);
+            __rt.effect(0, 'before-await');
+            await null;
+            __rt.effect(0, 'second');
+            let b = __rt.need(248,2);
+            return a + b;
+        }
+        f().then(x => __rt.effect(0,x));
+        __rt.effect(0, 'caller');
+        Promise.resolve().then(() => __rt.effect(0,'parallel'));
+        return 42;
+    }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.0, [Primitive::String("first".into())]);
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    let moved = task.clone();
+    let (out, returned_host) = std::thread::spawn(move || {
+        let out = moved.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        (out, host)
+    })
+    .join()
+    .unwrap();
+    host = returned_host;
+    assert!(matches!(out, RunOutcome::Waiting(_)));
+    assert_eq!(
+        host.0,
+        ["first", "before-await", "caller", "second"].map(|s| Primitive::String(s.into()))
+    );
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    let moved = task.clone();
+    let (out, host) = std::thread::spawn(move || {
+        let out = moved.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        (out, host)
+    })
+    .join()
+    .unwrap();
+    assert!(matches!(out,RunOutcome::Complete(v) if v.view()==ValueView::Number(42.)));
+    assert_eq!(
+        host.0,
+        vec![
+            Primitive::String("first".into()),
+            Primitive::String("before-await".into()),
+            Primitive::String("caller".into()),
+            Primitive::String("second".into()),
+            Primitive::String("parallel".into()),
+            Primitive::Number(16.)
+        ]
+    );
+    assert!(task.suspended_async_activations().is_empty());
+}
+
+#[test]
+fn async_await_and_return_thenables_are_resumable() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+        async function f() {
+            let x = await {get then() { __rt.need(248,3); return resolve => resolve(5); }};
+            return {then(resolve) { __rt.need(248,4); resolve(x + 1); }};
+        }
+        f().then(x => __rt.effect(0,x));
+        __rt.effect(0,1);
+        return 42;
+    }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert!(
+        host.0.is_empty(),
+        "then getter is synchronous before suspension"
+    );
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.0, [Primitive::Number(1.)]);
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [Primitive::Number(1.), Primitive::Number(6.)]);
+}
+
+#[test]
+fn async_resume_jobs_belong_to_the_awaiting_task() {
+    for result in ["2", "({private:2})"] {
+        let rt = Runtime::new();
+        let pair = finish(&function(
+            &rt,
+            "function make() { let resolve; let p=new Promise(r => { resolve=r; }); return __rt.vector(p,resolve); }",
+            &[],
+        ));
+        rt.publish(&pair).unwrap();
+        let get = |i| {
+            finish(&function(
+                &rt,
+                &format!("function get(pair) {{ return __rt.nth(pair,{i}); }}"),
+                std::slice::from_ref(&pair),
+            ))
+        };
+        let p = get(0);
+        let resolve = get(1);
+        let consumer = function(
+            &rt,
+            r#"function consume(p) {
+            (async () => { try { return await p; } catch(e) { return e instanceof TypeError ? 3 : 99; } })().then(x => __rt.effect(0,x));
+            __rt.need(248,5);
+            return 42;
+        }"#,
+            &[p],
+        );
+        let mut host = Effects::default();
+        assert!(matches!(
+            consumer.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Waiting(_)
+        ));
+        let settler = function(
+            &rt,
+            &format!("function settle(resolve) {{ resolve({result}); }}"),
+            &[resolve],
+        );
+        finish(&settler);
+        assert!(host.0.is_empty());
+        assert_eq!(consumer.status(), clj_quickjs::TaskStatus::Waiting);
+        rt.collect().unwrap();
+        satisfy(&rt, &consumer);
+        assert!(matches!(
+            consumer.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        assert_eq!(
+            host.0,
+            [Primitive::Number(if result == "2" { 2. } else { 3. })]
+        );
+        assert!(consumer.suspended_async_activations().is_empty());
+    }
+}
+
+#[test]
+fn async_operands_and_handlers_survive_collection_at_every_step() {
+    for body in [
+        "function first(a,b) { return a; } return first({n:17}, await 0).n;",
+        "try { return {n:17}; } finally { await 0; await null; }",
+        "try { throw {n:17}; } finally { await 0; }",
+        "try { return 2 + await Promise.reject({n:17}); } catch(e) { return e; }",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "function body() {{ async function f() {{ {body} }} f().then(x => __rt.effect(0,typeof x === 'number' ? x : x.n), e => __rt.effect(0,e.n)); return 42; }}"
+        );
+        let task = function(&rt, &source, &[]);
+        let mut host = Effects::default();
+        let mut complete = false;
+        for _ in 0..5000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Number(42.));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{body}: {other:?}"),
+            }
+        }
+        assert!(complete, "{body}");
+        assert_eq!(host.0, [Primitive::Number(17.)], "{body}");
+        rt.collect().unwrap();
+        assert_eq!(rt.heap_usage().objects.async_state, 0);
+    }
+}
+
+#[test]
+fn async_cancellation_unwinds_attached_finally_and_discards_resumes() {
+    let rt = Runtime::new();
+    let object = rt.scope(|s| s.persist(s.new_object()));
+    let weak = object.downgrade();
+    let task = function(
+        &rt,
+        r#"function body(o) {
+        (async () => { await 0; try { __rt.need(248,6); } finally { __rt.effect(0,1); } })();
+        (async () => { o; await 0; __rt.effect(0,2); })();
+        return 42;
+    }"#,
+        &[object],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert_eq!(host.0, [Primitive::Number(1.)]);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    assert_eq!(rt.heap_usage().objects.async_state, 0);
+}

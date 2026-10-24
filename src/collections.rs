@@ -250,6 +250,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
     match object {
         HeapObject::Promise(_) => "Promise",
         HeapObject::Generator(_) => "generator",
+        HeapObject::AsyncState(_) => "async activation",
         HeapObject::PromiseReaction(_) => "promise reaction",
         HeapObject::PromiseResolving(_) => "promise resolving functions",
         HeapObject::Plain(_) => "object",

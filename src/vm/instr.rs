@@ -120,6 +120,8 @@
 //! | `OwnKeys` | 0x80 | – | source → keys | private array of own keys, including symbols, before rest copying |
 //! | `IsEnumerable` | 0x81 | – | source key → boolean | current own descriptor's enumerable flag; key is already converted |
 //! | `DefineElem` | 0x82 | – | object key value → object | define own writable/enumerable/configurable data property; key is already converted |
+//! | `AsyncStart` | 0x83 | – | – | establish async promise and completion boundary before defaults |
+//! | `Await` | 0x84 | – | value → resumed | detach activation and resume through an internal promise reaction |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -611,6 +613,8 @@ pub enum Opcode {
     OwnKeys = 0x80,
     IsEnumerable = 0x81,
     DefineElem = 0x82,
+    AsyncStart = 0x83,
+    Await = 0x84,
 }
 
 /// Operand encoding of an opcode.
@@ -776,6 +780,8 @@ impl Opcode {
             0x81 => IsEnumerable,
             0x80 => OwnKeys,
             0x7F => RequireCoercible,
+            0x83 => AsyncStart,
+            0x84 => Await,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -915,6 +921,8 @@ impl Opcode {
             IsEnumerable => "is_enumerable",
             OwnKeys => "own_keys",
             RequireCoercible => "require_coercible",
+            AsyncStart => "async_start",
+            Await => "await",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -977,14 +985,17 @@ impl Opcode {
             | Dec | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
                 OperandKind::None
             }
-            GeneratorStart | GeneratorYield | GeneratorInitialYield | GeneratorYieldStar => {
-                OperandKind::None
-            }
 
             RequireCoercible => OperandKind::None,
             OwnKeys => OperandKind::None,
             IsEnumerable => OperandKind::None,
             DefineElem => OperandKind::None,
+            GeneratorStart
+            | GeneratorYield
+            | GeneratorInitialYield
+            | GeneratorYieldStar
+            | AsyncStart
+            | Await => OperandKind::None,
         }
     }
 }
@@ -1168,6 +1179,8 @@ pub(crate) enum Instr {
     OwnKeys,
     IsEnumerable,
     DefineElem,
+    AsyncStart,
+    Await,
 }
 
 impl Instr {
@@ -1283,6 +1296,8 @@ impl Instr {
             Instr::IsEnumerable => Opcode::IsEnumerable,
             Instr::OwnKeys => Opcode::OwnKeys,
             Instr::RequireCoercible => Opcode::RequireCoercible,
+            Instr::AsyncStart => Opcode::AsyncStart,
+            Instr::Await => Opcode::Await,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1322,8 +1337,9 @@ impl Instr {
             DeclareGlobalVar(_)
             | DeclareGlobalFunction(_)
             | GeneratorStart
-            | GeneratorInitialYield => (0, 0),
-            GeneratorYield | GeneratorYieldStar => (1, 1),
+            | GeneratorInitialYield
+            | AsyncStart => (0, 0),
+            GeneratorYield | GeneratorYieldStar | Await => (1, 1),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div

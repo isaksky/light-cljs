@@ -218,7 +218,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         };
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
-        lower.cur_mut().constructor = !function.generator;
+        lower.cur_mut().constructor = !function.generator && !function.asynchronous;
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -1523,12 +1523,15 @@ impl<'s> Lowerer<'s> {
     /// ECMAScript FunctionDeclarationInstantiation and QuickJS
     /// `js_parse_function_decl2` (`has_parameter_expressions`).
     fn function_body(&mut self, f: &Function) -> Result<(), SyntaxError> {
-        if f.asynchronous {
+        if f.asynchronous && f.generator {
             return Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 f.span,
-                "async functions cannot be executed yet",
+                "async generators cannot be executed yet",
             ));
+        }
+        if f.asynchronous {
+            self.out().op(Opcode::AsyncStart, f.span);
         }
         if f.generator {
             self.out().op(Opcode::GeneratorStart, f.span);
@@ -1744,7 +1747,8 @@ impl<'s> Lowerer<'s> {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
         self.enter_function(self_name, false, f.strict);
-        self.cur_mut().constructor = f.kind == FunctionKind::Ordinary && !f.generator;
+        self.cur_mut().constructor =
+            f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous;
         self.cur_mut().own_arguments = matches!(
             f.kind,
             FunctionKind::Ordinary
@@ -3655,11 +3659,11 @@ impl<'s> Lowerer<'s> {
                 value: None,
                 delegate: true,
             } => Err(self.internal(span, "delegated yield without operand")),
-            ExprKind::Await(_) => Err(self.error(
-                SyntaxErrorKind::Unsupported,
-                e.span,
-                "await cannot be executed yet",
-            )),
+            ExprKind::Await(value) => {
+                self.expr(value)?;
+                self.out().op(Opcode::Await, span);
+                Ok(())
+            }
             ExprKind::Sequence { left, right } => self.sequence(left, right, span),
             ExprKind::Delete { operand, op_span } => self.delete(operand, *op_span),
         }

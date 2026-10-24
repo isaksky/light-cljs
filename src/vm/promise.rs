@@ -82,6 +82,7 @@ pub(crate) struct Reaction {
     // source result is inaccessible, reject that target locally as well as
     // this reaction's derived Promise, without exposing the foreign value.
     forwarding: Option<ObjectId>,
+    async_state: Option<ObjectId>,
 }
 impl Trace for Reaction {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -91,6 +92,9 @@ impl Trace for Reaction {
         self.rejected.trace(visit);
         if let Some(guard) = self.forwarding {
             visit((guard).into());
+        }
+        if let Some(id) = self.async_state {
+            visit(id);
         }
     }
 }
@@ -222,6 +226,16 @@ fn rejection_tracking(_promise: ObjectId, _handled: bool) {}
 
 #[derive(Debug)]
 pub(crate) enum PromiseState {
+    AsyncRejectTypeError {
+        id: ObjectId,
+        called: bool,
+    },
+    Await {
+        promise: ObjectId,
+        resolve: Value,
+        value: Value,
+        called: bool,
+    },
     RejectTypeError {
         promise: ObjectId,
         forwarding: Option<ObjectId>,
@@ -276,6 +290,17 @@ pub(crate) enum PromiseState {
 impl Trace for PromiseState {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
+            Self::AsyncRejectTypeError { id, .. } => visit(*id),
+            Self::Await {
+                promise,
+                resolve,
+                value,
+                ..
+            } => {
+                visit(*promise);
+                resolve.trace(visit);
+                value.trace(visit);
+            }
             Self::RejectTypeError {
                 promise,
                 forwarding,
@@ -384,6 +409,45 @@ impl PromiseState {
         input: Input,
     ) -> Result<Action, Fault> {
         match self {
+            Self::AsyncRejectTypeError { id, called } => {
+                if !*called {
+                    *called = true;
+                    let callee = crate::realm::intrinsics(heap)
+                        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                        .global(crate::realm::Global::TypeError);
+                    return Ok(Action::Call {
+                        callee,
+                        this: Value::Undefined,
+                        args: vec![Value::String(
+                            "promise result belongs to another task".into(),
+                        )],
+                    });
+                }
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("missing async TypeError"));
+                };
+                Ok(Action::ResumeAsync {
+                    id: *id,
+                    rejected: true,
+                    value,
+                })
+            }
+            Self::Await {
+                promise,
+                resolve,
+                value,
+                called,
+            } => {
+                if !*called {
+                    *called = true;
+                    return Ok(Action::Call {
+                        callee: resolve.clone(),
+                        this: Value::Undefined,
+                        args: vec![value.clone()],
+                    });
+                }
+                Ok(Action::SuspendAsync(*promise))
+            }
             Self::RejectTypeError {
                 promise,
                 forwarding,
@@ -547,6 +611,10 @@ impl PromiseState {
                     .flatten()
                     .ok_or(Fault::Internal("reaction source is pending"))?;
                 if result.owner.is_some_and(|owner| owner != task) {
+                    if let Some(id) = reaction.async_state {
+                        *self = Self::AsyncRejectTypeError { id, called: false };
+                        return Ok(Action::Continue);
+                    }
                     *self = Self::RejectTypeError {
                         promise: reaction.derived,
                         forwarding: reaction.forwarding,
@@ -554,6 +622,13 @@ impl PromiseState {
                         called: false,
                     };
                     return Ok(Action::Continue);
+                }
+                if let Some(id) = reaction.async_state {
+                    return Ok(Action::ResumeAsync {
+                        id,
+                        rejected: result.rejected,
+                        value: result.value,
+                    });
                 }
                 let handler = if result.rejected {
                     &reaction.rejected
@@ -765,30 +840,90 @@ pub(crate) fn leaf(
                     fulfilled,
                     rejected,
                     forwarding,
+                    async_state: None,
                 }),
             )?;
             let callable = function(heap, Builtin::PromiseReaction(record))?;
-            heap.with_object_mut(source, |o| {
-                let HeapObject::Promise(p) = o else {
-                    unreachable!()
-                };
-                if p.result.as_ref().is_some_and(|r| r.rejected) && !p.is_handled {
-                    rejection_tracking(source, true);
-                }
-                p.is_handled = true;
-                let registration = Registration {
-                    inbox: inbox.clone(),
-                    callable,
-                };
-                if p.result.is_some() {
-                    registration.enqueue();
-                } else {
-                    p.reactions.push(registration);
-                }
-            })
-            .ok_or(Fault::Internal("promise reclaimed"))?;
+            register(heap, inbox, source, callable)?;
             Ok(Value::Object(derived))
         }
         _ => Err(Fault::Internal("invalid promise leaf")),
     }
+}
+
+pub(crate) fn capability(heap: &Heap) -> Result<(ObjectId, Value, Value), Fault> {
+    let promise = new(heap)?;
+    let (_, resolve, reject) = resolving_functions(heap, promise)?;
+    Ok((promise, resolve, reject))
+}
+
+/// PromiseResolve with the intrinsic constructor; native promises take the
+/// identity path and their observable `then` property is never consulted.
+pub(crate) fn await_state(heap: &Heap, value: Value) -> Result<PromiseState, Fault> {
+    if let Ok(promise) = receiver(heap, &value) {
+        return Ok(PromiseState::Await {
+            promise,
+            resolve: Value::Undefined,
+            value: Value::Undefined,
+            called: true,
+        });
+    }
+    let (promise, resolve, _) = capability(heap)?;
+    Ok(PromiseState::Await {
+        promise,
+        resolve,
+        value,
+        called: false,
+    })
+}
+
+/// Internal PerformPromiseThen: queue a reaction bound to the activation's
+/// owning task, without JavaScript property access or a derived capability.
+pub(crate) fn await_then(
+    heap: &Heap,
+    inbox: &Weak<JobInbox>,
+    source: ObjectId,
+    state: ObjectId,
+) -> Result<(), Fault> {
+    let record = alloc(
+        heap,
+        HeapObject::PromiseReaction(Reaction {
+            source,
+            derived: source,
+            fulfilled: Value::Undefined,
+            rejected: Value::Undefined,
+            forwarding: None,
+            async_state: Some(state),
+        }),
+    )?;
+    let callable = function(heap, Builtin::PromiseReaction(record))?;
+    register(heap, inbox, source, callable)
+}
+
+fn register(
+    heap: &Heap,
+    inbox: &Weak<JobInbox>,
+    source: ObjectId,
+    callable: Value,
+) -> Result<(), Fault> {
+    heap.with_object_mut(source, |o| {
+        let HeapObject::Promise(p) = o else {
+            unreachable!()
+        };
+        if p.result.as_ref().is_some_and(|r| r.rejected) && !p.is_handled {
+            rejection_tracking(source, true);
+        }
+        p.is_handled = true;
+        let registration = Registration {
+            inbox: inbox.clone(),
+            callable,
+        };
+        if p.result.is_some() {
+            registration.enqueue();
+        } else {
+            p.reactions.push(registration);
+        }
+    })
+    .ok_or(Fault::Internal("promise reclaimed"))?;
+    Ok(())
 }
