@@ -443,6 +443,16 @@ pub(crate) enum Builtin {
     DisposableStackDispose,
     DisposableStackMove,
     DisposableStackDisposed,
+
+    AsyncDisposableStack,
+    AsyncDisposableStackUse,
+    AsyncDisposableStackAdopt,
+    AsyncDisposableStackDefer,
+    AsyncDisposableStackDispose,
+    AsyncDisposableStackMove,
+    AsyncDisposableStackDisposed,
+    /// Private entry called only by the internal async dispose activation.
+    AsyncDisposableStackDisposeBody,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -679,12 +689,18 @@ impl Builtin {
             Builtin::WeakMapDelete => "delete",
             Builtin::WeakRef => "WeakRef",
             Builtin::DisposableStack => "DisposableStack",
-            Builtin::DisposableStackUse => "use",
-            Builtin::DisposableStackAdopt => "adopt",
-            Builtin::DisposableStackDefer => "defer",
+            Builtin::AsyncDisposableStack => "AsyncDisposableStack",
+            Builtin::DisposableStackUse | Builtin::AsyncDisposableStackUse => "use",
+            Builtin::DisposableStackAdopt | Builtin::AsyncDisposableStackAdopt => "adopt",
+            Builtin::DisposableStackDefer | Builtin::AsyncDisposableStackDefer => "defer",
             Builtin::DisposableStackDispose => "dispose",
-            Builtin::DisposableStackMove => "move",
-            Builtin::DisposableStackDisposed => "get disposed",
+            Builtin::AsyncDisposableStackDispose | Builtin::AsyncDisposableStackDisposeBody => {
+                "disposeAsync"
+            }
+            Builtin::DisposableStackMove | Builtin::AsyncDisposableStackMove => "move",
+            Builtin::DisposableStackDisposed | Builtin::AsyncDisposableStackDisposed => {
+                "get disposed"
+            }
             Builtin::WeakRefDeref => "deref",
             Builtin::FinalizationRegistry => "FinalizationRegistry",
             Builtin::FinalizationRegistryRegister => "register",
@@ -888,11 +904,19 @@ impl Builtin {
             Builtin::MapSet | Builtin::WeakMapSet => 2,
             Builtin::WeakRef => 1,
             Builtin::DisposableStack
+            | Builtin::AsyncDisposableStack
+            | Builtin::AsyncDisposableStackDispose
+            | Builtin::AsyncDisposableStackDisposeBody
+            | Builtin::AsyncDisposableStackMove
+            | Builtin::AsyncDisposableStackDisposed
             | Builtin::DisposableStackDispose
             | Builtin::DisposableStackMove
             | Builtin::DisposableStackDisposed => 0,
-            Builtin::DisposableStackUse | Builtin::DisposableStackDefer => 1,
-            Builtin::DisposableStackAdopt => 2,
+            Builtin::DisposableStackUse
+            | Builtin::DisposableStackDefer
+            | Builtin::AsyncDisposableStackUse
+            | Builtin::AsyncDisposableStackDefer => 1,
+            Builtin::DisposableStackAdopt | Builtin::AsyncDisposableStackAdopt => 2,
             Builtin::WeakRefDeref => 0,
             Builtin::FinalizationRegistry | Builtin::FinalizationRegistryUnregister => 1,
             Builtin::FinalizationRegistryRegister => 2,
@@ -1156,13 +1180,26 @@ pub(crate) fn call(
         Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
         Builtin::WeakRef => Err(Fault::TypeError("WeakRef requires new".into())),
         Builtin::DisposableStack => Err(Fault::TypeError("DisposableStack requires new".into())),
-        Builtin::DisposableStackUse | Builtin::DisposableStackDispose => Err(Fault::Internal(
+        Builtin::AsyncDisposableStack => {
+            Err(Fault::TypeError("AsyncDisposableStack requires new".into()))
+        }
+        Builtin::DisposableStackUse
+        | Builtin::DisposableStackDispose
+        | Builtin::AsyncDisposableStackUse
+        | Builtin::AsyncDisposableStackDispose
+        | Builtin::AsyncDisposableStackDisposeBody => Err(Fault::Internal(
             "DisposableStack requires a native continuation",
         )),
         Builtin::DisposableStackAdopt
         | Builtin::DisposableStackDefer
         | Builtin::DisposableStackMove
         | Builtin::DisposableStackDisposed => {
+            disposable_stack_method(heap, task, which, this, args)
+        }
+        Builtin::AsyncDisposableStackAdopt
+        | Builtin::AsyncDisposableStackDefer
+        | Builtin::AsyncDisposableStackMove
+        | Builtin::AsyncDisposableStackDisposed => {
             disposable_stack_method(heap, task, which, this, args)
         }
         Builtin::WeakRefDeref => Err(Fault::Internal("WeakRef.deref requires task kept objects")),
@@ -2432,18 +2469,33 @@ fn disposable_stack_method(
     this: &Value,
     args: &[Value],
 ) -> Result<Value, Fault> {
-    use crate::object::disposable_stack::{self as stack, Hint, Resource};
+    use crate::object::disposable_stack::{self as stack, Hint, Kind, Resource};
+    let kind = if matches!(
+        which,
+        Builtin::AsyncDisposableStackAdopt
+            | Builtin::AsyncDisposableStackDefer
+            | Builtin::AsyncDisposableStackMove
+            | Builtin::AsyncDisposableStackDisposed
+    ) {
+        Kind::Async
+    } else {
+        Kind::Sync
+    };
     let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
-    if which == Builtin::DisposableStackDisposed {
-        return stack::access(heap, task, this, false, |s| Value::Bool(s.disposed));
+    if matches!(
+        which,
+        Builtin::DisposableStackDisposed | Builtin::AsyncDisposableStackDisposed
+    ) {
+        return stack::access(heap, task, this, kind, false, |s| Value::Bool(s.disposed));
     }
-    stack::access(heap, task, this, true, |_| ())?;
-    if which == Builtin::DisposableStackMove {
-        let prototype = realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-            .disposable_stack_prototype;
-        let mut moved = stack::DisposableStack::new(task, prototype);
-        moved.resources = stack::access(heap, task, this, true, |s| {
+    stack::access(heap, task, this, kind, true, |_| ())?;
+    if matches!(
+        which,
+        Builtin::DisposableStackMove | Builtin::AsyncDisposableStackMove
+    ) {
+        let prototype = kind.prototype(heap)?;
+        let mut moved = stack::DisposableStack::new(task, prototype, kind);
+        moved.resources = stack::access(heap, task, this, kind, true, |s| {
             s.disposed = true;
             std::mem::take(&mut s.resources)
         })?;
@@ -2453,12 +2505,16 @@ fn disposable_stack_method(
             .ok_or(Fault::OutOfMemory("heap object table exhausted"));
     }
     let (value, method, hint, result) = match which {
-        Builtin::DisposableStackAdopt => (arg(0), arg(1), Hint::Adopt, arg(0)),
-        Builtin::DisposableStackDefer => (Value::Undefined, arg(0), Hint::Defer, Value::Undefined),
+        Builtin::DisposableStackAdopt | Builtin::AsyncDisposableStackAdopt => {
+            (arg(0), arg(1), Hint::Adopt, arg(0))
+        }
+        Builtin::DisposableStackDefer | Builtin::AsyncDisposableStackDefer => {
+            (Value::Undefined, arg(0), Hint::Defer, Value::Undefined)
+        }
         _ => return Err(Fault::Internal("invalid DisposableStack method")),
     };
     stack::callable(heap, &method)?;
-    stack::access(heap, task, this, true, |s| {
+    stack::access(heap, task, this, kind, true, |s| {
         s.resources.push(Resource {
             value,
             method,

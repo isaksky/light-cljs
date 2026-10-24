@@ -3,8 +3,58 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
-/// Synthetic fixtures, not light-cljs output. Intrinsic move cases follow
-/// QuickJS test_language.js::test_using (MIT notice reproduced below).
+/// Synthetic fixtures, not light-cljs output. Async stack cases follow
+/// QuickJS test_language.js::test_await_using (MIT notice reproduced below).
+#[test]
+fn async_disposable_stack() {
+    // Synthetic fixtures, not light-cljs output. The first five groups adapt
+    // QuickJS test_language.js::test_await_using (MIT notice below).
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for source in [
+        "let log = [], s = new AsyncDisposableStack(); s.use({async [Symbol.asyncDispose]() { log.push('outer-called'); }}); s.use({async [Symbol.asyncDispose]() { log.push('inner-called'); await null; log.push('inner-after-await'); }}); let p = s.disposeAsync(); log.push('after-sync-dispose'); await p; return log.join(',') === 'inner-called,after-sync-dispose,inner-after-await,outer-called';",
+        "let log = [], s = new AsyncDisposableStack(); s.use({[Symbol.asyncDispose]() { log.push(42); }}); s.use({[Symbol.asyncDispose]() { log.push(43); }}); s.disposeAsync(); let disposed = s.disposed; await s.disposeAsync(); return disposed && log.join(',') === '43,42';",
+        "let log = [], s = new AsyncDisposableStack(); for (let v of ['a', 'b', 'c']) s.use({[Symbol.asyncDispose]() { log.push(v); }}); await s.disposeAsync(); return log.join(',') === 'c,b,a';",
+        "let s = new AsyncDisposableStack(), caught, saved = SuppressedError; s.use({async [Symbol.asyncDispose]() { throw new Error('first'); }}); s.use({async [Symbol.asyncDispose]() { throw new Error('second'); }}); SuppressedError = () => { throw 99; }; try { await s.disposeAsync(); } catch(e) { caught = e; } return caught instanceof saved && caught.error.message === 'first' && caught.suppressed.message === 'second';",
+        "let s = new AsyncDisposableStack(); s.use({[Symbol.asyncDispose]() { return 42; }}); s.use({async [Symbol.asyncDispose]() { return 'hello'; }}); return await s.disposeAsync() === undefined;",
+        "let caught; try { AsyncDisposableStack(); } catch(e) { caught = e; } return caught instanceof TypeError;",
+        "let p = AsyncDisposableStack.prototype.disposeAsync.call({}), caught; try { await p; } catch(e) { caught = e; } return p instanceof Promise && caught instanceof TypeError;",
+        "let s = new AsyncDisposableStack(), n = 0; s.disposeAsync(); for (let f of [() => s.use(null), () => s.adopt(0, null), () => s.defer(null), () => s.move()]) { try { f(); } catch(e) { if (e instanceof ReferenceError) n++; } } return n === 4 && await s.disposeAsync() === undefined;",
+        "let s = new AsyncDisposableStack(); return s[Symbol.asyncDispose] === s.disposeAsync && s[Symbol.toStringTag] === 'AsyncDisposableStack' && s.disposeAsync.length === 0 && AsyncDisposableStack.length === 0;",
+        "let log = ''; await (async () => { await using s = new AsyncDisposableStack(); s.defer(async () => { log += 'd'; await null; log += 'D'; }); s.adopt('a', async v => { log += v; await null; }); })(); return log === 'adD';",
+        "let log = '', s = new AsyncDisposableStack(), r = {get [Symbol.asyncDispose]() { log += 'a'; return null; }, get [Symbol.dispose]() { log += 's'; return function() { if (this === r && arguments.length === 0) log += 'c'; return Promise.resolve(42); }; }}; let ok = s.use(r) === r && s.use(null) === null && s.use(undefined) === undefined; Object.defineProperty(r, Symbol.dispose, {value: 42}); await s.disposeAsync(); return ok && log === 'asc';",
+        "let s = new AsyncDisposableStack(), log = ''; let a = s.adopt(42, async function(v) { if (this === undefined && arguments.length === 1 && v === 42) log += 'a'; await null; log += 'A'; }); let d = s.defer(async function() { if (this === undefined && arguments.length === 0) log += 'd'; await null; log += 'D'; }); await s.disposeAsync(); return a === 42 && d === undefined && log === 'dDaA';",
+        "let saved = AsyncDisposableStack, s = new saved(), n = 0; s.defer(() => n++); Object.defineProperty(s, 'constructor', {get() { throw 99; }}); globalThis.AsyncDisposableStack = class Other {}; let moved = s.move(); let ok = s.disposed && !moved.disposed && Object.getPrototypeOf(moved) === saved.prototype; await moved.disposeAsync(); return ok && n === 1;",
+        "class S extends AsyncDisposableStack {} let s = new S(); return s instanceof S && s instanceof AsyncDisposableStack && Object.getPrototypeOf(s.move()) === AsyncDisposableStack.prototype;",
+        "let n = 0; for (let value of [42, {}, {[Symbol.asyncDispose]: 42, [Symbol.dispose]() {}}]) { try { new AsyncDisposableStack().use(value); } catch(e) { if (e instanceof TypeError) n++; } } try { DisposableStack.prototype.use.call(new AsyncDisposableStack(), null); } catch(e) { if (e instanceof TypeError) n++; } try { AsyncDisposableStack.prototype.use.call(new DisposableStack(), null); } catch(e) { if (e instanceof TypeError) n++; } return n === 5;",
+        "let s = new AsyncDisposableStack(), caught, log = ''; s.defer(() => { log += 'a'; throw 1; }); s.defer(() => { log += 'b'; return Promise.reject(2); }); s.defer(() => { throw undefined; }); try { await s.disposeAsync(); } catch(e) { caught = e; } return log === 'ba' && caught.error === 1 && caught.suppressed.error === 2 && caught.suppressed.suppressed === undefined;",
+        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(null); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ba';",
+        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(undefined); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ba';",
+        "let s = new AsyncDisposableStack(), log = '', returned = Promise.reject(99); returned.catch(() => {}); s.use({[Symbol.dispose]() { log += 'd'; return returned; }}); await s.disposeAsync(); return log === 'd';",
+        "let s = new AsyncDisposableStack(), log = '', caught; s.defer(() => { log += 'a'; }); s.defer(() => { log += 't'; throw 42; }); let p = s.disposeAsync(); log += 'b'; try { await p; } catch(e) { caught = e; } return caught === 42 && log === 'tba';",
+        "let s = new AsyncDisposableStack(), n = 0; s.defer(() => { s.disposeAsync(); if (s.disposed) n++; }); await s.disposeAsync(); return n === 1;",
+        "let s = new AsyncDisposableStack(), log = ''; s.defer(() => { log += 'a'; }); s.defer(() => ({then(resolve) { log += 't'; resolve(); resolve(); }})); await s.disposeAsync(); return log === 'ta';",
+        "let p = AsyncDisposableStack.prototype, d = Object.getOwnPropertyDescriptor(p, 'disposed'), m = Object.getOwnPropertyDescriptor(p, 'disposeAsync'), t = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); return d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable && m.writable && !m.enumerable && m.configurable && !t.writable && !t.enumerable && t.configurable;",
+    ] {
+        let source = format!(
+            "(async () => {{ {source} }})().then(x => __rt.effect(0, x), e => __rt.effect(0, String(e)));"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Log::default();
+        let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        assert!(matches!(out, RunOutcome::Complete(_)), "{source}: {out:?}");
+        assert_eq!(host.0, vec![Primitive::Bool(true)], "{source}");
+        assert!(task.suspended_async_activations().is_empty(), "{source}");
+    }
+}
+
 #[test]
 fn await_using_declarations() {
     // Synthetic fixtures, not light-cljs output. Validation/fallback adapt

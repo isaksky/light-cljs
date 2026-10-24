@@ -1365,6 +1365,31 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::AsyncDisposableStackDispose && !construct {
+        dispose::start_async_stack(heap, state, this.clone(), popped)?;
+        return Ok(true);
+    }
+    if !construct {
+        match which {
+            Builtin::DisposableStackUse
+            | Builtin::DisposableStackDispose
+            | Builtin::AsyncDisposableStackUse
+            | Builtin::AsyncDisposableStackDisposeBody => {
+                return start_stack_method(heap, state, which, this, args, popped);
+            }
+            Builtin::DisposableStackAdopt
+            | Builtin::DisposableStackDefer
+            | Builtin::DisposableStackMove
+            | Builtin::DisposableStackDisposed
+            | Builtin::AsyncDisposableStackAdopt
+            | Builtin::AsyncDisposableStackDefer
+            | Builtin::AsyncDisposableStackMove
+            | Builtin::AsyncDisposableStackDisposed => {
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
     if which == Builtin::Function {
         let native = eval::DynamicFunction::new(args);
         state.truncate_operands(state.stack_len() - popped)?;
@@ -1439,6 +1464,29 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+/// Stack methods run without reserving unrelated built-in constructor storage.
+#[inline(never)]
+fn start_stack_method(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = dispose::Stack::method(
+        heap,
+        state.diag.task,
+        which,
+        this,
+        args,
+        state.error_stack(state.top().pc.saturating_sub(1)),
+    )?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::Disposal(Box::new(native)))?;
+    Ok(true)
 }
 
 /// Keep field constructors returning typed arrays off the large general
@@ -1737,16 +1785,6 @@ fn start_builtin_slow(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
-            Builtin::DisposableStackUse | Builtin::DisposableStackDispose => {
-                Some(NativeState::Disposal(Box::new(dispose::Stack::method(
-                    heap,
-                    state.diag.task,
-                    which,
-                    this,
-                    args,
-                    state.error_stack(state.top().pc.saturating_sub(1)),
-                )?)))
-            }
             Builtin::MapForEach => Some(NativeState::Iterator(Box::new(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
@@ -4431,6 +4469,7 @@ pub(crate) fn start_disposable_stack_constructor(
     state: &mut VmState,
     target: Value,
     popped: usize,
+    kind: crate::object::disposable_stack::Kind,
 ) -> Result<(), Fault> {
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(
@@ -4438,6 +4477,7 @@ pub(crate) fn start_disposable_stack_constructor(
         NativeState::Disposal(Box::new(dispose::Stack::Construct {
             target,
             reading: false,
+            kind,
         })),
     )
 }

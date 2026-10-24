@@ -2790,6 +2790,14 @@ those of ordinary objects; virtual properties introduce no heap edges.
   `research/quickjs/tests/test_language.js::test_using`, with the MIT notice
   retained in that file. Rust code and other fixtures are original.
 
+- AsyncDisposableStack (clj-quickjs-241): consulted `js_disposable_stack_use`,
+  `js_get_dispose_method`, `js_disposable_stack_dispose`, `js_async_dispose_step`
+  and `js_async_disposable_stack_proto_funcs` in `research/quickjs/quickjs.c`,
+  revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The first five cases in
+  `tests/js_source.rs::async_disposable_stack` adapt
+  `research/quickjs/tests/test_language.js::test_await_using`; the MIT notice
+  is retained in that file. Rust implementation and other fixtures are original.
+
 - Synchronous `using` (clj-quickjs-236): consulted
   `research/quickjs/quickjs.c` `is_using`, `js_parse_var`,
   `js_emit_dispose_scope`, `js_op_using_check` and `OP_using_dispose`,
@@ -8447,7 +8455,8 @@ combines it with the previous error via the intrinsic SuppressedError helper.
 An Option distinguishes no error from thrown undefined. After all resources,
 a changed error overrides the pending completion, except during cancellation
 cleanup where errors are discarded so outer scopes can continue unwinding.
-AsyncDisposableStack remains separate (clj-quickjs-241).
+AsyncDisposableStack extends this representation and loop (clj-quickjs-241),
+as described below.
 
 ### Dynamic Function compilation (clj-quickjs-111)
 
@@ -8502,5 +8511,45 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`
 The validation/fallback rows in `tests/js_source.rs::await_using_declarations`
 adapt `research/quickjs/tests/test_language.js::test_await_using` at that revision;
 the QuickJS MIT copyright/license notice is retained in that test file.
-AsyncDisposableStack remains clj-quickjs-241; for-await-using and module top-level
-await using are explicitly unsupported (top-level await is absent).
+AsyncDisposableStack shares this disposal path (clj-quickjs-241); for-await-using
+and module top-level await using are explicitly unsupported (top-level await is
+absent).
+
+## AsyncDisposableStack (clj-quickjs-241)
+
+The existing `HeapObject::DisposableStack` carries a private Sync/Async brand.
+Both classes retain the same task ownership, property operations, resource
+tracing and `TaskOwned` publication classification; no new heap kind or opcode
+is needed. Constructor, use, adopt, defer, move and disposed share the original
+implementation with a class parameter. Move chooses the matching immutable
+intrinsic prototype without consulting globals or user properties. Async use
+shares await-using's traced method lookup and fallback hints, retaining nullish
+records to perform the required await. The realm adds operand 44 for the
+constructor, plus its prototype, methods, getter, asyncDispose alias and tag.
+
+The public disposeAsync builtin enters a small, immutable internal executable:
+AsyncStart, GetThis, GetCapture, CallMethod, Return. The captured private builtin
+starts `native::dispose::Run` with await-all enabled. The usual async boundary is
+established before receiver validation and before the first synchronous callback;
+an invalid receiver therefore rejects a promise. Empty/disposed stacks finish
+without awaiting. Each active call transfers the resource vector after marking
+the stack disposed, so a second call returns its own fulfilled promise without
+stealing the pending resources. The driver code is shared in a OnceLock; each
+call's closure and movable activation are ordinary traced VM state owned by the
+calling task. The private builtin is a rooted realm intrinsic, never a user
+property lookup or a JavaScript-visible entry point.
+
+The shared loop awaits async use/adopt/defer results, discards sync fallback
+results, and awaits undefined for nullish records. A synchronous throw in an
+async stack records the error and yields through await before the next resource;
+await rejections enter the same intrinsic SuppressedError path. Pending errors
+remain traced until final rejection, including thrown undefined. The ordinary
+async machinery detaches and resumes the disposal native frame and its catch
+handler; all callbacks remain VM frames and `__rt.need` remains a dependency
+wait. `async_disposable_stack_callback_waits_and_resumes` collects the task and
+remaining callbacks while waiting, migrates on completion, and verifies LIFO
+effects and exactly one promise settlement. Source tests check the five upstream
+groups, receiver/disposed validation, intrinsic move, fallback, tags, reentry,
+thenables and await-using composition.
+Stack methods bypass the large general builtin-start dispatcher; the wait and
+migration test runs both phases on 64 KiB worker stacks.

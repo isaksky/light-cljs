@@ -134,6 +134,52 @@ fn run_to_wait(rt: &Runtime, task: &Task, log: &mut Log, expected: (DependencyId
     assert_eq!(task.status(), TaskStatus::Waiting);
 }
 
+/// Synthetic fixture, not light-cljs output. The disposal activation and its
+/// remaining resources stay rooted while the callback waits and migrates.
+#[test]
+fn async_disposable_stack_callback_waits_and_resumes() {
+    let rt = Runtime::new();
+    // Realm construction runs on the host; VM work runs on small workers.
+    spawn(&rt, "Object").run().unwrap();
+    let task = spawn(
+        &rt,
+        r#"
+        let s = new AsyncDisposableStack(), settled = 0;
+        s.adopt({n: 1}, async v => { await null; __rt.effect(1, v.n); });
+        s.defer(async () => {
+            __rt.effect(1, 2); __rt.need(5, 3);
+            await null; __rt.effect(1, 3);
+        });
+        s.disposeAsync().then(v => {
+            settled++; __rt.effect(1, v === undefined && settled === 1 ? 4 : 99);
+        });
+        42;
+    "#,
+    );
+    let run_small = |task: Task, mut log: Log| {
+        thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = run(&task, &mut log);
+                (task, outcome, log)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    };
+    let (task, outcome, log) = run_small(task, Log::default());
+    assert_eq!(waiting(outcome), key(&rt, A));
+    assert_eq!(task.status(), TaskStatus::Waiting);
+    assert_eq!(log.0, [2.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (task, outcome, log) = run_small(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [2.0, 3.0, 1.0, 4.0]);
+    assert!(task.suspended_async_activations().is_empty());
+}
+
 /// Synthetic fixture, not light-cljs output. The pending return is an object
 /// rooted only by the finally completion while a disposer waits.
 #[test]

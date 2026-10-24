@@ -1270,11 +1270,11 @@ mod tests {
     fn builtin_global_operands_are_validated() {
         let g = Opcode::GetBuiltinGlobal as u8;
         assert_eq!(
-            kind(load(vec![g, 44, 0, RET], vec![], 0)),
-            UnknownBuiltinGlobal { index: 44 }
+            kind(load(vec![g, 45, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 45 }
         );
-        // DisposableStack appends operand 43; prior operands keep their meaning.
-        for i in 0..44 {
+        // AsyncDisposableStack appends operand 44; prior operands keep their meaning.
+        for i in 0..45 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
     }

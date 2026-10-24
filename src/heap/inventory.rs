@@ -1021,7 +1021,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 332); // Includes Array unscopables (-110).
+    assert_eq!(ids.len(), 341); // AsyncDisposableStack and its private entry (-241).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
@@ -1208,7 +1208,8 @@ fn disposable_stack_resources_retain_and_reclaim() {
     let value = heap.alloc(HeapObject::host_object()).unwrap();
     let method = heap.alloc(HeapObject::host_object()).unwrap();
     let property = heap.alloc(HeapObject::host_object()).unwrap();
-    let mut stack = DisposableStack::new(task, prototype);
+    let mut stack =
+        DisposableStack::new(task, prototype, crate::object::disposable_stack::Kind::Sync);
     stack.resources.push(Resource {
         value: Value::Object(value),
         method: Value::Object(method),

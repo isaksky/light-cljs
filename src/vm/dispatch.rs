@@ -816,15 +816,21 @@ fn construct_target(
         return Err(not_a_constructor(state, &f, f.type_name()));
     }
     if super_call
-        && matches!(callee(heap, &f)?, Callee::Builtin(which) if !matches!(which, Builtin::Object | Builtin::DisposableStack))
+        && matches!(callee(heap, &f)?, Callee::Builtin(which) if !matches!(which, Builtin::Object | Builtin::DisposableStack | Builtin::AsyncDisposableStack))
     {
         return Err(Fault::Unsupported(
             "subclass construction of this built-in is not supported".into(),
         ));
     }
     let (id, code) = match callee(heap, &f) {
-        Ok(Callee::Builtin(Builtin::DisposableStack)) => {
-            super::native::start_disposable_stack_constructor(state, new_target, argc + 1)?;
+        Ok(Callee::Builtin(which @ (Builtin::DisposableStack | Builtin::AsyncDisposableStack))) => {
+            use crate::object::disposable_stack::Kind;
+            let kind = if which == Builtin::AsyncDisposableStack {
+                Kind::Async
+            } else {
+                Kind::Sync
+            };
+            super::native::start_disposable_stack_constructor(state, new_target, argc + 1, kind)?;
             return Ok(Flow::Next);
         }
         Ok(Callee::Builtin(Builtin::Object)) if super_call => {
@@ -1304,6 +1310,7 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                         | Builtin::WeakRef
                         | Builtin::FinalizationRegistry
                         | Builtin::DisposableStack
+                        | Builtin::AsyncDisposableStack
                         | Builtin::Number
                         | Builtin::String
                         | Builtin::Date

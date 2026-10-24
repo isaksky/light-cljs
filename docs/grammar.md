@@ -568,8 +568,8 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 object, number, string and symbol environments execute (clj-quickjs-110).
 
 Synchronous `using` executes in blocks, function bodies, module top level and
-for-of heads; DisposableStack and `await using` in async functions are supported.
-AsyncDisposableStack remains separate (clj-quickjs-241). Classic for-using heads,
+for-of heads; DisposableStack, AsyncDisposableStack and `await using` in async
+functions are supported. Classic for-using heads,
 `for (await using x of iterable)` and module top-level await using remain
 unsupported; top-level await is absent.
 
@@ -3735,8 +3735,8 @@ including after publication and collection, and are distinct from registry
 symbols with matching descriptions. Their Symbol constructor properties are
 non-writable, non-enumerable and non-configurable. Exceptions: strict assignment
 or deletion throws catchable TypeError. Rejected forms and explicit gaps:
-this adds no syntax; AsyncDisposableStack and iterator
-disposal methods remain deferred to their own pellets.
+this adds no syntax; AsyncDisposableStack is supported (clj-quickjs-241), while
+iterator disposal methods remain deferred to their own pellets.
 
 Synthetic fixture, not light-cljs output:
 
@@ -6111,7 +6111,7 @@ preserves this design: the engine test expects TypeError from the attempted
 intrinsic overwrite before replacing the global. The engine wrapping helper
 ignores that global binding and uses the original intrinsic prototype directly;
 disposal syntax, including async function resources, is described under
-"Execution" above; AsyncDisposableStack remains separate.
+"Execution" above; AsyncDisposableStack is supported (clj-quickjs-241).
 
 Synthetic fixtures, not light-cljs output:
 
@@ -6361,8 +6361,8 @@ of an intrinsic SuppressedError whose suppressed field holds the previous error.
 The final error is thrown after all callbacks. `using s = new DisposableStack()`
 disposes its registered resources at scope exit through the shared disposal loop.
 Publication rejects these task-owned objects even after disposal or freezing.
-Syntax and rejected forms are unchanged. Explicit gaps: AsyncDisposableStack
-remains clj-quickjs-241; intrinsics remain immutable.
+Syntax and rejected forms are unchanged. AsyncDisposableStack is described below;
+intrinsics remain immutable.
 
 Synthetic fixtures, not light-cljs output:
 
@@ -6378,6 +6378,57 @@ s[Symbol.dispose] === s.dispose;
 let n = 0;
 { using s = new DisposableStack(); s.defer(() => n++); }
 n === 1;
+```
+
+### Execution: AsyncDisposableStack (clj-quickjs-241)
+
+Syntax is unchanged. `new AsyncDisposableStack()` supports derived construction
+and the methods `use`, `adopt`, `defer`, `disposeAsync`, `move` and getter
+`disposed`. Registration, callback receivers/arguments and intrinsic move follow
+DisposableStack. `use` snapshots Symbol.asyncDispose, falling back to Symbol.dispose
+only when nullish; async stacks record null/undefined resources too.
+`[Symbol.asyncDispose]` is the same function object as `disposeAsync`, and
+`[Symbol.toStringTag]` is `AsyncDisposableStack`.
+
+Execution: disposeAsync marks disposed immediately, calls the top resource
+synchronously, then awaits each result before the next LIFO callback. Adopt/defer
+results are awaited too. Null/undefined registration awaits undefined; a sync
+fallback discards its return value before awaiting undefined. The returned promise
+resolves to undefined after disposal. Repeated calls return an independently
+fulfilled promise without interrupting disposal already in progress. An internal
+async activation preserves resource records and pending errors across budget
+yields, dependency waits, collection and worker migration. `await using s = new
+AsyncDisposableStack()` awaits its registered resources at scope exit.
+
+Exceptions: calling the constructor without new throws TypeError; use/adopt/defer/
+move on a disposed stack throw ReferenceError. Methods and the disposed getter
+require the matching stack brand. An invalid disposeAsync receiver returns a
+rejected promise with TypeError. Other validation follows DisposableStack.
+Disposal continues after synchronous throws and promise rejections, combining
+errors through intrinsic SuppressedError and rejecting with the final error.
+Publication rejects both stack brands as task-owned values, even after disposal.
+Rejected forms and explicit gaps: no additional syntax is accepted;
+for-await-using heads and module top-level await using remain unsupported.
+Realm intrinsics remain immutable.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+(async () => {
+    let log = '', s = new AsyncDisposableStack();
+    s.defer(async () => { log += 'a'; await null; log += 'A'; });
+    s.adopt(42, async v => { log += v; });
+    let result = await s.disposeAsync();
+    return s.disposed && result === undefined && log === '42aA';
+})();
+```
+
+```js accept
+(async () => {
+    let n = 0;
+    { await using s = new AsyncDisposableStack(); s.defer(() => n++); }
+    return n === 1;
+})();
 ```
 
 ### Function constructor (clj-quickjs-111)

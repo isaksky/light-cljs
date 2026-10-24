@@ -7,6 +7,29 @@ use crate::object::OrdinaryObject;
 use crate::value::Value;
 use crate::vm::dispatch::{self, Fault};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Sync,
+    Async,
+}
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Sync => "DisposableStack",
+            Self::Async => "AsyncDisposableStack",
+        }
+    }
+
+    pub(crate) fn prototype(self, heap: &Heap) -> Result<ObjectId, Fault> {
+        let realm = crate::realm::intrinsics(heap)
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        Ok(match self {
+            Self::Sync => realm.disposable_stack_prototype,
+            Self::Async => realm.async_disposable_stack_prototype,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Hint {
     Sync,
@@ -32,13 +55,15 @@ impl Trace for Resource {
 #[derive(Debug)]
 pub(crate) struct DisposableStack {
     object: OrdinaryObject,
+    kind: Kind,
     pub(crate) disposed: bool,
     pub(crate) resources: Vec<Resource>,
 }
 impl DisposableStack {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId) -> Self {
+    pub(crate) fn new(owner: TaskId, prototype: ObjectId, kind: Kind) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(owner, prototype),
+            kind,
             disposed: false,
             resources: vec![],
         }
@@ -63,11 +88,17 @@ pub(crate) fn access<T>(
     heap: &Heap,
     task: TaskId,
     this: &Value,
+    kind: Kind,
     live: bool,
     f: impl FnOnce(&mut DisposableStack) -> T,
 ) -> Result<T, Fault> {
-    let invalid =
-        || Fault::TypeError("DisposableStack method requires a DisposableStack receiver".into());
+    let invalid = || {
+        Fault::TypeError(format!(
+            "{} method requires a {} receiver",
+            kind.name(),
+            kind.name()
+        ))
+    };
     let Value::Object(id) = this else {
         return Err(invalid());
     };
@@ -75,6 +106,9 @@ pub(crate) fn access<T>(
         let HeapObject::DisposableStack(stack) = object else {
             return Err(invalid());
         };
+        if stack.kind != kind {
+            return Err(invalid());
+        }
         if stack.object.owner() != Some(task) {
             return Err(Fault::ForeignObject {
                 owner: stack.object.owner(),
@@ -82,9 +116,10 @@ pub(crate) fn access<T>(
             });
         }
         if live && stack.disposed {
-            return Err(Fault::ReferenceError(
-                "DisposableStack has been disposed".into(),
-            ));
+            return Err(Fault::ReferenceError(format!(
+                "{} has been disposed",
+                kind.name()
+            )));
         }
         Ok(f(stack))
     })

@@ -3,6 +3,50 @@
 use super::*;
 use crate::vm::builtin::Builtin;
 
+/// A private async function activation around the shared disposal continuation.
+/// The entry calls a captured intrinsic, so global/prototype mutation cannot
+/// replace the operation. AsyncStart establishes the ordinary task-owned async
+/// boundary before receiver validation or the synchronous first disposer call.
+pub(super) fn start_async_stack(
+    heap: &Heap,
+    state: &mut VmState,
+    this: Value,
+    popped: usize,
+) -> Result<(), Fault> {
+    use crate::vm::{Assembler, Opcode};
+    use std::sync::OnceLock;
+    static DRIVER: OnceLock<crate::vm::Executable> = OnceLock::new();
+    let code = DRIVER.get_or_init(|| {
+        let mut asm = Assembler::new();
+        asm.captures(1)
+            .op(Opcode::AsyncStart)
+            .op(Opcode::GetThis)
+            .get_capture(0)
+            .op(Opcode::CallMethod)
+            .raw(0)
+            .raw(0)
+            .op(Opcode::Return);
+        asm.finish("<AsyncDisposableStack.disposeAsync>", 0, 0)
+            .expect("internal async disposal driver")
+    });
+    let body = crate::realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .async_dispose_body;
+    let function = dispatch::new_function(
+        heap,
+        code.0.clone(),
+        Box::new([Value::Object(body)]),
+        state.diag.task,
+        None,
+    )?;
+    let Value::Object(id) = function else {
+        unreachable!()
+    };
+    state.truncate_operands(state.stack_len() - popped)?;
+    state.push(function);
+    state.enter(code.0.clone(), id, this, 0)
+}
+
 #[derive(Debug)]
 pub(super) struct State {
     source: Value,
@@ -100,7 +144,7 @@ impl State {
     }
 }
 
-use crate::object::disposable_stack::{self as stack, Hint as ResourceHint, Resource};
+use crate::object::disposable_stack::{self as stack, Hint as ResourceHint, Kind, Resource};
 
 /// The single disposal loop for lexical using scopes and DisposableStack.
 /// Resources are popped before calling JS; pending errors and all remaining
@@ -115,6 +159,10 @@ pub(super) struct Run {
     calling: bool,
     // A disposer call must be followed by await; fallback discards its result.
     await_call: Option<bool>,
+    // Async stacks await adopt/defer too, and preserve a job boundary after
+    // synchronous throws before invoking the next disposer.
+    await_all: bool,
+    await_failure: bool,
     stack: JsString,
 }
 impl Trace for Run {
@@ -145,6 +193,8 @@ impl Run {
             cancelling,
             calling: false,
             await_call: None,
+            await_all: false,
+            await_failure: false,
             stack,
         }
     }
@@ -154,7 +204,8 @@ impl Run {
     pub(super) fn failed(&mut self, exception: super::super::exception::Exception) {
         self.failure = Some(exception.value);
         self.calling = false;
-        self.await_call = None;
+        let pending_call = self.await_call.take().is_some();
+        self.await_failure = self.await_all && pending_call;
     }
     pub(super) fn step(
         &mut self,
@@ -163,6 +214,10 @@ impl Run {
         input: Input,
     ) -> Result<Action, Fault> {
         self.calling = false;
+        if std::mem::take(&mut self.await_failure) {
+            self.calling = true;
+            return Ok(Action::Await(Value::Undefined));
+        }
         if let Some(fallback) = self.await_call.take() {
             let Input::CallResult(value) = input else {
                 return Err(Fault::Internal("async disposer expected call result"));
@@ -185,10 +240,12 @@ impl Run {
         }
         if let Some(resource) = self.resources.pop() {
             if matches!(resource.method, Value::Undefined) {
-                if matches!(
-                    resource.hint,
-                    ResourceHint::Async | ResourceHint::AsyncFallback
-                ) {
+                if self.await_all
+                    || matches!(
+                        resource.hint,
+                        ResourceHint::Async | ResourceHint::AsyncFallback
+                    )
+                {
                     self.calling = true;
                     return Ok(Action::Await(Value::Undefined));
                 }
@@ -203,6 +260,9 @@ impl Run {
                     (resource.value, vec![])
                 }
             };
+            if self.await_all && self.await_call.is_none() {
+                self.await_call = Some(false);
+            }
             self.calling = true;
             return Ok(Action::Call {
                 callee: resource.method,
@@ -223,8 +283,15 @@ impl Run {
 
 #[derive(Debug)]
 pub(super) enum Stack {
-    Construct { target: Value, reading: bool },
-    Use { this: Value, check: State },
+    Construct {
+        target: Value,
+        reading: bool,
+        kind: Kind,
+    },
+    Use {
+        this: Value,
+        check: State,
+    },
     Run(Run),
 }
 impl Trace for Stack {
@@ -249,15 +316,29 @@ impl Stack {
         diagnostic: JsString,
     ) -> Result<Self, Fault> {
         match which {
-            Builtin::DisposableStackUse => {
-                stack::access(heap, task, this, true, |_| ())?;
+            Builtin::DisposableStackUse | Builtin::AsyncDisposableStackUse => {
+                let kind = if which == Builtin::AsyncDisposableStackUse {
+                    Kind::Async
+                } else {
+                    Kind::Sync
+                };
+                stack::access(heap, task, this, kind, true, |_| ())?;
                 Ok(Self::Use {
                     this: this.clone(),
-                    check: State::new(args.first().cloned().unwrap_or(Value::Undefined)),
+                    check: if kind == Kind::Async {
+                        State::asynchronous(args.first().cloned().unwrap_or(Value::Undefined))
+                    } else {
+                        State::new(args.first().cloned().unwrap_or(Value::Undefined))
+                    },
                 })
             }
-            Builtin::DisposableStackDispose => {
-                let resources = stack::access(heap, task, this, false, |s| {
+            Builtin::DisposableStackDispose | Builtin::AsyncDisposableStackDisposeBody => {
+                let kind = if which == Builtin::AsyncDisposableStackDisposeBody {
+                    Kind::Async
+                } else {
+                    Kind::Sync
+                };
+                let resources = stack::access(heap, task, this, kind, false, |s| {
                     if s.disposed {
                         vec![]
                     } else {
@@ -265,7 +346,9 @@ impl Stack {
                         std::mem::take(&mut s.resources)
                     }
                 })?;
-                Ok(Self::Run(Run::new(resources, None, false, diagnostic)))
+                let mut run = Run::new(resources, None, false, diagnostic);
+                run.await_all = kind == Kind::Async;
+                Ok(Self::Run(run))
             }
             _ => Err(Fault::Internal("invalid DisposableStack native")),
         }
@@ -288,25 +371,38 @@ impl Stack {
             Self::Run(run) => run.step(heap, task, input),
             Self::Use { this, check } => {
                 let action = check.step(heap, task, input)?;
-                if let Action::Return(method) = action {
-                    // AddDisposableResource checks the receiver before invoking
-                    // the getter. Re-entrant disposal in that getter does not
-                    // repeat the disposed check (ECMAScript use steps 2-6).
-                    if !matches!(method, Value::Undefined) {
-                        stack::access(heap, task, this, false, |s| {
-                            s.resources.push(Resource {
-                                value: check.source.clone(),
-                                method,
-                                hint: ResourceHint::Sync,
-                            })
-                        })?;
-                    }
-                    Ok(Action::Return(check.source.clone()))
-                } else {
-                    Ok(action)
+                let (method, kind, hint) = match action {
+                    Action::Return(method) => (method, Kind::Sync, ResourceHint::Sync),
+                    Action::ReturnPair(method, _) => (
+                        method,
+                        Kind::Async,
+                        if check.fallback {
+                            ResourceHint::AsyncFallback
+                        } else {
+                            ResourceHint::Async
+                        },
+                    ),
+                    _ => return Ok(action),
+                };
+                // AddDisposableResource checks the receiver before invoking
+                // the getter. Re-entrant disposal in that getter does not
+                // repeat the disposed check (ECMAScript use steps 2-6).
+                if kind == Kind::Async || !matches!(method, Value::Undefined) {
+                    stack::access(heap, task, this, kind, false, |s| {
+                        s.resources.push(Resource {
+                            value: check.source.clone(),
+                            method,
+                            hint,
+                        })
+                    })?;
                 }
+                Ok(Action::Return(check.source.clone()))
             }
-            Self::Construct { target, reading } => {
+            Self::Construct {
+                target,
+                reading,
+                kind,
+            } => {
                 let prototype = if *reading {
                     let Input::CallResult(value) = input else {
                         return Err(Fault::Internal(
@@ -335,15 +431,11 @@ impl Stack {
                 };
                 let prototype = match prototype {
                     Value::Object(id) => id,
-                    _ => {
-                        crate::realm::intrinsics(heap)
-                            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-                            .disposable_stack_prototype
-                    }
+                    _ => kind.prototype(heap)?,
                 };
                 let value = heap
                     .alloc(crate::heap::HeapObject::DisposableStack(Box::new(
-                        stack::DisposableStack::new(task, prototype),
+                        stack::DisposableStack::new(task, prototype, *kind),
                     )))
                     .map(Value::Object)
                     .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;

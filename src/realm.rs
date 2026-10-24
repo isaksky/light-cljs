@@ -62,6 +62,7 @@
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
 //! | `SuppressedError` (clj-quickjs-234) | NativeError constructor/prototype pair; constructor inherits from Error, prototype from Error.prototype | length 3; prototype owns constructor, name and empty message; instances own error/suppressed and capture stack |
 //! | `DisposableStack` (clj-quickjs-239) | constructible built-in; ordinary unbranded prototype | constructor length 0; prototype constructor, use, adopt, defer, dispose, move, disposed getter, Symbol.dispose alias and Symbol.toStringTag |
+//! | `AsyncDisposableStack` (clj-quickjs-241) | constructible built-in sharing stack storage with a separate brand | constructor length 0; use, adopt, defer, disposeAsync, move, disposed getter, Symbol.asyncDispose alias and Symbol.toStringTag |
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
@@ -218,11 +219,12 @@ pub(crate) enum Global {
     FinalizationRegistry = 41,
     SuppressedError = 42,
     DisposableStack = 43,
+    AsyncDisposableStack = 44,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 44] = [
+    const ALL: [Global; 45] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -267,6 +269,7 @@ impl Global {
         Global::FinalizationRegistry,
         Global::SuppressedError,
         Global::DisposableStack,
+        Global::AsyncDisposableStack,
     ];
 
     /// The JavaScript name.
@@ -297,6 +300,7 @@ impl Global {
             Global::InternalError => "InternalError",
             Global::SuppressedError => "SuppressedError",
             Global::DisposableStack => "DisposableStack",
+            Global::AsyncDisposableStack => "AsyncDisposableStack",
             Global::Json => "JSON",
 
             Global::Symbol => "Symbol",
@@ -401,6 +405,9 @@ pub(crate) struct Intrinsics {
     finalization_registry: ObjectId,
     pub(crate) disposable_stack_prototype: ObjectId,
     disposable_stack: ObjectId,
+    pub(crate) async_disposable_stack_prototype: ObjectId,
+    async_disposable_stack: ObjectId,
+    pub(crate) async_dispose_body: ObjectId,
 
     pub(crate) array_buffer_prototype: ObjectId,
     array_buffer: ObjectId,
@@ -526,6 +533,7 @@ impl Intrinsics {
             Global::WeakMap => Value::Object(self.weak_map),
             Global::WeakRef => Value::Object(self.weak_ref),
             Global::DisposableStack => Value::Object(self.disposable_stack),
+            Global::AsyncDisposableStack => Value::Object(self.async_disposable_stack),
             Global::FinalizationRegistry => Value::Object(self.finalization_registry),
             Global::Date => Value::Object(self.date),
             Global::Number => Value::Object(self.number),
@@ -1132,7 +1140,10 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (weak_map_prototype, weak_map) = weak_map_intrinsics(&mut b, object_prototype)?;
     let (weak_ref_prototype, weak_ref) = weak_ref_intrinsics(&mut b, object_prototype)?;
     let (disposable_stack_prototype, disposable_stack) =
-        disposable_stack_intrinsics(&mut b, object_prototype)?;
+        disposable_stack_intrinsics(&mut b, object_prototype, false)?;
+    let (async_disposable_stack_prototype, async_disposable_stack) =
+        disposable_stack_intrinsics(&mut b, object_prototype, true)?;
+    let async_dispose_body = b.function(Builtin::AsyncDisposableStackDisposeBody, &[])?;
     let (finalization_registry_prototype, finalization_registry) =
         finalization_registry_intrinsics(&mut b, object_prototype)?;
 
@@ -1351,6 +1362,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         finalization_registry,
         disposable_stack_prototype,
         disposable_stack,
+        async_disposable_stack_prototype,
+        async_disposable_stack,
+        async_dispose_body,
         intl,
         intl_locale_prototype,
 
@@ -2642,7 +2656,35 @@ fn intl_duration_format_intrinsics(
 fn disposable_stack_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
+    asynchronous: bool,
 ) -> Option<(ObjectId, ObjectId)> {
+    let (constructor_kind, methods, disposed, dispose_symbol) = if asynchronous {
+        (
+            Builtin::AsyncDisposableStack,
+            [
+                Builtin::AsyncDisposableStackUse,
+                Builtin::AsyncDisposableStackAdopt,
+                Builtin::AsyncDisposableStackDefer,
+                Builtin::AsyncDisposableStackDispose,
+                Builtin::AsyncDisposableStackMove,
+            ],
+            Builtin::AsyncDisposableStackDisposed,
+            "asyncDispose",
+        )
+    } else {
+        (
+            Builtin::DisposableStack,
+            [
+                Builtin::DisposableStackUse,
+                Builtin::DisposableStackAdopt,
+                Builtin::DisposableStackDefer,
+                Builtin::DisposableStackDispose,
+                Builtin::DisposableStackMove,
+            ],
+            Builtin::DisposableStackDisposed,
+            "dispose",
+        )
+    };
     let prototype = b
         .heap
         .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
@@ -2650,24 +2692,21 @@ fn disposable_stack_intrinsics(
         ))))?;
     b.all.push(prototype);
     let constructor = b.function(
-        Builtin::DisposableStack,
+        constructor_kind,
         &[("prototype", prototype, PropertyFlags::FIXED)],
     )?;
     b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
-    for which in [
-        Builtin::DisposableStackUse,
-        Builtin::DisposableStackAdopt,
-        Builtin::DisposableStackDefer,
-        Builtin::DisposableStackDispose,
-        Builtin::DisposableStackMove,
-    ] {
+    for which in methods {
         let method = b.function(which, &[])?;
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
-        if which == Builtin::DisposableStackDispose {
+        if matches!(
+            which,
+            Builtin::DisposableStackDispose | Builtin::AsyncDisposableStackDispose
+        ) {
             let key = b
                 .heap
                 .keys()
-                .intern_symbol(&crate::value::symbol::well_known("dispose"))?;
+                .intern_symbol(&crate::value::symbol::well_known(dispose_symbol))?;
             b.heap
                 .with_object_mut(prototype, |o| match o {
                     HeapObject::Plain(o) => {
@@ -2678,7 +2717,7 @@ fn disposable_stack_intrinsics(
                 .then_some(())?;
         }
     }
-    let getter = b.function(Builtin::DisposableStackDisposed, &[])?;
+    let getter = b.function(disposed, &[])?;
     let key = b.heap.keys().intern(&JsString::from("disposed"))?;
     b.heap
         .with_object_mut(prototype, |o| match o {
@@ -2705,7 +2744,7 @@ fn disposable_stack_intrinsics(
         .with_object_mut(prototype, |o| match o {
             HeapObject::Plain(o) => o.define_with(
                 key,
-                Value::String(JsString::from("DisposableStack")),
+                Value::String(JsString::from(constructor_kind.name())),
                 PropertyFlags::FUNCTION_INFO,
             ),
             _ => false,
@@ -2831,7 +2870,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 332); // Includes Array unscopables (-110).
+        assert_eq!(first.all.len(), 341); // AsyncDisposableStack and its private entry (-241).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2909,7 +2948,8 @@ mod tests {
         );
         assert_eq!(Global::from_u16(42), Some(Global::SuppressedError));
         assert_eq!(Global::from_u16(43), Some(Global::DisposableStack));
-        assert_eq!(Global::from_u16(44), None);
+        assert_eq!(Global::from_u16(44), Some(Global::AsyncDisposableStack));
+        assert_eq!(Global::from_u16(45), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

@@ -3972,13 +3972,23 @@ Sync fallback return values are discarded. Cleanup awaits during consumer
 cancellation end that scope's cleanup under the existing finally rules.
 
 Deferred: classic for-using heads, `for (await using x of iterable)`, module
-top-level await using (top-level await is absent), and AsyncDisposableStack.
+top-level await using (top-level await is absent).
 Script top level, switch clauses without a block, single-statement bodies,
 binding patterns and missing initializers are syntax errors.
+
+Supported (clj-quickjs-241): `AsyncDisposableStack` shares DisposableStack's
+registration and move operations, with async/sync disposal-method lookup and
+`disposeAsync` / `[Symbol.asyncDispose]`. Disposal marks the stack disposed at
+once, calls the first disposer synchronously, then awaits each LIFO callback.
+It resolves to undefined or rejects with intrinsic SuppressedError chains.
+Callbacks may wait, migrate and survive collection; `await using` composes with
+the stack at scope exit. Nullish resources await undefined and sync fallback
+return values are discarded.
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_source await_using -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test js_source async_disposable_stack -- --exact --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_source for_using_of_loops -- --exact --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3
