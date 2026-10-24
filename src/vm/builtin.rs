@@ -399,7 +399,6 @@ pub(crate) enum Builtin {
     WeakRef,
     WeakRefDeref,
 
-
     SymbolPrototypeToString,
     SymbolPrototypeValueOf,
     SymbolPrototypeDescription,
