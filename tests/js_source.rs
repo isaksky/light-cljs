@@ -16905,6 +16905,29 @@ fn regexp_unicode_sets() {
 }
 
 #[test]
+fn regexp_v_outside_class_unicode_parity() {
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(
+        eval(
+            r#"
+            let invalid = ['\\1', '\\c0', '(?=a)+', 'a{1,2', '\\k<x>',
+                           '\\x0', '\\u{110000}', ']', '}'];
+            for (let i = 0; i < invalid.length; i++) {
+                let caught = false;
+                try { RegExp(invalid[i], 'v'); }
+                catch(e) { caught = e instanceof SyntaxError; }
+                if (!caught) throw new Error('accepted Unicode syntax error ' + invalid[i]);
+            }
+            let m = /^(.)\1$/v.exec('😀😀');
+            m[0] === '😀😀' && m[1] === '😀' &&
+            /^(?<x>.)\k<x>$/v.test('😀😀') && !/^(.)\1$/v.test('😀a')
+        "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_property_escapes() {
     // Synthetic fixture, not light-cljs output. QuickJS rows retain their notice.
     assert_eq!(
