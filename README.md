@@ -1846,10 +1846,9 @@ Deferred:
   `TypeError` (built-ins are shared and immutable; listed in
   `docs/grammar.md`, "Explicit gaps"). The `Object` global binding itself
   is writable (clj-quickjs-104).
-- (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
-  (built-in constructors; `new` on ordinary functions is clj-quickjs-71), wrapper
-  objects for `Object(1)` and primitive receivers (clj-quickjs-72),
-  `Object.getPrototypeOf` and the other reflection functions.
+- Boolean and BigInt wrappers for `Object(v)` and `new Object(v)` remain
+  deferred. Number, String and Symbol wrappers and direct Object construction
+  execute (clj-quickjs-280, below).
 
 ### Untagged template literals (clj-quickjs-57)
 
@@ -2021,8 +2020,8 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
   from `F.prototype` (or `Object.prototype` when that is not an object)
   is `F`'s `this`; an object returned by `F` replaces it, any other return
   value is ignored.
-- Anything else (`new 1`, an arrow function, a built-in such as `Object`,
-  a collection, a plain object) is a catchable `TypeError` "… is not a
+- Non-constructors (`new 1`, an arrow function, a built-in such as `Object.is`,
+  a collection, a plain object) throw a catchable `TypeError` "… is not a
   constructor" at the `new` token, after the callee and the arguments are
   evaluated.
 - The constructor runs in an ordinary task-owned frame marked as a
@@ -2033,7 +2032,7 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 Deferred:
 
 - Derived classes, `super`
-  and fields (clj-quickjs-137..-139), built-in constructors such as `new Object()`,
+  and fields (clj-quickjs-137..-139),
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
 - `new` on a published function whose `prototype` was never created fails
@@ -3960,6 +3959,21 @@ CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --t
 CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
 CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3
 ```
+
+### Object construction (clj-quickjs-280)
+
+`new Object` and `new Object()` create distinct task-owned ordinary objects
+inheriting from `Object.prototype`. Direct construction and `Object(v)` share
+argument rules: absent, `undefined` or `null` creates an object; an object
+returns unchanged; Number, String and Symbol primitives receive their existing
+wrappers. All arguments evaluate, only the first is used, and object coercion
+hooks are never called. Derived `super()` keeps allocating from `new.target`'s
+prototype and ignores argument values. Boolean and BigInt wrappers remain
+deferred with `UnsupportedOperand`. Tests cover collection, suspension,
+migration, publication rejection and foreign-task access.
+
+Verify with `cargo test --test js_source object_constructor` and
+`cargo test --test js_source primitive_wrappers_survive_wait_collection_and_migration`.
 
 ### Unmodified QuickJS operator fixture (clj-quickjs-77)
 

@@ -476,9 +476,11 @@
 //! `OP_call_constructor`, `JS_CallConstructorInternal`, revision
 //! 7d1c13c5d8f8). It checks that `f` is a constructor: a function object
 //! whose code is an ordinary function (`ExecutableSpec::constructor_kind`, a
-//! `function` declaration or expression). Anything else (a primitive, a
-//! built-in, an arrow function, a collection) fails with a catchable
-//! `TypeError` "… is not a constructor". It then reads `f.prototype`
+//! `function` declaration or expression), or a supported built-in constructor.
+//! Object shares its call argument rules (clj-quickjs-280); derived Object
+//! construction allocates using new.target. A primitive, non-constructor
+//! built-in, arrow function or collection fails with a catchable
+//! `TypeError` "… is not a constructor". For ordinary functions it reads `f.prototype`
 //! (materializing the lazy prototype object, `crate::vm::function`),
 //! allocates an ordinary object owned by the running task whose prototype
 //! is that value if it is an object and `Object.prototype` otherwise, and

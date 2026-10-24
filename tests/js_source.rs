@@ -13312,7 +13312,6 @@ fn new_operator_constructs_objects() {
         ("const v = __rt.vector(); new v", "v is not a constructor"),
         ("new undefined", "undefined is not a constructor"),
         ("const a = () => 1; new a()", "a is not a constructor"),
-        ("new Object()", "Object is not a constructor"),
         ("const o = {}; new o()", "o is not a constructor"),
     ] {
         assert_eq!(
@@ -13344,9 +13343,88 @@ fn new_operator_constructs_objects() {
         "function F(x) { this.x = x; } const b = new F(2); b.x === 2 && (new F).x === undefined && new F(1) !== new F(1);",
         "function G() { this.y = 1; return {y: 2}; } function H() { this.z = 1; return 5; } new G().y === 2 && new H().z === 1;",
         "function P(v) { this.v = v; } P.prototype.twice = function () { return this.v * 2; }; new P(3).twice() === 6 && new P(3).constructor === P;",
-        "let r = false; try { new Object(); } catch (e) { r = true; } r;",
+        "let o = new Object(); o.constructor === Object && Object.getPrototypeOf(o) === Object.prototype;",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Object construction shares
+/// call argument rules, while a derived constructor uses new.target instead.
+#[test]
+fn object_constructor() {
+    for source in [
+        "const a = new Object, b = new Object(); a !== b && Object.getPrototypeOf(a) === Object.prototype && Object.getPrototypeOf(b) === Object.prototype",
+        "const a = new Object(); a.x = 42; a.x === 42 && a instanceof Object && a.constructor === Object && Object.getOwnPropertyDescriptor(a, 'x').value === 42",
+        "new Object(undefined) !== new Object(null) && Object.getPrototypeOf(new Object(null)) === Object.prototype",
+        "const o = {x: 1}; new Object(o) === o && Object(o) === o",
+        "const a = [], f = function() {}; new Object(a) === a && new Object(f) === f && new Object(Object) === Object",
+        "const o = Object.create(null); new Object(o) === o && Object.getPrototypeOf(new Object(o)) === null",
+        "const n = new Object(-0); Object.is(n.valueOf(), -0) && n instanceof Number && Object.getPrototypeOf(n) === Number.prototype",
+        "const s = new Object('abc'); s instanceof String && s.valueOf() === 'abc' && s.length === 3 && s[1] === 'b'",
+        "Object(42).valueOf() === 42 && Object('abc').valueOf() === 'abc'",
+        "const s = Symbol('s'); const o = new Object(s); o.valueOf() === s && Object.getPrototypeOf(o) === Symbol.prototype",
+        "let n = 0; const o = {valueOf() { n++; throw 1; }, toString() { n++; throw 2; }}; new Object(o) === o && n === 0",
+        "let n = 0; const o = {}; function arg(x) { n = n * 10 + x; return o; } new Object(arg(1), arg(2)) === o && n === 12",
+        "const o = {x: 3}, C = Object.bind(null, o); new C() === o && new C(null) === o",
+        "const C = Object.bind(null); const o = new C(); Object.getPrototypeOf(o) === Object.prototype && o instanceof Object",
+        "class D extends Object {} const arg = {x: 7}; const d = new D(arg); d !== arg && d.x === undefined && Object.getPrototypeOf(d) === D.prototype && d instanceof D",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    // Boolean/BigInt wrappers do not exist yet; never return an unboxed primitive.
+    for source in ["new Object(true)", "new Object(1n)"] {
+        let (kind, message, ..) = failure_at(source);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{source}");
+        assert!(message.contains("wrapper object"), "{source}: {message}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Collect immediately after every
+/// instruction, then migrate with the constructor and its argument suspended.
+#[test]
+fn object_constructor_survives_collection_wait_and_migration() {
+    let rt = Runtime::new();
+    let script = exe(
+        "let o = new Object; o.n = new Object(-0); o.s = new Object('abc');
+         o.self = new Object(o); let p = new Object((__rt.need(280, 1), o));
+         p === o && p.self === o && Object.is(p.n.valueOf(), -0)
+         && p.s.valueOf() === 'abc' && p.s[1] === 'b'
+         && Object.getPrototypeOf(p) === Object.prototype",
+    );
+    let task = rt.spawn(&script, &[]).unwrap();
+    let mut waiting = false;
+    for _ in 0..500 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waiting = true;
+                break;
+            }
+            other => panic!("expected yield or wait, got {other:?}"),
+        }
+    }
+    assert!(waiting, "constructor argument did not wait");
+    rt.collect().unwrap();
+    let request = task.take_producer_requests().pop().unwrap();
+    let value = rt.root(Primitive::Undefined);
+    let runnable = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&value))
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    let result = std::thread::spawn(move || runnable.run().unwrap())
+        .join()
+        .unwrap();
+    match result {
+        RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
     }
 }
 
@@ -13451,11 +13529,17 @@ fn instanceof_operator() {
         let at = src.rfind("instanceof").unwrap() as u32 + 1;
         assert_eq!((line, column), (2, at), "{src}");
     }
-    // The pellet's `new Object() instanceof F` row: `new Object()` is
-    // itself a TypeError until `Object` is a constructor (clj-quickjs-71).
+    // Construction succeeds; instanceof reports the invalid F.prototype.
+    let source = "function F() {} F.prototype = 1; new Object() instanceof F";
+    let (kind, message, line, column) = failure_at(source);
     assert_eq!(
-        failure_at("function F() {} F.prototype = 1; new Object() instanceof F").0,
-        VmErrorKind::TypeError
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "operand 'prototype' property is not an object",
+            1,
+            source.find("instanceof").unwrap() as u32 + 1
+        )
     );
     // Engine errors inherit through their NativeError and Error prototypes.
     let src = "let e; try { nope; } catch (x) { e = x; } e instanceof Object";
@@ -13981,8 +14065,6 @@ fn object_intrinsics_reject_what_they_do_not_support() {
     // Wrapper objects (clj-quickjs-72), missing Function.prototype methods
     // (clj-quickjs-102) and the error tag (clj-quickjs-230).
     for (src, needle) in [
-        ("Object(1)", "wrapper object"),
-        ("Object('s')", "wrapper object"),
         ("Object(true)", "wrapper object"),
         ("Object.is.toString()", "Function.prototype"),
     ] {
@@ -17186,6 +17268,10 @@ fn primitive_wrappers_survive_wait_collection_and_migration() {
         "new Number(7)",
         "new String('abc')",
         "Object(Symbol('abc'))",
+        "new Object()",
+        "new Object(7)",
+        "new Object('abc')",
+        "new Object(Symbol('abc'))",
     ] {
         let owner = rt.spawn(&exe(constructor), &[]).unwrap();
         let RunOutcome::Complete(wrapper) = owner.run().unwrap() else {

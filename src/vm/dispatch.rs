@@ -766,7 +766,8 @@ fn prepend_args(bound: &mut Vec<Value>, args: Vec<Value>, max_args: usize) -> Re
 /// `js_get_prototype_from_ctor`, revision 7d1c13c5d8f8): the constructor and
 /// the arguments are the top operands. Number/String construct wrappers
 /// (clj-quickjs-72); Array constructs an array (clj-quickjs-153), and Error
-/// constructs an error (clj-quickjs-228). Ordinary functions use the rule below.
+/// constructs an error (clj-quickjs-228). Object uses its call argument rules
+/// (clj-quickjs-280). Ordinary functions use the rule below.
 /// Anything else is a TypeError. For ordinary functions, the
 /// new object inherits from `f.prototype` when that is an object, else from
 /// `Object.prototype`, and becomes the `this` of a construct frame entered
@@ -822,6 +823,11 @@ fn construct_target(
         Ok(Callee::Builtin(Builtin::Object)) if super_call => {
             let object = allocate_receiver(heap, task, &new_target)?;
             state.replace(argc + 1, object)?;
+            return Ok(Flow::Next);
+        }
+        Ok(Callee::Builtin(Builtin::Object)) => {
+            let result = builtin::object_constructor(heap, task, &args)?;
+            state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }
         Ok(Callee::Builtin(Builtin::Date)) => {

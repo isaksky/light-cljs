@@ -1283,3 +1283,12 @@ text, a synthetic fixture, not light-cljs output. `tests/quickjs_language.rs`
 checks the embedded upstream line count, compiles once per case in upstream
 non-strict mode, and runs each independently with bounded instruction
 slices and collection between slices.
+
+### Object construction (clj-quickjs-280)
+
+`js_object_constructor` in `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04)
+was a semantic reference for direct Object argument rules and derived
+allocation. The Rust implementation is original; no C implementation was
+copied or wrapped. New constructor/lifetime tests are synthetic fixtures,
+not light-cljs output; the upstream operator fixture remains unmodified.

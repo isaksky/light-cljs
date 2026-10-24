@@ -62,7 +62,7 @@
 //!
 //! | Built-in | Result |
 //! |----------|--------|
-//! | `Object(v)` | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; a boolean, number or string: `UnsupportedOperand` (wrapper objects are clj-quickjs-72) |
+//! | `Object(v)`, `new Object(v)` (clj-quickjs-280) | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; a number, string or symbol: its task-owned wrapper; a boolean or BigInt: `UnsupportedOperand` (wrappers deferred) |
 //! | `Object.is(a, b)` | SameValue: `NaN` is `NaN`, `0` is not `-0`, strings by content, objects by identity |
 //! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Array]"` for an array (clj-quickjs-118); `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); `"[object Error]"` for an Error instance; a primitive receiver: `UnsupportedOperand` (clj-quickjs-72/-73) |
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
@@ -1152,15 +1152,7 @@ pub(crate) fn call(
         | Builtin::MapDelete
         | Builtin::MapClear
         | Builtin::MapSize => map_operation(heap, task, which, this, args),
-        Builtin::Object => match arg(0) {
-            Value::Undefined | Value::Null => new_object(heap, task),
-            v @ Value::Object(_) => Ok(v),
-            v @ Value::Symbol(_) => symbol_wrapper(heap, task, &v),
-            v => Err(Fault::Unsupported(format!(
-                "Object() of a {} needs a wrapper object, which is not supported",
-                v.type_name()
-            ))),
-        },
+        Builtin::Object => object_constructor(heap, task, args),
         Builtin::ObjectIs => Ok(Value::Bool(same_value(&arg(0), &arg(1)))),
         Builtin::MathFloor
         | Builtin::MathCeil
@@ -1945,6 +1937,25 @@ pub(crate) fn forward(
 /// IsCallable, failing with the `… is not a function` TypeError.
 fn callable(heap: &Heap, v: &Value) -> Result<(), Fault> {
     crate::vm::dispatch::callee(heap, v).map(drop)
+}
+
+/// Object's call and direct construction share argument rules. ToObject does
+/// not call user coercion hooks: reuse the existing Number/String/Symbol
+/// wrappers, retaining object arguments by identity. Operands stay traced in
+/// the caller until replacement, before the next safepoint.
+pub(crate) fn object_constructor(
+    heap: &Heap,
+    task: TaskId,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    match args.first().unwrap_or(&Value::Undefined) {
+        Value::Undefined | Value::Null => new_object(heap, task),
+        v @ (Value::Bool(_) | Value::BigInt(_)) => Err(Fault::Unsupported(format!(
+            "Object() of a {} needs a wrapper object, which is not supported",
+            v.type_name()
+        ))),
+        value => array_string_receiver(heap, task, value),
+    }
 }
 
 /// A new ordinary object owned by `task` whose prototype is
