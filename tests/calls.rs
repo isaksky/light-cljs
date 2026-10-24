@@ -711,3 +711,48 @@ fn exceeding_the_stack_value_bound_fails_the_task() {
     assert_eq!(err.diagnostic().call_chain.len(), 8);
     assert!(err.message().contains("10000"), "{}", err.message());
 }
+
+#[test]
+fn a_compiled_callee_keeps_its_source_locations_and_error_messages() {
+    // Synthetic fixture, not light-cljs output.
+    let f = clj_quickjs::frontend::compile_function(
+        "function f(n) {\n  let x = n + 1;\n  return missing + x;\n}",
+    )
+    .unwrap();
+    // function mid() { return f(1); }  function main() { return mid(); }
+    let mut asm = Assembler::new();
+    asm.function(&f)
+        .constant(num(1.0))
+        .call(1)
+        .op(Opcode::Return);
+    let mid = asm.finish("mid", 0, 0).unwrap();
+    let mut asm = Assembler::new();
+    asm.function(&mid).call(0).op(Opcode::Return);
+    let main = asm.finish("main", 0, 0).unwrap();
+    let rt = Runtime::new();
+    let task = rt.spawn(&main, &[]).unwrap();
+    let mut host = Recorder::default();
+    // main: function, call; mid: function, const, call; now at f's first
+    // instruction, two hand-assembled frames below it.
+    assert!(matches!(
+        task.run_with(Budget::instructions(5), &mut host).unwrap(),
+        RunOutcome::Yielded
+    ));
+    let at = task
+        .source_location()
+        .expect("the running frame is compiled");
+    assert_eq!(Some(at), f.source_location(0));
+    assert_eq!(at.line, 2);
+    let err = failed(task.run_with(Budget::UNLIMITED, &mut host).unwrap());
+    assert_eq!(err.kind(), VmErrorKind::ReferenceError);
+    assert_eq!(err.message(), "missing is not defined");
+    let d = err.diagnostic();
+    assert_eq!(&*d.executable, f.name());
+    assert_eq!(d.source.map(|s| s.line), Some(3));
+    let chain: Vec<(&str, usize)> = d
+        .call_chain
+        .iter()
+        .map(|c| (&*c.executable, c.instruction))
+        .collect();
+    assert_eq!(chain, [("mid", 2), ("main", 1)]);
+}

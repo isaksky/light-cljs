@@ -148,8 +148,11 @@ impl VmState {
         limits: VmLimits,
     ) -> VmState {
         let mut stack = Vec::with_capacity(usize::from(code.locals) + code.max_stack);
-        stack.extend_from_slice(args);
-        bind_args(&mut stack, 0, code, args.len());
+        // Only declared parameters are copied, so ignored extra arguments
+        // never enlarge the task's retained storage.
+        let bound = &args[..args.len().min(usize::from(code.params))];
+        stack.extend_from_slice(bound);
+        bind_args(&mut stack, 0, code, bound.len());
         VmState {
             entry: Frame {
                 code: Arc::clone(code),
@@ -353,5 +356,30 @@ impl Trace for VmState {
                 visit(id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::Assembler;
+    use crate::vm::instr::Opcode;
+
+    #[test]
+    fn ignored_entry_arguments_do_not_grow_saved_storage() {
+        // function f(a) { let b; return b; }, given a million arguments.
+        let f = Assembler::new()
+            .get_local(1)
+            .op(Opcode::Return)
+            .finish("f", 1, 2)
+            .unwrap();
+        let args = vec![Value::Number(7.0); 1_000_000];
+        let diag = DiagnosticContext {
+            task: TaskId::from_raw(1),
+            world: WorldId::INITIAL,
+        };
+        let vm = VmState::new(&f.0, &args, diag, VmLimits::DEFAULT);
+        assert_eq!(vm.stack, [Value::Number(7.0), Value::Undefined]);
+        assert!(vm.stack.capacity() < 16, "{}", vm.stack.capacity());
     }
 }

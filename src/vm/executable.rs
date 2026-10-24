@@ -72,6 +72,21 @@ pub(crate) struct Code {
     pub(crate) debug: Option<DebugInfo>,
 }
 
+/// Iterative teardown: a function tree may be nested arbitrarily deep (each
+/// level is a separate load), so dropping the last handle to a chain must not
+/// recurse once per level on the Rust stack. Child tables of uniquely owned
+/// children are detached onto a worklist before the child itself is dropped.
+impl Drop for Code {
+    fn drop(&mut self) {
+        let mut pending: Vec<Arc<Code>> = std::mem::take(&mut self.functions).into_vec();
+        while let Some(child) = pending.pop() {
+            if let Some(mut child) = Arc::into_inner(child) {
+                pending.extend(std::mem::take(&mut child.functions).into_vec());
+            }
+        }
+    }
+}
+
 /// Source information of compiled code. Diagnostic only: it never changes
 /// what an instruction does.
 #[derive(Debug)]
@@ -795,5 +810,21 @@ mod tests {
         let again = Executable::load(spec).unwrap();
         assert_eq!(again.0.instrs, exe.0.instrs);
         assert!(Executable::same_code(&again.function(0).unwrap(), &child));
+    }
+
+    #[test]
+    fn dropping_deep_function_code_does_not_overflow_the_rust_stack() {
+        // A chain of 50,000 levels, each executable owning the previous one
+        // as its only child; only the outermost handle is kept.
+        let mut exe = load(vec![UNDEF, RET], vec![], 0).unwrap();
+        for _ in 0..50_000 {
+            exe = Executable::load(with_functions(vec![UNDEF, RET], vec![exe])).unwrap();
+        }
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || drop(exe))
+            .unwrap()
+            .join()
+            .expect("teardown is iterative");
     }
 }
