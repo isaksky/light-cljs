@@ -27,19 +27,23 @@
 //!
 //! The body stores code units (`u16`), not Rust `str` bytes, because
 //! JavaScript defines `length`, indexing and relational order on code units
-//! and a string may contain lone surrogates. Today every string comes from
-//! Rust or source text (Unicode scalar values, encoded with
-//! [`str::encode_utf16`]), so lone surrogates cannot arise yet;
-//! [`JsString::from_code_units`] already accepts any sequence, which is what
-//! lone surrogate escapes and string indexing need. Consequently:
+//! and a string may contain lone surrogates. [`JsString::from_code_units`]
+//! accepts any sequence: the lexer builds string literals with it, so a lone
+//! surrogate escape is a lone code unit and two surrogate escapes that spell
+//! a pair are the same string as the astral character (clj-quickjs-141).
+//! Consequently:
 //!
 //! * `length` is [`JsString::len`], the number of stored code units (O(1));
 //! * relational order is [`Ord`]: lexicographic over code units, the
 //!   ECMAScript IsLessThan order for two strings (QuickJS `js_string_compare`,
 //!   `research/quickjs/quickjs.c`, revision 7d1c13c5d8f8, compares code units
 //!   too), not Unicode scalar order;
+//! * equality, hashing and the map-key hash compare code-unit sequences,
+//!   never how a string was produced;
 //! * conversion to Rust text ([`JsString::to_string_lossy`], `Display`)
-//!   replaces a lone surrogate with U+FFFD.
+//!   replaces a lone surrogate with U+FFFD; [`JsString::code_units`] and
+//!   `Debug` (a quoted literal that writes a lone surrogate as `\u{d800}`)
+//!   are exact. None of them panics.
 //!
 //! Every string uses the 16-bit form; a narrow (Latin-1) body as in QuickJS's
 //! `JSString`, or a rope body for repeated concatenation, can be added inside
@@ -194,10 +198,35 @@ impl fmt::Display for JsString {
     }
 }
 
+/// Exact: a quoted, escaped literal like `str`'s `Debug`, except that a lone
+/// surrogate is written as the escape `\u{d800}` (not U+FFFD), so two
+/// different strings never print the same.
 impl fmt::Debug for JsString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.to_string_lossy())
+        f.write_str("\"")?;
+        let mut run = String::new();
+        for unit in char::decode_utf16(self.code_units().iter().copied()) {
+            match unit {
+                Ok(c) => run.push(c),
+                Err(lone) => {
+                    write_escaped_run(f, &run)?;
+                    run.clear();
+                    write!(f, "\\u{{{:x}}}", lone.unpaired_surrogate())?;
+                }
+            }
+        }
+        write_escaped_run(f, &run)?;
+        f.write_str("\"")
     }
+}
+
+/// Writes `run` escaped as `str`'s `Debug` does, without the quotes.
+fn write_escaped_run(f: &mut fmt::Formatter<'_>, run: &str) -> fmt::Result {
+    if run.is_empty() {
+        return Ok(());
+    }
+    let quoted = format!("{run:?}");
+    f.write_str(&quoted[1..quoted.len() - 1])
 }
 
 /// JavaScript Number::toString(x) in radix 10 (ECMA-262 Number::toString,
@@ -639,7 +668,28 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!(s.code_units(), &[0x61, 0xD800]);
         assert_eq!(s.to_string_lossy(), "a\u{FFFD}");
+        assert_eq!(s.to_string(), "a\u{FFFD}");
         assert_ne!(s, JsString::from("a\u{FFFD}"));
+        // `Debug` is exact: a lone surrogate is an escape, everything else
+        // is escaped as `str`'s `Debug` escapes it.
+        assert_eq!(format!("{s:?}"), r#""a\u{d800}""#);
+        let mixed =
+            JsString::from_code_units(vec![0xDC00, 0x0A, 0x22, 0xD83D, 0xDE00, 0xDBFF]).unwrap();
+        assert_eq!(
+            format!("{mixed:?}"),
+            "\"\\u{dc00}\\n\\\"\u{1F600}\\u{dbff}\""
+        );
+        assert_eq!(format!("{:?}", JsString::from("")), r#""""#);
+        assert_eq!(
+            format!("{:?}", JsString::from("a\tb")),
+            format!("{:?}", "a\tb")
+        );
+        // Halves joined by concatenation form the pair.
+        let high = JsString::from_code_units(vec![0xDBFF]).unwrap();
+        let low = JsString::from_code_units(vec![0xDFFF]).unwrap();
+        assert_eq!(high.concat(&low).unwrap(), JsString::from("\u{10FFFF}"));
+        assert_ne!(high, low);
+        assert!(high < low);
     }
 
     #[test]

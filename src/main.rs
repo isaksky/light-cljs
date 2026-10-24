@@ -5,8 +5,10 @@
 //!   synthetic fixture).
 //! * `cargo run -- path/to/script.js` runs that file instead.
 //!
-//! The completion value is printed. Host effects (`__rt.effect(op, x)`) print
-//! `effect op: x` and return `x`. Compilation errors exit with status 2, run
+//! The completion value is printed; a string exactly, as a quoted literal
+//! that writes a lone surrogate as `\u{d800}` (`JsString`'s `Debug`). Host
+//! effects (`__rt.effect(op, x)`) print `effect op: x` (a string lossily,
+//! U+FFFD for a lone surrogate) and return `x`. Compilation errors exit with status 2, run
 //! failures with status 1. No qjsc or C engine is involved: the script is
 //! compiled by `clj_quickjs::frontend` and executed by its VM.
 

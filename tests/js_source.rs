@@ -2375,6 +2375,96 @@ fn strings_compare_by_code_units() {
     );
 }
 
+/// Strings are sequences of UTF-16 code units, lone surrogates included
+/// (clj-quickjs-141). The literal rows of the unicode group of
+/// `test_string` (line 235) and its `"\0"` row (line 339) are adapted from
+/// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8: each
+/// `assert(a, b)` is a Rust assertion on `a === b`, the string that upstream
+/// builds with `String.fromCharCode(0x20ac)` is the literal `"€"`, and
+/// `eval('"\0"')` is the literal itself (`length`, `charCodeAt`,
+/// `codePointAt`, `String.fromCharCode` / `String.fromCodePoint` and `eval`
+/// are later pellets); see `docs/architecture.md`, "QuickJS references and
+/// provenance". The QuickJS MIT notice is on
+/// `strings_convert_with_string_to_number` above.
+#[test]
+fn strings_are_code_unit_sequences() {
+    for (src, expected) in [
+        // `test_string`: U+10FFFF is the pair DBFF DFFF, whether written as
+        // the character, a braced escape or two braced surrogate escapes.
+        ("\"\\u{10ffff}\" === \"\\u{dbff}\\u{dfff}\"", true),
+        ("\"\u{10FFFF}\" === \"\\u{10ffff}\"", true),
+        ("\"\u{20AC}\" === \"\u{20AC}\"", true),
+        ("\"\u{20AC}\" === \"\\u20ac\"", true),
+        ("\"\u{20AC}\" === \"\\u{20ac}\"", true),
+        ("\"a\" === \"\\x61\"", true),
+        ("\"\\0\" === \"\\u0000\"", true),
+        ("\"\\0\" !== \"\"", true),
+        // Halves joined by concatenation form the pair, statically known
+        // or not.
+        ("\"\\u{dbff}\" + \"\\u{dfff}\" === \"\\u{10ffff}\"", true),
+        (
+            "let h = \"\\uDBFF\", l = \"\\uDFFF\"; h + l === \"\u{10FFFF}\"",
+            true,
+        ),
+        (
+            "let h = \"\\uD83D\"; h + \"\\uDE00!\" === \"\u{1F600}!\"",
+            true,
+        ),
+        // A lone surrogate is its own value: not its partner, not U+FFFD.
+        ("\"\\u{dbff}\" === \"\\u{dfff}\"", false),
+        ("\"\\uD800\" === \"\u{FFFD}\"", false),
+        ("\"\\uD800\" === \"\\u{d800}\"", true),
+        ("\"\\uD800\" == \"\\uD800\"", true),
+        ("\"\\uD800\" ? true : false", true),
+        // Relational order is by code units.
+        ("\"\\uD800\" < \"\\uDC00\"", true),
+        ("\"\\uDC00\\uD800\" > \"\\uD800\\uDC00\"", true),
+        ("\"\\uDBFF\" < \"\\u{10ffff}\"", true),
+        ("\"\\u{10ffff}\" < \"\\uE000\"", true),
+        // Persistent map keys compare code units.
+        (
+            "__rt.get(__rt.map(\"\\u{10ffff}\", 1), \"\\u{dbff}\\u{dfff}\") === 1",
+            true,
+        ),
+        (
+            "let m = __rt.map(\"\\uD800\", 1, \"\u{FFFD}\", 2); \
+             __rt.get(m, \"\\u{d800}\") === 1 && __rt.get(m, \"\\uFFFD\") === 2",
+            true,
+        ),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
+
+    // An embedder reads a string result with a lone surrogate exactly
+    // (code units, `Debug`) or lossily (`Display`), without panicking.
+    let rt = Runtime::new();
+    let script = exe("let s = \"a\\uD800\"; s");
+    let RunOutcome::Complete(lone) = rt.spawn(&script, &[]).unwrap().run().unwrap() else {
+        panic!("expected Complete");
+    };
+    let s = lone.string().expect("a string value");
+    assert_eq!(s.code_units(), [0x61, 0xD800]);
+    assert_eq!(format!("{s:?}"), "\"a\\u{d800}\"");
+    assert_eq!(s.to_string(), "a\u{FFFD}");
+
+    // Published to another task on another thread, it compares equal by
+    // content there and joins with a low surrogate into a pair.
+    assert_eq!(rt.publish(&lone), Ok(()));
+    let consumer = compile_function(
+        "function consume(s) {
+           return s === \"a\\u{d800}\" && s !== \"a\u{FFFD}\" &&
+                  s + \"\\uDC00\" === \"a\u{10000}\" && __rt.get(__rt.map(s, 7), \"a\\uD800\");
+         }",
+    )
+    .unwrap();
+    let task = rt.spawn(&consumer, &[&lone]).unwrap();
+    let outcome = std::thread::scope(|t| t.spawn(|| task.run().unwrap()).join().unwrap());
+    let RunOutcome::Complete(v) = outcome else {
+        panic!("expected Complete, got {outcome:?}");
+    };
+    assert_eq!(v.view(), ValueView::Number(7.0));
+}
+
 /// IsLooselyEqual between strings and numbers or booleans (clj-quickjs-67).
 /// The string rows of `test_eq` (line 126) are adapted from
 /// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (each

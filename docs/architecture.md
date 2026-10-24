@@ -1303,15 +1303,27 @@ Design: `design.md` §§4, 11.
   no identity).
 - **UTF-16 code units.** The body stores `u16` code units, not Rust `str`
   bytes: JavaScript defines `length`, indexing and relational order on code
-  units, and a string may hold lone surrogates. Today literals are Unicode
-  scalar values (lone surrogate escapes are still rejected by the lexer)
-  encoded with UTF-16; `JsString::from_code_units` already accepts any
-  sequence, which is what lone surrogate escapes (clj-quickjs-141) need.
+  units, and a string may hold lone surrogates. The lexer decodes a string
+  literal straight to code units (clj-quickjs-141; the token and the
+  syntax tree carry a `JsString`): raw source characters are UTF-16
+  encoded, and each `\u` escape appends its code unit (or, above U+FFFF,
+  its pair) as is, so a lone surrogate escape is a lone code unit and two
+  surrogate escapes that spell a pair give the same code units as the
+  astral character (QuickJS `js_parse_string` likewise). Every operation
+  that compares strings reads only the code-unit sequence, never how it
+  was produced: equality (`===`, `==`, SameValue in atom compare-and-set),
+  persistent map keys (`content_hash` and equality in
+  `src/collections/map.rs`), constant deduplication and relational order,
+  so `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"`.
   `length` will be `JsString::len` (stored count, O(1)); indexing reads
   `code_units()[i]` (clj-quickjs-142); relational order (`<` etc.,
   clj-quickjs-68) is `JsString`'s `Ord`, lexicographic over code units
-  (QuickJS `js_string_compare`), not Unicode scalar order. Text for diagnostics and the
-  embedder (`to_string_lossy`, `Display`) maps a lone surrogate to U+FFFD.
+  (QuickJS `js_string_compare`), not Unicode scalar order. Reading a
+  string never panics on a lone surrogate: `code_units()` is exact,
+  `Debug` is exact (a quoted literal that writes a lone surrogate as
+  `\u{d800}`; `src/main.rs` prints a string result with it), and text for
+  diagnostics and host effects (`to_string_lossy`, `Display`) maps a lone
+  surrogate to U+FFFD.
 - **Room for later representations.** Every string uses the 16-bit form
   and concatenation copies both operands into a new flat body (an empty
   operand returns the other's body). A Latin-1 body (QuickJS's 8-bit
@@ -1681,3 +1693,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   unresolvable operand is decided statically (there is no global object)
   and `type_of` in `src/vm/dispatch.rs` classifies this runtime's value
   kinds. No code was copied.
+- `tests/js_source.rs` `strings_are_code_unit_sequences` (clj-quickjs-141):
+  the literal rows of the unicode group of `test_string` (line 235) and its
+  `"\0"` row (line 339) of `research/quickjs/tests/test_builtin.js`,
+  revision 7d1c13c5d8f8. Modified: each `assert(a, b)` is a Rust assertion
+  on `a === b`; `String.fromCharCode(0x20ac)` is the literal `"€"` and
+  `eval('"\0"')` the literal itself; the `length`, `charCodeAt`,
+  `codePointAt` and `String.fromCodePoint` rows and `test_rope` wait for
+  string properties and methods. The notice is on
+  `strings_convert_with_string_to_number`. `research/quickjs/quickjs.c`
+  `js_parse_string`, `JS_ConcatString` and `js_string_compare` were
+  consulted only, for semantics. No code was copied.

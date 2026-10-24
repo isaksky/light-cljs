@@ -20,6 +20,7 @@ use std::cmp::Ordering;
 
 use super::unicode_ident::{ID_CONTINUE, ID_START};
 use super::{Span, SyntaxError, SyntaxErrorKind};
+use crate::value::JsString;
 
 /// A lexical token.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,8 +38,9 @@ pub enum TokenKind {
     Keyword(Keyword),
     /// A numeric literal's value.
     Number(f64),
-    /// A string literal's cooked value.
-    String(String),
+    /// A string literal's cooked value: UTF-16 code units, possibly with
+    /// lone surrogates (clj-quickjs-141).
+    String(JsString),
     Punct(Punct),
     Eof,
 }
@@ -604,7 +606,7 @@ impl<'a> Lexer<'a> {
     fn lex_string(&mut self, quote: char) -> Result<TokenKind, SyntaxError> {
         let start = self.pos;
         self.bump();
-        let mut out = String::new();
+        let mut out: Vec<u16> = Vec::new();
         loop {
             let char_pos = self.pos;
             let Some(c) = self.bump() else {
@@ -624,13 +626,29 @@ impl<'a> Lexer<'a> {
                     ));
                 }
                 '\\' => self.lex_escape(char_pos, &mut out)?,
-                c => out.push(c),
+                c => push_char(&mut out, c),
             }
         }
-        Ok(TokenKind::String(out))
+        // Only a source text of over 2^30 - 1 code units can hold such a
+        // literal; report it rather than truncate.
+        JsString::from_code_units(out)
+            .map(TokenKind::String)
+            .ok_or_else(|| {
+                self.error(
+                    SyntaxErrorKind::TooLarge,
+                    Span::new(start, self.pos),
+                    "a string literal longer than 2^30 - 1 code units",
+                )
+            })
     }
 
-    fn lex_escape(&mut self, backslash: usize, out: &mut String) -> Result<(), SyntaxError> {
+    /// One escape sequence of a string literal, appended to `out` as UTF-16
+    /// code units. A `\u` escape appends its code unit (or, above U+FFFF,
+    /// its surrogate pair) as is, so two escapes that spell a surrogate pair
+    /// give the same code units as the astral character itself, and a lone
+    /// surrogate escape stays a lone surrogate (ECMAScript §12.9.4.1 SV;
+    /// QuickJS `js_parse_string`).
+    fn lex_escape(&mut self, backslash: usize, out: &mut Vec<u16>) -> Result<(), SyntaxError> {
         let Some(c) = self.bump() else {
             return Err(self.error(
                 SyntaxErrorKind::UnexpectedEnd,
@@ -642,13 +660,13 @@ impl<'a> Lexer<'a> {
             lexer.error(kind, Span::new(backslash, lexer.pos), message.to_string())
         };
         match c {
-            'n' => out.push('\n'),
-            't' => out.push('\t'),
-            'r' => out.push('\r'),
-            'b' => out.push('\u{08}'),
-            'f' => out.push('\u{0C}'),
-            'v' => out.push('\u{0B}'),
-            '0' if !self.peek_char().is_some_and(|c| c.is_ascii_digit()) => out.push('\0'),
+            'n' => out.push(0x0A),
+            't' => out.push(0x09),
+            'r' => out.push(0x0D),
+            'b' => out.push(0x08),
+            'f' => out.push(0x0C),
+            'v' => out.push(0x0B),
+            '0' if !self.peek_char().is_some_and(|c| c.is_ascii_digit()) => out.push(0),
             '0'..='7' => {
                 return Err(escape_error(
                     self,
@@ -678,48 +696,20 @@ impl<'a> Lexer<'a> {
                         "invalid hexadecimal escape sequence",
                     )
                 })?;
-                out.push(char::from_u32(value).unwrap_or('\u{FFFD}'));
+                // Two hex digits: always one code unit below 0x100.
+                out.push(value as u16);
             }
             'u' => {
-                let unit = self.unicode_escape_value().ok_or_else(|| {
+                let value = self.unicode_escape_value().ok_or_else(|| {
                     escape_error(
                         self,
                         SyntaxErrorKind::InvalidToken,
                         "invalid Unicode escape sequence",
                     )
                 })?;
-                let scalar = if (0xD800..0xDC00).contains(&unit) {
-                    // A high surrogate must be followed by a `\u` low
-                    // surrogate escape to form one scalar value.
-                    let mut ahead = self.clone();
-                    let low = if ahead.rest().starts_with("\\u") {
-                        ahead.pos += 2;
-                        ahead.unicode_escape_value()
-                    } else {
-                        None
-                    };
-                    match low {
-                        Some(low @ 0xDC00..0xE000) => {
-                            *self = ahead;
-                            0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
-                        }
-                        _ => unit,
-                    }
-                } else {
-                    unit
-                };
-                match char::from_u32(scalar) {
-                    Some(ch) => out.push(ch),
-                    None => {
-                        return Err(escape_error(
-                            self,
-                            SyntaxErrorKind::Unsupported,
-                            "lone surrogate escapes are not supported (strings hold Unicode scalar values)",
-                        ));
-                    }
-                }
+                push_code_point(out, value);
             }
-            other => out.push(other),
+            other => push_char(out, other),
         }
         Ok(())
     }
@@ -755,6 +745,25 @@ impl<'a> Lexer<'a> {
         } else {
             self.hex_digits(4)
         }
+    }
+}
+
+/// Appends `c` as UTF-16 code units.
+fn push_char(out: &mut Vec<u16>, c: char) {
+    let mut buf = [0u16; 2];
+    out.extend_from_slice(c.encode_utf16(&mut buf));
+}
+
+/// Appends a code point of at most U+10FFFF as UTF-16 code units: a
+/// surrogate (U+D800..U+DFFF) is appended as that one code unit, so a lone
+/// surrogate stays representable; above U+FFFF, the surrogate pair.
+fn push_code_point(out: &mut Vec<u16>, value: u32) {
+    match char::from_u32(value) {
+        Some(c) => push_char(out, c),
+        // `unicode_escape_value` returns at most U+10FFFF, so the only
+        // values that are not chars are the surrogates, which fit in one
+        // code unit.
+        None => out.push(value as u16),
     }
 }
 

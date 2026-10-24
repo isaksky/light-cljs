@@ -1326,8 +1326,11 @@ fn literals() {
 }
 
 #[test]
-fn unicode_string_escapes_decode_scalars() {
-    let src = r"x = 'A😀éz';";
+fn unicode_string_escapes_decode_code_units() {
+    // clj-quickjs-141: a string literal is a sequence of UTF-16 code units.
+    // Each `\u` escape contributes its code unit, so two escapes that spell
+    // a surrogate pair are the same string as the astral character itself.
+    let src = "x = 'A\\uD83D\\uDE00\\u00E9z';";
     let script = parse_script(src).unwrap();
     let StmtKind::Expr(Expr {
         kind: ExprKind::Assign { value, .. },
@@ -1336,18 +1339,45 @@ fn unicode_string_escapes_decode_scalars() {
     else {
         panic!()
     };
-    // The surrogate pair combines into one scalar value; both escapes are
-    // consumed and the following characters are kept.
-    assert_eq!(value.kind, ExprKind::String("A😀éz".into()));
-    assert_eq!(value.span.text(src), r"'A😀éz'");
-    // A high surrogate followed by a non-surrogate escape is not combined.
-    rejects_with(
-        r"'\uD83DA'",
-        SyntaxErrorKind::Unsupported,
+    assert_eq!(value.kind, ExprKind::String("A\u{1F600}\u{E9}z".into()));
+    assert_eq!(value.span.text(src), "'A\\uD83D\\uDE00\\u00E9z'");
+    // Lone surrogate escapes are kept as code units (formerly rejected with
+    // `Unsupported`): a high surrogate followed by a non-surrogate, a lone
+    // high or low surrogate in either escape form, and a low surrogate
+    // before a high one (not a pair).
+    let units = |src: &str| match parse_script(src).unwrap().body[0].kind {
+        StmtKind::Expr(Expr {
+            kind: ExprKind::String(ref s),
+            ..
+        }) => s.code_units().to_vec(),
+        ref other => panic!("{src:?}: not a string literal: {other:?}"),
+    };
+    assert_eq!(units("'\\uD83DA'"), [0xD83D, 0x41]);
+    assert_eq!(units("'\\uD800'"), [0xD800]);
+    assert_eq!(units("'\\u{dfff}'"), [0xDFFF]);
+    assert_eq!(units("'\\u{D800}x'"), [0xD800, 0x78]);
+    assert_eq!(units("'\\uDC00\\uD800'"), [0xDC00, 0xD800]);
+    // Braced surrogate escapes pair up too; U+10FFFF is DBFF DFFF.
+    assert_eq!(units("'\\u{dbff}\\u{dfff}'"), [0xDBFF, 0xDFFF]);
+    assert_eq!(units("'\\u{10ffff}'"), [0xDBFF, 0xDFFF]);
+    assert_eq!(units("'\u{10FFFF}'"), [0xDBFF, 0xDFFF]);
+    // The other escape groups give the same units as the raw characters.
+    assert_eq!(units("'\\x61'"), units("'a'"));
+    assert_eq!(units("'\\u{20ac}'"), [0x20AC]);
+    assert_eq!(units("'\\u20AC'"), units("'\u{20AC}'"));
+    assert_eq!(units("'\\0'"), [0]);
+    assert_eq!(units("'\\xff\\u{0}'"), [0xFF, 0]);
+    assert_eq!(units("''"), [0u16; 0]);
+    // The AST rendering shows a lone surrogate exactly.
+    assert_eq!(ast("'a\\uD800';"), "\"a\\u{d800}\"");
+    // Identifiers still reject surrogates.
+    rejects(
+        "let \\uD835\\uDC9C = 1;",
+        SyntaxErrorKind::InvalidToken,
         1,
-        2,
-        "surrogate",
+        5,
     );
+    rejects("let \\u{D800} = 1;", SyntaxErrorKind::InvalidToken, 1, 5);
 }
 
 #[test]
@@ -1871,8 +1901,6 @@ fn rejects_lexically_ambiguous_input() {
     rejects("'\\x4'", InvalidToken, 1, 2);
     rejects("'\\u12'", InvalidToken, 1, 2);
     rejects("'\\u{110000}'", InvalidToken, 1, 2);
-    rejects_with("'\\uD800'", Unsupported, 1, 2, "surrogate");
-    rejects_with("'\\uDC00\\uD800'", Unsupported, 1, 2, "surrogate");
     rejects("'abc\ndef'", InvalidToken, 1, 1);
     // Characters and constructs that are not tokens of the subset.
     rejects_with("x = `t`;", Unsupported, 1, 5, "template");

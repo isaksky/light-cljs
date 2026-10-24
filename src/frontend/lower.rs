@@ -104,8 +104,9 @@
 //! ToNumber and the number-only comparison are IsLessThan, and they are
 //! emitted instead.
 //!
-//! **Strings.** A string literal (Unicode scalar values, encoded as UTF-16
-//! code units) is a constant, deduplicated by content like other constants.
+//! **Strings.** A string literal (UTF-16 code units, possibly with lone
+//! surrogates, decoded by the lexer) is a constant, deduplicated by
+//! content like other constants.
 //! `++`/`--` on a binding (clj-quickjs-64) is a read, `to_number`, `add` or
 //! `sub` of the constant 1 and a store, with the checks of an ordinary read
 //! and assignment (so a captured binding goes through its cell and a
@@ -1799,17 +1800,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span)?,
             ExprKind::Null => self.constant(Primitive::Null, span)?,
             ExprKind::Undefined => self.out().op(Opcode::Undefined, span),
-            ExprKind::String(s) => {
-                let units: Vec<u16> = s.encode_utf16().collect();
-                let Some(s) = JsString::from_code_units(units) else {
-                    return Err(self.error(
-                        SyntaxErrorKind::TooLarge,
-                        span,
-                        "a string literal longer than 2^30 - 1 code units",
-                    ));
-                };
-                self.constant(Primitive::String(s), span)?;
-            }
+            ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span)?,
             ExprKind::Identifier(name) => {
                 let at = self.name_span(name, span);
                 let access = self.resolve(name);

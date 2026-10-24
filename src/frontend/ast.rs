@@ -12,6 +12,7 @@
 //! passes over a parsed tree have a fixed depth bound.
 
 use super::Span;
+use crate::value::JsString;
 
 /// A whole script: a statement list.
 #[derive(Clone, Debug, PartialEq)]
@@ -349,7 +350,8 @@ impl Expr {
 pub enum ExprKind {
     /// A numeric literal, or `NaN` / `Infinity` (which the subset reserves).
     Number(f64),
-    String(String),
+    /// A string literal's cooked value (UTF-16 code units).
+    String(JsString),
     Bool(bool),
     Null,
     /// `undefined` (which the subset reserves).

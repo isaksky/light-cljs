@@ -1409,6 +1409,14 @@ Supported (`cargo test --test js_source string_values`,
   (`docs/architecture.md`, "String values"): publishable to other tasks,
   usable as persistent map keys by content (`__rt.get(__rt.map("k", 1), "k")`
   is 1), stored as UTF-16 code units.
+- Strings are UTF-16 code-unit sequences, lone surrogates included
+  (clj-quickjs-141; `cargo test --test js_source strings_are_code_unit_sequences`,
+  `cargo test --lib frontend::tests::unicode_string_escapes_decode_code_units`):
+  `\u` escapes decode to code units, so `"\u{dbff}\u{dfff}"` and
+  `"\u{dbff}" + "\u{dfff}"` equal `"\u{10ffff}"`, a lone surrogate escape
+  (`"\u{d800}"`) is a string that equals only itself, and such a string
+  publishes to other tasks and works as a map key. `cargo run` prints a
+  string result exactly (a lone surrogate as `\u{d800}`).
 - `+` with a string operand concatenates the ToString of both operands
   (clj-quickjs-66; `cargo test --test js_source addition_concatenates_strings`,
   `cargo test --lib value::string::`): `"a" + 1` is `"a1"`, `1 + 2 + "3"`
@@ -1425,8 +1433,7 @@ Deferred:
   numbers since clj-quickjs-67 and compare relationally by code units since
   clj-quickjs-68, below; `typeof` is clj-quickjs-69.) No templates,
   `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
-  other than 10, clj-quickjs-149); lone surrogate escapes are still rejected
-  by the lexer (clj-quickjs-141).
+  other than 10, clj-quickjs-149).
 
 ### StringToNumber and loose equality with strings (clj-quickjs-67)
 
