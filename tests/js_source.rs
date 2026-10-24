@@ -1460,6 +1460,18 @@ fn for_in_walks_the_prototype_chain() {
         ),
         "opp2t"
     );
+    // The chain is read lazily: a prototype replaced (or removed) while the
+    // walk is still on the object's own keys is not visited; the new one is.
+    assert_eq!(
+        keys(
+            r#"const old = {gone: 1};
+               const o = {a: 1, b: 1, __proto__: old};
+               for (const k in o) { if (k === "a") Object.setPrototypeOf(o, {fresh: 1, b: 2}); s = s + k + ","; }
+               const n = {a: 1, __proto__: {gone: 1}};
+               for (const k in n) { Object.setPrototypeOf(n, null); s = s + k + ","; }"#
+        ),
+        "a,b,fresh,a,"
+    );
     // A function on the chain contributes its own enumerable properties;
     // the walk ends there (`Function.prototype` has no enumerable ones).
     assert_eq!(
