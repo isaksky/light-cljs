@@ -3985,10 +3985,9 @@ object keys `if` and `async`. The test compiles each case independently in
 non-strict mode and collects between instruction-budget slices. This adds
 upstream coverage of the supported operators, conversions, equality,
 increment/decrement, constructors, `in`, `instanceof` and `typeof`.
-Current result: `test_op1`, `test_cvt`, `test_eq` and `test_inc_dec` pass;
-`test_op2` fails at `new Object` with a TypeError because Object construction
-is still deferred (clj-quickjs-280). The fixture retains every
-assertion and intentionally fails until that prerequisite lands. Other
+Current result: all five cases complete normally, including `test_op2` with
+direct Object construction (clj-quickjs-280). All 214 selected upstream lines
+and every assertion remain unchanged; adapted rows: none. Other
 `test_language.js` cases remain outside this fixture.
 
 ```sh
