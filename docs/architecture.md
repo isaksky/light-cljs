@@ -1843,11 +1843,9 @@ the element or property is added.
 - `Object.getPrototypeOf([])` names `Array.prototype` (clj-quickjs-121);
   an `Array` global (clj-quickjs-39) will give it its usual name. Its methods are
   added to the realm (`realm::build`, `Builtin`, append-only).
-- Assigning `length` (truncation or extension), the `Array` constructor,
-  `Array.isArray` and the `Array.prototype` methods (clj-quickjs-39,
-  -153..-156) are not implemented; assigning `length` fails with
-  `UnsupportedOperand` instead of misbehaving. With dense storage,
-  truncation is a `Vec::truncate` plus a sparse `split_off`.
+- Assigning or defining `length` uses ArraySetLength (clj-quickjs-154,
+  "Array length changes" below). The `Array` constructor, `Array.isArray`
+  and `Array.prototype` methods belong to their own built-in pellets.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
   arrays never do). Key reclamation by the collector is clj-quickjs-259
@@ -1928,9 +1926,8 @@ their call instruction like every built-in so far.
   not all true (empty for every literal, so plain arrays pay nothing) and
   a `length_writable` flag. `define_element` runs the same
   `validate_and_apply` as ordinary properties (a new element at or beyond
-  a read-only `length` is rejected); `define_length` accepts only defines
-  that keep the value (changing it is ArraySetLength, clj-quickjs-39,
-  `UnsupportedOperand`). Writes consult both: a read-only element is a
+  a read-only `length` is rejected); `define_length` implements
+  ArraySetLength (clj-quickjs-154). Writes consult both: a read-only element is a
   read-only property for `[[Set]]` (own or inherited), and a read-only
   `length` rejects new elements at or beyond it and `a.length = v`.
 - clj-quickjs-120 turns the property value into a data/accessor enum and
@@ -3128,3 +3125,33 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_function_apply`, `build_arg_list` and `js_reflect_apply` were
   consulted only, for semantics (call and apply are tail calls here, not
   C-stack calls). No code was copied.
+
+## Array length changes (clj-quickjs-154)
+
+`vm::property::length_descriptor` validates primitive length values as
+ToUint32/ToNumber before mutation, normalizing negative zero. It is shared
+by assignment and `Object.defineProperty`; object values explicitly fail
+through the existing unsupported ToPrimitive path, so conversion runs no
+JavaScript under the heap's object-table lock. A future object conversion
+must run through resumable VM frames before entering that lock.
+
+`ArrayObject::define_length` validates the non-configurable length
+property's descriptor, grows without allocating elements, or calls
+`truncate`. Truncation deletes sparse entries from the greatest key down,
+then dense elements from the end; a failed deletion leaves length at that
+index plus one. Dense slots and attribute exceptions above the resulting
+length are dropped, so the collector sees no removed edges and regrowth
+cannot resurrect elements or attributes. The operation is atomic under the
+object-table lock and costs at most the stored sparse entries and dense
+slots visited, independent of holes in the numeric length. It creates no
+per-index work for sparse gaps and retains no Rust stack across a wait.
+
+The resulting writable flag is applied even on partial truncation failure.
+`[[Set]]` maps rejection through the executing code's strict flag (strict
+TypeError, sloppy no-op); `defineProperty` always throws. Invalid length
+values use the new catchable `VmErrorKind::RangeError` through the existing
+immutable `ErrorObject` allocation/unwinding path. No new heap kind or
+constructor is introduced. `tests/js_source.rs` covers both entry paths,
+and `array_length_truncation_reclaims_elements` in `tests/gc_roots.rs`
+verifies collection of dense and sparse element values while a suspended
+frame keeps their array alive.

@@ -166,6 +166,8 @@ pub(crate) enum Fault {
         owner: Option<TaskId>,
         caller: TaskId,
     },
+    /// An invalid array length (clj-quickjs-154).
+    RangeError(String),
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -674,6 +676,7 @@ fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
 /// The error kind and message of a fault that is not an exception value.
 fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
     match fault {
+        Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
         Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
         Fault::Host(m) => (VmErrorKind::HostEffect, m),
@@ -722,6 +725,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
 fn catchable(kind: VmErrorKind) -> bool {
     match kind {
         VmErrorKind::ReferenceError
+        | VmErrorKind::RangeError
         | VmErrorKind::TypeError
         | VmErrorKind::StackOverflow
         | VmErrorKind::DependencyFailed(_)

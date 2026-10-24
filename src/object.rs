@@ -575,7 +575,9 @@ pub(crate) enum DefineOutcome {
     /// The property was created or updated.
     Done,
     /// ValidateAndApplyPropertyDescriptor returned false (`defineProperty`
-    /// throws a TypeError); the reason, for the message. Nothing changed.
+    /// throws a TypeError); the reason, for the message. Ordinary properties
+    /// stay unchanged; ArraySetLength may already have removed higher
+    /// elements before reaching a non-configurable one.
     Rejected(&'static str),
     /// The define would create an accessor property, or turn a
     /// configurable data property into one (clj-quickjs-120). Nothing

@@ -374,28 +374,57 @@ impl ArrayObject {
         DefineOutcome::Done
     }
 
-    /// `[[DefineOwnProperty]]` of `length` (ArraySetLength, clj-quickjs-119)
-    /// for the cases that keep its value: [`validate_and_apply`] against the
-    /// current `length` property (a value numerically equal to it counts as
-    /// the same, as ToUint32 makes it). `None` when the define would change
-    /// the value: truncating or extending an array is clj-quickjs-39.
-    pub(crate) fn define_length(&mut self, desc: &PropertyDescriptor) -> Option<DefineOutcome> {
+    /// ArraySetLength (clj-quickjs-154). The VM has already converted any
+    /// value to a valid u32 number. Validate the attributes before deleting
+    /// elements, and apply writable:false even when a deletion is blocked.
+    pub(crate) fn define_length(&mut self, desc: &PropertyDescriptor) -> DefineOutcome {
         let current = self.length_property();
-        let mut desc = desc.clone();
-        if let Some(Value::Number(n)) = desc.value
-            && n == f64::from(self.length)
-        {
-            desc.value = Some(current.value.clone());
-        }
-        let property = match validate_and_apply(Some(&current), &desc) {
+        let property = match validate_and_apply(Some(&current), desc) {
             Ok(property) => property,
-            Err(outcome) => return Some(outcome),
+            Err(outcome) => return outcome,
         };
-        if !matches!(property.value, Value::Number(n) if n == f64::from(self.length)) {
-            return None;
-        }
+        let Value::Number(length) = property.value else {
+            unreachable!("array length must be normalized before definition");
+        };
+        debug_assert!(length >= 0.0 && length <= f64::from(u32::MAX) && length.fract() == 0.0);
+        let length = length as u32;
+        let outcome = if length < self.length {
+            self.truncate(length)
+        } else {
+            self.length = length;
+            DefineOutcome::Done
+        };
         self.length_writable = property.flags.writable;
-        Some(DefineOutcome::Done)
+        outcome
+    }
+
+    /// Delete from the highest present index down. Sparse gaps never cost
+    /// work; the atomic operation is bounded by stored elements/dense slots,
+    /// not by the numeric length. Drop every removed value and attribute so
+    /// neither the collector nor later growth can see stale elements.
+    fn truncate(&mut self, length: u32) -> DefineOutcome {
+        while let Some((&index, _)) = self.sparse.last_key_value() {
+            if index < length {
+                break;
+            }
+            if self.delete_element(index) == DeleteOutcome::NonConfigurable {
+                self.length = index + 1;
+                return DefineOutcome::Rejected("an array element is not configurable");
+            }
+        }
+        let mut end = self.dense.len();
+        while end > length as usize {
+            let index = (end - 1) as u32;
+            if self.delete_element(index) == DeleteOutcome::NonConfigurable {
+                self.dense.truncate(end);
+                self.length = index + 1;
+                return DefineOutcome::Rejected("an array element is not configurable");
+            }
+            end -= 1;
+        }
+        self.dense.truncate(end);
+        self.length = length;
+        DefineOutcome::Done
     }
 
     /// Append an element (`Some`) or a hole (`None`) at index `length`, as

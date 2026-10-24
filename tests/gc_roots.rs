@@ -1534,3 +1534,30 @@ fn for_in_prototype_walk_survives_collection_and_migration() {
         assert_eq!(s.view(v), ValueView::Bool(true));
     });
 }
+
+/// Truncation clears both dense and sparse element edges while keeping the
+/// array alive in a suspended frame (clj-quickjs-154). Synthetic fixtures,
+/// not light-cljs output.
+#[test]
+fn array_length_truncation_reclaims_elements() {
+    for index in [2, 4294967294_u32] {
+        let rt = Runtime::new();
+        let (task, weak) = spawn_holding(
+            &rt,
+            &format!(
+                "function f(o) {{ const a = [1]; a[{index}] = o; o = 0; \
+                 const r1 = __rt.need(9, 1); a.length = 1; \
+                 const r2 = __rt.need(10, 1); return a.length === 1 && a[0] === 1 && a[{index}] === undefined; }}"
+            ),
+        );
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 9)));
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+        complete_requests(&rt, &task);
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 10)));
+        rt.request_collection().unwrap();
+        assert_stale(&rt, std::slice::from_ref(&weak));
+        complete_requests(&rt, &task);
+        assert_eq!(run_to_end(&task).view(), ValueView::Bool(true));
+    }
+}

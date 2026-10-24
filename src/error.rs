@@ -94,6 +94,10 @@ pub enum VmErrorKind {
         /// The task that tried to use it.
         caller: TaskId,
     },
+    /// An invalid array length (clj-quickjs-154). Catchable through the
+    /// existing immutable VM error objects; a RangeError constructor is
+    /// still deferred to the error built-ins.
+    RangeError,
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

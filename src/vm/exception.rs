@@ -56,7 +56,8 @@
 //! **Exception values and catchability.** `throw v` raises `v` itself. Some
 //! run-time failures are JavaScript errors and are raised as catchable
 //! exceptions too: `ReferenceError` (undeclared name, temporal dead zone),
-//! `TypeError` (assignment to a constant, calling a non-function) and
+//! `TypeError` (assignment to a constant, calling a non-function),
+//! `RangeError` (invalid array length, clj-quickjs-154) and
 //! `StackOverflow` (QuickJS's catchable "stack overflow" InternalError).
 //! Their exception value is a fresh, immutable **error object**
 //! ([`ErrorObject`], a native heap object, shareable) that carries the

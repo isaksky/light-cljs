@@ -14,7 +14,7 @@
 //! | Base | Read `b.x` / `b[k]` | Write `b.x = v` / `b[k] = v` |
 //! |------|-----------|-----------------|
 //! | ordinary object owned by the running task | own property, else the prototype chain, else `undefined` | update an own writable data property; otherwise add one, unless the property is inherited read-only (`TypeError`) |
-//! | array owned by the running task | an index: the element, else (a hole) the prototype chain; `length`; any other name as an ordinary object | an index: update the element, or (after the prototype-chain check) add it, extending `length`; `length`: `UnsupportedOperand` (clj-quickjs-39); any other name as an ordinary object |
+//! | array owned by the running task | an index: the element, else (a hole) the prototype chain; `length`; any other name as an ordinary object | an index: update the element, or (after the prototype-chain check) add it, extending `length`; `length`: ArraySetLength (clj-quickjs-154); any other name as an ordinary object |
 //! | ordinary object created by the embedder (no owner) | as above | `ForeignObject` failure |
 //! | ordinary object or array owned by another task | `ForeignObject` failure | `ForeignObject` failure |
 //! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
@@ -66,8 +66,10 @@
 //! same owner and kind rules as the table above. Array elements and
 //! `length` keep their attributes in the array (`crate::object::array`): a
 //! read-only element rejects writes like a read-only named property, and a
-//! read-only `length` rejects new elements at or beyond it; a define that
-//! would change `length` fails with `UnsupportedOperand` (clj-quickjs-39).
+//! read-only `length` rejects new elements at or beyond it. Length changes
+//! use ArraySetLength (clj-quickjs-154): validate a primitive as a u32,
+//! grow without creating elements, or delete from the end until blocked by
+//! a non-configurable element. Invalid lengths are catchable RangeErrors.
 //!
 //! # Primitive bases
 //!
@@ -669,11 +671,19 @@ fn store(
                     let prototype = a.object().prototype();
                     stored(a.set(*index, value.clone()), key, prototype)
                 }
-                _ if key.is_length() && !a.length_writable() => Ok(Stored::Rejected(read_only(key))),
-                _ if key.is_length() => Err(Fault::Unsupported(
-                    "cannot set property 'length' of an array: changing an array's length by assignment is not supported"
-                        .to_string(),
-                )),
+                _ if key.is_length() && !a.length_writable() => {
+                    Ok(Stored::Rejected(read_only(key)))
+                }
+                _ if key.is_length() => {
+                    let desc = length_descriptor(&PropertyDescriptor {
+                        value: Some(value.clone()),
+                        ..PropertyDescriptor::default()
+                    })?;
+                    match defined(a.define_length(&desc), key) {
+                        Ok(()) => Ok(Stored::Done),
+                        Err(fault) => Ok(Stored::Rejected(fault)),
+                    }
+                }
                 Key::Name(_) => named(a.object_mut()),
             }
         }
@@ -1028,9 +1038,8 @@ pub(crate) fn define_field(
 /// module table: an owned ordinary object validates and applies `desc`
 /// ([`OrdinaryObject::define_own_property`]); an owned array does the same
 /// for its named properties, and ArrayDefineOwnProperty for its elements and
-/// `length` (`ArrayObject::define_element`, `ArrayObject::define_length`; a
-/// define that would change `length` is `UnsupportedOperand`,
-/// clj-quickjs-39); a realm intrinsic
+/// `length` (`ArrayObject::define_element`, `ArrayObject::define_length`,
+/// clj-quickjs-154); a realm intrinsic
 /// is a TypeError (immutable); another task's object is `ForeignObject`; a
 /// function's property goes to its property record
 /// (`crate::vm::function::define_target`, clj-quickjs-125); an error object
@@ -1076,13 +1085,7 @@ pub(crate) fn define_own_property(
             check_write(a.object(), task)?;
             match key {
                 Key::Index(index) => defined(a.define_element(*index, desc), key),
-                _ if key.is_length() => match a.define_length(desc) {
-                    Some(outcome) => defined(outcome, key),
-                    None => Err(Fault::Unsupported(
-                        "cannot define property 'length' of an array: changing an array's length is not supported"
-                            .to_string(),
-                    )),
-                },
+                _ if key.is_length() => defined(a.define_length(&length_descriptor(desc)?), key),
                 Key::Name(_) => named(a.object_mut()),
             }
         }
@@ -1096,6 +1099,22 @@ pub(crate) fn define_own_property(
         ))),
     })
     .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+}
+
+/// ArraySetLength's ToUint32/ToNumber validation. For primitive values both
+/// conversions are pure, so the equality holds exactly for finite integers
+/// in 0..=2^32-1 (including -0, normalized to +0). Objects still fail
+/// explicitly through ToPrimitive; no JavaScript runs under an object lock.
+fn length_descriptor(desc: &PropertyDescriptor) -> Result<PropertyDescriptor, Fault> {
+    let mut desc = desc.clone();
+    if let Some(value) = &desc.value {
+        let number = super::dispatch::to_number(value)?;
+        if !(0.0..=f64::from(u32::MAX)).contains(&number) || number.fract() != 0.0 {
+            return Err(Fault::RangeError("invalid array length".to_string()));
+        }
+        desc.value = Some(Value::Number(f64::from(number as u32)));
+    }
+    Ok(desc)
 }
 
 /// The fault of a [`DefineOutcome`].

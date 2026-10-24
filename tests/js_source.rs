@@ -6501,10 +6501,10 @@ fn array_literals() {
             4
         )
     );
-    // Explicitly unsupported, never a wrong value: setting `length`
-    // (clj-quickjs-39) and an object key (ToPrimitive, clj-quickjs-70).
+    // Setting length truncates (clj-quickjs-154); object keys still need
+    // ToPrimitive (clj-quickjs-70).
+    assert_eq!(num("let a = [1];\na.length = 0; a.length"), 0.0);
     for (src, needle) in [
-        ("let a = [1];\na.length = 0;", "length"),
         ("let a = [1];\na[[]];", "ToPrimitive"),
         ("let a = [1];\na[{}] = 1;", "ToPrimitive"),
     ] {
@@ -6970,15 +6970,19 @@ fn define_property_validation_and_targets() {
     let (kind, message, ..) =
         failure_at("Object.defineProperty([1], 'length', {configurable: true})");
     assert_eq!(kind, VmErrorKind::TypeError, "{message}");
-    // Changing `length` (ArraySetLength) and accessors fail explicitly.
-    for src in [
-        "Object.defineProperty([1], 'length', {value: 0})",
-        "Object.defineProperty([1], 'length', {value: '1'})",
-        "Object.defineProperty([1], 0, {get: () => 1})",
-    ] {
-        let (kind, message, ..) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-    }
+    // ArraySetLength converts and changes the value (clj-quickjs-154).
+    assert_eq!(
+        num("Object.defineProperty([1], 'length', {value: 0}).length"),
+        0.0
+    );
+    assert_eq!(
+        num("Object.defineProperty([1], 'length', {value: '1'}).length"),
+        1.0
+    );
+    // Accessors still fail explicitly.
+    let src = "Object.defineProperty([1], 0, {get: () => 1})";
+    let (kind, message, ..) = failure_at(src);
+    assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
 }
 
 /// Element and `length` attributes of arrays (clj-quickjs-119 over the
@@ -8621,4 +8625,140 @@ fn methods_on_primitive_bases_allocate_no_wrappers() {
         other => panic!("expected Complete, got {other:?}"),
     }
     assert_eq!(rt.heap_stats().objects, before);
+}
+
+/// ArraySetLength (clj-quickjs-154). Synthetic fixtures, not light-cljs output.
+/// The first four groups adapt QuickJS tests/test_builtin.js, test_array,
+/// revision 7d1c13c5d8f8. Copyright (c) 2017-2021 Fabrice Bellard.
+/// Copyright (c) 2017-2021 Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn array_length_assignment() {
+    for src in [
+        "let a = [1,2,3]; a.length = 2; a.length === 2 && a[0] === 1 && a[1] === 2 && a[2] === undefined",
+        "let a = []; a[1] = 10; a[4] = 3; a.length === 5 && a[1] === 10 && a[4] === 3",
+        "let a = [1,2]; a.length = 5; a[4] = 1; a.length = 4; a[4] !== 1 && a.length === 4 && a[2] === undefined",
+        "let a = [1,2,3,4,5]; Object.defineProperty(a, '3', {configurable: false}); let caught = false; try { a.length = 2; } catch (e) { caught = true; } caught && a.length === 4 && a[0] === 1 && a[1] === 2 && a[2] === 3 && a[3] === 4 && a[4] === undefined",
+        "let a = [1,2,3]; a.length = 0; a.length === 0 && a[0] === undefined",
+        "let a = [1,2,3]; let v = (a['length'] = '2'); a.length === 2 && v === '2' && a[2] === undefined",
+        "let a = []; a[4294967294] = 1; a.length = 0; a.length === 0 && a[4294967294] === undefined",
+        "let a = [1]; a.length = 4294967295; a.length === 4294967295 && a[4294967294] === undefined && Object.keys(a).length === 1",
+        "let a = [1,2]; a.length = -0; a.length === 0 && 1/a.length === 1/0",
+        "let a = [1,2]; a.length = true; let n = a.length; a.length = null; n === 1 && a.length === 0 && a[0] === undefined",
+        "let a = [1,2]; Object.preventExtensions(a); a.length = 5; a.length = 1; a.length === 1 && a[0] === 1 && a[1] === undefined",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for invalid in [
+        "-1",
+        "1.5",
+        "4294967296",
+        "0/0",
+        "1/0",
+        "undefined",
+        "'bad'",
+    ] {
+        let src = format!(
+            "let a = [1,2,3]; let caught = false; try {{ a.length = {invalid}; }} catch (e) {{ caught = true; }} caught && a.length === 3 && a[2] === 3"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    let readonly = "let a = [1,2]; Object.defineProperty(a, 'length', {writable: false});";
+    for write in [
+        "a.length = 5",
+        "a.length = 0",
+        "a.length = 2",
+        "a[a.length] = 1",
+    ] {
+        let src = format!(
+            "{readonly} let caught = false; try {{ {write}; }} catch (e) {{ caught = true; }} caught && a.length === 2 && a[0] === 1 && a[2] === undefined"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        assert_eq!(
+            sloppy_eval(&format!(
+                "{readonly} {write}; a.length === 2 && a[0] === 1 && a[2] === undefined"
+            )),
+            ValueView::Bool(true)
+        );
+    }
+    assert_eq!(
+        sloppy_eval(
+            "let a = [1,2,3,4,5]; Object.defineProperty(a, 3, {configurable:false}); let result = (a.length = 1); result === 1 && a.length === 4 && a[4] === undefined && a[3] === 4"
+        ),
+        ValueView::Bool(true)
+    );
+    for (src, kind) in [
+        ("let a = [1]; a.length = -1", VmErrorKind::RangeError),
+        (
+            "let a = [1]; Object.defineProperty(a, 'length', {value:1.5})",
+            VmErrorKind::RangeError,
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, 'length', {writable:false}); a.length = 5",
+            VmErrorKind::TypeError,
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, 'length', {writable:false}); a[a.length] = 1",
+            VmErrorKind::TypeError,
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, 0, {configurable:false}); a.length = 0",
+            VmErrorKind::TypeError,
+        ),
+    ] {
+        assert_eq!(failure(src).kind(), kind, "{src}");
+        let caught = format!("function f() {{ try {{ {src}; }} catch(e) {{ return e; }} }} f()");
+        let RunOutcome::Complete(error) = run(&exe(&caught), &[]) else {
+            panic!("failed to catch {src}");
+        };
+        assert_eq!(error.error().unwrap().kind(), kind, "{src}");
+    }
+    assert_eq!(
+        sloppy_eval(
+            "let a = [1,2]; function f() { 'use strict'; a.length = 1; a.length = -1; } let caught = false; try { f(); } catch(e) { caught = true; } caught && a.length === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        failure("let a = [1]; a.length = {}").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+}
+
+#[test]
+fn array_length_define_property() {
+    for src in [
+        "let a = [1,2,3]; Object.defineProperty(a, 'length', {value:'2'}); a.length === 2 && a[2] === undefined",
+        "let a = [1]; Object.defineProperty(a, 'length', {value:5, writable:false}); let d = Object.getOwnPropertyDescriptor(a, 'length'); d.value === 5 && !d.writable && !d.enumerable && !d.configurable && a[4] === undefined",
+        "let a = [1,2,3,4,5]; Object.defineProperty(a, 3, {configurable:false}); let caught = false; try { Object.defineProperty(a, 'length', {value:1, writable:false}); } catch(e) { caught = true; } let d = Object.getOwnPropertyDescriptor(a, 'length'); caught && a.length === 4 && a[4] === undefined && a[3] === 4 && !d.writable",
+        "let a = []; a[4294967294] = 1; Object.defineProperty(a, 4000, {value:2, configurable:false}); a[5000] = 3; let caught = false; try { Object.defineProperty(a, 'length', {value:0}); } catch(e) { caught = true; } caught && a.length === 4001 && a[4000] === 2 && a[5000] === undefined && a[4294967294] === undefined && Object.getOwnPropertyDescriptor(a, 'length').writable",
+        "let a = [1]; Object.defineProperty(a, 'length', {writable:false}); Object.defineProperty(a, 'length', {value:'1'}); a.length === 1",
+        "let a = [1]; let caught = false; try { Object.defineProperty(a, 'length', {value:0, enumerable:true}); } catch(e) { caught = true; } caught && a.length === 1 && a[0] === 1",
+        "let a = [1,2,3,4,5]; Object.defineProperty(a, 1, {configurable:false}); Object.defineProperty(a, 3, {configurable:false}); let caught = false; try { a.length = 0; } catch(e) { caught = true; } caught && a.length === 4 && a[2] === 3 && a[4] === undefined",
+        "let a = [1,2]; Object.defineProperty(a, 1, {writable:false, enumerable:false, configurable:true}); a.length = 1; a[1] = 3; let d = Object.getOwnPropertyDescriptor(a, 1); a.length === 2 && d.value === 3 && d.writable && d.enumerable && d.configurable",
+        "let a = []; Object.defineProperty(a, 5000, {value:1, writable:false, configurable:true}); Object.defineProperty(a, 'length', {value:0}); a[5000] = 3; Object.getOwnPropertyDescriptor(a, 5000).writable && a[5000] === 3",
+        "let a = [1,2]; Object.setPrototypeOf(a, {1:7}); a.length = 1; a.length = 2; a[1] === 7 && Object.getOwnPropertyDescriptor(a, 1) === undefined",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for invalid in ["-1", "1.5", "4294967296", "0/0", "undefined"] {
+        let src = format!(
+            "let a = [1,2]; let caught = false; try {{ Object.defineProperty(a, 'length', {{value:{invalid}, writable:false}}); }} catch(e) {{ caught = true; }} caught && a.length === 2 && Object.getOwnPropertyDescriptor(a, 'length').writable"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
 }
