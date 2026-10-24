@@ -1566,6 +1566,9 @@ fn property_read_step(
     _host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
+    if native::start_conversion(state, instr)? {
+        return Ok(Flow::Next);
+    }
     let key = match instr {
         Instr::GetField(i) => property::Key::from_name(&name_constant(code, i)?),
         Instr::GetElem => {
