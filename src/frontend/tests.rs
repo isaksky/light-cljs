@@ -1263,6 +1263,7 @@ fn render_stmt(s: &Stmt) -> String {
             };
             let head = match head {
                 super::ast::ForInHead::Binding(name) => name.name.clone(),
+                super::ast::ForInHead::Member(target) => render_expr(target),
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Let, name) => {
                     format!("(let {})", name.name)
                 }
@@ -1800,15 +1801,9 @@ fn for_statements() {
     parse_script("for (let [a] = b; ;) {}").unwrap();
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
     // level of the init, so an `in` after any init starts a for-in head
-    // (clj-quickjs-85), where these left sides are early errors or
-    // unsupported property targets (`for_in_heads`).
-    rejects_with(
-        "for (a.b in y) {}",
-        Unsupported,
-        1,
-        6,
-        "property references",
-    );
+    // (clj-quickjs-85). Member references are targets (clj-quickjs-87),
+    // while assignments themselves remain early errors.
+    assert!(parse_script("for (a.b in y) {}").is_ok());
     rejects_with(
         "for (x = a in b; ;) {}",
         Invalid,
@@ -1966,7 +1961,7 @@ fn for_of_statements() {
 /// parsed with `[~In]`.
 #[test]
 fn for_in_heads() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
     assert_eq!(ast("for (k in o) ;"), "(for-in k o (empty))");
     assert_eq!(ast("for (let k in o) {}"), "(for-in (let k) o (block))");
     assert_eq!(ast("for (const k in o) {}"), "(for-in (const k) o (block))");
@@ -2020,22 +2015,17 @@ fn for_in_heads() {
     rejects("for (f() in o) {}", Invalid, 1, 6);
     rejects("for (undefined in o) {}", ReservedWord, 1, 6);
     rejects("for (let let in o) {}", ReservedWord, 1, 10);
-    // Property targets (clj-quickjs-87) are a separate feature (`var`
-    // heads: `for_var_heads`).
-    rejects_with(
-        "for (a.b in o) {}",
-        Unsupported,
-        1,
-        6,
-        "property references",
-    );
-    rejects_with(
-        "for (a[0] in o) {}",
-        Unsupported,
-        1,
-        6,
-        "property references",
-    );
+    for source in [
+        "for (a.x in o) ;",
+        "for (a[0] in o) ;",
+        "for ((a.x) in o) ;",
+        "for (((a[0])) in o) ;",
+        "for (obj().k in o) ;",
+    ] {
+        assert!(parse_script(source).is_ok(), "{source}");
+    }
+    rejects("for (f() in o) ;", Invalid, 1, 6);
+    rejects("for (__rt.count in o) ;", ReservedWord, 1, 6);
     rejects("for (__rt.count in o) {}", ReservedWord, 1, 6);
     // The head is parenthesized; a declaration cannot be the body.
     rejects("for (k in o {}", UnexpectedToken, 1, 13);
@@ -5307,6 +5297,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                 "{ a: ".repeat(n),
                 " }".repeat(n)
             )
+        }),
+        ("for-in member targets", |n| {
+            format!("for (a[{}k{}] in o) ;", "f(".repeat(n), ")".repeat(n))
         }),
         ("for with heads", |n| {
             format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))

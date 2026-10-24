@@ -1299,8 +1299,12 @@ impl<'a> Parser<'a> {
                 let init = self.parse_expression()?;
                 self.no_in = outer;
                 if self.is_keyword(Keyword::In) {
-                    let target = self.for_in_target(&init)?;
-                    return self.parse_for_in_rest(ForInHead::Binding(target));
+                    let head = if is_property_target(&init) {
+                        ForInHead::Member(Box::new(init))
+                    } else {
+                        ForInHead::Binding(self.simple_target(&init, TargetUse::Assign)?)
+                    };
+                    return self.parse_for_in_rest(head);
                 }
                 if self.is_of() {
                     if init.span.text(self.lexer.source()) == "async" {
@@ -1310,7 +1314,7 @@ impl<'a> Parser<'a> {
                             "`async` cannot be a for-of target",
                         ));
                     }
-                    let target = self.for_in_target(&init)?;
+                    let target = self.for_of_target(&init)?;
                     return self.parse_for_of_rest(ForInHead::Binding(target));
                 }
                 Some(ForInit::Expr(init))
@@ -1342,15 +1346,15 @@ impl<'a> Parser<'a> {
         Ok(ForHead::In(head, object))
     }
 
-    /// The binding that the left-hand side `left` of a for-in head assigns:
+    /// The binding that the left-hand side `left` of a for-of head assigns:
     /// an identifier, possibly parenthesized. A property reference is
-    /// unsupported (clj-quickjs-87); anything else is rejected as the
+    /// unsupported; anything else is rejected as the
     /// target of `=` is (`for (1 in o)` is `Invalid`).
     #[inline(never)]
-    fn for_in_target(&self, left: &Expr) -> PResult<Ident> {
+    fn for_of_target(&self, left: &Expr) -> PResult<Ident> {
         if is_property_target(left) {
             return Err(
-                self.unsupported(left.span, "property references as `for`-`in` targets are")
+                self.unsupported(left.span, "property references as `for`-`of` targets are")
             );
         }
         self.simple_target(left, TargetUse::Assign)

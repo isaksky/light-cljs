@@ -162,9 +162,14 @@ impl Stmt {
                     .max(update.as_ref().map_or(0, |e| e.height))
                     .max(body.height)
             }
-            StmtKind::ForIn { object, body, .. }
-            | StmtKind::ForOf { object, body, .. }
-            | StmtKind::With { object, body } => object.height.max(body.height),
+            StmtKind::ForIn { head, object, body } | StmtKind::ForOf { head, object, body } => {
+                let target = match head {
+                    ForInHead::Member(target) => target.height,
+                    _ => 0,
+                };
+                target.max(object.height).max(body.height)
+            }
+            StmtKind::With { object, body } => object.height.max(body.height),
             StmtKind::Try {
                 block,
                 handler,
@@ -338,6 +343,9 @@ pub enum ForInHead {
     /// enclosing function (or script), one for the whole loop; each key is
     /// assigned to it.
     Var(Ident),
+    /// `for (o.p in keys)` or `for (o[k] in keys)`: the property reference
+    /// is evaluated anew for each key (clj-quickjs-87).
+    Member(Box<Expr>),
 }
 
 /// `catch (param) { body }` or `catch { body }`.

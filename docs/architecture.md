@@ -3137,6 +3137,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   -90. The test carries the full notice. `js_parse_for_in_of`,
   `build_for_in_iterator`, `js_for_in_start` and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
+- `tests/js_source.rs` `for_in_assigns_member_targets` (clj-quickjs-87):
+  the fifth and sixth groups of `test_for_in` in
+  `research/quickjs/tests/test_loop.js`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Modified: local `let`
+  bindings and boolean completion assertions, including the final target
+  value. The test carries the MIT notice. `research/quickjs/quickjs.c`
+  `js_parse_for_in_of` (left-hand-side parsing and `put_lvalue` per
+  iteration) was consulted as a semantic reference only. Additional
+  evaluation-order, setter, failure and resumability cases are synthetic.
 - `tests/js_source.rs` `for_in_walks_the_prototype_chain` (clj-quickjs-86):
   the second and third groups of `test_for_in` (line 77) of
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as

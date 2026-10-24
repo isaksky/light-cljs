@@ -8202,6 +8202,11 @@ fn script_completion_value_follows_javascript() {
     assert_eq!(eval("5; do ; while (false)"), ValueView::Undefined);
     // `for`-`in` (clj-quickjs-85): reset to undefined, then UpdateEmpty.
     assert_eq!(eval("5; for (let k in {}) {}"), ValueView::Undefined);
+    assert_eq!(
+        eval("let a = {}; 42; for (a.x in {}) 1;"),
+        ValueView::Undefined
+    );
+    assert_eq!(num("let a = {}; for (a.x in {x:1, y:1}) 7;"), 7.0);
     assert_eq!(eval("5; for (let k in null) 6;"), ValueView::Undefined);
     assert_eq!(eval("5; for (let k in {a: 1}) {}"), ValueView::Undefined);
     assert_eq!(num("5; for (let k in {a: 1, b: 2}) 6;"), 6.0);
@@ -9114,6 +9119,124 @@ fn for_in_over_own_properties() {
         ),
         6.0
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. The first two scripts adapt
+/// the member-target groups in QuickJS tests/test_loop.js::test_for_in,
+/// revision 7d1c13c5d8f8: let bindings and boolean completion assertions.
+///
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+/// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+/// IN THE SOFTWARE.
+#[test]
+fn for_in_assigns_member_targets() {
+    for source in [
+        "let a = {x:0}, tab = []; for (a.x in {x:1, y:2}) tab.push(a.x); tab.toString() === 'x,y' && a.x === 'y'",
+        "let a = [0], tab = []; for (a[0] in {x:1, y:2}) tab.push(a[0]); tab.toString() === 'x,y' && a[0] === 'y'",
+        "let a = {}, calls = 0, tab = ''; function obj() { calls++; return a; } for (obj().k in {a:1, b:1, c:1}) tab += a.k; calls === 3 && tab === 'abc' && a.k === 'c'",
+        "let log = '', a = {set k(v) { log += v; }}; function obj() { log += 'o'; return a; } function key() { log += 'k'; return {toString() { log += 'c'; return 'k'; }}; } for (obj()[key()] in {a:1, b:1}) log += '!'; log === 'okca!okcb!'",
+        "let n = 0; function obj() { n++; return {}; } for (obj().k in {}) n++; n === 0",
+        "let a = {}; for (((a.x)) in {x:1, y:1}) ; for ((a[0]) in {x:1, y:1}) ; a.x === 'y' && a[0] === 'y'",
+        "let a = {}, n = 0, caught; Object.defineProperty(a, 'x', {value: 0}); try { for (a.x in {x:1}) n++; } catch(e) { caught = e; } caught instanceof TypeError && n === 0 && a.x === 0",
+        "let a = {}, n = 0, caught; Object.defineProperty(a, 'x', {set(v) { throw v; }}); try { for (a['x'] in {x:1, y:1}) n++; } catch(e) { caught = e; } caught === 'x' && n === 0",
+        "let a = {}, b = {}, target = a; for (target.x in {x:1, y:1}) target = b; a.x === 'x' && b.x === 'y'",
+        "let a = {}, log = ''; for (a.x in {a:1, b:1, c:1}) { try { if (a.x === 'b') continue; if (a.x === 'c') break; log += a.x; } finally { log += '!'; } } log === 'a!!!' && a.x === 'c'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let looping = exe(
+        "let a = {}, log = ''; function obj() { log += 'o'; return a; } function key() { log += 'k'; return 'x'; } for (obj()[key()] in {a:1, b:1, c:1}) log += a.x; log",
+    );
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.string().unwrap().to_string(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, "okaokbokc");
+    assert!(yields > 0);
+    for source in [
+        "let a = null;\nfor (a.x in {x:1}) ;",
+        "let a = null;\nfor (a[0] in {x:1}) ;",
+        "let a = {}; Object.defineProperty(a, 'x', {value: 0});\nfor (a.x in {x:1}) ;",
+    ] {
+        let (kind, _, line, column) = failure_at(source);
+        assert_eq!(
+            (kind, line, column),
+            (VmErrorKind::TypeError, 2, 7),
+            "{source}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Suspend in the object, key
+/// conversion and setter, collecting and migrating on every instruction.
+#[test]
+fn for_in_member_targets_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+    let code = exe(
+        "let log = '', a = {set x(v) { __rt.need(187, 3); log += v; }}; function obj() { __rt.need(187, 1); log += 'o'; return a; } let key = {toString() { __rt.need(187, 2); log += 'k'; return 'x'; }}; for (obj()[key] in {a:1, b:1}) log += '!'; log === 'oka!okb!'",
+    );
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut waits = 0;
+    let mut complete = false;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(1.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waits, 3);
 }
 
 /// `for`-`in` walks the prototype chain (clj-quickjs-86). `TEST_FOR_IN_PROTO`

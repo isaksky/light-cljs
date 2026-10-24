@@ -3861,6 +3861,7 @@ impl<'s> Lowerer<'s> {
                 self.store(access, name.span)?;
                 self.out().op(Opcode::Pop, name.span);
             }
+            ForInHead::Member(target) => self.for_member_store(target)?,
         }
         self.push_loop(end, start);
         self.statement(body)?;
@@ -3877,6 +3878,24 @@ impl<'s> Lowerer<'s> {
         let ctx = self.cur_mut();
         ctx.scopes.pop();
         ctx.next_slot = saved_slot;
+        Ok(())
+    }
+
+    /// Consume the iteration key after evaluating the reference anew. The
+    /// saved key and the reference remain traced VM state across any calls,
+    /// yields or waits in the object, computed key, conversion or setter.
+    #[inline(never)]
+    fn for_member_store(&mut self, target: &Expr) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
+        let key = self.temp(target.span)?;
+        self.out().op_u16(Opcode::SetLocal, key, target.span);
+        let reference = self.property_reference(target, false)?;
+        self.out().op_u16(Opcode::GetLocal, key, target.span);
+        self.reference_put(reference);
+        self.out().op(Opcode::Pop, target.span);
+        self.out().op(Opcode::Undefined, target.span);
+        self.out().op_u16(Opcode::SetLocal, key, target.span);
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 
@@ -3972,6 +3991,7 @@ impl<'s> Lowerer<'s> {
                     this.store(access, name.span)?;
                     this.out().op(Opcode::Pop, name.span);
                 }
+                ForInHead::Member(target) => this.for_member_store(target)?,
             }
             this.statement(body)
         })?;
