@@ -8,9 +8,10 @@
 
 use std::thread;
 
+use clj_quickjs::frontend::{compile_function, compile_script};
 use clj_quickjs::{
     Assembler, Executable, HandleError, KeyName, Local, Opcode, PathStep, Primitive, Provenance,
-    PublishError, Rooted, RunOutcome, Runtime, Scope, TaskId,
+    PublishError, Rooted, RunOutcome, Runtime, Scope, TaskId, ValueView,
 };
 
 fn complete(outcome: RunOutcome) -> Rooted {
@@ -316,4 +317,44 @@ fn primitives_publish_and_foreign_handles_are_rejected() {
         rt.publish(&foreign),
         Err(PublishError::Handle(HandleError::ForeignRuntime))
     );
+}
+
+/// clj-quickjs-65: strings are immutable primitives, so a string a task
+/// computed (alone or inside a persistent collection) publishes without a
+/// walk and another task reads and compares it by content. The programs are
+/// JavaScript source (synthetic fixtures).
+#[test]
+fn strings_publish_as_persistent_values() {
+    let rt = Runtime::new();
+    let run_script = |name: &str, src: &str| {
+        let exe = compile_script(name, src).unwrap();
+        complete(rt.spawn(&exe, &[]).unwrap().run().unwrap())
+    };
+    let bare = run_script("bare", r#"let s = "pub"; s + "lished""#);
+    assert_eq!(bare.view(), ValueView::String);
+    assert_eq!(rt.publish(&bare), Ok(()));
+    let map = run_script("map", r#"let s = "pub"; __rt.map("key", s + "lished")"#);
+    assert_eq!(rt.publish(&map), Ok(()));
+
+    // A consumer on another thread reads both, compares them with its own
+    // literal and returns what it read.
+    let consumer = compile_function(
+        r#"function consume(m, s) {
+             let got = __rt.get(m, "key");
+             return __rt.vector(got, got === "published", s === got, s == "published");
+           }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&consumer, &[&map, &bare]).unwrap();
+    let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
+    let received = rt.scope(|s| {
+        let items = s.items(s.local(&result).unwrap()).unwrap();
+        for flag in &items[1..] {
+            assert_eq!(s.view(*flag), ValueView::Bool(true));
+        }
+        s.persist(items[0])
+    });
+    assert_eq!(received.string().unwrap(), "published");
+    assert_eq!(received.strict_equals(&bare), Ok(true), "equal by content");
+    assert_eq!(rt.publish(&received), Ok(()));
 }

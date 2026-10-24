@@ -134,15 +134,15 @@ impl Trace for ErrorObject {
 }
 
 /// The failure and cause of `value` if it is an error object.
-pub(crate) fn error_object(heap: &Heap, value: Value) -> Option<(VmError, Value)> {
-    let Value::Object(id) = value else {
+pub(crate) fn error_object(heap: &Heap, value: &Value) -> Option<(VmError, Value)> {
+    let Value::Object(id) = *value else {
         return None;
     };
     heap.read(id, |object| match object {
         HeapObject::Native(payload) => {
             let any: &dyn std::any::Any = &**payload;
             any.downcast_ref::<ErrorObject>()
-                .map(|e| (e.error.clone(), e.cause))
+                .map(|e| (e.error.clone(), e.cause.clone()))
         }
         _ => None,
     })
@@ -215,8 +215,8 @@ impl Trace for Handler {
 }
 
 /// A thrown value for a diagnostic message, written as JavaScript would.
-pub(crate) fn describe_thrown(value: Value) -> String {
-    match value {
+pub(crate) fn describe_thrown(value: &Value) -> String {
+    match *value {
         Value::Undefined => "undefined".to_string(),
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
@@ -225,5 +225,8 @@ pub(crate) fn describe_thrown(value: Value) -> String {
         }
         Value::Number(n) => n.to_string(),
         Value::Object(_) => "an object".to_string(),
+        // A thrown string is reported by its text, as JavaScript ToString
+        // shows it (a lone surrogate as U+FFFD).
+        Value::String(ref s) => s.to_string_lossy(),
     }
 }

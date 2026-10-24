@@ -72,7 +72,7 @@ fn yielded_task_resumes_on_another_thread_without_replaying_effects() {
     assert_eq!(result, ValueView::Number(3.0));
     // 4 + 12 * 3 + 6 = 46 instructions in runs of 9.
     assert_eq!(runs, 6);
-    let args: Vec<Primitive> = host.calls.iter().map(|c| c.1).collect();
+    let args: Vec<Primitive> = host.calls.iter().map(|c| c.1.clone()).collect();
     assert_eq!(
         args,
         [0.0, 1.0, 2.0].map(Primitive::Number),

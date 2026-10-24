@@ -150,7 +150,7 @@ pub struct Provenance {
 }
 
 /// A syntax occurrence: one value at one source location.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Occurrence {
     pub(crate) value: Value,
     pub(crate) provenance: Provenance,
@@ -231,14 +231,14 @@ enum Body {
 }
 
 /// Resolve `v` to its body under one short object-table lock.
-fn body(heap: &Heap, v: Value) -> Body {
-    let Value::Object(id) = v else {
+fn body(heap: &Heap, v: &Value) -> Body {
+    let Value::Object(id) = *v else {
         return Body::Other(v.type_name());
     };
     heap.read(id, |object| match object {
         HeapObject::Vector(vec) => Body::Vector(vec.clone()),
         HeapObject::Map(map) => Body::Map(map.clone()),
-        HeapObject::Occurrence(occ) => Body::Occurrence(*occ),
+        HeapObject::Occurrence(occ) => Body::Occurrence(occ.clone()),
         other => Body::Other(object_name(other)),
     })
     // Callers hold a live value; a stale one is reported, not trusted.
@@ -276,14 +276,14 @@ fn wrong(expected: &'static str, b: &Body) -> CollectionError {
     }
 }
 
-fn vector_body(heap: &Heap, v: Value) -> Result<PVector, CollectionError> {
+fn vector_body(heap: &Heap, v: &Value) -> Result<PVector, CollectionError> {
     match body(heap, v) {
         Body::Vector(vec) => Ok(vec),
         other => Err(wrong("vector", &other)),
     }
 }
 
-fn map_body(heap: &Heap, v: Value) -> Result<PMap, CollectionError> {
+fn map_body(heap: &Heap, v: &Value) -> Result<PMap, CollectionError> {
     match body(heap, v) {
         Body::Map(map) => Ok(map),
         other => Err(wrong("map", &other)),
@@ -307,8 +307,8 @@ fn alloc(
 const MAX_INDEX: f64 = 9_007_199_254_740_991.0;
 
 /// The vector index named by `key`. See the index contract.
-pub(crate) fn index_from_value(key: Value) -> Result<usize, CollectionError> {
-    match key {
+pub(crate) fn index_from_value(key: &Value) -> Result<usize, CollectionError> {
+    match *key {
         Value::Number(n) if n.fract() == 0.0 && (0.0..=MAX_INDEX).contains(&n) => {
             // In range and integral; saturates on 32-bit targets (and then
             // fails as out of bounds, since no vector can be that long).
@@ -319,7 +319,7 @@ pub(crate) fn index_from_value(key: Value) -> Result<usize, CollectionError> {
 }
 
 /// The persistent kind of `v`, if any.
-pub(crate) fn kind_of(heap: &Heap, v: Value) -> Option<PersistentKind> {
+pub(crate) fn kind_of(heap: &Heap, v: &Value) -> Option<PersistentKind> {
     match body(heap, v) {
         Body::Vector(_) => Some(PersistentKind::Vector),
         Body::Map(_) => Some(PersistentKind::Map),
@@ -337,9 +337,9 @@ pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, Collecti
 }
 
 pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, CollectionError> {
-    let map = entries
-        .iter()
-        .fold(PMap::default(), |m, &(k, v)| m.assoc(k, v).unwrap_or(m));
+    let map = entries.iter().fold(PMap::default(), |m, (k, v)| {
+        m.assoc(k.clone(), v.clone()).unwrap_or(m)
+    });
     alloc(heap, HeapObject::Map(map), None)
 }
 
@@ -350,13 +350,16 @@ pub(crate) fn new_occurrence(
 ) -> Result<Value, CollectionError> {
     alloc(
         heap,
-        HeapObject::Occurrence(Occurrence { value, provenance }),
+        HeapObject::Occurrence(Occurrence {
+            value: value.clone(),
+            provenance,
+        }),
         Some(&[value]),
     )
 }
 
 pub(crate) fn count(heap: &Heap, coll: Value) -> Result<usize, CollectionError> {
-    match body(heap, coll) {
+    match body(heap, &coll) {
         Body::Vector(vec) => Ok(vec.len()),
         Body::Map(map) => Ok(map.len()),
         other => Err(wrong("vector or map", &other)),
@@ -365,11 +368,11 @@ pub(crate) fn count(heap: &Heap, coll: Value) -> Result<usize, CollectionError> 
 
 /// The element count of a vector (`WrongType` for anything else).
 pub(crate) fn vector_count(heap: &Heap, vec: Value) -> Result<usize, CollectionError> {
-    vector_body(heap, vec).map(|vec| vec.len())
+    vector_body(heap, &vec).map(|vec| vec.len())
 }
 
 pub(crate) fn nth(heap: &Heap, vec: Value, index: usize) -> Result<Value, CollectionError> {
-    let vec = vector_body(heap, vec)?;
+    let vec = vector_body(heap, &vec)?;
     vec.get(index).ok_or(CollectionError::IndexOutOfBounds {
         index,
         count: vec.len(),
@@ -379,8 +382,8 @@ pub(crate) fn nth(heap: &Heap, vec: Value, index: usize) -> Result<Value, Collec
 /// The element of a vector at an index *value* (the `nth` intrinsic): the
 /// operand kind is checked before the index.
 pub(crate) fn nth_at(heap: &Heap, vec: Value, key: Value) -> Result<Value, CollectionError> {
-    let vec = vector_body(heap, vec)?;
-    let index = index_from_value(key)?;
+    let vec = vector_body(heap, &vec)?;
+    let index = index_from_value(&key)?;
     vec.get(index).ok_or(CollectionError::IndexOutOfBounds {
         index,
         count: vec.len(),
@@ -390,17 +393,17 @@ pub(crate) fn nth_at(heap: &Heap, vec: Value, key: Value) -> Result<Value, Colle
 /// Strict lookup (the `get` intrinsic): like [`get`], but an absent entry
 /// is an error: `IndexOutOfBounds` for a vector, `MissingKey` for a map.
 pub(crate) fn lookup(heap: &Heap, coll: Value, key: Value) -> Result<Value, CollectionError> {
-    match body(heap, coll) {
-        Body::Map(map) => map.get(key).ok_or(CollectionError::MissingKey),
+    match body(heap, &coll) {
+        Body::Map(map) => map.get(&key).ok_or(CollectionError::MissingKey),
         Body::Vector(_) => nth_at(heap, coll, key),
         other => Err(wrong("vector or map", &other)),
     }
 }
 
 pub(crate) fn get(heap: &Heap, coll: Value, key: Value) -> Result<Option<Value>, CollectionError> {
-    match body(heap, coll) {
-        Body::Vector(vec) => Ok(vec.get(index_from_value(key)?)),
-        Body::Map(map) => Ok(map.get(key)),
+    match body(heap, &coll) {
+        Body::Vector(vec) => Ok(vec.get(index_from_value(&key)?)),
+        Body::Map(map) => Ok(map.get(&key)),
         other => Err(wrong("vector or map", &other)),
     }
 }
@@ -411,29 +414,29 @@ pub(crate) fn assoc(
     key: Value,
     value: Value,
 ) -> Result<Value, CollectionError> {
-    match body(heap, coll) {
+    match body(heap, &coll) {
         Body::Vector(vec) => {
-            let index = index_from_value(key)?;
+            let index = index_from_value(&key)?;
             let count = vec.len();
             if index == count {
                 return alloc(
                     heap,
-                    HeapObject::Vector(vec.push(value)),
+                    HeapObject::Vector(vec.push(value.clone())),
                     Some(&[coll, value]),
                 );
             }
             let old = vec
                 .get(index)
                 .ok_or(CollectionError::IndexOutOfBounds { index, count })?;
-            if identical(old, value) {
+            if identical(&old, &value) {
                 return Ok(coll);
             }
             let updated = vec
-                .set(index, value)
+                .set(index, value.clone())
                 .ok_or(CollectionError::IndexOutOfBounds { index, count })?;
             alloc(heap, HeapObject::Vector(updated), Some(&[coll, value]))
         }
-        Body::Map(map) => match map.assoc(key, value) {
+        Body::Map(map) => match map.assoc(key.clone(), value.clone()) {
             Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[coll, key, value])),
             None => Ok(coll),
         },
@@ -442,7 +445,7 @@ pub(crate) fn assoc(
 }
 
 /// "Nothing changed" for a vector slot: numbers by bits, else `===`.
-fn identical(a: Value, b: Value) -> bool {
+fn identical(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.to_bits() == y.to_bits(),
         _ => a.strict_equals(b),
@@ -450,34 +453,34 @@ fn identical(a: Value, b: Value) -> bool {
 }
 
 pub(crate) fn dissoc(heap: &Heap, map: Value, key: Value) -> Result<Value, CollectionError> {
-    match map_body(heap, map)?.dissoc(key) {
+    match map_body(heap, &map)?.dissoc(&key) {
         Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[map])),
         None => Ok(map),
     }
 }
 
 pub(crate) fn conj(heap: &Heap, vec: Value, value: Value) -> Result<Value, CollectionError> {
-    let updated = vector_body(heap, vec)?.push(value);
+    let updated = vector_body(heap, &vec)?.push(value.clone());
     alloc(heap, HeapObject::Vector(updated), Some(&[vec, value]))
 }
 
 pub(crate) fn pop(heap: &Heap, vec: Value) -> Result<Value, CollectionError> {
-    let updated = vector_body(heap, vec)?
+    let updated = vector_body(heap, &vec)?
         .pop()
         .ok_or(CollectionError::IndexOutOfBounds { index: 0, count: 0 })?;
     alloc(heap, HeapObject::Vector(updated), Some(&[vec]))
 }
 
 pub(crate) fn items(heap: &Heap, vec: Value) -> Result<Vec<Value>, CollectionError> {
-    Ok(vector_body(heap, vec)?.to_vec())
+    Ok(vector_body(heap, &vec)?.to_vec())
 }
 
 pub(crate) fn entries(heap: &Heap, map: Value) -> Result<Vec<(Value, Value)>, CollectionError> {
-    Ok(map_body(heap, map)?.to_vec())
+    Ok(map_body(heap, &map)?.to_vec())
 }
 
 pub(crate) fn occurrence(heap: &Heap, occ: Value) -> Result<Occurrence, CollectionError> {
-    match body(heap, occ) {
+    match body(heap, &occ) {
         Body::Occurrence(o) => Ok(o),
         other => Err(wrong("occurrence", &other)),
     }
@@ -500,18 +503,19 @@ fn value_equals_counted(heap: &Heap, a: Value, b: Value, expanded: &mut usize) -
     // Resolve occurrences (transparent for equality) to the underlying value
     // and its body.
     let resolve = |mut v: Value| loop {
-        match body(heap, v) {
+        match body(heap, &v) {
             Body::Occurrence(o) => v = o.value,
             b => return (v, b),
         }
     };
     let mut work = vec![(a, b)];
     while let Some((a, b)) = work.pop() {
-        if a.same_object(b) {
+        if a.same_object(&b) {
             continue;
         }
         let ((a, body_a), (b, body_b)) = (resolve(a), resolve(b));
-        if let (Value::Object(x), Value::Object(y)) = (a, b) {
+        if let (Value::Object(x), Value::Object(y)) = (&a, &b) {
+            let (x, y) = (*x, *y);
             let collections = matches!(
                 (&body_a, &body_b),
                 (Body::Vector(_), Body::Vector(_)) | (Body::Map(_), Body::Map(_))
@@ -535,7 +539,7 @@ fn value_equals_counted(heap: &Heap, a: Value, b: Value, expanded: &mut usize) -
                 *expanded += 1;
                 let mut missing = false;
                 x.for_each(|k, v| match y.get(k) {
-                    Some(w) => work.push((v, w)),
+                    Some(w) => work.push((v.clone(), w)),
                     None => missing = true,
                 });
                 if missing {
@@ -544,7 +548,7 @@ fn value_equals_counted(heap: &Heap, a: Value, b: Value, expanded: &mut usize) -
             }
             // Primitives by SameValueZero; other heap objects by identity.
             _ => {
-                if !map::key_eq(a, b) {
+                if !map::key_eq(&a, &b) {
                     return false;
                 }
             }
@@ -593,7 +597,7 @@ impl<'s> Scope<'s> {
     /// The persistent kind of a value, or `None` for primitives and other
     /// objects.
     pub fn persistent_kind(&self, v: Local<'s>) -> Option<PersistentKind> {
-        kind_of(self.heap(), self.local_value(v))
+        kind_of(self.heap(), &self.local_value(v))
     }
 
     /// Element count of a vector or entry count of a map.
@@ -692,10 +696,10 @@ mod tests {
 
     #[test]
     fn index_values_follow_the_index_contract() {
-        assert_eq!(index_from_value(n(0.0)), Ok(0));
-        assert_eq!(index_from_value(n(-0.0)), Ok(0));
-        assert_eq!(index_from_value(n(7.0)), Ok(7));
-        assert_eq!(index_from_value(n(MAX_INDEX)), Ok(MAX_INDEX as usize));
+        assert_eq!(index_from_value(&n(0.0)), Ok(0));
+        assert_eq!(index_from_value(&n(-0.0)), Ok(0));
+        assert_eq!(index_from_value(&n(7.0)), Ok(7));
+        assert_eq!(index_from_value(&n(MAX_INDEX)), Ok(MAX_INDEX as usize));
         for bad in [
             n(-1.0),
             n(1.5),
@@ -706,7 +710,7 @@ mod tests {
             Value::Bool(true),
             Value::Object(ObjectId::from_index(0)),
         ] {
-            assert_eq!(index_from_value(bad), Err(CollectionError::InvalidIndex));
+            assert_eq!(index_from_value(&bad), Err(CollectionError::InvalidIndex));
         }
     }
 
@@ -719,17 +723,17 @@ mod tests {
         let leaf = |x| new_occurrence(&heap, n(x), Provenance::default()).unwrap();
         let (mut a, mut b) = (n(1.0), leaf(1.0));
         for _ in 0..60 {
-            a = new_vector(&heap, &[a, a]).unwrap();
-            let shared = new_vector(&heap, &[b, b]).unwrap();
+            a = new_vector(&heap, &[a.clone(), a]).unwrap();
+            let shared = new_vector(&heap, &[b.clone(), b]).unwrap();
             b = new_occurrence(&heap, shared, Provenance::default()).unwrap();
         }
         let mut expanded = 0;
-        assert!(value_equals_counted(&heap, a, b, &mut expanded));
+        assert!(value_equals_counted(&heap, a.clone(), b, &mut expanded));
         assert_eq!(expanded, 60, "one expansion per distinct pair");
         // A difference at the bottom is still found.
         let mut c = n(2.0);
         for _ in 0..60 {
-            c = new_vector(&heap, &[c, c]).unwrap();
+            c = new_vector(&heap, &[c.clone(), c]).unwrap();
         }
         let mut expanded = 0;
         assert!(!value_equals_counted(&heap, a, c, &mut expanded));

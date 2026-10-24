@@ -492,7 +492,7 @@ fn cancellation_releases_open_builder_drafts() {
     let first = owner.run_with(Budget::instructions(6), &mut crate::host::NoHost);
     assert!(matches!(first, Ok(RunOutcome::Yielded)), "{first:?}");
     let (_, _, locals) = owner.saved_state().unwrap();
-    let builder = crate::Rooted::new(rt.heap(), locals[0]);
+    let builder = crate::Rooted::new(rt.heap(), locals[0].clone());
     assert_eq!(rt.collect().unwrap().reclaimed, 0, "the draft is live");
 
     assert!(matches!(owner.cancel(), Cancel::Requested));

@@ -79,7 +79,7 @@ use std::sync::Arc;
 use super::gc::{Access, MutatorToken, Trace};
 use super::{Heap, HeapObject, ObjectId};
 use crate::error::VmError;
-use crate::value::{Primitive, Value, ValueView};
+use crate::value::{JsString, Primitive, Value, ValueView};
 use crate::vm::exception::error_object;
 
 /// Persistent root slots. Freed slots are reused; a slot holds the rooted
@@ -213,7 +213,7 @@ impl Rooted {
     /// collected before this returns (it is held by another root, a scope on
     /// this thread, or the task of a run guard this thread holds).
     pub(crate) fn new(heap: &Arc<Heap>, value: Value) -> Rooted {
-        let slot = heap.roots().insert(value);
+        let slot = heap.roots().insert(value.clone());
         Rooted {
             heap: Arc::clone(heap),
             slot,
@@ -226,16 +226,26 @@ impl Rooted {
         self.value.view()
     }
 
+    /// The contents of a string value (`None` for any other value). The
+    /// string is immutable and lives outside the heap, so the returned
+    /// [`JsString`] stays valid after this handle is dropped.
+    pub fn string(&self) -> Option<JsString> {
+        match &self.value {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
     /// True only when both handles reference the same heap object (identity,
     /// not equality). Primitives are never "the same object".
     pub fn same_object(&self, other: &Rooted) -> bool {
-        Arc::ptr_eq(&self.heap, &other.heap) && self.value.same_object(other.value)
+        Arc::ptr_eq(&self.heap, &other.heap) && self.value.same_object(&other.value)
     }
 
     /// JavaScript `===` between two rooted values of the same runtime.
     pub fn strict_equals(&self, other: &Rooted) -> Result<bool, HandleError> {
         let other = other.value_in(&self.heap)?;
-        Ok(self.value.strict_equals(other))
+        Ok(self.value.strict_equals(&other))
     }
 
     /// The failure an error object stands for, if the value is one: the
@@ -243,7 +253,7 @@ impl Rooted {
     /// cancelled dependency raised at a `need` (`crate::vm::exception`).
     /// `None` for any other value.
     pub fn error(&self) -> Option<VmError> {
-        error_object(&self.heap, self.value).map(|(error, _)| error)
+        error_object(&self.heap, &self.value).map(|(error, _)| error)
     }
 
     /// The cause of an error object, rooted: for a failed dependency, the
@@ -252,21 +262,21 @@ impl Rooted {
     pub fn error_cause(&self) -> Option<Rooted> {
         // The cause is an edge of the error object, which `self` keeps
         // alive, so it cannot be reclaimed before it is rooted.
-        error_object(&self.heap, self.value).map(|(_, cause)| Rooted::new(&self.heap, cause))
+        error_object(&self.heap, &self.value).map(|(_, cause)| Rooted::new(&self.heap, cause))
     }
 
     /// A non-rooting handle to the same value.
     pub fn downgrade(&self) -> WeakHandle {
         WeakHandle {
             heap: Arc::clone(&self.heap),
-            value: self.value,
+            value: self.value.clone(),
         }
     }
 
     /// The raw value, after checking the handle belongs to `heap`.
     pub(crate) fn value_in(&self, heap: &Arc<Heap>) -> Result<Value, HandleError> {
         if Arc::ptr_eq(&self.heap, heap) {
-            Ok(self.value)
+            Ok(self.value.clone())
         } else {
             Err(HandleError::ForeignRuntime)
         }
@@ -275,7 +285,7 @@ impl Rooted {
 
 impl Clone for Rooted {
     fn clone(&self) -> Self {
-        Rooted::new(&self.heap, self.value)
+        Rooted::new(&self.heap, self.value.clone())
     }
 }
 
@@ -312,7 +322,11 @@ impl WeakHandle {
     pub fn is_live(&self) -> bool {
         match self.value {
             Value::Object(id) => self.heap.is_live(id),
-            Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => true,
+            Value::Undefined
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_) => true,
         }
     }
 
@@ -321,12 +335,12 @@ impl WeakHandle {
     pub fn upgrade(&self) -> Result<Rooted, HandleError> {
         let slot = self
             .heap
-            .root_if_live(self.value)
+            .root_if_live(self.value.clone())
             .ok_or(HandleError::Reclaimed)?;
         Ok(Rooted {
             heap: Arc::clone(&self.heap),
             slot,
-            value: self.value,
+            value: self.value.clone(),
         })
     }
 }
@@ -429,7 +443,7 @@ impl<'s> Scope<'s> {
     pub(crate) fn local_value(&self, local: Local<'s>) -> Value {
         // The brand guarantees `local` was created by this scope, and the
         // local list only grows while the scope is open, so the index exists.
-        self.heap.scopes().locals(self.slot)[local.index]
+        self.heap.scopes().locals(self.slot)[local.index].clone()
     }
 
     /// Allocate a new (property-less) plain object.
@@ -482,7 +496,7 @@ impl<'s> Scope<'s> {
             return Err(HandleError::Reclaimed);
         }
         // Still live when pushed: see `new_object`.
-        Ok(self.new_local(weak.value))
+        Ok(self.new_local(weak.value.clone()))
     }
 
     /// Root-free view of a local value.
@@ -490,14 +504,23 @@ impl<'s> Scope<'s> {
         self.local_value(local).view()
     }
 
+    /// The contents of a local string value (`None` for any other value).
+    /// The returned [`JsString`] is immutable and outlives the scope.
+    pub fn string(&self, local: Local<'s>) -> Option<JsString> {
+        match self.local_value(local) {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// True only when both locals reference the same heap object.
     pub fn same_object(&self, a: Local<'s>, b: Local<'s>) -> bool {
-        self.local_value(a).same_object(self.local_value(b))
+        self.local_value(a).same_object(&self.local_value(b))
     }
 
     /// JavaScript `===` between two locals.
     pub fn strict_equals(&self, a: Local<'s>, b: Local<'s>) -> bool {
-        self.local_value(a).strict_equals(self.local_value(b))
+        self.local_value(a).strict_equals(&self.local_value(b))
     }
 
     /// Release heap access for the duration of `f`: a safepoint.

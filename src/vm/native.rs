@@ -220,7 +220,7 @@ enum Awaiting {
 }
 
 /// The completion delivered to a step.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Input {
     Start,
     CallResult(Value),
@@ -304,9 +304,14 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::Reduce { f, vec, acc, .. } => {
-                [*f, *vec, *acc].trace(visit);
+                for v in [f, vec, acc] {
+                    v.trace(visit);
+                }
             }
-            NativeState::NeedAll { defs, out, .. } => [*defs, *out].trace(visit),
+            NativeState::NeedAll { defs, out, .. } => {
+                defs.trace(visit);
+                out.trace(visit);
+            }
         }
     }
 }
@@ -326,7 +331,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Function(..) | Call(_) | CurrentFunction | GetCapture(_) | NewCell | CellInit
         | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PushCatch(_)
         | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
-        | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion => false,
+        | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus => false,
     }
 }
 
@@ -335,7 +340,7 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
     let ops = state.operands();
     ops.len()
         .checked_sub(N)
-        .and_then(|at| <[Value; N]>::try_from(&ops[at..]).ok())
+        .map(|at| std::array::from_fn(|i| ops[at + i].clone()))
         .ok_or(Fault::Internal("operand stack underflow"))
 }
 
@@ -351,9 +356,9 @@ pub(crate) fn start(
     let (popped, native) = match instr {
         Instr::Reduce => {
             let [f, init, vec] = operands::<3>(state)?;
-            let len = coll::vector_count(heap, vec)?;
+            let len = coll::vector_count(heap, vec.clone())?;
             // Checked once, up front, even for an empty vector.
-            callee_code(heap, f)?;
+            callee_code(heap, &f)?;
             let native = NativeState::Reduce {
                 f,
                 vec,
@@ -365,11 +370,11 @@ pub(crate) fn start(
         }
         Instr::NeedAll => {
             let [defs, kind] = operands::<2>(state)?;
-            let len = coll::vector_count(heap, defs)?;
-            let kind = result_kind(kind).ok_or_else(|| {
+            let len = coll::vector_count(heap, defs.clone())?;
+            let kind = result_kind(&kind).ok_or_else(|| {
                 Fault::Unsupported(format!(
                     "need_all takes a result kind as a non-negative integer number, got {}",
-                    describe(kind)
+                    describe(&kind)
                 ))
             })?;
             let native = NativeState::NeedAll {
@@ -484,14 +489,15 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
     state.truncate_operands(base)?;
     match action {
         Action::Call { callee, args } => {
-            let code = callee_code(heap, callee)?;
+            let code = callee_code(heap, &callee)?;
             let Value::Object(id) = callee else {
                 return Err(Fault::Internal("callee is not an object"));
             };
             set_awaiting(state, Awaiting::CallResult)?;
             state.push(callee);
-            args.iter().for_each(|&a| state.push(a));
-            state.enter(code, id, args.len())?;
+            let argc = args.len();
+            args.into_iter().for_each(|a| state.push(a));
+            state.enter(code, id, argc)?;
             Ok(Flow::FrameChanged)
         }
         Action::Need { dependency, kind } => {
@@ -539,12 +545,12 @@ impl NativeState {
                     }
                 }
                 if *next >= *len {
-                    return Ok(Action::Return(*acc));
+                    return Ok(Action::Return(acc.clone()));
                 }
-                let x = coll::nth(heap, *vec, *next)?;
+                let x = coll::nth(heap, vec.clone(), *next)?;
                 Ok(Action::Call {
-                    callee: *f,
-                    args: [*acc, x],
+                    callee: f.clone(),
+                    args: [acc.clone(), x],
                 })
             }
             NativeState::NeedAll {
@@ -557,7 +563,7 @@ impl NativeState {
                 match input {
                     Input::Start => *out = coll::new_vector(heap, &[])?,
                     Input::Dependency(v) => {
-                        *out = coll::conj(heap, *out, v)?;
+                        *out = coll::conj(heap, out.clone(), v)?;
                         *next += 1;
                     }
                     Input::CallResult(_) => {
@@ -565,13 +571,13 @@ impl NativeState {
                     }
                 }
                 if *next >= *len {
-                    return Ok(Action::Return(*out));
+                    return Ok(Action::Return(out.clone()));
                 }
-                let def = coll::nth(heap, *defs, *next)?;
-                let dependency = dependency_id(def).ok_or_else(|| {
+                let def = coll::nth(heap, defs.clone(), *next)?;
+                let dependency = dependency_id(&def).ok_or_else(|| {
                     Fault::Unsupported(format!(
                         "need_all takes definition ids as non-negative integer numbers, got {} at index {next}",
-                        describe(def)
+                        describe(&def)
                     ))
                 })?;
                 Ok(Action::Need {
@@ -708,11 +714,14 @@ mod tests {
             .finish("count", 1, 1)
             .unwrap();
         let vec = vector(&heap, 1000);
-        let (done, s) = run(&code, &heap, vec, 2);
+        let (done, s) = run(&code, &heap, vec.clone(), 2);
         assert_eq!(done, None);
         assert!(s.natives.is_empty());
         assert_eq!(s.operands(), [Value::Number(1000.0)], "count already ran");
-        assert_eq!(run(&code, &heap, vec, 3).0, Some(Value::Number(1000.0)));
+        assert_eq!(
+            run(&code, &heap, vec.clone(), 3).0,
+            Some(Value::Number(1000.0))
+        );
     }
 
     /// `reduce(add, 0, vec)` costs its instruction, one step per element plus
@@ -738,17 +747,20 @@ mod tests {
         let vec = vector(&heap, 3);
         // 4 instructions to the reduce, 4 steps, 3 callbacks of 4, 1 return.
         let total = 4 + 4 + 3 * 4 + 1;
-        assert_eq!(run(&code, &heap, vec, total - 1).0, None);
-        assert_eq!(run(&code, &heap, vec, total).0, Some(Value::Number(6.0)));
+        assert_eq!(run(&code, &heap, vec.clone(), total - 1).0, None);
+        assert_eq!(
+            run(&code, &heap, vec.clone(), total).0,
+            Some(Value::Number(6.0))
+        );
 
         // After the instruction and the first step: inside the first
         // callback, above the native frame.
-        let (_, s) = run(&code, &heap, vec, 5);
+        let (_, s) = run(&code, &heap, vec.clone(), 5);
         assert_eq!((s.natives.len(), s.depth()), (1, 2));
         assert_eq!(running(&s), None, "the callback runs, not the native");
         // After the first callback returned: the native is running again,
         // with the result delivered to its operand area.
-        let (_, s) = run(&code, &heap, vec, 9);
+        let (_, s) = run(&code, &heap, vec.clone(), 9);
         assert_eq!((s.natives.len(), s.depth()), (1, 1));
         assert_eq!(running(&s), Some(3), "started by instruction 3");
         assert_eq!(s.operands(), [Value::Number(1.0)]);
@@ -792,7 +804,7 @@ mod tests {
             task: TaskId::from_raw(1),
             world: WorldId::INITIAL,
         };
-        let fresh = || VmState::new(&code.0, &[vec], diag, VmLimits::DEFAULT);
+        let fresh = || VmState::new(&code.0, std::slice::from_ref(&vec), diag, VmLimits::DEFAULT);
         let expect = |message: String, operation: &str| {
             assert!(
                 message.contains("native safepoint contract violated")
@@ -889,7 +901,10 @@ mod tests {
             .op(Opcode::Reduce)
             .op(Opcode::Return);
         let sum = asm.finish("sum", 1, 1).unwrap();
-        assert_eq!(run(&sum, &heap, vec, 100).0, Some(Value::Number(3.0)));
+        assert_eq!(
+            run(&sum, &heap, vec.clone(), 100).0,
+            Some(Value::Number(3.0))
+        );
         assert_no_borrow("after a fold");
     }
 

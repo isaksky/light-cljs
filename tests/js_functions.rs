@@ -18,8 +18,8 @@ struct PlusThousand {
 
 impl Host for PlusThousand {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        match (call.op, call.arg) {
-            (7, Primitive::Number(n)) => {
+        match (call.op, &call.arg) {
+            (7, &Primitive::Number(n)) => {
                 self.calls.push(n);
                 Ok(Primitive::Number(n + 1000.0))
             }

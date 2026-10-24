@@ -957,7 +957,7 @@ impl RunGuard<'_> {
             }
             Terminal::Failed(error) => (
                 VmErrorKind::DependencyFailed(key),
-                format!("dependency {key} failed with {}", describe(error)),
+                format!("dependency {key} failed with {}", describe(&error)),
                 error,
             ),
             Terminal::Cancelled => (
@@ -1285,7 +1285,7 @@ enum VmNeed {
 }
 
 /// A dependency's error value for a diagnostic message.
-fn describe(value: Value) -> String {
+fn describe(value: &Value) -> String {
     match value.to_primitive() {
         Some(p) => format!("{p:?}"),
         None => format!("an {}", value.type_name()),
@@ -1405,7 +1405,7 @@ mod tests {
         for (consts, ops, expected) in cases {
             let mut asm = Assembler::new();
             for c in &consts {
-                asm.constant(*c);
+                asm.constant(c.clone());
             }
             for op in &ops {
                 asm.op(*op);
@@ -1552,7 +1552,7 @@ mod tests {
         }
         for operand in [Primitive::Null, Primitive::Undefined] {
             let e = failed(run(&|a| {
-                a.constant(operand).op(BitNot);
+                a.constant(operand.clone()).op(BitNot);
             }));
             assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand);
             assert_eq!(e.diagnostic().opcode, Some(BitNot));
@@ -1739,8 +1739,8 @@ mod resume_tests {
             self.log
                 .iter()
                 .filter(|c| c.task == task)
-                .map(|c| match c.arg {
-                    Primitive::Number(n) => n,
+                .map(|c| match &c.arg {
+                    Primitive::Number(n) => *n,
                     other => panic!("{other:?}"),
                 })
                 .collect()

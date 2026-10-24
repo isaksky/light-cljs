@@ -351,3 +351,44 @@ fn root_changes_on_another_thread_interleave_safely_with_collection() {
     assert_eq!(rt.heap_stats().persistent_roots, 1);
     assert!(weak.upgrade().unwrap().same_object(&keep));
 }
+
+/// clj-quickjs-65: strings are primitives outside the object table
+/// (immutable `Arc` storage, `docs/architecture.md` "String values"). A
+/// string held only by a frame local, by a closure capture, or by a
+/// persistent collection keeps its contents across collections between
+/// budgeted runs, and adds no heap object. The program is JavaScript source
+/// (a synthetic fixture).
+#[test]
+fn strings_in_frames_captures_and_collections_survive_collections() {
+    let rt = Runtime::new();
+    let exe = clj_quickjs::frontend::compile_script(
+        "strings",
+        r#"let local = "lo" + "cal";
+           let captured = "cap" + "tured";
+           let read = () => captured;
+           let m = __rt.map("k", "in" + " map");
+           let i = 0;
+           while (i < 20) { i = i + 1; }
+           local === "local" && read() === "captured" && __rt.get(m, "k") === "in map""#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut runs = 0;
+    let result = loop {
+        runs += 1;
+        match task
+            .run_with(Budget::instructions(7), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                let stats = rt.collect().unwrap();
+                // At most the closure and the map: no string is an object.
+                assert!(stats.live <= 2, "{stats:?}");
+                assert_eq!(stats.reclaimed, 0);
+            }
+            other => break complete(other),
+        }
+    };
+    assert!(runs > 5, "collections ran mid-program ({runs} runs)");
+    assert_eq!(result.view(), ValueView::Bool(true));
+}

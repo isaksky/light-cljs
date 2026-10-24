@@ -35,8 +35,8 @@ struct Log(Vec<f64>);
 
 impl Host for Log {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        match (call.op, call.arg) {
-            (1, Primitive::Number(n)) => {
+        match (call.op, &call.arg) {
+            (1, &Primitive::Number(n)) => {
                 self.0.push(n);
                 Ok(call.arg)
             }

@@ -74,9 +74,17 @@
 //! `& | ^ << >> >>>`, `**` and unary `-`, `+`, `~` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
 //! before the number-only arithmetic instruction (which applies ToInt32 /
-//! ToUint32 itself for the bitwise ones); with no string values in
-//! the subset, that is exactly JavaScript's semantics for primitives. When
-//! strings arrive, `+` and the relational operators must lower differently.
+//! ToUint32 itself for the bitwise ones). `to_number` rejects a string
+//! operand (StringToNumber is clj-quickjs-67), so these operators never
+//! guess at a string. Binary `+` (clj-quickjs-65) lowers to the number-only
+//! `add` only when both operands are statically numbers (`is_number`),
+//! and otherwise to `plus`, JavaScript `+` on primitives, which concatenates
+//! two strings at run time and applies no ToNumber first. The relational
+//! operators still lower to ToNumber and a numeric comparison; string
+//! comparison (clj-quickjs-68) must lower them differently.
+//!
+//! **Strings.** A string literal (Unicode scalar values, encoded as UTF-16
+//! code units) is a constant, deduplicated by content like other constants.
 //! `++`/`--` on a binding (clj-quickjs-64) is a read, `to_number`, `add` or
 //! `sub` of the constant 1 and a store, with the checks of an ordinary read
 //! and assignment (so a captured binding goes through its cell and a
@@ -114,7 +122,7 @@ use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
 use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
-use crate::value::Primitive;
+use crate::value::{JsString, Primitive};
 use crate::vm::executable::{Executable, ExecutableSpec};
 use crate::vm::instr::{Opcode, ThrowKind};
 
@@ -287,6 +295,8 @@ enum ConstKey {
     Null,
     Bool(bool),
     Number(u64),
+    /// Strings by content (code units).
+    String(JsString),
 }
 
 /// Internal bytecode emitter: byte code, one span per instruction, a
@@ -1455,10 +1465,11 @@ impl<'s> Lowerer<'s> {
     // ----- expressions -----
 
     fn constant(&mut self, value: Primitive, span: Span) -> Result<(), SyntaxError> {
-        let key = match value {
+        let key = match &value {
             Primitive::Null => ConstKey::Null,
-            Primitive::Bool(b) => ConstKey::Bool(b),
+            Primitive::Bool(b) => ConstKey::Bool(*b),
             Primitive::Number(n) => ConstKey::Number(n.to_bits()),
+            Primitive::String(s) => ConstKey::String(s.clone()),
             Primitive::Undefined => {
                 self.out().op(Opcode::Undefined, span);
                 return Ok(());
@@ -1492,7 +1503,17 @@ impl<'s> Lowerer<'s> {
             ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span)?,
             ExprKind::Null => self.constant(Primitive::Null, span)?,
             ExprKind::Undefined => self.out().op(Opcode::Undefined, span),
-            ExprKind::String(_) => return Err(self.unsupported(span, "a string value")),
+            ExprKind::String(s) => {
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let Some(s) = JsString::from_code_units(units) else {
+                    return Err(self.error(
+                        SyntaxErrorKind::TooLarge,
+                        span,
+                        "a string literal longer than 2^30 - 1 code units",
+                    ));
+                };
+                self.constant(Primitive::String(s), span)?;
+            }
             ExprKind::Identifier(name) => {
                 let at = self.name_span(name, span);
                 let access = self.resolve(name);
@@ -1760,7 +1781,14 @@ impl<'s> Lowerer<'s> {
             BinaryOp::Mul => Opcode::Mul,
             BinaryOp::Div => Opcode::Div,
             BinaryOp::Rem => Opcode::Rem,
-            BinaryOp::Add => Opcode::Add,
+            // `+` is numeric addition only when both operands are numbers;
+            // otherwise `plus` decides at run time (strings concatenate) and
+            // no ToNumber may run first.
+            BinaryOp::Add if is_number(left) && is_number(right) => Opcode::Add,
+            BinaryOp::Add => {
+                self.out().op(Opcode::Plus, span);
+                return;
+            }
             BinaryOp::Sub => Opcode::Sub,
             BinaryOp::Lt => Opcode::Lt,
             BinaryOp::Gt => Opcode::Gt,
@@ -1804,12 +1832,18 @@ fn is_number(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Number(_) => true,
         ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Neg | UnaryOp::Plus | UnaryOp::BitNot),
+        // `+` concatenates when an operand is a string, so it is a number
+        // only when both operands are.
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            left,
+            right,
+        } => is_number(left) && is_number(right),
         ExprKind::Binary { op, .. } => matches!(
             op,
             BinaryOp::Mul
                 | BinaryOp::Div
                 | BinaryOp::Rem
-                | BinaryOp::Add
                 | BinaryOp::Sub
                 | BinaryOp::BitAnd
                 | BinaryOp::BitOr

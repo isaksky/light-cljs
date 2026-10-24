@@ -411,6 +411,7 @@ impl Executable {
                 Opcode::EndFinally => Instr::EndFinally,
                 Opcode::CallFinally => Instr::CallFinally,
                 Opcode::DropCompletion => Instr::DropCompletion,
+                Opcode::Plus => Instr::Plus,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

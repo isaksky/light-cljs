@@ -87,7 +87,7 @@ impl PVector {
                     node = children.get((index >> level) & MASK)?;
                     level = level.saturating_sub(BITS);
                 }
-                Node::Leaf(values) => return values.get(index & MASK).copied(),
+                Node::Leaf(values) => return values.get(index & MASK).cloned(),
             }
         }
     }
@@ -153,11 +153,11 @@ impl PVector {
     }
 
     /// Call `f` on every element in index order.
-    pub(crate) fn for_each(&self, mut f: impl FnMut(Value)) {
-        fn walk(node: &Node, f: &mut dyn FnMut(Value)) {
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&Value)) {
+        fn walk(node: &Node, f: &mut dyn FnMut(&Value)) {
             match node {
                 Node::Branch(children) => children.iter().for_each(|c| walk(c, f)),
-                Node::Leaf(values) => values.iter().copied().for_each(f),
+                Node::Leaf(values) => values.iter().for_each(f),
             }
         }
         walk(&self.root, &mut f);
@@ -166,7 +166,7 @@ impl PVector {
     /// Every element in index order.
     pub(crate) fn to_vec(&self) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.len);
-        self.for_each(|v| out.push(v));
+        self.for_each(|v| out.push(v.clone()));
         out
     }
 
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(v.len(), model.len());
         assert_eq!(v.to_vec(), model);
         for (i, m) in model.iter().enumerate() {
-            assert_eq!(v.get(i), Some(*m), "index {i}");
+            assert_eq!(v.get(i), Some(m.clone()), "index {i}");
         }
         assert_eq!(v.get(model.len()), None);
     }
@@ -284,7 +284,9 @@ mod tests {
             let model: Vec<Value> = (0..n).map(num).collect();
             let built = PVector::from_values(&model);
             check(&built, &model);
-            let pushed = model.iter().fold(PVector::default(), |v, x| v.push(*x));
+            let pushed = model
+                .iter()
+                .fold(PVector::default(), |v, x| v.push(x.clone()));
             check(&pushed, &model);
             assert_eq!(built.shift, pushed.shift, "n = {n}");
         }

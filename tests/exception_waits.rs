@@ -40,8 +40,8 @@ struct Log(Vec<f64>);
 
 impl Host for Log {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        match (call.op, call.arg) {
-            (1, Primitive::Number(n)) => {
+        match (call.op, &call.arg) {
+            (1, &Primitive::Number(n)) => {
                 self.0.push(n);
                 Ok(call.arg)
             }
@@ -852,8 +852,8 @@ struct CancelHost {
 
 impl Host for CancelHost {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        match (call.op, call.arg) {
-            (1, Primitive::Number(n)) => self.log.push(n),
+        match (call.op, &call.arg) {
+            (1, &Primitive::Number(n)) => self.log.push(n),
             (2, _) => {
                 let task = self.task.as_ref().ok_or("no task")?;
                 assert!(matches!(task.cancel(), Cancel::Requested));
@@ -922,8 +922,8 @@ struct WorkerLog {
 
 impl Host for WorkerLog {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        match (call.op, call.arg) {
-            (1, Primitive::Number(n)) => {
+        match (call.op, &call.arg) {
+            (1, &Primitive::Number(n)) => {
                 self.effects
                     .lock()
                     .unwrap()

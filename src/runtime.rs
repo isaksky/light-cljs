@@ -121,7 +121,7 @@ impl Runtime {
     /// `value::share` for the categories and the cache.
     pub fn publish(&self, value: &Rooted) -> Result<(), PublishError> {
         let value = value.value_in(&self.0.heap).map_err(PublishError::Handle)?;
-        share::check(&self.0.heap, value)
+        share::check(&self.0.heap, &value)
     }
 
     /// Create a task that will run `executable` with `args` bound to its

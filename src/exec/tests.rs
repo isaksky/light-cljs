@@ -103,7 +103,7 @@ fn a_task_keeps_its_builder_across_workers_and_other_tasks_are_rejected() {
     // Queued for the busy worker 1: runnable, VM state saved, builder open.
     assert_eq!(owner.status(), TaskStatus::Ready);
     let (_, _, locals) = owner.saved_state().unwrap();
-    let handle = Rooted::new(rt.heap(), locals[0]);
+    let handle = Rooted::new(rt.heap(), locals[0].clone());
     for op in [BuilderConj, BuilderAssoc, Freeze] {
         let mut asm = Assembler::new();
         asm.get_local(0);

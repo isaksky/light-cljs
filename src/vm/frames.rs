@@ -274,7 +274,7 @@ impl VmState {
     pub(crate) fn stack_value(&self, at: usize) -> Result<Value, Fault> {
         self.stack
             .get(at)
-            .copied()
+            .cloned()
             .filter(|_| at >= self.top().floor())
             .ok_or(Fault::Internal("operand index out of range"))
     }

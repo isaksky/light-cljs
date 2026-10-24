@@ -442,8 +442,8 @@ fn dependency_outcome_reclaims_with_its_cell() {
         let key = DependencyKey::new(WorldId::INITIAL, DependencyId::new(def), ResultKind::new(0));
         let request = table.claim(key).unwrap();
         let inner = crate::collections::new_vector(&heap, &[]).unwrap();
-        let outer = crate::collections::new_vector(&heap, &[inner]).unwrap();
-        let root = Rooted::new(&heap, outer);
+        let outer = crate::collections::new_vector(&heap, std::slice::from_ref(&inner)).unwrap();
+        let root = Rooted::new(&heap, outer.clone());
         let completion = if failed {
             Completion::Failed(&root)
         } else {
@@ -452,9 +452,9 @@ fn dependency_outcome_reclaims_with_its_cell() {
         let wakeups = crate::dep::complete(&table, key, request.producer(), completion).unwrap();
         assert!(wakeups.deliveries().is_empty());
         drop(root);
-        ids.extend([outer, inner].map(|v| match v {
+        ids.extend([&outer, &inner].map(|v| match *v {
             Value::Object(id) => id,
-            other => panic!("{other:?}"),
+            ref other => panic!("{other:?}"),
         }));
     }
     heap.request_collection().unwrap();

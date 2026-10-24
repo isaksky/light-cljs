@@ -8,7 +8,8 @@ A small documented JavaScript subset ([`docs/grammar.md`](docs/grammar.md))
 compiles to VM bytecode and runs: straight-line code, conditionals, loops,
 locals, functions, calls, recursion and closures in task-owned frames, and
 private collection and host-effect intrinsics through the compiler-reserved
-binding `__rt`. Strings and property access are not executable yet.
+binding `__rt`, and string values (clj-quickjs-65). Property access is not
+executable yet.
 
 ## Build and test
 
@@ -348,7 +349,8 @@ Deferred:
 
 - String values and property access: they parse but are rejected by the
   compiler as `Unsupported`. (Functions, calls, closures and the reserved
-  intrinsic binding compile since clj-quickjs-21, below.)
+  intrinsic binding compile since clj-quickjs-21, string values since
+  clj-quickjs-65, below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
 - labels, `switch`, `var`, update and compound
@@ -1382,3 +1384,33 @@ Deferred:
 
 - `var` heads (clj-quickjs-89), for-in (clj-quickjs-85 to -88) and for-of
   (`Unsupported`), labelled `for` (labels: clj-quickjs-82).
+
+### String values (clj-quickjs-65)
+
+Supported (`cargo test --test js_source string_values`,
+`cargo test --test publication strings_publish`,
+`cargo test --test gc strings_in_frames`, `cargo test --lib value::`):
+
+- String literals compile to constants and run; a script may complete with a
+  string (`cargo run -- file.js` prints it; embedders read it with
+  `Rooted::string` / `Scope::string`, `ValueView::String`, `JsString`).
+- `===`/`!==`/`==`/`!=` between strings compare contents; a string never
+  strictly equals a non-string; `""` is the only falsy string; `+` of two
+  strings concatenates (new opcode `plus` `0x49`, emitted for every `+`
+  whose operands are not both statically numbers); calling a string is a
+  `TypeError` "string is not a function"; an uncaught thrown string is
+  reported with its text.
+- Strings are immutable primitives over `Arc` storage outside the heap
+  (`docs/architecture.md`, "String values"): publishable to other tasks,
+  usable as persistent map keys by content (`__rt.get(__rt.map("k", 1), "k")`
+  is 1), stored as UTF-16 code units.
+
+Deferred:
+
+- Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
+  one string operand (ToString, clj-quickjs-66); arithmetic, bitwise, `**`,
+  `++`/`--` on strings and `==` between a string and a number or boolean
+  (StringToNumber, clj-quickjs-67); relational comparison of strings
+  (clj-quickjs-68). No `typeof`, templates, `length`, indexing or string
+  methods yet; lone surrogate escapes are still rejected by the lexer
+  (clj-quickjs-141).

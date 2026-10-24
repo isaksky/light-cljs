@@ -44,7 +44,7 @@
 //! | [`task`] | [`Task`], execution claim and state machine (park, wake), [`RunOutcome`] |
 //! | [`vm`] | instruction format, executable validation, task-owned frames, dispatch, test assembler |
 //! | [`heap`] | object storage and identity, roots and scoped handles ([`heap::roots`]), tracing contract ([`heap::gc`]) |
-//! | `value` | raw VM values (crate-private), root-free views, and publication rules (`value::share`) |
+//! | `value` | raw VM values (crate-private), root-free views, string values (`value::string`, [`JsString`]), and publication rules (`value::share`) |
 //! | `ids` | opaque task, world, definition, result-kind, dependency-key, producer and wake-handle identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract; [`host::sim`], the simulated compiler host (worlds, result kinds, producers) |
@@ -61,8 +61,9 @@
 //! JavaScript source in the documented subset is parsed and compiled to
 //! validated bytecode ([`frontend::compile_script`]): straight-line code,
 //! conditionals, loops, locals, functions, calls, closures and the
-//! compiler-reserved intrinsic binding `__rt`; strings and property access
-//! cannot be compiled yet. Executables can also be built from hand-assembled bytecode
+//! compiler-reserved intrinsic binding `__rt`, and string values
+//! ([`JsString`]: immutable UTF-16 code units, compared by content); property
+//! access cannot be compiled yet. Executables can also be built from hand-assembled bytecode
 //! ([`Assembler`]), which is an early VM test tool, not JavaScript source
 //! support; at that level the VM runs nested calls and recursion in explicit
 //! task-owned frames, bounded by [`VmLimits`] instead of the Rust stack.
@@ -104,7 +105,7 @@ pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeH
 pub use runtime::Runtime;
 pub use task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStats, TaskStatus, Wake};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
-pub use value::{Primitive, ValueView};
+pub use value::{JsString, Primitive, ValueView};
 pub use vm::{
     Assembler, Executable, ExecutableSpec, Label, Opcode, ThrowKind, ValidationError,
     ValidationErrorKind, VmLimits,

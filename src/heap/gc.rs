@@ -172,7 +172,12 @@ impl Trace for Value {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match *self {
             Value::Object(id) => visit(id),
-            Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => {}
+            // A string is not a heap object (`crate::value::string`).
+            Value::Undefined
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_) => {}
         }
     }
 }

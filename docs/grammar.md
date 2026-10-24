@@ -9,17 +9,17 @@ agreement by tests: every `js accept` example below must parse, every
 `line:column`, and every `js compile-reject` example must parse but fail to
 compile that way (`frontend::tests::grammar_doc_examples`).
 
-Status: everything below parses. Everything except string values and
-property access also compiles to VM bytecode and executes
-(`frontend::compile_script`; see "Execution" below): literals, bindings,
+Status: everything below parses. Everything except property access also
+compiles to VM bytecode and executes (`frontend::compile_script`; see
+"Execution" below): literals (string values since clj-quickjs-65), bindings,
 operators, assignment, blocks, `if`/`else`, `while`, `do`-`while`
 (clj-quickjs-80), `for` with an empty, expression or `let`/`const` head
 (clj-quickjs-81), function declarations
 and expressions, calls, closures (clj-quickjs-21), arrow functions
 (clj-quickjs-53), and the
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
-binding"). String values and property access parse but are rejected by the
-compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
+binding"). Property access parses but is rejected by the compiler.
+`throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
 jumps out of `try` statements that run their finally blocks on the way
@@ -278,9 +278,13 @@ checks left to later stages:
   root-to-leaf path, counted by each node's `height`), which also catches
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
   passes can rely on that bound.
-- **Strings are Unicode scalar values**, not UTF-16 code-unit sequences:
-  a lone surrogate escape is rejected, so string length and indexing
-  semantics are not yet decided.
+- **String literals are Unicode scalar values**: a lone surrogate escape is
+  rejected. At run time a string is a sequence of UTF-16 code units
+  (clj-quickjs-65; `docs/architecture.md`, "String values"): a literal is
+  stored as the UTF-16 encoding of its text, so `'\u{1F600}'` is two code
+  units, and content equality compares code units. `length`, indexing and
+  relational order on code units are later pellets (clj-quickjs-141,
+  clj-quickjs-142, clj-quickjs-68).
 - **Identifier tables are Unicode 16.0**, the version compiled into the perl
   that generated them; code points assigned later are not identifier
   characters until the tables are regenerated.
@@ -322,14 +326,16 @@ Executed, with JavaScript semantics:
 | Form | Semantics |
 |------|-----------|
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
+| String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values (UTF-16 code units) loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
-| `+ - * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign |
-| `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false) |
+| `+` | two strings concatenate (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"); two numbers add; a string with any other operand fails with `UnsupportedOperand` until ToString (clj-quickjs-66); other primitives: ToNumber of both, then IEEE addition. Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
+| `- * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign; a string operand fails with `UnsupportedOperand` until StringToNumber (clj-quickjs-67) |
+| `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false); a string operand fails with `UnsupportedOperand` (string comparison is clj-quickjs-68) |
 | `&`, `\|`, `^`, `<<`, `>>`, `>>>` and unary `~` (clj-quickjs-62) | ToNumber of both operands (left first, after both are evaluated), then ToInt32 (NaN and ±Infinity are 0; truncate, wrap modulo 2^32), ToUint32 for the left operand of `>>>`; a shift count is `ToUint32(right) & 31`; the result is a 32-bit integer (unsigned for `>>>`), never `-0` |
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
-| `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`) |
-| `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
-| `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
+| `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
+| `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean fails with `UnsupportedOperand` until StringToNumber (clj-quickjs-67) |
+| `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
@@ -353,13 +359,13 @@ Errors:
 |-----------|------|-------------|
 | A name declared twice in one block, script or function body (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
-| String values, property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| Property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
 | Assigning to an initialized `const` (`c = 1`, `c++`), or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
-| Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function" (names the value's type) |
+| Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
 
 Run-time failures carry the source position (`Diagnostic::source`, line and
@@ -403,10 +409,16 @@ would escape such a finally block ends the cleanup there (`src/task.rs`,
 
 Gaps specific to execution:
 
-- **No string values**, so `+` and the relational operators lower to
-  numeric operations; they must change when strings arrive. The bitwise
-  and shift operators convert with ToNumber, which for strings is the
-  StringToNumber pellet (clj-quickjs-67).
+- **Strings are values without conversions yet** (clj-quickjs-65). String
+  literals, `===`/`==` between strings, `+` of two strings, ToBoolean and
+  strings as map keys execute. Every operation that would convert a string
+  to or from another type fails with `UnsupportedOperand` instead of
+  guessing: `+` with one string operand (ToString, clj-quickjs-66), the
+  arithmetic, bitwise, shift, `**` and `++`/`--` operators on a string and
+  `==` between a string and a number or boolean (StringToNumber,
+  clj-quickjs-67), and relational comparison (clj-quickjs-68). `typeof`,
+  template literals, `length`, indexing and string methods are not
+  supported yet.
 - **Error objects are opaque.** A caught ReferenceError, TypeError or
   StackOverflow is an object without properties (`e.message`, `e.name`,
   `instanceof` and the `Error` constructors do not exist yet); it can be
@@ -541,6 +553,14 @@ let b = a
 / 2 / 1
 const s = 'it\'s \u{1F600} \x41\
 !'
+```
+
+```js accept
+// String values execute (clj-quickjs-65): content equality, concatenation
+// of two strings, ToBoolean, map keys by content.
+let greeting = "hello, " + 'world';
+const m = __rt.map(greeting, 1);
+greeting === "hello, world" && "1" != "01" && !"" ? __rt.get(m, "hello, world") : 0
 ```
 
 ```js accept

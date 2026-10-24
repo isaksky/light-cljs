@@ -39,7 +39,9 @@
 //! independently owned immutable `Arc` storage, shared by tasks and not
 //! managed by the collector. Its constants are traced through every live task
 //! running it (`RootCategory::ExecutableConstant`); they are primitives only
-//! in this slice. Task VM state is owned by the task and traced as a root
+//! in this slice. String values (`crate::value::JsString`) are immutable
+//! `Arc` storage outside the table as well: a string has no heap edges, so
+//! the collector neither traces nor sweeps it. Task VM state is owned by the task and traced as a root
 //! source while the task handle exists.
 //! Persistent collections ([`crate::collections`]) are heap objects whose
 //! bodies are immutable `Arc` trie nodes outside the object table, shared
@@ -274,8 +276,8 @@ impl ObjectTable {
     /// True when `v` is a primitive or a live object known to be transitively
     /// shareable: its sticky bit is set, or it is an explicit concurrent
     /// reference (shareable without descending into it).
-    fn known_shareable(&self, v: Value) -> bool {
-        let Value::Object(id) = v else {
+    fn known_shareable(&self, v: &Value) -> bool {
+        let Value::Object(id) = *v else {
             return true;
         };
         self.slot(id).is_some_and(|slot| {
@@ -422,10 +424,10 @@ impl Heap {
         debug_assert_eq!(share::classify(&object), Shareability::Persistent);
         let mut table = lock(&self.objects);
         let shareable = match parts {
-            Some(parts) => parts.iter().all(|&v| table.known_shareable(v)),
+            Some(parts) => parts.iter().all(|v| table.known_shareable(v)),
             None => {
                 let mut all = true;
-                object.trace(&mut |id| all = all && table.known_shareable(Value::Object(id)));
+                object.trace(&mut |id| all = all && table.known_shareable(&Value::Object(id)));
                 all
             }
         };

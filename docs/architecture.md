@@ -128,7 +128,8 @@ collected by a precise, nonmoving, stop-the-world mark/sweep
   drops its frames, and what remains reachable (the returned `Rooted` and
   anything it references) survives. `Executable` code is independently owned
   immutable `Arc` storage outside the heap; its constants are primitives in
-  this slice.
+  this slice (strings included: a string is immutable `Arc` storage outside
+  the heap too, see "String values").
 - **No unsafe code.** Objects are reached only under the `objects` lock;
   reclaimed objects are dropped after all heap locks are released.
 
@@ -1228,6 +1229,81 @@ blocks", native frames). Design: `design.md` §§10–11, 13.
   check rejections, unwind/discard selection), and the updated pinned
   tests in `tests/native_fold.rs` and `tests/exception_waits.rs`.
 
+## String values (clj-quickjs-65)
+
+Contract: `src/value/string.rs` (`JsString`), `src/value.rs`
+(`Value::String`, `Primitive::String`, `ValueView::String`), `plus` and
+`loose_equals` in `src/vm/dispatch.rs`. Design: `design.md` §§4, 11.
+
+- **Representation: a primitive over immutable `Arc` storage, not a heap
+  object.** `Value::String(JsString)` holds a thin `Arc` (one pointer, so a
+  raw value stays two words) to an immutable body that owns the code
+  units. Strings have no heap edges, so the body is a documented coarse
+  `Arc` storage boundary like executable code and collection trie nodes:
+  the collector never traces or sweeps it, and a string lives exactly as
+  long as some value holding its `Arc` (frame slot, operand, capture,
+  collection entry, root, constant pool, an embedder's `JsString`). This is
+  Rust ownership of acyclic leaf buffers, not reference counting of heap
+  objects: a string references nothing, so no cycle can pass through one.
+  The alternative, a new heap kind behind `Value::Object`, was rejected:
+  `===`, `==`, ToBoolean and persistent-map hashing and key equality
+  (`collections::map::key_eq`/`key_hash`, which by contract never read the
+  heap) would all need a heap read per comparison, and `typeof` and
+  publication would have to inspect the object to know a value is a string.
+- **Consequence for the value model.** `Value` and `Primitive` are no
+  longer `Copy` (copying a string is an O(1) `clone`, an atomic increment);
+  `ValueView` stays `Copy` (`ValueView::String` carries no contents; read
+  them with `Rooted::string` or `Scope::string`, which return a `JsString`
+  that outlives the handle). Atoms box values as before; a reader clones
+  the boxed value inside its mutator registration.
+- **Publication and persistence.** A string is immutable and therefore
+  persistent and shareable by construction: `value::share::check` treats
+  it as a primitive (no walk), a persistent collection stores it without
+  copying, and another task reads the same body. Map keys compare and hash
+  by content (SameValueZero), so `__rt.get(__rt.map("k", 1), "k")` is 1;
+  atom compare-and-set compares strings by content (SameValue: strings have
+  no identity).
+- **UTF-16 code units.** The body stores `u16` code units, not Rust `str`
+  bytes: JavaScript defines `length`, indexing and relational order on code
+  units, and a string may hold lone surrogates. Today literals are Unicode
+  scalar values (lone surrogate escapes are still rejected by the lexer)
+  encoded with UTF-16; `JsString::from_code_units` already accepts any
+  sequence, which is what lone surrogate escapes (clj-quickjs-141) need.
+  `length` will be `JsString::len` (stored count, O(1)); indexing reads
+  `code_units()[i]` (clj-quickjs-142); relational order is `JsString`'s
+  `Ord`, lexicographic over code units (QuickJS `js_string_compare`), not
+  Unicode scalar order (clj-quickjs-68). Text for diagnostics and the
+  embedder (`to_string_lossy`, `Display`) maps a lone surrogate to U+FFFD.
+- **Room for later representations.** Every string uses the 16-bit form
+  and concatenation copies both operands into a new flat body (an empty
+  operand returns the other's body). A Latin-1 body (QuickJS's 8-bit
+  `JSString`) or a rope body for repeated concatenation (clj-quickjs-146,
+  flattened on first code-unit access) fits inside the private body type
+  without changing `JsString`'s interface, `Value`, or publication, since
+  either is still immutable leaf storage. The length limit is QuickJS's
+  `JS_STRING_LEN_MAX`, 2^30 - 1 code units; a longer concatenation fails
+  the task with `OutOfMemory` ("string too long", QuickJS's InternalError).
+- **Instructions.** String literals are constants (`ExecutableSpec::constants`,
+  `Primitive::String`; deduplicated by content; the `TooLarge` limit of
+  65,536 distinct constants is unchanged). `plus` (opcode `0x49`) is
+  JavaScript's binary `+` on primitives: two strings concatenate, two
+  numbers add, a string with any other operand and an object operand fail
+  with `UnsupportedOperand` (ToString is clj-quickjs-66, ToPrimitive
+  clj-quickjs-70), other primitives add their ToNumber. The compiler emits
+  `add` when both operands are statically numbers and `plus` otherwise, so
+  `+` never applies ToNumber to a string. `to_number` on a string fails
+  with `UnsupportedOperand` (StringToNumber is clj-quickjs-67), so `-`,
+  `*`, `<` and the other numeric operators reject strings explicitly.
+  `===` and `==` compare two strings by content; `==` between a string and
+  a number or boolean fails until clj-quickjs-67. Calling a string is a
+  TypeError "string is not a function"; an uncaught thrown string reports
+  its text.
+- **Tests.** `tests/js_source.rs` `string_values`, `tests/publication.rs`
+  `strings_publish_as_persistent_values`, `tests/gc.rs`
+  `strings_in_frames_captures_and_collections_survive_collections`, and
+  unit tests in `src/value/string.rs`, `src/value.rs`,
+  `src/collections/map.rs`, `src/atom.rs` and `src/value/share.rs`.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -1450,3 +1526,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/quickjs.c` (the head's scope, `continue` targeting the
   update, the loop variables closed before the first iteration and before
   each update) was consulted only. No code was copied.
+- String values (clj-quickjs-65): `research/quickjs/quickjs.c`, revision
+  7d1c13c5d8f8: `JSString` (8- and 16-bit code-unit storage),
+  `JS_STRING_LEN_MAX`, `js_strict_eq2` (string branch), `js_add_slow`
+  (string concatenation) and `js_string_compare` (code-unit order) were
+  consulted only, for semantics. No code was copied.

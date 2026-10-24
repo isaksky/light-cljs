@@ -166,9 +166,9 @@ fn new_function(heap: &Heap, code: Arc<Code>, captures: Box<[Value]>) -> Result<
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
-fn numbers(op: Opcode, a: Value, b: Value) -> Result<(f64, f64), Fault> {
+fn numbers(op: Opcode, a: &Value, b: &Value) -> Result<(f64, f64), Fault> {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => Ok((x, y)),
+        (Value::Number(x), Value::Number(y)) => Ok((*x, *y)),
         _ => Err(Fault::Unsupported(format!(
             "{} supports number operands only, got {} and {}",
             op.name(),
@@ -205,28 +205,72 @@ fn exponentiate(x: f64, y: f64) -> f64 {
 
 /// JavaScript ToNumber for primitives. Objects need ToPrimitive, which is
 /// deferred, so they are rejected explicitly.
-fn to_number(v: Value) -> Result<f64, Fault> {
-    match v {
+fn to_number(v: &Value) -> Result<f64, Fault> {
+    match *v {
         Value::Undefined => Ok(f64::NAN),
         Value::Null => Ok(0.0),
         Value::Bool(b) => Ok(if b { 1.0 } else { 0.0 }),
         Value::Number(x) => Ok(x),
+        // StringToNumber is a later pellet (clj-quickjs-67): rejected
+        // explicitly rather than guessed.
+        Value::String(_) => Err(Fault::Unsupported(
+            "converting a string to a number (StringToNumber) is not supported yet".to_string(),
+        )),
         Value::Object(_) => Err(Fault::Unsupported(
             "converting an object to a number (ToPrimitive) is not supported".to_string(),
         )),
     }
 }
 
-/// JavaScript `==` (IsLooselyEqual) for the supported value types. Strings
-/// do not exist yet; an object compared with a number or boolean would need
-/// ToPrimitive, which is deferred, so that case is rejected explicitly.
-fn loose_equals(a: Value, b: Value) -> Result<bool, Fault> {
+/// JavaScript binary `+` (ApplyStringOrNumericBinaryOperator for `+`, QuickJS
+/// `js_add_slow`) on the supported value types: two strings concatenate, two
+/// numbers add, and other primitive pairs without a string add their
+/// ToNumber values. A string with a non-string operand needs ToString
+/// (clj-quickjs-66) and an object needs ToPrimitive; both are deferred, so
+/// those cases are rejected explicitly, never converted with ToNumber.
+fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
+        (Value::String(x), Value::String(y)) => x
+            .concat(y)
+            .map(Value::String)
+            .ok_or(Fault::OutOfMemory("string too long")),
+        (Value::Object(_), _) | (_, Value::Object(_)) => Err(Fault::Unsupported(format!(
+            "plus of {} and {} needs ToPrimitive, which is not supported",
+            a.type_name(),
+            b.type_name()
+        ))),
+        (Value::String(_), _) | (_, Value::String(_)) => Err(Fault::Unsupported(format!(
+            "plus of {} and {} needs ToString, which is not supported yet",
+            a.type_name(),
+            b.type_name()
+        ))),
+        _ => Ok(Value::Number(to_number(a)? + to_number(b)?)),
+    }
+}
+
+/// JavaScript `==` (IsLooselyEqual) for the supported value types. Two
+/// strings compare by content. A string compared with a number or boolean
+/// needs StringToNumber (clj-quickjs-67) and an object compared with a
+/// primitive needs ToPrimitive; both are deferred, so those cases are
+/// rejected explicitly.
+fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
     Ok(match (a, b) {
         (Undefined | Null, Undefined | Null) => true,
         (Undefined | Null, _) | (_, Undefined | Null) => false,
-        (Object(_), Object(_)) | (Number(_), Number(_)) | (Bool(_), Bool(_)) => a.strict_equals(b),
+        (Object(_), Object(_))
+        | (Number(_), Number(_))
+        | (Bool(_), Bool(_))
+        | (String(_), String(_)) => a.strict_equals(b),
         (Number(_), Bool(_)) | (Bool(_), Number(_)) => to_number(a)? == to_number(b)?,
+        (String(_), Number(_) | Bool(_)) | (Number(_) | Bool(_), String(_)) => {
+            return Err(Fault::Unsupported(format!(
+                "loose_eq between {} and {} needs StringToNumber, which is not supported yet",
+                a.type_name(),
+                b.type_name()
+            )));
+        }
         (Object(_), _) | (_, Object(_)) => {
             return Err(Fault::Unsupported(format!(
                 "loose_eq between {} and {} needs ToPrimitive, which is not supported",
@@ -257,8 +301,8 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
 
 /// The callee of a `Call` (or of a native's callback): the code of a function
 /// object, or the name of what was found instead.
-pub(crate) fn callee_code(heap: &Heap, callee: Value) -> Result<Arc<Code>, Fault> {
-    let Value::Object(id) = callee else {
+pub(crate) fn callee_code(heap: &Heap, callee: &Value) -> Result<Arc<Code>, Fault> {
+    let Value::Object(id) = *callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
     heap.read(id, |object| match object {
@@ -283,13 +327,13 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
 /// not a binding cell, or belongs to another task.
 fn with_cell<R>(
     heap: &Heap,
-    cell: Value,
+    cell: &Value,
     task: TaskId,
     f: impl FnOnce(&mut Option<Value>) -> Result<R, Fault>,
 ) -> Result<R, Fault> {
     let not_cell =
         |found: &str| Fault::Unsupported(format!("expected a binding cell, got {found}"));
-    let Value::Object(id) = cell else {
+    let Value::Object(id) = *cell else {
         return Err(not_cell(cell.type_name()));
     };
     heap.with_object_mut(id, |object| match object {
@@ -307,7 +351,7 @@ fn with_cell<R>(
 /// The operands of `Need`: a definition id (an integer number in
 /// `0..=2^53-1`, exactly representable) and a result kind (an integer in
 /// `0..=u32::MAX`). Anything else is rejected, never rounded.
-fn need_operands(dependency: Value, kind: Value) -> Result<(DependencyId, ResultKind), Fault> {
+fn need_operands(dependency: &Value, kind: &Value) -> Result<(DependencyId, ResultKind), Fault> {
     match (dependency_id(dependency), result_kind(kind)) {
         (Some(d), Some(k)) => Ok((d, k)),
         _ => Err(Fault::Unsupported(format!(
@@ -319,26 +363,26 @@ fn need_operands(dependency: Value, kind: Value) -> Result<(DependencyId, Result
 }
 
 /// `v` as an integer number in `0..=max`, never rounded.
-fn integer(v: Value, max: f64) -> Option<f64> {
-    match v {
+fn integer(v: &Value, max: f64) -> Option<f64> {
+    match *v {
         Value::Number(n) if n.fract() == 0.0 && (0.0..=max).contains(&n) => Some(n),
         _ => None,
     }
 }
 
 /// A definition id operand: an integer number in `0..=2^53-1`.
-pub(crate) fn dependency_id(v: Value) -> Option<DependencyId> {
+pub(crate) fn dependency_id(v: &Value) -> Option<DependencyId> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     integer(v, MAX_SAFE_INTEGER).map(|d| DependencyId::new(d as u64))
 }
 
 /// A result kind operand: an integer number in `0..=u32::MAX`.
-pub(crate) fn result_kind(v: Value) -> Option<ResultKind> {
+pub(crate) fn result_kind(v: &Value) -> Option<ResultKind> {
     integer(v, f64::from(u32::MAX)).map(|k| ResultKind::new(k as u32))
 }
 
 /// A value for a diagnostic: numbers as themselves, other values by type.
-pub(crate) fn describe(v: Value) -> String {
+pub(crate) fn describe(v: &Value) -> String {
     match v {
         Value::Number(n) => n.to_string(),
         other => other.type_name().to_string(),
@@ -410,7 +454,7 @@ fn catchable(kind: VmErrorKind) -> bool {
 
 /// The error an exception with value `v`, raised by `Throw` at `pc`, reports
 /// if nothing catches it: an error object's own error, otherwise `Thrown`.
-fn thrown_error(state: &VmState, heap: &Heap, v: Value, pc: usize) -> VmError {
+fn thrown_error(state: &VmState, heap: &Heap, v: &Value, pc: usize) -> VmError {
     match error_object(heap, v) {
         Some((original, _)) => original,
         None => {
@@ -500,13 +544,13 @@ fn step(
             let v = code
                 .constants
                 .get(usize::from(i))
-                .copied()
+                .cloned()
                 .ok_or(Fault::Internal("constant index out of range"))?;
             state.push(v);
         }
         Instr::Undefined => state.push(Value::Undefined),
         Instr::GetLocal(i) => {
-            let v = *state.local(i)?;
+            let v = state.local(i)?.clone();
             state.push(v);
         }
         Instr::SetLocal(i) => {
@@ -517,9 +561,10 @@ fn step(
             state.pop()?;
         }
         Instr::Dup => {
-            let v = *state
+            let v = state
                 .operands()
                 .last()
+                .cloned()
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             state.push(v);
         }
@@ -534,7 +579,7 @@ fn step(
         | Instr::Ge => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let (x, y) = numbers(instr.opcode(), a, b)?;
+            let (x, y) = numbers(instr.opcode(), &a, &b)?;
             state.push(match instr {
                 Instr::Add => Value::Number(x + y),
                 Instr::Sub => Value::Number(x - y),
@@ -552,7 +597,7 @@ fn step(
         Instr::BitAnd | Instr::BitOr | Instr::BitXor | Instr::Shl | Instr::Sar | Instr::UShr => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let (x, y) = numbers(instr.opcode(), a, b)?;
+            let (x, y) = numbers(instr.opcode(), &a, &b)?;
             let (i, j) = (to_int32(x), to_int32(y));
             // Shift counts are ToUint32(y) & 31; masking the bits of
             // ToInt32(y) gives the same count.
@@ -580,13 +625,18 @@ fn step(
         Instr::Pow => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let (x, y) = numbers(instr.opcode(), a, b)?;
+            let (x, y) = numbers(instr.opcode(), &a, &b)?;
             state.push(Value::Number(exponentiate(x, y)));
+        }
+        Instr::Plus => {
+            let b = state.pop()?;
+            let a = state.pop()?;
+            state.push(plus(&a, &b)?);
         }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
-            state.push(Value::Bool(a.strict_equals(b)));
+            state.push(Value::Bool(a.strict_equals(&b)));
         }
         Instr::Not => {
             let v = state.pop()?;
@@ -603,20 +653,20 @@ fn step(
         },
         Instr::ToNumber => {
             let v = state.pop()?;
-            state.push(Value::Number(to_number(v)?));
+            state.push(Value::Number(to_number(&v)?));
         }
         Instr::ToNumberPair => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let x = to_number(a)?;
-            let y = to_number(b)?;
+            let x = to_number(&a)?;
+            let y = to_number(&b)?;
             state.push(Value::Number(x));
             state.push(Value::Number(y));
         }
         Instr::LooseEq => {
             let b = state.pop()?;
             let a = state.pop()?;
-            state.push(Value::Bool(loose_equals(a, b)?));
+            state.push(Value::Bool(loose_equals(&a, &b)?));
         }
         Instr::ThrowError(kind) => return Err(Fault::Throw(kind)),
         Instr::Jump(target) => state.top_mut().pc = target as usize,
@@ -715,7 +765,7 @@ fn step(
         Instr::GetCapture(i) => {
             let captured = state.top().callee.and_then(|id| {
                 heap.read(id, |object| match object {
-                    HeapObject::Function(f) => f.captures.get(usize::from(i)).copied(),
+                    HeapObject::Function(f) => f.captures.get(usize::from(i)).cloned(),
                     _ => None,
                 })
                 .flatten()
@@ -740,25 +790,27 @@ fn step(
             state.push(Value::Object(id));
         }
         Instr::CellInit | Instr::CellSet => {
-            let &[cell, v] = top_operands(state, 2)? else {
+            let [cell, v] = top_operands(state, 2)? else {
                 return Err(Fault::Internal("operand stack underflow"));
             };
             with_cell(heap, cell, state.diag.task, |binding| {
                 if instr == Instr::CellSet && binding.is_none() {
                     return Err(Fault::Throw(ThrowKind::Uninitialized));
                 }
-                *binding = Some(v);
+                *binding = Some(v.clone());
                 Ok(())
             })?;
             state.pop()?;
             state.pop()?;
         }
         Instr::CellGet => {
-            let &[cell] = top_operands(state, 1)? else {
+            let [cell] = top_operands(state, 1)? else {
                 return Err(Fault::Internal("operand stack underflow"));
             };
             let v = with_cell(heap, cell, state.diag.task, |binding| {
-                binding.ok_or(Fault::Throw(ThrowKind::Uninitialized))
+                binding
+                    .clone()
+                    .ok_or(Fault::Throw(ThrowKind::Uninitialized))
             })?;
             state.replace(1, v)?;
         }
@@ -783,7 +835,7 @@ fn step(
         Instr::Need => {
             let kind = state.pop()?;
             let dependency = state.pop()?;
-            let (dependency, kind) = need_operands(dependency, kind)?;
+            let (dependency, kind) = need_operands(&dependency, &kind)?;
             return Ok(Flow::Need(dependency, kind));
         }
         Instr::Call(argc) => {
@@ -792,10 +844,10 @@ fn step(
             let callee = operands
                 .len()
                 .checked_sub(argc + 1)
-                .map(|i| operands[i])
+                .map(|i| &operands[i])
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             let callee_code = callee_code(heap, callee)?;
-            let Value::Object(id) = callee else {
+            let Value::Object(id) = *callee else {
                 return Err(Fault::Internal("callee is not an object"));
             };
             state.enter(callee_code, id, argc)?;
@@ -868,6 +920,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::UShr
         | Instr::BitNot
         | Instr::Pow
+        // A string result lives outside the heap: no allocation to poll for.
+        | Instr::Plus
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit
@@ -953,7 +1007,7 @@ pub(crate) fn execute(
                 };
             }
             Err(Fault::Thrown(v)) => {
-                let error = Box::new(thrown_error(state, heap, v, pc));
+                let error = Box::new(thrown_error(state, heap, &v, pc));
                 raise(state, Exception { value: v, error })
             }
             Err(Fault::Rethrow(exception)) => raise(state, exception),

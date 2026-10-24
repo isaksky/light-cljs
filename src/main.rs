@@ -18,8 +18,9 @@ struct PrintingHost;
 
 impl Host for PrintingHost {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-        let shown = match call.arg {
+        let shown = match &call.arg {
             Primitive::Number(n) => n.to_string(),
+            Primitive::String(s) => s.to_string(),
             other => format!("{other:?}"),
         };
         println!("effect {}: {shown}", call.op);
@@ -59,6 +60,10 @@ fn main() {
     match outcome {
         Ok(RunOutcome::Complete(v)) => match v.view() {
             ValueView::Number(n) => println!("{name} completed with {n}"),
+            ValueView::String => match v.string() {
+                Some(s) => println!("{name} completed with {s:?}"),
+                None => println!("{name} completed with a string"),
+            },
             other => println!("{name} completed with {other:?}"),
         },
         Ok(RunOutcome::Failed(e)) => {

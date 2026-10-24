@@ -39,7 +39,7 @@ use crate::ids::TaskId;
 use crate::value::Primitive;
 
 /// One call of a leaf host effect.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HostCall {
     /// The task executing the effect.
     pub task: TaskId,

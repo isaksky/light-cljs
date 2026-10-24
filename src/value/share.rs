@@ -11,7 +11,10 @@
 //! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
-//! Primitives are always shareable. Plain objects are the ordinary mutable
+//! Primitives are always shareable, strings included: a string
+//! (`crate::value::JsString`, clj-quickjs-65) is immutable `Arc` storage
+//! outside the heap with no heap edges, not a heap object, so it needs no
+//! category and the walk never descends into it. Plain objects are the ordinary mutable
 //! JavaScript objects of `design.md` §4: they have no property storage yet,
 //! but they are classified as task-owned mutation now so a collection that
 //! holds one is not silently shareable once properties exist. A builder
@@ -152,7 +155,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
 }
 
 /// A map key as named in a [`PathStep`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum KeyName {
     /// A primitive key, by value.
     Primitive(Primitive),
@@ -170,13 +173,14 @@ impl fmt::Display for KeyName {
                 f.write_str(if *n > 0.0 { "Infinity" } else { "-Infinity" })
             }
             KeyName::Primitive(Primitive::Number(n)) => write!(f, "{n}"),
+            KeyName::Primitive(Primitive::String(s)) => write!(f, "{s:?}"),
             KeyName::Object(kind) => write!(f, "<{kind}>"),
         }
     }
 }
 
 /// One step from a value to something it references.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PathStep {
     /// The element of a vector at an index. Displayed `[i]`.
     Index(usize),
@@ -257,7 +261,7 @@ impl std::error::Error for PublishError {}
 
 /// A step as recorded during the walk: keys stay raw values until an error
 /// needs their names, so the walk never takes a lock to name a key.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Step {
     Index(usize),
     MapValue(Value),
@@ -292,7 +296,7 @@ enum Children {
 }
 
 impl Children {
-    fn for_each(&self, mut f: impl FnMut(Step, Value)) {
+    fn for_each(&self, mut f: impl FnMut(Step, &Value)) {
         match self {
             Children::Vector(vec) => {
                 let mut index = 0;
@@ -302,17 +306,17 @@ impl Children {
                 });
             }
             Children::Map(map) => map.for_each(|k, v| {
-                f(Step::MapKey(k), k);
-                f(Step::MapValue(k), v);
+                f(Step::MapKey(k.clone()), k);
+                f(Step::MapValue(k.clone()), v);
             }),
-            Children::Occurrence(v) => f(Step::OccurrenceValue, *v),
+            Children::Occurrence(v) => f(Step::OccurrenceValue, v),
             Children::Native(edges) => {
                 for (n, &id) in edges.iter().enumerate() {
-                    f(Step::NativeEdge(n), Value::Object(id));
+                    f(Step::NativeEdge(n), &Value::Object(id));
                 }
             }
             Children::Captures(values) => {
-                for (n, &v) in values.iter().enumerate() {
+                for (n, v) in values.iter().enumerate() {
                     f(Step::Capture(n), v);
                 }
             }
@@ -335,7 +339,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
         Shareability::Persistent => Node::Expand(match object {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
-            HeapObject::Occurrence(occ) => Children::Occurrence(occ.value),
+            HeapObject::Occurrence(occ) => Children::Occurrence(occ.value.clone()),
             HeapObject::Function(func) => Children::Captures(func.captures.clone()),
             other => {
                 let mut edges = Vec::new();
@@ -352,13 +356,13 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
 /// See the module docs.
 ///
 /// The caller keeps `value` alive (a root, a scope local, or a frame).
-pub(crate) fn check(heap: &Heap, value: Value) -> Result<(), PublishError> {
+pub(crate) fn check(heap: &Heap, value: &Value) -> Result<(), PublishError> {
     check_counted(heap, value, &mut 0)
 }
 
 /// [`check`], counting the objects whose references it expands.
-fn check_counted(heap: &Heap, value: Value, expanded: &mut usize) -> Result<(), PublishError> {
-    let Value::Object(root) = value else {
+fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(), PublishError> {
+    let Value::Object(root) = *value else {
         return Ok(());
     };
     // Each discovered object maps to the step that first reached it.
@@ -386,7 +390,7 @@ fn check_counted(heap: &Heap, value: Value, expanded: &mut usize) -> Result<(), 
                 *expanded += 1;
                 proven.push(id);
                 children.for_each(|step, child| {
-                    if let Value::Object(child) = child
+                    if let Value::Object(child) = *child
                         && let Entry::Vacant(slot) = parents.entry(child)
                     {
                         slot.insert(Some((id, step)));
@@ -407,9 +411,9 @@ fn path_to(
     mut id: ObjectId,
 ) -> ValuePath {
     let mut steps = Vec::new();
-    while let Some(&Some((parent, step))) = parents.get(&id) {
-        steps.push(name_step(heap, step));
-        id = parent;
+    while let Some(Some((parent, step))) = parents.get(&id) {
+        steps.push(name_step(heap, step.clone()));
+        id = *parent;
     }
     steps.reverse();
     ValuePath(steps)
@@ -446,10 +450,10 @@ mod tests {
         Value::Number(x)
     }
 
-    fn id(v: Value) -> ObjectId {
-        match v {
+    fn id(v: &Value) -> ObjectId {
+        match *v {
             Value::Object(id) => id,
-            other => panic!("not an object: {other:?}"),
+            ref other => panic!("not an object: {other:?}"),
         }
     }
 
@@ -457,12 +461,12 @@ mod tests {
         Value::Object(heap.alloc(HeapObject::Plain).unwrap())
     }
 
-    fn known(heap: &Heap, v: Value) -> bool {
+    fn known(heap: &Heap, v: &Value) -> bool {
         heap.known_shareable(id(v)).expect("live object")
     }
 
     /// Check `v` and return how many objects the walk expanded.
-    fn expansions(heap: &Heap, v: Value) -> Result<usize, PublishError> {
+    fn expansions(heap: &Heap, v: &Value) -> Result<usize, PublishError> {
         let mut expanded = 0;
         check_counted(heap, v, &mut expanded).map(|()| expanded)
     }
@@ -493,7 +497,7 @@ mod tests {
 
     /// Two-phase construction of a cycle, before anything is checked (a
     /// persistent payload's edges are fixed once it can be published).
-    fn set_edges(heap: &Heap, v: Value, edges: Vec<Value>) {
+    fn set_edges(heap: &Heap, v: &Value, edges: Vec<Value>) {
         heap.with_object_mut(id(v), |o| match o {
             HeapObject::Native(p) => {
                 let any: &mut dyn std::any::Any = &mut **p;
@@ -514,8 +518,8 @@ mod tests {
             &mut OwnedBuilders::default(),
         )
         .unwrap();
-        for &v in items {
-            builder::conj(heap, OWNER, b, v).unwrap();
+        for v in items {
+            builder::conj(heap, OWNER, b.clone(), v.clone()).unwrap();
         }
         b
     }
@@ -529,13 +533,13 @@ mod tests {
         let occ = coll::new_occurrence(&heap, n(1.0), Provenance::default()).unwrap();
         let open = vector_builder(&heap, &[]);
         let frozen = vector_builder(&heap, &[]);
-        builder::freeze(&heap, OWNER, frozen).unwrap();
-        let class = |v| heap.read(id(v), classify).unwrap();
+        builder::freeze(&heap, OWNER, frozen.clone()).unwrap();
+        let class = |v| heap.read(id(&v), classify).unwrap();
         assert_eq!(class(plain(&heap)), Shareability::TaskOwned);
         for persistent in [vec, map, occ] {
             assert_eq!(class(persistent), Shareability::Persistent);
         }
-        assert_eq!(class(open), Shareability::TaskOwned);
+        assert_eq!(class(open.clone()), Shareability::TaskOwned);
         assert_eq!(
             class(frozen),
             Shareability::TaskOwned,
@@ -548,7 +552,7 @@ mod tests {
         ] {
             assert_eq!(class(native(&heap, declared, vec![])), declared);
         }
-        assert_eq!(heap.read(id(open), owner).unwrap(), Some(OWNER));
+        assert_eq!(heap.read(id(&open), owner).unwrap(), Some(OWNER));
     }
 
     #[test]
@@ -557,41 +561,62 @@ mod tests {
         let _scope = Scope::new(&heap);
         let obj = plain(&heap);
         let vec = coll::new_vector(&heap, &[n(1.0), n(2.0)]).unwrap();
-        let map = coll::new_map(&heap, &[(vec, vec), (n(1.0), n(2.0))]).unwrap();
-        let occ = coll::new_occurrence(&heap, map, Provenance::default()).unwrap();
-        let holder = coll::new_vector(&heap, &[occ]).unwrap();
-        let grown = coll::conj(&heap, holder, n(3.0)).unwrap();
-        for v in [vec, map, occ, holder, grown] {
+        let map = coll::new_map(&heap, &[(vec.clone(), vec.clone()), (n(1.0), n(2.0))]).unwrap();
+        let occ = coll::new_occurrence(&heap, map.clone(), Provenance::default()).unwrap();
+        let holder = coll::new_vector(&heap, std::slice::from_ref(&occ)).unwrap();
+        let grown = coll::conj(&heap, holder.clone(), n(3.0)).unwrap();
+        for v in [&vec, &map, &occ, &holder, &grown] {
             assert!(known(&heap, v));
             assert_eq!(expansions(&heap, v), Ok(0), "no walk for a known value");
         }
         // Derived versions: known exactly when every new part is known.
         assert!(known(
             &heap,
-            coll::assoc(&heap, vec, n(0.0), n(9.0)).unwrap()
+            &coll::assoc(&heap, vec.clone(), n(0.0), n(9.0)).unwrap()
         ));
-        assert!(known(&heap, coll::assoc(&heap, map, n(5.0), vec).unwrap()));
-        assert!(known(&heap, coll::dissoc(&heap, map, n(1.0)).unwrap()));
-        assert!(known(&heap, coll::pop(&heap, vec).unwrap()));
-        let tainted = coll::assoc(&heap, vec, n(0.0), obj).unwrap();
-        assert!(!known(&heap, tainted));
-        assert!(!known(&heap, coll::new_vector(&heap, &[tainted]).unwrap()));
-        assert!(!known(&heap, coll::assoc(&heap, map, obj, n(1.0)).unwrap()));
+        assert!(known(
+            &heap,
+            &coll::assoc(&heap, map.clone(), n(5.0), vec.clone()).unwrap()
+        ));
+        assert!(known(
+            &heap,
+            &coll::dissoc(&heap, map.clone(), n(1.0)).unwrap()
+        ));
+        assert!(known(&heap, &coll::pop(&heap, vec.clone()).unwrap()));
+        let tainted = coll::assoc(&heap, vec.clone(), n(0.0), obj.clone()).unwrap();
+        assert!(!known(&heap, &tainted));
+        assert!(!known(
+            &heap,
+            &coll::new_vector(&heap, std::slice::from_ref(&tainted)).unwrap()
+        ));
+        assert!(!known(
+            &heap,
+            &coll::assoc(&heap, map.clone(), obj.clone(), n(1.0)).unwrap()
+        ));
         // Removing the task-owned part is not tracked at allocation (the
         // parent was not known), so the check walks it once and caches it.
-        let cleaned = coll::assoc(&heap, tainted, n(0.0), n(1.0)).unwrap();
-        assert!(!known(&heap, cleaned));
-        assert_eq!(expansions(&heap, cleaned), Ok(1));
-        assert!(known(&heap, cleaned));
+        let cleaned = coll::assoc(&heap, tainted.clone(), n(0.0), n(1.0)).unwrap();
+        assert!(!known(&heap, &cleaned));
+        assert_eq!(expansions(&heap, &cleaned), Ok(1));
+        assert!(known(&heap, &cleaned));
         // Freezing: known when the draft holds only known values.
-        let good = vector_builder(&heap, &[vec, n(1.0)]);
-        assert!(known(&heap, builder::freeze(&heap, OWNER, good).unwrap()));
-        let bad = vector_builder(&heap, &[vec, obj]);
-        assert!(!known(&heap, builder::freeze(&heap, OWNER, bad).unwrap()));
+        let good = vector_builder(&heap, &[vec.clone(), n(1.0)]);
+        assert!(known(
+            &heap,
+            &builder::freeze(&heap, OWNER, good.clone()).unwrap()
+        ));
+        let bad = vector_builder(&heap, &[vec.clone(), obj.clone()]);
+        assert!(!known(
+            &heap,
+            &builder::freeze(&heap, OWNER, bad.clone()).unwrap()
+        ));
         // A concurrent reference is a known part even though it is not
         // immutable.
-        let cell = native(&heap, Shareability::ConcurrentReference, vec![obj]);
-        assert!(known(&heap, coll::new_vector(&heap, &[cell]).unwrap()));
+        let cell = native(&heap, Shareability::ConcurrentReference, vec![obj.clone()]);
+        assert!(known(
+            &heap,
+            &coll::new_vector(&heap, std::slice::from_ref(&cell)).unwrap()
+        ));
     }
 
     #[test]
@@ -601,20 +626,24 @@ mod tests {
         // An empty vector not known shareable: popped from one holding an
         // object. Everything built on it is unknown until checked.
         let obj = plain(&heap);
-        let base = coll::pop(&heap, coll::new_vector(&heap, &[obj]).unwrap()).unwrap();
-        assert!(!known(&heap, base));
+        let base = coll::pop(
+            &heap,
+            coll::new_vector(&heap, std::slice::from_ref(&obj)).unwrap(),
+        )
+        .unwrap();
+        assert!(!known(&heap, &base));
         let inner: Vec<Value> = (0..1000)
-            .map(|i| coll::new_vector(&heap, &[base, n(f64::from(i))]).unwrap())
+            .map(|i| coll::new_vector(&heap, &[base.clone(), n(f64::from(i))]).unwrap())
             .collect();
         let root = coll::new_vector(&heap, &inner).unwrap();
-        assert_eq!(expansions(&heap, root), Ok(1002), "root, 1000 inner, base");
-        assert_eq!(expansions(&heap, root), Ok(0), "second publication: O(1)");
-        assert!(inner.iter().all(|&v| known(&heap, v)));
+        assert_eq!(expansions(&heap, &root), Ok(1002), "root, 1000 inner, base");
+        assert_eq!(expansions(&heap, &root), Ok(0), "second publication: O(1)");
+        assert!(inner.iter().all(|v| known(&heap, v)));
         // New versions of a published value are known at allocation.
-        let next = coll::conj(&heap, root, n(1.0)).unwrap();
-        assert_eq!(expansions(&heap, next), Ok(0));
-        let wrapped = coll::new_map(&heap, &[(n(1.0), root)]).unwrap();
-        assert_eq!(expansions(&heap, wrapped), Ok(0));
+        let next = coll::conj(&heap, root.clone(), n(1.0)).unwrap();
+        assert_eq!(expansions(&heap, &next), Ok(0));
+        let wrapped = coll::new_map(&heap, &[(n(1.0), root.clone())]).unwrap();
+        assert_eq!(expansions(&heap, &wrapped), Ok(0));
     }
 
     #[test]
@@ -623,21 +652,21 @@ mod tests {
         let _scope = Scope::new(&heap);
         // a <-> b, plus a self-loop on b: persistent natives.
         let a = native(&heap, Shareability::Persistent, vec![]);
-        let b = native(&heap, Shareability::Persistent, vec![a]);
-        set_edges(&heap, a, vec![b, n(1.0)]);
-        set_edges(&heap, b, vec![a, b]);
-        let root = coll::new_vector(&heap, &[a, b, a]).unwrap();
-        assert!(!known(&heap, root));
-        assert_eq!(expansions(&heap, root), Ok(3));
-        assert!(known(&heap, a) && known(&heap, b) && known(&heap, root));
+        let b = native(&heap, Shareability::Persistent, vec![a.clone()]);
+        set_edges(&heap, &a, vec![b.clone(), n(1.0)]);
+        set_edges(&heap, &b, vec![a.clone(), b.clone()]);
+        let root = coll::new_vector(&heap, &[a.clone(), b.clone(), a.clone()]).unwrap();
+        assert!(!known(&heap, &root));
+        assert_eq!(expansions(&heap, &root), Ok(3));
+        assert!(known(&heap, &a) && known(&heap, &b) && known(&heap, &root));
 
         // A cycle with a builder behind it: rejected with the shortest path.
         let c = native(&heap, Shareability::Persistent, vec![]);
-        let d = native(&heap, Shareability::Persistent, vec![c]);
-        let builder = vector_builder(&heap, &[c]);
-        set_edges(&heap, c, vec![d]);
-        set_edges(&heap, d, vec![c, builder]);
-        let err = check(&heap, c).unwrap_err();
+        let d = native(&heap, Shareability::Persistent, vec![c.clone()]);
+        let builder = vector_builder(&heap, std::slice::from_ref(&c));
+        set_edges(&heap, &c, vec![d.clone()]);
+        set_edges(&heap, &d, vec![c.clone(), builder.clone()]);
+        let err = check(&heap, &c).unwrap_err();
         assert_eq!(
             err,
             PublishError::NotShareable {
@@ -652,7 +681,7 @@ mod tests {
              (owned by task#1), which is not shareable"
         );
         assert!(
-            !known(&heap, c) && !known(&heap, d),
+            !known(&heap, &c) && !known(&heap, &d),
             "nothing cached on failure"
         );
     }
@@ -664,13 +693,13 @@ mod tests {
         let obj = plain(&heap);
         // The reference's own operations check what they store; the walk
         // does not read its (changeable) contents.
-        let cell = native(&heap, Shareability::ConcurrentReference, vec![obj]);
-        assert_eq!(check(&heap, cell), Ok(()));
+        let cell = native(&heap, Shareability::ConcurrentReference, vec![obj.clone()]);
+        assert_eq!(check(&heap, &cell), Ok(()));
         let mutable = native(&heap, Shareability::TaskOwned, vec![]);
         let occ = coll::new_occurrence(&heap, mutable, Provenance::default()).unwrap();
-        let root = coll::new_map(&heap, &[(n(2.0), occ)]).unwrap();
+        let root = coll::new_map(&heap, &[(n(2.0), occ.clone())]).unwrap();
         assert_eq!(
-            check(&heap, root),
+            check(&heap, &root),
             Err(PublishError::NotShareable {
                 path: ValuePath(vec![
                     PathStep::MapValue(KeyName::Primitive(Primitive::Number(2.0))),
@@ -687,8 +716,8 @@ mod tests {
         let heap = Arc::new(Heap::default());
         let _scope = Scope::new(&heap);
         let b = vector_builder(&heap, &[]);
-        let map = coll::new_map(&heap, &[(n(1.0), n(1.0)), (b, n(2.0))]).unwrap();
-        let err = check(&heap, map).unwrap_err();
+        let map = coll::new_map(&heap, &[(n(1.0), n(1.0)), (b.clone(), n(2.0))]).unwrap();
+        let err = check(&heap, &map).unwrap_err();
         let PublishError::NotShareable { path, .. } = &err else {
             panic!("{err:?}")
         };
@@ -697,7 +726,17 @@ mod tests {
             [PathStep::MapKey(KeyName::Object("vector builder"))]
         );
         assert_eq!(path.to_string(), "value{<vector builder>}.key");
-        assert_eq!(check(&heap, n(1.0)), Ok(()), "primitives are shareable");
+        // A string key is named by its contents; strings themselves are
+        // primitives, shareable without a walk.
+        let key = Value::String(crate::value::JsString::from("k"));
+        let map = coll::new_map(&heap, &[(key.clone(), b.clone())]).unwrap();
+        let err = check(&heap, &map).unwrap_err();
+        let PublishError::NotShareable { path, .. } = &err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(path.to_string(), "value{\"k\"}");
+        assert_eq!(check(&heap, &key), Ok(()));
+        assert_eq!(check(&heap, &n(1.0)), Ok(()), "primitives are shareable");
     }
 
     #[test]
@@ -711,16 +750,22 @@ mod tests {
                 let heap = Arc::new(Heap::default());
                 let _scope = Scope::new(&heap);
                 let nest = |bottom: Value| {
-                    (0..DEPTH).fold(bottom, |v, _| coll::new_vector(&heap, &[v]).unwrap())
+                    (0..DEPTH).fold(bottom, |v, _| {
+                        coll::new_vector(&heap, std::slice::from_ref(&v)).unwrap()
+                    })
                 };
                 let obj = plain(&heap);
-                let base = coll::pop(&heap, coll::new_vector(&heap, &[obj]).unwrap()).unwrap();
-                let good = nest(base);
-                assert_eq!(expansions(&heap, good), Ok(DEPTH + 1));
-                assert_eq!(expansions(&heap, good), Ok(0));
+                let base = coll::pop(
+                    &heap,
+                    coll::new_vector(&heap, std::slice::from_ref(&obj)).unwrap(),
+                )
+                .unwrap();
+                let good = nest(base.clone());
+                assert_eq!(expansions(&heap, &good), Ok(DEPTH + 1));
+                assert_eq!(expansions(&heap, &good), Ok(0));
 
                 let bad = nest(obj);
-                let Err(PublishError::NotShareable { path, found, .. }) = check(&heap, bad) else {
+                let Err(PublishError::NotShareable { path, found, .. }) = check(&heap, &bad) else {
                     panic!("a deep object must be found")
                 };
                 assert_eq!(found, "object");

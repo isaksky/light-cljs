@@ -137,7 +137,7 @@ fn top<const N: usize>(ops: &[Value]) -> Result<[Value; N], Fault> {
         .len()
         .checked_sub(N)
         .ok_or(Fault::Internal("operand stack underflow"))?;
-    <[Value; N]>::try_from(&ops[start..]).map_err(|_| Fault::Internal("operand stack underflow"))
+    Ok(std::array::from_fn(|i| ops[start + i].clone()))
 }
 
 /// Execute one collection intrinsic or builder instruction.
@@ -163,7 +163,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             let entries: Vec<(Value, Value)> = ops[start..]
                 .chunks_exact(2)
-                .map(|kv| (kv[0], kv[1]))
+                .map(|kv| (kv[0].clone(), kv[1].clone()))
                 .collect();
             let map = coll::new_map(heap, &entries)?;
             state.replace(n, map)?;
@@ -218,12 +218,12 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
         }
         Instr::BuilderConj => {
             let [b, x] = top(state.operands())?;
-            builder::conj(heap, caller, b, x)?;
+            builder::conj(heap, caller, b.clone(), x)?;
             state.replace(2, b)?;
         }
         Instr::BuilderAssoc => {
             let [b, k, v] = top(state.operands())?;
-            builder::assoc(heap, caller, b, k, v)?;
+            builder::assoc(heap, caller, b.clone(), k, v)?;
             state.replace(3, b)?;
         }
         Instr::Freeze => {
@@ -246,7 +246,8 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
         }
         Instr::AtomCas => {
             let [a, expected, new] = top(state.operands())?;
-            let (witness, ok) = match atom::compare_and_set(heap, a, expected, new, |v| v)? {
+            let (witness, ok) = match atom::compare_and_set(heap, a, expected.clone(), new, |v| v)?
+            {
                 Ok(()) => (expected, true),
                 Err(current) => (current, false),
             };
@@ -283,7 +284,7 @@ mod tests {
         let first = owner.run_with(Budget::instructions(6), &mut NoHost);
         assert!(matches!(first, Ok(RunOutcome::Yielded)), "{first:?}");
         let (_, _, locals) = owner.saved_state().unwrap();
-        let handle = Rooted::new(rt.heap(), locals[0]);
+        let handle = Rooted::new(rt.heap(), locals[0].clone());
 
         for op in [BuilderConj, BuilderAssoc, Freeze] {
             let mut asm = Assembler::new();
@@ -333,7 +334,7 @@ mod tests {
         let first = owner.run_with(Budget::instructions(6), &mut NoHost);
         assert!(matches!(first, Ok(RunOutcome::Yielded)), "{first:?}");
         let (_, _, locals) = owner.saved_state().unwrap();
-        let handle = Rooted::new(rt.heap(), locals[0]);
+        let handle = Rooted::new(rt.heap(), locals[0].clone());
         let RunOutcome::Failed(_) = owner.run().unwrap() else {
             panic!("owner did not fail")
         };

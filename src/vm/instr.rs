@@ -77,6 +77,7 @@
 //! | `Pow`           | 0x46 | –                  | a b → `a ** b`         | Number::exponentiate |
 //! | `CallFinally`   | 0x47 | –                  | –                      | run the innermost finally block, then continue after this instruction |
 //! | `DropCompletion`| 0x48 | –                  | –                      | discard the pending completion of the running finally block |
+//! | `Plus`          | 0x49 | –                  | a b → a+b              | JavaScript binary `+` on primitives (numbers add, strings concatenate) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -87,10 +88,13 @@
 //! ([`crate::frontend::compile_script`]) needs beyond the core set.
 //! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
 //! or 1; an object operand fails with `UnsupportedOperand` (ToPrimitive on
-//! objects is deferred). `LooseEq` is JavaScript `==` (IsLooselyEqual) for
+//! objects is deferred), and so does a string (StringToNumber is
+//! clj-quickjs-67). `LooseEq` is JavaScript `==` (IsLooselyEqual) for
 //! the supported value types: `null == undefined`, a boolean compares as its
-//! number, objects compare by identity, and comparing an object with a
-//! number or boolean fails with `UnsupportedOperand`. `ThrowError` always
+//! number, objects compare by identity, two strings by content, and
+//! comparing an object with a number or boolean, or a string with a number
+//! or boolean, fails with `UnsupportedOperand`. `StrictEq` compares strings
+//! by content too. `ThrowError` always
 //! raises the error named by its [`ThrowKind`] operand
 //! ([`VmErrorKind::ReferenceError`](crate::VmErrorKind::ReferenceError) or
 //! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError)), a catchable
@@ -201,6 +205,17 @@
 //! (hand-assembled code only) fails the task with `Internal`, like the
 //! other handler-stack mismatches above.
 //!
+//! Opcode `0x49` `Plus` is JavaScript's binary `+` on primitives
+//! (clj-quickjs-65; QuickJS `js_add_slow`): two strings concatenate into a
+//! new string (immutable storage outside the heap, `crate::value::JsString`;
+//! a result longer than 2^30 - 1 code units fails with `OutOfMemory`), two
+//! numbers add, other primitive pairs without a string add their ToNumber
+//! values, and a string with a non-string operand or any object operand
+//! fails with `UnsupportedOperand` (ToString and ToPrimitive are deferred),
+//! never converting a string with ToNumber. It allocates no heap object, so
+//! it is not a poll point. The compiler emits it for every `+` whose
+//! operands are not both statically numbers; `Add` stays number-only.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
@@ -298,6 +313,7 @@ pub enum Opcode {
     Pow = 0x46,
     CallFinally = 0x47,
     DropCompletion = 0x48,
+    Plus = 0x49,
 }
 
 /// Operand encoding of an opcode.
@@ -418,6 +434,7 @@ impl Opcode {
             0x46 => Pow,
             0x47 => CallFinally,
             0x48 => DropCompletion,
+            0x49 => Plus,
             _ => return None,
         })
     }
@@ -498,6 +515,7 @@ impl Opcode {
             Pow => "pow",
             CallFinally => "call_finally",
             DropCompletion => "drop_completion",
+            Plus => "plus",
         }
     }
 
@@ -519,7 +537,7 @@ impl Opcode {
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
-            | UShr | BitNot | Pow | CallFinally | DropCompletion => OperandKind::None,
+            | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus => OperandKind::None,
         }
     }
 }
@@ -636,6 +654,7 @@ pub(crate) enum Instr {
     Pow,
     CallFinally,
     DropCompletion,
+    Plus,
 }
 
 impl Instr {
@@ -713,6 +732,7 @@ impl Instr {
             Instr::Pow => Opcode::Pow,
             Instr::CallFinally => Opcode::CallFinally,
             Instr::DropCompletion => Opcode::DropCompletion,
+            Instr::Plus => Opcode::Plus,
         }
     }
 
@@ -728,7 +748,7 @@ impl Instr {
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
-            | Sar | UShr | Pow => (2, 1),
+            | Sar | UShr | Pow | Plus => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -760,6 +780,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 72);
+        assert_eq!(assigned, 73);
     }
 }

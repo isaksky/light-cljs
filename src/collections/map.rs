@@ -1,9 +1,11 @@
 //! Persistent map body: a hash array mapped trie (HAMT) with path copying.
 //!
 //! Keys are compared with [`key_eq`] (SameValueZero: primitives by value,
-//! `NaN` equal to itself, `+0` equal to `-0`; heap objects by identity) and
-//! hashed with [`key_hash`], a fixed private function of the key's bits or
-//! object identity. Neither ever reads another heap object or runs user code,
+//! `NaN` equal to itself, `+0` equal to `-0`, strings by content; heap
+//! objects by identity) and hashed with [`key_hash`], a fixed private
+//! function of the key's bits, string contents or object identity. A string
+//! carries its own immutable contents (`crate::value::JsString`), so neither
+//! ever reads another heap object or runs user code,
 //! so lookups need no heap lock beyond resolving the map itself.
 //!
 //! Each trie level consumes 5 hash bits. Keys whose 64-bit hashes are fully
@@ -22,7 +24,7 @@ const BITS: u32 = 5;
 const MASK: u64 = (1 << BITS) - 1;
 
 /// SameValueZero key equality. See the module docs.
-pub(crate) fn key_eq(a: Value, b: Value) -> bool {
+pub(crate) fn key_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x == y || (x.is_nan() && y.is_nan()),
         _ => a.strict_equals(b),
@@ -39,13 +41,14 @@ pub(crate) fn canonical_key(key: Value) -> Value {
 }
 
 /// Private, deterministic key hash consistent with [`key_eq`].
-pub(crate) fn key_hash(key: Value) -> u64 {
+pub(crate) fn key_hash(key: &Value) -> u64 {
     let raw = match key {
         Value::Undefined => 1,
         Value::Null => 2,
         Value::Bool(false) => 3,
         Value::Bool(true) => 4,
         Value::Number(n) => {
+            let n = *n;
             let n = if n == 0.0 {
                 0.0
             } else if n.is_nan() {
@@ -56,6 +59,7 @@ pub(crate) fn key_hash(key: Value) -> u64 {
             n.to_bits() ^ 0x6e75_6d62_6572_0000
         }
         Value::Object(id) => id.to_bits() ^ 0x6f62_6a65_6374_0000,
+        Value::String(s) => s.content_hash() ^ 0x7374_7269_6e67_0000,
     };
     // splitmix64 finalizer.
     let mut z = raw;
@@ -66,7 +70,7 @@ pub(crate) fn key_hash(key: Value) -> u64 {
 
 /// Same value for the purpose of "nothing changed": numbers by bits (so
 /// replacing `0` with `-0` is a change), everything else by `===`.
-fn identical(a: Value, b: Value) -> bool {
+fn identical(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.to_bits() == y.to_bits(),
         _ => a.strict_equals(b),
@@ -123,22 +127,22 @@ impl PMap {
         self.len
     }
 
-    pub(crate) fn get(&self, key: Value) -> Option<Value> {
+    pub(crate) fn get(&self, key: &Value) -> Option<Value> {
         self.get_hashed(key_hash(key), key)
     }
 
     /// A new version mapping `key` to `value`, or `None` when the key already
     /// maps to an identical value (so the caller can return the original).
     pub(crate) fn assoc(&self, key: Value, value: Value) -> Option<PMap> {
-        self.assoc_hashed(key_hash(key), key, value)
+        self.assoc_hashed(key_hash(&key), key, value)
     }
 
     /// A new version without `key`, or `None` when the key is absent.
-    pub(crate) fn dissoc(&self, key: Value) -> Option<PMap> {
+    pub(crate) fn dissoc(&self, key: &Value) -> Option<PMap> {
         self.dissoc_hashed(key_hash(key), key)
     }
 
-    fn get_hashed(&self, hash: u64, key: Value) -> Option<Value> {
+    fn get_hashed(&self, hash: u64, key: &Value) -> Option<Value> {
         let mut node = self.root.as_deref()?;
         let mut shift = 0;
         loop {
@@ -150,7 +154,7 @@ impl PMap {
                     }
                     match entries.get(position(*bitmap, bit))? {
                         Entry::Pair { key: k, value, .. } => {
-                            return key_eq(*k, key).then_some(*value);
+                            return key_eq(k, key).then(|| value.clone());
                         }
                         Entry::Child(child) => {
                             node = child;
@@ -159,7 +163,10 @@ impl PMap {
                     }
                 }
                 Node::Collision { pairs, .. } => {
-                    return pairs.iter().find(|(k, _)| key_eq(*k, key)).map(|p| p.1);
+                    return pairs
+                        .iter()
+                        .find(|(k, _)| key_eq(k, key))
+                        .map(|p| p.1.clone());
                 }
             }
         }
@@ -188,7 +195,7 @@ impl PMap {
         })
     }
 
-    fn dissoc_hashed(&self, hash: u64, key: Value) -> Option<PMap> {
+    fn dissoc_hashed(&self, hash: u64, key: &Value) -> Option<PMap> {
         match dissoc_in(self.root.as_deref()?, 0, hash, key) {
             Dissoc::Absent => None,
             Dissoc::Removed(root) => Some(PMap {
@@ -199,18 +206,18 @@ impl PMap {
     }
 
     /// Call `f` on every entry, in trie order.
-    pub(crate) fn for_each(&self, mut f: impl FnMut(Value, Value)) {
-        fn walk(node: &Node, f: &mut dyn FnMut(Value, Value)) {
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&Value, &Value)) {
+        fn walk(node: &Node, f: &mut dyn FnMut(&Value, &Value)) {
             match node {
                 Node::Bitmap { entries, .. } => {
                     for entry in entries {
                         match entry {
-                            Entry::Pair { key, value, .. } => f(*key, *value),
+                            Entry::Pair { key, value, .. } => f(key, value),
                             Entry::Child(child) => walk(child, f),
                         }
                     }
                 }
-                Node::Collision { pairs, .. } => pairs.iter().for_each(|(k, v)| f(*k, *v)),
+                Node::Collision { pairs, .. } => pairs.iter().for_each(|(k, v)| f(k, v)),
             }
         }
         if let Some(root) = &self.root {
@@ -221,7 +228,7 @@ impl PMap {
     /// Every entry, in trie order.
     pub(crate) fn to_vec(&self) -> Vec<(Value, Value)> {
         let mut out = Vec::with_capacity(self.len);
-        self.for_each(|k, v| out.push((k, v)));
+        self.for_each(|k, v| out.push((k.clone(), v.clone())));
         out
     }
 
@@ -292,18 +299,19 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Ass
                     key: k,
                     value: v,
                 } => {
-                    if key_eq(*k, key) {
-                        if identical(*v, value) {
+                    if key_eq(k, &key) {
+                        if identical(v, &value) {
                             return Assoc::Unchanged;
                         }
                         let entry = Entry::Pair {
                             hash: *h,
-                            key: *k,
+                            key: k.clone(),
                             value,
                         };
                         (entry, false)
                     } else {
-                        let child = merge(shift + BITS, (*h, *k, *v), (hash, key, value));
+                        let child =
+                            merge(shift + BITS, (*h, k.clone(), v.clone()), (hash, key, value));
                         (Entry::Child(Arc::new(child)), true)
                     }
                 }
@@ -330,8 +338,8 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Ass
             // reaches one has the node's full hash.
             debug_assert_eq!(*h, hash);
             let mut copy = pairs.clone();
-            match pairs.iter().position(|(k, _)| key_eq(*k, key)) {
-                Some(i) if identical(pairs[i].1, value) => Assoc::Unchanged,
+            match pairs.iter().position(|(k, _)| key_eq(k, &key)) {
+                Some(i) if identical(&pairs[i].1, &value) => Assoc::Unchanged,
                 Some(i) => {
                     copy[i].1 = value;
                     Assoc::Replaced(Node::Collision {
@@ -360,14 +368,14 @@ fn single_pair(node: &Node) -> Option<Entry> {
         },
         Node::Collision { hash, pairs } if pairs.len() == 1 => Some(Entry::Pair {
             hash: *hash,
-            key: pairs[0].0,
-            value: pairs[0].1,
+            key: pairs[0].0.clone(),
+            value: pairs[0].1.clone(),
         }),
         _ => None,
     }
 }
 
-fn dissoc_in(node: &Node, shift: u32, hash: u64, key: Value) -> Dissoc {
+fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value) -> Dissoc {
     match node {
         Node::Bitmap { bitmap, entries } => {
             let bit = bit_for(hash, shift);
@@ -376,7 +384,7 @@ fn dissoc_in(node: &Node, shift: u32, hash: u64, key: Value) -> Dissoc {
             }
             let pos = position(*bitmap, bit);
             let replacement = match &entries[pos] {
-                Entry::Pair { key: k, .. } if key_eq(*k, key) => None,
+                Entry::Pair { key: k, .. } if key_eq(k, key) => None,
                 Entry::Pair { .. } => return Dissoc::Absent,
                 Entry::Child(child) => match dissoc_in(child, shift + BITS, hash, key) {
                     Dissoc::Absent => return Dissoc::Absent,
@@ -403,7 +411,7 @@ fn dissoc_in(node: &Node, shift: u32, hash: u64, key: Value) -> Dissoc {
             }))
         }
         Node::Collision { hash: h, pairs } => {
-            let Some(i) = pairs.iter().position(|(k, _)| key_eq(*k, key)) else {
+            let Some(i) = pairs.iter().position(|(k, _)| key_eq(k, key)) else {
                 return Dissoc::Absent;
             };
             let mut copy = pairs.clone();
@@ -440,14 +448,14 @@ mod tests {
         assert_eq!(map.len(), model.len());
         for (k, v) in model {
             assert!(
-                map.get(*k).is_some_and(|got| identical(got, *v)),
+                map.get(k).is_some_and(|got| identical(&got, v)),
                 "{k:?} -> {v:?}"
             );
         }
         let entries = map.to_vec();
         assert_eq!(entries.len(), model.len());
         for (k, _) in &entries {
-            assert!(model.iter().any(|(mk, _)| key_eq(*mk, *k)));
+            assert!(model.iter().any(|(mk, _)| key_eq(mk, k)));
         }
     }
 
@@ -460,23 +468,28 @@ mod tests {
             (Value::Null, Value::Null),
         ];
         for (a, b) in pairs {
-            assert!(key_eq(a, b));
-            assert_eq!(key_hash(a), key_hash(b));
+            assert!(key_eq(&a, &b));
+            assert_eq!(key_hash(&a), key_hash(&b));
         }
-        assert!(!key_eq(Value::Null, Value::Undefined));
-        assert!(!key_eq(num(1.0), Value::Bool(true)));
+        assert!(!key_eq(&Value::Null, &Value::Undefined));
+        assert!(!key_eq(&num(1.0), &Value::Bool(true)));
         let a = Value::Object(ObjectId::from_index(1));
         let b = Value::Object(ObjectId::from_index(2));
-        assert!(key_eq(a, a) && !key_eq(a, b));
-        assert_ne!(key_hash(a), key_hash(b));
+        assert!(key_eq(&a, &a) && !key_eq(&a, &b));
+        assert_ne!(key_hash(&a), key_hash(&b));
+        let s = |t: &str| Value::String(crate::value::JsString::from(t));
+        assert!(key_eq(&s("k"), &s("k")) && !key_eq(&s("k"), &s("K")));
+        assert_eq!(key_hash(&s("k")), key_hash(&s("k")));
+        assert!(!key_eq(&s("1"), &num(1.0)));
+        assert_ne!(key_hash(&s("1")), key_hash(&num(1.0)));
     }
 
     #[test]
     fn negative_zero_keys_are_stored_as_positive_zero() {
         let map = PMap::default().assoc(num(-0.0), Value::Null).unwrap();
-        let (k, _) = map.to_vec()[0];
+        let (k, _) = map.to_vec()[0].clone();
         assert!(matches!(k, Value::Number(z) if z.to_bits() == 0));
-        assert!(map.get(num(0.0)).is_some());
+        assert!(map.get(&num(0.0)).is_some());
     }
 
     #[test]
@@ -493,25 +506,27 @@ mod tests {
             let (map, model) = versions.last().unwrap().clone();
             let key = num((next() % 600) as f64);
             let mut model2 = model.clone();
-            let found = model2.iter().position(|(k, _)| key_eq(*k, key));
+            let found = model2.iter().position(|(k, _)| key_eq(k, &key));
             let next_map = if next() % 3 == 0 {
                 match found {
                     Some(i) => {
                         model2.remove(i);
-                        map.dissoc(key).expect("present key is removed")
+                        map.dissoc(&key).expect("present key is removed")
                     }
                     None => {
-                        assert!(map.dissoc(key).is_none(), "absent key: unchanged");
+                        assert!(map.dissoc(&key).is_none(), "absent key: unchanged");
                         continue;
                     }
                 }
             } else {
                 let value = num(step as f64);
                 match found {
-                    Some(i) => model2[i].1 = value,
-                    None => model2.push((key, value)),
+                    Some(i) => model2[i].1 = value.clone(),
+                    None => model2.push((key.clone(), value.clone())),
                 }
-                let updated = map.assoc(key, value).expect("a new value is a change");
+                let updated = map
+                    .assoc(key.clone(), value.clone())
+                    .expect("a new value is a change");
                 assert!(updated.assoc(key, value).is_none(), "identical: unchanged");
                 updated
             };
@@ -540,22 +555,22 @@ mod tests {
         let mut map = PMap::default();
         let mut model = Vec::new();
         for (h, k) in &keys {
-            map = map.assoc_hashed(*h, *k, *k).unwrap();
-            model.push((*k, *k));
+            map = map.assoc_hashed(*h, k.clone(), k.clone()).unwrap();
+            model.push((k.clone(), k.clone()));
             for (mk, mv) in &model {
-                let h = keys.iter().find(|(_, x)| key_eq(*x, *mk)).unwrap().0;
-                assert_eq!(map.get_hashed(h, *mk), Some(*mv));
+                let h = keys.iter().find(|(_, x)| key_eq(x, mk)).unwrap().0;
+                assert_eq!(map.get_hashed(h, mk), Some(mv.clone()));
             }
         }
         assert_eq!(map.len(), 6);
         assert!(map.assoc_hashed(same, num(2.0), num(2.0)).is_none());
         let replaced = map.assoc_hashed(same, num(2.0), Value::Null).unwrap();
-        assert_eq!(replaced.get_hashed(same, num(2.0)), Some(Value::Null));
-        assert_eq!(map.get_hashed(same, num(2.0)), Some(num(2.0)));
-        assert!(map.dissoc_hashed(same, num(9.0)).is_none());
+        assert_eq!(replaced.get_hashed(same, &num(2.0)), Some(Value::Null));
+        assert_eq!(map.get_hashed(same, &num(2.0)), Some(num(2.0)));
+        assert!(map.dissoc_hashed(same, &num(9.0)).is_none());
         for (h, k) in &keys {
-            map = map.dissoc_hashed(*h, *k).unwrap();
-            assert_eq!(map.get_hashed(*h, *k), None);
+            map = map.dissoc_hashed(*h, k).unwrap();
+            assert_eq!(map.get_hashed(*h, k), None);
         }
         assert_eq!(map.len(), 0);
         assert!(map.root.is_none());
@@ -576,6 +591,6 @@ mod tests {
             .count();
         assert!(fresh <= 4, "only the root-to-entry path is copied: {fresh}");
         assert!(old.len() > 100);
-        assert_eq!(map.get(num(1234.0)), Some(num(1234.0)));
+        assert_eq!(map.get(&num(1234.0)), Some(num(1234.0)));
     }
 }

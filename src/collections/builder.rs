@@ -313,7 +313,7 @@ pub(crate) fn assoc(
     with_builder(heap, b, None, |builder| {
         match builder.draft(caller)? {
             Draft::Vector(items) => {
-                let index = index_from_value(key)?;
+                let index = index_from_value(&key)?;
                 let count = items.len();
                 match items.get_mut(index) {
                     Some(slot) => *slot = value,
@@ -378,7 +378,7 @@ mod tests {
         assert!(owned.ids.len() <= 32, "pruned: {}", owned.ids.len());
 
         let frozen = new_builder(&heap, owner, BuilderKind::Map, &mut owned).unwrap();
-        freeze(&heap, owner, frozen).unwrap();
+        freeze(&heap, owner, frozen.clone()).unwrap();
         let open = new_builder(&heap, owner, BuilderKind::Map, &mut owned).unwrap();
         owned.release_all(&heap, owner);
         assert!(owned.ids.is_empty());

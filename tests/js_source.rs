@@ -24,7 +24,7 @@ fn exe(src: &str) -> Executable {
 
 fn run(exe: &Executable, args: &[Primitive]) -> RunOutcome {
     let rt = Runtime::new();
-    let roots: Vec<_> = args.iter().map(|&p| rt.root(p)).collect();
+    let roots: Vec<_> = args.iter().map(|p| rt.root(p.clone())).collect();
     let refs: Vec<_> = roots.iter().collect();
     rt.spawn(exe, &refs).unwrap().run().unwrap()
 }
@@ -104,7 +104,8 @@ fn fixtures_compute_through_vm_instructions() {
     let ops = opcodes(&control);
     for op in [
         Opcode::Rem,
-        Opcode::Add,
+        // `+` with a binding operand may concatenate strings: `plus`.
+        Opcode::Plus,
         Opcode::Lt,
         Opcode::StrictEq,
         Opcode::JumpIfFalse,
@@ -1280,7 +1281,6 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
     // Valid syntax that cannot execute yet is rejected where it starts.
     // (Functions and calls execute since clj-quickjs-21.)
     for (src, line, column) in [
-        ("let s = 'text';", 1, 9),
         ("let o = 1;\no.p;", 2, 1),
         ("let o = 1;\no.p(1);", 2, 1),
         // Var-scoped redeclaration by a function declaration, which
@@ -1292,6 +1292,75 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
     }
     // Syntax errors pass through from the parser.
     assert_eq!(compile_err("let if = 1;").0, SyntaxErrorKind::ReservedWord);
+}
+
+/// The contents of a script's string completion value.
+fn string(src: &str) -> String {
+    match run(&exe(src), &[]) {
+        RunOutcome::Complete(v) => {
+            assert_eq!(v.view(), ValueView::String, "{src:?}");
+            v.string().expect("a string value").to_string()
+        }
+        other => panic!("{src:?}: expected Complete, got {other:?}"),
+    }
+}
+
+#[test]
+fn string_values() {
+    // Literals compile to constants and complete with their contents.
+    assert_eq!(string(r#""abc""#), "abc");
+    assert_eq!(string(r"'it\'s \u{1F600}'"), "it's \u{1F600}");
+    assert_eq!(string("''"), "");
+    // Equality compares contents; a string never equals a non-string.
+    assert_eq!(eval(r#""ab" === "a" + "b""#), ValueView::Bool(true));
+    assert_eq!(eval(r#""a" !== "b""#), ValueView::Bool(true));
+    assert_eq!(eval(r#""a" === 1"#), ValueView::Bool(false));
+    assert_eq!(eval(r#""1" == "01""#), ValueView::Bool(false));
+    assert_eq!(eval(r#""a" == "a""#), ValueView::Bool(true));
+    assert_eq!(eval(r#""a" != "a""#), ValueView::Bool(false));
+    assert_eq!(eval(r#""a" == null"#), ValueView::Bool(false));
+    // ToBoolean is false only for the empty string.
+    assert_eq!(num(r#""" ? 1 : 2"#), 2.0);
+    assert_eq!(num(r#""0" ? 1 : 2"#), 1.0);
+    assert_eq!(eval(r#"!"""#), ValueView::Bool(true));
+    // `+` with two string operands concatenates; numbers still add.
+    assert_eq!(string(r#"let s = "x"; s + s + s"#), "xxx");
+    assert_eq!(string(r#"let f = (a, b) => a + b; f("p", "q")"#), "pq");
+    assert_eq!(num("let f = (a, b) => a + b; f(1, 2)"), 3.0);
+    assert_eq!(num("let t = true; t + 1"), 2.0);
+    // Persistent map keys compare by content.
+    assert_eq!(num(r#"__rt.get(__rt.map("k", 1), "k")"#), 1.0);
+    assert_eq!(
+        num(r#"let k = "k"; __rt.get(__rt.map("k" + "", 1, k + k, 2), "kk")"#),
+        2.0
+    );
+    // Calling a string is a TypeError.
+    let (kind, message, ..) = failure_at(r#""s"()"#);
+    assert_eq!(kind, VmErrorKind::TypeError);
+    assert_eq!(message, "string is not a function");
+    // Mixed operands wait for ToString (clj-quickjs-66) and
+    // StringToNumber (clj-quickjs-67): rejected, never converted.
+    for src in [
+        r#""a" + 1"#,
+        r#"1 + "a""#,
+        r#"let a = "a"; a - 1"#,
+        r#""1" == 1"#,
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    // An uncaught thrown string is reported with its text.
+    let e = failure(r#"throw "boom""#);
+    assert_eq!(e.kind(), VmErrorKind::Thrown);
+    assert!(e.message().contains("boom"), "{}", e.message());
+    // A caught string is the same value.
+    assert_eq!(
+        eval(r#"let r; try { throw "e" + "x"; } catch (v) { r = v === "ex"; } r"#),
+        ValueView::Bool(true)
+    );
 }
 
 #[test]

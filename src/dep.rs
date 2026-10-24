@@ -167,7 +167,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// A cell's terminal outcome, as raw values.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Terminal {
     Ready(Value),
     Failed(Value),
@@ -175,7 +175,7 @@ pub(crate) enum Terminal {
 }
 
 impl Terminal {
-    fn value(self) -> Option<Value> {
+    fn value(&self) -> Option<&Value> {
         match self {
             Terminal::Ready(v) | Terminal::Failed(v) => Some(v),
             Terminal::Cancelled => None,
@@ -385,14 +385,14 @@ impl DependencyTable {
         // Fast path. Acquire (inside `OnceLock::get`) pairs with the
         // completion's Release, so the outcome's values are visible.
         if let Some(terminal) = cell.outcome.get() {
-            return Read::Terminal(*terminal);
+            return Read::Terminal(terminal.clone());
         }
         self.hook(HookPoint::NeedAfterPendingRead);
         let mut state = lock(&cell.pending);
         // Recheck: the outcome is only ever set while this lock is held, so
         // under it "no outcome" is stable until the waiter is registered.
         if let Some(terminal) = cell.outcome.get() {
-            return Read::Terminal(*terminal);
+            return Read::Terminal(terminal.clone());
         }
         let PendingState {
             producer,
@@ -541,7 +541,7 @@ impl DependencyTable {
         let terminal = {
             let state = lock(&cell.pending);
             match cell.outcome.get() {
-                Some(terminal) => *terminal,
+                Some(terminal) => terminal.clone(),
                 None => {
                     return CellStatus::Pending {
                         producer: state.producer,

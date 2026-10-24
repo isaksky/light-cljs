@@ -42,7 +42,8 @@
 //! `Object.is`): heap objects by identity (`ObjectId`), never by structure
 //! (two equal vectors that are distinct objects do not match); numbers by
 //! value with `NaN` matching `NaN` and `+0` not matching `-0`; `undefined`,
-//! `null` and booleans by value. No user hashing, equality, getter or
+//! `null` and booleans by value; strings by content (code units), since a
+//! JavaScript string has no identity. No user hashing, equality, getter or
 //! callback runs (QuickJS's `js_strict_eq` is JavaScript `===`, which differs
 //! on `NaN` and `±0`; it was a reference only).
 //!
@@ -135,12 +136,14 @@ use crate::value::share::{self, PublishError};
 
 /// SameValue (`Object.is`) on raw values: the CAS comparison. See the
 /// module docs.
-pub(crate) fn same_value(a: Value, b: Value) -> bool {
+pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
             x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
         }
         (Value::Object(x), Value::Object(y)) => x == y,
+        // Strings have no identity: SameValue compares their code units.
+        (Value::String(x), Value::String(y)) => x == y,
         (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         _ => false,
@@ -215,8 +218,10 @@ impl AtomCell {
         // during that registration, so the box is still allocated. Boxes are
         // never written after installation, so a shared read is race-free;
         // the `Acquire` load that produced `ptr` synchronizes with the
-        // `Release` store that installed it.
-        unsafe { *ptr }
+        // `Release` store that installed it. The read clones the value (for a
+        // string, an atomic increment of its immutable body's `Arc`); the box
+        // keeps its own reference until it is freed.
+        unsafe { (*ptr).clone() }
     }
 
     /// The current value. Caller: registered mutator (`Access`).
@@ -232,7 +237,7 @@ impl AtomCell {
         let mut seen = self.current.load(Ordering::Acquire);
         loop {
             let current = Self::read(seen);
-            if !same_value(current, expected) {
+            if !same_value(&current, &expected) {
                 // SAFETY: `fresh` came from `Box::into_raw` above and was
                 // never installed, so this is its only owner.
                 drop(unsafe { Box::from_raw(fresh) });
@@ -448,7 +453,7 @@ pub(crate) fn new_atom<R>(
     keep: impl FnOnce(Value) -> R,
 ) -> Result<R, AtomError> {
     let _mutator = heap.enter_mutator(crate::heap::gc::Access::Op);
-    share::check(heap, initial).map_err(AtomError::NotShareable)?;
+    share::check(heap, &initial).map_err(AtomError::NotShareable)?;
     let cell = Arc::new(AtomCell::new(initial, single_writer));
     let id = heap
         .alloc(HeapObject::Atom(cell))
@@ -480,7 +485,7 @@ pub(crate) fn compare_and_set<R>(
     if access.cell.single_writer {
         return Err(AtomError::SingleWriter);
     }
-    share::check(heap, new).map_err(AtomError::NotShareable)?;
+    share::check(heap, &new).map_err(AtomError::NotShareable)?;
     match access.cell.compare_and_set(access.epoch, expected, new) {
         Ok(_) => Ok(Ok(())),
         Err(current) => Ok(Err(keep(current))),
@@ -509,7 +514,7 @@ impl Publisher {
         let value = value.value_in(heap).map_err(AtomError::Handle)?;
         let atom = self.atom.value_in(heap).map_err(AtomError::Handle)?;
         let access = access(heap, atom)?;
-        share::check(heap, value).map_err(AtomError::NotShareable)?;
+        share::check(heap, &value).map_err(AtomError::NotShareable)?;
         access.cell.store(access.epoch, value);
         Ok(())
     }
@@ -614,17 +619,21 @@ mod tests {
     #[test]
     fn same_value_is_identity_and_object_is() {
         let n = Value::Number;
-        assert!(same_value(n(f64::NAN), n(-f64::NAN)));
-        assert!(!same_value(n(0.0), n(-0.0)));
-        assert!(same_value(n(1.5), n(1.5)));
-        assert!(!same_value(n(1.0), Value::Bool(true)));
-        assert!(!same_value(Value::Undefined, Value::Null));
+        assert!(same_value(&n(f64::NAN), &n(-f64::NAN)));
+        assert!(!same_value(&n(0.0), &n(-0.0)));
+        assert!(same_value(&n(1.5), &n(1.5)));
+        assert!(!same_value(&n(1.0), &Value::Bool(true)));
+        assert!(!same_value(&Value::Undefined, &Value::Null));
         let a = ObjectId::from_index(3);
-        assert!(same_value(Value::Object(a), Value::Object(a)));
+        assert!(same_value(&Value::Object(a), &Value::Object(a)));
         assert!(!same_value(
-            Value::Object(a),
-            Value::Object(ObjectId::from_index(4))
+            &Value::Object(a),
+            &Value::Object(ObjectId::from_index(4))
         ));
+        // Strings have no identity: equal contents are the same value.
+        let s = |t: &str| Value::String(crate::value::JsString::from(t));
+        assert!(same_value(&s("ab"), &s("ab")));
+        assert!(!same_value(&s("ab"), &s("b")));
     }
 
     #[test]
@@ -635,7 +644,7 @@ mod tests {
         rt.collect().unwrap();
         let new = heap.alloc(HeapObject::Plain).unwrap();
         assert_eq!(new.to_bits() >> 32, old.to_bits() >> 32, "slot reused");
-        assert!(!same_value(Value::Object(old), Value::Object(new)));
+        assert!(!same_value(&Value::Object(old), &Value::Object(new)));
     }
 
     #[test]
@@ -746,12 +755,18 @@ mod tests {
         let atom = atom.value_in(heap).unwrap();
         let (expected, new, replacement) = (graph(&rt), graph(&rt), graph(&rt));
         let raw = |r: &Rooted| r.value_in(heap).unwrap();
-        let outcome = compare_and_set(heap, atom, raw(&expected), raw(&new), |current| {
+        let outcome = compare_and_set(heap, atom.clone(), raw(&expected), raw(&new), |current| {
             std::thread::scope(|t| {
                 t.spawn(|| {
                     // The unrooted `current` is still the atom's value:
                     // replace it, then try to collect.
-                    let swapped = compare_and_set(heap, atom, current, raw(&replacement), |_| ());
+                    let swapped = compare_and_set(
+                        heap,
+                        atom.clone(),
+                        current.clone(),
+                        raw(&replacement),
+                        |_| (),
+                    );
                     assert!(matches!(swapped, Ok(Ok(()))));
                     assert_eq!(
                         rt.collect().unwrap_err(),
