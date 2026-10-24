@@ -2911,8 +2911,10 @@ impl<'s> Lowerer<'s> {
     /// `o.p` the base and the name as a string constant, for `o[k]` the
     /// base and the key, then `Delete`, which checks the base, converts the
     /// key and removes the own property (reported at the `delete`). Any
-    /// other operand is evaluated for its effects and gives `true`; the
-    /// parser rejects an identifier operand.
+    /// other value operand is evaluated for its effects and gives `true`.
+    /// Sloppy identifiers delete a global property or give `false` for a
+    /// declarative binding without reading it (even in its temporal dead zone).
+    /// The parser rejects strict identifier operands.
     #[inline(never)]
     fn delete(&mut self, operand: &Expr, op_span: Span) -> Result<(), SyntaxError> {
         match &operand.kind {
@@ -2927,9 +2929,7 @@ impl<'s> Lowerer<'s> {
                 self.expr(object)?;
                 self.expr(index)?;
             }
-            ExprKind::Identifier(_) => {
-                return Err(self.internal(operand.span, "`delete` of an identifier"));
-            }
+            ExprKind::Identifier(name) => return self.delete_identifier(name, op_span),
             _ => {
                 self.expr(operand)?;
                 self.out().op(Opcode::Pop, op_span);
@@ -2938,6 +2938,25 @@ impl<'s> Lowerer<'s> {
         }
         self.out().op(Opcode::Delete, op_span);
         Ok(())
+    }
+
+    #[inline(never)]
+    fn delete_identifier(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
+        // Deleting a name never reads it, so the unsupported global-eval
+        // value restriction of `resolve_reference` does not apply here.
+        match self.resolve(name) {
+            Access::Global(global) => {
+                self.out().op(Opcode::GetGlobalObject, at);
+                self.global_op(Opcode::Const, global, at)?;
+                self.out().op(Opcode::Delete, at);
+                Ok(())
+            }
+            Access::Found { .. } => self.constant(Primitive::Bool(false), at),
+            Access::Intrinsic => Err(self.not_a_value(at)),
+            Access::Unsupported(message) => {
+                Err(self.error(SyntaxErrorKind::Unsupported, at, message))
+            }
+        }
     }
 
     /// A prefix operator other than `typeof` of an identifier.

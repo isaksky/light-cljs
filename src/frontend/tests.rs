@@ -1240,11 +1240,11 @@ fn unary_binds_tighter_than_binary_and_looser_than_calls() {
 }
 
 /// `delete` of an identifier (clj-quickjs-124): an early error in strict
-/// code, at the `delete`; in sloppy code it waits for clj-quickjs-105.
+/// code, at the `delete`; accepted in sloppy code (clj-quickjs-105).
 /// The reserved constants are identifiers too.
 #[test]
-fn delete_of_identifiers_is_rejected() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
+fn delete_of_identifiers_follows_strictness() {
+    use SyntaxErrorKind::{Invalid, ReservedWord};
     rejects("delete x;", Invalid, 1, 1);
     rejects("y = delete (x);", Invalid, 1, 5);
     rejects("function f() { return delete x; }", Invalid, 1, 23);
@@ -1257,15 +1257,16 @@ fn delete_of_identifiers_is_rejected() {
         1,
         33,
     );
-    sloppy_rejects("delete x;", Unsupported, 1, 1);
-    sloppy_rejects("y = delete (undefined);", Unsupported, 1, 5);
+    sloppy_script("delete x;");
+    sloppy_script("y = delete (undefined);");
+    sloppy_rejects("function f() { 'use strict'; delete x; }", Invalid, 1, 30);
     // Comments and escaped spellings do not hide an identifier.
     rejects("delete (/* c */ undefined);", Invalid, 1, 1);
     rejects("delete ( // c\n NaN );", Invalid, 1, 1);
     rejects("delete \\u004eaN;", Invalid, 1, 1);
     rejects("delete (\\u0078);", Invalid, 1, 1);
-    sloppy_rejects("delete (/* c */ Infinity);", Unsupported, 1, 1);
-    sloppy_rejects("delete \\u0075ndefined;", Unsupported, 1, 1);
+    sloppy_script("delete (/* c */ Infinity);");
+    sloppy_script("delete \\u0075ndefined;");
     // A literal is not an identifier, even right after a reserved constant.
     parse_script("NaN; delete (/* NaN */ 1); delete (NaN, 1); delete undefined.x;").unwrap();
     rejects_with("delete __rt.vector;", ReservedWord, 1, 8, "deleted");

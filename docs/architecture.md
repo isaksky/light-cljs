@@ -2372,7 +2372,7 @@ expression still reports there) whose operand the parser checks: an
 identifier, including the reserved constants `undefined`/`NaN`/`Infinity`
 that parse as literals (recognized by the token the parser last turned
 into one, not by spelling), is an early `Invalid` in strict code and
-`Unsupported` in sloppy code until clj-quickjs-105. The
+deletes global properties in sloppy code (clj-quickjs-105). The
 lowering pushes the base and the key (for `o.p` the name as a string
 constant) and emits one appended opcode, as QuickJS's `OP_delete`; the
 opcode does the `undefined`/`null` check, ToPropertyKey and `[[Delete]]`
@@ -3808,8 +3808,9 @@ including for inherited accessors, through the traced `PropertyCall`
 continuation and ordinary VM frames from clj-quickjs-120. `typeof` also
 invokes getters. Setter return values are ignored; assignment returns its
 right operand. No Rust frame survives a callback wait. Missing reads and
-writes raise `ReferenceError`;
-sloppy implicit creation and identifier deletion remain clj-quickjs-105.
+strict writes raise `ReferenceError`; sloppy writes create configurable
+properties, and sloppy identifier deletion uses the same property path
+(clj-quickjs-105).
 `get_builtin_global` remains available to hand-assembled code, but source
 identifiers no longer use it.
 
@@ -3858,7 +3859,7 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`,
 `tests/js_source.rs::global_object_bindings` adapts the upstream sequence:
 `Object.defineProperty` creates the initial configurable property instead
 of indirect eval; Rust assertions check script completion values. The
-identifier-delete group is deferred. The test carries the QuickJS MIT notice.
+identifier-delete group is covered separately by clj-quickjs-105. The test carries the QuickJS MIT notice.
 No upstream implementation code is copied.
 
 ## Stored prototype accessor (clj-quickjs-261)
@@ -3925,3 +3926,29 @@ ordinary resumable dispatch. Cyclic arrays keep recursing through explicit
 native frames, bounded by `VmLimits.max_call_depth`, producing the catchable
 StackOverflow failure required by this pellet. There is no Rust recursion,
 cycle suppression, or empty-string substitution for cycles.
+
+## Sloppy implicit globals and identifier deletion (clj-quickjs-105)
+
+`PutGlobal` rejects an absent name only in strict code. Sloppy code uses
+the existing ordinary property Set path to create a writable, enumerable,
+configurable property; inherited setters, read-only properties and a
+non-extensible global object keep their ordinary sloppy-write rules.
+Callbacks still run through `PropertyCall` and task-owned VM frames.
+
+The parser accepts `delete IdentifierReference` only in sloppy code. It
+restores reserved constant operands (`undefined`, `NaN`, `Infinity`) to
+identifier nodes for this operation, preserving parentheses and comments.
+The lowerer's out-of-line helper resolves the identifier: a declarative
+binding gives constant `false` without a read or TDZ check; a global
+binding emits `GetGlobalObject`, a name constant and `Delete`. No opcode
+or heap kind is added. Global deletion therefore uses the existing owner
+checks and configurable flags and never invokes a getter. The object is
+read directly from task state, even if its `globalThis` property changed.
+
+`tests/js_source.rs::sloppy_implicit_globals_and_delete` uses synthetic
+fixtures for creation, descriptors, deletion/recreation, strict failures,
+declarative bindings (including TDZ), inherited properties and getters.
+Semantic references: `research/quickjs/quickjs.c`, `OP_put_var`,
+`OP_delete_var`, and `JS_DeleteGlobalVar`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No upstream code or tests
+are copied into this pellet.

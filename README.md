@@ -1751,7 +1751,7 @@ Deferred:
 - Every other sloppy-mode difference (listed in `docs/grammar.md`,
   "Explicit gaps"): references that would denote the global `eval`
   (clj-quickjs-106), sloppy function-name
-  stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
+  stores (clj-quickjs-96), `with`
   (clj-quickjs-110); strict reserved words and duplicate parameters stay
   rejected in sloppy code.
 
@@ -2119,8 +2119,7 @@ Supported (`cargo test --test js_source delete_property_references`,
 
 Deferred:
 
-- `delete x` in sloppy code (implicit globals, clj-quickjs-105) is `Unsupported`;
-  `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
+- `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
   properties of error objects
   (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
@@ -2521,8 +2520,7 @@ Supported (`cargo test --test js_source global_object_bindings`,
 - The object and its properties survive yields, collections and migration,
   and are reclaimed after task VM state is released.
 
-Deferred: implicit globals/identifier deletion (-105),
-indirect eval (-106), multiple scripts in one task, and sloppy `this`
+Deferred: indirect eval (-106), multiple scripts in one task, and sloppy `this`
 substitution keep their existing gaps.
 
 ### Stored `Object.prototype.__proto__` accessor (clj-quickjs-261)
@@ -2544,3 +2542,18 @@ separate prototype-setting semantics. Checks: `cargo test --test js_source
 stored_proto_accessor`, `cargo test --test js_source prototype_reflection`,
 `cargo test --test publication built_in_proto_accessors_are_shared_across_tasks`,
 `cargo test --lib vm::prototype::`.
+
+### Sloppy implicit globals and identifier deletion (clj-quickjs-105)
+
+Supported (`cargo test --test js_source sloppy_implicit_globals_and_delete`,
+`cargo test --lib frontend::`):
+
+- Assignment to an unresolvable name in sloppy code creates a writable,
+  enumerable, configurable global property. Strict code keeps ReferenceError.
+- Sloppy `delete x` removes a configurable own global property and returns
+  `true`, also for a missing name. A non-configurable global (including new
+  script `var` and function bindings) or declarative binding returns `false`.
+  Deletion never reads a binding or invokes its getter. Strict `delete x`
+  remains an early `Invalid` SyntaxError.
+- Property writes use the existing resumable accessor path. Sloppy `this`
+  substitution and eval remain deferred.

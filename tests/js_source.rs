@@ -9793,8 +9793,7 @@ fn delete_property_references() {
         let e = compile_script("t", src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Invalid, "{src}: {e}");
     }
-    let e = compile_script_with("t", "delete x;", ScriptOptions::SLOPPY).unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+    assert_eq!(sloppy_eval("delete x;"), ValueView::Bool(true));
 
     // Run-time failures are reported at the `delete`, also when the
     // expression is parenthesized or spans lines.
@@ -11148,6 +11147,63 @@ fn global_object_bindings() {
     assert!(
         matches!(run(&sloppy, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
     );
+}
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-105).
+#[test]
+fn sloppy_implicit_globals_and_delete() {
+    assert_eq!(
+        sloppy_eval("function f() { u = 3; } f(); u"),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(
+        sloppy_eval("function f() { u = 3; } f(); globalThis.u"),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(sloppy_eval("u = 3; delete u"), ValueView::Bool(true));
+    assert_eq!(
+        sloppy_eval("u = 3; delete u; u = 5; u"),
+        ValueView::Number(5.0)
+    );
+    for src in [
+        "u = 3; let d = Object.getOwnPropertyDescriptor(globalThis, 'u'); d.value === 3 && d.writable && d.enumerable && d.configurable",
+        "var v = 1; delete v === false && v === 1",
+        "function f() {} delete f === false && typeof f === 'function'",
+        "let w = 1; delete w === false && w === 1",
+        "const w = 1; delete w === false && w === 1",
+        "delete nothing_here",
+        "delete eval",
+        "let eval = 1; delete eval === false && eval === 1",
+        "function f() { return delete arguments; } f() === false",
+        "let ok = delete w === false; let w = 1; ok && w === 1",
+        "function f(p) { var v = 1; let w = 2; return delete p === false && delete v === false && delete w === false; } f(3)",
+        "let w = 1; function f() { return delete w; } f() === false && w === 1",
+        "let f = function self() { return delete self; }; f() === false",
+        "let hits = 0; Object.defineProperty(globalThis, 'u', {get() { hits++; }, configurable: true}); delete u && hits === 0 && typeof u === 'undefined'",
+        "Object.defineProperty(globalThis, 'u', {value: 1}); delete u === false && u === 1",
+        "let p = {u: 1}; Object.setPrototypeOf(globalThis, p); delete u && u === 1 && p.u === 1",
+        "delete undefined === false && delete NaN === false && delete Infinity === false",
+        "delete (/* comment */ Infinity) === false && delete \\u0075ndefined === false",
+        "NaN; delete (/* NaN */ 1) && delete (NaN, 1)",
+        "u = 1; u += 2; let old = u++; old === 3 && globalThis.u === 4 && delete u",
+        "for (k in {a: 1}) {} k === 'a' && delete k",
+        "Object.preventExtensions(globalThis); u = 1; typeof u === 'undefined'",
+        "let g = globalThis; globalThis = null; u = 1; g.u === 1 && delete u && typeof u === 'undefined'",
+    ] {
+        assert_eq!(sloppy_eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "u = 3; delete u; u",
+        "function f() { 'use strict'; u2 = 1; } f()",
+        "missing += 1",
+        "missing++",
+    ] {
+        let program = compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap();
+        match run(&program, &[]) {
+            RunOutcome::Failed(e) => assert_eq!(e.kind(), VmErrorKind::ReferenceError, "{src}"),
+            other => panic!("{src}: expected ReferenceError, got {other:?}"),
+        }
+    }
 }
 
 #[test]

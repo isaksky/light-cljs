@@ -1459,13 +1459,14 @@ pub(crate) fn step(
         Instr::PutGlobal(i) => {
             let name = name_constant(code, i)?;
             let global = global_object(state, heap)?;
-            if !property::has_property(
-                heap,
-                state.diag.task,
-                &global,
-                &property::Key::from_name(&name),
-            )? {
-                // Implicit sloppy globals belong to clj-quickjs-105.
+            if code.strict
+                && !property::has_property(
+                    heap,
+                    state.diag.task,
+                    &global,
+                    &property::Key::from_name(&name),
+                )?
+            {
                 return Err(Fault::Throw(ThrowKind::Unresolvable));
             }
             let value = state.pop()?;

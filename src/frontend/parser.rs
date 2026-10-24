@@ -2126,7 +2126,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::OPERATOR)?;
         let op_span = self.advance()?.span;
-        let operand = self.parse_unary()?;
+        let mut operand = self.parse_unary()?;
         self.depth = saved;
         let op = match op {
             Prefix::Unary(op) => Some(op),
@@ -2134,7 +2134,7 @@ impl<'a> Parser<'a> {
             Prefix::Update(op) => return self.update(op, true, operand, op_span),
         };
         if op.is_none() {
-            self.check_delete_operand(&operand, op_span)?;
+            self.check_delete_operand(&mut operand, op_span)?;
         }
         if self.is_punct(Punct::StarStar) {
             return Err(self.error(
@@ -2156,11 +2156,11 @@ impl<'a> Parser<'a> {
     /// the `delete` token: an identifier reference (possibly parenthesized,
     /// including the reserved constants `undefined`, `NaN` and `Infinity`)
     /// is an early `Invalid` SyntaxError in strict code (ECMAScript 13.5.1.1)
-    /// and, in sloppy code, `Unsupported` until clj-quickjs-105 deletes
-    /// global bindings; a property of the reserved intrinsic binding cannot
-    /// be deleted.
+    /// (clj-quickjs-105). Sloppy code keeps reserved constants as identifier
+    /// references for lowering; a property of the reserved intrinsic
+    /// binding cannot be deleted.
     #[inline(never)]
-    fn check_delete_operand(&self, operand: &Expr, op_span: Span) -> PResult<()> {
+    fn check_delete_operand(&self, operand: &mut Expr, op_span: Span) -> PResult<()> {
         let identifier = match &operand.kind {
             ExprKind::Identifier(_) => true,
             // A literal operand spans one primary token (inside any
@@ -2188,10 +2188,20 @@ impl<'a> Parser<'a> {
                 op_span,
                 "`delete` of an identifier is not allowed in strict mode code",
             )),
-            (true, false) => Err(self.unsupported(
-                op_span,
-                "`delete` of an identifier in sloppy code (clj-quickjs-105) is",
-            )),
+            (true, false) => {
+                // These references normally lower as literals. `delete`
+                // needs the actual non-configurable global property instead.
+                let name = match &operand.kind {
+                    ExprKind::Undefined => Some("undefined"),
+                    ExprKind::Number(n) if n.is_nan() => Some("NaN"),
+                    ExprKind::Number(_) => Some("Infinity"),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    operand.kind = ExprKind::Identifier(name.into());
+                }
+                Ok(())
+            }
         }
     }
 

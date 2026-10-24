@@ -96,7 +96,7 @@
 //! | `GetGlobalObject` | 0x69 | – | → obj | the task-owned global object (script `this`) |
 //! | `GetGlobal` | 0x6A | u16 name constant | → v | current global property; missing is ReferenceError |
 //! | `GetGlobalOrUndefined` | 0x6B | u16 name constant | → v | global lookup permitting a missing property (`typeof`) |
-//! | `PutGlobal` | 0x6C | u16 name constant | v → v | assign existing global property, respecting strictness |
+//! | `PutGlobal` | 0x6C | u16 name constant | v → v | assign global property; sloppy code creates missing names, strict code throws ReferenceError |
 //! | `DeclareGlobalVar` | 0x6D | u16 name constant | – | create a non-configurable global var unless already own |
 //! | `DeclareGlobalFunction` | 0x6E | u16 name constant | – | validate a global function declaration and prepare its property |
 //!

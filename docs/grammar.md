@@ -53,7 +53,9 @@ logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
 The `void` operator (clj-quickjs-133) parses and executes. The `instanceof`
 operator (clj-quickjs-75) parses and executes. The `delete` operator on
 property references `o.p` and `o[k]` (clj-quickjs-124) parses and executes;
-`delete` of an identifier is an early error in strict code.
+`delete` of an identifier executes in sloppy code (clj-quickjs-105) and is
+an early error in strict code. Sloppy assignment to an undeclared name
+creates a configurable property of the global object.
 The `in` operator (clj-quickjs-74) parses and executes.
 Property reads and method calls on number and string primitives
 (`(1).toString()`, clj-quickjs-73) execute.
@@ -294,6 +296,9 @@ Notes on the grammar:
   `Infinity`, and in strict code `eval` and `arguments`.
   `arguments` is an IdentifierReference in both modes (clj-quickjs-97);
   strict code cannot assign, increment or decrement that identifier.
+- The `Unary` production's `delete IdentifierReference`, including a
+  parenthesized reference and `undefined`/`NaN`/`Infinity`, is allowed only
+  in sloppy code (clj-quickjs-105); strict code rejects it at `delete`.
 - The assignment target may be parenthesized (`(a) = 1`, `(a) += 1`), as
   in JavaScript. A compound assignment (clj-quickjs-84) takes the same
   targets as `=`, properties included (clj-quickjs-260), and is
@@ -396,7 +401,7 @@ Every form below is rejected where it starts. Error kinds:
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233), `async` and generator methods | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
-| `delete` of an identifier reference, possibly parenthesized, including `undefined`/`NaN`/`Infinity` (`delete x`, `delete (x)`), in sloppy code (clj-quickjs-105); `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
+| `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
@@ -608,7 +613,7 @@ checks left to later stages:
   the global `eval` (clj-quickjs-106, direct eval -107/-108) are compile
   errors (`Unsupported`, see "Directive prologues and strictness"); silently
   ignored stores to a function expression's own name (clj-quickjs-96);
-  implicit globals and `delete` of identifiers (clj-quickjs-105); `with`
+  `with`
   (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
   explicitly unless its receiver is an object, see above) and the mapped
   `arguments` object (not filed). Strict reserved words (`let`, `static`, `yield`,
@@ -674,7 +679,8 @@ Directive"; QuickJS `js_parse_directives` and
   a plain `var arguments;` keeps the object (clj-quickjs-97).
   In a script outside any `function`,
   an unbound `arguments` is an ordinary unresolvable name
-  (ReferenceError at run time, `"undefined"` for `typeof`).
+  (ReferenceError when read, `"undefined"` for `typeof`, and an implicit
+  global on sloppy assignment, clj-quickjs-105).
 - The resulting mode is recorded on the tree (`Script::strict`,
   `Function::strict`) and in each function's compiled code
   (`ExecutableSpec::strict`, `Executable::is_strict`; hand-assembled code
@@ -857,7 +863,8 @@ Executed, with JavaScript semantics:
 | `k in o` (clj-quickjs-74) | evaluates `k`, then `o`, then the `in` opcode (`0x61`) at the operator token (ECMAScript `in` and HasProperty; QuickJS `js_operator_in`, `OP_in`): an `o` that is not an object is a catchable TypeError "cannot use 'in' operator to search for 'k' in o" (`'x' in 1`, `'x' in null`, `'length' in 'abc'`), checked before `k` is converted; then ToPropertyKey(`k`) as for `o[k]` (`1 in {1: 0}` and `'1' in {1: 0}` are the same key) and the result is whether `o` or an object on its prototype chain has the property, whatever its value (`'x' in {x: undefined}` and `'toString' in {}` are true; `Object.create(null)` has nothing inherited; `'__proto__' in {}` is true through `Object.prototype`'s accessor, which is not run). Arrays have their elements (not holes) and `length`; a function has its own properties, its lazy `prototype` (reported without being created, so the function stays publishable) and those of `Function.prototype` (`'call' in f`, clj-quickjs-102) and `Object.prototype`. Persistent vectors, maps, occurrences, builders, atoms and cells have no JavaScript properties: `false`. Relational precedence, left-associative. A name `Function.prototype` does not have yet (`'bind' in Object`, `'toString' in f`, clj-quickjs-103 and later), and an error object's properties (clj-quickjs-230) fail with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist. Object key conversion may call JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
-| `x = v` | evaluates `v`, then stores; the expression's value is `v` |
+| `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
+| `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `get_global_object`, a name constant and `delete`, or constant `false` for a declarative binding; failures are reported at `delete` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
 | `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super`, computed keys, async and generator methods remain deferred. |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
@@ -876,7 +883,7 @@ Executed, with JavaScript semantics:
 | `do body while (test)` (clj-quickjs-80) | runs the body, then evaluates the test, and repeats while it is truthy: the body always runs at least once |
 | `for (init; test; update) body` (clj-quickjs-81) | runs the init once (an expression's value is discarded), then repeats: evaluates the test (absent: true) and stops when it is falsy, runs the body, then the update (its value discarded) |
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
-| `for (k in o) body`, `for (let k in o)`, `for (const k in o)` (clj-quickjs-85, -86) | evaluates `o` once (with a `let`/`const` head's binding in its temporal dead zone: `for (let k in k)` is a ReferenceError), then runs the body once per enumerable string key of `o` and its prototype chain: first `o`'s own keys, snapshotted when the loop starts, in OrdinaryOwnPropertyKeys order (array indices ascending, then the other keys in creation order; as `Object.keys`, clj-quickjs-123), then each prototype's, snapshotted when the walk reaches it (clj-quickjs-86), each key a string; an inherited key is skipped when an object nearer `o` had an own property of that name, enumerable or not (a non-enumerable own `x` hides an inherited enumerable `x`), so each name is visited at most once; before each key it checks that the key is still an own enumerable property of the object it was found on and skips it otherwise (so a property deleted or made non-enumerable before it is reached is not visited), and keys added to an object after its snapshot are not visited (a prototype the walk has not reached yet is read when it is reached; when the chain changes, the walk continues on the prototype it is on). `Object.prototype` and the other realm intrinsics have no enumerable properties, so the walk ends there without reading them under any lock, and after a function (`Function.prototype`, clj-quickjs-102). `null`, `undefined`, numbers and booleans run zero iterations, a string visits its indices `"0"`, `"1"`, ...; enumerating an object of another task fails with `ForeignObject`. An identifier head is assigned each key as by `k = key` (a `const` binding is a TypeError, an undeclared name a ReferenceError, at the name); a `let`/`const` head is a fresh binding per iteration scoped to the loop, so closures keep their iteration's key. `break`, `continue`, labels, `return` and exceptions leave or continue the loop as in other loops (through finally blocks too). The enumerator is task-owned frame state (`crate::vm::keys`): a yield, a dependency wait, a collection or migration inside the loop resumes it exactly. Lowered to `for_in_start` and `for_in_next` (new, `0x63`, `0x64`) with the enumerator in a scratch local |
+| `for (k in o) body`, `for (let k in o)`, `for (const k in o)` (clj-quickjs-85, -86) | evaluates `o` once (with a `let`/`const` head's binding in its temporal dead zone: `for (let k in k)` is a ReferenceError), then runs the body once per enumerable string key of `o` and its prototype chain: first `o`'s own keys, snapshotted when the loop starts, in OrdinaryOwnPropertyKeys order (array indices ascending, then the other keys in creation order; as `Object.keys`, clj-quickjs-123), then each prototype's, snapshotted when the walk reaches it (clj-quickjs-86), each key a string; an inherited key is skipped when an object nearer `o` had an own property of that name, enumerable or not (a non-enumerable own `x` hides an inherited enumerable `x`), so each name is visited at most once; before each key it checks that the key is still an own enumerable property of the object it was found on and skips it otherwise (so a property deleted or made non-enumerable before it is reached is not visited), and keys added to an object after its snapshot are not visited (a prototype the walk has not reached yet is read when it is reached; when the chain changes, the walk continues on the prototype it is on). `Object.prototype` and the other realm intrinsics have no enumerable properties, so the walk ends there without reading them under any lock, and after a function (`Function.prototype`, clj-quickjs-102). `null`, `undefined`, numbers and booleans run zero iterations, a string visits its indices `"0"`, `"1"`, ...; enumerating an object of another task fails with `ForeignObject`. An identifier head is assigned each key as by `k = key` (a `const` binding is a TypeError, an undeclared name creates a global in sloppy code and throws ReferenceError in strict code, at the name); a `let`/`const` head is a fresh binding per iteration scoped to the loop, so closures keep their iteration's key. `break`, `continue`, labels, `return` and exceptions leave or continue the loop as in other loops (through finally blocks too). The enumerator is task-owned frame state (`crate::vm::keys`): a yield, a dependency wait, a collection or migration inside the loop resumes it exactly. Lowered to `for_in_start` and `for_in_next` (new, `0x63`, `0x64`) with the enumerator in a scratch local |
 | `for (var ...; ...; ...)`, `for (var k in o)` (clj-quickjs-89) | the head declares `var` bindings of the enclosing function or script, hoisted like a `var` statement's (readable, `undefined`, before the loop; one binding per name, shared with other `var`s and a parameter of that name); each initializer of a `for` head is an assignment run once, before the first test, and a for-in `var` head is assigned each key as by `k = key`; there is no per-iteration copy, so every closure created in the body shares the one binding and sees its latest value (closures made by `for (var i = 0; i < 3; i++)` all return 3 afterwards), and the binding keeps its last value after the loop (`for (var k in {x: 1, y: 2}) {}` leaves `k` `"y"`) |
 | `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
@@ -970,15 +977,20 @@ let r = false; try { delete null.a; } catch (e) { r = true; } r;
 let o = {}; Object.defineProperty(o, "k", {value: 1}); let r = false; try { delete o.k; } catch (e) { r = o.k === 1; } r;
 ```
 
-`delete` of an identifier is an early error in strict code, and waits for
-clj-quickjs-105 in sloppy code:
+`delete` of an identifier is an early error in strict code and deletes
+configurable global properties in sloppy code (clj-quickjs-105):
 
 ```js reject Invalid 1:16
 function f() { delete x; }
 ```
 
-```js sloppy-reject Unsupported 1:1
-delete x;
+```js sloppy-accept
+delete nothing_here;
+function f() { u = 3; } f(); globalThis.u === 3 && delete u && typeof u === "undefined";
+u = 5; u === 5;
+var v = 1; delete v === false && v === 1;
+let w = 1; delete w === false;
+delete undefined === false && delete NaN === false && delete Infinity === false;
 ```
 
 Concise object-literal methods accept literal keys, including contextual
@@ -1150,7 +1162,7 @@ Errors:
 | In `compile_function`, assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
-| Reading, assigning, incrementing or decrementing a name with no binding (a name absent from the global object; sloppy implicit creation is deferred to clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading, incrementing or decrementing a name with no binding (a name absent from the global object), except as the operand of `typeof`; assigning it in strict code | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand in either mode) | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, a parameter in its own or an earlier parameter's default value, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
 | Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it (also in sloppy code until clj-quickjs-96) | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
@@ -2455,8 +2467,9 @@ non-enumerable, configurable own self-reference. Top-level `this` reads
 the object directly. Script `var` and function declarations create
 non-configurable enumerable properties at entry. `let` and `const` stay
 lexical. Otherwise free names are looked up at every access; replacing
-properties is observed immediately. Missing reads/writes are
-`ReferenceError`; only a `typeof` lookup permits a missing property.
+properties is observed immediately. Missing reads and strict writes are
+`ReferenceError`; a `typeof` lookup permits a missing property, and a
+sloppy write creates one (clj-quickjs-105).
 Read-only global writes throw `TypeError` in strict code and do nothing
 in sloppy code. A declaration conflict with lexical bindings is an early
 SyntaxError; a restricted global function property is a catchable run-time
@@ -2481,5 +2494,5 @@ Global objects are task-owned and cannot be published. A published closure
 that refers to a global reads the calling task's globals; a closure with a
 lexical capture follows the usual value/cell publication rule. A script
 arrow capturing `this` captures the task-owned object and cannot publish.
-There is one script per task. Implicit globals/identifier deletion (-105), indirect eval
-(-106), and sloppy non-object receiver substitution are still deferred.
+There is one script per task. Indirect eval (-106) and sloppy non-object
+receiver substitution are still deferred.
