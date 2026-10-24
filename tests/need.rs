@@ -479,3 +479,51 @@ fn need_operands_are_validated() {
     assert_eq!(number(task.run().unwrap()), 15.0);
     assert_eq!(task.dependency_log().edges().len(), 1);
 }
+
+/// A published persistent graph reaches consumers through `need` as the
+/// very objects the producer published, not copies, whether the consumer
+/// waited for it or read it ready, and stays alive through its cell alone
+/// after the producer drops its handle and collections run.
+#[test]
+fn a_published_object_keeps_its_identity_through_need() {
+    let rt = Runtime::new();
+    let k = DependencyKey::new(rt.world(), DependencyId::new(9), ResultKind::new(1));
+    let (graph, leaf) = rt.scope(|s| {
+        let leaf = s
+            .new_vector(&[s.primitive(Primitive::Number(1.0))])
+            .unwrap();
+        let outer = s
+            .new_vector(&[leaf, s.primitive(Primitive::Number(2.0))])
+            .unwrap();
+        (s.persist(outer), s.downgrade(leaf))
+    });
+    // Returns the needed graph and its first element.
+    let exe = compile_script(
+        "t",
+        "const g = __rt.need(9, 1); __rt.vector(g, __rt.nth(g, 0));",
+    )
+    .unwrap();
+    let waiter = rt.spawn(&exe, &[]).unwrap();
+    assert_eq!(waiting(waiter.run().unwrap()), k);
+    let request = one_request(&waiter, k);
+    let wakeups = rt
+        .complete(k, request.producer(), Completion::Ready(&graph))
+        .unwrap();
+    let graph_weak = graph.downgrade();
+    drop(graph);
+    rt.collect().unwrap();
+    assert!(graph_weak.is_live() && leaf.is_live(), "the cell keeps it");
+
+    let reader = rt.spawn(&exe, &[]).unwrap();
+    for task in [only_runnable(wakeups), reader] {
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("the consumer returns the pair");
+        };
+        rt.collect().unwrap();
+        rt.scope(|s| {
+            let items = s.items(s.local(&result).unwrap()).unwrap();
+            assert!(s.same_object(items[0], s.upgrade(&graph_weak).unwrap()));
+            assert!(s.same_object(items[1], s.upgrade(&leaf).unwrap()));
+        });
+    }
+}

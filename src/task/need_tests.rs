@@ -124,3 +124,110 @@ fn cancellation_inside_the_park_window_keeps_the_producer_request() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Counts leaf host effects.
+struct Effects(usize);
+
+impl Host for Effects {
+    fn effect(&mut self, _: crate::host::HostCall) -> Result<crate::value::Primitive, String> {
+        self.0 += 1;
+        Ok(crate::value::Primitive::Number(1.0))
+    }
+}
+
+/// The budget carries across the need: a ready need that uses the last
+/// instruction ends the run before the next one (an effect), and resuming a
+/// completed suspended need with a zero budget injects the value without
+/// executing anything after it.
+#[test]
+fn a_need_obeys_exact_instruction_budgets() {
+    let src = "let local = 2; local * 100 + __rt.need(3, 1) + __rt.effect(1, 0);";
+    let exe = compile_script("need", src).unwrap();
+    let at = exe
+        .0
+        .instrs
+        .iter()
+        .position(|i| *i == crate::vm::instr::Instr::Need)
+        .unwrap();
+
+    // Ready: the need is the run's last instruction.
+    let rt = Runtime::new();
+    let req = rt.claim(key(&rt)).unwrap();
+    let _ = complete(&rt, &req, 5.0);
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Effects(0);
+    let budget = Budget::instructions(at as u64 + 1);
+    assert!(matches!(
+        task.run_with(budget, &mut host).unwrap(),
+        RunOutcome::Yielded
+    ));
+    let (pc, operands, _) = task.saved_state().unwrap();
+    assert_eq!(pc, at + 1);
+    assert_eq!(operands, [Value::Number(200.0), Value::Number(5.0)]);
+    assert_eq!(host.0, 0, "the effect after the need did not run");
+    assert_eq!(
+        number(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        206.0
+    );
+    assert_eq!(host.0, 1);
+
+    // Pending, then resumed with a zero budget.
+    let rt = Runtime::new();
+    let req = rt.claim(key(&rt)).unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Effects(0);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    let _ = complete(&rt, &req, 6.0).into_runnable();
+    assert!(matches!(
+        task.run_with(Budget::instructions(0), &mut host).unwrap(),
+        RunOutcome::Yielded
+    ));
+    let (pc, operands, _) = task.saved_state().unwrap();
+    assert_eq!(pc, at + 1, "nothing executed");
+    assert_eq!(operands, [Value::Number(200.0), Value::Number(6.0)]);
+    match &*task.0.body.lock().unwrap() {
+        TaskBody::Ready(vm) => assert_eq!(vm.pending_need, None, "injected"),
+        TaskBody::Finished => panic!("not finished"),
+    }
+    assert_eq!(host.0, 0);
+    assert_eq!(
+        number(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        207.0
+    );
+    assert_eq!(host.0, 1);
+}
+
+/// A wake without a completion (a spurious resume) runs the task again: the
+/// suspended need finds the cell still pending, subscribes the new
+/// execution's handle (claiming nothing more) and suspends again with its
+/// state unchanged; the completion then resumes it exactly once.
+#[test]
+fn a_spurious_resume_resubscribes_the_suspended_need() {
+    let rt = Runtime::new();
+    let task = source_consumer(&rt);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt)));
+    let requests = task.take_producer_requests();
+    assert_eq!(requests.len(), 1, "the first need claims the producer");
+    let saved = task.saved_state().unwrap();
+    let first = WakeHandle::new(task.0.deps.runtime, task.id(), 1);
+    assert!(matches!(task.wake(first), Wake::Runnable(_)));
+
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt)));
+    assert_eq!(task.saved_state().unwrap(), saved);
+    assert!(task.take_producer_requests().is_empty(), "no second claim");
+    assert!(
+        matches!(task.wake(first), Wake::Stale),
+        "the old handle is stale"
+    );
+    match rt.cell_status(key(&rt)) {
+        CellStatus::Pending { waiters, .. } => assert_eq!(waiters, [task.id()]),
+        other => panic!("{other:?}"),
+    }
+
+    let runnable = complete(&rt, &requests[0], 8.0).into_runnable();
+    assert_eq!(runnable.len(), 1);
+    assert_eq!(number(runnable[0].run().unwrap()), 208.0);
+}
