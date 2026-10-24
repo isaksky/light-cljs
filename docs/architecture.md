@@ -3846,6 +3846,8 @@ finishing a task. `tests/js_functions.rs` checks receiving-task lookup,
 publication rejection for a captured global, and one-instruction runs with
 collection and migration between every slice. `tests/js_source.rs`
 `global_object_bindings` checks source semantics and data descriptors.
+`global_object_descriptors` checks every initial global binding's value and
+attributes, and all three attributes of script var/function properties.
 
 **Remaining prerequisite.** The object model does not yet store accessors
 (clj-quickjs-120). The accessor/getter/setter rows of this pellet's acceptance

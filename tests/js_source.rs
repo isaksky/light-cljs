@@ -11098,3 +11098,47 @@ fn global_bytecode_round_trip_and_name_validation() {
         );
     }
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn global_object_descriptors() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    truth(
+        "let d = Object.getOwnPropertyDescriptor(globalThis, 'globalThis'); \
+         d !== undefined && d.value === this && d.writable && !d.enumerable && d.configurable \
+         && Object.keys(this).length === 0",
+    );
+    for name in ["Object", "Number", "String", "Array", "Function", "Reflect"] {
+        let value_check = if name == "Reflect" {
+            "typeof d.value === 'object' && typeof d.value.apply === 'function'".to_string()
+        } else {
+            format!("typeof d.value === 'function' && d.value.name === '{name}'")
+        };
+        truth(&format!(
+            "let d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
+             d !== undefined && d.value === {name} && {value_check} \
+             && d.writable && !d.enumerable && d.configurable"
+        ));
+    }
+    for (name, check) in [
+        ("undefined", "d.value === undefined"),
+        ("NaN", "Object.is(d.value, NaN)"),
+        ("Infinity", "d.value === Infinity"),
+    ] {
+        truth(&format!(
+            "let d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
+             d !== undefined && {check} && !d.writable && !d.enumerable && !d.configurable"
+        ));
+    }
+    truth(
+        "var a; function g() {} \
+         let d = Object.getOwnPropertyDescriptor(globalThis, 'a'); \
+         let f = Object.getOwnPropertyDescriptor(globalThis, 'g'); \
+         d !== undefined && d.value === undefined && d.writable && d.enumerable && !d.configurable \
+         && f !== undefined && f.value === g && f.writable && f.enumerable && !f.configurable",
+    );
+    truth(
+        "Object.defineProperty(globalThis, 'globalThis', {enumerable: true}); \
+         Object.keys(this)[0] === 'globalThis'",
+    );
+}
