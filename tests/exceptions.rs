@@ -1,12 +1,12 @@
 //! `throw`, `try`/`catch`/`finally` and completion records compiled from
 //! JavaScript source (clj-quickjs-11). Programs are JavaScript source:
 //! inline synthetic snippets (not light-cljs output) and one adapted QuickJS
-//! test (`fixtures/js/quickjs_try_catch.js`, which carries its notice).
+//! test (`fixtures/js/quickjs_test_loop_try_catch.js`, with its notice).
 //!
 //! Effects are observed through a recording host: `__rt.effect(1, x)` logs
 //! `x` and returns it.
 
-use clj_quickjs::frontend::{SyntaxErrorKind, compile_script};
+use clj_quickjs::frontend::{ScriptOptions, SyntaxErrorKind, compile_script, compile_script_with};
 use clj_quickjs::{
     Budget, Executable, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView, VmError,
     VmErrorKind,
@@ -81,17 +81,29 @@ fn failure_at(e: &VmError) -> (VmErrorKind, String, u32, u32) {
     (e.kind(), e.message().to_string(), at.line, at.column)
 }
 
-const QUICKJS_TRY_CATCH: &str = include_str!("fixtures/js/quickjs_try_catch.js");
+// Adapted QuickJS text; synthetic fixture, not light-cljs output. The helper,
+// __loadScript attempt and all eight cases/calls are unmodified upstream text;
+// only the license/provenance header and excerpt separators are added.
+const QUICKJS_TRY_CATCH: &str = include_str!("fixtures/js/quickjs_test_loop_try_catch.js");
+
+fn run_quickjs_try_catch(src: &str) -> RunOutcome {
+    // Match upstream's non-strict script mode (clj-quickjs-95).
+    let executable = compile_script_with("quickjs_test_loop_try_catch", src, ScriptOptions::SLOPPY)
+        .expect("the unmodified QuickJS fixture compiles");
+    assert!(!executable.is_strict());
+    let rt = Runtime::new();
+    let task = rt.spawn(&executable, &[]).unwrap();
+    task.run().unwrap()
+}
 
 #[test]
 fn quickjs_try_catch_cases_pass() {
     // Every case's assert() returned, so the script reached its last line.
-    match run(QUICKJS_TRY_CATCH).0 {
+    match run_quickjs_try_catch(QUICKJS_TRY_CATCH) {
         RunOutcome::Complete(v) => {
-            assert_eq!(v.view(), ValueView::String);
-            assert_eq!(v.string().expect("a string value").to_string(), "ok");
+            assert_eq!(v.view(), ValueView::Undefined);
         }
-        other => panic!("expected Complete(\"ok\"), got {other:?}"),
+        other => panic!("expected normal fixture completion, got {other:?}"),
     }
 }
 
@@ -101,13 +113,14 @@ fn quickjs_try_catch_fixture_detects_a_wrong_result() {
     // the helper is not vacuous.
     assert_eq!(QUICKJS_TRY_CATCH.matches(r#""tfag""#).count(), 1);
     let src = QUICKJS_TRY_CATCH.replace(r#""tfag""#, r#""tfgx""#);
-    let (e, _) = failure(&src);
+    let e = match run_quickjs_try_catch(&src) {
+        RunOutcome::Failed(e) => e,
+        other => panic!("expected a failed assertion, got {other:?}"),
+    };
     assert_eq!(e.kind(), VmErrorKind::Thrown, "{e}");
-    assert!(
-        e.message()
-            .contains("assertion failed: got |tfag|, expected |tfgx| (catch)"),
-        "{}",
-        e.message()
+    assert_eq!(
+        e.message(),
+        "uncaught exception: Error: assertion failed: got |tfag|, expected |tfgx| (catch)"
     );
 }
 

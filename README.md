@@ -854,12 +854,11 @@ Supported:
   `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
   source position and call chain, also after leaving through finally
   blocks.
-- Adapted QuickJS `test_try_catch1`–`8` run from source with their
-  upstream strings, `for(;;)` and `assert()` calls (clj-quickjs-227; `5`
-  since clj-quickjs-79, `8` with a counted `for` for `for`-`in`)
-  (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice and
-  its remaining adaptations: `let` for `var` and an `assert` that throws
-  its message string).
+- QuickJS `test_try_catch1`–`8`, their `assert` helper and caught
+  `__loadScript` attempt run unmodified in non-strict script mode
+  (clj-quickjs-232; `tests/fixtures/js/quickjs_test_loop_try_catch.js`,
+  with the QuickJS license notice). The negative harness check changes
+  one expected string and verifies the uncaught `Error: assertion failed: ...`.
 
 Deferred:
 

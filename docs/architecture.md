@@ -2881,21 +2881,18 @@ and Charlie Gordon) and is listed here with its source path and revision:
   through enclosing functions and threading captures down) and
   `instantiate_hoisted_definitions` (function declarations created on scope
   entry). No code was copied.
-- `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-11, re-adapted
-  with upstream strings in clj-quickjs-227): the `assert` function and
-  `test_try_catch1`–`test_try_catch8` of
-  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, called once
-  each in upstream order, as JavaScript source compiled by this frontend;
-  the script completes with `"ok"`. The string literals, thrown strings,
-  `for(;;)` and `assert(actual, expected, message)` calls are upstream's.
-  Modified: `let` for `var` (until clj-quickjs-94); `assert` tests
-  `expected === undefined` instead of `arguments.length == 1` (until
-  clj-quickjs-97), throws its message string instead of `Error(...)` (until
-  clj-quickjs-228) and drops
-  the unreached object/`toString()` comparison (until clj-quickjs-69 and
-  clj-quickjs-70); `test_try_catch8` iterates `"x"`, `"y"` with a counted
-  `for` instead of `for (var i in {x:1, y:2})` (until clj-quickjs-85,
-  clj-quickjs-89 and clj-quickjs-114). The file carries the full notice.
+- `tests/fixtures/js/quickjs_test_loop_try_catch.js` (clj-quickjs-232):
+  `research/quickjs/tests/test_loop.js`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04),
+  lines 1-20 (`assert` and the caught `__loadScript` attempt), 254-372
+  (complete `test_try_catch1`–`test_try_catch8`) and 395-402 (their calls
+  in upstream order), byte for byte. Only the descriptive/license header
+  and separators between excerpts are added; adapted rows: none. The full
+  QuickJS MIT notice from `research/quickjs/LICENSE` is retained. This
+  replaces the earlier re-encoded fixture (clj-quickjs-11/-227).
+  `tests/exceptions.rs` compiles it in non-strict mode and verifies normal
+  completion with `undefined`; a negative check changes only `"tfag"` to
+  `"tfgx"` and requires the uncaught `Error: assertion failed: ...`.
 - `tests/exceptions.rs` `break_and_continue_run_finally_blocks`
   (clj-quickjs-79): the body of `test_try_catch5` in
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8. Modified:

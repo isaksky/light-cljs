@@ -533,6 +533,10 @@ The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
 sloppy declaration hoisting into the caller's variable environment (clj-quickjs-108).
 
+The QuickJS try/catch fixture executes all eight cases without source
+adaptations in non-strict mode (clj-quickjs-232). The shell's `__loadScript`
+global is absent; the upstream attempt to call it catches its ReferenceError.
+
 Module source parses into static records (see "Modules"). The embedding API
 loads complete static graphs, including cycles, before task execution. Acyclic
 graphs link and evaluate with live imports and re-exports (clj-quickjs-253).
@@ -1714,6 +1718,11 @@ because the task suspends. An abrupt completion of a finally block (`return`,
 `throw`, or a `break`/`continue` out of it) replaces the pending one; a
 normal completion keeps it.
 
+`tests/fixtures/js/quickjs_test_loop_try_catch.js` runs QuickJS's complete
+`test_try_catch1`–`8` with their original `assert` helper in non-strict mode
+(clj-quickjs-232). A harness check changes one expected string and verifies
+the uncaught `Error` diagnostic, including `Error: assertion failed: ...`.
+
 ```js accept
 function f() {
   try { return 1; } finally { cleanup(); }
@@ -2828,10 +2837,10 @@ initialized from parameters of the same name); two cases of
 adapted in `tests/js_functions.rs` `default_parameters` with the notice.
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks`, and
-`test_try_catch1`–`test_try_catch8` with their upstream strings and
-`assert` calls in `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-227;
-`let` for `var`, an `assert` that throws its message string, and a counted
-`for` for the `for`-`in` of `test_try_catch8`), each with the notice.
+`test_try_catch1`–`test_try_catch8`, the `assert` helper and the caught
+`__loadScript` attempt run unmodified in non-strict mode in
+`tests/fixtures/js/quickjs_test_loop_try_catch.js` (clj-quickjs-232), each
+with the notice.
 For run-time error positions (clj-quickjs-52): `emit_source_loc` calls at
 the operator token in `js_parse_postfix_expr`, `js_parse_unary` and
 `js_parse_assign_expr2`, and `build_backtrace` / `get_line_col` (a caller
