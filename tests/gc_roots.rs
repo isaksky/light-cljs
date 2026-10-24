@@ -814,6 +814,8 @@ fn realm_intrinsics_retain() {
         "String.prototype.codePointAt",
         "String.fromCharCode",
         "String.fromCodePoint",
+        "String.prototype.indexOf",
+        "String.prototype.lastIndexOf",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -835,8 +837,9 @@ fn realm_intrinsics_retain() {
     // `Function`, `Reflect` and `Reflect.apply`, clj-quickjs-102,
     // `Function.prototype.bind`, clj-quickjs-103, and
     // `Array.prototype.push`, clj-quickjs-155, and the five string code-unit
-    // methods, clj-quickjs-143.)
-    assert_eq!(rt.heap_usage().objects.builtin, 35);
+    // methods, clj-quickjs-143, and both substring-search methods,
+    // clj-quickjs-144.)
+    assert_eq!(rt.heap_usage().objects.builtin, 37);
     assert_eq!(rt.heap_usage().objects.plain, 5);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
