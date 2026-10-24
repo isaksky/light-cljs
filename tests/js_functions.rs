@@ -2224,3 +2224,53 @@ fn global_bindings_survive_yields_collection_and_migration() {
     }
     assert!(yields > 30);
 }
+
+/// Synthetic fixture, not light-cljs output. Shared executable code and
+/// intrinsic identities must not imply shared mutable global bindings.
+#[test]
+fn global_objects_are_isolated_between_tasks() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function main(n) {
+            let fresh = typeof marker === 'undefined' && typeof Object === 'function'
+                && Object.getOwnPropertyDescriptor(globalThis, 'marker') === undefined;
+            let intrinsic = Object;
+            globalThis.marker = n;
+            Object = n + 1;
+            __rt.need(5, 3);
+            return fresh && marker === n && Object === n + 1
+                && globalThis.Object === n + 1 && intrinsic === ({}).constructor;
+        }"#,
+    )
+    .unwrap();
+    let seven = rt.root(Primitive::Number(7.0));
+    let nine = rt.root(Primitive::Number(9.0));
+    let a = rt.spawn(&code, &[&seven]).unwrap();
+    let b = rt.spawn(&code, &[&nine]).unwrap();
+    let expected = DependencyKey::new(rt.world(), DependencyId::new(5), ResultKind::new(3));
+    // A mutates first and remains alive while B checks fresh initial state
+    // and mutates the same bindings. Both then read after both writes.
+    for task in [&a, &b] {
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(key) if key == expected));
+    }
+    rt.collect().unwrap();
+    let requests = a.take_producer_requests();
+    assert_eq!(requests.len(), 1);
+    assert!(b.take_producer_requests().is_empty());
+    let ready = rt.root(Primitive::Null);
+    let runnable = rt
+        .complete(expected, requests[0].producer(), Completion::Ready(&ready))
+        .unwrap()
+        .into_runnable();
+    assert_eq!(runnable.len(), 2);
+    for task in runnable {
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
+    }
+    // A later task also starts fresh; the shared dependency is now ready.
+    let c = rt.spawn(&code, &[&seven]).unwrap();
+    assert!(
+        matches!(c.run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+}
