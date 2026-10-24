@@ -438,11 +438,19 @@ fn javascript_run_time_errors_are_catchable_error_objects() {
 
 #[test]
 fn other_failures_end_the_task_without_catch_or_finally() {
-    // Unsupported operations are not JavaScript exceptions: no catch or
-    // finally block runs.
-    let (e, log) = failure(
+    // Object conversion is now supported: this produces NaN and runs finally.
+    let (n, log) = num_log(
         "try {
            try { -(function () {}); } catch (e) { __rt.effect(1, 1); }
+         } finally { __rt.effect(1, 2); }",
+    );
+    assert!(n.is_nan());
+    assert_eq!(log, [2.0]);
+    // Unsupported operations are not JavaScript exceptions: no catch or
+    // finally block runs. Host effects require an explicit primitive argument.
+    let (e, log) = failure(
+        "try {
+           try { __rt.effect(1, {}); } catch (e) { __rt.effect(1, 1); }
          } finally { __rt.effect(1, 2); }",
     );
     assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{e}");
