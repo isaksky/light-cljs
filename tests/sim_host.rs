@@ -1430,6 +1430,19 @@ fn intl_date_time_format_time_style() {
             if (new Intl.DateTimeFormat('de', {timeStyle:'medium'}).format(d) !== '18:05:09') throw 'de medium';
             if (new Intl.DateTimeFormat('ja', {timeStyle:'short'}).format(d) !== '18:05') throw 'ja short';
             if (new Intl.DateTimeFormat('zh', {timeStyle:'short'}).format(d) !== '18:05') throw 'zh short';
+            let traditional = new Intl.DateTimeFormat('zh-Hant', {timeStyle:'short'});
+            if (traditional.format(new Date(2023,0,15,5,5)) !== '凌晨5:05') throw 'night period';
+            if (traditional.format(new Date(2023,0,15,6,5)) !== '清晨6:05') throw 'morning boundary';
+            if (traditional.format(new Date(2023,0,15,11,5)) !== '清晨11:05') throw 'morning period';
+            if (traditional.format(new Date(2023,0,15,12,5)) !== '12:05') throw 'snapshot empty noon period';
+            if (traditional.format(new Date(2023,0,15,13,5)) !== '中午1:05') throw 'afternoon boundary';
+            if (traditional.format(new Date(2023,0,15,17,5)) !== '中午5:05') throw 'afternoon period';
+            if (traditional.format(d) !== '晚上6:05') throw 'evening boundary';
+            if (traditional.format(new Date(2023,0,15,20,5)) !== '晚上8:05') throw 'evening period';
+            if (traditional.format(new Date(2023,0,15,21,5)) !== '凌晨9:05') throw 'night boundary';
+            if (new Intl.DateTimeFormat('zh-TW', {timeStyle:'short'}).format(d) !== '晚上6:05') throw 'Taiwan period';
+            if (new Intl.DateTimeFormat('zh-Hant', {timeStyle:'short',hourCycle:'h23'}).format(d) !== '18:05') throw 'leading period suppressed';
+            if (new Intl.DateTimeFormat('zh-Hant', {timeStyle:'full',timeZone:'UTC'}).format(Date.UTC(2023,0,15,18,5,9)) !== '晚上6:05:09 [Coordinated Universal Time]') throw 'period and bracket literals';
             if (new Intl.DateTimeFormat('en', {dateStyle:'short', timeStyle:'short'}).format(d) !== '1/15/23, 6:05 PM') throw 'combined';
             if (new Intl.DateTimeFormat('pt-BR', {dateStyle:'long'}).format(d) !== '15 de janeiro de 2023') throw 'quoted literals';
             if (new Intl.DateTimeFormat('ar', {timeStyle:'short'}).format(d) !== '٦:٠٥ م') throw 'digits';
@@ -1477,6 +1490,30 @@ fn intl_date_time_format_style_zone_names() {
             let f = new Intl.DateTimeFormat('de', {timeStyle:'full'});
             if (f.format(Date.UTC(2023,0,15,12)) !== '13:00:00 Central European Standard Time') throw 'winter';
             if (f.format(Date.UTC(2023,6,15,12)) !== '14:00:00 Central European Summer Time') throw 'summer';
+            true
+        "#,
+        ),
+        (
+            "Asia/Kolkata",
+            r#"
+            let short = new Intl.DateTimeFormat('en-GB', {timeStyle:'long'});
+            let full = new Intl.DateTimeFormat('en-GB', {timeStyle:'full'});
+            if (short.format(Date.UTC(2023,0,15)) !== '05:30:00 GMT+5:30') throw 'positive minute offset';
+            if (full.format(Date.UTC(2023,0,15)) !== '05:30:00 GMT+05:30') throw 'padded minute offset';
+            // The pinned 1900 offset is +05:21:10. Clock fields retain its
+            // seconds; snapshot GMT name formatting truncates to minutes.
+            if (short.format(Date.UTC(1900,0,1)) !== '05:21:10 GMT+5:21') throw 'historical seconds';
+            if (full.format(Date.UTC(1900,0,1)) !== '05:21:10 GMT+05:21') throw 'historical full';
+            true
+        "#,
+        ),
+        (
+            "Europe/London",
+            r#"
+            let short = new Intl.DateTimeFormat('en-GB', {timeStyle:'long'});
+            let full = new Intl.DateTimeFormat('en-GB', {timeStyle:'full'});
+            if (short.format(Date.UTC(2023,0,15)) !== '00:00:00 GMT') throw 'zero short';
+            if (full.format(Date.UTC(2023,0,15)) !== '00:00:00 GMT') throw 'zero full';
             true
         "#,
         ),
