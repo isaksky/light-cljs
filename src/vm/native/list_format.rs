@@ -423,10 +423,7 @@ impl State {
             )?;
             property::append(heap, task, &self.output, Some(part))
         } else {
-            self.text = self
-                .text
-                .concat(&text)
-                .ok_or(Fault::RangeError("list string too long".into()))?;
+            self.text = self.text.concat(&text).ok_or(Fault::StringTooLong)?;
             Ok(())
         }
     }

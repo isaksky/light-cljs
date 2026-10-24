@@ -70,7 +70,7 @@ impl StringRaw {
         }
         crate::value::string::StringBuild::with_length(std::mem::take(&mut self.parts), self.units)
             .map(Some)
-            .ok_or_else(|| Fault::RangeError("string too long".into()))
+            .ok_or(Fault::OutOfMemory("String.raw output buffer"))
     }
 
     fn append(&mut self, text: JsString) -> Result<Action, Fault> {
@@ -79,7 +79,7 @@ impl StringRaw {
             .units
             .checked_add(len)
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-            .ok_or_else(|| Fault::RangeError("string too long".into()))?;
+            .ok_or(Fault::StringTooLong)?;
         if len != 0 {
             self.parts.push((text, 0, len));
         }

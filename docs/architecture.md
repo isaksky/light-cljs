@@ -1519,8 +1519,8 @@ Design: `design.md` §§4, 11.
   at the first contiguous read, comparison or hash. The cache changes no observable
   content and is shared safely across readers. A Latin-1 form remains a
   possible private representation. The length limit is QuickJS's
-  `JS_STRING_LEN_MAX`, 2^30 - 1 code units; a longer concatenation fails
-  the task with `OutOfMemory` ("string too long", QuickJS's InternalError).
+  `JS_STRING_LEN_MAX`, 2^30 - 1 code units; a longer concatenation throws
+  catchable `InternalError` "string too long" (clj-quickjs-231).
 - **Instructions.** String literals are constants (`ExecutableSpec::constants`,
   `Primitive::String`; deduplicated by content; the `TooLarge` limit of
   65,536 distinct constants is unchanged). `plus` (opcode `0x49`) is
@@ -2727,6 +2727,15 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- String length overflow (clj-quickjs-231) follows `string_buffer_realloc`,
+  `js_new_string`, and `JS_ConcatString` in `research/quickjs/quickjs.c`,
+  revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, as semantic references.
+  No source or test text was adapted. `Fault::StringTooLong` maps to the
+  appended `VmErrorKind::StringTooLong` and a catchable InternalError with
+  message "string too long". Length guards precede output allocation, including
+  rope construction. Heap exhaustion remains uncatchable OutOfMemory; existing
+  per-feature argument, property-count and work limits retain their behavior.
+
 - Disposal symbols (clj-quickjs-235) use `research/quickjs/quickjs.c`
   `js_symbol_funcs` and `research/quickjs/quickjs-atom.h` entries
   `Symbol_dispose` / `Symbol_asyncDispose` as semantic references at revision
@@ -3722,7 +3731,7 @@ a starting unit, output length) and an output `Vec<u16>`, with no heap edges.
 A repeated plan supplies padding. Each native step copies at most 256 units
 or advances part boundaries, charging the instruction budget and allowing a
 safepoint. The result length is checked against `MAX_STRING_LEN` (`2^30 - 1`)
-before reserving output storage; overlong results throw `RangeError` with
+before reserving output storage; overlong results throw `InternalError` with
 "string too long". Empty padding returns the original text even for an
 infinite target. A plan representing one whole source reuses that string.
 
@@ -4096,7 +4105,7 @@ the existing wrapper representation. Boolean wrappers remain unsupported.
 
 Each join step processes at most one element. It checks the running UTF-16
 length as each separator/element is appended and rejects overflow above
-`2^30 - 1` with RangeError `"string too long"`. Completed parts move into the
+`2^30 - 1` with InternalError `"string too long"`. Completed parts move into the
 existing flat `StringBuild`, with their already checked total length, avoiding
 another linear scan. The builder reserves the final output once, then copies
 at most 256 units/part boundaries per native step. Its consuming iterator

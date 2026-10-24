@@ -281,7 +281,7 @@ pub(crate) fn bind_with_metadata(
     let name = match name {
         Value::String(name) => JsString::from("bound ")
             .concat(name)
-            .ok_or_else(exhausted)?,
+            .ok_or(Fault::StringTooLong)?,
         _ => JsString::from("bound "),
     };
     let Value::Object(target_id) = target else {

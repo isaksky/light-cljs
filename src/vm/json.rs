@@ -431,8 +431,8 @@ impl Parser {
                     mut units,
                 } => {
                     if next == end {
-                        let text = JsString::from_owned_code_units(units)
-                            .ok_or_else(|| Fault::RangeError("JSON string too long".to_string()))?;
+                        let text =
+                            JsString::from_owned_code_units(units).ok_or(Fault::StringTooLong)?;
                         self.token = Token::Ready(Lexeme::String(text), position);
                         continue;
                     }
@@ -731,7 +731,7 @@ impl Stringifier {
             .units
             .checked_add(text.len())
             .filter(|n| *n <= MAX_STRING_LEN)
-            .ok_or_else(|| Fault::RangeError("JSON.stringify string too long".into()))?;
+            .ok_or(Fault::StringTooLong)?;
         if !text.is_empty() {
             let len = text.len();
             self.parts.push((text, 0, len));
@@ -1178,6 +1178,18 @@ impl Stringifier {
 mod stringify_budget_tests {
     use super::*;
     use crate::value::string::cursor_release_counts;
+
+    #[test]
+    fn stringify_overflow_precedes_output_allocation() {
+        let mut stringify = Stringifier::new(Value::Null, Value::Undefined);
+        stringify.units = MAX_STRING_LEN;
+        assert!(stringify.append(JsString::from("")).is_ok());
+        assert!(matches!(
+            stringify.append(JsString::from("x")),
+            Err(Fault::StringTooLong)
+        ));
+        assert!(stringify.parts.is_empty());
+    }
 
     #[test]
     fn json_parse_invalid_identifier_is_budgeted() {

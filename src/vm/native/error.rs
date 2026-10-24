@@ -221,7 +221,7 @@ fn join(name: &Value, message: &Value) -> Result<JsString, Fault> {
     }
     name.concat(&JsString::from(": "))
         .and_then(|s| s.concat(message))
-        .ok_or_else(|| Fault::RangeError("string too long".into()))
+        .ok_or(Fault::StringTooLong)
 }
 
 /// Diagnostics must not run user code, including getters or conversions.

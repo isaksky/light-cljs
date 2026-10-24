@@ -59,6 +59,8 @@
 //! `TypeError` (assignment to a constant, calling a non-function),
 //! `RangeError` (invalid array length, clj-quickjs-154) and
 //! `StackOverflow` (QuickJS's catchable "stack overflow" InternalError).
+//! `StringTooLong` raises InternalError "string too long" before allocating
+//! an overlong result, including a rope concatenation (clj-quickjs-231).
 //! `SyntaxError` is catchable too. Their exception value is a fresh,
 //! task-owned ordinary instance of the realm's matching Error constructor.
 //! It has writable, configurable, non-enumerable `message` and `stack`

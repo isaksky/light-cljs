@@ -353,7 +353,7 @@ impl State {
                             .concat(source)
                             .and_then(|s| s.concat(&JsString::from("/")))
                             .and_then(|s| s.concat(&flags))
-                            .ok_or_else(|| Fault::RangeError("RegExp string too long".into()))?;
+                            .ok_or(Fault::StringTooLong)?;
                         return Ok(Action::Return(Value::String(s)));
                     }
                     _ => return Err(Fault::Internal("RegExp toString stage")),

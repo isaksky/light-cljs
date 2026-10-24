@@ -81,8 +81,10 @@ fn record_copies(units: usize) {
 }
 
 /// Maximum string length in code units: `2^30 - 1`, as QuickJS's
-/// `JS_STRING_LEN_MAX`. A concatenation that would exceed it fails instead of
-/// allocating (QuickJS raises an InternalError "string too long").
+/// `JS_STRING_LEN_MAX`. Constructors/builders reject an overlong result before
+/// allocating its storage. The VM raises catchable InternalError "string too
+/// long", including for rope concatenation; allocation exhaustion remains a
+/// separate, uncatchable OutOfMemory failure (clj-quickjs-231).
 pub const MAX_STRING_LEN: usize = (1 << 30) - 1;
 
 /// An immutable JavaScript string value: a sequence of UTF-16 code units.

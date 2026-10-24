@@ -3,6 +3,43 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+/// Synthetic fixture, not light-cljs output. Doubling retains rope children;
+/// neither the rejected result nor its large operands need a flat allocation.
+#[test]
+fn string_too_long_is_catchable() {
+    assert_eq!(
+        eval(
+            "let s = 'x'; let r = false; let finalized = false; try { for (let i = 0; i < 31; i++) s = s + s; } catch (e) { r = e instanceof InternalError && e.message === 'string too long'; } finally { finalized = true; } r && finalized && s.length === 536870912"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Test result-length guards with
+/// shared ropes, including coercion order and the unchanged empty-fill case.
+#[test]
+fn string_builders_too_long_are_internal_errors() {
+    for expression in [
+        "s.concat(s, {toString() { later++; return ''; }})",
+        "`${s}${s}`",
+        "[s, s].join('')",
+        "String.raw({raw: [s, s]})",
+        "''.padStart(1073741824, 'x')",
+        "''.padEnd(Infinity, 'x')",
+        "Error.prototype.toString.call({name: s, message: s})",
+        "RegExp.prototype.toString.call({source: max, flags: ''})",
+        "Symbol(max).toString()",
+        "(function() { let f = () => 0; Object.defineProperty(f, 'name', {value: max}); return f.bind(null); })()",
+        "({[Symbol(max)]() {}})",
+        "({get [Symbol(max)]() {}})",
+    ] {
+        let source = format!(
+            "let s = 'x'; for (let i = 0; i < 29; i++) s = s + s; let max = ''; for (let i = 0; i < 30; i++) max = max + max + 'x'; let later = 0; let caught = false; let finalized = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof InternalError && e instanceof Error && e.message === 'string too long'; }} finally {{ finalized = true; }} caught && finalized && later === 0 && ''.padStart(Infinity, '') === ''"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{expression}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first three rows adapt
 /// QuickJS tests/test_intl.js::test_listFormat (MIT notice below).
 #[test]
@@ -6655,7 +6692,7 @@ fn string_extract_combine_coercion_and_boundaries() {
     for name in ["padStart", "padEnd"] {
         for target in ["Infinity", "1073741824", "9007199254740991"] {
             let src = format!("'abc'.{name}({target}, 'x')");
-            assert_eq!(failure(&src).kind(), VmErrorKind::RangeError, "{src}");
+            assert_eq!(failure(&src).kind(), VmErrorKind::StringTooLong, "{src}");
         }
     }
 }

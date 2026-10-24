@@ -176,6 +176,8 @@ pub(crate) enum Fault {
         line: usize,
         column: usize,
     },
+    /// The result would exceed QuickJS's maximum UTF-16 string length.
+    StringTooLong,
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -330,7 +332,7 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
         (Value::String(_), _) | (_, Value::String(_)) => to_js_string(a)?
             .concat(&to_js_string(b)?)
             .map(Value::String)
-            .ok_or(Fault::OutOfMemory("string too long")),
+            .ok_or(Fault::StringTooLong),
         _ => {
             reject_mixed_bigint(a, b)?;
             Ok(Value::Number(to_number(a)? + to_number(b)?))
@@ -1477,11 +1479,10 @@ fn computed_name_step(
             None => JsString::from(""),
             Some(description) => JsString::concat(&JsString::from("["), description)
                 .and_then(|s| JsString::concat(&s, &JsString::from("]")))
-                .ok_or(Fault::OutOfMemory("computed function name too long"))?,
+                .ok_or(Fault::StringTooLong)?,
         },
     };
-    let name = JsString::concat(&name_constant(code, index)?, &name)
-        .ok_or(Fault::OutOfMemory("computed function name too long"))?;
+    let name = JsString::concat(&name_constant(code, index)?, &name).ok_or(Fault::StringTooLong)?;
     let record = heap
         .with_object_mut_known(*id, |object, shared| match object {
             HeapObject::Function(f)
@@ -1624,6 +1625,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
             (VmErrorKind::SyntaxError, m)
         }
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
+        Fault::StringTooLong => (VmErrorKind::StringTooLong, "string too long".into()),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
         Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
         Fault::Host(m) => (VmErrorKind::HostEffect, m),
@@ -1676,6 +1678,7 @@ fn catchable(kind: VmErrorKind) -> bool {
         | VmErrorKind::RangeError
         | VmErrorKind::TypeError
         | VmErrorKind::StackOverflow
+        | VmErrorKind::StringTooLong
         | VmErrorKind::DependencyFailed(_)
         | VmErrorKind::DependencyCancelled(_) => true,
         VmErrorKind::UnsupportedOperand
@@ -1762,7 +1765,9 @@ fn raise_failure_with_input(
             VmErrorKind::TypeError => Some(NativeErrorKind::Type),
             VmErrorKind::RangeError => Some(NativeErrorKind::Range),
             VmErrorKind::SyntaxError => Some(NativeErrorKind::Syntax),
-            VmErrorKind::StackOverflow => Some(NativeErrorKind::Internal),
+            VmErrorKind::StackOverflow | VmErrorKind::StringTooLong => {
+                Some(NativeErrorKind::Internal)
+            }
             _ => None,
         };
         let prototype = kind.map_or(intrinsics.error_prototype, |k| {
@@ -3020,6 +3025,25 @@ mod tests {
     use crate::vm::frames::{DiagnosticContext, VmLimits};
     use crate::vm::{Assembler, Executable};
 
+    #[test]
+    fn string_overflow_fault_is_catchable() {
+        let mut text = JsString::from("x");
+        for _ in 0..29 {
+            text = text.concat(&text).unwrap();
+        }
+        let fault = match plus(&Value::String(text.clone()), &Value::String(text)) {
+            Err(fault) => fault,
+            Ok(_) => panic!("overlong rope concatenation succeeded"),
+        };
+        let mut asm = Assembler::new();
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        let code = asm.finish("string-overflow", 0, 0).unwrap();
+        let (kind, message) = fault_error(fault, &code.0, 0);
+        assert_eq!(kind, VmErrorKind::StringTooLong);
+        assert_eq!(message, "string too long");
+        assert!(catchable(kind));
+        assert!(!catchable(VmErrorKind::OutOfMemory));
+    }
     fn state(code: &Executable, task: u64) -> VmState {
         let diag = DiagnosticContext {
             task: TaskId::from_raw(task),

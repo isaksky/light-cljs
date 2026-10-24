@@ -99,6 +99,9 @@ pub enum VmErrorKind {
     RangeError,
     /// A global declaration clashes with a restricted global property.
     SyntaxError,
+    /// A string result exceeds `2^30 - 1` UTF-16 code units. Catchable as
+    /// InternalError with message "string too long" (clj-quickjs-231).
+    StringTooLong,
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

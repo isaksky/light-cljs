@@ -83,7 +83,7 @@
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
 //! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
 //! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
-//! | `String.prototype.substring`, `.slice`, `.concat`, `.padStart`, `.padEnd` (clj-quickjs-145) | generic ToString receivers and resumable argument coercion; UTF-16 extraction/combination, with at most 256 output units copied per native step; length above `2^30 - 1`: catchable `RangeError` ("string too long") |
+//! | `String.prototype.substring`, `.slice`, `.concat`, `.padStart`, `.padEnd` (clj-quickjs-145) | generic ToString receivers and resumable argument coercion; UTF-16 extraction/combination, with at most 256 output units copied per native step; length above `2^30 - 1`: catchable `InternalError` ("string too long") |
 //! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
 //! | global `isNaN`, `isFinite`; `Number.isNaN`, `.isFinite`, `.isInteger`, `.isSafeInteger` (clj-quickjs-147) | globals apply ToNumber (objects through a resumable native conversion); Number methods return false for non-numbers without coercion; all ignore `this` and use only the first argument (absent: undefined) |
 
@@ -1390,6 +1390,13 @@ fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
     let mut units = Vec::new();
     for arg in args {
         let n = crate::vm::dispatch::to_number(arg)?;
+        if which != Builtin::StringFromCharCode {
+            validate_code_point(n)?;
+        }
+        let width = usize::from(which != Builtin::StringFromCharCode && n > 0xffff as f64) + 1;
+        if units.len() > crate::value::string::MAX_STRING_LEN - width {
+            return Err(Fault::StringTooLong);
+        }
         if which == Builtin::StringFromCharCode {
             // ToUint16: truncate, modulo 2^16, non-finite values become zero.
             let unit = if n.is_finite() {
@@ -1400,7 +1407,6 @@ fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
             let unit = if unit < 0.0 { unit + 65536.0 } else { unit };
             units.push(unit as u16);
         } else {
-            validate_code_point(n)?;
             let point = n as u32;
             if point <= 0xffff {
                 units.push(point as u16);
@@ -1410,13 +1416,10 @@ fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
                 units.push(0xdc00 | (offset & 0x3ff) as u16);
             }
         }
-        if units.len() > crate::value::string::MAX_STRING_LEN {
-            return Err(Fault::OutOfMemory("string too long"));
-        }
     }
     JsString::from_code_units(units)
         .map(Value::String)
-        .ok_or(Fault::OutOfMemory("string too long"))
+        .ok_or(Fault::StringTooLong)
 }
 
 fn validate_code_point(n: f64) -> Result<(), Fault> {
@@ -1533,7 +1536,7 @@ pub(crate) fn string_build(
                     vec![(text, 0, len)]
                 } else {
                     if target.trunc() > crate::value::string::MAX_STRING_LEN as f64 {
-                        return Err(Fault::RangeError("string too long".to_string()));
+                        return Err(Fault::StringTooLong);
                     }
                     let padding = (fill, 0, target.trunc() as usize - len);
                     if which == StringPrototypePadStart {
@@ -1546,12 +1549,18 @@ pub(crate) fn string_build(
         }
         _ => return Err(Fault::Internal("not a string build operation")),
     };
+    parts.iter().try_fold(0usize, |total, (_, _, len)| {
+        total
+            .checked_add(*len)
+            .filter(|total| *total <= crate::value::string::MAX_STRING_LEN)
+            .ok_or(Fault::StringTooLong)
+    })?;
     (if which == StringPrototypeConcat {
         crate::value::string::StringBuild::concatenation(parts)
     } else {
         crate::value::string::StringBuild::new(parts)
     })
-    .ok_or_else(|| Fault::RangeError("string too long".to_string()))
+    .ok_or(Fault::OutOfMemory("string output buffer"))
 }
 
 /// Receiver validation precedes radix coercion; the continuation retains only
@@ -1683,7 +1692,7 @@ fn symbol_descriptive_string(symbol: &crate::value::JsSymbol) -> Result<JsString
     JsString::from("Symbol(")
         .concat(symbol.description().unwrap_or(&JsString::from("")))
         .and_then(|s| s.concat(&JsString::from(")")))
-        .ok_or(Fault::OutOfMemory("string too long"))
+        .ok_or(Fault::StringTooLong)
 }
 
 /// thisSymbolValue accepts a symbol or its own branded wrapper, never a prototype slot.

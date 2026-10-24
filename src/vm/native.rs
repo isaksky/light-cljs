@@ -648,7 +648,7 @@ impl ArrayJoin {
             .units
             .checked_add(len)
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-            .ok_or_else(|| Fault::RangeError("string too long".into()))?;
+            .ok_or(Fault::StringTooLong)?;
         if len != 0 {
             self.parts.push((text, 0, len));
         }
@@ -2936,7 +2936,7 @@ impl NativeState {
                             std::mem::take(&mut join.parts),
                             join.units,
                         )
-                        .ok_or_else(|| Fault::RangeError("string too long".into()))?,
+                        .ok_or(Fault::OutOfMemory("join output buffer"))?,
                     );
                     return Ok(Action::Continue);
                 }
@@ -3613,9 +3613,7 @@ impl NativeState {
                                 *concat_len = concat_len
                                     .checked_add(text.len())
                                     .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-                                    .ok_or_else(|| {
-                                        Fault::RangeError("string too long".to_string())
-                                    })?;
+                                    .ok_or(Fault::StringTooLong)?;
                             }
                             *hint = if builtin::string_operand_is_text(which, *next + 1) {
                                 Hint::String
@@ -4198,14 +4196,16 @@ mod tests {
             parts: vec![],
             units: crate::value::string::MAX_STRING_LEN - 1,
         };
-        assert!(
-            matches!(join.step(&heap, task, Input::Start), Err(Fault::RangeError(message)) if message == "string too long")
-        );
+        assert!(matches!(
+            join.step(&heap, task, Input::Start),
+            Err(Fault::StringTooLong)
+        ));
         join.units = crate::value::string::MAX_STRING_LEN;
         assert!(join.append(JsString::from("")).is_ok());
-        assert!(
-            matches!(join.append(JsString::from("x")), Err(Fault::RangeError(message)) if message == "string too long")
-        );
+        assert!(matches!(
+            join.append(JsString::from("x")),
+            Err(Fault::StringTooLong)
+        ));
     }
 
     /// Seed an already converted near-limit prefix instead of allocating a
@@ -4241,10 +4241,16 @@ mod tests {
             method: 0,
         };
         let limit = crate::value::string::MAX_STRING_LEN;
-        assert!(
-            matches!(pending(limit - 1).step(&heap, task, &std::sync::Weak::new(), Input::Start, &mut NoHost),
-            Err(Fault::RangeError(message)) if message == "string too long")
-        );
+        assert!(matches!(
+            pending(limit - 1).step(
+                &heap,
+                task,
+                &std::sync::Weak::new(),
+                Input::Start,
+                &mut NoHost
+            ),
+            Err(Fault::StringTooLong)
+        ));
         // The same continuation below the limit really does request the
         // later conversion callback, so the overflow assertion checks order.
         assert!(
