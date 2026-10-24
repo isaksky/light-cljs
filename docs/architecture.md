@@ -3764,6 +3764,18 @@ collection and migration at every yield.
 GC inventory tests include the namespace and all six functions. Math
 constants and other methods are outside this pellet.
 
+## Math.pow and shared exponentiation (clj-quickjs-164)
+
+The realm registers a seventh Math function, `pow` (length 2), using the
+existing method flags and intrinsic rooting. `builtin::math` and the Pow
+opcode both call `dispatch::exponentiate`, keeping Number::exponentiate
+semantics in one place. Its existing `f64::powf` guard returns NaN for
+absolute base 1 and a non-finite exponent, as in QuickJS's `js_pow`.
+Object arguments enter the existing Math conversion continuation with two
+operands and number hint, so conversion remains ordered and traced through
+yields, dependency waits, collection and worker migration. Primitive calls
+use the fixed-arity leaf path. No new opcode or heap kind is needed.
+
 ## Task-owned global objects (clj-quickjs-104)
 
 Contract: `realm::new_global_object`, `realm::declare_global`,

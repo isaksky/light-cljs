@@ -919,13 +919,14 @@ pub(crate) fn start_builtin(
         | Builtin::MathCeil
         | Builtin::MathAbs
         | Builtin::MathImul
+        | Builtin::MathPow
         | Builtin::MathFround
         | Builtin::MathHypot
             if !construct =>
         {
             let count = match which {
                 Builtin::MathHypot => args.len(),
-                Builtin::MathImul => args.len().min(2),
+                Builtin::MathImul | Builtin::MathPow => args.len().min(2),
                 _ => args.len().min(1),
             };
             let operands = &args[..count];

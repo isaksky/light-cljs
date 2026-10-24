@@ -245,6 +245,8 @@ pub(crate) enum Builtin {
 
     /// NativeError constructors share Error's resumable implementation.
     NativeError(NativeErrorKind),
+    /// Number exponentiation shared with `**` (clj-quickjs-164).
+    MathPow,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -342,6 +344,7 @@ impl Builtin {
             Builtin::MathImul => "imul",
             Builtin::MathFround => "fround",
             Builtin::MathHypot => "hypot",
+            Builtin::MathPow => "pow",
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -401,7 +404,7 @@ impl Builtin {
             Builtin::ParseInt => 2,
             Builtin::ParseFloat => 1,
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
-            Builtin::MathImul | Builtin::MathHypot => 2,
+            Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -453,6 +456,7 @@ pub(crate) fn call(
         | Builtin::MathCeil
         | Builtin::MathAbs
         | Builtin::MathImul
+        | Builtin::MathPow
         | Builtin::MathFround => math(which, args),
         Builtin::MathHypot => Err(Fault::Internal("hypot requires a budgeted native frame")),
         Builtin::ObjectPrototypeToString => {
@@ -557,6 +561,10 @@ pub(super) fn math(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
         Builtin::MathCeil => x.ceil(),
         Builtin::MathAbs => x.abs(),
         Builtin::MathFround => f64::from(x as f32),
+        Builtin::MathPow => {
+            let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
+            super::dispatch::exponentiate(x, y)
+        }
         Builtin::MathImul => {
             let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
             f64::from(super::dispatch::to_int32(x).wrapping_mul(super::dispatch::to_int32(y)))

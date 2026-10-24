@@ -2534,6 +2534,18 @@ immutable despite its methods' writable/configurable descriptor flags.
 `Math()` and `new Math()` throw catchable TypeErrors; engine-raised errors
 expose stacks only, so tests verify caught failures and the runtime error kind.
 
+### Math.pow (clj-quickjs-164)
+
+Execution: `Math.pow(base, exponent)` converts the first two arguments to
+Numbers from left to right, using resumable object conversion. Missing
+arguments become undefined; extra arguments are ignored. The result uses
+the same Number::exponentiate helper as `**`: `Math.pow(NaN, 0)` is 1,
+`Math.pow(1, Infinity)` is NaN, `Math.pow(-0, -1)` is -Infinity and
+`Math.pow(-0, 3)` is -0. Its method descriptor is non-enumerable, writable
+and configurable; its length is 2 and its name is `"pow"`.
+Explicit gaps: other Math methods/constants remain in their own pellets;
+the shared intrinsic mutation restriction described above still applies.
+
 ### Global object bindings (clj-quickjs-104)
 
 Execution uses a global object owned by the running task, alongside the

@@ -861,6 +861,7 @@ fn realm_intrinsics_retain() {
         "Math.imul",
         "Math.fround",
         "Math.hypot",
+        "Math.pow",
         "Array.prototype.join",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
@@ -911,8 +912,9 @@ fn realm_intrinsics_retain() {
     // the two __proto__ accessors, clj-quickjs-261, Array.prototype.join,
     // clj-quickjs-156, Error and its prototype/toString, clj-quickjs-228,
     // String.prototype.split, clj-quickjs-157, Array.isArray, clj-quickjs-153,
-    // and seven NativeError constructors and prototypes, clj-quickjs-229.
-    assert_eq!(rt.heap_usage().objects.builtin, 70);
+    // seven NativeError constructors and prototypes, clj-quickjs-229,
+    // and Math.pow, clj-quickjs-164.
+    assert_eq!(rt.heap_usage().objects.builtin, 71);
     assert_eq!(rt.heap_usage().objects.plain, 14);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

@@ -2505,6 +2505,15 @@ summation for extreme magnitudes. `Math.floor(-0.5)` is -1;
 `Math.ceil(-0.5)` preserves negative zero. Math constants and other methods
 remain deferred. Run `cargo test --test js_source math_`.
 
+### Math.pow (clj-quickjs-164)
+
+Supported: `Math.pow(base, exponent)` shares the `**` Number exponentiation
+routine, including NaN, infinities and signed zeros. Both arguments undergo
+ToNumber in order through resumable conversion; extra arguments are ignored.
+The method has length 2 and is non-enumerable, writable and configurable.
+Other Math methods and constants remain deferred to their pellets.
+Check: `cargo test --test js_source math_pow -- --exact`.
+
 ### Global object bindings (clj-quickjs-104)
 
 Supported (`cargo test --test js_source global_object_bindings`,

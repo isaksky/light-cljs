@@ -90,6 +90,46 @@ fn constructed_arrays_are_task_owned() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. SameValue comparisons cover
+/// NaN and distinguish signed zeros for both exponentiation entry points.
+#[test]
+fn math_pow() {
+    for (base, exponent, check) in [
+        ("2", "32", "x - 1 === 4294967295"),
+        ("2", "-1", "x === 0.5"),
+        ("NaN", "0", "x === 1"),
+        ("1", "Infinity", "Number.isNaN(x)"),
+        ("-8", "1/3", "Number.isNaN(x)"),
+        ("-0", "-1", "x === -Infinity"),
+        ("-0", "3", "1 / x === -Infinity"),
+        ("-1", "-Infinity", "Number.isNaN(x)"),
+        ("1", "NaN", "Number.isNaN(x)"),
+        ("NaN", "-0", "x === 1"),
+        ("-0", "2", "1 / x === Infinity"),
+        ("-Infinity", "-3", "1 / x === -Infinity"),
+    ] {
+        let src = format!(
+            "let x = Math.pow({base}, {exponent}); ({check}) && Object.is(x, ({base}) ** ({exponent}))"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "let d = Object.getOwnPropertyDescriptor(Math, 'pow'); d.value === Math.pow && d.writable && !d.enumerable && d.configurable && Math.pow.length === 2 && Math.pow.name === 'pow'",
+        "Number.isNaN(Math.pow()) && Number.isNaN(Math.pow(2)) && Number.isNaN(Math.pow(undefined, 2))",
+        "Math.pow('2', '3') === 8 && Math.pow(null, false) === 1",
+        "Math.pow.call(null, 2, 3) === 8 && Math.pow.apply(null, [2, 3]) === 8 && Math.pow.bind(null, 2)(3) === 8",
+        "let log = ''; function v(n) { return {valueOf() { log += n; return n; }}; } Math.pow(v(2), v(3)) === 8 && log === '23'",
+        "let log = ''; let a = {valueOf() { log += 'a'; return NaN; }}; let b = {valueOf() { log += 'b'; return 0; }}; Math.pow(a, b) === 1 && log === 'ab'",
+        "let log = ''; let a = {valueOf() { throw 42; }}; let b = {valueOf() { log += 'b'; return 0; }}; let caught = false; try { Math.pow(a, b); } catch (e) { caught = e === 42; } caught && log === ''",
+        "let caught = false; try { Math.pow(NaN, {valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } caught",
+        "let o = {valueOf() { throw 42; }}; Math.pow(2, 3, o) === 8",
+        "let o = {valueOf() { return {}; }, toString() { return '3'; }}; Math.pow(new Number(2), o) === 8",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(failure("new Math.pow(2, 3)").kind(), VmErrorKind::TypeError);
+}
+
 /// Synthetic fixtures, not light-cljs output. The first rows adapt test_math
 /// in QuickJS tests/test_builtin.js (7d1c13c5d8f8); the full QuickJS copyright
 /// and MIT permission notice is retained on string_code_unit_access below.
@@ -231,6 +271,8 @@ fn math_coercion_waits_yields_collects_and_migrates() {
         ("Math.abs.apply(null, [v(-2.5, 152)]) === 2.5", "152,"),
         ("Math.fround.bind(null, v(1.5, 152))() === 1.5", "152,"),
         ("Math.imul(v(-2, 152), v(4, 153)) === -8", "152,153,"),
+        ("Math.pow(v(2, 152), v(3, 153)) === 8", "152,153,"),
+        ("Math.pow(NaN, v(0, 152)) === 1", "152,"),
         ("Math.hypot(v(3, 152), v(4, 153)) === 5", "152,153,"),
         ("Math.hypot(NaN, Infinity, v(4, 152)) === Infinity", "152,"),
         (

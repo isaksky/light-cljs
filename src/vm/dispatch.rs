@@ -228,12 +228,12 @@ pub(crate) fn to_int32(x: f64) -> i32 {
     x.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
 }
 
-/// JavaScript Number::exponentiate (`x ** y`). IEEE 754 `pow` (which
+/// JavaScript Number::exponentiate (`x ** y` and `Math.pow`). IEEE 754 `pow` (which
 /// `f64::powf` is) agrees with it except where `pow` returns 1 although
 /// JavaScript requires NaN: a non-finite exponent (NaN or ±Infinity) with
 /// base `1` or `-1`. Every other NaN exponent already gives NaN from `pow`,
 /// and `NaN ** ±0` is 1 in both. This is QuickJS's `js_pow`.
-fn exponentiate(x: f64, y: f64) -> f64 {
+pub(super) fn exponentiate(x: f64, y: f64) -> f64 {
     if !y.is_finite() && x.abs() == 1.0 {
         f64::NAN
     } else {

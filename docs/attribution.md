@@ -212,6 +212,14 @@ output; eval and NativeError instance checks are left to their own pellets.
 same revision were read as semantic references. No C code was copied;
 capture uses this runtime's explicit frames and immutable string storage.
 
+## Math.pow (clj-quickjs-164)
+
+`research/quickjs/quickjs.c`, `js_pow` and the `pow` registration in
+`js_math_funcs`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04), were read as semantic references. The existing Rust
+exponentiation helper is reused by the new built-in. Tests are synthetic
+fixtures, not light-cljs output; no upstream test text was copied.
+
 ## Array constructor and brand (clj-quickjs-153)
 
 `research/quickjs/quickjs.c`, `js_array_constructor` and `js_array_isArray`,
