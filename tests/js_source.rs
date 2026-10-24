@@ -8858,6 +8858,8 @@ fn array_push() {
         "let a = Object.freeze([1]); a.push(5)",
         "let a = Object.freeze([]); a.push()",
         "let a = Object.preventExtensions([]); a.push(5)",
+        "Array.prototype.push.call(new String('ab'))",
+        "Array.prototype.push.call(new String('ab'), 'c')",
         "Array.prototype.push.call({length: 9007199254740991}, 7)",
         "Array.prototype.push.call({length: 1/0}, 7)",
         "let p = {}; Object.defineProperty(p, 0, {value: 9}); let a = []; Object.setPrototypeOf(a, p); Array.prototype.push.call(a, 7)",
@@ -8899,6 +8901,17 @@ fn array_push() {
         VmErrorKind::RangeError
     );
     assert_eq!(failure("Array()").kind(), VmErrorKind::UnsupportedOperand);
+
+    // A String wrapper permits ordinary index additions, then rejects the
+    // final length Set even when its value is unchanged. Push always throws,
+    // including in sloppy code, and preserves any earlier successful Sets.
+    for src in [
+        "let w = new String('ab'); let caught = false; try { Array.prototype.push.call(w); } catch(e) { caught = true; } caught && w.length === 2 && w[0] === 'a' && w[1] === 'b' && !(2 in w)",
+        "let w = new String('ab'); let caught = false; try { Array.prototype.push.call(w, 'c'); } catch(e) { caught = true; } caught && w.length === 2 && w[0] === 'a' && w[1] === 'b' && w[2] === 'c'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+        assert_eq!(sloppy_eval(src), ValueView::Bool(true), "{src}");
+    }
 
     // Yield and collect throughout repeated appends, including heap-valued
     // elements whose only references are in the growing dense array.

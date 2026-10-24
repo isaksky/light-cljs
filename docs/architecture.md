@@ -3377,7 +3377,8 @@ operand remains traced until its method returns a primitive, and callbacks
 run through explicit VM frames, preserving waits, GC, budget yields, migration,
 exceptions and cancellation. Implicit wrapper equality and addition use the
 existing resumable operator paths, observing overridden conversion methods.
-String exotic own properties and own-key enumeration remain deferred to -142.
+String exotic own properties and enumeration use the immutable string slot;
+see "String own properties" (clj-quickjs-142).
 
 Semantic references only (no upstream implementation code copied):
 `research/quickjs/quickjs.c` at revision
