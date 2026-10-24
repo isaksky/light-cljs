@@ -1902,13 +1902,18 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
   `a["1"]`, `a[-0]` is `a["0"]`) on objects and arrays (clj-quickjs-115, above).
 - `Array.prototype` (a realm intrinsic inheriting from `Object.prototype`)
   as every array's prototype; `a[k](...)` as a method call.
+- `join` and `toString` (clj-quickjs-156): generic array-like joining,
+  resumable getters/coercion and bounded string building; array conversion in
+  addition, templates and property keys. Cycles throw catchable StackOverflow
+  at the task's call-depth limit. See `docs/grammar.md`.
 
 Deferred:
 
-- Array methods other than `push` (clj-quickjs-155), calling the `Array`
-  constructor, and `Array.isArray` (clj-quickjs-39, -153..-156).
-  The `Array` global exposes `Array.prototype`; its `toString` and
-  constructor still fail when called. Assigning `length` supports
+- Array methods other than `push`, `join` and `toString`, calling the `Array`
+  constructor, and `Array.isArray` (clj-quickjs-39, -153).
+  The `Array` global exposes `Array.prototype`; its
+  constructor still fails when called. Boolean receivers of the generic array
+  string methods require the deferred Boolean wrappers. Assigning `length` supports
   ArraySetLength (clj-quickjs-154). Spread elements and array destructuring
   (`Unsupported`); object keys convert since clj-quickjs-70.
   `__rt.vector` values stay persistent vectors, not arrays.
@@ -2360,8 +2365,8 @@ Supported (`cargo test --test js_source objects_convert_with_to_primitive`,
   yields, `__rt.need` waits, GC and migration. Exceptions propagate and
   cancellation runs finally blocks without restarting a conversion.
 
-Deferred: Symbol.toPrimitive; Function.prototype.toString and
-Array.prototype.join. Functions use the available Object.prototype default (`"[object Function]"`);
+Deferred: Symbol.toPrimitive and Function.prototype.toString.
+Functions use the available Object.prototype default (`"[object Function]"`);
 runtime collections with no conversion methods throw TypeError. Leaf built-ins
 still reject object conversion arguments (for example descriptor keys,
 array lengths and apply's argument-list length); these require their own

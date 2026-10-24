@@ -164,3 +164,13 @@ Other cases are synthetic fixtures, not light-cljs output.
 semantic references. The Rust implementation was written afresh over the
 existing realm and resumable native protocol, with scaled compensated
 summation rather than the reference implementation's repeated hypot calls.
+
+## Array join and toString (clj-quickjs-156)
+
+`research/quickjs/quickjs.c`, `js_array_join` and `js_array_toString`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), were read as
+semantic references. The Rust continuations were written afresh. The basic
+join/toString rows in `tests/js_source.rs::array_join_and_to_string` cover
+`tests/test_builtin.js::test_array` at that revision; the full QuickJS MIT
+copyright and permission notice is retained with that test. Other tests are
+synthetic fixtures, not light-cljs output; no C implementation was copied.

@@ -66,7 +66,7 @@
 //! | `Object.is(a, b)` | SameValue: `NaN` is `NaN`, `0` is not `-0`, strings by content, objects by identity |
 //! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Array]"` for an array (clj-quickjs-118); `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); an error object or a primitive receiver: `UnsupportedOperand` (their tags belong to clj-quickjs-230 and clj-quickjs-72/-73) |
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
-//! | `Array.prototype.toString()` (clj-quickjs-118) | `UnsupportedOperand` until `Array.prototype.join` exists (clj-quickjs-39), never `Object.prototype.toString`'s answer |
+//! | `Array.prototype.join(separator)`, `.toString()` (clj-quickjs-156) | generic array-like join through resumable length/index getters and ToPrimitive; undefined separator defaults to comma; null/undefined elements give empty strings; bounded string building; toString dynamically calls join, or intrinsic Object.prototype.toString for a non-callable join; cycles reach catchable StackOverflow |
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
 //! | `Array.prototype.push(...items)` (clj-quickjs-155) | ToObject(receiver), ToLength(`length`), Set each index and then `length` with Throw=true, return the new length; over `2^53 - 1`: catchable `TypeError`; null/undefined: catchable `TypeError`; primitive receiver wrappers: `UnsupportedOperand`; object lengths convert resumably |
 //! | `Object.defineProperty(o, k, attributes)` | define or update the own data or accessor property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError` |
@@ -119,8 +119,7 @@ pub(crate) enum Builtin {
     ObjectPrototypeToString,
     /// `Object.prototype.valueOf` (QuickJS `js_object_valueOf`).
     ObjectPrototypeValueOf,
-    /// `Array.prototype.toString` (clj-quickjs-118): fails explicitly
-    /// until `Array.prototype.join` exists (clj-quickjs-39).
+    /// `Array.prototype.toString` (clj-quickjs-118/-156): dynamic join call.
     ArrayPrototypeToString,
     /// `Array` (clj-quickjs-118): reachable only as
     /// `Array.prototype.constructor`; fails when called until the Array
@@ -232,6 +231,9 @@ pub(crate) enum Builtin {
     /// `Object.prototype.__proto__` accessor functions (clj-quickjs-261).
     ObjectPrototypeProtoGetter,
     ObjectPrototypeProtoSetter,
+
+    /// Generic resumable array-like joining (clj-quickjs-156).
+    ArrayPrototypeJoin,
 }
 
 impl Builtin {
@@ -265,6 +267,7 @@ impl Builtin {
             Builtin::Function => "Function",
             Builtin::FunctionPrototypeBind => "bind",
             Builtin::ArrayPrototypePush => "push",
+            Builtin::ArrayPrototypeJoin => "join",
             Builtin::StringPrototypeCharAt => "charAt",
             Builtin::StringPrototypeCharCodeAt => "charCodeAt",
             Builtin::StringPrototypeCodePointAt => "codePointAt",
@@ -323,6 +326,7 @@ impl Builtin {
             Builtin::ReflectApply => 3,
             Builtin::FunctionPrototypeBind => 1,
             Builtin::ArrayPrototypePush => 1,
+            Builtin::ArrayPrototypeJoin => 1,
             Builtin::StringPrototypeCharAt
             | Builtin::StringPrototypeCharCodeAt
             | Builtin::StringPrototypeCodePointAt
@@ -409,8 +413,8 @@ pub(crate) fn call(
                 v.type_name()
             ))),
         },
-        Builtin::ArrayPrototypeToString => Err(Fault::Unsupported(
-            "Array.prototype.toString (Array.prototype.join) is not supported".to_string(),
+        Builtin::ArrayPrototypeToString | Builtin::ArrayPrototypeJoin => Err(Fault::Internal(
+            "array string methods must run through a native frame",
         )),
         Builtin::ArrayPrototypePush => Err(Fault::Internal(
             "push must run through the native trampoline",
@@ -852,6 +856,36 @@ pub(crate) fn primitive_constructor(
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or_else(exhausted)
+}
+
+/// ToObject for the generic array string methods. Boolean wrappers remain
+/// unsupported until Boolean.prototype exists; never give them a wrong tag.
+pub(crate) fn array_string_receiver(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+) -> Result<Value, Fault> {
+    match this {
+        Value::Object(_) => Ok(this.clone()),
+        Value::Number(_) | Value::String(_) => primitive_constructor(
+            heap,
+            task,
+            if matches!(this, Value::Number(_)) {
+                Builtin::Number
+            } else {
+                Builtin::String
+            },
+            std::slice::from_ref(this),
+            true,
+        ),
+        Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
+            "cannot convert {} to object",
+            this.type_name()
+        ))),
+        Value::Bool(_) => Err(Fault::Unsupported(
+            "Boolean wrapper objects are not supported".into(),
+        )),
+    }
 }
 
 /// A receiver's kind for a thisNumberValue/thisStringValue message.

@@ -1796,9 +1796,8 @@ does.
 intrinsics"), `Array.prototype` is a shared immutable intrinsic: an
 ordinary object (not itself an array, which is unobservable while nobody
 can write to it) inheriting from `Object.prototype`, with an own `length`
-of 0, a `push` method (clj-quickjs-155), a `toString` that fails explicitly
-until `Array.prototype.join` exists (so `[].toString()` never answers
-`"[object Array]"`), and a
+of 0, a `push` method (clj-quickjs-155), `join` and `toString`
+(clj-quickjs-156), and a
 `constructor` that is the `Array` built-in, a stub that fails when called
 and is also a global name (clj-quickjs-155; construction remains
 clj-quickjs-39). Every array literal
@@ -3896,3 +3895,33 @@ the built-in functions. QuickJS `js_object_get___proto__`,
 `js_object_set___proto__` and `js_object_proto_funcs` in
 `research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`, were consulted for semantics;
 no source or tests were copied.
+
+### Array string conversion (clj-quickjs-156)
+
+`Array.prototype.join` and `toString` are realm built-in functions executed
+through task-owned native continuations. Join retains its receiver, separator,
+snapshotted ToLength, index, stage and accumulated immutable string parts.
+Length/index getters and OrdinaryToPrimitive run as ordinary VM frames;
+ToNumber/ToString subcontinuations return into the saved stage without replay.
+The receiver and separator are traced roots; string parts own immutable Arc
+bodies without heap edges. Number/String primitive receivers are boxed using
+the existing wrapper representation. Boolean wrappers remain unsupported.
+
+Each join step processes at most one element. It checks the running UTF-16
+length as each separator/element is appended and rejects overflow above
+`2^30 - 1` with RangeError `"string too long"`. Completed parts move into the
+existing flat `StringBuild`, with their already checked total length, avoiding
+another linear scan. The builder reserves the final output once, then copies
+at most 256 units/part boundaries per native step. Its consuming iterator
+releases each part as it finishes, and transfers its Vec into the immutable
+string without a final copy. Parts metadata grows amortized linearly; copying
+string content is linear, with no repeated prefix concatenation. Allocation
+and metadata-vector growth remain synchronous, as with other native builders.
+
+Array `toString` reads the dynamic `join` property, including accessors, then
+calls it with the receiver and no arguments; a non-callable value selects
+intrinsic Object.prototype.toString (the existing Array tag). Both calls use
+ordinary resumable dispatch. Cyclic arrays keep recursing through explicit
+native frames, bounded by `VmLimits.max_call_depth`, producing the catchable
+StackOverflow failure required by this pellet. There is no Rust recursion,
+cycle suppression, or empty-string substitution for cycles.

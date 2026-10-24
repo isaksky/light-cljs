@@ -265,6 +265,7 @@ enum Action {
     Continue,
 
     ToNumber(Value),
+    ToString(Value),
     /// Replace a completed conversion with the remaining built-in work.
     Builtin {
         which: builtin::Builtin,
@@ -307,6 +308,7 @@ enum Hint {
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
     NumberValue,
+    StringValue,
     Instruction(Instr),
     PrimitiveConstructor {
         which: builtin::Builtin,
@@ -419,6 +421,155 @@ enum NativeState {
         sum: f64,
         correction: f64,
     },
+    Join(Box<ArrayJoin>),
+    ArrayToString {
+        this: Value,
+        stage: u8,
+    },
+}
+
+#[derive(Debug)]
+enum JoinStage {
+    Length,
+    LengthValue,
+    Separator,
+    SeparatorValue,
+    Element,
+    ElementValue,
+    ElementString,
+}
+
+/// Each step visits at most one element. String bodies are retained as
+/// immutable parts, then copied by StringBuild in 256-unit slices.
+#[derive(Debug)]
+struct ArrayJoin {
+    this: Value,
+    separator: Value,
+    stage: JoinStage,
+    len: u64,
+    next: u64,
+    parts: Vec<(JsString, usize, usize)>,
+    units: usize,
+}
+
+impl ArrayJoin {
+    fn append(&mut self, text: JsString) -> Result<(), Fault> {
+        let len = text.len();
+        self.units = self
+            .units
+            .checked_add(len)
+            .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
+            .ok_or_else(|| Fault::RangeError("string too long".into()))?;
+        if len != 0 {
+            self.parts.push((text, 0, len));
+        }
+        Ok(())
+    }
+
+    fn element(&mut self, value: Value) -> Result<Action, Fault> {
+        if matches!(value, Value::Object(_)) {
+            self.stage = JoinStage::ElementString;
+            return Ok(Action::ToString(value));
+        }
+        if !matches!(value, Value::Undefined | Value::Null) {
+            self.append(dispatch::to_js_string(&value)?)?;
+        }
+        self.next += 1;
+        self.stage = JoinStage::Element;
+        Ok(Action::Continue)
+    }
+
+    fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
+        match self.stage {
+            JoinStage::Length => {
+                self.stage = JoinStage::LengthValue;
+                match property::read(
+                    heap,
+                    task,
+                    &self.this,
+                    &property::Key::Name(JsString::from("length")),
+                )? {
+                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
+                        callee,
+                        this: self.this.clone(),
+                        args: vec![],
+                    }),
+                    value => self.length(match value {
+                        Some(property::Read::Value(v)) => v,
+                        _ => Value::Undefined,
+                    }),
+                }
+            }
+            JoinStage::LengthValue => {
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("join expected length"));
+                };
+                self.length(value)
+            }
+            JoinStage::Separator => {
+                self.stage = JoinStage::SeparatorValue;
+                if matches!(self.separator, Value::Undefined) {
+                    self.separator = Value::String(JsString::from(","));
+                }
+                if matches!(self.separator, Value::Object(_)) {
+                    return Ok(Action::ToString(self.separator.clone()));
+                }
+                self.separator = Value::String(dispatch::to_js_string(&self.separator)?);
+                self.stage = JoinStage::Element;
+                Ok(Action::Continue)
+            }
+            JoinStage::SeparatorValue => {
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("join expected separator"));
+                };
+                self.separator = value;
+                self.stage = JoinStage::Element;
+                Ok(Action::Continue)
+            }
+            JoinStage::Element => {
+                if self.next > 0 {
+                    let Value::String(separator) = &self.separator else {
+                        return Err(Fault::Internal("join separator is not a string"));
+                    };
+                    self.append(separator.clone())?;
+                }
+                self.stage = JoinStage::ElementValue;
+                match property::read(heap, task, &self.this, &index_key(self.next))? {
+                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
+                        callee,
+                        this: self.this.clone(),
+                        args: vec![],
+                    }),
+                    Some(property::Read::Value(value)) => self.element(value),
+                    None => self.element(Value::Undefined),
+                }
+            }
+            JoinStage::ElementValue => {
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("join expected element"));
+                };
+                self.element(value)
+            }
+            JoinStage::ElementString => {
+                let Input::CallResult(Value::String(text)) = input else {
+                    return Err(Fault::Internal("join expected element string"));
+                };
+                self.append(text)?;
+                self.next += 1;
+                self.stage = JoinStage::Element;
+                Ok(Action::Continue)
+            }
+        }
+    }
+
+    fn length(&mut self, value: Value) -> Result<Action, Fault> {
+        if matches!(value, Value::Object(_)) {
+            return Ok(Action::ToNumber(value));
+        }
+        self.len = to_length(&value)?;
+        self.stage = JoinStage::Separator;
+        Ok(Action::Continue)
+    }
 }
 
 /// A pending resumable native operation. See the module docs.
@@ -439,6 +590,11 @@ pub(crate) struct NativeFrame {
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
+            NativeState::Join(join) => {
+                join.this.trace(visit);
+                join.separator.trace(visit);
+            }
+            NativeState::ArrayToString { this, .. } => this.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
                     v.trace(visit);
@@ -643,6 +799,19 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::ArrayPrototypeJoin => Some(NativeState::Join(Box::new(ArrayJoin {
+                this: builtin::array_string_receiver(heap, state.diag.task, this)?,
+                separator: arg(0),
+                stage: JoinStage::Length,
+                len: 0,
+                next: 0,
+                parts: vec![],
+                units: 0,
+            }))),
+            Builtin::ArrayPrototypeToString => Some(NativeState::ArrayToString {
+                this: builtin::array_string_receiver(heap, state.diag.task, this)?,
+                stage: 0,
+            }),
             Builtin::FunctionPrototypeApply | Builtin::ReflectApply => {
                 let (callee, receiver, list) = if which == Builtin::ReflectApply {
                     (arg(0), arg(1), arg(2))
@@ -1009,6 +1178,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Continue
             | Action::Call { .. }
             | Action::ToNumber(_)
+            | Action::ToString(_)
             | Action::Builtin { .. }
             | Action::Need { .. }
             | Action::Return(_)
@@ -1074,16 +1244,21 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.truncate_operands(base)?;
     match action {
-        Action::ToNumber(value) => {
+        Action::ToNumber(_) | Action::ToString(_) => {
+            let (value, target, hint) = match action {
+                Action::ToNumber(value) => (value, ConvertTarget::NumberValue, Hint::Number),
+                Action::ToString(value) => (value, ConvertTarget::StringValue, Hint::String),
+                _ => unreachable!(),
+            };
             set_awaiting(state, Awaiting::CallResult)?;
             push_native(
                 state,
                 NativeState::Convert {
-                    target: ConvertTarget::NumberValue,
+                    target,
                     operands: vec![value],
                     next: 0,
                     end: 1,
-                    hint: Hint::Number,
+                    hint,
                     method: 0,
                     method_get: false,
                 },
@@ -1256,6 +1431,67 @@ impl NativeState {
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::Join(join) => {
+                if matches!(join.stage, JoinStage::Element) && join.next == join.len {
+                    *self = NativeState::StringBuild(
+                        crate::value::string::StringBuild::with_length(
+                            std::mem::take(&mut join.parts),
+                            join.units,
+                        )
+                        .ok_or_else(|| Fault::RangeError("string too long".into()))?,
+                    );
+                    return Ok(Action::Continue);
+                }
+                join.step(heap, task, input)
+            }
+            NativeState::ArrayToString { this, stage } => {
+                let method = if *stage == 0 {
+                    *stage = 1;
+                    match property::read(
+                        heap,
+                        task,
+                        this,
+                        &property::Key::Name(JsString::from("join")),
+                    )? {
+                        Some(property::Read::Getter(callee)) => {
+                            return Ok(Action::Call {
+                                callee,
+                                this: this.clone(),
+                                args: vec![],
+                            });
+                        }
+                        Some(property::Read::Value(value)) => value,
+                        None => Value::Undefined,
+                    }
+                } else {
+                    let Input::CallResult(value) = input else {
+                        return Err(Fault::Internal("array toString expected call result"));
+                    };
+                    if *stage == 2 {
+                        return Ok(Action::Return(value));
+                    }
+                    value
+                };
+                match dispatch::callee(heap, &method) {
+                    Ok(_) => {
+                        *stage = 2;
+                        Ok(Action::Call {
+                            callee: method,
+                            this: this.clone(),
+                            args: vec![],
+                        })
+                    }
+                    Err(Fault::NotCallable(_)) => builtin::call(
+                        heap,
+                        task,
+                        builtin::Builtin::ObjectPrototypeToString,
+                        this,
+                        &[],
+                    )
+                    .map(Action::Return),
+                    Err(error) => Err(error),
+                }
+            }
             NativeState::Bind {
                 target,
                 args,
@@ -1738,6 +1974,8 @@ impl NativeState {
                     ConvertTarget::NumberValue => {
                         dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))
                     }
+                    ConvertTarget::StringValue => dispatch::to_js_string(&operands[0])
+                        .map(|s| Action::Return(Value::String(s))),
                     ConvertTarget::PropertyBuiltin { which } => Ok(Action::Builtin {
                         which,
                         args: operands.clone(),
@@ -1866,6 +2104,8 @@ impl NativeState {
                 | NativeState::Instanceof { .. }
                 | NativeState::Apply { .. }
                 | NativeState::Push { .. }
+                | NativeState::Join(_)
+                | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }
@@ -1941,6 +2181,31 @@ mod tests {
     use crate::vm::dispatch::{Exit, execute};
     use crate::vm::frames::{DiagnosticContext, VmLimits};
     use crate::vm::{Assembler, Executable, Opcode};
+
+    #[test]
+    fn join_overflow_is_checked_before_the_next_getter() {
+        // Model a near-limit prefix without allocating a gigabyte. The
+        // separator overflows before index 1 can be read or converted.
+        let heap = Heap::default();
+        let task = TaskId::from_raw(156);
+        let mut join = ArrayJoin {
+            this: Value::Null,
+            separator: Value::String(JsString::from("ab")),
+            stage: JoinStage::Element,
+            len: 2,
+            next: 1,
+            parts: vec![],
+            units: crate::value::string::MAX_STRING_LEN - 1,
+        };
+        assert!(
+            matches!(join.step(&heap, task, Input::Start), Err(Fault::RangeError(message)) if message == "string too long")
+        );
+        join.units = crate::value::string::MAX_STRING_LEN;
+        assert!(join.append(JsString::from("")).is_ok());
+        assert!(
+            matches!(join.append(JsString::from("x")), Err(Fault::RangeError(message)) if message == "string too long")
+        );
+    }
 
     /// Seed an already converted near-limit prefix instead of allocating a
     /// gigabyte string. The later object's toString must not run on overflow.

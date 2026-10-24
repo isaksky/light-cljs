@@ -160,8 +160,7 @@ impl JsString {
 /// (padding). All storage is task-owned Rust data with no collector edges.
 #[derive(Debug)]
 pub(crate) struct StringBuild {
-    parts: Vec<(JsString, usize, usize)>,
-    part: usize,
+    parts: std::vec::IntoIter<(JsString, usize, usize)>,
     offset: usize,
     units: Vec<u16>,
 }
@@ -171,6 +170,12 @@ impl StringBuild {
         let len = parts
             .iter()
             .try_fold(0usize, |n, (_, _, len)| n.checked_add(*len))?;
+        Self::with_length(parts, len)
+    }
+
+    /// The caller has already accumulated and checked the sum of part
+    /// lengths incrementally. Avoid scanning a long join's parts again.
+    pub(crate) fn with_length(parts: Vec<(JsString, usize, usize)>, len: usize) -> Option<Self> {
         if len > MAX_STRING_LEN {
             return None;
         }
@@ -181,8 +186,7 @@ impl StringBuild {
             units.try_reserve_exact(len).ok()?;
         }
         Some(Self {
-            parts,
-            part: 0,
+            parts: parts.into_iter(),
             offset: 0,
             units,
         })
@@ -193,17 +197,21 @@ impl StringBuild {
     pub(crate) fn advance(&mut self, budget: usize) -> Option<JsString> {
         if let [(text, 0, len)] = self.parts.as_slice()
             && *len == text.len()
+            && self.units.is_empty()
+            && self.offset == 0
         {
             return Some(text.clone());
         }
         for _ in 0..budget {
-            let Some((text, start, len)) = self.parts.get(self.part) else {
+            let Some((text, start, len)) = self.parts.as_slice().first() else {
                 return Some(JsString(Arc::new(Body {
                     units: std::mem::take(&mut self.units),
                 })));
             };
             if self.offset == *len {
-                self.part += 1;
+                // Release each consumed body in a bounded step, rather than
+                // dropping every retained string at completion.
+                self.parts.next();
                 self.offset = 0;
             } else {
                 self.units
@@ -1133,6 +1141,17 @@ mod tests {
         assert_eq!(result.len(), 513);
         assert!(result.code_units().iter().all(|unit| *unit == b'b' as u16));
         assert_eq!(result.code_units().as_ptr(), allocation);
+
+        // Crossing into the final full-string part must preserve the prefix;
+        // the identity shortcut only applies before output has been copied.
+        let tail = JsString::from("z".repeat(512).as_str());
+        let mut build =
+            StringBuild::new(vec![(JsString::from("x"), 0, 1), (tail, 0, 512)]).unwrap();
+        assert!(build.advance(256).is_none());
+        assert!(build.advance(256).is_none());
+        let result = build.advance(256).unwrap();
+        assert_eq!(result.len(), 513);
+        assert_eq!(result.code_units()[0], b'x' as u16);
     }
 
     #[test]

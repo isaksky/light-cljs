@@ -34,7 +34,8 @@
 //! | `Object.getOwnPropertyNames` | built-in function | `length` (1), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
-//! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString`, `push` (clj-quickjs-155) |
+//! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString`, `push` (clj-quickjs-155), `join` (clj-quickjs-156) |
+//! | `Array.prototype.join` | built-in function ([`Builtin::ArrayPrototypeJoin`]) | `length` (1), `name` |
 //! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
 //! | `Array.prototype.push` | built-in function ([`Builtin::ArrayPrototypePush`]) | `length` (1), `name` |
 //! | `Array` (global name, clj-quickjs-155; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
@@ -749,18 +750,17 @@ fn primitive_prototype(
 
 /// `Array.prototype` (clj-quickjs-118): an intrinsic ordinary object
 /// inheriting from `Object.prototype`, with an own `length` of 0 (writable,
-/// not enumerable, not configurable, as an array's) and a `toString` that
-/// fails explicitly until `Array.prototype.join` exists (clj-quickjs-39), so
-/// `[].toString()` never answers `Object.prototype.toString`'s
-/// `"[object Array]"`. ECMAScript makes it an array exotic object itself;
+/// not enumerable, not configurable, as an array's), `join` and `toString`
+/// (clj-quickjs-156). ECMAScript makes it an array exotic object itself;
 /// that is not observable while no code can write to it. Its
 /// `constructor` is the `Array` constructor stub (also a global name,
 /// clj-quickjs-155). `push` is supported; calling the constructor and the
-/// remaining methods belong to clj-quickjs-39 and -153..-156.
+/// remaining methods belong to clj-quickjs-39 and -153.
 fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
     let to_string = b.function(Builtin::ArrayPrototypeToString, &[])?;
     let push = b.function(Builtin::ArrayPrototypePush, &[])?;
+    let join = b.function(Builtin::ArrayPrototypeJoin, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
     let length = heap.keys().intern(&JsString::from("length"))?;
     let length_flags = PropertyFlags {
@@ -779,6 +779,7 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
         PropertyFlags::METHOD,
     )?;
     define(heap, &mut prototype, "push", push, PropertyFlags::METHOD)?;
+    define(heap, &mut prototype, "join", join, PropertyFlags::METHOD)?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
     b.all.push(id);
     // `Array.prototype.constructor` is the `Array` constructor, a stub

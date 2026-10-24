@@ -7993,12 +7993,9 @@ fn array_literals() {
     // Setting length truncates; an ordinary object key converts to a name.
     assert_eq!(num("let a = [1];\na.length = 0; a.length"), 0.0);
     assert_eq!(num("let a = [1]; a[{}] = 1; a['[object Object]']"), 1.0);
-    let (kind, message, line, _) = failure_at("let a = [1];\na[[]];");
-    assert_eq!((kind, line), (VmErrorKind::UnsupportedOperand, 2));
-    assert!(message.contains("Array.prototype.toString"));
+    assert_eq!(eval("let a = [1];\na[[]];"), ValueView::Undefined);
     // The prototype chain: Array.prototype, then Object.prototype. Its
-    // push is supported; toString and the constructor fail
-    // explicitly rather than answer as Object's would.
+    // push and toString are supported; the constructor still fails explicitly.
     for src in [
         "[].valueOf === Object.prototype.valueOf",
         "let a = [1]; a.valueOf() === a",
@@ -8022,10 +8019,8 @@ fn array_literals() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
-    for (src, needle) in [
-        ("let a = [1];\na.toString();", "Array.prototype.toString"),
-        ("let a = [];\na.constructor();", "Array constructor"),
-    ] {
+    {
+        let (src, needle) = ("let a = [];\na.constructor();", "Array constructor");
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains(needle), "{src}: {message}");
@@ -11237,4 +11232,149 @@ fn global_object_descriptors() {
         "Object.defineProperty(globalThis, 'globalThis', {enumerable: true}); \
          Object.keys(this)[0] === 'globalThis'",
     );
+}
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-156).
+/// Basic join/toString rows cover QuickJS tests/test_builtin.js::test_array,
+/// revision 7d1c13c5d8f8. Copyright (c) 2017-2021 Fabrice Bellard.
+/// Copyright (c) 2017-2021 Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn array_join_and_to_string() {
+    for (src, expected) in [
+        ("[1, 2, 3, 4].join()", "1,2,3,4"),
+        ("[1, 2].join('-')", "1-2"),
+        ("[1, 2].join(undefined)", "1,2"),
+        ("[].join()", ""),
+        ("[null, undefined, 1].join()", ",,1"),
+        ("[1, , 3].join()", "1,,3"),
+        ("[[1, 2], [3]].join(';')", "1,2;3"),
+        ("[1, 2].toString()", "1,2"),
+        ("'' + [1, 2]", "1,2"),
+        ("`${[1, 2]}`", "1,2"),
+        ("[{}].join()", "[object Object]"),
+        ("[{toString: function () { return 'x'; }}].join()", "x"),
+        ("let b = [1]; b.join = 5; b.toString()", "[object Array]"),
+        (
+            "Array.prototype.join.call({0: 'a', 2: 'c', length: '3.9'}, '-')",
+            "a--c",
+        ),
+        ("Array.prototype.join.call('abc', '-')", "a-b-c"),
+        ("Array.prototype.join.call(3)", ""),
+        ("Array.prototype.join.call({length: -2})", ""),
+        ("Array.prototype.join.call({length: NaN})", ""),
+        (
+            "Array.prototype.join.call({length: {valueOf() { return 2; }}, 0: 4, 1: 5})",
+            "4,5",
+        ),
+        (
+            "Array.prototype.toString.call({join() { return this.x; }, x: 'ok'})",
+            "ok",
+        ),
+        (
+            "Array.prototype.toString.call({join: null})",
+            "[object Object]",
+        ),
+        (
+            "let a = [1, 2]; Object.defineProperty(a, 'join', {get() { return function () { return this[1] + 'x'; }; }}); a.toString()",
+            "2x",
+        ),
+        (
+            "let a = [, 2]; let p = Object.create(Array.prototype); p[0] = 7; Object.setPrototypeOf(a, p); a.join()",
+            "7,2",
+        ),
+        (
+            "let a = [1, 2]; a[0] = {toString() { a.push(3); a[1] = 4; return 'x'; }}; a.join()",
+            "x,4",
+        ),
+        ("[1, 2].join({toString() { return '-'; }})", "1-2"),
+        ("[1, 2].join(null)", "1null2"),
+    ] {
+        assert_eq!(string(src), expected, "{src}");
+    }
+    for src in [
+        "let log = ''; let o = {get length() { log += 'l'; return {valueOf() { log += 'v'; return 2; }}; }, get 0() { log += 'a'; return {toString() { log += 't'; return 'x'; }}; }, get 1() { log += 'b'; return null; }}; let s = {toString() { log += 's'; return '-'; }}; Array.prototype.join.call(o, s) === 'x-' && log === 'lvsatb'",
+        "let hit = 0; [].join({toString() { hit++; return ''; }}) === '' && hit === 1",
+        "let o = {join() { return 42; }}; Array.prototype.toString.call(o) === 42",
+        "Array.prototype.join.name === 'join' && Array.prototype.join.length === 1 && Array.prototype.toString.length === 0",
+        "let d = Object.getOwnPropertyDescriptor(Array.prototype, 'join'); d.writable && !d.enumerable && d.configurable",
+        "let caught = false; try { [1, {toString() { throw 42; }}].join(); } catch (e) { caught = e === 42; } caught && [2, 3].join() === '2,3'",
+        "let a = [1]; a[1] = a; let caught = false; try { a.join(); } catch (e) { caught = true; } caught && [3].join() === '3'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "Array.prototype.join.call(null)",
+        "Array.prototype.join.call(undefined)",
+        "Array.prototype.toString.call(null)",
+        "Array.prototype.toString.call(undefined)",
+        "[Object.create(null)].join()",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+    assert_eq!(
+        failure("let a = [1]; a[1] = a; a.join()").kind(),
+        VmErrorKind::StackOverflow
+    );
+}
+
+#[test]
+fn array_join_yields_and_collects() {
+    struct JoinHost(bool);
+    impl Host for JoinHost {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
+    // Synthetic fixture, not light-cljs output. Budget during both element
+    // conversion and copying a single large element/separator.
+    for (source, minimum_yields) in [
+        (
+            "let a = []; for (let i = 0; i < 10000; i++) { a.push('x'); } __rt.effect(1, 0); let s = a.join(); s.length === 19999 && s[19998] === 'x'",
+            100,
+        ),
+        (
+            "let s = 'x'.padEnd(20000, 'y'); let a = [s, s]; __rt.effect(1, 0); let result = a.join(s); result.length === 60000 && result[59999] === 'y'",
+            2,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        let mut host = JoinHost(false);
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(100), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yields += usize::from(host.0);
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(
+            complete && yields >= minimum_yields,
+            "completed={complete}, yields={yields}"
+        );
+    }
 }
