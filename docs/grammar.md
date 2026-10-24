@@ -3208,7 +3208,7 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 `Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
 BigInt primitive; `for-in` over it performs no iterations.
 
-Explicit gaps: comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
+Explicit gaps: JavaScript string/Number conversions,
 wrappers, literal property names and BigInt property keys remain assigned to
 later pellets. Available but deferred operators/conversions throw
 UnsupportedOperand naming BigInt; mixing BigInt and Number in arithmetic
@@ -3262,8 +3262,8 @@ unequal and throw TypeError for relational operators. Object operands use
 resumable ToPrimitive (number hint for relational operators, default for
 equality), retaining source conversion order and exceptions.
 
-Explicit gaps: BigInt/String comparisons throw UnsupportedOperand pending
-StringToBigInt (clj-quickjs-201), including strings returned by ToPrimitive.
+BigInt/String comparisons use StringToBigInt (clj-quickjs-201), including
+strings returned by ToPrimitive.
 Strict equality continues to distinguish Number and BigInt.
 
 ## Task-owned job execution (clj-quickjs-174)
@@ -3506,3 +3506,36 @@ new RegExp('a/b').source === 'a\\/b';
 r = /a/y; r.lastIndex = 1; r.test('ba') && r.lastIndex === 2;
 try { /a/u; } catch (e) { e instanceof SyntaxError; }
 ```
+
+### BigInt function and StringToBigInt (clj-quickjs-201)
+
+Lexical grammar: string conversion uses StringToBigInt rather than the source
+literal grammar. It trims the same StrWhiteSpace and line terminators as
+StringToNumber. Empty text is zero. Decimal digits may have one leading `+`
+or `-`; unsigned `0x`/`0X`, `0o`/`0O`, and `0b`/`0B` forms require at least
+one radix digit. Leading decimal zeros are permitted. Fractions, exponents,
+`Infinity`, separators, `n` suffixes, signed radix prefixes, embedded whitespace,
+NUL, non-ASCII digits and lone surrogates are invalid.
+
+Execution: the global `BigInt` function has length 1. Integral finite Numbers
+convert exactly from their binary64 value, including values outside i64;
+`BigInt(9007199254740993)` is `9007199254740992n`. Negative zero becomes `0n`.
+Booleans convert to `0n`/`1n`, BigInts remain unchanged, and strings use the
+shared parser. Objects use resumable ToPrimitive with hint number. Invalid
+strings throw catchable SyntaxError; fractional/non-finite Numbers and
+magnitudes exceeding 1 Mbit throw RangeError; undefined, null, symbols and
+construction with `new` throw TypeError. String validation precedes size
+rejection. `BigInt.prototype` inherits from `Object.prototype`, has a
+`constructor` link, and supplies property lookup on BigInt primitives;
+`Object.getPrototypeOf(1n)` returns it. Realm intrinsics remain immutable.
+
+BigInt/String loose equality and relational comparisons now parse the string
+exactly, including strings returned by ToPrimitive. Invalid strings are unequal
+and unordered (all four relational operators return false). Valid strings
+above the magnitude cap throw RangeError. Long scans and decimal limb updates
+yield through native continuations. Each advance handles at most 256 bounded
+scan/limb steps (a decimal group reads at most nine digits); an existing string
+rope may first flatten in linear time.
+
+Explicit gaps: BigInt wrapper objects, prototype conversion methods/ToString,
+`Number(bigint)` and `asIntN`/`asUintN` remain with their sibling pellets.

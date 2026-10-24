@@ -416,12 +416,6 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "1n < '2'",
-        "'1' < 2n",
-        "1n == '1'",
-        "'1' == 1n",
-        "1n <= {valueOf() { return '2'; }}",
-        "({valueOf() { return '1'; }}) == 1n",
         "String(1n)",
         "Number(1n)",
         "new Number(1n)",
@@ -16031,5 +16025,210 @@ fn string_split_rejects_regexp_separators() {
             ValueView::Bool(true),
             "{separator}"
         );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Covers the StringToBigInt
+/// acceptance rows also exercised by QuickJS test_bigint2 (semantic reference).
+#[test]
+fn bigint_function_converts_numbers_and_strings() {
+    for src in [
+        r#"BigInt('') === 0n && BigInt('  123') === 123n && BigInt('  123   ') === 123n"#,
+        r#"BigInt(' \n\t-42 ') === -42n && BigInt('+42') === 42n"#,
+        r#"BigInt('0x1f') === 31n && BigInt('0b101') === 5n && BigInt('0o17') === 15n"#,
+        r#"BigInt('0XFF') === 255n && BigInt('0O17') === 15n && BigInt('0B101') === 5n"#,
+        r#"BigInt(true) === 1n && BigInt(false) === 0n && BigInt(10n) === 10n"#,
+        r#"BigInt(9007199254740993) === 9007199254740992n && BigInt(1e21) === 1000000000000000000000n"#,
+        r#"BigInt(2**60) === 1152921504606846976n && BigInt(-0) === 0n && BigInt(-1e21) === -1000000000000000000000n"#,
+        r#"typeof BigInt === 'function' && BigInt.length === 1 && BigInt.name === 'BigInt' && globalThis.BigInt === BigInt"#,
+        r#"BigInt.prototype.constructor === BigInt && Object.getPrototypeOf(1n) === BigInt.prototype && (1n).constructor === BigInt"#,
+        r#"Object.getPrototypeOf(BigInt.prototype) === Object.prototype && Object.getPrototypeOf(BigInt) === Function.prototype"#,
+        r#"BigInt('\uFEFF\u00A0\u1680\u2000\u200A\u202F\u205F\u3000\u2028\u2029\r\v\f42\t ') === 42n"#,
+        r#"BigInt('000010') === 10n && BigInt('-000') === 0n && BigInt(' \n ') === 0n"#,
+        r#"let log = ''; let x = { valueOf() { log += 'v'; return {}; }, toString() { log += 's'; return '-42'; } }; BigInt(x) === -42n && log === 'vs'"#,
+        r#"BigInt.call(null, '42') === 42n && BigInt.apply(null, [true]) === 1n && BigInt.bind(null, 12)() === 12n"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (kind, expressions) in [
+        (
+            "SyntaxError",
+            &[
+                r#"BigInt('+')"#,
+                r#"BigInt('-')"#,
+                r#"BigInt('\x00a')"#,
+                r#"BigInt('  123  r')"#,
+                r#"BigInt('-0x1')"#,
+                r#"BigInt('+0b1')"#,
+                r#"BigInt('1n')"#,
+                r#"BigInt('1.5')"#,
+                r#"BigInt('1e3')"#,
+                r#"BigInt('1_0')"#,
+                r#"BigInt('0x')"#,
+                r#"BigInt('0b2')"#,
+                r#"BigInt('0o8')"#,
+                r#"BigInt('Infinity')"#,
+                r#"BigInt('\u008542')"#,
+                r#"BigInt('\uD800')"#,
+                r#"BigInt('+ 1')"#,
+            ][..],
+        ),
+        (
+            "RangeError",
+            &[
+                "BigInt(1.5)",
+                "BigInt(NaN)",
+                "BigInt(Infinity)",
+                "BigInt(-Infinity)",
+                "BigInt(5e-324)",
+            ][..],
+        ),
+        (
+            "TypeError",
+            &[
+                "BigInt(undefined)",
+                "BigInt(null)",
+                "BigInt()",
+                "BigInt(Symbol())",
+                "new BigInt(1)",
+                "new (BigInt.bind(null))(1)",
+                "BigInt({valueOf() { return {}; }, toString() { return {}; }})",
+            ][..],
+        ),
+    ] {
+        for expression in expressions {
+            assert_eq!(
+                eval(&format!(
+                    "let caught = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof {kind}; }} caught"
+                )),
+                ValueView::Bool(true),
+                "{expression}"
+            );
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. StringToBigInt comparisons
+/// preserve exact integers; invalid strings are unordered and unequal.
+#[test]
+fn bigint_string_comparisons_use_integer_grammar() {
+    for src in [
+        "1n < '2'",
+        "'1' < 2n",
+        "1n == '1'",
+        "'1' == 1n",
+        "1n <= {valueOf() { return '2'; }}",
+        "({valueOf() { return '1'; }}) == 1n",
+        "9007199254740993n == '9007199254740993' && 9007199254740993n > '9007199254740992'",
+        "'9007199254740993' > 9007199254740992n && '9007199254740993' <= 9007199254740993n",
+        "0n == '' && 0n == '  ' && -42n == '\\n-42\\t' && 16n == '0x10'",
+        "'0b11' >= 3n && '0o10' < 9n && 2n !== '2'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for text in ["1.5", "1e3", "-0x1", "1n", "+", "r", "1_0", "0x"] {
+        assert_eq!(
+            eval(&format!(
+                "let s = '{text}'; !(1n == s) && !(s == 1n) && 1n != s && !(1n < s) && !(s < 1n) && !(1n <= s) && !(s <= 1n) && !(1n > s) && !(s > 1n) && !(1n >= s) && !(s >= 1n)"
+            )),
+            ValueView::Bool(true),
+            "{text}"
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The magnitude policy applies
+/// to parsed strings too; invalid strings retain SyntaxError precedence.
+#[test]
+fn bigint_string_parsing_enforces_size_cap() {
+    use clj_quickjs::MAX_BIGINT_BITS;
+    let code =
+        compile_function("function f(s) { return BigInt(s) === (1n << 1048575n); }").unwrap();
+    for text in [
+        format!("0x8{}", "0".repeat(MAX_BIGINT_BITS / 4 - 1)),
+        format!("0b1{}", "0".repeat(MAX_BIGINT_BITS - 1)),
+    ] {
+        assert!(
+            matches!(run(&code, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
+    }
+    let caught = compile_function("function f(s) { try { BigInt(s); } catch(e) { return e instanceof RangeError && e.message === 'BigInt is too large'; } return false; }").unwrap();
+    let oversized = [
+        format!("0x1{}", "0".repeat(MAX_BIGINT_BITS / 4)),
+        "9".repeat(MAX_BIGINT_BITS * 30103 / 100000 + 2),
+    ];
+    for text in &oversized {
+        assert!(
+            matches!(run(&caught, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
+    }
+    let malformed = compile_function("function f(s) { try { BigInt(s); } catch(e) { return e instanceof SyntaxError && !(1n == s) && !(1n <= s); } return false; }").unwrap();
+    let text = format!("{}r", oversized[1]);
+    assert!(
+        matches!(run(&malformed, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    assert_eq!(
+        eval("BigInt(Number.MAX_VALUE) === (1n << 1024n) - (1n << 971n)"),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Decimal parsing must yield
+/// during limb updates as well as during scans; ToPrimitive runs only once.
+#[test]
+fn bigint_string_conversion_waits_yields_collects_and_migrates() {
+    for expression in [
+        "BigInt(value) === 10n ** 3999n",
+        "value == 10n ** 3999n",
+        "10n ** 3999n <= value",
+        "value >= 10n ** 3999n",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let calls = 0; let value = {{valueOf() {{ calls++; return __rt.need(2011, 1); }} }}; let ok = {expression}; ok && calls === 1"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let text = format!("1{}", "0".repeat(3999));
+        let mut waited = 0;
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert_eq!(waited, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::String(text.as_str().into()));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waited, 1);
+                    assert!(yields > 100, "decimal limb updates must yield: {yields}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "{expression}");
     }
 }

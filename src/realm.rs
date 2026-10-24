@@ -204,11 +204,15 @@ pub(crate) enum Global {
     Float32Array = 33,
     Float64Array = 34,
     RegExp = 35,
+
+
+
+    BigInt = 36,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 36] = [
+    const ALL: [Global; 37] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -245,11 +249,16 @@ impl Global {
         Global::Float32Array,
         Global::Float64Array,
         Global::RegExp,
+
+
+
+        Global::BigInt,
     ];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Global::BigInt => "BigInt",
             Global::Object => "Object",
             Global::Number => "Number",
             Global::String => "String",
@@ -375,6 +384,10 @@ pub(crate) struct Intrinsics {
     date: ObjectId,
     pub(crate) regexp_prototype: ObjectId,
     regexp: ObjectId,
+
+
+    pub(crate) bigint_prototype: ObjectId,
+    bigint: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -425,13 +438,15 @@ impl Intrinsics {
     /// The prototype a property access on the primitive `v` starts at, as
     /// if on its wrapper object, which is not allocated (clj-quickjs-73;
     /// QuickJS `JS_GetPrototypePrimitive`): `Number.prototype` for a
-    /// number, `String.prototype` for a string. `None` for anything else
+    /// number, `String.prototype` for a string, `BigInt.prototype` for a BigInt.
+    /// `None` for anything else
     /// (objects, `undefined`, `null`, and booleans until `Boolean.prototype`
     /// exists, clj-quickjs-39).
     pub(crate) fn primitive_prototype(&self, v: &Value) -> Option<ObjectId> {
         match v {
             Value::Number(_) => Some(self.number_prototype),
             Value::String(_) => Some(self.string_prototype),
+            Value::BigInt(_) => Some(self.bigint_prototype),
             _ => None,
         }
     }
@@ -439,6 +454,7 @@ impl Intrinsics {
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
+            Global::BigInt => Value::Object(self.bigint),
             Global::ArrayBuffer => Value::Object(self.array_buffer),
             Global::Int8Array => Value::Object(self.typed_array_constructors[0]),
             Global::Uint8Array => Value::Object(self.typed_array_constructors[1]),
@@ -939,6 +955,22 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
+
+
+    let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(bigint_prototype);
+    let bigint = b.function(
+        Builtin::BigInt,
+        &[("prototype", bigint_prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(
+        bigint_prototype,
+        "constructor",
+        bigint,
+        PropertyFlags::METHOD,
+    )?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -962,6 +994,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        bigint,
+        bigint_prototype,
         typed_array_prototypes,
         typed_array_constructors,
         regexp_prototype,
@@ -1668,7 +1702,11 @@ mod tests {
         assert_eq!(Global::from_u16(34), Some(Global::Float64Array));
         assert_eq!(Global::from_name("RegExp"), Some(Global::RegExp));
         assert_eq!(Global::from_u16(35), Some(Global::RegExp));
-        assert_eq!(Global::from_u16(36), None);
+
+
+
+        assert_eq!(Global::from_u16(36), Some(Global::BigInt));
+        assert_eq!(Global::from_u16(37), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

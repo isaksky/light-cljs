@@ -305,6 +305,10 @@ pub(crate) enum Builtin {
     RegExpSource,
     RegExpFlags,
     RegExpFlag(char),
+
+
+    /// BigInt conversion is callable, never constructible (clj-quickjs-201).
+    BigInt,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -347,6 +351,7 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::BigInt => "BigInt",
             Builtin::IntlLocale => "Locale",
             Builtin::IntlGetCanonicalLocales => "getCanonicalLocales",
             Builtin::IntlLocaleToString => "toString",
@@ -472,6 +477,7 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::BigInt => 1,
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
@@ -733,7 +739,7 @@ pub(crate) fn call(
         | Builtin::ReflectApply => {
             Err(Fault::Internal("a forwarding built-in was called directly"))
         }
-        Builtin::Number | Builtin::String | Builtin::Symbol => {
+        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
             primitive_constructor(heap, task, which, args, false)
         }
         Builtin::SymbolFor => {
@@ -1159,6 +1165,21 @@ pub(crate) fn primitive_constructor(
     construct: bool,
 ) -> Result<Value, Fault> {
     let value = match which {
+        Builtin::BigInt if !construct => match args.first().unwrap_or(&Value::Undefined) {
+            Value::BigInt(n) => Value::BigInt(n.clone()),
+            Value::Bool(b) => Value::BigInt(crate::value::JsBigInt::from(i64::from(*b))),
+            Value::Number(n) => Value::BigInt(
+                crate::value::JsBigInt::from_integral_number(*n).ok_or_else(|| {
+                    Fault::RangeError(
+                        "cannot convert non-integral or non-finite Number to BigInt".into(),
+                    )
+                })?,
+            ),
+            Value::String(_) => {
+                return Err(Fault::Internal("StringToBigInt requires a resumable frame"));
+            }
+            _ => return Err(Fault::TypeError("cannot convert to BigInt".into())),
+        },
         Builtin::Number => Value::Number(match args.first() {
             // Number permits BigInt explicitly, unlike ToNumber. Keep the
             // deferred conversion visible until clj-quickjs-203 implements it.

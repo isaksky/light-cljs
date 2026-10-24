@@ -542,3 +542,12 @@ because eval remains unavailable. Additional assertions are synthetic.
 `js_regexp_toString` in `research/quickjs/quickjs.c` at that revision were
 consulted as semantic references. Object/native Rust code is independently
 written and no QuickJS implementation is linked or copied.
+
+## BigInt function and StringToBigInt (clj-quickjs-201)
+
+Semantic references: `research/quickjs/quickjs.c` (`JS_ToBigIntCtorFree`,
+`js_bigint_constructor`, `JS_StringToBigInt`, `js_bigint_from_string`,
+`js_bigint_from_float64`, `js_bigint_funcs`, `js_bigint_proto_funcs`) and
+`research/quickjs/tests/test_bigint.js::test_bigint2`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The implementation and synthetic
+source tests are written fresh; no QuickJS source or fixture is copied.

@@ -372,6 +372,12 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    BigIntParse {
+        parser: Box<crate::value::bigint::StringToBigInt>,
+        instr: Option<Instr>,
+        operands: Vec<Value>,
+        index: usize,
+    },
     StringSplit {
         split: Box<crate::value::string::StringSplit>,
         out: Value,
@@ -670,7 +676,9 @@ impl Trace for NativeFrame {
                 defs.trace(visit);
                 out.trace(visit);
             }
-            NativeState::Convert { operands, .. } | NativeState::MathHypot { operands, .. } => {
+            NativeState::Convert { operands, .. }
+            | NativeState::MathHypot { operands, .. }
+            | NativeState::BigIntParse { operands, .. } => {
                 for v in operands {
                     v.trace(visit);
                 }
@@ -812,12 +820,24 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
         .ok_or(Fault::Internal("operand stack underflow"))
 }
 
-/// Start a continuation only when an instruction actually needs to
-/// convert an object. Primitive operands retain their single-step path.
+/// Start a continuation for object conversion or BigInt/String comparison.
+/// Other primitive operands retain their single-step path.
 /// Property operations retain their base checks before observable key
 /// conversion; equality never converts two objects or a nullish pair.
 pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool, Fault> {
     use Instr::*;
+    if matches!(
+        instr,
+        CompareLt | CompareGt | CompareLe | CompareGe | LooseEq
+    ) {
+        let pair = operands::<2>(state)?.to_vec();
+        if let Some(parser) = bigint_comparison(instr, pair) {
+            state.pop()?;
+            state.pop()?;
+            push_native(state, parser)?;
+            return Ok(true);
+        }
+    }
     let (count, first, end, hint) = match instr {
         ToNumber | ToNumeric => (1, 0, 1, Hint::Number),
         ToString => (1, 0, 1, Hint::String),
@@ -904,6 +924,20 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::BigInt
+        && !construct
+        && let Some(Value::String(text)) = args.first()
+    {
+        let parser = NativeState::BigIntParse {
+            parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
+            instr: None,
+            operands: vec![],
+            index: 0,
+        };
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, parser)?;
+        return Ok(true);
+    }
     if (which == Builtin::IntlLocale && construct)
         || (which == Builtin::IntlGetCanonicalLocales && !construct)
     {
@@ -1203,8 +1237,8 @@ pub(crate) fn start_builtin(
                 Hint::String,
             )
         }
-        Builtin::Number | Builtin::String | Builtin::Symbol => {
-            if which == Builtin::Symbol && construct {
+        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
+            if matches!(which, Builtin::Symbol | Builtin::BigInt) && construct {
                 return Ok(false);
             }
             let Some(value @ Value::Object(_)) = args.first() else {
@@ -1771,11 +1805,64 @@ pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), F
     }
 }
 
+/// Parse a string only after both operands have passed through ToPrimitive.
+/// Invalid strings become NaN, which is unequal/unordered for these operations.
+fn bigint_comparison(instr: Instr, operands: Vec<Value>) -> Option<NativeState> {
+    if !matches!(
+        instr,
+        Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe | Instr::LooseEq
+    ) {
+        return None;
+    }
+    let index = match operands.as_slice() {
+        [Value::String(_), Value::BigInt(_)] => 0,
+        [Value::BigInt(_), Value::String(_)] => 1,
+        _ => return None,
+    };
+    let Value::String(text) = &operands[index] else {
+        unreachable!()
+    };
+    Some(NativeState::BigIntParse {
+        parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
+        instr: Some(instr),
+        operands,
+        index,
+    })
+}
+
 impl NativeState {
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::BigIntParse {
+                parser,
+                instr,
+                operands,
+                index,
+            } => {
+                use crate::value::bigint::BigIntError;
+                let Some(result) = parser.advance() else {
+                    return Ok(Action::Continue);
+                };
+                let value = match result {
+                    Ok(n) => Value::BigInt(n),
+                    Err(BigIntError::InvalidDigits) if instr.is_some() => Value::Number(f64::NAN),
+                    Err(BigIntError::InvalidDigits) => {
+                        return Err(Fault::SyntaxError("invalid BigInt string".into()));
+                    }
+                    Err(error) => return Err(Fault::RangeError(error.to_string())),
+                };
+                if let Some(instr) = instr {
+                    operands[*index] = value;
+                    Ok(Action::Resume {
+                        instr: *instr,
+                        operands: std::mem::take(operands),
+                    })
+                } else {
+                    Ok(Action::Return(value))
+                }
+            }
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
@@ -2489,10 +2576,16 @@ impl NativeState {
                     ConvertTarget::Math { which, .. } => {
                         builtin::math(which, operands).map(Action::Return)
                     }
-                    ConvertTarget::Instruction(instr) => Ok(Action::Resume {
-                        instr,
-                        operands: operands.clone(),
-                    }),
+                    ConvertTarget::Instruction(instr) => {
+                        if let Some(parser) = bigint_comparison(instr, operands.clone()) {
+                            *self = parser;
+                            return Ok(Action::Continue);
+                        }
+                        Ok(Action::Resume {
+                            instr,
+                            operands: operands.clone(),
+                        })
+                    }
                     ConvertTarget::TypedArray { kind, from_buffer } => {
                         crate::object::typed_array::constructor(
                             heap,
@@ -2543,6 +2636,19 @@ impl NativeState {
                         .map(Action::Return)
                     }
                     ConvertTarget::PrimitiveConstructor { which, construct } => {
+                        if which == builtin::Builtin::BigInt
+                            && let Value::String(text) = &operands[0]
+                        {
+                            *self = NativeState::BigIntParse {
+                                parser: Box::new(crate::value::bigint::StringToBigInt::new(
+                                    text.clone(),
+                                )),
+                                instr: None,
+                                operands: vec![],
+                                index: 0,
+                            };
+                            return Ok(Action::Continue);
+                        }
                         // String's descriptive-symbol exception applies only
                         // to an original symbol argument, never the result of
                         // an object's ToPrimitive.
@@ -2696,6 +2802,7 @@ impl NativeState {
     /// callback. Allocates nothing and touches no heap object.
     fn fail(&mut self, failure: Failure) -> Action {
         match (self, failure) {
+            (NativeState::BigIntParse { .. }, _) => Action::Unwind,
             (
                 NativeState::Reduce { .. }
                 | NativeState::Error(_)

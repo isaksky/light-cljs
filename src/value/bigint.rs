@@ -77,6 +77,40 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    /// Convert an integral finite binary64 Number exactly, including values
+    /// outside i64 and canonical negative zero. Callers validate integrality.
+    pub fn from_integral_number(number: f64) -> Option<Self> {
+        if !number.is_finite() || number.trunc() != number {
+            return None;
+        }
+        let bits = number.to_bits();
+        let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
+        let significand =
+            (bits & ((1u64 << 52) - 1)) | if biased_exponent == 0 { 0 } else { 1u64 << 52 };
+        let exponent = biased_exponent.max(1) - 1023 - 52;
+        let limbs = if exponent < 0 {
+            let integer = significand.checked_shr((-exponent) as u32).unwrap_or(0);
+            vec![integer as u32, (integer >> 32) as u32]
+        } else {
+            let words = exponent as usize / 32;
+            let shift = exponent as u32 % 32;
+            let mut limbs = vec![0; words + 3];
+            for (i, limb) in [significand as u32, (significand >> 32) as u32]
+                .into_iter()
+                .enumerate()
+            {
+                let word = (limb as u64) << shift;
+                limbs[words + i] |= word as u32;
+                limbs[words + i + 1] |= (word >> 32) as u32;
+            }
+            limbs
+        };
+        Some(
+            Self::from_sign_magnitude(number.is_sign_negative(), limbs)
+                .expect("a finite binary64 integer fits the BigInt cap"),
+        )
+    }
+
     /// Infinite two's-complement NOT: ~x = -x - 1. The intermediate negation
     /// preserves magnitude; the subtraction checks any extra result bit.
     pub fn checked_not(&self) -> Result<Self, BigIntError> {
@@ -571,6 +605,189 @@ impl JsBigInt {
     }
 }
 
+/// Shared, resumable StringToBigInt. Each advance performs at most 256 bounded
+/// scan/limb steps; a decimal group reads at most nine digits. Validation precedes size rejection so
+/// malformed text remains invalid even when its digit prefix exceeds the cap.
+/// The string may flatten once (linear in its length); decimal multiplication
+/// is chunked and budgeted, with storage capped at MAX_BIGINT_BITS / 32 limbs.
+#[derive(Debug)]
+pub struct StringToBigInt {
+    text: super::JsString,
+    start: usize,
+    end: usize,
+    next: usize,
+    stage: ParseStage,
+    radix: u32,
+    negative: bool,
+    limbs: Vec<u32>,
+    base: u64,
+    carry: u64,
+    limb: usize,
+}
+
+#[derive(Debug)]
+enum ParseStage {
+    TrimStart,
+    TrimEnd,
+    Prefix,
+    Validate,
+    Build,
+}
+
+impl StringToBigInt {
+    pub fn new(text: super::JsString) -> Self {
+        Self {
+            end: text.len(),
+            text,
+            start: 0,
+            next: 0,
+            stage: ParseStage::TrimStart,
+            radix: 10,
+            negative: false,
+            limbs: vec![],
+            base: 0,
+            carry: 0,
+            limb: 0,
+        }
+    }
+
+    /// None means pending; Some contains the finished result or parse error.
+    pub fn advance(&mut self) -> Option<Result<JsBigInt, BigIntError>> {
+        use super::string::is_str_white_space;
+        let units = self.text.code_units();
+        for _ in 0..256 {
+            match self.stage {
+                ParseStage::TrimStart => {
+                    if self.start == self.end {
+                        return Some(Ok(JsBigInt::from(0)));
+                    }
+                    if is_str_white_space(units[self.start]) {
+                        self.start += 1;
+                    } else {
+                        self.stage = ParseStage::TrimEnd;
+                    }
+                }
+                ParseStage::TrimEnd => {
+                    if is_str_white_space(units[self.end - 1]) {
+                        self.end -= 1;
+                    } else {
+                        self.stage = ParseStage::Prefix;
+                    }
+                }
+                ParseStage::Prefix => {
+                    let signed = matches!(units[self.start], 43 | 45);
+                    if signed {
+                        self.negative = units[self.start] == 45;
+                        self.start += 1;
+                    } else if self.end - self.start >= 2 && units[self.start] == 48 {
+                        self.radix = match units[self.start + 1] {
+                            120 | 88 => 16,
+                            111 | 79 => 8,
+                            98 | 66 => 2,
+                            _ => 10,
+                        };
+                        if self.radix != 10 {
+                            self.start += 2;
+                        }
+                    }
+                    if self.start == self.end {
+                        return Some(Err(BigIntError::InvalidDigits));
+                    }
+                    self.next = self.start;
+                    self.stage = ParseStage::Validate;
+                }
+                ParseStage::Validate => {
+                    if self.next < self.end {
+                        let Some(digit) = char::from_u32(units[self.next] as u32)
+                            .and_then(|c| c.to_digit(self.radix))
+                        else {
+                            return Some(Err(BigIntError::InvalidDigits));
+                        };
+                        if digit == 0 && self.next == self.start {
+                            self.start += 1;
+                        }
+                        self.next += 1;
+                    } else {
+                        let digits = self.end - self.start;
+                        if digits == 0 {
+                            return Some(Ok(JsBigInt::from(0)));
+                        }
+                        if self.radix == 10 {
+                            // 30103/100000 is an upper bound on log10(2).
+                            if digits > MAX_BIGINT_BITS * 30103 / 100000 + 1 {
+                                return Some(Err(BigIntError::TooLarge));
+                            }
+                            self.next = self.start;
+                        } else {
+                            let width = self.radix.trailing_zeros() as usize;
+                            let high = char::from_u32(units[self.start] as u32)
+                                .unwrap()
+                                .to_digit(self.radix)
+                                .unwrap();
+                            let bits = (digits - 1) * width + 32 - high.leading_zeros() as usize;
+                            if bits > MAX_BIGINT_BITS {
+                                return Some(Err(BigIntError::TooLarge));
+                            }
+                            self.limbs.resize(bits.div_ceil(32), 0);
+                            self.next = self.end;
+                        }
+                        self.stage = ParseStage::Build;
+                    }
+                }
+                ParseStage::Build if self.radix != 10 => {
+                    if self.next == self.start {
+                        return Some(self.finish());
+                    }
+                    self.next -= 1;
+                    let digit = char::from_u32(units[self.next] as u32)
+                        .unwrap()
+                        .to_digit(self.radix)
+                        .unwrap();
+                    let width = self.radix.trailing_zeros() as usize;
+                    let bit = (self.end - 1 - self.next) * width;
+                    self.limbs[bit / 32] |= digit << (bit % 32);
+                    if bit % 32 + width > 32 && bit / 32 + 1 < self.limbs.len() {
+                        self.limbs[bit / 32 + 1] |= digit >> (32 - bit % 32);
+                    }
+                }
+                ParseStage::Build => {
+                    if self.base == 0 {
+                        if self.next == self.end {
+                            return Some(self.finish());
+                        }
+                        self.base = 1;
+                        self.carry = 0;
+                        self.limb = 0;
+                        for &unit in &units[self.next..(self.next + 9).min(self.end)] {
+                            self.carry = self.carry * 10 + (unit - 48) as u64;
+                            self.base *= 10;
+                        }
+                        self.next = (self.next + 9).min(self.end);
+                    } else if self.limb < self.limbs.len() {
+                        let product = self.limbs[self.limb] as u64 * self.base + self.carry;
+                        self.limbs[self.limb] = product as u32;
+                        self.carry = product >> 32;
+                        self.limb += 1;
+                    } else {
+                        if self.carry != 0 {
+                            if self.limbs.len() == MAX_BIGINT_BITS / 32 {
+                                return Some(Err(BigIntError::TooLarge));
+                            }
+                            self.limbs.push(self.carry as u32);
+                        }
+                        self.base = 0;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn finish(&mut self) -> Result<JsBigInt, BigIntError> {
+        JsBigInt::from_sign_magnitude(self.negative, std::mem::take(&mut self.limbs))
+    }
+}
+
 /// One word of a sign/magnitude <-> two's-complement conversion. The same
 /// invert-plus-one operation works in either direction for a negative value.
 fn complement_word(word: u32, negative: bool, carry: &mut bool) -> u32 {
@@ -692,6 +909,81 @@ impl fmt::Display for JsBigInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> Result<JsBigInt, BigIntError> {
+        let mut parser = StringToBigInt::new(text.into());
+        for _ in 0..100_000 {
+            if let Some(result) = parser.advance() {
+                return result;
+            }
+        }
+        panic!("parser did not finish");
+    }
+
+    #[test]
+    fn string_to_bigint_uses_canonical_values_and_all_radices() {
+        for number in [0, 1, -1, i64::MAX, i64::MIN] {
+            assert_eq!(
+                parse(&format!("  {number}  ")).unwrap(),
+                JsBigInt::from(number)
+            );
+        }
+        for digits in 1..=150 {
+            let text = "9".repeat(digits);
+            assert_eq!(
+                parse(&text).unwrap(),
+                JsBigInt::from_digits(&text, 10).unwrap()
+            );
+            let text = "7".repeat(digits);
+            assert_eq!(
+                parse(&format!("0o{text}")).unwrap(),
+                JsBigInt::from_digits(&text, 8).unwrap()
+            );
+            let text = "f".repeat(digits);
+            assert_eq!(
+                parse(&format!("0x{text}")).unwrap(),
+                JsBigInt::from_digits(&text, 16).unwrap()
+            );
+        }
+        assert_eq!(
+            parse(&format!("{}1", "0".repeat(10_000))).unwrap(),
+            JsBigInt::from(1)
+        );
+        assert_eq!(parse("\u{feff}\n-0\u{3000}").unwrap(), JsBigInt::from(0));
+    }
+
+    #[test]
+    fn integral_numbers_convert_exactly_at_every_binary_exponent() {
+        for exponent in 0..=1023 {
+            let number = 2f64.powi(exponent);
+            let mut limbs = vec![0; exponent as usize / 32 + 1];
+            limbs[exponent as usize / 32] = 1 << (exponent % 32);
+            let expected = JsBigInt::from_sign_magnitude(false, limbs).unwrap();
+            assert_eq!(
+                JsBigInt::from_integral_number(number),
+                Some(expected.clone())
+            );
+            assert_eq!(
+                JsBigInt::from_integral_number(-number),
+                Some(expected.negated())
+            );
+        }
+        for number in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.5,
+            -1.5,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+        ] {
+            assert_eq!(JsBigInt::from_integral_number(number), None);
+        }
+        assert_eq!(
+            JsBigInt::from_integral_number(-0.0),
+            Some(JsBigInt::from(0))
+        );
+    }
     use std::hash::{DefaultHasher, Hash, Hasher};
 
     #[test]

@@ -338,7 +338,7 @@ fn to_numeric(v: Value) -> Result<Value, Fault> {
 /// compare lexicographically by UTF-16 code units (QuickJS
 /// `js_string_compare`), a proper prefix being smaller; any other pair
 /// compares numeric values exactly, preserving BigInts. BigInt/String pairs
-/// fail explicitly pending StringToBigInt. native::Convert has already
+/// have already passed through budgeted StringToBigInt. native::Convert has
 /// converted objects in source order with hint number, before operands swap.
 fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
     Ok(match (x, y) {
@@ -348,9 +348,7 @@ fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
         (Value::String(s), Value::String(t)) => Some(s < t),
         (Value::BigInt(a), Value::BigInt(b)) => Some(a < b),
         (Value::BigInt(_), Value::String(_)) | (Value::String(_), Value::BigInt(_)) => {
-            return Err(Fault::Unsupported(
-                "BigInt/String comparisons need StringToBigInt".into(),
-            ));
+            return Err(Fault::Internal("unparsed string reached BigInt comparison"));
         }
         (Value::BigInt(a), b) => a.cmp_number(to_number(b)?).map(|order| order.is_lt()),
         (a, Value::BigInt(b)) => b.cmp_number(to_number(a)?).map(|order| order.is_gt()),
@@ -408,7 +406,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
 /// compared with a non-nullish primitive has already passed through
 /// native::Convert with hint default.
 /// BigInt/Number pairs compare exactly, including Boolean-to-Number conversion;
-/// BigInt/String pairs fail explicitly until StringToBigInt lands.
+/// BigInt/String pairs have already passed through budgeted StringToBigInt.
 fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
     Ok(match (a, b) {
@@ -427,9 +425,7 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
             .cmp_number(to_number(a)?)
             .is_some_and(|order| order.is_eq()),
         (BigInt(_), String(_)) | (String(_), BigInt(_)) => {
-            return Err(Fault::Unsupported(
-                "BigInt/String comparisons need StringToBigInt".into(),
-            ));
+            return Err(Fault::Internal("unparsed string reached BigInt equality"));
         }
         (Number(_) | Bool(_) | String(_), Number(_) | Bool(_) | String(_)) => {
             to_number(a)? == to_number(b)?

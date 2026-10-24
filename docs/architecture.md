@@ -4524,8 +4524,7 @@ keys use canonical integer equality/hashing, distinct from Number keys.
 
 Strict equality compares mathematical integer values; ToBoolean is false only
 for zero; `typeof` and diagnostic type names are `bigint`. Mixed BigInt/Number
-arithmetic throws TypeError. Other deferred numeric operators, comparisons
-with strings, ToString, wrappers and property-key conversion fail
+arithmetic throws TypeError. ToString, wrappers and property-key conversion fail
 explicitly with UnsupportedOperand naming BigInt. JSON serialization rejects
 BigInt with TypeError. `Rooted::bigint` and `Scope::bigint` return an immutable
 root-free `JsBigInt`, inspectable as decimal (`Display`) or sign/magnitude.
@@ -4610,9 +4609,9 @@ inequality retain their existing rules; relational Symbol conversion throws
 TypeError. Existing native conversion frames handle object operands before
 the leaf comparison, with number/default hints and source-order conversion.
 They retain BigInt primitives across yield, dependency wait, GC and migration;
-no new heap edges or continuation kind are introduced. BigInt/String pairs
-explicitly fail with UnsupportedOperand until StringToBigInt lands in
-clj-quickjs-201. Tests cover all acceptance rows, signed/limb boundaries,
+no new heap edges are introduced. BigInt/String pairs use the resumable
+StringToBigInt parser described under clj-quickjs-201. Tests cover all acceptance
+rows, signed/limb boundaries,
 every normal integer power of two, the largest f64, and resumable coercion.
 
 ## Intl locale data
@@ -5189,3 +5188,42 @@ recognition, symbol-based string consumers, Unicode/case folding and indices
 remain later work. Direct and indirect eval are unavailable, so the raw NUL
 upstream case is exercised through the constructor and a literal containing
 an actual NUL instead.
+
+## BigInt conversion and string comparison (clj-quickjs-201)
+
+The append-only global/Builtin registries install callable, nonconstructible
+`BigInt` (length 1). Its ordinary `BigInt.prototype` has a constructor link and
+inherits from Object.prototype. Both are rooted and copied into the existing
+immutable realm views. BigInt primitive property lookup and prototype reflection
+use that prototype without allocating a wrapper or introducing a heap kind.
+
+`JsBigInt::from_integral_number` validates finiteness/integrality and decodes the
+binary64 significand and exponent directly into canonical limbs (at most 1024
+bits). No i64 narrowing or decimal formatting rounds the argument. The builtin
+also handles booleans and existing BigInts, rejects null/undefined/symbols, and
+uses existing hint-number ToPrimitive continuations for object arguments.
+
+`StringToBigInt` is a shared task-owned parser in `src/value/bigint.rs`. It trims
+with StringToNumber's whitespace predicate, validates the complete UTF-16 input,
+skips leading zeros, then constructs canonical sign/magnitude limbs. Signed
+inputs must be decimal; radix-prefixed inputs must be unsigned. Invalid grammar
+is reported before resource limits, even for oversized digit prefixes. A
+significant-digit bound rejects clearly oversized decimal strings before any
+quadratic computation. Power-of-two radices pack bits linearly; decimal input
+uses multiply/add groups of nine digits, resuming inside the limb loop. Limb
+storage never exceeds 1 Mbit. Each advance performs at most 256 bounded scan/limb
+steps (a decimal group reads at most nine digits);
+normalization, capped buffer allocation, and final immutable limb transfer are
+bounded by the magnitude cap. The existing JsString flatten cache may perform
+one linear traversal before scanning a rope, without a retained Rust stack.
+
+The native BigIntParse frame owns the parser, comparison operands and original
+instruction. It has no additional heap edges beyond its traced operands;
+JsString and limb buffers contain no traced pointers. It returns a BigInt for
+a function call, or resumes a comparison with the parsed operand. Invalid text
+throws SyntaxError for the function and becomes NaN (unequal/unordered) for a
+comparison. Oversized valid text throws RangeError in both contexts. Object
+comparisons finish both observable ToPrimitive conversions in source order
+before entering this parser. Budget boundaries preserve parse progress across
+GC, migration and cancellation. Arithmetic retains its existing one-instruction
+leaf policy; long StringToBigInt operations explicitly use native steps.

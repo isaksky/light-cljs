@@ -260,6 +260,9 @@ pub(crate) fn object_get_prototype_of(
 ) -> Result<Value, Fault> {
     let v = args.first().cloned().unwrap_or(Value::Undefined);
     match v {
+        Value::BigInt(_) => crate::realm::intrinsics(heap)
+            .map(|realm| Value::Object(realm.bigint_prototype))
+            .ok_or(Fault::OutOfMemory("heap object table exhausted")),
         Value::Object(id) => Ok(prototype_value(get_prototype_of(heap, task, id)?)),
         Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
             "cannot convert {} to object",

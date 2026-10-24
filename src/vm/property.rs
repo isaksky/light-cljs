@@ -345,14 +345,14 @@ pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
 /// `undefined`/`null` are a catchable `TypeError`.
 fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
     let intrinsics = match base {
-        Value::Number(_) | Value::String(_) => {
+        Value::Number(_) | Value::String(_) | Value::BigInt(_) => {
             realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         }
         _ => return Err(primitive_base(base, key, Access::Read)),
     };
-    intrinsics
-        .primitive_prototype(base)
-        .ok_or(Fault::Internal("a number or string without a prototype"))
+    intrinsics.primitive_prototype(base).ok_or(Fault::Internal(
+        "a primitive without its registered prototype",
+    ))
 }
 
 /// The failure of an access to a heap object without an ordinary store.
@@ -905,8 +905,10 @@ pub(crate) fn prepare_put(
         return Ok(None);
     }
     let Value::Object(mut id) = *base else {
-        if matches!(base, Value::Number(_) | Value::String(_) | Value::Bool(_))
-            && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
+        if matches!(
+            base,
+            Value::Number(_) | Value::String(_) | Value::Bool(_) | Value::BigInt(_)
+        ) && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
         {
             // Boolean.prototype is not implemented yet. Its standard own
             // properties are data properties, so supported inherited

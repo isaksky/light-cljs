@@ -938,7 +938,7 @@ impl RadixInteger {
 /// so one code unit decides. (QuickJS tests the same set, the
 /// regular-expression `\s` characters, with `lre_is_space`,
 /// `research/quickjs/libunicode.h`, revision 7d1c13c5d8f8.)
-fn is_str_white_space(u: u16) -> bool {
+pub(crate) fn is_str_white_space(u: u16) -> bool {
     matches!(
         u,
         0x09..=0x0D
