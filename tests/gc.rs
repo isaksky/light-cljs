@@ -450,13 +450,15 @@ fn strings_in_frames_captures_and_collections_survive_collections() {
     let rt = Runtime::new();
     let exe = clj_quickjs::frontend::compile_script(
         "strings",
-        r#"let local = "lo" + "cal";
+        // Block locals isolate string storage from the script global
+        // environment's independently allocated lexical cells.
+        r#"{ let local = "lo" + "cal";
            let captured = "cap" + "tured";
            let read = () => captured;
            let m = __rt.map("k", "in" + " map");
            let i = 0;
            while (i < 20) { i = i + 1; }
-           local === "local" && read() === "captured" && __rt.get(m, "k") === "in map""#,
+           local === "local" && read() === "captured" && __rt.get(m, "k") === "in map" }"#,
     )
     .unwrap();
     let task = rt.spawn(&exe, &[]).unwrap();

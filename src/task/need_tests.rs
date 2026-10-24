@@ -42,8 +42,20 @@ fn a_suspended_need_keeps_its_destination_operands_and_locals() {
     assert!(task.take_producer_requests().is_empty(), "claimed up front");
     let (pc, operands, locals) = task.saved_state().unwrap();
     assert_eq!(operands, [Value::Number(200.0)]);
-    // `local`, beside the script's completion-value slot.
-    assert!(locals.contains(&Value::Number(2.0)), "{locals:?}");
+    // Script `let` lives in its shared global lexical cell, beside the
+    // completion-value slot. Check the saved binding's value as well as
+    // the suspended expression operands.
+    assert_eq!(locals.len(), 2);
+    let Value::Object(binding) = locals[1] else {
+        panic!("{locals:?}");
+    };
+    assert_eq!(
+        rt.heap().read(binding, |object| match object {
+            crate::heap::HeapObject::Cell(cell) if cell.owner == task.id() => cell.value.clone(),
+            other => panic!("expected this task's lexical cell, got {other:?}"),
+        }),
+        Some(Some(Value::Number(2.0)))
+    );
     let pending = match &*task.0.body.lock().unwrap() {
         TaskBody::Ready(vm) => vm.pending_need.unwrap(),
         TaskBody::Finished => panic!("suspended, not finished"),
