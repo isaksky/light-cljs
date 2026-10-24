@@ -624,7 +624,8 @@ and `examples/`):
 Deferred:
 
 - Strings, property access (`f.call`, methods, objects), `this`,
-  `arguments`, `new`, default/rest parameters, arrow functions, generators.
+  `arguments`, `new`, default/rest parameters, generators. (Arrow
+  functions: clj-quickjs-53 below.)
 - A function declaration repeating a parameter or another declaration at
   the top level of a script or function body (var-scoped in JavaScript) is
   rejected as `Unsupported`.
@@ -1156,3 +1157,25 @@ Deferred:
   workers, collection pause times, isolated cross-thread wake latency.
 - Allocator bytes are requested sizes; `HeapUsage` and `TaskStats` bytes
   are shallow estimates (see their docs).
+
+### Arrow functions (clj-quickjs-53)
+
+Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
+`cargo test --test js_functions arrow_function_values`):
+
+- `x => e`, `() => e`, `(a, b,) => { ... }` from source, lowered as
+  closures exactly like anonymous function expressions (captures, cells,
+  temporal dead zone, publication rules). A `(...)` followed by `=>` is a
+  parameter list; an arrow is a whole AssignmentExpression, so a line
+  break after a block body ends the statement (`() => {}` newline `+1`
+  completes with 1) and an unparenthesized arrow operand or callee is a
+  syntax error, as is a line break before `=>`. Grammar and errors:
+  [`docs/grammar.md`](docs/grammar.md).
+
+Deferred:
+
+- `async` arrows; rest, default and destructuring parameters; `this`,
+  `arguments`, `new.target` and `super` (rejected inside arrows as
+  everywhere else).
+- QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
+  generators) and `() => eval('0.a')` (needs `eval`).

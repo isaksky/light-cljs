@@ -13,7 +13,8 @@ Status: everything below parses. Everything except string values and
 property access also compiles to VM bytecode and executes
 (`frontend::compile_script`; see "Execution" below): literals, bindings,
 operators, assignment, blocks, `if`/`else`, `while`, function declarations
-and expressions, calls, closures (clj-quickjs-21), and the
+and expressions, calls, closures (clj-quickjs-21), arrow functions
+(clj-quickjs-53), and the
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). String values and property access parse but are rejected by the
 compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
@@ -74,8 +75,12 @@ FunctionRest        = "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] 
                       "{" { StatementListItem } "}"
 
 Expression            = AssignmentExpression
-AssignmentExpression  = ConditionalExpression
+AssignmentExpression  = ConditionalExpression | ArrowFunction
                       | Identifier "=" AssignmentExpression
+ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
+ArrowParameters       = BindingIdentifier
+                      | "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
+ConciseBody           = "{" { StatementListItem } "}" | AssignmentExpression
 ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
 LogicalOr             = LogicalAnd { "||" LogicalAnd }
 LogicalAnd            = Equality { "&&" Equality }
@@ -103,6 +108,16 @@ Notes on the grammar:
   allowed in the script, a function body or a block, but not as the direct
   body of `if`/`else`/`while` (strict mode rejects that; wrap it in a block).
 - Function parameter names must be distinct (strict mode).
+- Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
+  by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
+  otherwise the parentheses are a parenthesized expression, where `(a, b)`
+  is the rejected comma operator. An arrow function is a whole
+  AssignmentExpression, so it cannot be an operand, callee or member object
+  without parentheses: `1 + x => x`, `f(a) => a` and `() => {}()` are
+  syntax errors, `(() => 1)()` is a call. Its body is a function body block
+  (where `return` is allowed) or an AssignmentExpression, the value it
+  returns. `async` arrows remain unsupported; `async => async` is an arrow
+  with a parameter named `async`.
 - `BindingIdentifier` excludes reserved words, `undefined`, `NaN`,
   `Infinity`, `eval` and `arguments`.
 - The assignment target may be parenthesized (`(a) = 1`), as in JavaScript.
@@ -126,6 +141,14 @@ Postfix `++`/`--` after a line break begins a new statement (where it is
 rejected as unsupported). No semicolon is ever inserted to create an empty
 statement, so `if (x)` newline `else y` is an error.
 
+Since no token can continue an arrow function whose body is a block, a
+line break after that body ends the statement: `() => {}` newline `() => {}`
+is two statements (the script completes with the second function), and
+`() => {}` newline `+1` is two statements completing with `1`; on one line
+both are syntax errors. A concise body is an expression and continues as
+one: `x => x` newline `(1)` is `x => x(1)`. A line break before `=>` is a
+syntax error (`x` newline `=> 1`).
+
 ## Rejected forms
 
 Every form below is rejected where it starts. Error kinds:
@@ -138,7 +161,7 @@ Every form below is rejected where it starts. Error kinds:
 | `var`, `for`, `do`-`while`, `break`, `continue`, `switch`, labelled statements, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
-| arrow functions, rest/default parameters, destructuring (including a destructuring catch parameter) | Unsupported |
+| rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
 | `typeof`, `void`, `delete`, `~`, `++`, `--`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `??`, `in`, `instanceof`, the comma operator, compound assignment (`+=`, `&&=`, ...) | Unsupported |
@@ -146,7 +169,8 @@ Every form below is rejected where it starts. Error kinds:
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) | ReservedWord |
-| `return` outside a function, `const` without initializer, duplicate parameter, declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
+| an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
+| `return` outside a function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -169,7 +193,9 @@ checks left to later stages:
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
-  plus 1 for a block or an `if`/`while`/`try`; a function 3 plus its body block;
+  plus 1 for a block or an `if`/`while`/`try`; a function or arrow
+  function 3 plus its body block (or, for a concise arrow body, its
+  assignment);
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
   or one link of a binary-operator or member chain 1; each call's
   argument list 3 plus each argument's assignment; parentheses 3 plus the
@@ -220,6 +246,7 @@ Executed, with JavaScript semantics:
 | `return` (in `compile_function`) | completes the task |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
+| arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
@@ -410,6 +437,16 @@ const s = 'it\'s \u{1F600} \x41\
 ```
 
 ```js accept
+// Arrow functions; ASI ends the statement after a block body.
+let g = (a, b) => a + b;
+const k = x => () => x, h = (a,) => { return k(a)(); }
+() => {}
+() => {}
+() => {}
++1
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -434,8 +471,17 @@ let x = 1;
 async function f() {}
 ```
 
-```js reject Unsupported 1:9
-let g = (a, b) => a + b;
+```js reject UnexpectedToken 1:10
+() => {} + 1
+```
+
+```js reject UnexpectedToken 2:1
+let f = x
+=> x + 1;
+```
+
+```js reject Invalid 1:13
+let g = (a, a) => a;
 ```
 
 ```js reject Unsupported 1:5
@@ -494,8 +540,16 @@ Structure consulted (no code adapted): `research/quickjs/quickjs.c` at
 revision 7d1c13c5d8f8 (`VERSION` 2026-06-04): `next_token`,
 `js_parse_expr_binary`, `js_parse_assign_expr`, `js_parse_statement`,
 `js_parse_expect_semi`; and the ASI cases of `test_parse_semicolon` in
-`research/quickjs/tests/test_language.js` (its `yield`/`await`/arrow cases
-are outside the subset). For functions and closures (clj-quickjs-21):
+`research/quickjs/tests/test_language.js` (its `yield`/`await` cases
+are outside the subset). For arrow functions (clj-quickjs-53):
+`js_parse_skip_parens_token` (deciding that a parenthesized list is an
+arrow's parameters by what follows its `)`), `js_parse_assign_expr2`
+(arrows only at the start of an AssignmentExpression) and
+`js_parse_function_decl2` (concise and block arrow bodies), plus the
+`test_parse_arrow_function` cases of `test_language.js` (adapted in
+`frontend::tests::arrow_functions_and_asi` and
+`tests/js_functions.rs` `arrow_function_values`, with the QuickJS notice;
+its `async` arrow cases are outside the subset). For functions and closures (clj-quickjs-21):
 `js_parse_function_decl` (function name and self-binding scoping),
 `get_closure_var` / `add_closure_var` (resolving a name through enclosing
 functions and threading it down as captured variables) and

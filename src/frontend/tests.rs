@@ -1,8 +1,11 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
-//! `hashbang_comment_only_at_start` (see its notice).
+//! `hashbang_comment_only_at_start` and three scripts in
+//! `arrow_functions_and_asi` (each marked there, with the QuickJS notice).
 
-use super::ast::{BinaryOp, Expr, ExprKind, Function, LogicalOp, Stmt, StmtKind, UnaryOp};
+use super::ast::{
+    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Stmt, StmtKind, UnaryOp,
+};
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{MAX_NESTING, SyntaxError, SyntaxErrorKind, line_column, parse_script};
 
@@ -80,11 +83,31 @@ fn render_expr(e: &Expr) -> String {
 
 fn render_function(f: &Function) -> String {
     let params: Vec<&str> = f.params.iter().map(|p| p.name.as_str()).collect();
-    let mut out = format!(
-        "(function {} ({})",
-        f.name.as_ref().map_or("-", |n| n.name.as_str()),
-        params.join(" ")
-    );
+    let mut out = match f.kind {
+        FunctionKind::Ordinary => format!(
+            "(function {} ({})",
+            f.name.as_ref().map_or("-", |n| n.name.as_str()),
+            params.join(" ")
+        ),
+        FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
+        FunctionKind::ConciseArrow => {
+            let [
+                Stmt {
+                    kind: StmtKind::Return(Some(value)),
+                    span,
+                    ..
+                },
+            ] = f.body.as_slice()
+            else {
+                panic!("a concise arrow body is one return: {f:?}");
+            };
+            assert_eq!(
+                *span, value.span,
+                "the concise body's return is its expression"
+            );
+            return format!("(arrow ({}) => {})", params.join(" "), render_expr(value));
+        }
+    };
     for s in &f.body {
         out.push(' ');
         out.push_str(&render_stmt(s));
@@ -470,6 +493,109 @@ fn automatic_semicolon_insertion() {
     assert_eq!(ast("async\nfunction f() {}"), "async (function f ())");
 }
 
+/// Arrow functions, and ASI after an arrow body: an arrow function is an
+/// AssignmentExpression, so no operator, call or member access continues it.
+/// The three two-statement scripts are the `test_parse_arrow_function`
+/// cases of `research/quickjs/tests/test_language.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution); the
+/// other cases are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn arrow_functions_and_asi() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    assert_eq!(ast("x => x"), "(arrow (x) => x)");
+    assert_eq!(ast("() => {}"), "(arrow ())");
+    assert_eq!(ast("(a, b,) => { return a; }"), "(arrow (a b) (return a))");
+    // Two statements each: neither `(` nor `+` can continue an arrow.
+    assert_eq!(ast("() => {}\n() => {}"), "(arrow ()) (arrow ())");
+    assert_eq!(ast("x => {}\n() => {}"), "(arrow (x)) (arrow ())");
+    assert_eq!(ast("() => {}\n+1"), "(arrow ()) (pos 1)");
+    // ... but they do continue a concise body, which is an expression.
+    assert_eq!(ast("x => x\n(1)"), "(arrow (x) => (call x 1))");
+    assert_eq!(ast("x => x\n+1"), "(arrow (x) => (+ x 1))");
+    // On one line, the token after the arrow is a syntax error.
+    rejects("() => {} + 1", UnexpectedToken, 1, 10);
+    rejects("() => {}()", UnexpectedToken, 1, 9);
+    rejects("() => {} ? a : b", UnexpectedToken, 1, 10);
+    // `[no LineTerminator here]` before `=>`.
+    rejects_with("x\n=> 1", UnexpectedToken, 2, 1, "line break");
+    rejects_with("(a)\n=> 1", UnexpectedToken, 2, 1, "line break");
+    rejects_with("f(1 + x\n=> 1)", UnexpectedToken, 2, 1, "line break");
+    rejects_with("(a, a) => 1", Invalid, 1, 5, "duplicate parameter");
+    // Arrows nest, are right-associative and are AssignmentExpressions:
+    // arguments, initializers, conditional branches, assigned values.
+    assert_eq!(
+        ast("f = x => y => x + y;"),
+        "(= f (arrow (x) => (arrow (y) => (+ x y))))"
+    );
+    assert_eq!(
+        ast("let f = () => {}, g = (a) => a ? b => 1 : () => 2;"),
+        "(let (f (arrow ())) (g (arrow (a) => (? a (arrow (b) => 1) (arrow () => 2)))))"
+    );
+    assert_eq!(
+        ast("g(x => x, () => {},)"),
+        "(call g (arrow (x) => x) (arrow ()))"
+    );
+    assert_eq!(ast("(() => 1)()"), "(call (arrow () => 1))");
+    assert_eq!(ast("(x => x).y"), "(. (arrow (x) => x) y)");
+    assert_eq!(ast("async => async"), "(arrow (async) => async)");
+    assert_eq!(
+        ast("x => { if (x) return 1; return function () { return 2; }; }"),
+        "(arrow (x) (if x (return 1)) (return (function - () (return 2))))"
+    );
+    // A concise body that is an object-literal-looking `{` is a block.
+    assert_eq!(ast("x => { x }"), "(arrow (x) x)");
+    // An arrow as an operand, callee or member object needs parentheses.
+    rejects_with("1 + x => x", UnexpectedToken, 1, 7, "parenthesized");
+    rejects_with("!(a) => a", UnexpectedToken, 1, 6, "parenthesized");
+    rejects_with("f(a) => a", UnexpectedToken, 1, 6, "parenthesized");
+    rejects_with("a.b => a", UnexpectedToken, 1, 5, "parenthesized");
+    // The parameter list holds plain binding identifiers only.
+    rejects("(1) => 1", UnexpectedToken, 1, 2);
+    rejects("((a)) => 1", UnexpectedToken, 1, 2);
+    rejects("(a b) => 1", UnexpectedToken, 1, 4);
+    rejects_with("(...a) => 1", Unsupported, 1, 2, "rest parameters");
+    rejects_with("(a = 1) => 1", Unsupported, 1, 4, "default parameter");
+    rejects_with("([a]) => 1", Unsupported, 1, 2, "destructuring");
+    rejects_with("({ a }) => 1", Unsupported, 1, 2, "destructuring");
+    rejects("(eval) => 1", ReservedWord, 1, 2);
+    rejects("arguments => 1", ReservedWord, 1, 1);
+    rejects("undefined => 1", ReservedWord, 1, 1);
+    rejects("yield => 1", ReservedWord, 1, 1);
+    // No own `this`/`arguments` in the subset, inside arrows too.
+    rejects_with("() => this", Unsupported, 1, 7, "`this`");
+    rejects_with(
+        "() => { return arguments; }",
+        Unsupported,
+        1,
+        16,
+        "arguments",
+    );
+    // `return` is allowed in a block body, not in a concise body or after
+    // the arrow.
+    rejects("() => return", UnexpectedToken, 1, 7);
+    rejects("() => {}\nreturn 1;", Invalid, 2, 1);
+    // Async arrows stay unsupported.
+    rejects_with("async () => {}\n() => {}", Unsupported, 1, 1, "async arrow");
+    rejects_with("async x => {}\n() => {}", Unsupported, 1, 1, "async arrow");
+}
+
 #[test]
 fn spans_cover_source_text() {
     let src = "let x = f(1,  2);\nfunction g(a) { return a; }\n";
@@ -679,11 +805,18 @@ fn rejects_lexically_ambiguous_input() {
     rejects_with("a <!-- b", Unsupported, 1, 5, "increment");
     // `++` after a line break begins the next statement.
     rejects_with("x = a\n++b", Unsupported, 2, 1, "increment");
-    // `(a, b)` before `=>` is an arrow parameter list, not a comma operator.
-    rejects_with("f = (a, b) => a;", Unsupported, 1, 5, "arrow");
-    rejects_with("f = () => 1;", Unsupported, 1, 5, "arrow");
-    rejects_with("f = x => x;", Unsupported, 1, 5, "arrow");
+    // `(a, b)` before `=>` is an arrow parameter list (accepted, see
+    // `arrow_functions_and_asi`), otherwise a comma operator.
     rejects_with("f = (a, b);", Unsupported, 1, 7, "comma");
+    // An arrow function cannot be an operand without parentheses.
+    rejects_with(
+        "f = 1 + (a, b) => a;",
+        UnexpectedToken,
+        1,
+        16,
+        "parenthesized",
+    );
+    rejects_with("f = 1 + x => x;", UnexpectedToken, 1, 11, "parenthesized");
     rejects("f = ();", UnexpectedToken, 1, 6);
     // Legacy and modern number forms outside the subset.
     rejects("017", InvalidToken, 1, 1);
@@ -966,6 +1099,13 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                 "function () { return ".repeat(n),
                 "}".repeat(n)
             )
+        }),
+        ("concise arrows", |n| format!("x = {}1;", "a => ".repeat(n))),
+        ("parenthesized arrows", |n| {
+            format!("x = {}1;", "(a, b) => ".repeat(n))
+        }),
+        ("block arrows", |n| {
+            format!("x = {}1{};", "() => { return ".repeat(n), "}".repeat(n))
         }),
         ("mixed", |n| {
             format!("x = {}1{};", "a + -(".repeat(n), ")".repeat(n))

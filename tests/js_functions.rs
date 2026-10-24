@@ -726,3 +726,101 @@ fn intrinsic_arguments_evaluate_left_to_right() {
         123.0
     );
 }
+
+/// Arrow functions (clj-quickjs-53) are closures: the same lowering as an
+/// anonymous function expression (the subset has no `this` or `arguments`
+/// for them to differ on). The first three scripts are the
+/// `test_parse_arrow_function` cases of
+/// `research/quickjs/tests/test_language.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution), checked
+/// here as completion values instead of through `eval` and `typeof`:
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn arrow_function_values() {
+    // ASI after the arrow body: two statements, the second one's value.
+    assert_eq!(num("() => {}\n+1"), 1.0);
+    // The completion value is the second arrow, a function object: calling
+    // it from another task returns what the second body returns.
+    let rt = Runtime::new();
+    let apply = compile_function("function apply(f) { return f(); }").unwrap();
+    let call_completion = |src: &str| {
+        let task = rt.spawn(&exe(src), &[]).unwrap();
+        let RunOutcome::Complete(f) = task.run().unwrap() else {
+            panic!("{src:?}")
+        };
+        assert_eq!(f.view(), ValueView::Object, "{src:?}");
+        // Captures nothing, so it is shareable.
+        rt.publish(&f).unwrap();
+        let other = rt.spawn(&apply, &[&f]).unwrap();
+        match other.run().unwrap() {
+            RunOutcome::Complete(v) => v.view(),
+            other => panic!("{src:?}: {other:?}"),
+        }
+    };
+    assert_eq!(call_completion("() => {}\n() => {}"), ValueView::Undefined);
+    assert_eq!(call_completion("x => {}\n() => {}"), ValueView::Undefined);
+    assert_eq!(
+        call_completion("() => { return 1; }\n() => { return 2; }"),
+        ValueView::Number(2.0)
+    );
+    assert_eq!(call_completion("() => 3"), ValueView::Number(3.0));
+
+    // Parameters, concise bodies and closure capture.
+    assert_eq!(num("const add = (a, b) => a + b; add(2, 3)"), 5.0);
+    assert_eq!(num("const k = x => () => x; k(7)()"), 7.0);
+    assert_eq!(num("((a, b,) => b)(1, 2, 3)"), 2.0);
+    assert_eq!(eval("((a, b) => b)(1)"), ValueView::Undefined);
+    assert_eq!(eval("(() => {})()"), ValueView::Undefined);
+    // Block bodies return, see and assign enclosing bindings.
+    assert_eq!(
+        num("let n = 0;
+             const inc = () => { n = n + 1; return n; };
+             inc();
+             inc()"),
+        2.0
+    );
+    assert_eq!(
+        num("const fact = n => n <= 1 ? 1 : n * fact(n - 1); fact(5)"),
+        120.0
+    );
+    // Each evaluation creates a new function object.
+    assert_eq!(
+        eval("const mk = () => () => 1; mk() === mk()"),
+        ValueView::Bool(false)
+    );
+    // An arrow is a callback like any function value.
+    assert_eq!(
+        num("__rt.reduce((acc, x) => acc + x * 10, 1, __rt.vector(1, 2, 3))"),
+        61.0
+    );
+    // The temporal dead zone applies to what an arrow captures.
+    assert_eq!(
+        failure_at("const f = () => later;\nf();\nconst later = 1;").0,
+        VmErrorKind::ReferenceError
+    );
+    // `this` and `arguments` stay rejected inside arrows.
+    assert_eq!(
+        compile_err("const f = () => this;"),
+        (SyntaxErrorKind::Unsupported, 1, 17)
+    );
+    assert_eq!(
+        compile_err("const f = (a) => arguments;"),
+        (SyntaxErrorKind::Unsupported, 1, 18)
+    );
+}

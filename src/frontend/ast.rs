@@ -144,15 +144,19 @@ pub struct Declarator {
     pub span: Span,
 }
 
-/// A function declaration or expression.
+/// A function declaration or expression, or an arrow function.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Function {
-    /// Always present for a declaration; optional for an expression.
+    /// The syntax that produced it.
+    pub kind: FunctionKind,
+    /// Always present for a declaration; optional for an expression;
+    /// `None` for an arrow function.
     pub name: Option<Ident>,
     /// Plain identifier parameters with distinct names.
     pub params: Vec<Ident>,
     pub body: Vec<Stmt>,
-    /// From the `function` keyword to the closing `}`.
+    /// From the `function` keyword (for an arrow function, its first
+    /// token) to the end of the body.
     pub span: Span,
     /// Tree height; at most [`MAX_NESTING`](super::MAX_NESTING).
     pub height: usize,
@@ -160,6 +164,7 @@ pub struct Function {
 
 impl Function {
     pub(crate) fn new(
+        kind: FunctionKind,
         name: Option<Ident>,
         params: Vec<Ident>,
         body: Vec<Stmt>,
@@ -167,6 +172,7 @@ impl Function {
     ) -> Function {
         let height = max_height(&body) + 1;
         Function {
+            kind,
             name,
             params,
             body,
@@ -174,6 +180,20 @@ impl Function {
             height,
         }
     }
+}
+
+/// Which syntax produced a [`Function`]. The subset has no `this`,
+/// `arguments`, `new.target` or `super`, so an arrow function behaves as an
+/// anonymous function expression with the same parameters and body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionKind {
+    /// A `function` declaration or expression.
+    Ordinary,
+    /// `params => { body }`.
+    Arrow,
+    /// `params => expression`: `body` is exactly one `return expression`
+    /// statement whose span is the expression's.
+    ConciseArrow,
 }
 
 #[derive(Clone, Debug, PartialEq)]

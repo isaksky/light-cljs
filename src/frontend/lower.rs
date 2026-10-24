@@ -16,7 +16,11 @@
 //! into its parent's child function table (`ExecutableSpec::functions`); a
 //! function expression lowers to `function i`, a call to `call n`. Function
 //! declarations are hoisted: entering a statement list creates its
-//! declarations' closures, in source order, before any statement runs.
+//! declarations' closures, in source order, before any statement runs. An
+//! arrow function lowers exactly as an anonymous function expression (its
+//! concise body is already a `return` statement in the tree): the subset
+//! has no `this`, `arguments`, `new.target` or `super`, the only bindings
+//! an arrow would take lexically instead of having its own.
 //!
 //! **Bindings.** Every `let`/`const`/function binding and every parameter
 //! lives in a frame local. Entering a statement list (script, function body,

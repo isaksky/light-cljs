@@ -1313,3 +1313,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   check the next line's position. The test carries the full notice.
   `research/quickjs/quickjs.c` `skip_shebang` was consulted only (where a
   hashbang may start and which characters end it); no code was copied.
+- `src/frontend/tests.rs` `arrow_functions_and_asi` and
+  `tests/js_functions.rs` `arrow_function_values` (clj-quickjs-53): the
+  scripts `() => {}\n() => {}`, `() => {}\n+1` and `x => {}\n() => {}` of
+  `test_parse_arrow_function` in `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8. Modified: checked as parse trees and as script
+  completion values instead of through `eval` and `typeof`; the `async`
+  arrow cases are rejected as unsupported. Each test carries the notice.
+  Consulted only, in `research/quickjs/quickjs.c`:
+  `js_parse_skip_parens_token`, `js_parse_assign_expr2` and
+  `js_parse_function_decl2` (arrow detection and bodies). No code was
+  copied.

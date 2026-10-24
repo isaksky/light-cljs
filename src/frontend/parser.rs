@@ -9,8 +9,8 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, Declarator, Expr, ExprKind, Function, Ident, LexicalDecl, LexicalKind,
-    LogicalOp, Script, Stmt, StmtKind, UnaryOp,
+    BinaryOp, CatchClause, Declarator, Expr, ExprKind, Function, FunctionKind, Ident, LexicalDecl,
+    LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -557,7 +557,13 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         self.in_function = outer;
         self.depth = saved;
-        let function = Function::new(name, params, body, self.span_from(start));
+        let function = Function::new(
+            FunctionKind::Ordinary,
+            name,
+            params,
+            body,
+            self.span_from(start),
+        );
         self.check_height(function.height)?;
         Ok(function)
     }
@@ -574,6 +580,13 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let params = self.parse_formal_parameters()?;
+        Ok((name, params))
+    }
+
+    /// `(` [ BindingIdentifier { `,` BindingIdentifier } [ `,` ] ] `)`:
+    /// distinct plain identifiers (strict mode; always so for an arrow).
+    fn parse_formal_parameters(&mut self) -> PResult<Vec<Ident>> {
         self.expect_punct(Punct::LParen)?;
         let mut params: Vec<Ident> = Vec::new();
         while !self.is_punct(Punct::RParen) {
@@ -597,7 +610,65 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect_punct(Punct::RParen)?;
-        Ok((name, params))
+        Ok(params)
+    }
+
+    /// ArrowFunction: ArrowParameters [no LineTerminator here] `=>`
+    /// ConciseBody, where ArrowParameters is a BindingIdentifier or a
+    /// parenthesized parameter list and ConciseBody is a function body block
+    /// or an AssignmentExpression. Called only where [`Self::at_arrow`]
+    /// holds, at the start of an AssignmentExpression.
+    #[inline(never)]
+    fn parse_arrow_function(&mut self) -> PResult<Expr> {
+        let saved = self.depth;
+        self.deeper(cost::FUNCTION)?;
+        let start = self.tok.span.start;
+        let params = if self.is_punct(Punct::LParen) {
+            self.parse_formal_parameters()?
+        } else {
+            vec![self.parse_binding_identifier("a parameter name")?]
+        };
+        if !self.is_punct(Punct::Arrow) {
+            return Err(self.unexpected("`=>`"));
+        }
+        if self.tok.newline_before {
+            return Err(self.misplaced_arrow(&self.tok));
+        }
+        self.advance()?;
+        let (kind, body) = if self.is_punct(Punct::LBrace) {
+            let outer = std::mem::replace(&mut self.in_function, true);
+            let body = self.parse_block()?;
+            self.in_function = outer;
+            (FunctionKind::Arrow, body)
+        } else {
+            // The body is an AssignmentExpression, so the arrow ends with
+            // it: no operator, call or `,` can continue an arrow function,
+            // and a line break before such a token ends the statement.
+            let value = self.parse_assignment()?;
+            let span = value.span;
+            let body = self.bounded(Stmt::new(StmtKind::Return(Some(value)), span))?;
+            (FunctionKind::ConciseArrow, vec![body])
+        };
+        self.depth = saved;
+        let function = Function::new(kind, None, params, body, self.span_from(start));
+        self.check_height(function.height)?;
+        let span = function.span;
+        self.expr(ExprKind::Function(Box::new(function)), span)
+    }
+
+    /// True when the current token starts an arrow function: an identifier
+    /// followed by `=>`, or a `(` whose matching `)` is followed by `=>`
+    /// (the cover grammar: such a parenthesized list is a parameter list,
+    /// never an expression). Lookahead only.
+    #[inline(never)]
+    fn at_arrow(&self) -> bool {
+        match &self.tok.kind {
+            TokenKind::Identifier(_) => self
+                .peek_next()
+                .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Arrow)),
+            TokenKind::Punct(Punct::LParen) => self.arrow_after_parens().is_some(),
+            _ => false,
+        }
     }
 
     // ----- expressions --------------------------------------------------
@@ -611,11 +682,16 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    /// AssignmentExpression: ConditionalExpression, or
+    /// AssignmentExpression: ConditionalExpression, ArrowFunction, or
     /// Identifier `=` AssignmentExpression (right-associative).
     fn parse_assignment(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         self.deeper(cost::ASSIGNMENT)?;
+        if self.at_arrow() {
+            let arrow = self.parse_arrow_function()?;
+            self.depth = saved;
+            return Ok(arrow);
+        }
         let left = self.parse_conditional()?;
         if !self.is_punct(Punct::Assign) {
             if let Some(error) = self.assignment_operator_error(&left) {
@@ -646,11 +722,27 @@ impl<'a> Parser<'a> {
                 self.tok.span,
                 &format!("compound assignment `{}` is", p.as_str()),
             )),
-            TokenKind::Punct(Punct::Arrow) => {
-                Some(self.unsupported(left.span.to(self.tok.span), "arrow functions are"))
+            TokenKind::Punct(Punct::Arrow) if is_async_call(left) => {
+                Some(self.unsupported(left.span.to(self.tok.span), "async arrow functions are"))
             }
+            TokenKind::Punct(Punct::Arrow) => Some(self.misplaced_arrow(&self.tok)),
             _ => None,
         }
+    }
+
+    /// The current token is a `=>` that cannot start an arrow function's
+    /// body: its parameters are not an identifier or a parenthesized list
+    /// at the start of an AssignmentExpression (an arrow function cannot be
+    /// an operand, callee or member object without parentheses), or a line
+    /// break precedes it.
+    #[inline(never)]
+    fn misplaced_arrow(&self, arrow: &Token) -> SyntaxError {
+        let message = if arrow.newline_before {
+            "a line break is not allowed before `=>`"
+        } else {
+            "unexpected `=>`: an arrow function's parameters must be an identifier or a parenthesized list, and an arrow function used as an operand must be parenthesized"
+        };
+        self.error(SyntaxErrorKind::UnexpectedToken, arrow.span, message)
     }
 
     #[inline(never)]
@@ -938,9 +1030,6 @@ impl<'a> Parser<'a> {
             _ => ExprKind::Identifier(name.clone()),
         };
         self.advance()?;
-        if self.is_punct(Punct::Arrow) {
-            return Err(self.unsupported(span.to(self.tok.span), "arrow functions are"));
-        }
         Ok(Expr::new(kind, span))
     }
 
@@ -975,7 +1064,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `(` Expression `)`; rejects arrow-function parameter lists.
+    /// `(` Expression `)`; rejects an arrow function in operand position.
     fn parse_parenthesized(&mut self) -> PResult<Expr> {
         let start = self.tok.span.start;
         let saved = self.depth;
@@ -989,12 +1078,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Consume the `(` of a parenthesized expression, rejecting an arrow
-    /// parameter list and empty parentheses.
+    /// parameter list (an arrow function reaching here is an operand, callee
+    /// or member object: [`Self::parse_assignment`] takes every arrow at the
+    /// start of an AssignmentExpression) and empty parentheses.
     #[inline(never)]
     fn open_paren(&mut self) -> PResult<()> {
-        let start = self.tok.span.start;
         if let Some(arrow) = self.arrow_after_parens() {
-            return Err(self.unsupported(Span::new(start, arrow.end), "arrow functions are"));
+            return Err(self.misplaced_arrow(&arrow));
         }
         self.advance()?;
         if self.is_punct(Punct::RParen) {
@@ -1003,10 +1093,10 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// With the current token `(`, the span of a `=>` following the matching
+    /// With the current token `(`, the `=>` token following the matching
     /// `)`, if any. Lookahead only; a lexical error ends the search (the
     /// normal parse then reports it at its position).
-    fn arrow_after_parens(&self) -> Option<Span> {
+    fn arrow_after_parens(&self) -> Option<Token> {
         let mut lexer = self.lexer.clone();
         let mut open = 1usize;
         while open > 0 {
@@ -1018,8 +1108,14 @@ impl<'a> Parser<'a> {
             }
         }
         let next = lexer.next_token().ok()?;
-        (next.kind == TokenKind::Punct(Punct::Arrow)).then_some(next.span)
+        (next.kind == TokenKind::Punct(Punct::Arrow)).then_some(next)
     }
+}
+
+/// True for `async(...)`: before `=>` it is an async arrow function's head.
+fn is_async_call(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Call { callee, .. }
+        if matches!(&callee.kind, ExprKind::Identifier(name) if name == "async"))
 }
 
 enum BinOrLogical {
