@@ -20350,6 +20350,78 @@ fn map_receivers_properties_and_explicit_gaps() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: integrity operations affect
+/// existing ordinary properties without locking the Map's entry storage.
+#[test]
+fn map_ordinary_property_integrity() {
+    let own = "let m = new Map(); m.x = 1;";
+    let prevented = format!("{own} Object.preventExtensions(m);");
+    let frozen = format!("{own} Object.freeze(m);");
+
+    for src in [
+        format!(
+            "{own} Object.isExtensible(m) && Object.preventExtensions(m) === m && !Object.isExtensible(m) && !Object.isFrozen(m)"
+        ),
+        format!(
+            "{prevented} m.x = 2; let d = Object.getOwnPropertyDescriptor(m, 'x'); m.x === 2 && d.value === 2 && d.writable && d.enumerable && d.configurable"
+        ),
+        format!(
+            "{prevented} Object.defineProperty(m, 'x', {{value: 3, enumerable: false}}); let d = Object.getOwnPropertyDescriptor(m, 'x'); m.x === 3 && d.writable && !d.enumerable && d.configurable"
+        ),
+        format!(
+            "{prevented} delete m.x && !('x' in m) && Object.getOwnPropertyDescriptor(m, 'x') === undefined"
+        ),
+        format!(
+            "{own} let d = Object.getOwnPropertyDescriptor(m, 'x'); d.writable && d.configurable && Object.freeze(m) === m && !Object.isExtensible(m) && Object.isFrozen(m)"
+        ),
+        format!(
+            "{frozen} let d = Object.getOwnPropertyDescriptor(m, 'x'); m.x === 1 && d.value === 1 && !d.writable && d.enumerable && !d.configurable"
+        ),
+        format!("{frozen} Object.defineProperty(m, 'x', {{value: 1}}) === m && m.x === 1"),
+    ] {
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+
+    for operation in ["preventExtensions", "freeze"] {
+        let setup = format!("{own} Object.{operation}(m);");
+        let src = format!(
+            "{setup} Object.setPrototypeOf(m, Map.prototype) === m && Object.getPrototypeOf(m) === Map.prototype"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for action in [
+            "m.y = 2",
+            "Object.defineProperty(m, 'y', {value: 2})",
+            "Object.setPrototypeOf(m, {})",
+        ] {
+            let src = format!(
+                "{setup} let caught = false; try {{ {action}; }} catch(e) {{ caught = e instanceof TypeError; }} caught && m.x === 1 && !('y' in m) && Object.getPrototypeOf(m) === Map.prototype"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        let src = format!(
+            "{own} m.set('entry', 1); Object.{operation}(m); m.set('entry', 2); let updated = m.get('entry') === 2 && m.size === 1; m.set('new', 3); let added = m.get('new') === 3 && m.size === 2; let removed = m.delete('entry') && !m.has('entry') && m.size === 1; m.clear(); updated && added && removed && m.size === 0 && !m.has('new') && m.x === 1"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+
+    for action in [
+        "m.x = 2",
+        "delete m.x",
+        "Object.defineProperty(m, 'x', {value: 2})",
+        "Object.defineProperty(m, 'x', {writable: true})",
+        "Object.defineProperty(m, 'x', {configurable: true})",
+    ] {
+        let src = format!(
+            "{frozen} let caught = false; try {{ {action}; }} catch(e) {{ caught = e instanceof TypeError; }} let d = Object.getOwnPropertyDescriptor(m, 'x'); caught && m.x === 1 && d.value === 1 && !d.writable && !d.configurable"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    let src = format!(
+        "{frozen} m.x = 2; m.y = 3; let removed = delete m.x; !removed && m.x === 1 && !('y' in m)"
+    );
+    assert_eq!(sloppy_eval(&src), ValueView::Bool(true), "{src}");
+}
+
 /// Synthetic fixtures, not light-cljs output. BigInt rows adapt QuickJS
 /// tests/test_builtin.js::test_map/test_map1 at 7d1c13c5d8f8.
 /// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
