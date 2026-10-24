@@ -444,3 +444,29 @@ fn map_deleted_and_cleared_entries_are_reclaimed() {
         assert!(map.downgrade().is_live());
     }
 }
+
+/// Synthetic fixture, not light-cljs output: these edges are independent
+/// of the entry storage, and the Map is their only remaining root path.
+#[test]
+fn map_properties_and_prototype_are_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let prototype = new_rooted_object(&rt);
+    let property = new_rooted_object(&rt);
+    let prototype_weak = prototype.downgrade();
+    let property_weak = property.downgrade();
+    let code = compile_function("function make(p, v) { let m = new Map(); m.own = v; Object.setPrototypeOf(m, p); return m; }").unwrap();
+    let task = rt.spawn(&code, &[&prototype, &property]).unwrap();
+    let map = complete(task.run().unwrap());
+    let map_weak = map.downgrade();
+    drop((task, prototype, property));
+    rt.collect().unwrap();
+    assert!(prototype_weak.upgrade().is_ok());
+    assert!(property_weak.upgrade().is_ok());
+    assert!(map_weak.upgrade().unwrap().same_object(&map));
+    drop(map);
+    rt.collect().unwrap();
+    for weak in [prototype_weak, property_weak, map_weak] {
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+}

@@ -131,4 +131,48 @@ mod tests {
         assert_eq!(map.find(&n(2.0)), Some(3));
         assert_eq!(map.size(), 1);
     }
+
+    #[test]
+    fn colliding_keys_remain_independent() {
+        let heap = Heap::default();
+        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        // Both raw hashes are 2 before the shared finalizer. These are
+        // distinct JS keys: a null and a finite nonzero number.
+        let a = Value::Null;
+        let b = Value::Number(f64::from_bits(0x6e75_6d62_6572_0002));
+        assert_eq!(key_hash(&a), key_hash(&b));
+        assert!(!key_eq(&a, &b));
+        map.set(a.clone(), Value::Bool(false));
+        map.set(b.clone(), Value::Bool(true));
+        assert_eq!(map.size(), 2);
+        assert_eq!(map.get(&a), Some(&Value::Bool(false)));
+        assert_eq!(map.get(&b), Some(&Value::Bool(true)));
+        map.set(a.clone(), Value::Number(1.0));
+        map.set(b.clone(), Value::Number(2.0));
+        assert_eq!(map.size(), 2);
+        assert_eq!(map.get(&a), Some(&Value::Number(1.0)));
+        assert_eq!(map.get(&b), Some(&Value::Number(2.0)));
+        assert!(map.delete(&a));
+        assert!(!map.delete(&a));
+        assert_eq!(map.size(), 1);
+        assert!(map.get(&a).is_none());
+        assert_eq!(map.get(&b), Some(&Value::Number(2.0)));
+        map.set(a.clone(), Value::Number(3.0));
+        assert_eq!(map.size(), 2);
+        assert_eq!(map.find(&a), Some(2));
+        assert!(map.delete(&b));
+        assert_eq!(map.size(), 1);
+        assert!(map.get(&b).is_none());
+        assert_eq!(map.get(&a), Some(&Value::Number(3.0)));
+        assert!(map.delete(&a));
+        assert_eq!(map.size(), 0);
+        assert!(map.index.is_empty());
+        map.set(a, Value::Undefined);
+        map.set(b, Value::Undefined);
+        map.clear();
+        assert_eq!(map.size(), 0);
+        assert!(map.index.is_empty());
+        assert!(map.entries.iter().all(Option::is_none));
+    }
 }

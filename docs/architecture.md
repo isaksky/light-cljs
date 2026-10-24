@@ -4385,6 +4385,8 @@ a callback. Tombstones hold no key/value edges, though their slot storage
 lasts until the Map dies. `Trace` reports the ordinary object's edges and
 both key and value of every live entry. The root inventory test
 `map_entries_are_traced` covers result-only retention and reclamation.
+`map_properties_and_prototype_are_traced` checks the independent ordinary
+property and custom-prototype edges with only the Map result rooted.
 
 The realm appends an immutable ordinary `Map.prototype`, constructor,
 methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
