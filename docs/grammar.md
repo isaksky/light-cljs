@@ -5164,8 +5164,8 @@ on 64 KiB worker stacks. Source preparation and limits match indirect eval.
 Rejected forms and explicit gaps: unshadowed direct eval in parameter
 expressions is rejected by the compiler with Unsupported (-109). A shadowed
 callee named `eval` remains an ordinary call there; passing intrinsic eval
-to that call is rejected at runtime before argument evaluation. Direct eval inherits the
-enclosing function's `new.target` binding (-99), also through arrows and
+to that call is rejected at runtime before argument evaluation. Direct eval
+inherits the enclosing function's `new.target` binding (-99), also through arrows and
 nested eval; at script scope and in indirect eval it is an early SyntaxError.
 Super property access remains unsupported. Runtime eval source does not inherit the
 constructor's super-call context; `eval('super()')` fails explicitly. Eval's

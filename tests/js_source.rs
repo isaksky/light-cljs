@@ -1075,6 +1075,8 @@ fn sloppy_eval_declares_vars_in_the_caller() {
         r#"function f() { eval('var z=1'); const remove=()=>eval('delete z'); return ()=>{ 'use strict'; z=(remove(),2); }; } let ok=false; try { f()(); } catch(e) { ok=e instanceof ReferenceError; } ok"#,
         r#"function F() { const read=()=>z; eval('var z=new.target'); return read; } new F()() === F"#,
         r#"function F() { eval('var z=1'); this.ok=eval('eval(\"new.target\")') === F && z === 1; } new F().ok"#,
+        r#"function Base() { const read=()=>z; eval('var z=new.target'); this.ok=read()===Derived; } class Derived extends Base { constructor() { super(); this.ok=this.ok && eval('this')===this && eval('new.target')===Derived; } } new Derived().ok"#,
+        r#"function f() { const read=()=>z; eval('var z=7'); class Base {} class Derived extends Base { constructor() { const target=eval('() => new.target'); const receiver=eval('() => this'); super(); this.ok=eval('z')===read() && target()===Derived && receiver()===this; } } return new Derived().ok; } f()"#,
     ] {
         assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
     }
