@@ -572,6 +572,42 @@ fn float_typed_array_byte_layout() {
 }
 
 #[test]
+fn float_typed_array_nan_encodings() {
+    // Synthetic fixtures, not light-cljs output. Seed positive signaling and
+    // negative payload-bearing NaNs without using an already canonical NaN.
+    for (input_kind, seed) in [
+        ("Float32Array", "u[0] = 0x7f800001; u[1] = 0xffc12345;"),
+        (
+            "Float64Array",
+            "u[0] = 1; u[1] = 0x7ff00000; u[2] = 0x89abcdef; u[3] = 0xfff81234;",
+        ),
+    ] {
+        for (output_kind, word_kind, expected) in [
+            (
+                "Float16Array",
+                "Uint16Array",
+                "w[0] === 0x7e00 && w[1] === 0x7e00",
+            ),
+            (
+                "Float32Array",
+                "Uint32Array",
+                "w[0] === 0x7fc00000 && w[1] === 0x7fc00000",
+            ),
+            (
+                "Float64Array",
+                "Uint32Array",
+                "w[0] === 0 && w[1] === 0x7ff80000 && w[2] === 0 && w[3] === 0x7ff80000",
+            ),
+        ] {
+            let src = format!(
+                "let input = new {input_kind}(2); let u = new Uint32Array(input.buffer); {seed} let output = new {output_kind}(2); output[0] = input[0]; output[1] = input[1]; let w = new {word_kind}(output.buffer); input[0] !== input[0] && input[1] !== input[1] && output[0] !== output[0] && output[1] !== output[1] && {expected}"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+}
+
+#[test]
 fn float_typed_array_constructors_and_coercion() {
     // Synthetic fixtures, not light-cljs output.
     for (kind, size) in [
