@@ -49,6 +49,8 @@ cargo test --lib heap::gc::       # rendezvous root snapshot with running tasks
 cargo test --test executor        # two-worker executor: overlap, migration, cancellation, shutdown
 cargo test --lib exec::           # builder ownership across workers, executor root snapshot
 cargo test --test executor_gc     # collection under the executor: workers, native scopes, parked roots
+cargo test --test gc_roots        # root inventory: retention and reclamation per holder, multi-worker
+cargo test --lib heap::inventory:: # root inventory cross-check, crate-internal holders
 cargo test --test need            # __rt.need: suspend at the need, resume without replay
 cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo test --test exceptions      # throw, try/catch/finally, completion records, yields inside handlers
@@ -1027,3 +1029,27 @@ Deferred:
   root inventory is clj-quickjs-31. Windows inside one cell critical section
   (between the fast-path read and subscription) stay with the hook-forced
   unit tests (`src/task/handoff_tests.rs`); here they are only raced.
+
+### GC root inventory (clj-quickjs-31)
+
+- Every holder of heap values the collector must see (host handles and
+  scope locals, published task results and dependency outcomes, running,
+  suspended and need-suspended frames, executor ready queue and parked set,
+  `finally` completions, resumable native frames, transient builders, atom
+  current and reader-retained old values, closure environments and binding
+  cells, persistent collection edges, executable object constants, native
+  payload edges) has a retention and a reclamation test, the latter with
+  stale-handle rejection after slot reuse; a multi-worker variant keeps
+  every holder alive while executor workers allocate and collect. The
+  inventory table is in `docs/architecture.md` ("Root inventory").
+- Cross-check: `src/heap/inventory.rs` maps every `RootCategory` and object
+  kind to its holders with exhaustive matches and checks that each
+  holder's tests exist and are documented.
+- Tests: `cargo test --test gc_roots`, `cargo test --lib heap::inventory::`.
+
+Deferred:
+
+- A published dependency outcome is reclaimable only with its runtime (cells
+  are never removed); its reclamation is tested on a dropped cell table.
+  Executable object constants exist only in crate tests (loaded code has
+  primitive constants).

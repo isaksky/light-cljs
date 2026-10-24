@@ -1,0 +1,952 @@
+//! The collector's root inventory, one holder at a time (pellet
+//! clj-quickjs-31, `docs/design.md` §11 "The collector must see"): for
+//! every place a heap value can be held, a retention test (the value
+//! survives forced collections while reachable only through that holder)
+//! and a reclamation test (once the holder releases it, a collection
+//! reclaims it and every handle to it is rejected as stale, also after its
+//! storage is reused). A multi-worker variant keeps every holder alive while
+//! executor workers allocate and collect.
+//!
+//! The inventory, and which test covers each `RootCategory` and object kind,
+//! is `src/heap/inventory.rs`; its cross-check fails if a test named there is
+//! missing from this file. Holders the public API cannot reach (object
+//! constants, native payload edges, a dropped dependency cell) are tested
+//! there. The inventory is documented in `docs/architecture.md`, "Root
+//! inventory".
+//!
+//! Programs are JavaScript source (synthetic fixtures, not light-cljs
+//! output). Collections are forced with `Runtime::request_collection`;
+//! every cross-thread step waits on a latch, channel or executor event with
+//! a bound, never on a sleep.
+
+use std::any::Any;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use clj_quickjs::exec::{EventKind, ExecutorConfig, OutcomeKind};
+use clj_quickjs::frontend::compile_function;
+use clj_quickjs::{
+    Budget, CasOutcome, CellStatus, CollectionObserver, CollectionReport, Completion, DependencyId,
+    DependencyKey, Executable, Executor, HandleError, Host, HostCall, Primitive, Provenance,
+    ResultKind, Rooted, RunOutcome, Runtime, Task, ValueView, WeakHandle,
+};
+
+/// Bound for every cross-thread wait.
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A loop long enough that a small budget always yields inside it.
+const SPIN: &str = "let i = 0; while (i < 1000000) { i = i + 1; }";
+
+/// Instructions a budgeted run gets before it yields: enough for every
+/// fixture to reach its spin loop, far too few to leave it.
+const PROLOGUE: u64 = 64;
+
+/// Host for programs without effects.
+struct NoEffects;
+
+impl Host for NoEffects {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        Err(format!("unexpected effect {}", call.op))
+    }
+}
+
+/// Objects reachable only through one holder, and how to release it.
+struct Held {
+    /// Non-rooting handles to the objects only the holder keeps alive.
+    weak: Vec<WeakHandle>,
+    /// Releases the holder (consumes the root, task or executor).
+    release: Box<dyn FnOnce() + Send>,
+    /// Other state the fixture needs alive (for example the atom whose old
+    /// value a reader retains); dropped at the end of the test.
+    keep: Box<dyn Any + Send>,
+}
+
+impl Held {
+    fn new(weak: Vec<WeakHandle>, release: impl FnOnce() + Send + 'static) -> Held {
+        Held {
+            weak,
+            release: Box::new(release),
+            keep: Box::new(()),
+        }
+    }
+
+    fn keeping(mut self, keep: impl Any + Send) -> Held {
+        self.keep = Box::new(keep);
+        self
+    }
+}
+
+/// Force a collection; every object of `held` survives it with its identity.
+fn assert_retained(rt: &Runtime, held: &Held) {
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(&held.weak);
+    }
+}
+
+fn assert_live(weak: &[WeakHandle]) {
+    for (i, w) in weak.iter().enumerate() {
+        assert!(w.is_live(), "object {i} was reclaimed while held");
+        // An upgrade checks the slot generation: it succeeds only while the
+        // very same object occupies the slot.
+        w.upgrade().expect("a held object upgrades");
+    }
+}
+
+/// Release the holder and collect: every object of `held` is reclaimed and
+/// rejected as stale, also after new objects reuse its storage.
+fn assert_reclaimed(rt: &Runtime, held: Held) {
+    let Held {
+        weak,
+        release,
+        keep,
+    } = held;
+    release();
+    let before = rt.heap_stats().objects;
+    let stats = rt.request_collection().unwrap();
+    assert!(
+        stats.reclaimed >= weak.len(),
+        "{} reclaimed, {} expected at least",
+        stats.reclaimed,
+        weak.len()
+    );
+    assert_eq!(rt.heap_stats().objects, before - stats.reclaimed);
+    assert_stale(rt, &weak);
+    // New objects take over the freed slots; the stale handles must not
+    // name them.
+    let newcomers: Vec<Rooted> = (0..2 * weak.len() + 4).map(|_| object(rt).0).collect();
+    assert_stale(rt, &weak);
+    drop((newcomers, keep));
+}
+
+fn assert_stale(rt: &Runtime, weak: &[WeakHandle]) {
+    for (i, w) in weak.iter().enumerate() {
+        assert!(!w.is_live(), "object {i} survived its holder's release");
+        assert_eq!(w.upgrade().unwrap_err(), HandleError::Reclaimed);
+        rt.scope(|s| assert_eq!(s.upgrade(w).unwrap_err(), HandleError::Reclaimed));
+    }
+}
+
+/// A new plain object rooted for the caller, and a weak handle to it.
+fn object(rt: &Runtime) -> (Rooted, WeakHandle) {
+    let rooted = rt.scope(|s| {
+        let o = s.new_object();
+        s.persist(o)
+    });
+    let weak = rooted.downgrade();
+    (rooted, weak)
+}
+
+/// A shareable value: a vector holding a vector. Weak handles to both.
+fn shareable(rt: &Runtime) -> (Rooted, Vec<WeakHandle>) {
+    rt.scope(|s| {
+        let one = s.primitive(Primitive::Number(1.0));
+        let inner = s.new_vector(&[one]).unwrap();
+        let outer = s.new_vector(&[inner, one]).unwrap();
+        let weak = vec![s.downgrade(outer), s.downgrade(inner)];
+        (s.persist(outer), weak)
+    })
+}
+
+fn compile(source: &str) -> Executable {
+    compile_function(source).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+/// Spawn `source` with a fresh object as its only argument; the caller's
+/// root for the argument is dropped, so only the task holds it.
+fn spawn_holding(rt: &Runtime, source: &str) -> (Task, WeakHandle) {
+    let (arg, weak) = object(rt);
+    let task = rt.spawn(&compile(source), &[&arg]).unwrap();
+    drop(arg);
+    (task, weak)
+}
+
+/// Run `task` for [`PROLOGUE`] instructions; it must yield.
+fn run_prologue(task: &Task) {
+    let outcome = task
+        .run_with(Budget::instructions(PROLOGUE), &mut NoEffects)
+        .unwrap();
+    assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+}
+
+fn complete(outcome: RunOutcome) -> Rooted {
+    match outcome {
+        RunOutcome::Complete(v) => v,
+        other => panic!("expected Complete, got {other:?}"),
+    }
+}
+
+fn run_to_end(task: &Task) -> Rooted {
+    complete(task.run_with(Budget::UNLIMITED, &mut NoEffects).unwrap())
+}
+
+fn key(rt: &Runtime, def: u64) -> DependencyKey {
+    DependencyKey::new(rt.world(), DependencyId::new(def), ResultKind::new(1))
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures: one per holder. Each returns objects reachable only through it.
+// ---------------------------------------------------------------------------
+
+/// Host root: a `Rooted` handle (`RootCategory::PersistentHandle`).
+fn persistent_handle(rt: &Runtime) -> Held {
+    let (root, weak) = object(rt);
+    Held::new(vec![weak], move || drop(root))
+}
+
+/// Edges of the persistent kinds: a rooted map holding a vector holding an
+/// occurrence of a plain object.
+fn persistent_collection(rt: &Runtime) -> Held {
+    let (root, weak) = rt.scope(|s| {
+        let o = s.new_object();
+        let at = Provenance {
+            source: 1,
+            line: 2,
+            column: 3,
+        };
+        let occ = s.new_occurrence(o, at).unwrap();
+        let vec = s.new_vector(&[occ]).unwrap();
+        let k = s.primitive(Primitive::Number(0.0));
+        let map = s.new_map(&[(k, vec)]).unwrap();
+        let weak = [map, vec, occ, o].map(|l| s.downgrade(l)).to_vec();
+        (s.persist(map), weak)
+    });
+    Held::new(weak, move || drop(root))
+}
+
+/// A task's published result: the `Rooted` of `RunOutcome::Complete`,
+/// owned by the embedder after the task is gone.
+fn task_result(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(rt, "function f(o) { return o; }");
+    let result = run_to_end(&task);
+    drop(task);
+    Held::new(vec![weak], move || drop(result))
+}
+
+/// A suspended task frame: a yielded task's local (`TaskFrame`, through the
+/// task's root source).
+fn suspended_frame(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(rt, &format!("function f(o) {{ {SPIN} return 0; }}"));
+    run_prologue(&task);
+    Held::new(vec![weak], move || drop(task))
+}
+
+/// A task suspended at a pending `__rt.need`: its frames are saved with the
+/// pending need; the dependency cell holds only a weak waiter.
+fn pending_need(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(rt, "function f(o) { const r = __rt.need(7, 1); return o; }");
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(rt, 7)));
+    Held::new(vec![weak], move || drop(task))
+}
+
+/// A completed dependency cell's `Ready` value (`DependencyOutcome`). A cell
+/// is never removed while its runtime exists, so its release is tested in
+/// `src/heap/inventory.rs` (a dropped cell table).
+fn dependency_ready(rt: &Runtime, def: u64) -> Vec<WeakHandle> {
+    let request = rt.claim(key(rt, def)).unwrap();
+    let (value, weak) = shareable(rt);
+    let wakeups = rt
+        .complete(key(rt, def), request.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert!(wakeups.deliveries().is_empty());
+    weak
+}
+
+/// A completed dependency cell's `Failed` error (`DependencyOutcome`).
+fn dependency_failed(rt: &Runtime, def: u64) -> Vec<WeakHandle> {
+    let request = rt.claim(key(rt, def)).unwrap();
+    let (error, weak) = shareable(rt);
+    let wakeups = rt
+        .complete(key(rt, def), request.producer(), Completion::Failed(&error))
+        .unwrap();
+    assert!(wakeups.deliveries().is_empty());
+    weak
+}
+
+/// An atom's current value: the atom object's edge. Released by replacing
+/// the value; the atom itself stays rooted.
+fn atom_current(rt: &Runtime) -> Held {
+    let (value, weak) = shareable(rt);
+    let atom = rt.new_atom(&value).unwrap();
+    drop(value);
+    let (rt2, atom2) = (rt.clone(), atom.clone());
+    Held::new(weak, move || {
+        let current = rt2.atom_load(&atom2).unwrap();
+        let replacement = rt2.root(Primitive::Number(2.0));
+        let swapped = rt2
+            .atom_compare_and_set(&atom2, &current, &replacement)
+            .unwrap();
+        assert!(matches!(swapped, CasOutcome::Swapped));
+    })
+    .keeping(atom)
+}
+
+/// An atom's replaced (old) value, retained by a reader that loaded it
+/// before the replacement (load-to-root).
+fn atom_retained_old(rt: &Runtime) -> Held {
+    let (old, weak) = shareable(rt);
+    let atom = rt.new_atom(&old).unwrap();
+    let reader = rt.atom_load(&atom).unwrap();
+    let (new, _) = shareable(rt);
+    let swapped = rt.atom_compare_and_set(&atom, &old, &new).unwrap();
+    assert!(matches!(swapped, CasOutcome::Swapped));
+    drop((old, new));
+    Held::new(weak, move || drop(reader)).keeping(atom)
+}
+
+/// A closure environment: a captured immutable value.
+fn closure_environment(rt: &Runtime) -> Held {
+    let (task, captured) = spawn_holding(rt, "function f(o) { return function () { return o; }; }");
+    let closure = run_to_end(&task);
+    drop(task);
+    let weak = vec![captured, closure.downgrade()];
+    Held::new(weak, move || drop(closure))
+}
+
+/// A binding cell: a captured mutable binding, holding the value.
+fn binding_cell(rt: &Runtime) -> Held {
+    let (task, captured) = spawn_holding(
+        rt,
+        "function f(o) { let x = 0; const g = function () { return x; }; x = o; return g; }",
+    );
+    let closure = run_to_end(&task);
+    drop(task);
+    let weak = vec![captured, closure.downgrade()];
+    Held::new(weak, move || drop(closure))
+}
+
+/// An open transient builder's draft, reachable from a suspended frame.
+fn transient_builder(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!(
+            "function f(o) {{ const b = __rt.vectorBuilder(); __rt.builderConj(b, o); o = 0; \
+             {SPIN} return 0; }}"
+        ),
+    );
+    run_prologue(&task);
+    Held::new(vec![weak], move || drop(task))
+}
+
+/// A pending `return` completion of a running `finally` block (handler
+/// stack). The argument is overwritten, so only the completion holds it.
+fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!("function f(o) {{ try {{ return o; }} finally {{ o = 0; {SPIN} }} }}"),
+    );
+    run_prologue(&task);
+    (task, weak)
+}
+
+/// A pending `throw` completion of a running `finally` block, caught by an
+/// enclosing handler once the block ends.
+fn finally_throw(rt: &Runtime) -> (Task, WeakHandle) {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!(
+            "function f(o) {{ try {{ try {{ throw o; }} finally {{ o = 0; {SPIN} }} }} \
+             catch (e) {{ return e; }} }}"
+        ),
+    );
+    run_prologue(&task);
+    (task, weak)
+}
+
+fn handler_completion(rt: &Runtime, fixture: fn(&Runtime) -> (Task, WeakHandle)) -> Held {
+    let (task, weak) = fixture(rt);
+    Held::new(vec![weak], move || drop(task))
+}
+
+/// A resumable native frame (`__rt.reduce`): its accumulator, while its
+/// callback runs. The callback clears every other reference first.
+fn native_frame(rt: &Runtime) -> (Task, WeakHandle) {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!(
+            "function f(o) {{ return __rt.reduce(function (acc, x) {{ o = 0; acc = 0; {SPIN} \
+             return 1; }}, o, __rt.vector(1)); }}"
+        ),
+    );
+    run_prologue(&task);
+    (task, weak)
+}
+
+/// A task in an executor's ready queue, never run (its frame holds its
+/// argument). The executor is stopping, so nothing dispatches it.
+fn ready_queue(rt: &Runtime) -> Held {
+    let exec = ExecutorConfig::new().workers(1).start(rt).unwrap();
+    exec.begin_shutdown();
+    let (task, weak) = spawn_holding(rt, "function f(o) { return o; }");
+    exec.submit(task).unwrap();
+    Held::new(vec![weak], move || {
+        let shutdown = exec.shutdown(TIMEOUT).unwrap();
+        assert_eq!(shutdown.pending.len(), 1);
+        drop(shutdown);
+    })
+}
+
+/// A task parked by an executor on a pending dependency: the executor holds
+/// the only task handle.
+fn executor_parked(rt: &Runtime) -> Held {
+    let exec = ExecutorConfig::new().workers(1).start(rt).unwrap();
+    let (task, weak) = spawn_holding(rt, "function f(o) { const r = __rt.need(8, 1); return o; }");
+    let id = task.id();
+    exec.submit(task).unwrap();
+    assert!(exec.wait_for(TIMEOUT, |events| {
+        events.iter().any(|e| {
+            e.task == Some(id) && matches!(e.kind, EventKind::Released(OutcomeKind::Waiting(_)))
+        })
+    }));
+    Held::new(vec![weak], move || {
+        let shutdown = exec.shutdown(TIMEOUT).unwrap();
+        assert_eq!(shutdown.parked.len(), 1);
+        drop(shutdown);
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Retention and reclamation, one pair per holder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn persistent_handle_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &persistent_handle(&rt));
+}
+
+#[test]
+fn persistent_handle_reclaims() {
+    let rt = Runtime::new();
+    let held = persistent_handle(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn scope_local_retains() {
+    let rt = Runtime::new();
+    rt.scope(|s| {
+        let local = s.new_object();
+        let weak = s.downgrade(local);
+        for _ in 0..2 {
+            rt.collect()
+                .expect("the collecting thread's own scope is fine");
+            let again = s.upgrade(&weak).unwrap();
+            assert!(s.same_object(local, again));
+        }
+    });
+}
+
+#[test]
+fn scope_local_reclaims() {
+    let rt = Runtime::new();
+    let weak = rt.scope(|s| {
+        let local = s.new_object();
+        rt.collect().unwrap();
+        s.downgrade(local)
+    });
+    assert_reclaimed(&rt, Held::new(vec![weak], || {}));
+}
+
+#[test]
+fn persistent_collection_edges_retain() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &persistent_collection(&rt));
+}
+
+#[test]
+fn persistent_collection_edges_reclaim() {
+    let rt = Runtime::new();
+    let held = persistent_collection(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn task_result_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &task_result(&rt));
+}
+
+#[test]
+fn task_result_reclaims() {
+    let rt = Runtime::new();
+    let held = task_result(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn suspended_frame_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &suspended_frame(&rt));
+}
+
+#[test]
+fn suspended_frame_reclaims() {
+    let rt = Runtime::new();
+    let held = suspended_frame(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+/// A suspended task's frames are also released when it finishes, not only
+/// when its handle is dropped.
+#[test]
+fn finished_task_frame_reclaims() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(&rt, &format!("function f(o) {{ {SPIN} return 0; }}"));
+    run_prologue(&task);
+    rt.request_collection().unwrap();
+    assert!(weak.is_live());
+    assert_eq!(run_to_end(&task).view(), ValueView::Number(0.0));
+    assert_reclaimed(&rt, Held::new(vec![weak], || {}).keeping(task));
+}
+
+#[test]
+fn pending_need_frame_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &pending_need(&rt));
+}
+
+#[test]
+fn pending_need_frame_reclaims() {
+    let rt = Runtime::new();
+    let held = pending_need(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn dependency_outcome_retains() {
+    let rt = Runtime::new();
+    let ready = dependency_ready(&rt, 1);
+    let failed = dependency_failed(&rt, 2);
+    let held = Held::new(ready.iter().chain(&failed).cloned().collect(), || {});
+    assert_retained(&rt, &held);
+    // Readers still get the very objects that were published.
+    let (CellStatus::Ready(value), CellStatus::Failed(error)) =
+        (rt.cell_status(key(&rt, 1)), rt.cell_status(key(&rt, 2)))
+    else {
+        panic!("both cells are complete");
+    };
+    assert!(value.same_object(&ready[0].upgrade().unwrap()));
+    assert!(error.same_object(&failed[0].upgrade().unwrap()));
+}
+
+#[test]
+fn atom_current_value_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &atom_current(&rt));
+}
+
+#[test]
+fn atom_current_value_reclaims() {
+    let rt = Runtime::new();
+    let held = atom_current(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+/// Dropping the atom's last root reclaims the atom and its value together.
+#[test]
+fn atom_object_reclaims_with_its_value() {
+    let rt = Runtime::new();
+    let (value, mut weak) = shareable(&rt);
+    let atom = rt.new_atom(&value).unwrap();
+    drop(value);
+    weak.push(atom.downgrade());
+    let held = Held::new(weak, move || drop(atom));
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn atom_retained_old_value_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &atom_retained_old(&rt));
+}
+
+#[test]
+fn atom_retained_old_value_reclaims() {
+    let rt = Runtime::new();
+    let held = atom_retained_old(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn closure_environment_retains() {
+    let rt = Runtime::new();
+    let held = closure_environment(&rt);
+    assert_retained(&rt, &held);
+    // Calling the closure after the collections returns the captured object.
+    let [captured, closure] = [&held.weak[0], &held.weak[1]].map(|w| w.upgrade().unwrap());
+    let caller = rt
+        .spawn(&compile("function g(h) { return h(); }"), &[&closure])
+        .unwrap();
+    assert!(run_to_end(&caller).same_object(&captured));
+}
+
+#[test]
+fn closure_environment_reclaims() {
+    let rt = Runtime::new();
+    let held = closure_environment(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn binding_cell_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &binding_cell(&rt));
+}
+
+#[test]
+fn binding_cell_reclaims() {
+    let rt = Runtime::new();
+    let held = binding_cell(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn transient_builder_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &transient_builder(&rt));
+}
+
+#[test]
+fn transient_builder_reclaims() {
+    let rt = Runtime::new();
+    let held = transient_builder(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn handler_completion_retains() {
+    for fixture in [finally_return, finally_throw] {
+        let rt = Runtime::new();
+        let (task, weak) = fixture(&rt);
+        assert_retained(&rt, &Held::new(vec![weak.clone()], || {}));
+        // The completion delivers the very object once the block ends.
+        let result = run_to_end(&task);
+        assert!(result.same_object(&weak.upgrade().unwrap()));
+    }
+}
+
+#[test]
+fn handler_completion_reclaims() {
+    for fixture in [finally_return, finally_throw] {
+        let rt = Runtime::new();
+        let held = handler_completion(&rt, fixture);
+        assert_retained(&rt, &held);
+        assert_reclaimed(&rt, held);
+    }
+}
+
+#[test]
+fn native_frame_retains() {
+    let rt = Runtime::new();
+    let (task, weak) = native_frame(&rt);
+    assert_retained(&rt, &Held::new(vec![weak], || {}));
+    assert_eq!(run_to_end(&task).view(), ValueView::Number(1.0));
+}
+
+#[test]
+fn native_frame_reclaims() {
+    let rt = Runtime::new();
+    let (task, weak) = native_frame(&rt);
+    let held = Held::new(vec![weak], move || drop(task));
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn ready_queue_retains() {
+    let rt = Runtime::new();
+    let held = ready_queue(&rt);
+    assert_retained(&rt, &held);
+    // Release through shutdown so the executor is not leaked.
+    (held.release)();
+}
+
+#[test]
+fn ready_queue_reclaims() {
+    let rt = Runtime::new();
+    let held = ready_queue(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn executor_parked_task_retains() {
+    let rt = Runtime::new();
+    let held = executor_parked(&rt);
+    assert_retained(&rt, &held);
+    (held.release)();
+}
+
+#[test]
+fn executor_parked_task_reclaims() {
+    let rt = Runtime::new();
+    let held = executor_parked(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+// ---------------------------------------------------------------------------
+// Running frames: reported by a run parked at a VM safepoint.
+// ---------------------------------------------------------------------------
+
+/// Opens once; waiting for it is bounded by [`TIMEOUT`].
+#[derive(Default)]
+struct Latch {
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Latch {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) -> bool {
+        let open = self.open.lock().unwrap();
+        *self
+            .cv
+            .wait_timeout_while(open, TIMEOUT, |o| !*o)
+            .unwrap()
+            .0
+    }
+}
+
+/// Host of spinning tasks: effect 0 answers "continue" until `stop` is set
+/// (failing after a bound) and opens `entered` the first time.
+#[derive(Clone, Default)]
+struct Spin {
+    entered: Arc<Latch>,
+    stop: Arc<AtomicBool>,
+}
+
+struct SpinHost {
+    spin: Spin,
+    deadline: Instant,
+}
+
+impl SpinHost {
+    fn new(spin: &Spin) -> SpinHost {
+        SpinHost {
+            spin: spin.clone(),
+            deadline: Instant::now() + TIMEOUT,
+        }
+    }
+}
+
+impl Host for SpinHost {
+    fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+        self.spin.entered.open();
+        if Instant::now() > self.deadline {
+            return Err("spin ran past its deadline".to_string());
+        }
+        Ok(Primitive::Bool(!self.spin.stop.load(Ordering::Acquire)))
+    }
+}
+
+/// Allocates garbage while spinning; its argument is only in its frame.
+const SPINNER: &str =
+    "function f(o) { while (__rt.effect(0, 0)) { const g = __rt.vector(1, 2); } return o; }";
+
+/// Run a spinner on its own thread and collect while it runs: the run parks
+/// at a VM safepoint and reports its frame. Returns the result and the weak
+/// handle once the spinner finished.
+fn collect_around_running_frame(rt: &Runtime) -> (Rooted, WeakHandle) {
+    let spin = Spin::default();
+    let (task, weak) = spawn_holding(rt, SPINNER);
+    let runner = {
+        let spin = spin.clone();
+        thread::spawn(move || {
+            let mut host = SpinHost::new(&spin);
+            complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap())
+        })
+    };
+    assert!(spin.entered.wait(), "the spinner never started");
+    for _ in 0..3 {
+        let stats = rt.request_collection().unwrap();
+        assert!(stats.roots >= 1, "the parked run reported its frame");
+        assert!(weak.is_live(), "a running frame's value was reclaimed");
+    }
+    spin.stop.store(true, Ordering::Release);
+    let result = runner.join().unwrap();
+    (result, weak)
+}
+
+#[test]
+fn running_frame_retains() {
+    let rt = Runtime::new();
+    let (result, weak) = collect_around_running_frame(&rt);
+    assert!(result.same_object(&weak.upgrade().unwrap()));
+}
+
+#[test]
+fn running_frame_reclaims() {
+    let rt = Runtime::new();
+    let (result, weak) = collect_around_running_frame(&rt);
+    // The run ended, so its frames are gone; the result is the last holder.
+    assert_reclaimed(&rt, Held::new(vec![weak], move || drop(result)));
+}
+
+// ---------------------------------------------------------------------------
+// Multi-worker variant.
+// ---------------------------------------------------------------------------
+
+/// Checks, after every collection, that none of `weak` was reclaimed.
+struct Watch {
+    weak: Mutex<Vec<WeakHandle>>,
+    collections: AtomicUsize,
+    lost: AtomicUsize,
+}
+
+impl CollectionObserver for Watch {
+    fn collected(&self, _: &CollectionReport) {
+        self.collections.fetch_add(1, Ordering::AcqRel);
+        let weak = self.weak.lock().unwrap();
+        let lost = weak.iter().filter(|w| !w.is_live()).count();
+        self.lost.fetch_add(lost, Ordering::AcqRel);
+    }
+}
+
+/// Allocates `n` small vectors, dropping most of them.
+const CHURN: &str = "function f(n) { let i = 0; let v = __rt.vector(); \
+     while (i < n) { v = __rt.conj(v, __rt.vector(i)); \
+     if (__rt.count(v) > 16) { v = __rt.vector(); } i = i + 1; } return i; }";
+
+/// Every holder at once, while two executor workers run allocating tasks,
+/// spinning tasks (running frames on workers) and collection jobs: each
+/// collection is requested by one worker while the other allocates. Every
+/// held object survives every collection, then is reclaimed once released.
+#[test]
+fn every_holder_retains_while_other_workers_allocate_and_collect() {
+    const COLLECTIONS: usize = 12;
+    let rt = Runtime::new();
+
+    let mut helds = vec![
+        persistent_handle(&rt),
+        persistent_collection(&rt),
+        task_result(&rt),
+        suspended_frame(&rt),
+        pending_need(&rt),
+        atom_current(&rt),
+        atom_retained_old(&rt),
+        closure_environment(&rt),
+        binding_cell(&rt),
+        transient_builder(&rt),
+        handler_completion(&rt, finally_return),
+        handler_completion(&rt, finally_throw),
+        ready_queue(&rt),
+        executor_parked(&rt),
+    ];
+    let (native_task, native_weak) = native_frame(&rt);
+    helds.push(Held::new(vec![native_weak], move || drop(native_task)));
+    let mut published = dependency_ready(&rt, 1);
+    published.extend(dependency_failed(&rt, 2));
+
+    let spin = Spin::default();
+    let exec: Executor = {
+        let spin = spin.clone();
+        ExecutorConfig::new()
+            .workers(2)
+            .budget(Budget::instructions(500))
+            .host(move |_| Box::new(SpinHost::new(&spin)))
+            .start(&rt)
+            .unwrap()
+    };
+    let spinners: Vec<(clj_quickjs::TaskId, WeakHandle)> = (0..2)
+        .map(|_| {
+            let (task, weak) = spawn_holding(&rt, SPINNER);
+            let id = task.id();
+            exec.submit(task).unwrap();
+            (id, weak)
+        })
+        .collect();
+
+    let mut all_weak: Vec<WeakHandle> = helds.iter().flat_map(|h| h.weak.clone()).collect();
+    all_weak.extend(published.iter().cloned());
+    all_weak.extend(spinners.iter().map(|(_, w)| w.clone()));
+    let watch = Arc::new(Watch {
+        weak: Mutex::new(all_weak.clone()),
+        collections: AtomicUsize::new(0),
+        lost: AtomicUsize::new(0),
+    });
+    let observer: Weak<dyn CollectionObserver> = Arc::downgrade(&watch) as _;
+    rt.observe_collections(observer);
+
+    let churn = compile(CHURN);
+    rt.scope(|s| {
+        // A host scope local, kept across the whole run: the scope is
+        // released while this thread waits, so it never delays a collection.
+        let local = s.new_object();
+        let local_weak = s.downgrade(local);
+        watch.weak.lock().unwrap().push(local_weak.clone());
+        s.released(|| {
+            assert!(spin.entered.wait(), "no spinner started");
+            let mut churners = Vec::new();
+            for _ in 0..COLLECTIONS {
+                let n = rt.root(Primitive::Number(2000.0));
+                let task = rt.spawn(&churn, &[&n]).unwrap();
+                churners.push(task.id());
+                exec.submit(task).unwrap();
+                exec.schedule_collection(clj_quickjs::Placement::Any);
+            }
+            for id in churners {
+                let outcome = exec.take_outcome(id, TIMEOUT).expect("churn finished");
+                assert_eq!(complete(outcome).view(), ValueView::Number(2000.0));
+            }
+            let by_workers = |events: &[clj_quickjs::exec::Event]| {
+                events
+                    .iter()
+                    .filter(|e| matches!(&e.kind, EventKind::Collected(c) if c.requester.is_some()))
+                    .count()
+            };
+            assert!(
+                exec.wait_for(TIMEOUT, |events| by_workers(events) >= COLLECTIONS),
+                "the workers' collections did not all run"
+            );
+        });
+        let again = s.upgrade(&local_weak).unwrap();
+        assert!(s.same_object(local, again));
+    });
+
+    spin.stop.store(true, Ordering::Release);
+    for (id, weak) in &spinners {
+        let result = complete(exec.take_outcome(*id, TIMEOUT).expect("spinner finished"));
+        assert!(result.same_object(&weak.upgrade().unwrap()));
+    }
+    assert!(watch.collections.load(Ordering::Acquire) >= COLLECTIONS);
+    assert_eq!(
+        watch.lost.load(Ordering::Acquire),
+        0,
+        "a held object was reclaimed"
+    );
+    for held in &helds {
+        assert_retained(&rt, held);
+    }
+    assert_live(&published);
+
+    // Then every holder lets go, and everything it held is reclaimed.
+    drop(exec.shutdown(TIMEOUT).unwrap());
+    watch.weak.lock().unwrap().clear();
+    let weak: Vec<WeakHandle> = helds.iter().flat_map(|h| h.weak.clone()).collect();
+    let mut keep = Vec::new();
+    for held in helds {
+        (held.release)();
+        keep.push(held.keep);
+    }
+    assert_reclaimed(&rt, Held::new(weak, || {}).keeping(keep));
+}

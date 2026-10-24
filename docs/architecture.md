@@ -177,6 +177,53 @@ safepoints"). This replaces QuickJS's one-thread-per-runtime rule
   for an effect to return), and parking a thread that holds two run guards.
   Worker integration: clj-quickjs-25 (below).
 
+## Root inventory (clj-quickjs-31)
+
+Every place a heap value can be held so that the collector must keep it
+(design.md §11, "The collector must see"), the `RootCategory` it is
+reached through, and its retention test (the value survives forced
+collections while reachable only through that holder) and reclamation test
+(released, it is reclaimed and every handle to it is rejected as stale,
+also after its slot is reused). Tests are in `tests/gc_roots.rs` unless
+marked *(lib)*: those are in `src/heap/inventory.rs`, for holders the
+public API cannot reach.
+
+| Holder | Root category (via object kind) | Retention | Reclamation |
+|--------|---------------------------------|-----------|-------------|
+| `Rooted` host handle | `PersistentHandle` (plain object) | `persistent_handle_retains` | `persistent_handle_reclaims` |
+| open scope local | `ScopeLocal` | `scope_local_retains` | `scope_local_reclaims` |
+| published task result | `PersistentHandle` | `task_result_retains` | `task_result_reclaims` |
+| running frames (run parked at a VM safepoint) | `TaskFrame`, reported by the runner | `running_frame_retains` | `running_frame_reclaims` |
+| suspended (yielded) frames | `TaskFrame`, task root source | `suspended_frame_retains` | `suspended_frame_reclaims` |
+| frames suspended at a pending `__rt.need` | `TaskFrame` | `pending_need_frame_retains` | `pending_need_frame_reclaims` |
+| executor ready queue | `TaskFrame` (queued task) | `ready_queue_retains` | `ready_queue_reclaims` |
+| executor parked set | `TaskFrame` (parked task) | `executor_parked_task_retains` | `executor_parked_task_reclaims` |
+| `finally` return/throw completions (handler stack) | `TaskFrame` | `handler_completion_retains` | `handler_completion_reclaims` |
+| resumable native frames (`__rt.reduce` accumulator) | `TaskFrame` | `native_frame_retains` | `native_frame_reclaims` |
+| transient builder drafts | `TaskFrame` (`Builder`) | `transient_builder_retains` | `transient_builder_reclaims` |
+| dependency `Ready` value / `Failed` error | `DependencyOutcome` (`Vector`) | `dependency_outcome_retains` | `dependency_outcome_reclaims_with_its_cell` *(lib)* |
+| atom current value | `PersistentHandle` (`Atom`) | `atom_current_value_retains` | `atom_current_value_reclaims` |
+| atom replaced value held by a reader | `PersistentHandle` (load-to-root) | `atom_retained_old_value_retains` | `atom_retained_old_value_reclaims` |
+| closure environment | `PersistentHandle` (`Function`) | `closure_environment_retains` | `closure_environment_reclaims` |
+| captured mutable binding | `PersistentHandle` (`Function` → `Cell`) | `binding_cell_retains` | `binding_cell_reclaims` |
+| persistent collection edges | `PersistentHandle` (`Map` → `Vector` → `Occurrence`) | `persistent_collection_edges_retain` | `persistent_collection_edges_reclaim` |
+| executable object constants | `ExecutableConstant` | `executable_constant_retains` *(lib)* | `executable_constant_reclaims` *(lib)* |
+| native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
+
+- **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
+  every `ObjectKind` to its holders with exhaustive matches, so a new
+  category or kind does not compile until it is mapped, and its test
+  checks that every holder's two tests exist and are named in this table.
+- **Multi-worker.** `every_holder_retains_while_other_workers_allocate_and_collect`
+  keeps every holder (and a scope local, released while waiting) alive
+  while two executor workers run allocating tasks, spinning tasks (running
+  frames on workers) and collection jobs; a collection observer checks
+  after each collection that nothing held was reclaimed, then every holder
+  is released and everything it held is reclaimed.
+- **Not reclaimable while the runtime lives.** A dependency cell is never
+  removed, so a published outcome stays rooted until the runtime and every
+  task are gone; the reclamation test drops a cell table directly.
+
 ## Persistent collections (clj-quickjs-3)
 
 `src/collections.rs` (contract and embedder API on `Scope`),

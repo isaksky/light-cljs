@@ -54,6 +54,8 @@
 //! proven shareable by the publication check (`value::share`).
 
 pub mod gc;
+#[cfg(test)]
+mod inventory;
 pub mod roots;
 
 use std::any::Any;
