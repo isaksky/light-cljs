@@ -433,6 +433,13 @@ fn bigint_deferred_operations_fail_explicitly() {
         "1n <= {valueOf() { return '2'; }}",
         "({valueOf() { return '1'; }}) == 1n",
         "String(1n)",
+        "Number(1n)",
+        "new Number(1n)",
+        "Number({ valueOf() { return 1n; } })",
+        "new Number({ valueOf() { return 1n; } })",
+        "try { Number(1n); } catch (e) { 99; }",
+        "try { new Number(1n); } catch (e) { 99; }",
+        "try { Number({ valueOf() { return 1n; } }); } catch (e) { 99; }",
         "({})[1n]",
         "let o = {}; o[1n] = 3",
         "Object(1n)",
@@ -14447,5 +14454,32 @@ fn bigint_arithmetic_resumes_object_conversion() {
             }
         }
         assert!(completed, "{expression}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The update completes before
+/// unary plus rejects its BigInt result; comparisons preserve its numeric type.
+#[test]
+fn bigint_update_results_use_numeric_coercion() {
+    for (setup, target) in [
+        ("let x = 2n;", "x"),
+        ("let o = {x: 2n};", "o.x"),
+        ("let o = {x: 2n};", "o['x']"),
+    ] {
+        for (expression, updated, less) in [
+            (format!("{target}++"), 3, true),
+            (format!("++{target}"), 3, false),
+            (format!("{target}--"), 1, true),
+            (format!("--{target}"), 1, true),
+        ] {
+            let source = format!(
+                "{setup} let caught = false; try {{ +({expression}); }} catch (e) {{ caught = e instanceof TypeError; }} caught && {target} === {updated}n"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+            let source = format!(
+                "{setup} let result = ({expression}) < 3; result === {less} && {target} === {updated}n"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
     }
 }

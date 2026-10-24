@@ -4872,3 +4872,8 @@ and intermediate operation checks the cap and maps overflow to RangeError;
 later cancellation cannot hide an oversized intermediate. BigInt/Number and
 other non-string primitive mixtures throw TypeError. BigInt ToString and the
 remaining numeric operators retain explicit failures for their sibling pellets.
+
+The Number constructor keeps a separate explicit UnsupportedOperand guard for
+BigInt until clj-quickjs-203: `Number(bigint)` is permitted by JavaScript and
+must not inherit the TypeError of unary plus/ToNumber. This guard also applies
+after an object's resumable ToPrimitive conversion and during construction.

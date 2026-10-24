@@ -1028,6 +1028,11 @@ pub(crate) fn primitive_constructor(
 ) -> Result<Value, Fault> {
     let value = match which {
         Builtin::Number => Value::Number(match args.first() {
+            // Number permits BigInt explicitly, unlike ToNumber. Keep the
+            // deferred conversion visible until clj-quickjs-203 implements it.
+            Some(Value::BigInt(_)) => {
+                return Err(Fault::Unsupported("Number(BigInt) is not supported".into()));
+            }
             Some(value) => to_number(value)?,
             None => 0.0,
         }),
