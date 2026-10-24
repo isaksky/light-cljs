@@ -1020,6 +1020,8 @@ fn realm_intrinsics_retain() {
         "Map.prototype.forEach",
         "Array.from",
         "Array.prototype.sort",
+        "Number.prototype.toExponential",
+        "Number.prototype.toPrecision",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1088,7 +1090,8 @@ fn realm_intrinsics_retain() {
     // Collator adds one prototype and five built-in functions (-218).
     // Number.prototype.toFixed adds one built-in function (-150).
     // WeakMap adds one prototype and five built-in functions (-173).
-    assert_eq!(rt.heap_usage().objects.builtin, 224);
+    // Number.prototype.toExponential/toPrecision add two built-ins (-151).
+    assert_eq!(rt.heap_usage().objects.builtin, 226);
     assert_eq!(rt.heap_usage().objects.plain, 42);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
