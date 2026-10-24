@@ -2935,7 +2935,8 @@ UTC years, overflowing components and the specified floating-point order.
 Deferred: `Date()`, no-argument/current-time and multiple-argument/local-time
 construction, string parsing, default Date-to-primitive conversion, formatting,
 calendar getters/setters and host zones. These constructor/conversion forms
-fail explicitly. Numeric strings for UTC/setTime are capped at 4096 UTF-16
+fail explicitly, as does JSON serialization requiring Date's deferred toJSON;
+an own toJSON override works. Numeric strings for UTC/setTime are capped at 4096 UTF-16
 units (RangeError) until budgeted numeric parsing lands.
 The host clock/zone extension point is documented in
 `src/vm/date.rs`; this core reads neither the clock nor the OS zone.

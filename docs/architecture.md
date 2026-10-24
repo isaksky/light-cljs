@@ -5068,8 +5068,8 @@ Date instances reuse `HeapObject::Plain` with `OrdinaryObject::date_value`, an
 optional scalar f64 slot independent of own properties and prototype changes.
 This follows the wrapper/Error slot model, needs no new heap kind or root
 category, and uses existing ordinary tracing for properties/prototypes and
-TaskOwned publication classification. Date.prototype is an intrinsic ordinary
-object with a NaN slot. The constructor/prototype cycle and five built-in
+TaskOwned publication classification. Date.prototype is an unbranded intrinsic
+ordinary object without a Date slot. The constructor/prototype cycle and five built-in
 functions append to the realm/global registry and its immutable views/roots.
 Intrinsic slot mutation is rejected; freezing an instance only freezes its
 properties. Both slot reads and writes enforce task ownership.
@@ -5095,5 +5095,8 @@ reserved for clj-quickjs-182: an unrecorded leaf clock effect through the host,
 one zone per runtime from generated QuickJS rule tables, UTC without a host,
 and explicit rejection of unsupported table coverage. This pellet consumes no
 host clock or zone. Clock/local constructor forms and parsing fail explicitly;
-Date toString lookup/default coercion also reject the deferred formatting and
-Symbol.toPrimitive behavior rather than returning Object's tag/numeric value.
+Date toString/toJSON value lookup and default coercion also reject deferred
+formatting and Symbol.toPrimitive behavior rather than returning Object's
+tag/numeric value or serializing a Date as an ordinary JSON object. Presence
+checks report the deferred methods without reading them, while own toJSON
+overrides still participate in resumable JSON serialization.

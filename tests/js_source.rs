@@ -1060,8 +1060,8 @@ fn date_slots_and_coercion() {
         "let d = Object.getOwnPropertyDescriptor(Date, 'UTC'); d.value === Date.UTC && d.writable && !d.enumerable && d.configurable",
         "let d = Object.getOwnPropertyDescriptor(Date.prototype, 'getTime'); d.value === Date.prototype.getTime && d.writable && !d.enumerable && d.configurable",
         "let d = new Date(1); d instanceof Date && typeof d === 'object' && Object.getPrototypeOf(d) === Date.prototype && d.constructor === Date && Object.keys(d).length === 0",
-        "Number.isNaN(Date.prototype.getTime()) && Number.isNaN(Date.prototype.valueOf())",
-        "Object.prototype.toString.call(new Date(1)) === '[object Date]' && Object.prototype.toString.call(Date.prototype) === '[object Date]'",
+        "'toString' in new Date(0) && 'toString' in Date.prototype && 'toJSON' in new Date(0) && 'toJSON' in Date.prototype",
+        "Object.prototype.toString.call(new Date(1)) === '[object Date]' && Object.prototype.toString.call(Date.prototype) === '[object Object]'",
         "let d = new Date(7); d.valueOf = function() {throw 1;}; d.toString = function() {throw 2;}; let copy = new Date(d); copy !== d && copy.getTime() === 7",
         "let d = new Date(NaN); Object.defineProperty(d, 'valueOf', {get() {throw 1;}}); Number.isNaN(new Date(d).valueOf())",
         "let d = new Date(7); Object.setPrototypeOf(d, null); Date.prototype.getTime.call(d) === 7 && new Date(d).getTime() === 7",
@@ -1093,6 +1093,7 @@ fn date_slots_and_coercion() {
         "undefined",
         "1",
         "Object.create(Date.prototype)",
+        "Date.prototype",
     ] {
         for method in ["getTime", "valueOf", "setTime"] {
             let src = format!(
@@ -1125,6 +1126,32 @@ fn date_slots_and_coercion() {
         "Date.prototype.setTime(1)",
     ] {
         assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: deferred Date formatting must
+/// not silently turn a Date into an ordinary JSON object. Own hooks still run.
+#[test]
+fn date_json_serialization() {
+    for src in [
+        "JSON.stringify(new Date(0))",
+        "JSON.stringify(new Date(NaN))",
+        "JSON.stringify([new Date(0)])",
+        "JSON.stringify({d: new Date(NaN)})",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    for src in [
+        "let d = new Date(0); d.toJSON = function() {return 'custom';}; JSON.stringify(d) === '\"custom\"'",
+        "let d = new Date(NaN); let key; Object.defineProperty(d, 'toJSON', {get() {return function(k) {key = k; return 42;};}}); JSON.stringify({x: d}) === '{\"x\":42}' && key === 'x'",
+        "let d = new Date(0); d.toJSON = undefined; JSON.stringify(d) === '{}'",
+        "let d = new Date(0); d.toJSON = 7; JSON.stringify(d) === '{\"toJSON\":7}'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
 }
 

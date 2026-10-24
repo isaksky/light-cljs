@@ -3402,8 +3402,9 @@ Date argument copies its slot without running conversion hooks, regardless
 of its prototype. Other arguments undergo resumable ToPrimitive with default
 hint, then ToNumber; string primitives fail explicitly pending Date parsing.
 TimeClip accepts finite milliseconds within ±8.64e15, truncates toward zero,
-canonicalizes zero to +0 and otherwise stores NaN. `Date.prototype` itself
-has a NaN slot; inheriting from it never confers the Date brand.
+canonicalizes zero to +0 and otherwise stores NaN. `Date.prototype` is an
+unbranded ordinary object without that slot; it and objects inheriting from
+it fail Date method receiver checks with TypeError.
 
 `getTime()` and `valueOf()` return the slot; `setTime(value)` validates the
 receiver first, converts its first argument to Number resumably, clips, stores
@@ -3437,8 +3438,11 @@ Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
 construction fail with UnsupportedOperand pending host clock/local time work
 (clj-quickjs-182). String construction/parsing, formatting, UTC calendar
 getters/setters and Date's Symbol.toPrimitive/default conversion remain
-separate Date/protocol work. A lookup reaching Date.prototype for its missing
-toString fails explicitly rather than using Object.prototype's tag as a date
-format. Host clock/zone integration is documented at `src/vm/date.rs`:
+separate Date/protocol work. A value lookup reaching Date.prototype for its
+deferred toString/toJSON fails explicitly rather than using Object.prototype's
+tag or silently serializing a Date as an ordinary JSON object. Presence checks
+for these standard methods return true without running formatting. An own
+toJSON override (including a getter or non-callable value) remains observable.
+Host clock/zone integration is documented at `src/vm/date.rs`:
 unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
 no host supplies a zone. No host input is consumed by this UTC-only core.

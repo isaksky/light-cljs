@@ -62,7 +62,7 @@
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
 //! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
-//! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; ordinary prototype with NaN Date slot | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
+//! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; unbranded ordinary prototype | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -1237,11 +1237,14 @@ fn intl_locale_intrinsics(
     Some(prototype)
 }
 
-/// Date's prototype itself has [[DateValue]] = NaN. Slots are never inherited.
+
+/// Date.prototype is ordinary and unbranded; only constructed Dates have a slot.
 fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b.heap.alloc(HeapObject::Plain(
-        OrdinaryObject::intrinsic(Some(object_prototype)).with_date_value(f64::NAN),
-    ))?;
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::Date,
