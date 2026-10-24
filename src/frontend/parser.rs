@@ -1219,10 +1219,9 @@ impl<'a> Parser<'a> {
                     && (matches!(&next.kind, TokenKind::Identifier(name) if name != "of")
                         || matches!(next.kind, TokenKind::Punct(Punct::LBrace))
                         || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
-                            && self.using_array_tail().is_some_and(|tail| {
-                                matches!(tail.kind, TokenKind::Keyword(Keyword::In))
-                                    || tail.span.text(self.src) == "of"
-                            })))
+                            && self
+                                .using_array_tail()
+                                .is_some_and(|tail| tail.span.text(self.src) == "of")))
             })
         {
             let start = self.advance()?.span;

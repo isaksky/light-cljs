@@ -2800,6 +2800,7 @@ for (a.x in o) ;
 for (a[0] in o) ;
 for ((a.x) in o) ;
 for (obj().k in {a:1, b:1, c:1}) ;
+for (using /* target */ [0] in o) ;
 ```
 
 ```js reject Invalid 1:6

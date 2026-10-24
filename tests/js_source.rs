@@ -9149,6 +9149,9 @@ fn for_in_assigns_member_targets() {
     for source in [
         "let a = {x:0}, tab = []; for (a.x in {x:1, y:2}) tab.push(a.x); tab.toString() === 'x,y' && a.x === 'y'",
         "let a = [0], tab = []; for (a[0] in {x:1, y:2}) tab.push(a[0]); tab.toString() === 'x,y' && a[0] === 'y'",
+        "let using = [0]; for (using[0] in {x:1, y:2}) ; using[0] === 'y'",
+        "let using = [0]; for (using [0] in {x:1, y:2}) ; using[0] === 'y'",
+        "let using = [0]; for (using /* target */ [0] in {x:1, y:2}) ; using[0] === 'y'",
         "let a = {}, calls = 0, tab = ''; function obj() { calls++; return a; } for (obj().k in {a:1, b:1, c:1}) tab += a.k; calls === 3 && tab === 'abc' && a.k === 'c'",
         "let log = '', a = {set k(v) { log += v; }}; function obj() { log += 'o'; return a; } function key() { log += 'k'; return {toString() { log += 'c'; return 'k'; }}; } for (obj()[key()] in {a:1, b:1}) log += '!'; log === 'okca!okcb!'",
         "let n = 0; function obj() { n++; return {}; } for (obj().k in {}) n++; n === 0",

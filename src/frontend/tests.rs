@@ -2021,6 +2021,9 @@ fn for_in_heads() {
         "for ((a.x) in o) ;",
         "for (((a[0])) in o) ;",
         "for (obj().k in o) ;",
+        "for (using[0] in o) ;",
+        "for (using [0] in o) ;",
+        "for (using /* target */ [0] in o) ;",
     ] {
         assert!(parse_script(source).is_ok(), "{source}");
     }
