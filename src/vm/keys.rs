@@ -43,8 +43,11 @@
 //! | persistent vector, map, occurrence, builder, atom, binding cell, other native payload | none (no JavaScript properties) |
 //!
 //! The built-ins apply ToObject first: `undefined` and `null` throw a
-//! catchable `TypeError`, other primitives fail with `UnsupportedOperand`
-//! until wrapper objects exist (clj-quickjs-72). Each returns a fresh array
+//! catchable `TypeError`; another primitive lists the keys of the wrapper
+//! ToObject would make, which is not allocated (clj-quickjs-142): a
+//! string's indices ascending, then its non-enumerable `length`
+//! (`Object.getOwnPropertyNames("ab")` is `["0", "1", "length"]`); a
+//! number or boolean has none. Each returns a fresh array
 //! owned by the running task, inheriting from `Array.prototype`, whose
 //! elements are the key strings.
 //!
@@ -172,7 +175,7 @@ impl OwnKey {
 #[derive(Default)]
 struct Raw {
     elements: Vec<(u32, bool)>,
-    /// An array's `length`, which is not in its key store.
+    /// An array's or allocated String wrapper's virtual `length`.
     length: bool,
     named: Vec<(PropertyKey, bool)>,
 }
@@ -263,21 +266,23 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
     match object {
         HeapObject::Plain(o) => {
             readable(o.owner())?;
-            if !o.is_intrinsic()
-                && matches!(
-                    o.primitive_data(),
-                    Some(crate::object::PrimitiveData::String(_))
-                )
-            {
-                return Err(Fault::Unsupported(
-                    "string wrapper own keys need length and index properties, which are not supported"
-                        .to_string(),
-                ));
-            }
-            Ok(Raw {
+            let mut raw = Raw {
                 named: named(o),
                 ..Raw::default()
-            })
+            };
+            if !o.is_intrinsic()
+                && let Some(crate::object::PrimitiveData::String(s)) = o.primitive_data()
+            {
+                // Merge virtual and stored indices in `order`, so an added
+                // index follows the string indices and precedes `length`.
+                for own in string_own_keys(s, KeyFilter::All)? {
+                    match own.key {
+                        Key::Index(index) => raw.elements.push((index, own.enumerable)),
+                        Key::Name(_) => raw.length = true,
+                    }
+                }
+            }
+            Ok(raw)
         }
         HeapObject::Builtin(f) => Ok(Raw {
             named: named(&f.properties),
@@ -363,26 +368,20 @@ pub(crate) fn object_keys(
     filter: KeyFilter,
 ) -> Result<Value, Fault> {
     let target = args.first().cloned().unwrap_or(Value::Undefined);
-    let id = match target {
-        Value::Object(id) => id,
+    let keys = match target {
+        Value::Object(id) => own_property_keys(heap, task, id, filter)?,
         Value::Undefined | Value::Null => {
             return Err(Fault::TypeError(format!(
                 "cannot convert {} to object",
                 target.type_name()
             )));
         }
-        v => {
-            let what = match filter {
-                KeyFilter::Enumerable => "Object.keys",
-                KeyFilter::All => "Object.getOwnPropertyNames",
-            };
-            return Err(Fault::Unsupported(format!(
-                "{what} of a {} needs a wrapper object, which is not supported",
-                v.type_name()
-            )));
-        }
+        // The wrapper ToObject would make, not allocated: a String
+        // wrapper's indices, then its `length` (clj-quickjs-142).
+        Value::String(s) => string_own_keys(&s, filter)?,
+        // Number and Boolean wrappers have no own properties.
+        Value::Number(_) | Value::Bool(_) => Vec::new(),
     };
-    let keys = own_property_keys(heap, task, id, filter)?;
     let exhausted = || Fault::OutOfMemory("heap object table exhausted");
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
@@ -396,6 +395,27 @@ pub(crate) fn object_keys(
     heap.alloc(HeapObject::Array(Box::new(array)))
         .map(Value::Object)
         .ok_or_else(exhausted)
+}
+
+/// The own string keys of the String wrapper of `s`, in
+/// OrdinaryOwnPropertyKeys order (String exotic objects'
+/// `[[OwnPropertyKeys]]`; QuickJS `js_string_obj_get_length` in
+/// `JS_GetOwnPropertyNamesInternal`): the
+/// indices ascending (enumerable), then `length` (not enumerable, so only
+/// with [`KeyFilter::All`]). The list is as long as the string, bounded by
+/// `MAX_STRING_LEN` like any other object's key count.
+fn string_own_keys(s: &JsString, filter: KeyFilter) -> Result<Vec<OwnKey>, Fault> {
+    let len = u32::try_from(s.len())
+        .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
+    let indices = (0..len).map(|index| OwnKey {
+        key: Key::Index(index),
+        enumerable: true,
+    });
+    let length = (filter == KeyFilter::All).then(|| OwnKey {
+        key: Key::Name(JsString::from("length")),
+        enumerable: false,
+    });
+    Ok(indices.chain(length).collect())
 }
 
 /// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85, -86;

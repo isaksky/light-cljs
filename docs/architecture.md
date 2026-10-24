@@ -1388,8 +1388,8 @@ Design: `design.md` §§4, 11.
   persistent map keys (`content_hash` and equality in
   `src/collections/map.rs`), constant deduplication and relational order,
   so `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"`.
-  `length` will be `JsString::len` (stored count, O(1)); indexing reads
-  `code_units()[i]` (clj-quickjs-142); relational order (`<` etc.,
+  `length` is `JsString::len` (stored count, O(1)); indexing reads one
+  stored unit (`JsString::code_unit_at`, O(1), clj-quickjs-142); relational order (`<` etc.,
   clj-quickjs-68) is `JsString`'s `Ord`, lexicographic over code units
   (QuickJS `js_string_compare`), not Unicode scalar order. Reading a
   string never panics on a lone surrogate: `code_units()` is exact,
@@ -2563,8 +2563,8 @@ prototype walk at `Number.prototype` or `String.prototype` instead of
 allocating the wrapper object ECMAScript's ToObject describes, as QuickJS's
 `JS_GetPrototypePrimitive` does. A wrapper is never observable through a
 read: a Number wrapper has no own properties, and a String wrapper's own
-properties (`length`, indices) are answered before the walk, today by an
-explicit `UnsupportedOperand` until clj-quickjs-142 implements them. A
+properties (`length`, indices) are answered before the walk (see "String
+own properties" below). A
 method call needs no new mechanism: `call_method` already passes the base
 value as the receiver, so `(1).toString()` hands the number itself to the
 built-in as `this`, which is the strict-mode receiver; there is no
@@ -2585,6 +2585,44 @@ with `[[NumberData]]` / `[[StringData]]` holding `+0` / `""`
 `Number` and `String` are built-in globals (operands 1 and 2 of
 `get_builtin_global`); their constructors and current conversion limitations
 are described in "Number and String wrapper data" below.
+
+## String own properties (clj-quickjs-142)
+
+Contract: `src/vm/property.rs` (`string_own_property`, module docs,
+"Primitive bases"), `src/value/string.rs` (`JsString::code_unit_at`),
+`src/vm/descriptor.rs`, `src/vm/keys.rs` (`string_own_keys`). Semantics:
+`docs/grammar.md`, "Execution" (`"abc".length`, `"abc"[i]`).
+
+**Decision.** A string primitive answers its String wrapper's own
+properties itself, with no wrapper and no per-string property store:
+`string_own_property` computes the property from the `JsString` and the
+key (ECMAScript StringGetOwnProperty; QuickJS
+`js_string_get_own_property`). `length` is the stored code-unit count and
+an index key, already an integer (`Key::Index`, so `s[1]` builds no key
+string), reads the one stored unit and wraps it in a new one-unit
+`JsString`; both are O(1) and nothing rescans the string. The attributes
+are fixed (indices read-only, enumerable, non-configurable; `length`
+read-only, non-enumerable, non-configurable), so the same function answers
+`[[Get]]`, `Object.getOwnPropertyDescriptor`, `[[Set]]` (a read-only own
+property: strict-mode TypeError), `[[Delete]]` (non-configurable) and,
+through `string_own_keys`, `Object.keys` / `Object.getOwnPropertyNames`
+(indices ascending, then `length`, the OrdinaryOwnPropertyKeys order of
+clj-quickjs-123). A one-unit result is a fresh `Arc` string rather than an
+entry of a cached single-character table; it is not a heap object, so the
+reads allocate nothing the collector sees (tested by an unchanged
+live-object count).
+
+String wrappers (`new String(v)`, clj-quickjs-72) keep virtual properties
+over their immutable `[[StringData]]` in the ordinary store. Their reads,
+descriptors, assignments, inherited writes and deletes reuse
+`string_own_property`. Compatible definitions validate against the fixed
+property through `validate_and_apply` without adding stored entries, even
+on non-extensible wrappers. `string_own_keys` supplies virtual indices
+and length to the existing key sorter alongside ordinary entries: all
+indices ascending, then `length`, then other names by creation order.
+String.prototype already stores its empty-string length and is excluded
+from virtual key synthesis. Ownership, tracing and integrity checks remain
+those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
@@ -3170,6 +3208,18 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_function_apply`, `build_arg_list` and `js_reflect_apply` were
   consulted only, for semantics (call and apply are tail calls here, not
   C-stack calls). No code was copied.
+
+- `tests/js_source.rs` `string_length_and_index_properties`
+  (clj-quickjs-142): the `a = String("abc"); a.length === 3; a[1] === "b"`
+  (lines 238-240) and `a = "\u{10ffff}"; a.length === 2` (lines 257-258)
+  cases of `test_string` (line 235) in
+  `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8.
+  Modified: the assertions are Rust assertions, with additional primitive
+  and wrapper descriptor, mutation and enumeration cases. The notice on
+  `object_extensibility` covers it. `research/quickjs/quickjs.c`
+  `js_string_get_own_property`, `js_string_define_own_property`,
+  `js_string_obj_get_length` and `js_string_constructor` were consulted
+  only, for semantics. No code was copied.
 
 ## Array length changes (clj-quickjs-154)
 

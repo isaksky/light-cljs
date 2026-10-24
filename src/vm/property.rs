@@ -23,7 +23,7 @@
 //! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
-//! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"); a string's `length` and indices below it: `UnsupportedOperand` (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
+//! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"), after a string's own `length` and indices below it (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
 //! | boolean | `UnsupportedOperand` (`Boolean.prototype`, clj-quickjs-39) | as a number |
 //!
 //! The non-ordinary heap kinds are this runtime's own values (or values
@@ -76,14 +76,21 @@
 //! A property access on a number or string (clj-quickjs-73; ECMAScript
 //! GetValue and PutValue, which apply ToObject to the base; QuickJS
 //! `JS_GetPrototypePrimitive`) acts on the wrapper object ToObject would
-//! make, without allocating it. A read starts the prototype walk at
-//! `Number.prototype` or `String.prototype` (`crate::realm`, building the
-//! realm if needed), so `(1).toString` is `Number.prototype.toString`. The
-//! wrapper's own properties are not looked at: a Number wrapper has none,
-//! and a string's `length` and its indices below the length belong to
-//! clj-quickjs-142 and fail with `UnsupportedOperand` rather than reading
-//! `undefined` (an index at or past the length is not an own property and
-//! continues at `String.prototype`). `__proto__` answers the wrapper's
+//! make, without allocating it. A read first looks at the wrapper's own
+//! properties: a Number wrapper has none; a String wrapper's
+//! ([`string_own_property`], clj-quickjs-142; ECMAScript String exotic
+//! objects, QuickJS `js_string_get_own_property`) are `length`, the
+//! code-unit count, and each index below it, the one-code-unit string
+//! there (`"\u{10ffff}"[0]` is the lone surrogate `"\u{dbff}"`). Both are
+//! read in constant time from the string's code units: the index key is
+//! already an integer ([`Key::Index`]) and nothing is rescanned. Any other
+//! key (an index at or past the length, `"-1"`, `"1.5"`, `"01"`) continues
+//! the walk at `Number.prototype` or `String.prototype` (`crate::realm`,
+//! building the realm if needed), so `(1).toString` is
+//! `Number.prototype.toString`. The same own properties answer
+//! `Object.getOwnPropertyDescriptor`, `Object.keys` and
+//! `Object.getOwnPropertyNames` of a primitive (`crate::vm::descriptor`,
+//! `crate::vm::keys`), a `delete` and a write. `__proto__` answers the wrapper's
 //! prototype. A method call `(1).m()` reads `m` this way and passes the
 //! primitive itself as `this` (the `CallMethod` receiver is the base value,
 //! as in strict mode). A write cannot succeed: the receiver is a primitive,
@@ -146,8 +153,8 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::array::{ArrayObject, array_index, number_index};
 use crate::object::{
-    DefineOutcome, DeleteOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyKey,
-    SetOutcome,
+    DefineOutcome, DeleteOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyFlags,
+    PropertyKey, SetOutcome,
 };
 use crate::realm;
 use crate::value::string::number_to_string;
@@ -274,24 +281,45 @@ fn primitive_base(base: &Value, key: &Key, access: Access) -> Fault {
     }
 }
 
-/// Where a read of `key` on the primitive `base` starts (module docs,
-/// "Primitive bases"): `Number.prototype` for a number, `String.prototype`
-/// for a string, building the realm if needed. A string's own `length` and
-/// index properties are clj-quickjs-142 (`UnsupportedOperand`); a boolean
-/// fails with `UnsupportedOperand` until `Boolean.prototype` exists
-/// (clj-quickjs-39); `undefined`/`null` are a catchable `TypeError`.
-fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
-    if let Value::String(s) = base {
-        let own = match key {
-            Key::Index(index) => (*index as usize) < s.len(),
-            _ => key.is_length(),
-        };
-        if own {
-            return Err(Fault::Unsupported(format!(
-                "cannot read property '{key}' of a string: string length and index properties are not supported"
-            )));
-        }
+/// The attributes of a String object's index properties (ECMAScript
+/// StringGetOwnProperty): read-only, enumerable, not configurable.
+const STRING_INDEX: PropertyFlags = PropertyFlags {
+    writable: false,
+    enumerable: true,
+    configurable: false,
+};
+
+/// The own property `key` of the String wrapper of `s` (module docs,
+/// "Primitive bases"; ECMAScript StringGetOwnProperty and the String
+/// object's `length`; QuickJS `js_string_get_own_property`), or `None`:
+/// `length` is the code-unit count, read-only, not enumerable, not
+/// configurable; an index below the length is the one-code-unit string
+/// there, read-only, enumerable, not configurable. Any other key (`"-1"`,
+/// `"1.5"`, `"01"`, an index at or past the length) is not an own
+/// property. Constant time: an index key is already an integer and the
+/// unit is read directly.
+pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
+    match key {
+        Key::Index(index) => s.code_unit_at(*index as usize).map(|unit| Property {
+            value: Value::String(unit),
+            flags: STRING_INDEX,
+        }),
+        _ if key.is_length() => Some(Property {
+            // At most `MAX_STRING_LEN` units, exact as an f64.
+            value: Value::Number(s.len() as f64),
+            flags: PropertyFlags::FIXED,
+        }),
+        Key::Name(_) => None,
     }
+}
+
+/// Where a read of `key` on the primitive `base` continues once its
+/// wrapper's own properties ([`string_own_property`]) lack it (module docs,
+/// "Primitive bases"): `Number.prototype` for a number, `String.prototype`
+/// for a string, building the realm if needed. A boolean fails with
+/// `UnsupportedOperand` until `Boolean.prototype` exists (clj-quickjs-39);
+/// `undefined`/`null` are a catchable `TypeError`.
+fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
     let intrinsics = match base {
         Value::Number(_) | Value::String(_) => {
             realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
@@ -424,7 +452,9 @@ enum Lookup {
 /// (`Function.prototype`, the one store whose misses can fail, is an
 /// intrinsic and always read through its view.)
 fn read_store(o: &OrdinaryObject, key: &Key, interned: Interned) -> Result<Lookup, Fault> {
-    check_string_wrapper_property(o, key)?;
+    if let Some(property) = string_wrapper_property(o, key) {
+        return Ok(Lookup::Found(property.value));
+    }
     let Some(k) = interned else {
         return Ok(Lookup::NeedsName);
     };
@@ -434,18 +464,15 @@ fn read_store(o: &OrdinaryObject, key: &Key, interned: Interned) -> Result<Looku
     }
 }
 
-/// String exotic own properties await clj-quickjs-142. In particular do
-/// not expose String.prototype.length (0) as a nonempty wrapper's length.
-fn check_string_wrapper_property(o: &OrdinaryObject, key: &Key) -> Result<(), Fault> {
+/// Virtual own properties of an allocated String wrapper. The intrinsic
+/// String.prototype wraps the empty string and already stores its length.
+fn string_wrapper_property(o: &OrdinaryObject, key: &Key) -> Option<Property> {
     if !o.is_intrinsic()
         && let Some(crate::object::PrimitiveData::String(s)) = o.primitive_data()
-        && (key.is_length() || matches!(key, Key::Index(i) if (*i as usize) < s.len()))
     {
-        return Err(Fault::Unsupported(
-            "string wrapper length and index properties are not supported".to_string(),
-        ));
+        return string_own_property(s, key);
     }
-    Ok(())
+    None
 }
 
 /// `base[key]` for the running task `task` (`[[Get]]`; QuickJS `get_field`
@@ -525,11 +552,15 @@ fn lookup(
     has: bool,
     conversion: bool,
 ) -> Result<Option<Value>, Fault> {
-    // A primitive base reads through its wrapper's prototype without
+    // A primitive base reads its wrapper's own properties (a string's
+    // `length` and indices), then its wrapper's prototype, without
     // allocating a wrapper (module docs, "Primitive bases"); `receiver` is
     // then `None`.
-    let (mut id, receiver) = match *base {
-        Value::Object(id) => (id, Some(id)),
+    let (mut id, receiver) = match base {
+        Value::Object(id) => (*id, Some(*id)),
+        Value::String(s) if let Some(own) = string_own_property(s, key) => {
+            return Ok(Some(own.value));
+        }
         _ => (primitive_prototype(heap, base, key)?, None),
     };
     let start = id;
@@ -693,7 +724,9 @@ fn store(
     value: &Value,
 ) -> Result<Stored, Fault> {
     let named = |o: &mut OrdinaryObject| {
-        check_string_wrapper_property(o, key)?;
+        if string_wrapper_property(o, key).is_some() {
+            return Ok(Stored::Rejected(read_only(key)));
+        }
         let Some(k) = interned else {
             return Ok(Stored::NeedsName);
         };
@@ -862,9 +895,8 @@ fn put_primitive(base: &Value, key: &Key, strict: bool) -> Result<(), Fault> {
     if !strict {
         return Ok(());
     }
-    let own = match (base, key) {
-        (Value::String(s), Key::Index(index)) => (*index as usize) < s.len(),
-        (Value::String(_), _) => key.is_length(),
+    let own = match base {
+        Value::String(s) => string_own_property(s, key).is_some(),
         _ => false,
     };
     Err(Fault::TypeError(if own {
@@ -933,7 +965,9 @@ fn check_inherited(
             }
         }
         let in_store = |o: &OrdinaryObject| {
-            check_string_wrapper_property(o, key)?;
+            if string_wrapper_property(o, key).is_some() {
+                return Err(read_only(key));
+            }
             match k.and_then(|k| o.get_own(k)) {
                 Some(property) if !property.flags.writable => Err(read_only(key)),
                 Some(_) => Ok(Walk::Next(None)),
@@ -1125,7 +1159,12 @@ pub(crate) fn define_own_property(
         false => Some(intern(heap, &key.to_name())?),
     };
     let named = |o: &mut OrdinaryObject| {
-        check_string_wrapper_property(o, key)?;
+        if let Some(property) = string_wrapper_property(o, key) {
+            return match crate::object::validate_and_apply(Some(&property), desc) {
+                Ok(_) => Ok(()),
+                Err(outcome) => defined(outcome, key),
+            };
+        }
         let k = interned.ok_or(Fault::Internal("a property name was not interned"))?;
         defined(o.define_own_property(k, desc), key)
     };
@@ -1229,10 +1268,7 @@ pub(crate) fn get_own_property(
     }
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
-        Visit::Store(o) => {
-            check_string_wrapper_property(o, key)?;
-            Ok(named(o))
-        }
+        Visit::Store(o) => Ok(string_wrapper_property(o, key).or_else(|| named(o))),
         Visit::Array(a) => Ok(match key {
             Key::Index(index) => a.element(*index),
             _ if key.is_length() => Some(a.length_property()),
@@ -1276,10 +1312,9 @@ pub(crate) fn delete(
         // The String wrapper ToObject would make: its indices below the
         // length and its `length` are its only own properties, and none of
         // them is configurable.
-        Value::String(s) => match &key {
-            Key::Index(index) if (*index as usize) < s.len() => DeleteOutcome::NonConfigurable,
-            _ if key.is_length() => DeleteOutcome::NonConfigurable,
-            _ => DeleteOutcome::Absent,
+        Value::String(s) => match string_own_property(s, &key) {
+            Some(_) => DeleteOutcome::NonConfigurable,
+            None => DeleteOutcome::Absent,
         },
         // Number and Boolean wrappers have no own properties.
         _ => DeleteOutcome::Absent,
@@ -1344,7 +1379,9 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
         HeapObject::Builtin(f) => shared(&f.properties),
         HeapObject::Plain(o) => {
             check_write(o, task)?;
-            check_string_wrapper_property(o, key)?;
+            if string_wrapper_property(o, key).is_some() {
+                return Ok(DeleteOutcome::NonConfigurable);
+            }
             Ok(named(o))
         }
         HeapObject::Array(a) => {

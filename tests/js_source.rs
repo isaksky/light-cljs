@@ -5858,7 +5858,6 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
         )
     );
     for (src, needle) in [
-        ("let s = 'a';\ns.length;", "of a string"),
         ("let b = true;\nb.x;", "of a boolean"),
         (
             "let e; try { null.x; } catch (c) { e = c; }\ne.message;",
@@ -6935,8 +6934,8 @@ fn define_property_validation_and_targets() {
         ""
     );
     // What needs a later pellet fails explicitly: accessors
-    // (clj-quickjs-120), wrapper objects (clj-quickjs-72), ToPrimitive of a
-    // key (clj-quickjs-70).
+    // (clj-quickjs-120), ToPrimitive of a key in this leaf built-in
+    // (clj-quickjs-70).
     for (src, needle) in [
         ("Object.defineProperty({}, 'k', {get: () => 1})", "accessor"),
         (
@@ -6947,7 +6946,6 @@ fn define_property_validation_and_targets() {
             "let o = {k: 1}; Object.defineProperty(o, 'k', {get: undefined})",
             "accessor",
         ),
-        ("Object.getOwnPropertyDescriptor(1, 'k')", "wrapper object"),
         ("Object.defineProperty({}, {}, {value: 1})", "ToPrimitive"),
     ] {
         let (kind, message, ..) = failure_at(src);
@@ -8082,16 +8080,16 @@ fn own_property_key_order() {
             )),
             "caught"
         );
-        fails(
-            &format!("{call}('ab')"),
-            VmErrorKind::UnsupportedOperand,
-            "wrapper",
-        );
-        fails(
-            &format!("{call}(1)"),
-            VmErrorKind::UnsupportedOperand,
-            "wrapper",
-        );
+        // A primitive's wrapper (clj-quickjs-142): a String's indices,
+        // then its non-enumerable `length`; Number and Boolean have none.
+        let (ab, empty) = match call {
+            "Object.keys" => ("2:0,1,", "0:"),
+            _ => ("3:0,1,length,", "1:length,"),
+        };
+        assert_eq!(listed("", &format!("{call}('ab')")), ab, "{call}");
+        assert_eq!(listed("", &format!("{call}('')")), empty, "{call}");
+        assert_eq!(listed("", &format!("{call}(1)")), "0:", "{call}");
+        assert_eq!(listed("", &format!("{call}(true)")), "0:", "{call}");
     }
     fails(
         "let k; try { null.x; } catch (e) { k = Object.keys(e); } k",
@@ -8620,23 +8618,10 @@ fn methods_on_primitive_bases() {
         other => panic!("expected Complete, got {other:?}"),
     }
 
-    // Explicitly unsupported until their pellets: a string's own `length`
-    // and indices (clj-quickjs-142), boolean properties (clj-quickjs-39),
+    // Explicitly unsupported until their pellets: boolean properties (clj-quickjs-39),
     // radixes other than 10 (clj-quickjs-39).
     // Not catchable: no JavaScript sees a wrong answer.
     for (src, needle) in [
-        (
-            "let s = 'abc';\ns.length;",
-            "string length and index properties",
-        ),
-        (
-            "let s = 'abc';\ns[0];",
-            "string length and index properties",
-        ),
-        (
-            "let s = 'abc';\ns['2'];",
-            "string length and index properties",
-        ),
         ("let b = true;\nb.toString();", "of a boolean"),
         ("let n = 1;\nn.toString(2);", "radix other than 10"),
         ("let n = 1;\nn.toString('10');", "radix other than 10"),
@@ -8646,7 +8631,7 @@ fn methods_on_primitive_bases() {
         assert!(message.contains(needle), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
     }
-    let (kind, ..) = failure_at("let r; try { 'abc'.length; } catch (e) { r = 1; } r");
+    let (kind, ..) = failure_at("let r; try { (1).toString(2); } catch (e) { r = 1; } r");
     assert_eq!(kind, VmErrorKind::UnsupportedOperand);
 
     // The `docs/grammar.md` example lines, each true.
@@ -9204,32 +9189,57 @@ fn primitive_wrapper_constructors_and_methods() {
     }
 }
 
-/// String exotic properties are deferred to clj-quickjs-142.
+/// String exotic descriptors and ordinary wrapper properties coexist.
+/// Synthetic fixtures, not light-cljs output.
 #[test]
-fn primitive_wrappers_report_deferred_string_properties() {
-    // The string exotic properties belong to clj-quickjs-142. A wrapper
-    // must not answer the inherited String.prototype.length = 0 or permit
-    // overwriting indices while that implementation is missing.
+fn primitive_wrappers_string_properties() {
     for src in [
-        "(new String('abc')).length",
-        "(new String('abc'))[0]",
-        "let s = new String('abc'); s[0] = 'x'",
-        "let s = new String('abc'); delete s.length",
-        "Object.getOwnPropertyDescriptor(new String('abc'), '0')",
-        "Object.defineProperty(new String('abc'), '0', {value: 'x'})",
-        "Object.keys(new String('abc'))",
-        "Object.getOwnPropertyNames(new String(''))",
-        "for (let k in new String('abc')) {}",
-        "'length' in new String('abc')",
-        "Object.create(new String('abc')).length",
+        "let s = new String('abc'); s[0] === 'a' && s[3] === undefined && s['01'] === undefined && s[-1] === undefined && s[1.5] === undefined",
+        "let s = new String('abc'); let d = Object.getOwnPropertyDescriptor(s, '0'); d.value === 'a' && !d.writable && d.enumerable && !d.configurable",
+        "let s = new String('abc'); let d = Object.getOwnPropertyDescriptor(s, 'length'); d.value === 3 && !d.writable && !d.enumerable && !d.configurable",
+        "let s = new String('abc'); Object.defineProperty(s, '0', {}); Object.defineProperty(s, '0', {value: 'a', writable: false, enumerable: true, configurable: false}) === s && s[0] === 'a'",
+        "let s = new String('abc'); Object.defineProperty(s, 'length', {value: 3, writable: false, enumerable: false, configurable: false}) === s && s.length === 3",
+        "let s = new String('abc'); Object.preventExtensions(s); Object.defineProperty(s, '0', {value: 'a'}); Object.defineProperty(s, 'length', {}); Object.isFrozen(s) && s.length === 3",
+        "let s = new String('abc'); s.x = 4; Object.freeze(s); Object.isFrozen(s) && s[0] === 'a' && s.x === 4",
+        "let s = new String('ab'); s.z = 1; s[5] = 5; s[2] = 2; s.a = 3; let k = Object.getOwnPropertyNames(s); k.length === 7 && k[0] === '0' && k[1] === '1' && k[2] === '2' && k[3] === '5' && k[4] === 'length' && k[5] === 'z' && k[6] === 'a'",
+        "let s = new String('ab'); s.x = 1; Object.defineProperty(s, 'hidden', {value: 2}); let k = Object.keys(s); k.length === 3 && k[0] === '0' && k[1] === '1' && k[2] === 'x'",
+        "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
+        "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
+        "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k.length === 4",
+        "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
+        "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
+        "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",
     ] {
-        let error = failure(src);
-        assert_eq!(
-            error.kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}: {error}"
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for operation in [
+        "s.length = 5",
+        "s[0] = 'x'",
+        "delete s.length",
+        "delete s[0]",
+        "Object.defineProperty(s, '0', {value: 'x'})",
+        "Object.defineProperty(s, '0', {value: 97})",
+        "Object.defineProperty(s, '0', {writable: true})",
+        "Object.defineProperty(s, '0', {enumerable: false})",
+        "Object.defineProperty(s, '0', {configurable: true})",
+        "Object.defineProperty(s, '0', {get: undefined})",
+        "Object.defineProperty(s, 'length', {value: 5})",
+        "Object.defineProperty(s, 'length', {writable: true})",
+        "Object.defineProperty(s, 'length', {enumerable: true})",
+        "Object.defineProperty(s, 'length', {configurable: true})",
+    ] {
+        let src = format!("let s = new String('ab'); {operation}");
+        assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+        let caught = format!(
+            "let s = new String('ab'); let caught = false; try {{ {operation}; }} catch (e) {{ caught = true; }} caught && s.length === 2 && s[0] === 'a'"
         );
-        assert!(error.message().contains("string wrapper"), "{src}: {error}");
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{caught}");
+    }
+    let sloppy = compile_script_with("string wrapper sloppy", "let s = new String('ab'); s.length = 5; s[0] = 'z'; s.length === 2 && s[0] === 'a' && delete s.length === false && delete s[0] === false", ScriptOptions::SLOPPY).unwrap();
+    match run(&sloppy, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
     }
     for (src, column) in [
         ("let o = Object.create(null);\nNumber(o)", 7),
@@ -9248,12 +9258,14 @@ fn primitive_wrappers_reject_inherited_string_index_writes() {
     for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
         let src = "let o = Object.create(new String('abc')); o[0] = 'x'; o[0]";
         let script = compile_script_with("inherited wrapper index", src, options).unwrap();
-        match run(&script, &[]) {
-            RunOutcome::Failed(error) => {
-                assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand);
-                assert!(error.message().contains("string wrapper"), "{error}");
+        match (options, run(&script, &[])) {
+            (ScriptOptions::STRICT, RunOutcome::Failed(error)) => {
+                assert_eq!(error.kind(), VmErrorKind::TypeError);
             }
-            other => panic!("expected UnsupportedOperand, got {other:?}"),
+            (ScriptOptions::SLOPPY, RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string(), "a");
+            }
+            (_, other) => panic!("unexpected inherited write outcome: {other:?}"),
         }
         // An index at the string's length is an ordinary inherited miss,
         // so the receiver gets its own writable property in either mode.
@@ -9272,7 +9284,8 @@ fn primitive_wrappers_survive_wait_collection_and_migration() {
     let script = exe(r"let n = new Number(-0); let s = new String('\uD800x');
           n.child = {v: 7}; s.peer = n; __rt.need(72, 1);
           Object.is(s.peer.valueOf(), -0) && s.valueOf() === '\uD800x'
-          && s.peer.child.v === 7 && s.toString() === '\uD800x'");
+          && s.peer.child.v === 7 && s.toString() === '\uD800x'
+          && s.length === 2 && s[0] === '\uD800' && s[1] === 'x'");
     let task = rt.spawn(&script, &[]).unwrap();
     assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
     let request = task.take_producer_requests().pop().unwrap();
@@ -9474,4 +9487,158 @@ fn primitive_wrapper_native_recursion_obeys_depth_limit() {
         RunOutcome::Complete(result) => assert_eq!(result.view(), ValueView::Bool(true)),
         other => panic!("native recursion did not unwind: {other:?}"),
     }
+}
+
+/// A string's own `length` and integer-index properties (clj-quickjs-142;
+/// ECMAScript String exotic objects; QuickJS `js_string_get_own_property`),
+/// read on a primitive base without allocating a wrapper, or on the
+/// immutable [[StringData]] of a constructed String wrapper.
+/// Synthetic fixture, not light-cljs output; the `String("abc")` and
+/// `"\u{10ffff}"` rows follow `research/quickjs/tests/test_builtin.js`
+/// `test_string` (line 235, revision 7d1c13c5d8f8); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The
+/// notice on `object_extensibility` covers them.
+#[test]
+fn string_length_and_index_properties() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    let undefined = |src: &str| assert_eq!(eval(src), ValueView::Undefined, "{src}");
+
+    // The pellet's acceptance rows on primitive bases.
+    for (src, want) in [
+        ("\"abc\"[1]", "b"),
+        ("\"abc\"[\"1\"]", "b"),
+        ("let s = 'abc'; let i = 2; s[i] + s[0]", "ca"),
+    ] {
+        assert_eq!(string(src), want, "{src}");
+    }
+    for src in ["\"abc\"[3]", "\"abc\"[-1]", "\"abc\"[1.5]"] {
+        undefined(src);
+    }
+    assert_eq!(eval("\"abc\".length"), ValueView::Number(3.0));
+    assert_eq!(eval("\"\".length"), ValueView::Number(0.0));
+    assert_eq!(eval("\"\\u{10ffff}\".length"), ValueView::Number(2.0));
+    truth("\"\\u{10ffff}\"[0] === \"\\u{dbff}\" && \"\\u{10ffff}\"[1] === \"\\u{dfff}\"");
+    truth(
+        "let d = Object.getOwnPropertyDescriptor(\"ab\", \"0\"); \
+         d.value === \"a\" && d.writable === false && d.enumerable === true && \
+         d.configurable === false",
+    );
+
+    // Keys that are not canonical indices below the length are not own
+    // properties and continue at String.prototype.
+    for src in [
+        "'abc'['01']",
+        "'abc'['-0']",
+        "'abc'['1.0']",
+        "'abc'[4294967295]",
+        "''[0]",
+        "'abc'.x",
+    ] {
+        undefined(src);
+    }
+    truth("'abc'.toString === String.prototype.toString && 'abc'['length'] === 3");
+    truth("let s = 'x'; s.length + s.length === 2 && `ab${1}`.length === 3");
+    truth("('a' + 'bc')[2] === 'c' && ('a' + 'bc').length === 3");
+    // A supplementary character is two code units, each a lone surrogate.
+    truth("let s = 'a\\u{1F600}b'; s.length === 4 && s[3] === 'b' && s[1] + s[2] === '\\u{1F600}'");
+
+    // Descriptors: `length` is read-only, non-enumerable, non-configurable;
+    // keys the wrapper lacks give undefined; Number and Boolean wrappers
+    // have no own properties.
+    truth(
+        "let d = Object.getOwnPropertyDescriptor('abc', 'length'); \
+         d.value === 3 && !d.writable && !d.enumerable && !d.configurable",
+    );
+    truth("let d = Object.getOwnPropertyDescriptor('abc', 2); d.value === 'c' && d.enumerable");
+    for src in [
+        "Object.getOwnPropertyDescriptor('abc', 3)",
+        "Object.getOwnPropertyDescriptor('abc', 'toString')",
+        "Object.getOwnPropertyDescriptor(1, 'k')",
+        "Object.getOwnPropertyDescriptor(true, 'length')",
+    ] {
+        undefined(src);
+    }
+    for src in [
+        "Object.getOwnPropertyDescriptor(null, 'k')",
+        "Object.getOwnPropertyDescriptor(undefined, 0)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+
+    // Own keys: the indices ascending, then `length` (not enumerable).
+    truth(
+        "let n = Object.getOwnPropertyNames('ab'); \
+         n.length === 3 && n[0] === '0' && n[1] === '1' && n[2] === 'length'",
+    );
+    truth("let k = Object.keys('ab'); k.length === 2 && k[0] === '0' && k[1] === '1'");
+    truth("let s = ''; for (let k in 'xyz') { s = s + k; } s === '012'");
+
+    // Writes and deletes of the own properties are rejected as on the
+    // wrapper: a catchable TypeError in strict code, nothing in sloppy code.
+    for src in [
+        "let s = 'ab'; s.length = 5",
+        "let s = 'ab'; s[0] = 'z'",
+        "let s = 'ab'; delete s.length",
+        "let s = 'ab'; delete s[1]",
+    ] {
+        let caught = format!(
+            "let r = false; try {{ {src}; }} catch (e) {{ r = true; }} r && 'ab'.length === 2"
+        );
+        truth(&caught);
+    }
+    truth("let s = 'ab'; delete s[2] && delete s.x");
+    let sloppy = compile_script_with(
+        "t",
+        "let s = 'ab'; s.length = 5; s[0] = 'z'; \
+         s.length === 2 && s[0] === 'a' && delete s.length === false",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    match run(&sloppy, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    // `in` needs an object: a string primitive is a TypeError.
+    assert_eq!(failure("0 in 'ab'").kind(), VmErrorKind::TypeError);
+
+    // The wrapper rows use the same own properties over [[StringData]].
+    for src in [
+        "String('abc').length === 3",
+        "(new String('abc')).length === 3 && (new String('abc'))[2] === 'c'",
+        "let w = new String('ab'); let caught = false; try { w.length = 5; } catch (e) { caught = true; } caught && w.length === 2",
+        "let n = Object.getOwnPropertyNames(new String('ab')); n.length === 3 && n[0] === '0' && n[1] === '1' && n[2] === 'length'",
+        r"let w = new String('\u{10ffff}'); w.length === 2 && w[0] === '\u{dbff}' && w[1] === '\u{dfff}'",
+    ] {
+        truth(src);
+    }
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "\"abc\".length === 3 && \"abc\"[1] === \"b\" && \"abc\"[\"1\"] === \"b\" && \"abc\"[3] === undefined;",
+        "\"\\u{10ffff}\".length === 2 && \"\\u{10ffff}\"[0] === \"\\u{dbff}\" && Object.getOwnPropertyNames(\"ab\")[2] === \"length\";",
+    ] {
+        truth(src);
+    }
+}
+
+/// String `length` and index reads allocate no heap object
+/// (clj-quickjs-142): the live-object count is unchanged by a loop of them.
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn string_index_reads_allocate_no_wrappers() {
+    let rt = Runtime::new();
+    let warm = exe("Number.prototype.toString(); 0");
+    assert!(matches!(
+        rt.spawn(&warm, &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    rt.collect().unwrap();
+    let before = rt.heap_stats().objects;
+    let src = "let s = 'abcdefghij'; let r = 0; \
+               for (let i = 0; i < 200; i++) { if (s[i % s.length] === 'c') { r = r + 1; } } r";
+    match rt.spawn(&exe(src), &[]).unwrap().run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(20.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    assert_eq!(rt.heap_stats().objects, before);
 }

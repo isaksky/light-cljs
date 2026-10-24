@@ -88,6 +88,15 @@ impl JsString {
         self.0.units.is_empty()
     }
 
+    /// The one-code-unit string at `index` (`s[index]`, `s.charAt(index)`),
+    /// or `None` at or past the end. Constant time: no scan of the string.
+    pub fn code_unit_at(&self, index: usize) -> Option<JsString> {
+        let unit = *self.0.units.get(index)?;
+        Some(JsString(Arc::new(Body {
+            units: Box::new([unit]),
+        })))
+    }
+
     /// The code units, in order.
     pub fn code_units(&self) -> &[u16] {
         &self.0.units
@@ -654,6 +663,11 @@ mod tests {
     fn length_and_order_are_in_code_units() {
         let emoji = JsString::from("\u{1F600}");
         assert_eq!(emoji.len(), 2, "a supplementary character is two units");
+        // Indexing is per code unit: each half of the pair is a lone surrogate.
+        let units = |s: Option<JsString>| s.map(|s| s.code_units().to_vec());
+        assert_eq!(units(emoji.code_unit_at(0)), Some(vec![0xD83D]));
+        assert_eq!(units(emoji.code_unit_at(1)), Some(vec![0xDE00]));
+        assert_eq!(units(emoji.code_unit_at(2)), None);
         // U+FF61 sorts after U+1F600 by code units (0xFF61 > 0xD83D), though
         // not by scalar value.
         let [halfwidth, a, ab, b] = ["\u{FF61}", "a", "ab", "b"].map(JsString::from);

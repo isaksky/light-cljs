@@ -1451,8 +1451,8 @@ Deferred:
 - Object operands convert with ToPrimitive since clj-quickjs-70. (Strings convert to
   numbers since clj-quickjs-67 and compare relationally by code units since
   clj-quickjs-68, below; `typeof` is clj-quickjs-69; untagged templates
-  are clj-quickjs-57.) No `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
-  other than 10, clj-quickjs-149).
+  are clj-quickjs-57.) String `length` and indexing are clj-quickjs-142 below;
+  additional string methods and radixes other than 10 remain deferred.
 
 ### StringToNumber and loose equality with strings (clj-quickjs-67)
 
@@ -1722,9 +1722,8 @@ Supported (`cargo test --lib frontend::tests::computed_member_access`,
 
 Deferred:
 
-- Symbol keys (clj-quickjs-127) fail explicitly; boolean bases and a string's own
-  indices fail with `UnsupportedOperand` (clj-quickjs-39, -142; numbers
-  and strings otherwise read through their prototypes since
+- Symbol keys (clj-quickjs-127) fail explicitly; boolean bases fail with
+  `UnsupportedOperand` (clj-quickjs-39; numbers and strings read through their prototypes since
   clj-quickjs-73); optional chaining.
   (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
 - Interned property names are never reclaimed, so writing many distinct
@@ -1939,7 +1938,7 @@ in `docs/architecture.md`, "Property attributes"):
 Deferred:
 
 - Accessor descriptors (`get`/`set`) fail with `UnsupportedOperand` (clj-quickjs-120); so do
-  primitive targets of `getOwnPropertyDescriptor` (wrapper objects, clj-quickjs-72), object keys
+  object keys
   (ToPrimitive, clj-quickjs-70). Function descriptors work for `length`/`name`
   (clj-quickjs-101) and other own properties (clj-quickjs-125).
   An inherited read-only property can be set up from source with
@@ -2270,8 +2269,7 @@ Supported (`cargo test --test js_source methods_on_primitive_bases`,
 
 Deferred:
 
-- A string's own
-  `length` and indices (clj-quickjs-142), boolean bases (`Boolean.prototype`), radixes other
+- Boolean bases (`Boolean.prototype`), radixes other
   than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
   with `UnsupportedOperand` (an absent method reads `undefined`).
 
@@ -2396,9 +2394,8 @@ Object arguments use resumable OrdinaryToPrimitive with number / string hint.
 Wrapper equality and addition call observable valueOf / toString methods;
 conversion callbacks can yield, wait, be collected around and migrate.
 
-Deferred: String wrapper `length`, indices and own-key enumeration explicitly fail
-until clj-quickjs-142. Boolean wrappers, other radixes and Number constants
-remain deferred. ToObject integration for `Object(primitive)`, reflection
+Deferred: Boolean wrappers, other radixes and Number constants
+remain deferred. ToObject integration for `Object(primitive)`, prototype reflection
 on primitives and sloppy-mode `this` remains unsupported.
 
 ### Lexical `this` in arrows (clj-quickjs-98)
@@ -2416,3 +2413,21 @@ Supported (`cargo test --test js_functions arrows_capture_this`,
   shareable receivers permit publication, task-owned object receivers do not.
 - Script-level arrows still reject `this` until the global object exists
   (clj-quickjs-104). Sloppy receiver substitution retains its existing gap.
+
+### String length and index properties (clj-quickjs-142)
+
+Supported (`cargo test --test js_source string_length_and_index_properties`,
+`cargo test --test js_source string_index_reads_allocate_no_wrappers`):
+
+- `s.length` is the number of UTF-16 code units (`"\u{10ffff}".length` is 2) and `s[k]` for
+  a canonical index `k` below it is the one-code-unit string there (`"abc"[1]`, `"abc"["1"]`;
+  `"\u{10ffff}"[0] === "\u{dbff}"`); other keys (`"abc"[3]`, `[-1]`, `[1.5]`) continue at
+  `String.prototype`. Constant-time reads, no wrapper allocated.
+- The same own properties for `Object.getOwnPropertyDescriptor` (indices read-only,
+  enumerable, non-configurable; `length` also non-enumerable), `Object.keys` /
+  `Object.getOwnPropertyNames` of a primitive (`["0", "1", "length"]` for `"ab"`; none for a
+  number or boolean), writes (strict `TypeError`, sloppy no-op) and `delete`.
+- String wrappers (`new String("ab")`) expose the same virtual own properties over
+  `[[StringData]]`. Compatible `Object.defineProperty` calls succeed; incompatible
+  values or attributes throw TypeError. Other properties use ordinary storage, with
+  every index sorted before `length`, then other names in creation order.

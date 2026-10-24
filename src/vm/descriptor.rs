@@ -65,24 +65,24 @@ pub(crate) fn get_own_property_descriptor(
     args: &[Value],
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
-    // ToObject.
-    let id = match arg(0) {
-        Value::Object(id) => id,
-        v @ (Value::Undefined | Value::Null) => {
-            return Err(Fault::TypeError(format!(
-                "cannot convert {} to object",
-                v.type_name()
-            )));
-        }
-        v => {
-            return Err(Fault::Unsupported(format!(
-                "Object.getOwnPropertyDescriptor of a {} needs a wrapper object, which is not supported",
-                v.type_name()
-            )));
-        }
-    };
+    // ToObject. A primitive's wrapper is not allocated: a String wrapper's
+    // own properties are its `length` and indices
+    // (`property::string_own_property`, clj-quickjs-142), and Number and
+    // Boolean wrappers have none.
+    let target = arg(0);
+    if let v @ (Value::Undefined | Value::Null) = &target {
+        return Err(Fault::TypeError(format!(
+            "cannot convert {} to object",
+            v.type_name()
+        )));
+    }
     let key = property::to_property_key(&arg(1))?;
-    match property::get_own_property(heap, task, id, &key)? {
+    let own = match &target {
+        Value::Object(id) => property::get_own_property(heap, task, *id, &key)?,
+        Value::String(s) => property::string_own_property(s, &key),
+        _ => None,
+    };
+    match own {
         Some(property) => from_property_descriptor(heap, task, property),
         None => Ok(Value::Undefined),
     }
