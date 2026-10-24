@@ -205,8 +205,6 @@ pub(crate) enum Global {
     Float64Array = 34,
     RegExp = 35,
 
-
-
     BigInt = 36,
 }
 
@@ -249,8 +247,6 @@ impl Global {
         Global::Float32Array,
         Global::Float64Array,
         Global::RegExp,
-
-
 
         Global::BigInt,
     ];
@@ -384,7 +380,6 @@ pub(crate) struct Intrinsics {
     date: ObjectId,
     pub(crate) regexp_prototype: ObjectId,
     regexp: ObjectId,
-
 
     pub(crate) bigint_prototype: ObjectId,
     bigint: ObjectId,
@@ -955,7 +950,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
-
 
     let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
         object_prototype,
@@ -1644,7 +1638,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 174); // Includes Number typed arrays, Date.toISOString and RegExp.
+        assert_eq!(first.all.len(), 176); // Includes Number typed arrays, Date.toISOString, RegExp and BigInt.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1702,8 +1696,6 @@ mod tests {
         assert_eq!(Global::from_u16(34), Some(Global::Float64Array));
         assert_eq!(Global::from_name("RegExp"), Some(Global::RegExp));
         assert_eq!(Global::from_u16(35), Some(Global::RegExp));
-
-
 
         assert_eq!(Global::from_u16(36), Some(Global::BigInt));
         assert_eq!(Global::from_u16(37), None);
