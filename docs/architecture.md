@@ -416,6 +416,53 @@ contract). Design: `design.md` §§3, 8, 10, 15.
   windows (clj-quickjs-24); a scheduler/executor that owns a ready queue
   (clj-quickjs-8).
 
+## Simulated compiler host (clj-quickjs-9)
+
+`src/host/sim.rs` (contract in its module docs). Design: `design.md` §§9,
+12. A host-side registry over the runtime's public API, not a compiler: no
+parser, analyzer, namespace or module linking.
+
+- **Worlds.** A `WorldSpec` (definitions by `DependencyId`, each with a name
+  and one `Producer` per `ResultKind`) is frozen by `SimHost::add_world`
+  under a fresh `WorldId`. A new version is a new world built from an
+  edited copy; old worlds and their completed cells are never changed or
+  reset (no invalidation).
+- **Result kinds.** `BINDING` (discovery; answered `true` by default),
+  `CALLABLE`, `INITIALIZED`, `ANALYSIS`: one cell each, no coarse "ready"
+  flag. A callable's producer needs only the bindings it refers to, so
+  mutually recursive functions are callable before (and without) any
+  initializer, and the recorded reference cycle is not a wait.
+- **Producers.** Rust work (run once, after all declared needs are ready:
+  never restarted, so never replayed), a published VM callable compiled by
+  this runtime, or an initializer that invokes a callable through the VM.
+- **Scheduling.** Each job (producer, top-level need, call) has its own
+  task: its identity, wake handle and `DependencyLog`. Jobs need through
+  `RunGuard::need`; a pending cell parks the job (parked before its
+  producer request is scheduled, so an immediately settled request still
+  finds it), and the one `ProducerRequest` per cell schedules the one
+  producer job. Completions return wake handles, which move parked jobs
+  back to a FIFO ready queue; nothing runs inline. The driver
+  (`run_until_idle`) is single-threaded and deterministic.
+- **Failures.** Unknown world, missing definition and missing result kind
+  are decided from the frozen world when the request is scheduled and fail
+  the cell at once (never a timeout). Producer errors, unshareable results
+  and failed or cancelled inputs settle the cell as `Failed`; the published
+  error value is a numeric code, the structured `SimError` stays with the
+  host. A top-level request left waiting with no runnable work returns
+  `Stalled` rather than hanging.
+- **Calls (stand-in).** Until the VM has call instructions and function
+  values (clj-quickjs-4, -20, -21, -23) a callable is a host token (a fresh
+  persistent vector, checked by identity) and each activation is a new VM
+  task with one argument. A callable may declare a tail callee: a returned
+  number is a tail call of it (the host needs the callee's `CALLABLE`,
+  recording the edge), any other value is the result. Branching, base case
+  and arguments are computed by the JavaScript; activations per invocation
+  are bounded.
+- **Deferred.** VM-level `__rt.need` and real calls/closures; worker
+  threads (clj-quickjs-8); wait-cycle detection and reporting
+  (clj-quickjs-26); cancelling a stalled request (its job stays parked;
+  clj-quickjs-24); invalidation.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision

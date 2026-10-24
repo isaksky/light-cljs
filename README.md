@@ -34,6 +34,7 @@ cargo test --test js_source       # JavaScript source compiled and executed
 cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowering
 cargo test --test wakeup           # parking and wakeups: many waiters, duplicate wakes, one owner
 cargo test --lib task::           # task state machine and hook-forced handoff windows
+cargo test --test sim_host        # simulated host: worlds, result kinds, producers
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -45,7 +46,8 @@ Library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Modules:
 guard, run outcomes), `vm` (instruction format, executable validation,
 task-owned frames, dispatch, test assembler), `heap` (object identity, roots,
 scoped and weak handles, tracing contract, mark/sweep collector), `value`,
-`ids`, `error`, `host` (leaf host effects), `collections` (persistent
+`ids`, `error`, `host` (leaf host effects; `host::sim`, the simulated
+compiler host), `collections` (persistent
 vectors, maps and occurrences), `dep` (dependency keys, single-assignment
 cells, read-or-subscribe, per-task dependency log). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
@@ -354,3 +356,38 @@ Deferred:
 - The VM instruction that needs and parks by itself (clj-quickjs-23);
   cancellation across these windows (clj-quickjs-24); a reference executor
   with a ready queue (clj-quickjs-8).
+
+### Simulated compiler host (clj-quickjs-9)
+
+Supported:
+
+- `host::sim::SimHost`: immutable worlds (`WorldSpec` frozen by
+  `add_world` under a fresh `WorldId`) of synthetic definitions, each with
+  separate results `BINDING` (discovery), `CALLABLE`, `INITIALIZED` and
+  `ANALYSIS`: one dependency cell per world, definition and kind. A world-2
+  result never satisfies world 1; completed results of an old world stay
+  stable when newer worlds are added.
+- Producers: Rust work (run once, after its declared needs are ready), a
+  VM callable compiled from JavaScript by this runtime, or an initializer
+  that calls a callable. One producer per key, discovered through the
+  cell's single producer request; completions wake parked jobs by task id.
+  `need` and `invoke` drive a deterministic single-thread job queue.
+- Recursion: mutually recursive callables (`tests/fixtures/js/sim_is_even.js`,
+  `sim_is_odd.js`, synthetic) need only each other's binding, so they run
+  without any initializer being needed and without a wait.
+- Failures settle cells deterministically: `UnknownWorld`,
+  `MissingDefinition`, `MissingResult`, `ProducerFailed` (error or
+  unshareable result), `InputFailed`/`InputCancelled`; `Stalled` when a
+  request is left waiting with no runnable work. Events (`Scheduled`,
+  `Parked`, `Woken`, `Activation`, `Settled`) and per-producer dependency
+  logs are recorded. Contract: `src/host/sim.rs` module docs; summary in
+  [`docs/architecture.md`](docs/architecture.md).
+
+Deferred:
+
+- Real calls: a callable is a host token and calls between callables use a
+  stand-in tail-call convention (a returned number calls the declared tail
+  callee) until VM calls, function values and `__rt.need` exist
+  (clj-quickjs-4, -20, -21, -23).
+- Worker threads (clj-quickjs-8), wait-cycle detection and reporting
+  (clj-quickjs-26), cancelling a stalled request, and invalidation.

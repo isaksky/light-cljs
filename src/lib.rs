@@ -38,7 +38,7 @@
 //! | `value` | raw VM values (crate-private), root-free views, and publication rules (`value::share`) |
 //! | `ids` | opaque task, world, definition, result-kind, dependency-key, producer and wake-handle identifiers |
 //! | `error` | runtime failure and diagnostics |
-//! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
+//! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract; [`host::sim`], the simulated compiler host (worlds, result kinds, producers) |
 //! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
 //! | [`frontend`] | JavaScript subset lexer, parser, AST and compiler to bytecode, with positioned diagnostics (`docs/grammar.md`) |
 //! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
