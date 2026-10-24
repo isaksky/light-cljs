@@ -396,6 +396,11 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `**` (clj-quickjs-63) is the number-only opcode `pow` (`0x46`) after the
   same ToNumber; it computes Number::exponentiate (IEEE `pow` with NaN for a
   non-finite exponent on base ±1, as QuickJS's `js_pow`).
+  `++`/`--` on a binding (clj-quickjs-64) needs no opcode of its own: the
+  compiler emits the binding's read, `to_number`, `add`/`sub` of the
+  constant 1 and the binding's store (through `cell_set` for a binding in
+  a cell, a `throw_error` for a `const`), with a `dup` before the
+  arithmetic so a postfix update yields the converted old value.
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -1400,3 +1405,12 @@ and Charlie Gordon) and is listed here with its source path and revision:
   The test carries the full notice. `research/quickjs/quickjs.c`
   `js_parse_unary` (`PF_POW_FORBIDDEN`), `js_pow` and the `OP_pow` case of
   `JS_CallInternal` were consulted only. No code was copied.
+- `tests/js_source.rs` `update_expressions_on_bindings` (clj-quickjs-64):
+  the four identifier groups of `test_inc_dec` (line 141) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `var a, r` is
+  `let a, r`, and each `assert(cond, true)` is the script's value checked
+  by a Rust assertion. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_parse_unary` (`TOK_INC`/`TOK_DEC`),
+  `js_parse_postfix_expr`, `OP_inc` / `OP_post_inc` and `js_post_inc_slow`
+  were consulted only. No code was copied.

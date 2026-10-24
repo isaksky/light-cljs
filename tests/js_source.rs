@@ -1309,6 +1309,135 @@ fn exponent_operator() {
     assert!(opcodes(&exe("let t = true; 2 ** t")).contains(&Opcode::ToNumber));
 }
 
+/// Prefix and postfix `++`/`--` on identifier bindings (clj-quickjs-64).
+/// The first four cases are adapted from the identifier groups of
+/// `test_inc_dec` in `research/quickjs/tests/test_language.js`, revision
+/// 7d1c13c5d8f8 (`var a, r` becomes `let`, and `assert(r === 1 && a === 2,
+/// true)` the script's value); see `docs/architecture.md`, "QuickJS
+/// references and provenance". The other cases are written for this
+/// project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn update_expressions_on_bindings() {
+    // `test_inc_dec`, identifier groups.
+    for src in [
+        "let a, r; a = 1; r = a++; r === 1 && a === 2",
+        "let a, r; a = 1; r = ++a; r === 2 && a === 2",
+        "let a, r; a = 1; r = a--; r === 1 && a === 0",
+        "let a, r; a = 1; r = --a; r === 0 && a === 0",
+        // A postfix update yields the old value converted to a number.
+        "let t = true; let r = t++; r === 1 && t === 2",
+        "let f = false; let r = f--; r === 0 && f === -1",
+        "let n = null; let r = n++; r === 0 && n === 1",
+        // Parenthesized targets, parameters, and a line break before `++`.
+        "let p = 1; (p)++; --((p)); ++(p); p === 2",
+        "function g(x) { x--; return x; } g(3) === 2",
+        "let a = 1, b = 1\na\n++b\nb === 2 && a === 1",
+        // Postfix binds tighter than binary operators.
+        "let a = 1, b = 1; let c = a+++b; c === 2 && a === 2 && b === 1",
+        "let a = 3; a++ ** 2 === 9 && ++a ** 2 === 25",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert!(num("let u; u++").is_nan());
+    assert!(num("let u; ++u; u").is_nan());
+    assert_eq!(num("let n = null; ++n"), 1.0);
+    assert_eq!(num("let z = -0; z++; z"), 1.0);
+    assert_eq!(num("let z = 0; --z"), -1.0);
+    // The old value keeps its sign: `-0` is returned as `-0`.
+    assert_eq!(num("let z = -0; z--").to_bits(), (-0.0f64).to_bits());
+    assert_eq!(num("let x = 1.5; x--; x"), 0.5);
+    assert_eq!(num("let big = 2 ** 53; big++; big"), 2f64.powi(53));
+    // A loop counter.
+    assert_eq!(
+        num("let i = 0, s = 0; while (i < 5) { s = s + i++; } s * 10 + i"),
+        105.0
+    );
+    // A closure-captured counter lives in a binding cell.
+    assert_eq!(
+        num(
+            "function mk() { let c = 0; return function () { return ++c; }; } const f = mk(); f(); f()"
+        ),
+        2.0
+    );
+    assert_eq!(
+        num("let c = 10; const dec = () => c--; dec(); dec() * 100 + c"),
+        908.0
+    );
+
+    // `const`: the read and conversion happen, then the TypeError.
+    let (kind, message, line, column) = failure_at("const c = 1;\nc++;");
+    assert_eq!(kind, VmErrorKind::TypeError);
+    assert!(message.contains("constant variable 'c'"), "{message}");
+    assert_eq!((line, column), (2, 1));
+    assert_eq!(failure("const c = 1; --c").kind(), VmErrorKind::TypeError);
+    assert_eq!(
+        num("const c = 1; let r = 0; try { c++; } catch (e) { r = 1; } r * 10 + c"),
+        11.0
+    );
+    // A captured `const` through a closure.
+    assert_eq!(
+        failure("const k = 1; const g = () => k++; g()").kind(),
+        VmErrorKind::TypeError
+    );
+    // Temporal dead zone, static and through a closure's cell.
+    let (kind, _, line, column) = failure_at("{ x++; let x = 1; }");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 3));
+    assert_eq!(
+        failure("function g() { return ++q; } g(); let q = 1;").kind(),
+        VmErrorKind::ReferenceError
+    );
+    // Unresolvable names.
+    let (kind, message, line, column) = failure_at("nope++");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (VmErrorKind::ReferenceError, "nope is not defined", 1, 1)
+    );
+    assert_eq!(failure("--nope").kind(), VmErrorKind::ReferenceError);
+    // Objects need ToPrimitive, which is deferred; the failure is at the
+    // operator token.
+    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f ++;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 5)
+    );
+    let (kind, _, line, column) = failure_at("let v = __rt.vector();\n--v;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 1)
+    );
+
+    // No new opcode: ToNumber, then add or sub, then the binding's store.
+    let ops = opcodes(&exe("let a = 1; a++; --a"));
+    for op in [Opcode::ToNumber, Opcode::Add, Opcode::Sub, Opcode::SetLocal] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+    // An update's value is a number: no second conversion.
+    let ops = opcodes(&exe("let a = 1; -a++"));
+    assert_eq!(
+        ops.iter().filter(|op| **op == Opcode::ToNumber).count(),
+        1,
+        "{ops:?}"
+    );
+}
+
 #[test]
 fn compiler_constant_limit() {
     // 65,536 distinct constants fit the u16 index; the last one is read

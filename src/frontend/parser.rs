@@ -10,7 +10,7 @@
 
 use super::ast::{
     BinaryOp, CatchClause, Declarator, Expr, ExprKind, Function, FunctionKind, Ident, LexicalDecl,
-    LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp,
+    LexicalKind, LogicalOp, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -760,7 +760,7 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return Ok(left);
         }
-        let target = self.assignment_target(&left)?;
+        let target = self.simple_target(&left, TargetUse::Assign)?;
         self.advance()?;
         let value = self.parse_assignment()?;
         self.depth = saved;
@@ -805,9 +805,24 @@ impl<'a> Parser<'a> {
         self.error(SyntaxErrorKind::UnexpectedToken, arrow.span, message)
     }
 
+    /// The identifier binding `left` names, as the target of an assignment
+    /// or of `++`/`--` (`use_`, which selects the diagnostics); anything
+    /// else is rejected.
     #[inline(never)]
-    fn assignment_target(&self, left: &Expr) -> PResult<Ident> {
+    fn simple_target(&self, left: &Expr, use_: TargetUse) -> PResult<Ident> {
         let text = strip_parens(left.span.text(self.src));
+        let (verb, properties, invalid) = match use_ {
+            TargetUse::Assign => (
+                "assigned",
+                "assignment to properties is",
+                "invalid assignment target",
+            ),
+            TargetUse::Update => (
+                "incremented or decremented",
+                "increment and decrement of properties are",
+                "invalid increment/decrement operand",
+            ),
+        };
         match &left.kind {
             ExprKind::Identifier(name) => Ok(Ident {
                 name: name.clone(),
@@ -816,26 +831,36 @@ impl<'a> Parser<'a> {
             ExprKind::Member { object, .. } if is_reserved_binding(object) => Err(self.error(
                 SyntaxErrorKind::ReservedWord,
                 left.span,
-                format!(
-                    "intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be assigned"
-                ),
+                format!("intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be {verb}"),
             )),
-            ExprKind::Member { .. } => {
-                Err(self.unsupported(left.span, "assignment to properties is"))
-            }
+            ExprKind::Member { .. } => Err(self.unsupported(left.span, properties)),
             ExprKind::Undefined | ExprKind::Number(_) if RESERVED_CONSTANTS.contains(&text) => {
                 Err(self.error(
                     SyntaxErrorKind::ReservedWord,
                     left.span,
-                    format!("`{text}` is reserved by this subset and cannot be assigned"),
+                    format!("`{text}` is reserved by this subset and cannot be {verb}"),
                 ))
             }
-            _ => Err(self.error(
-                SyntaxErrorKind::Invalid,
-                left.span,
-                "invalid assignment target",
-            )),
+            _ => Err(self.error(SyntaxErrorKind::Invalid, left.span, invalid)),
         }
+    }
+
+    /// The UpdateExpression `++operand` / `operand++` (or `--`): the
+    /// operand must be an identifier binding, possibly parenthesized
+    /// (property targets are not supported yet), else the error
+    /// [`Self::simple_target`] gives.
+    #[inline(never)]
+    fn update(&self, op: UpdateOp, prefix: bool, operand: Expr, op_span: Span) -> PResult<Expr> {
+        let target = self.simple_target(&operand, TargetUse::Update)?;
+        self.expr(
+            ExprKind::Update {
+                op,
+                prefix,
+                target,
+                op_span,
+            },
+            op_span.to(operand.span),
+        )
     }
 
     /// ConditionalExpression: LogicalOr (`?` Assignment `:` Assignment)?
@@ -925,17 +950,23 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// UnaryExpression: (`!` | `-` | `+` | `~`) UnaryExpression | CallExpression
+    /// UnaryExpression: (`!` | `-` | `+` | `~`) UnaryExpression
+    ///   | (`++` | `--`) UnaryExpression | PostfixExpression
     ///
     /// A prefix-operator expression followed by `**` is rejected here, at
     /// the `**`: ECMAScript does not let a UnaryExpression be the base of
-    /// an exponentiation (`-2 ** 2` is ambiguous to a reader).
+    /// an exponentiation (`-2 ** 2` is ambiguous to a reader). A prefix
+    /// `++`/`--` expression is an UpdateExpression, which may be one
+    /// (`++a ** 2`); its operand must be an identifier binding
+    /// ([`Self::update`]).
     fn parse_unary(&mut self) -> PResult<Expr> {
         let op = match &self.tok.kind {
-            TokenKind::Punct(Punct::Bang) => UnaryOp::Not,
-            TokenKind::Punct(Punct::Minus) => UnaryOp::Neg,
-            TokenKind::Punct(Punct::Plus) => UnaryOp::Plus,
-            TokenKind::Punct(Punct::Tilde) => UnaryOp::BitNot,
+            TokenKind::Punct(Punct::Bang) => Prefix::Unary(UnaryOp::Not),
+            TokenKind::Punct(Punct::Minus) => Prefix::Unary(UnaryOp::Neg),
+            TokenKind::Punct(Punct::Plus) => Prefix::Unary(UnaryOp::Plus),
+            TokenKind::Punct(Punct::Tilde) => Prefix::Unary(UnaryOp::BitNot),
+            TokenKind::Punct(Punct::PlusPlus) => Prefix::Update(UpdateOp::Inc),
+            TokenKind::Punct(Punct::MinusMinus) => Prefix::Update(UpdateOp::Dec),
             _ => {
                 self.reject_unsupported_prefix()?;
                 return self.parse_call();
@@ -943,9 +974,13 @@ impl<'a> Parser<'a> {
         };
         let saved = self.depth;
         self.deeper(cost::OPERATOR)?;
-        let start = self.advance()?.span.start;
+        let op_span = self.advance()?.span;
         let operand = self.parse_unary()?;
         self.depth = saved;
+        let op = match op {
+            Prefix::Unary(op) => op,
+            Prefix::Update(op) => return self.update(op, true, operand, op_span),
+        };
         if self.is_punct(Punct::StarStar) {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
@@ -953,7 +988,7 @@ impl<'a> Parser<'a> {
                 "a unary expression cannot be the left operand of `**`; parenthesize it",
             ));
         }
-        let span = Span::new(start, operand.span.end);
+        let span = op_span.to(operand.span);
         self.expr(
             ExprKind::Unary {
                 op,
@@ -967,9 +1002,6 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_prefix(&self) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
-            TokenKind::Punct(Punct::PlusPlus | Punct::MinusMinus) => {
-                Err(self.unsupported(span, "increment and decrement are"))
-            }
             TokenKind::Keyword(k @ (Keyword::Typeof | Keyword::Void | Keyword::Delete)) => {
                 Err(self.unsupported(span, &format!("the `{}` operator is", k.as_str())))
             }
@@ -980,7 +1012,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// PostfixExpression: CallExpression [no LineTerminator here] (`++` | `--`)?
     /// CallExpression: Primary (Arguments | `.` IdentifierName)*
+    ///
+    /// Both are parsed here. A postfix update ends the expression: its
+    /// value is not a callee or member object (`a++()` is a syntax error).
     fn parse_call(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         let mut expr = self.parse_primary()?;
@@ -1008,12 +1044,29 @@ impl<'a> Parser<'a> {
                     span,
                 )?;
             } else {
-                self.reject_unsupported_postfix(&expr)?;
+                if let Some(op) = self.postfix_update_op() {
+                    let op_span = self.advance()?.span;
+                    expr = self.update(op, false, expr, op_span)?;
+                } else {
+                    self.reject_unsupported_postfix(&expr)?;
+                }
                 break;
             }
         }
         self.depth = saved;
         Ok(expr)
+    }
+
+    /// The operator of a postfix `++`/`--` at the current token. Postfix
+    /// `++`/`--` is a restricted production: after a line break it starts
+    /// the next statement instead (`a` newline `++b` is `a; ++b;`).
+    fn postfix_update_op(&self) -> Option<UpdateOp> {
+        match self.tok.kind {
+            _ if self.tok.newline_before => None,
+            TokenKind::Punct(Punct::PlusPlus) => Some(UpdateOp::Inc),
+            TokenKind::Punct(Punct::MinusMinus) => Some(UpdateOp::Dec),
+            _ => None,
+        }
     }
 
     /// `.` IdentifierName (reserved words allowed).
@@ -1045,12 +1098,6 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Punct(Punct::OptionalChain) => {
                 Err(self.unsupported(span, "optional chaining is"))
-            }
-            // Postfix `++`/`--` is a restricted production: after a line
-            // break it starts the next statement instead (and is rejected
-            // there).
-            TokenKind::Punct(Punct::PlusPlus | Punct::MinusMinus) if !self.tok.newline_before => {
-                Err(self.unsupported(span, "increment and decrement are"))
             }
             _ => Ok(()),
         }
@@ -1209,6 +1256,19 @@ impl<'a> Parser<'a> {
 fn is_async_call(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Call { callee, .. }
         if matches!(&callee.kind, ExprKind::Identifier(name) if name == "async"))
+}
+
+/// A prefix operator: a UnaryExpression operator or `++`/`--`.
+enum Prefix {
+    Unary(UnaryOp),
+    Update(UpdateOp),
+}
+
+/// What an identifier target is used for (it selects the diagnostics).
+#[derive(Clone, Copy)]
+enum TargetUse {
+    Assign,
+    Update,
 }
 
 enum BinOrLogical {

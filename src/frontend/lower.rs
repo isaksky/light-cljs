@@ -74,6 +74,11 @@
 //! ToUint32 itself for the bitwise ones); with no string values in
 //! the subset, that is exactly JavaScript's semantics for primitives. When
 //! strings arrive, `+` and the relational operators must lower differently.
+//! `++`/`--` on a binding (clj-quickjs-64) is a read, `to_number`, `add` or
+//! `sub` of the constant 1 and a store, with the checks of an ordinary read
+//! and assignment (so a captured binding goes through its cell and a
+//! `const` throws after the read); a postfix update `dup`s the converted
+//! old value first and drops the stored one.
 //!
 //! **Completion value.** A script keeps its completion value in local 0 (see
 //! [`super::compile_script`]); a function body discards expression values.
@@ -99,7 +104,7 @@ use std::sync::Arc;
 
 use super::ast::{
     BinaryOp, CatchClause, Expr, ExprKind, Function, Ident, LexicalKind, LogicalOp, Script, Stmt,
-    StmtKind, UnaryOp,
+    StmtKind, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -1413,6 +1418,35 @@ impl<'s> Lowerer<'s> {
                 let access = self.resolve(&target.name);
                 self.store(access, at)?;
             }
+            ExprKind::Update {
+                op,
+                prefix,
+                target,
+                op_span,
+            } => {
+                // Read the binding (with the same checks as any read),
+                // ToNumber, add or subtract 1, store (with the same checks
+                // as `=`). A postfix update keeps the converted old value
+                // under the new one and drops the stored value.
+                let at = self.name_span(&target.name, target.span);
+                let access = self.resolve(&target.name);
+                self.load(access, at)?;
+                let op_span = *op_span;
+                self.out().op(Opcode::ToNumber, op_span);
+                if !*prefix {
+                    self.out().op(Opcode::Dup, op_span);
+                }
+                self.constant(Primitive::Number(1.0), op_span)?;
+                let arith = match op {
+                    UpdateOp::Inc => Opcode::Add,
+                    UpdateOp::Dec => Opcode::Sub,
+                };
+                self.out().op(arith, op_span);
+                self.store(access, at)?;
+                if !*prefix {
+                    self.out().op(Opcode::Pop, op_span);
+                }
+            }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Member { object, property } = &callee.kind {
                     if self.is_intrinsic_binding(object) {
@@ -1653,6 +1687,7 @@ fn is_number(e: &Expr) -> bool {
         } => is_number(consequent) && is_number(alternate),
         ExprKind::Assign { value, .. } => is_number(value),
         ExprKind::Sequence { right, .. } => is_number(right),
+        ExprKind::Update { .. } => true,
         _ => false,
     }
 }

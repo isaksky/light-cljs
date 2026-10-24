@@ -1303,3 +1303,24 @@ Supported (`cargo test --test exceptions break_and_continue`,
   cancellation ends the cleanup there, like a `return`.
 - Completion values: `5; while (true) { try { 6; break; } finally { 7; } }`
   is 6. QuickJS `test_try_catch5` runs from source (adapted, with notice).
+
+### `++`/`--` on bindings (clj-quickjs-64)
+
+Supported (`cargo test --lib frontend::tests::update_expressions`,
+`cargo test --test js_source update_expressions_on_bindings`):
+
+- Prefix and postfix `++`/`--` on an identifier binding, possibly
+  parenthesized: read (temporal-dead-zone and unresolvable-name checks as
+  for any read), ToNumber, add or subtract 1, store (as `=`: a `const` is a
+  `TypeError`, a closure-captured binding is updated through its binding
+  cell). A prefix update yields the new value, a postfix one the old value
+  converted to a number (`let t = true; t++` is 1). No new opcode. A line
+  break before `++`/`--` starts a new statement (`a` newline `++b`).
+  The identifier cases of QuickJS `test_inc_dec` are adapted with the
+  license notice.
+
+Deferred:
+
+- `++`/`--` on properties (`a.b++` is `Unsupported`; clj-quickjs-76);
+  object operands wait for ToPrimitive (they fail with
+  `UnsupportedOperand`); compound assignment stays rejected.

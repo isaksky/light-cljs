@@ -219,7 +219,8 @@ impl Expr {
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::Undefined
-            | ExprKind::Identifier(_) => 0,
+            | ExprKind::Identifier(_)
+            | ExprKind::Update { .. } => 0,
             ExprKind::Unary { operand, .. } => operand.height,
             ExprKind::Binary { left, right, .. } | ExprKind::Logical { left, right, .. } => {
                 left.height.max(right.height)
@@ -294,6 +295,18 @@ pub enum ExprKind {
         object: Box<Expr>,
         property: Ident,
     },
+    /// `++x`, `x++`, `--x` or `x--` on an identifier binding (property
+    /// targets are not supported yet). The target may be parenthesized.
+    Update {
+        op: UpdateOp,
+        /// `++x` / `--x` (the value is the new one) rather than `x++` /
+        /// `x--` (the value is the old one, converted to a number).
+        prefix: bool,
+        target: Ident,
+        /// The `++` / `--` token, where run-time failures of the update
+        /// itself are reported.
+        op_span: Span,
+    },
     Function(Box<Function>),
     /// `left, right` (the comma operator): evaluates `left` and discards its
     /// value, then evaluates `right`, whose value is the result. Left-
@@ -314,6 +327,15 @@ pub enum UnaryOp {
     Plus,
     /// `~`
     BitNot,
+}
+
+/// The operator of an [`ExprKind::Update`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateOp {
+    /// `++`
+    Inc,
+    /// `--`
+    Dec,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

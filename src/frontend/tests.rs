@@ -8,7 +8,7 @@
 //! `identifiers_are_not_normalized`).
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Stmt, StmtKind, UnaryOp,
+    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{MAX_NESTING, SyntaxError, SyntaxErrorKind, line_column, parse_script};
@@ -74,6 +74,16 @@ fn render_expr(e: &Expr) -> String {
             render_expr(consequent),
             render_expr(alternate)
         ),
+        ExprKind::Update {
+            op, prefix, target, ..
+        } => {
+            let op = match op {
+                UpdateOp::Inc => "++",
+                UpdateOp::Dec => "--",
+            };
+            let fix = if *prefix { "pre" } else { "post" };
+            format!("({fix}{op} {})", target.name)
+        }
         ExprKind::Assign { target, value } => {
             format!("(= {} {})", target.name, render_expr(value))
         }
@@ -515,6 +525,99 @@ fn exponent_operator_syntax() {
     rejects_with("typeof a ** b;", Unsupported, 1, 1, "typeof");
     // `**=` stays rejected (compound assignment).
     rejects_with("a **= 2;", Unsupported, 1, 3, "**=");
+}
+
+/// Prefix and postfix `++`/`--` on identifier bindings (clj-quickjs-64).
+#[test]
+fn update_expressions() {
+    assert_eq!(ast("a++;"), "(post++ a)");
+    assert_eq!(ast("++a;"), "(pre++ a)");
+    assert_eq!(ast("a--;"), "(post-- a)");
+    assert_eq!(ast("--a;"), "(pre-- a)");
+    // Two `-` tokens are two negations; `--` is one decrement.
+    assert_eq!(ast("- -a;"), "(neg (neg a))");
+    assert_eq!(ast("-(-a);"), "(neg (neg a))");
+    assert_eq!(ast("- --a;"), "(neg (pre-- a))");
+    // No line break before a postfix operator: it starts a new statement.
+    assert_eq!(ast("a\n++b"), "a (pre++ b)");
+    assert_eq!(ast("x = a\n++b"), "(= x a) (pre++ b)");
+    assert_eq!(ast("a\n--\nb"), "a (pre-- b)");
+    // `<!--` is not a comment: `a < !(--b)`.
+    assert_eq!(ast("a <!-- b"), "(< a (! (pre-- b)))");
+    // Precedence: postfix binds tighter than prefix and binary operators.
+    assert_eq!(ast("-a++;"), "(neg (post++ a))");
+    assert_eq!(ast("a++ + ++b;"), "(+ (post++ a) (pre++ b))");
+    assert_eq!(ast("a+++b;"), "(+ (post++ a) b)");
+    assert_eq!(ast("a---b;"), "(- (post-- a) b)");
+    assert_eq!(ast("x = y++;"), "(= x (post++ y))");
+    // An UpdateExpression may be the base of `**`.
+    assert_eq!(ast("++a ** 2;"), "(** (pre++ a) 2)");
+    assert_eq!(ast("a-- ** 2;"), "(** (post-- a) 2)");
+    // A parenthesized identifier is a valid target.
+    assert_eq!(ast("(a)++;"), "(post++ a)");
+    assert_eq!(ast("--((a));"), "(pre-- a)");
+    assert_eq!(ast("f(a++, --b);"), "(call f (post++ a) (pre-- b))");
+    // The span covers the operator and the operand.
+    let script = parse_script("  (b)--;").unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    assert_eq!((e.span.start, e.span.end), (2, 7));
+    let ExprKind::Update {
+        target, op_span, ..
+    } = &e.kind
+    else {
+        panic!("not an update")
+    };
+    assert_eq!((op_span.start, op_span.end), (5, 7));
+    assert_eq!((target.span.start, target.span.end), (2, 5));
+
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    // The operand must be an identifier binding (early errors).
+    rejects_with("1++;", Invalid, 1, 1, "increment/decrement operand");
+    rejects_with("--1;", Invalid, 1, 3, "increment/decrement operand");
+    rejects_with("(a + b)++;", Invalid, 1, 1, "increment/decrement operand");
+    rejects_with("f()++;", Invalid, 1, 1, "increment/decrement operand");
+    rejects_with("++a++;", Invalid, 1, 3, "increment/decrement operand");
+    rejects_with("++-a;", Invalid, 1, 3, "increment/decrement operand");
+    rejects_with("++ ++a;", Invalid, 1, 4, "increment/decrement operand");
+    rejects_with("(a, b)++;", Invalid, 1, 1, "increment/decrement operand");
+    rejects_with("(a = 1)++;", Invalid, 1, 1, "increment/decrement operand");
+    // Reserved constants, like assignment.
+    rejects_with("undefined++;", ReservedWord, 1, 1, "undefined");
+    rejects_with("--NaN;", ReservedWord, 1, 3, "NaN");
+    rejects_with("(Infinity)--;", ReservedWord, 1, 1, "Infinity");
+    // The reserved intrinsic binding's intrinsics, like assignment.
+    rejects_with("__rt.count++;", ReservedWord, 1, 1, "__rt");
+    rejects_with("++__rt.count;", ReservedWord, 1, 3, "__rt");
+    // Property targets are a later pellet (clj-quickjs-76).
+    rejects_with(
+        "a.b++;",
+        Unsupported,
+        1,
+        1,
+        "increment and decrement of properties",
+    );
+    rejects_with(
+        "--a.b;",
+        Unsupported,
+        1,
+        3,
+        "increment and decrement of properties",
+    );
+    rejects_with("a[0]++;", Unsupported, 1, 2, "computed member");
+    // The result of a postfix update is not a callee or member object, and
+    // two operands need an operator between them.
+    rejects("a++();", UnexpectedToken, 1, 4);
+    rejects("a++.b;", UnexpectedToken, 1, 4);
+    rejects("a++ ++;", UnexpectedToken, 1, 5);
+    rejects("a--b", UnexpectedToken, 1, 4);
+    // The unary-operand restriction of `**` still applies around updates.
+    rejects_with("-a++ ** 2;", Invalid, 1, 6, "parenthesize");
+    // The other prefix operators stay unsupported.
+    rejects_with("typeof a++;", Unsupported, 1, 1, "typeof");
+    // Compound assignment stays unsupported.
+    rejects_with("a++ += 1;", Unsupported, 1, 5, "+=");
 }
 
 #[test]
@@ -1135,11 +1238,11 @@ fn rejects_lexically_ambiguous_input() {
     rejects_with("a**=b", Unsupported, 1, 2, "**=");
     rejects_with("a ?? b", Unsupported, 1, 3, "??");
     rejects_with("a?.b", Unsupported, 1, 2, "optional chaining");
-    rejects_with("a--b", Unsupported, 1, 2, "increment");
-    // HTML-like comments are not comments here.
-    rejects_with("a <!-- b", Unsupported, 1, 5, "increment");
-    // `++` after a line break begins the next statement.
-    rejects_with("x = a\n++b", Unsupported, 2, 1, "increment");
+    // `a--b` is `a--` then `b`, with no operator between them. (HTML-like
+    // comments are not comments here: `a <!-- b` is `a < !--b`, and `++`
+    // after a line break begins the next statement; both parse, see
+    // `update_expressions`.)
+    rejects("a--b", UnexpectedToken, 1, 4);
     // `(a, b)` before `=>` is an arrow parameter list (accepted, see
     // `arrow_functions_and_asi`), otherwise the comma operator (accepted,
     // see `comma_operator`).
@@ -1280,7 +1383,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = typeof y;", 1, 5, "typeof"),
         ("void 0;", 1, 1, "void"),
         ("delete x.y;", 1, 1, "delete"),
-        ("++x;", 1, 1, "increment"),
+        ("++x.y;", 1, 3, "increment and decrement of properties"),
         ("x = {};", 1, 5, "object literals"),
         ("x = [1];", 1, 5, "array literals"),
         ("a[0];", 1, 2, "computed member"),
@@ -1345,6 +1448,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("x = {}1{};", "(".repeat(n), ")".repeat(n)),
         format!("x = {}1;", "!".repeat(n)),
         format!("x = {}1;", "- ".repeat(n)),
+        format!("x = {}a;", "++ ".repeat(n)),
+        format!("x = {}a;", "-- -".repeat(n)),
         format!("{}{}", "{".repeat(n), "}".repeat(n)),
         format!("{}x;", "if (1) ".repeat(n)),
         format!("{}x;", "while (1) ".repeat(n)),
@@ -1446,6 +1551,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("mixed", |n| {
             format!("x = {}1{};", "a + -(".repeat(n), ")".repeat(n))
+        }),
+        ("updates", |n| {
+            format!("x = {}++b{};", "a++ + -(".repeat(n), ")".repeat(n))
         }),
         ("wrapped member chains", |n| {
             let mut s = "a".to_string();
