@@ -672,6 +672,8 @@ impl Task {
     pub fn unhandled_rejections(&self) -> UnhandledRejections {
         let _access = self.0.heap.enter_mutator(Access::Op);
         let (entries, dropped) = self.0.jobs.rejections();
+        #[cfg(test)]
+        self.0.jobs.rejection_snapshot_boundary();
         UnhandledRejections {
             entries: entries
                 .into_iter()

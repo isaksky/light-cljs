@@ -652,6 +652,90 @@ fn inbox_is_traced_while_task_is_at_a_running_safepoint() {
 }
 
 #[test]
+fn unhandled_rejection_snapshot_survives_concurrent_handling_and_gc() {
+    let rt = Runtime::new();
+    let object = rt.scope(|scope| scope.persist(scope.new_object()));
+    let weak = object.downgrade();
+    let owner = rt
+        .spawn(
+            &crate::frontend::compile_function("function reject(o) { return Promise.reject(o); }")
+                .unwrap(),
+            &[&object],
+        )
+        .unwrap();
+    drop(object);
+    let RunOutcome::Complete(promise) = owner.run().unwrap() else {
+        panic!("complete")
+    };
+    let weak_promise = promise.downgrade();
+    let handler = rt
+        .spawn(
+            &crate::frontend::compile_function("function handle(p) { p.catch(() => {}); }")
+                .unwrap(),
+            &[&promise],
+        )
+        .unwrap();
+    drop(promise);
+
+    let (copied_tx, copied_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    *owner.0.jobs.before_rejection_roots.lock().unwrap() = Some(Box::new(move || {
+        copied_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }));
+    let queried = owner.clone();
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    let query = std::thread::spawn(move || {
+        snapshot_tx.send(queried.unhandled_rejections()).unwrap();
+    });
+    copied_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Only the unrooted snapshot copy will hold these values after handling.
+    assert!(matches!(handler.run().unwrap(), RunOutcome::Complete(_)));
+    drop(handler);
+    assert!(owner.0.jobs.rejections().0.is_empty());
+
+    let (collected_tx, collected_rx) = mpsc::channel();
+    let runtime = rt.clone();
+    let collector = std::thread::spawn(move || {
+        collected_tx
+            .send(runtime.request_collection().unwrap())
+            .unwrap();
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !rt.collection_requested() {
+        assert!(
+            matches!(collected_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "collection completed before the snapshot rooted its values"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "collector did not request a safepoint"
+        );
+        std::thread::yield_now();
+    }
+    assert!(matches!(
+        collected_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    release_tx.send(()).unwrap();
+    let snapshot = snapshot_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    collected_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    query.join().unwrap();
+    collector.join().unwrap();
+    assert_eq!(snapshot.entries.len(), 1);
+    assert!(weak.is_live() && weak_promise.is_live());
+    assert!(
+        snapshot.entries[0]
+            .reason
+            .same_object(&weak.upgrade().unwrap())
+    );
+    assert!(owner.unhandled_rejections().entries.is_empty());
+    drop(snapshot);
+    rt.collect().unwrap();
+    assert!(!weak.is_live() && !weak_promise.is_live());
+}
+
+#[test]
 fn delivery_after_completion_or_drop_is_rejected() {
     let (_rt, task, jobs, mut host) =
         setup("function a() { __rt.effect(0, 1); } __rt.effect(0, -1); 42;");

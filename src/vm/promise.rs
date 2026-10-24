@@ -82,8 +82,8 @@ pub(crate) struct Reaction {
     fulfilled: Value,
     rejected: Value,
     // An engine resolve/reject pair forwards to another Promise. If the
-    // source result is inaccessible, reject that target locally as well as
-    // this reaction's derived Promise, without exposing the foreign value.
+    // source result is inaccessible, reject that target locally without
+    // exposing the foreign value. The forwarding reaction returns undefined.
     forwarding: Option<ObjectId>,
     async_state: Option<ObjectId>,
 }
@@ -491,11 +491,16 @@ impl PromiseState {
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("missing TypeError result"));
                 };
-                settle(heap, task, inbox, *promise, true, value.clone())?;
-                if let Some(guard) = forwarding
-                    && let Some(target) = claim(heap, *guard)?
-                {
-                    settle(heap, task, inbox, target, true, value)?;
+                if let Some(guard) = forwarding {
+                    if let Some(target) = claim(heap, *guard)? {
+                        settle(heap, task, inbox, target, true, value)?;
+                    }
+                    // A resolver forwards the rejection and returns normally.
+                    // Adoption discards this reaction's derived promise; it
+                    // must not become a second, uncatchable rejection.
+                    settle(heap, task, inbox, *promise, false, Value::Undefined)?;
+                } else {
+                    settle(heap, task, inbox, *promise, true, value)?;
                 }
                 Ok(Action::Return(Value::Undefined))
             }

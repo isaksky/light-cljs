@@ -920,12 +920,31 @@ fn adoption_of_foreign_task_local_result_rejects() {
                 .catch(e => __rt.effect(0, e instanceof TypeError));
             return 42;
         }"#,
-            &[inner],
+            std::slice::from_ref(&inner),
         );
         let mut host = Effects::default();
         let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
         assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
         assert_eq!(host.0, [Primitive::Bool(true), Primitive::Bool(true)]);
+        assert!(task.unhandled_rejections().entries.is_empty());
+        assert_eq!(task.unhandled_rejections().dropped, 0);
+        let async_task = function(
+            &rt,
+            r#"function consume(inner) {
+            async function f() { return new Promise(r => r(inner)); }
+            (async () => { try { await f(); } catch(e) { __rt.effect(0,e instanceof TypeError); } })();
+            return 42;
+        }"#,
+            &[inner],
+        );
+        let mut host = Effects::default();
+        assert!(matches!(
+            async_task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        assert_eq!(host.0, [Primitive::Bool(true)]);
+        assert!(async_task.unhandled_rejections().entries.is_empty());
+        assert_eq!(async_task.unhandled_rejections().dropped, 0);
     }
 }
 

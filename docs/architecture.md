@@ -5889,11 +5889,11 @@ registering task. Dependency completion only publishes and wakes tasks.
 
 A reaction registered with a matching engine resolve/reject pair also traces
 that pair's guard as a forwarding capability. If the source holds a foreign
-task-owned result or rejection reason, the reaction rejects both its derived
-Promise and the forwarding target with a local TypeError, claiming the guard
-first. This prevents intrinsic Promise adoption from leaving its outer Promise
-pending when the otherwise ignored intermediate Promise rejects at the
-ownership boundary. Ordinary user handlers still cannot receive foreign
+task-owned result or rejection reason, the reaction rejects the forwarding
+target with a local TypeError, claiming the guard first, and fulfills its
+derived Promise with undefined (clj-quickjs-249). This models a resolver's
+normal return and avoids a false unhandled rejection for the discarded
+intermediate Promise during adoption. Ordinary user handlers still cannot receive foreign
 results or reasons. `adoption_of_foreign_task_local_result_rejects` covers
 both states and preserves the ordinary-handler policy.
 
@@ -6813,6 +6813,9 @@ Root inventory addition: `UnhandledRejection` is a TaskFrame holder covered by
 omitted reasons are collectible, and the acceptance test collects between
 individual instructions. Waiting, cancellation, failure, foreign settlement,
 and foreign handling have dedicated tests.
+`src/task/job_tests.rs::unhandled_rejection_snapshot_survives_concurrent_handling_and_gc`
+pauses a query between copying entries and rooting them, removes its record
+on another task, and proves collection waits until the snapshot owns roots.
 
 QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `fulfill_or_reject_promise`, `perform_promise_then`, and

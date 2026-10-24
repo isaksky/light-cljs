@@ -40,6 +40,8 @@ pub(crate) struct JobInbox {
     pub(crate) before_next: TestHook,
     #[cfg(test)]
     pub(crate) before_close: TestHook,
+    #[cfg(test)]
+    pub(crate) before_rejection_roots: TestHook,
 }
 
 impl std::fmt::Debug for JobInbox {
@@ -62,6 +64,11 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
+    #[cfg(test)]
+    pub(crate) fn rejection_snapshot_boundary(&self) {
+        run_hook(&self.before_rejection_roots);
+    }
+
     /// Called under the Promise settlement lock. This is a leaf operation:
     /// no heap access, user code, or acquisition of another inbox lock.
     /// The returned bit distinguishes a stored entry from a counted overflow.
