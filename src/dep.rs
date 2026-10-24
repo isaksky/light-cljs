@@ -71,10 +71,10 @@
 //!
 //! # Collector boundary
 //!
-//! Each cell is a [`RootSource`]: while the cell exists, a `Ready` value or
+//! Each cell is a `RootSource`: while the cell exists, a `Ready` value or
 //! `Failed` error it holds is a root (`RootCategory::DependencyOutcome`), so
 //! a published result survives collection after the producer drops its own
-//! handle. Values are checked with [`share::check`] before installation:
+//! handle. Values are checked with `share::check` before installation:
 //! task-owned mutation (builders, plain objects) is rejected with
 //! [`CompleteError::NotShareable`] and the cell stays pending. A terminal
 //! outcome is immutable and the cell outlives every reader, so a value
