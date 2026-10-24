@@ -18952,6 +18952,44 @@ fn native_error_constructors() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-267).
+#[test]
+fn native_error_bound_constructor_prototypes() {
+    for name in [
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+        "SuppressedError",
+    ] {
+        for expression in [
+            "Object.getPrototypeOf(B) === Error && B.prototype === Error.prototype",
+            "Object.getOwnPropertyDescriptor(B, 'prototype') === undefined && 'prototype' in B",
+            "let C = B.bind(null); Object.getPrototypeOf(C) === Error && C.prototype === Error.prototype && Object.getOwnPropertyDescriptor(C, 'prototype') === undefined",
+            "B.extra = 1; Object.getPrototypeOf(B) === Error && B.prototype === Error.prototype && B.extra === 1 && Object.getOwnPropertyDescriptor(B, 'prototype') === undefined",
+            "B.extra = 1; let C = B.bind(null); C.extra = 2; Object.getPrototypeOf(C) === Error && C.prototype === Error.prototype && C.extra === 2 && Object.getOwnPropertyDescriptor(C, 'prototype') === undefined",
+        ] {
+            let src = format!("const B = {name}.bind(null); {expression}");
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for expression in [
+        "Object.getPrototypeOf(B) === Parent && B.prototype === Parent.prototype && B.inherited() === 42",
+        "Object.getOwnPropertyDescriptor(B, 'prototype') === undefined && new B() instanceof Child",
+        "let C = B.bind(null); Object.getPrototypeOf(C) === Parent && C.prototype === Parent.prototype && C.inherited() === 42 && new C() instanceof Child",
+        "B.extra = 1; Object.getPrototypeOf(B) === Parent && B.prototype === Parent.prototype && B.inherited() === 42 && B.extra === 1",
+        "B.extra = 1; let C = B.bind(null); C.extra = 2; Object.getPrototypeOf(C) === Parent && C.prototype === Parent.prototype && C.inherited() === 42 && C.extra === 2 && Object.getOwnPropertyDescriptor(C, 'prototype') === undefined",
+    ] {
+        let src = format!(
+            "class Parent {{ static inherited() {{ return 42; }} }} class Child extends Parent {{}} const B = Child.bind(null); {expression}"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output (clj-quickjs-234).
 #[test]
 fn suppressed_error_constructor() {

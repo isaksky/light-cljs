@@ -2343,6 +2343,11 @@ Binding snapshots the target's current own numeric length, subtracting bound
 arguments and clamping at zero, and prefixes its current string name with
 `bound ` (clj-quickjs-101). Construction through a bound function sets
 `new.target` to the resolved target (clj-quickjs-99).
+Bound functions retain the target's internal prototype through repeated binding
+and own-property writes. In particular, bound NativeError constructors inherit
+from `Error` and read the inherited `Error.prototype` without an own `prototype`
+property (`cargo test --test js_source native_error_bound_constructor_prototypes`,
+clj-quickjs-267).
 
 ### Function `length` and `name` (clj-quickjs-101)
 
