@@ -2,8 +2,14 @@
 //!
 //! Every node carries the [`Span`] of the source text it was parsed from.
 //! Parentheses are not represented: a parenthesized expression is its inner
-//! expression (with the inner span). The tree only contains supported forms;
-//! the parser rejects everything else before building a node.
+//! expression, with a span that covers the parentheses. The tree only
+//! contains supported forms; the parser rejects everything else before
+//! building a node.
+//!
+//! Every [`Stmt`], [`Function`] and [`Expr`] records its `height` (nodes on
+//! the longest path down to a leaf, itself included). The parser rejects
+//! input whose tree would be higher than [`MAX_NESTING`](super::MAX_NESTING), so recursive
+//! passes over a parsed tree have a fixed depth bound.
 
 use super::Span;
 
@@ -25,6 +31,44 @@ pub struct Ident {
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    /// Tree height; at most [`MAX_NESTING`](super::MAX_NESTING).
+    pub height: usize,
+}
+
+impl Stmt {
+    /// A statement node with its height computed from its children.
+    pub(crate) fn new(kind: StmtKind, span: Span) -> Stmt {
+        let child = match &kind {
+            StmtKind::FunctionDecl(f) => f.height,
+            StmtKind::Lexical(decl) => decl
+                .declarators
+                .iter()
+                .filter_map(|d| d.init.as_ref().map(|e| e.height))
+                .max()
+                .unwrap_or(0),
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) => e.height,
+            StmtKind::Block(body) => max_height(body),
+            StmtKind::If {
+                test,
+                consequent,
+                alternate,
+            } => test
+                .height
+                .max(consequent.height)
+                .max(alternate.as_ref().map_or(0, |s| s.height)),
+            StmtKind::While { test, body } => test.height.max(body.height),
+            StmtKind::Return(None) | StmtKind::Empty => 0,
+        };
+        Stmt {
+            kind,
+            span,
+            height: child + 1,
+        }
+    }
+}
+
+fn max_height(body: &[Stmt]) -> usize {
+    body.iter().map(|s| s.height).max().unwrap_or(0)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,12 +128,69 @@ pub struct Function {
     pub body: Vec<Stmt>,
     /// From the `function` keyword to the closing `}`.
     pub span: Span,
+    /// Tree height; at most [`MAX_NESTING`](super::MAX_NESTING).
+    pub height: usize,
+}
+
+impl Function {
+    pub(crate) fn new(
+        name: Option<Ident>,
+        params: Vec<Ident>,
+        body: Vec<Stmt>,
+        span: Span,
+    ) -> Function {
+        let height = max_height(&body) + 1;
+        Function {
+            name,
+            params,
+            body,
+            span,
+            height,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    /// Tree height; at most [`MAX_NESTING`](super::MAX_NESTING).
+    pub height: usize,
+}
+
+impl Expr {
+    /// An expression node with its height computed from its children.
+    pub(crate) fn new(kind: ExprKind, span: Span) -> Expr {
+        let child = match &kind {
+            ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::Undefined
+            | ExprKind::Identifier(_) => 0,
+            ExprKind::Unary { operand, .. } => operand.height,
+            ExprKind::Binary { left, right, .. } | ExprKind::Logical { left, right, .. } => {
+                left.height.max(right.height)
+            }
+            ExprKind::Conditional {
+                test,
+                consequent,
+                alternate,
+            } => test.height.max(consequent.height).max(alternate.height),
+            ExprKind::Assign { value, .. } => value.height,
+            ExprKind::Call { callee, args } => args
+                .iter()
+                .map(|a| a.height)
+                .fold(callee.height, usize::max),
+            ExprKind::Member { object, .. } => object.height,
+            ExprKind::Function(f) => f.height,
+        };
+        Expr {
+            kind,
+            span,
+            height: child + 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

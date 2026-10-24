@@ -33,8 +33,9 @@ use std::fmt;
 /// and call chains) charges a cost weighted by the Rust stack it uses
 /// (`docs/grammar.md`, "Nesting limit"). Input over budget is rejected with
 /// [`SyntaxErrorKind::TooDeep`], so parsing at the limit fits a 2 MiB thread
-/// stack even unoptimized, and the AST depth stays bounded for dropping it
-/// and for later recursive passes.
+/// stack even unoptimized. The same number also bounds the height of the
+/// syntax tree (`height` on every statement, function and expression), so
+/// dropping it and later recursive passes have a fixed depth bound.
 pub const MAX_NESTING: usize = 256;
 
 /// Half-open byte range `start..end` into the source text.

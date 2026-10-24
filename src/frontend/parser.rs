@@ -172,6 +172,28 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Reject a tree higher than [`MAX_NESTING`] nodes. The unit budget
+    /// above bounds the parser's own recursion; this bounds the tree it
+    /// builds, which can be higher when finished subtrees are wrapped
+    /// again (for example `(a.b.b).b.b`).
+    fn check_height(&self, height: usize) -> PResult<()> {
+        if height > MAX_NESTING {
+            return Err(self.too_deep());
+        }
+        Ok(())
+    }
+
+    fn expr(&self, kind: ExprKind, span: Span) -> PResult<Expr> {
+        let expr = Expr::new(kind, span);
+        self.check_height(expr.height)?;
+        Ok(expr)
+    }
+
+    fn bounded(&self, stmt: Stmt) -> PResult<Stmt> {
+        self.check_height(stmt.height)?;
+        Ok(stmt)
+    }
+
     #[inline(never)]
     fn too_deep(&self) -> SyntaxError {
         self.error(
@@ -205,10 +227,10 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Function) => {
                 let start = self.tok.span.start;
                 let function = self.parse_function(true)?;
-                Ok(Stmt {
-                    kind: StmtKind::FunctionDecl(function),
-                    span: self.span_from(start),
-                })
+                self.bounded(Stmt::new(
+                    StmtKind::FunctionDecl(function),
+                    self.span_from(start),
+                ))
             }
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => self.parse_lexical_decl(),
             _ => self.parse_statement(),
@@ -237,10 +259,7 @@ impl<'a> Parser<'a> {
             }
         };
         self.depth = saved;
-        Ok(Stmt {
-            kind,
-            span: self.span_from(start),
-        })
+        self.bounded(Stmt::new(kind, self.span_from(start)))
     }
 
     /// Rejects statement forms that start with the current token but are not
@@ -398,10 +417,10 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect_semi()?;
-        Ok(Stmt {
-            kind: StmtKind::Lexical(LexicalDecl { kind, declarators }),
-            span: self.span_from(start),
-        })
+        self.bounded(Stmt::new(
+            StmtKind::Lexical(LexicalDecl { kind, declarators }),
+            self.span_from(start),
+        ))
     }
 
     /// BindingIdentifier: an identifier that is not a reserved word, a
@@ -453,12 +472,9 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         self.in_function = outer;
         self.depth = saved;
-        Ok(Function {
-            name,
-            params,
-            body,
-            span: self.span_from(start),
-        })
+        let function = Function::new(name, params, body, self.span_from(start));
+        self.check_height(function.height)?;
+        Ok(function)
     }
 
     /// `function` Name? `(` Params `)`, up to the body.
@@ -527,13 +543,14 @@ impl<'a> Parser<'a> {
         self.advance()?;
         let value = self.parse_assignment()?;
         self.depth = saved;
-        Ok(Expr {
-            span: left.span.to(value.span),
-            kind: ExprKind::Assign {
+        let span = left.span.to(value.span);
+        self.expr(
+            ExprKind::Assign {
                 target,
                 value: Box::new(value),
             },
-        })
+            span,
+        )
     }
 
     /// Rejects compound assignment and an arrow after an expression.
@@ -590,14 +607,15 @@ impl<'a> Parser<'a> {
         self.expect_punct(Punct::Colon)?;
         let alternate = self.parse_assignment()?;
         self.depth = saved;
-        Ok(Expr {
-            span: test.span.to(alternate.span),
-            kind: ExprKind::Conditional {
+        let span = test.span.to(alternate.span);
+        self.expr(
+            ExprKind::Conditional {
                 test: Box::new(test),
                 consequent: Box::new(consequent),
                 alternate: Box::new(alternate),
             },
-        })
+            span,
+        )
     }
 
     /// Binary operators by precedence climbing; all are left-associative.
@@ -616,6 +634,7 @@ impl<'a> Parser<'a> {
             self.advance()?;
             let right = self.parse_binary(prec + 1)?;
             left = make_binary(op, left, right);
+            self.check_height(left.height)?;
         }
         self.depth = saved;
         Ok(left)
@@ -656,13 +675,14 @@ impl<'a> Parser<'a> {
         let start = self.advance()?.span.start;
         let operand = self.parse_unary()?;
         self.depth = saved;
-        Ok(Expr {
-            span: Span::new(start, operand.span.end),
-            kind: ExprKind::Unary {
+        let span = Span::new(start, operand.span.end);
+        self.expr(
+            ExprKind::Unary {
                 op,
                 operand: Box::new(operand),
             },
-        })
+            span,
+        )
     }
 
     #[inline(never)]
@@ -691,23 +711,25 @@ impl<'a> Parser<'a> {
             if self.is_punct(Punct::LParen) {
                 self.deeper(cost::CALL)?;
                 let args = self.parse_arguments()?;
-                expr = Expr {
-                    span: self.span_from(expr.span.start),
-                    kind: ExprKind::Call {
+                let span = self.span_from(expr.span.start);
+                expr = self.expr(
+                    ExprKind::Call {
                         callee: Box::new(expr),
                         args,
                     },
-                };
+                    span,
+                )?;
             } else if self.is_punct(Punct::Dot) {
                 self.deeper(cost::OPERATOR)?;
                 let property = self.parse_property_name()?;
-                expr = Expr {
-                    span: expr.span.to(property.span),
-                    kind: ExprKind::Member {
+                let span = expr.span.to(property.span);
+                expr = self.expr(
+                    ExprKind::Member {
                         object: Box::new(expr),
                         property,
                     },
-                };
+                    span,
+                )?;
             } else {
                 self.reject_unsupported_postfix()?;
                 break;
@@ -777,17 +799,15 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Null) => ExprKind::Null,
             TokenKind::Keyword(Keyword::Function) => {
                 let function = self.parse_function(false)?;
-                return Ok(Expr {
-                    span: function.span,
-                    kind: ExprKind::Function(Box::new(function)),
-                });
+                let span = function.span;
+                return self.expr(ExprKind::Function(Box::new(function)), span);
             }
             TokenKind::Identifier(_) => return self.parse_identifier_reference(),
             TokenKind::Punct(Punct::LParen) => return self.parse_parenthesized(),
             _ => return Err(self.primary_error()),
         };
         self.advance()?;
-        Ok(Expr { kind, span })
+        Ok(Expr::new(kind, span))
     }
 
     /// An identifier in expression position, including the reserved
@@ -822,7 +842,7 @@ impl<'a> Parser<'a> {
         if self.is_punct(Punct::Arrow) {
             return Err(self.unsupported(span.to(self.tok.span), "arrow functions are"));
         }
-        Ok(Expr { kind, span })
+        Ok(Expr::new(kind, span))
     }
 
     /// The current token cannot start a supported expression.
@@ -941,7 +961,7 @@ fn make_binary(op: BinOrLogical, left: Expr, right: Expr) -> Expr {
         BinOrLogical::Binary(op) => ExprKind::Binary { op, left, right },
         BinOrLogical::Logical(op) => ExprKind::Logical { op, left, right },
     };
-    Expr { kind, span }
+    Expr::new(kind, span)
 }
 
 fn is_compound_assign(p: Punct) -> bool {

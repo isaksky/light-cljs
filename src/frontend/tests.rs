@@ -315,6 +315,31 @@ fn literals() {
 }
 
 #[test]
+fn unicode_string_escapes_decode_scalars() {
+    let src = r"x = 'A😀éz';";
+    let script = parse_script(src).unwrap();
+    let StmtKind::Expr(Expr {
+        kind: ExprKind::Assign { value, .. },
+        ..
+    }) = &script.body[0].kind
+    else {
+        panic!()
+    };
+    // The surrogate pair combines into one scalar value; both escapes are
+    // consumed and the following characters are kept.
+    assert_eq!(value.kind, ExprKind::String("A😀éz".into()));
+    assert_eq!(value.span.text(src), r"'A😀éz'");
+    // A high surrogate followed by a non-surrogate escape is not combined.
+    rejects_with(
+        r"'\uD83DA'",
+        SyntaxErrorKind::Unsupported,
+        1,
+        2,
+        "surrogate",
+    );
+}
+
+#[test]
 fn radix_literals_round_correctly() {
     let value = |src: &str| match parse_script(src).unwrap().body[0].kind {
         StmtKind::Expr(Expr {
@@ -745,6 +770,33 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
     }
 }
 
+/// Wrapping finished subtrees again (which the parser's recursion budget
+/// does not see) is bounded by the tree-height limit.
+#[test]
+fn mixed_expression_depth_is_bounded() {
+    let mut s = "a".to_string();
+    for _ in 0..30 {
+        s = format!("({s}){}", ".b".repeat(100));
+    }
+    let e = err(&format!("x = {s};"));
+    assert_eq!(e.kind, SyntaxErrorKind::TooDeep, "{e}");
+
+    // Statements, functions and expressions all count toward the height.
+    let mut s = "1".to_string();
+    for _ in 0..100 {
+        s = format!("(function () {{ return {s}; }})()");
+    }
+    let e = err(&format!("x = {s};"));
+    assert_eq!(e.kind, SyntaxErrorKind::TooDeep, "{e}");
+
+    let script = parse_script("x = 1 + 2 * 3;").unwrap();
+    // Number, `*`, `+`, `=`, statement.
+    assert_eq!(script.body[0].height, 5);
+    let script = parse_script("function f() { if (a) { return; } }").unwrap();
+    // return, block, if, function, statement.
+    assert_eq!(script.body[0].height, 5);
+}
+
 /// For each nesting construct, the deepest accepted input parses within a
 /// 2 MiB stack (Rust's default for spawned threads) in this build profile.
 /// A stack overflow here aborts the test binary, failing the run.
@@ -779,6 +831,13 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("mixed", |n| {
             format!("x = {}1{};", "a + -(".repeat(n), ")".repeat(n))
+        }),
+        ("wrapped member chains", |n| {
+            let mut s = "a".to_string();
+            for _ in 0..n {
+                s = format!("({s}).b.b.b.b.b");
+            }
+            format!("x = {s};")
         }),
     ];
     std::thread::Builder::new()

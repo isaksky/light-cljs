@@ -132,7 +132,7 @@ Every form below is rejected where it starts. Error kinds:
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | `return` outside a function, `const` without initializer, duplicate parameter, declaration as an `if`/`while` body, invalid assignment target (`1 = 2`) | Invalid |
-| nesting over the `MAX_NESTING` budget (256 units; see "Nesting limit" below) | TooDeep |
+| nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
 
@@ -153,8 +153,11 @@ checks left to later stages:
   inner assignment. So about 64 nested parentheses or calls, 128 nested
   blocks or `else if` links, 64 nested function declarations, 42 nested
   function expressions, or a chain of about 250 binary operators fit. The whole budget fits a 2 MiB thread stack
-  even in a debug build (tested), and the bounded tree depth keeps later
-  recursive passes bounded too.
+  even in a debug build (tested). Separately, the syntax tree itself may be
+  at most 256 nodes high (statements, functions and expressions on any
+  root-to-leaf path, counted by each node's `height`), which also catches
+  finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
+  passes can rely on that bound.
 - **Strings are Unicode scalar values**, not UTF-16 code-unit sequences:
   a lone surrogate escape is rejected, so string length and indexing
   semantics are not yet decided.
