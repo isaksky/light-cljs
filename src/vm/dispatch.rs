@@ -591,6 +591,46 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
     }
 }
 
+// Keep the guard's heap-read temporaries off the dispatch frame: even debug
+// builds run ordinary calls on the 64 KiB worker stacks tested in calls.rs.
+#[inline(never)]
+fn check_direct_eval(state: &VmState, heap: &Heap) -> Result<Flow, Fault> {
+    let [callee] = top_operands(state, 1)? else {
+        return Err(Fault::Internal("missing direct eval candidate"));
+    };
+    let intrinsic = if let Value::Object(id) = callee {
+        heap.read(
+            *id,
+            |object| matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval),
+        )
+        .ok_or(Fault::Internal("direct eval candidate was reclaimed"))?
+    } else {
+        false
+    };
+    if intrinsic {
+        return Err(Fault::Unsupported(
+            "direct eval is not supported; use an indirect call".into(),
+        ));
+    }
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn declare_global(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    index: u16,
+    function: bool,
+) -> Result<Flow, Fault> {
+    let name = name_constant(code, index)?;
+    let Value::Object(id) = global_object(state, heap)? else {
+        return Err(Fault::Internal("missing global object"));
+    };
+    realm::declare_global_with(heap, id, &name, function, state.top().eval)?;
+    Ok(Flow::Next)
+}
+
 /// Compiler-private dense argument array. Read storage directly: iteration
 /// already ran in budgeted bytecode, and prototype getters must not run a
 /// second time. Hand-loaded bytecode is checked for array kind and owner too.
@@ -2132,25 +2172,7 @@ fn step_instruction(
             let this = this_value(state)?;
             state.push(this);
         }
-        Instr::CheckDirectEval => {
-            let [callee] = top_operands(state, 1)? else {
-                return Err(Fault::Internal("missing direct eval candidate"));
-            };
-            let intrinsic = if let Value::Object(id) = callee {
-                heap.read(
-                    *id,
-                    |object| matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval),
-                )
-                .ok_or(Fault::Internal("direct eval candidate was reclaimed"))?
-            } else {
-                false
-            };
-            if intrinsic {
-                return Err(Fault::Unsupported(
-                    "direct eval is not supported; use an indirect call".into(),
-                ));
-            }
-        }
+        Instr::CheckDirectEval => return check_direct_eval(state, heap),
         Instr::GetGlobalObject => {
             let global = global_object(state, heap)?;
             state.push(global);
@@ -2194,16 +2216,13 @@ fn step_instruction(
             native::write_result(state, setter, global, value)?;
         }
         Instr::DeclareGlobalVar(i) | Instr::DeclareGlobalFunction(i) => {
-            let name = name_constant(code, i)?;
-            let Value::Object(id) = global_object(state, heap)? else {
-                return Err(Fault::Internal("missing global object"));
-            };
-            let function = matches!(instr, Instr::DeclareGlobalFunction(_));
-            if state.top().eval {
-                realm::declare_global_with(heap, id, &name, function, true)?;
-            } else {
-                realm::declare_global(heap, id, &name, function)?;
-            }
+            return declare_global(
+                state,
+                code,
+                heap,
+                i,
+                matches!(instr, Instr::DeclareGlobalFunction(_)),
+            );
         }
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use

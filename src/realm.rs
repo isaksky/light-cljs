@@ -629,6 +629,7 @@ pub(crate) fn new_global_object(heap: &Heap, task: crate::ids::TaskId) -> Option
 
 /// GlobalDeclarationInstantiation for a script's object bindings. Lexical
 /// redeclarations are checked by the compiler; there is one script per task.
+#[cfg(test)]
 pub(crate) fn declare_global(
     heap: &Heap,
     id: ObjectId,
