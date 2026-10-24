@@ -1453,6 +1453,29 @@ mod tests {
     }
 
     #[test]
+    fn shared_rope_dags_flatten_cached_descendants() {
+        let units: Vec<u16> = (0..96).map(|i| 0xd7f0 + i).collect();
+        let left = JsString::from_code_units(units[..48].to_vec()).unwrap();
+        let right = JsString::from_code_units(units[48..].to_vec()).unwrap();
+        let rope = left.concat(&right).unwrap();
+        // Retain the same uncached rope twice before caching it, so the
+        // parent traverses cached descendants rather than substituted leaves.
+        let shared = rope.concat(&rope).unwrap();
+        assert!(rope.0.flat.get().is_none());
+        assert_eq!(rope.code_units(), units);
+        let before = JsString::copied_code_units();
+        let expected = [units.as_slice(), units.as_slice()].concat();
+        assert_eq!(shared.code_units(), expected);
+        let after = JsString::copied_code_units();
+        assert_eq!(after - before, shared.len() as u64);
+        assert_eq!(shared.code_units(), expected);
+        assert_eq!(JsString::copied_code_units(), after);
+        drop(shared);
+        assert_eq!(rope.code_units(), units);
+        assert_eq!(JsString::copied_code_units(), after);
+    }
+
+    #[test]
     fn concurrent_rope_readers_share_one_flat_cache() {
         use std::sync::mpsc;
         use std::time::Duration;
