@@ -386,6 +386,19 @@ fn explicit_stacks_and_shared_work_limit() {
 }
 
 #[test]
+fn class_member_checks_share_work_limit() {
+    // Synthetic fixture, not light-cljs output. Instruction work fits the
+    // allowance; scanning past 1,000 nonmatching members for each input unit
+    // exceeds it. Anchoring prevents search work from masking a missing charge.
+    let pattern = format!("^[{}a]{{1000}}$", "b".repeat(1000));
+    let compiled = program(&pattern, "").unwrap();
+    assert_eq!(
+        exec(&compiled, &vec![97; 1000], 0),
+        Err(MatchError::LimitExceeded)
+    );
+}
+
+#[test]
 fn backreference_comparisons_share_work_limit() {
     // Setup and instruction work fit the allowance; the million code-unit
     // comparisons must consume it. Anchoring prevents a costly search from
