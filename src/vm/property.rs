@@ -1495,6 +1495,25 @@ pub(crate) fn get_own_property(
     .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
 }
 
+/// Observe the current own enumerable flag without creating a virtual
+/// function prototype or property record. No callback or allocation.
+pub(crate) fn own_enumerable(
+    heap: &Heap,
+    task: TaskId,
+    source: &Value,
+    key: &Key,
+) -> Result<bool, Fault> {
+    let own = match source {
+        Value::Object(id) if is_function(heap, *id) => {
+            return function::own_enumerable(heap, task, *id, key);
+        }
+        Value::Object(id) => get_own_property(heap, task, *id, key)?,
+        Value::String(s) => string_own_property(s, key),
+        _ => None,
+    };
+    Ok(own.is_some_and(|p| p.flags.enumerable))
+}
+
 /// True for a function object, whose properties live in a separate record
 /// (`crate::vm::function`).
 fn is_function(heap: &Heap, id: ObjectId) -> bool {

@@ -6585,7 +6585,8 @@ one-instruction budgets, collection, waits and thread migration.
 ## Object patterns (clj-quickjs-132)
 
 The shared Pattern AST includes ordered property-name/pattern pairs and optional
-rest. PropertyName adds a computed expression. Object assignment cover grammar
+rest. PropertyName adds a computed expression and opening-bracket span for
+conversion/read diagnostics. Object assignment cover grammar
 converts literals recursively through the same pattern conversion as arrays.
 Cover-only shorthand defaults, computed names and rest retain deferred syntax
 errors until consumed as patterns; unconsumed forms still fail parsing. Rest
@@ -6601,6 +6602,8 @@ PutElem timing. Four appended instructions supply callback-free steps:
 RequireCoercible rejects null/undefined; OwnKeys snapshots all own keys into a
 private array, including symbols; IsEnumerable checks the current own descriptor;
 DefineElem creates an own data property on the new ordinary rest object. The
+enumerability query reads virtual function flags without materializing a lazy
+prototype or changing publication eligibility. The
 copy loop uses GetElem between descriptor checks and definitions, so getters
 can suspend, mutate later properties, throw, or trigger GC without retaining a
 Rust stack. OwnKeys is an allocation poll point; the other new instructions

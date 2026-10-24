@@ -15,6 +15,66 @@ use clj_quickjs::{
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn object_destructuring_function_rest_preserves_publication() {
+    for source in [
+        "function f() {} f;",
+        "function f() {} let {...r} = f; if (Object.keys(r).length !== 0) throw 1; f;",
+        "function target() {} target.bind(null);",
+        "function target() {} let f = target.bind(null); let {...r} = f; if (Object.keys(r).length !== 0) throw 1; f;",
+    ] {
+        let rt = Runtime::new();
+        let RunOutcome::Complete(f) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        rt.publish(&f)
+            .expect("rest must not materialize virtual function properties");
+        rt.collect().unwrap();
+        let copy =
+            compile_function("function copy(f) { let {...r} = f; return Object.keys(r).length; }")
+                .unwrap();
+        let RunOutcome::Complete(result) = rt.spawn(&copy, &[&f]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert_eq!(result.view(), ValueView::Number(0.0));
+    }
+    assert_eq!(
+        eval(
+            "function f() {} f.a = 7; Object.defineProperty(f, 'name', {enumerable: true}); let {...r} = f; r.a === 7 && r.name === 'f'"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixture. Compile and initialize the shared realm outside the
+/// small worker; execute the complete object pattern inside it.
+#[test]
+fn object_destructuring_on_small_worker_stack() {
+    let rt = Runtime::new();
+    assert!(matches!(
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    let task = rt
+        .spawn(
+            &exe("let {a = 1, ...r} = {a: undefined, b: 2}; a + r.b"),
+            &[],
+        )
+        .unwrap();
+    let result = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let RunOutcome::Complete(value) = task.run().unwrap() else {
+                panic!()
+            };
+            value.view()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(result, ValueView::Number(3.0));
+}
+
+#[test]
 fn object_destructuring() {
     for source in [
         "let {a, b: c, d = 4, ...r} = {a: 1, b: 2, e: 5}; a === 1 && c === 2 && d === 4 && r.e === 5 && !('a' in r)",
@@ -8005,6 +8065,21 @@ fn unknown_names_fail_with_reference_errors_at_their_position() {
 /// SOFTWARE.
 #[test]
 fn runtime_error_positions_follow_operator_tokens() {
+    for source in [
+        "let {[Object.create(null)]: a} = {};",
+        "let a; ({[Object.create(null)]: a} = {});",
+    ] {
+        let (kind, _, line, column) = failure_at(source);
+        assert_eq!(
+            (kind, line, column),
+            (
+                VmErrorKind::TypeError,
+                1,
+                source.find('[').unwrap() as u32 + 1
+            ),
+            "{source}"
+        );
+    }
     // Binary operators: at the operator, not the start of the expression.
     let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  1 + 2 * f;");
     assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 9));

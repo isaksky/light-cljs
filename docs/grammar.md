@@ -1351,6 +1351,9 @@ Execution first rejects null and undefined with TypeError, including empty
 patterns; other primitives use ordinary property reads (Number has no own
 `length`, so `let {length} = 1` binds undefined). Each computed source key is
 converted once before preparing its assignment target and performing Get.
+Computed-key conversion/read errors use the opening bracket's source position.
+Escaped reserved words are valid property names with `:`, but cannot be
+shorthand binding or assignment names.
 Assignment target computed keys follow the array-pattern timing: expression
 evaluation precedes Get/defaults, conversion occurs at PutElem. Getters,
 conversions, defaults and setters remain resumable. Rest copies remaining own

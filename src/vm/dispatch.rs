@@ -843,59 +843,80 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
 /// Keep object-pattern temporaries out of the general dispatch frame, which
 /// must also run unrelated calls on 64 KiB worker stacks.
 #[inline(never)]
-fn object_pattern_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
+fn object_pattern_step(
+    state: &mut VmState,
+    _code: &Code,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
     match instr {
-        Instr::RequireCoercible => {
-            if matches!(
-                state.operands().last(),
-                Some(Value::Null | Value::Undefined)
-            ) {
-                return Err(Fault::TypeError(
-                    "cannot destructure null or undefined".into(),
-                ));
-            }
-        }
-        Instr::OwnKeys => {
-            let source = state.pop()?;
-            state.push(keys::rest_keys(heap, state.diag.task, &source)?);
-        }
-        Instr::IsEnumerable => {
-            let key = property::to_property_key(&state.pop()?)?;
-            let source = state.pop()?;
-            let own = match source {
-                Value::Object(id) => property::get_own_property(heap, state.diag.task, id, &key)?,
-                Value::String(s) => property::string_own_property(&s, &key),
-                _ => None,
-            };
-            state.push(Value::Bool(own.is_some_and(|p| p.flags.enumerable)));
-        }
-        Instr::DefineElem => {
-            let value = state.pop()?;
-            let key = property::to_property_key(&state.pop()?)?;
-            let object = state.pop()?;
-            let Value::Object(id) = object else {
-                return Err(Fault::Internal("define_elem needs an object"));
-            };
-            // Compiler-private rest destination. Restrict this like DefineField:
-            // defining on a function could allocate a metadata property record.
-            if !heap
-                .read(id, |o| matches!(o, HeapObject::Plain(_)))
-                .unwrap_or(false)
-            {
-                return Err(Fault::Internal("define_elem needs an ordinary object"));
-            }
-            let desc = crate::object::PropertyDescriptor {
-                value: Some(value),
-                writable: Some(true),
-                enumerable: Some(true),
-                configurable: Some(true),
-                ..Default::default()
-            };
-            property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
-            state.push(object);
-        }
-        _ => return Err(Fault::Internal("invalid object pattern instruction")),
+        Instr::RequireCoercible => require_coercible_step(state, heap),
+        Instr::OwnKeys => own_keys_step(state, heap),
+        Instr::IsEnumerable => is_enumerable_step(state, heap),
+        Instr::DefineElem => define_element_step(state, heap),
+        _ => Err(Fault::Internal("invalid object pattern instruction")),
     }
+}
+
+#[inline(never)]
+fn require_coercible_step(state: &mut VmState, _heap: &Heap) -> Result<Flow, Fault> {
+    if matches!(
+        state.operands().last(),
+        Some(Value::Null | Value::Undefined)
+    ) {
+        return Err(Fault::TypeError(
+            "cannot destructure null or undefined".into(),
+        ));
+    }
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn own_keys_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+    let source = state.pop()?;
+    state.push(keys::rest_keys(heap, state.diag.task, &source)?);
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn is_enumerable_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+    let key = property::to_property_key(&state.pop()?)?;
+    let source = state.pop()?;
+    state.push(Value::Bool(property::own_enumerable(
+        heap,
+        state.diag.task,
+        &source,
+        &key,
+    )?));
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn define_element_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+    let value = state.pop()?;
+    let key = property::to_property_key(&state.pop()?)?;
+    let object = state.pop()?;
+    let Value::Object(id) = object else {
+        return Err(Fault::Internal("define_elem needs an object"));
+    };
+    // Compiler-private rest destination. Restrict this like DefineField:
+    // defining on a function could allocate a metadata property record.
+    if !heap
+        .read(id, |o| matches!(o, HeapObject::Plain(_)))
+        .unwrap_or(false)
+    {
+        return Err(Fault::Internal("define_elem needs an ordinary object"));
+    }
+    let desc = crate::object::PropertyDescriptor {
+        value: Some(value),
+        writable: Some(true),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
+    state.push(object);
     Ok(Flow::Next)
 }
 
@@ -1628,7 +1649,7 @@ pub(crate) fn step(
             require_iterator_object(state)?;
         }
         Instr::RequireCoercible | Instr::OwnKeys | Instr::IsEnumerable | Instr::DefineElem => {
-            return object_pattern_step(state, heap, instr);
+            return object_pattern_step(state, code, heap, host, instr);
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
@@ -2176,7 +2197,26 @@ pub(crate) fn execute_budgeted(
                 let result = match instr {
                     Some(instr) => {
                         state.top_mut().pc = pc + 1;
-                        step(state, &code, heap, host, instr)
+                        // Route pattern leaves without the general dispatch frame
+                        // beneath enumeration and descriptor lookup.
+                        let execute: fn(
+                            &mut VmState,
+                            &Code,
+                            &Heap,
+                            &mut dyn Host,
+                            Instr,
+                        ) -> Result<Flow, Fault> = if matches!(
+                            instr,
+                            Instr::RequireCoercible
+                                | Instr::OwnKeys
+                                | Instr::IsEnumerable
+                                | Instr::DefineElem
+                        ) {
+                            object_pattern_step
+                        } else {
+                            step
+                        };
+                        execute(state, &code, heap, host, instr)
                     }
                     None => Err(Fault::Internal("instruction position out of range")),
                 };

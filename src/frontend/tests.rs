@@ -146,7 +146,7 @@ fn render_expr(e: &Expr) -> String {
                     PropertyName::Identifier(name) => name.clone(),
                     PropertyName::String(s) => format!("{s:?}"),
                     PropertyName::Number(n) => format!("{n}"),
-                    PropertyName::Computed(e) => format!("[{}]", render_expr(e)),
+                    PropertyName::Computed(e, _) => format!("[{}]", render_expr(e)),
                 };
                 if p.shorthand {
                     out.push_str(&format!(" (shorthand {name} {})", render_expr(&p.value)));
@@ -265,7 +265,7 @@ fn render_pattern(p: &Pattern) -> String {
                         PropertyName::Identifier(n) => n.clone(),
                         PropertyName::String(s) => format!("{s:?}"),
                         PropertyName::Number(n) => format!("{n}"),
-                        PropertyName::Computed(e) => format!("[{}]", render_expr(e)),
+                        PropertyName::Computed(e, _) => format!("[{}]", render_expr(e)),
                     };
                     format!("({key} {})", render_pattern(p))
                 })
@@ -325,6 +325,20 @@ fn object_patterns() {
         "({a: {b = 2}})",
     ] {
         assert!(parse_script(source).is_err(), "{source}");
+    }
+    for source in [
+        r"let {\u0069f} = {};",
+        r"function f({\u0069f}) {}",
+        r"({\u0069f = 1} = {});",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::ReservedWord,
+            "{source}"
+        );
+    }
+    for source in [r"let {\u0069f: a} = {};", r"({\u0069f: a} = {});"] {
+        parse_script(source).unwrap();
     }
 }
 

@@ -394,6 +394,29 @@ pub(crate) fn own_metadata(
     Ok(property)
 }
 
+/// Flags-only observation: virtual metadata and a constructor's lazy
+/// prototype are non-enumerable. Do not materialize their values, which
+/// would attach task-owned state and prevent publication.
+pub(crate) fn own_enumerable(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    key: &Key,
+) -> Result<bool, Fault> {
+    let info = info(heap, function)?;
+    if !info.shared && info.owner != task {
+        return Err(Fault::ForeignObject {
+            owner: Some(info.owner),
+            caller: task,
+        });
+    }
+    match info.record.or(info.defaults) {
+        Some(record) => Ok(super::property::get_own_property(heap, task, record, key)?
+            .is_some_and(|p| p.flags.enumerable)),
+        None => Ok(false),
+    }
+}
+
 fn initial_metadata(
     heap: &Heap,
     task: TaskId,

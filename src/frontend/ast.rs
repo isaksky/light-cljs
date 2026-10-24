@@ -795,14 +795,14 @@ pub enum PropertyName {
     String(crate::value::JsString),
     /// A numeric literal's value; the key is its ToString (`1.0` is `"1"`).
     Number(f64),
-    /// Computed key in an object pattern. Literal execution is deferred.
-    Computed(Box<Expr>),
+    /// Computed key and opening-bracket span in an object pattern. Literal execution is deferred.
+    Computed(Box<Expr>, Span),
 }
 
 impl PropertyName {
     pub(crate) fn height(&self) -> usize {
         match self {
-            Self::Computed(e) => e.height,
+            Self::Computed(e, _) => e.height,
             _ => 0,
         }
     }
@@ -811,7 +811,7 @@ impl PropertyName {
         match self {
             PropertyName::Identifier(n) => n == "__proto__",
             PropertyName::String(s) => *s == "__proto__",
-            PropertyName::Number(_) | PropertyName::Computed(_) => false,
+            PropertyName::Number(_) | PropertyName::Computed(_, _) => false,
         }
     }
 }

@@ -1383,6 +1383,7 @@ impl<'a> Parser<'a> {
             .peek_next()
             .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Colon))
         {
+            self.check_pattern_shorthand()?;
             let ident = self.parse_binding_identifier(what)?;
             return Ok((
                 PropertyName::Identifier(ident.name.clone()),
@@ -1394,8 +1395,22 @@ impl<'a> Parser<'a> {
         Ok((name, self.parse_binding_pattern(what)?))
     }
 
+    fn check_pattern_shorthand(&self) -> PResult<()> {
+        if let TokenKind::Identifier(name) = &self.tok.kind
+            && Keyword::from_text(name).is_some()
+        {
+            return Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                self.tok.span,
+                "a reserved word cannot be a shorthand pattern name",
+            ));
+        }
+        Ok(())
+    }
+
     #[inline(never)]
     fn parse_pattern_key(&mut self) -> PResult<PropertyName> {
+        let op_span = self.tok.span;
         if self.eat_punct(Punct::LBracket)? {
             // A computed pattern key adds a recursive expression path through
             // cover conversion beyond an ordinary object property's value.
@@ -1404,7 +1419,7 @@ impl<'a> Parser<'a> {
             let key = self.parse_assignment()?;
             self.expect_punct(Punct::RBracket)?;
             self.depth = saved;
-            return Ok(PropertyName::Computed(Box::new(key)));
+            return Ok(PropertyName::Computed(Box::new(key), op_span));
         }
         let name = match &self.tok.kind {
             TokenKind::Identifier(n) => PropertyName::Identifier(n.clone()),
@@ -2356,6 +2371,7 @@ impl<'a> Parser<'a> {
                     shorthand: false,
                 }));
             }
+            self.check_pattern_shorthand()?;
             let value = self.parse_assignment()?;
             let ExprKind::Assign { target, .. } = &value.kind else {
                 return Err(self.unexpected("a shorthand assignment"));

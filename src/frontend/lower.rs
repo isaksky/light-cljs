@@ -2050,10 +2050,14 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::SetLocal, source, span);
         let mut excluded = Vec::new();
         for (name, target) in properties {
+            let key_span = match name {
+                PropertyName::Computed(_, op_span) => *op_span,
+                _ => span,
+            };
             let key = self.temp(span)?;
             self.out().op_u16(Opcode::GetLocal, source, span);
             match name {
-                PropertyName::Computed(e) => self.expr(e)?,
+                PropertyName::Computed(e, _) => self.expr(e)?,
                 PropertyName::Identifier(n) => {
                     self.constant(Primitive::String(JsString::from(n.as_str())), span)?
                 }
@@ -2063,13 +2067,13 @@ impl<'s> Lowerer<'s> {
                     span,
                 )?,
             }
-            self.out().op(Opcode::ToPropertyKey, span);
+            self.out().op(Opcode::ToPropertyKey, key_span);
             self.out().op_u16(Opcode::SetLocal, key, span);
             self.out().op(Opcode::Pop, span);
             let prepared = self.pattern_reference(target)?;
             self.out().op_u16(Opcode::GetLocal, source, span);
             self.out().op_u16(Opcode::GetLocal, key, span);
-            self.out().op(Opcode::GetElem, span);
+            self.out().op(Opcode::GetElem, key_span);
             self.pattern_store(target, initialize, prepared)?;
             excluded.push(key);
         }
@@ -3481,7 +3485,7 @@ impl<'s> Lowerer<'s> {
                     PropertyName::Identifier(n) => JsString::from(n.as_str()),
                     PropertyName::String(n) => n.clone(),
                     PropertyName::Number(n) => JsString::from(number_to_string(*n).as_str()),
-                    PropertyName::Computed(_) => {
+                    PropertyName::Computed(_, _) => {
                         return Err(self.internal(span, "unconverted object cover"));
                     }
                 };
@@ -3519,7 +3523,7 @@ impl<'s> Lowerer<'s> {
                 PropertyName::Number(n) => {
                     self.name_index(&number_to_string(*n), property.name_span)?
                 }
-                PropertyName::Computed(_) => {
+                PropertyName::Computed(_, _) => {
                     return Err(self.internal(span, "unconverted object cover"));
                 }
             };
