@@ -3873,3 +3873,23 @@ Deferred to clj-quickjs-224: language names and dialect display; constructing
 `type: 'language'` processes `languageDisplay`, but `of` throws an explicit
 TypeError. The symbol tag is readable directly; generic
 `Object.prototype.toString` tag consumption retains its existing explicit gap.
+
+### Intl.DurationFormat (clj-quickjs-225)
+
+Supported: `new Intl.DurationFormat`, `format`, `formatToParts`,
+`resolvedOptions`, `supportedLocalesOf` and the Intl.DurationFormat tag.
+Long/short/narrow unit text uses pinned QuickJS patterns and unit list joins;
+digital output supports hours:minutes:seconds, zero displays, numbering systems
+and 0–9 fractional digits, combining subseconds exactly and truncating.
+Duration objects use budgeted numeric coercions and resumable getters, reject
+fractional/nonfinite fields and mixed signs, and retain task ownership.
+
+Deferred: ISO duration strings/Temporal private slots and complete CLDR unit
+coverage. Missing patterns reproduce QuickJS's literal unit-identifier fallback.
+NumberFormat style `unit` remains a RangeError, although its pattern data is
+now available for a future implementation.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_duration_format -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --lib value::string::tests::string_to_number_budgeted -- --test-threads=3
+```

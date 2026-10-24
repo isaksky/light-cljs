@@ -875,6 +875,7 @@ fn construct_target(
             | Builtin::IntlPluralRules
             | Builtin::IntlRelativeTimeFormat
             | Builtin::IntlDisplayNames
+            | Builtin::IntlDurationFormat
             | Builtin::IntlCollator
             | Builtin::IntlDateTimeFormat
             | Builtin::IntlListFormat

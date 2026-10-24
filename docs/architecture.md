@@ -7800,3 +7800,33 @@ validation failure has no pending rope tree. SupportedLocalesOf applies
 ToObject-equivalent property reads to non-null primitive options, separately
 from the strict constructor options rule. Callback failure tests preserve
 thrown identities and dependency-failure causes after waits and GC.
+
+### Intl.DurationFormat (clj-quickjs-225)
+
+DurationFormat stores immutable NumberFormat configuration, ten unit styles,
+ten display flags and optional fractional precision in ordinary task-owned
+slots with no heap edges. Append-only builtin/realm additions install its
+constructor and prototype. Publication remains task-owned even after freezing.
+The native continuation traces locale-reader state, options and the source
+record; option getters and numeric ToPrimitive calls run through VM frames.
+The source is read alphabetically once. Numeric strings use StringToNumber's
+budgeted flatten/trim/grammar-validation stages and the bounded NumberParse
+accumulator, so neither rope flattening nor long digit scans block a step.
+
+After validation, at most ten bounded components use NumberFormat's decimal
+parts, PluralRules and the shared unit ListFormat separators. Integral
+binary64 subseconds convert to exact u128 magnitudes before combining;
+range validation bounds total time below 2^53 seconds, and all intermediate
+nanosecond sums fit u128. Fractional formatting passes an exact decimal string
+to the number core with truncation, avoiding binary-float rounding and carries.
+Parts preserve unit metadata; list/clock separators are separate literals.
+
+The existing quickjs-data exporter now imports all 28 eight-field nullable
+UnitPatternEntry rows from pinned intl/numberformat.c. The Intl repacker writes
+units.rs and unit_provenance.txt; complete C/Rust value comparison, repeated
+repacking, semantic edge cases, deliberate corruption and input hashes verify
+these tables. Missing patterns retain the snapshot's unit identifier fallback,
+including French and subsecond spellings. Data for NumberFormat unit style is
+now present, but its constructor/options/compound-unit behavior remain a gap;
+this pellet enables only the duration consumer. Locale coverage and the host
+default-locale leaf remain the shared Intl policy.

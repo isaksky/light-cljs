@@ -1183,6 +1183,122 @@ fn is_str_decimal_literal(t: &[u8]) -> bool {
     t.iter().all(|&c| prefix.push(u16::from(c))) && prefix.complete()
 }
 
+/// Strict, budgeted StringToNumber for native callers. Flatten, trim and
+/// validate the entire token before reusing the bounded numeric accumulator.
+/// Unlike parseFloat/parseInt, trailing garbage and incomplete exponents fail.
+#[derive(Debug)]
+pub(crate) struct StringToNumber {
+    flatten: Option<StringFlatten>,
+    text: Option<JsString>,
+    next: usize,
+    start: usize,
+    end: usize,
+    validating: bool,
+    grammar: DecimalPrefix,
+    radix: Option<u32>,
+    parser: Option<NumberParse>,
+}
+
+impl StringToNumber {
+    pub(crate) fn new(text: JsString) -> Option<Self> {
+        Some(Self {
+            flatten: Some(StringFlatten::new(text)?),
+            text: None,
+            next: 0,
+            start: usize::MAX,
+            end: 0,
+            validating: false,
+            grammar: DecimalPrefix::default(),
+            radix: None,
+            parser: None,
+        })
+    }
+
+    pub(crate) fn advance(&mut self, budget: usize) -> Option<f64> {
+        if let Some(flatten) = &mut self.flatten {
+            self.text = Some(flatten.advance(budget)?);
+            self.flatten = None;
+            return None;
+        }
+        if let Some(parser) = &mut self.parser {
+            return parser.advance(budget);
+        }
+        let text = self.text.as_ref().unwrap();
+        let units = text.code_units(); // Incrementally flattened above.
+        if !self.validating {
+            for _ in 0..budget {
+                if self.next == units.len() {
+                    if self.start == usize::MAX {
+                        return Some(0.0);
+                    }
+                    let token = &units[self.start..self.end];
+                    if token.iter().take(10).copied().eq("Infinity".encode_utf16())
+                        || token
+                            .iter()
+                            .take(10)
+                            .copied()
+                            .eq("+Infinity".encode_utf16())
+                    {
+                        return Some(f64::INFINITY);
+                    }
+                    if token
+                        .iter()
+                        .take(10)
+                        .copied()
+                        .eq("-Infinity".encode_utf16())
+                    {
+                        return Some(f64::NEG_INFINITY);
+                    }
+                    self.radix = match token {
+                        [48, 88 | 120, ..] => Some(16),
+                        [48, 79 | 111, ..] => Some(8),
+                        [48, 66 | 98, ..] => Some(2),
+                        _ => None,
+                    };
+                    self.start += if self.radix.is_some() { 2 } else { 0 };
+                    if self.start == self.end {
+                        return Some(f64::NAN);
+                    }
+                    self.next = self.start;
+                    self.validating = true;
+                    return None;
+                }
+                if !is_str_white_space(units[self.next]) {
+                    self.start = self.start.min(self.next);
+                    self.end = self.next + 1;
+                }
+                self.next += 1;
+            }
+        } else {
+            for _ in 0..budget {
+                if self.next == self.end {
+                    if self.radix.is_none() && !self.grammar.complete() {
+                        return Some(f64::NAN);
+                    }
+                    self.parser = Some(NumberParse::range(
+                        text.clone(),
+                        self.radix,
+                        self.start,
+                        self.end,
+                    ));
+                    return None;
+                }
+                let c = units[self.next];
+                let valid = if let Some(radix) = self.radix {
+                    char::from_u32(u32::from(c)).is_some_and(|c| c.is_digit(radix))
+                } else {
+                    self.grammar.push(c)
+                };
+                if !valid {
+                    return Some(f64::NAN);
+                }
+                self.next += 1;
+            }
+        }
+        None
+    }
+}
+
 /// The shared StrDecimalLiteral prefix grammar (Infinity is handled by
 /// callers). State 3 is a point with no digit yet; 5/6 are an incomplete
 /// exponent, which parseFloat discards but StringToNumber rejects.
@@ -1462,6 +1578,71 @@ fn round_integer(mant: u64, dropped: u64, sticky: bool) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn string_to_number_budgeted() {
+        for text in [
+            "",
+            " \u{feff}",
+            "1",
+            "-0",
+            "+1.5",
+            ".5",
+            "5.",
+            "1e3",
+            "1e-3",
+            "1e+",
+            "1e",
+            "1.2.3",
+            "1_000",
+            "0x10",
+            "0Xff",
+            "0b101",
+            "0o77",
+            "0b2",
+            "0x",
+            "-0x1",
+            "1n",
+            "Infinity",
+            "+Infinity",
+            "-Infinity",
+            "Infinityx",
+            " 1 2 ",
+            "１２",
+            "\u{a0}30\u{202f}",
+        ] {
+            let rope = JsString::from(" ")
+                .concat(&JsString::from(text))
+                .unwrap()
+                .concat(&JsString::from(" "))
+                .unwrap();
+            let expected = super::string_to_number(&rope);
+            let mut scan = super::StringToNumber::new(rope).unwrap();
+            let actual = (0..1000)
+                .find_map(|_| scan.advance(1))
+                .expect("bounded scan finishes");
+            assert!(
+                actual.to_bits() == expected.to_bits() || actual.is_nan() && expected.is_nan(),
+                "{text:?}: {actual} vs {expected}"
+            );
+        }
+        for text in [
+            format!("{}1", "0".repeat(20_000)),
+            format!("1.{}1", "0".repeat(20_000)),
+            format!("0x{}f", "0".repeat(20_000)),
+            format!("1e{}1", "0".repeat(20_000)),
+            format!("1{}x", "0".repeat(20_000)),
+        ] {
+            let text = JsString::from(text.as_str());
+            let expected = super::string_to_number(&text);
+            let mut scan = super::StringToNumber::new(text).unwrap();
+            assert!(scan.advance(256).is_none());
+            let actual = (0..1000)
+                .find_map(|_| scan.advance(256))
+                .expect("large scan finishes");
+            assert!(actual.to_bits() == expected.to_bits() || actual.is_nan() && expected.is_nan());
+        }
+    }
+
     #[test]
     fn appending_after_index_reads_releases_cached_prefixes() {
         fn reachable_units(text: &JsString) -> usize {

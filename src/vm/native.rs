@@ -224,6 +224,7 @@ mod array_sort;
 mod collator;
 mod date_time_format;
 mod display_names;
+mod duration_format;
 mod eval;
 mod intl_service;
 mod list_format;
@@ -615,6 +616,7 @@ enum NativeState {
     ListFormat(Box<list_format::State>),
     Segmenter(Box<segmenter::State>),
     DisplayNames(Box<display_names::State>),
+    DurationFormat(Box<duration_format::State>),
 }
 
 #[derive(Debug)]
@@ -875,6 +877,7 @@ impl Trace for NativeFrame {
             NativeState::PluralRules(rules) => rules.trace(visit),
             NativeState::RelativeTimeFormat(format) => format.trace(visit),
             NativeState::DisplayNames(names) => names.trace(visit),
+            NativeState::DurationFormat(format) => format.trace(visit),
             NativeState::Collator(collator) => collator.trace(visit),
             NativeState::DateTimeFormat(format) => format.trace(visit),
             NativeState::ListFormat(format) => format.trace(visit),
@@ -1437,6 +1440,20 @@ fn start_builtin_slow(
         let native = display_names::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::DisplayNames(Box::new(native)))?;
+        return Ok(true);
+    }
+    if (which == Builtin::IntlDurationFormat && construct)
+        || (!construct
+            && matches!(
+                which,
+                Builtin::IntlDurationFormatFormat
+                    | Builtin::IntlDurationFormatToParts
+                    | Builtin::IntlDurationFormatSupportedLocales
+            ))
+    {
+        let native = duration_format::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::DurationFormat(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlRelativeTimeFormat && construct)
@@ -2900,6 +2917,7 @@ impl NativeState {
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),
             NativeState::DisplayNames(names) => names.step(heap, task, input),
+            NativeState::DurationFormat(format) => format.step(heap, task, input),
             NativeState::Collator(collator) => collator.step(heap, task, input),
             NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
             NativeState::ListFormat(format) => format.step(heap, task, input),
@@ -4095,6 +4113,7 @@ impl NativeState {
                 | NativeState::PluralRules(_)
                 | NativeState::RelativeTimeFormat(_)
                 | NativeState::DisplayNames(_)
+                | NativeState::DurationFormat(_)
                 | NativeState::Collator(_)
                 | NativeState::DateTimeFormat(_)
                 | NativeState::ListFormat(_)

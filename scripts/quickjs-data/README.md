@@ -361,3 +361,27 @@ Word_Break dataset and does not claim full UAX #29 coverage. Runtime rule limits
 and regional-indicator pairing corrections are documented in architecture.
 Consumer checks: `cargo test --lib intl::segmenter::` and
 `cargo test --test js_source intl_segmenter -- --test-threads=3`.
+
+### Duration unit patterns (clj-quickjs-225)
+
+The pinned additional input `intl/numberformat.c` supplies 28 UnitPatternEntry
+rows. The exporter reads only their eight literal string/NULL fields and lets
+C evaluate the original escapes. The complete wire comparison verifies every
+byte; `edge_cases.rs` pins British minute plurals, German hour abbreviations,
+nullable singulars and CJK strings. `verify.sh` also repeats the Intl repack,
+compares its unit array with the original exported values and detects a
+corrupted British plural. Normal builds read only immutable Rust values.
+
+Regenerate in a worktree (output directory must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/duration-import-new
+cp target/duration-import-new/intl-first/units.rs src/intl/data/units.rs
+cp target/duration-import-new/intl-first/provenance.txt src/intl/data/unit_provenance.txt
+```
+
+NumberFormat's unit-pattern data is available; its unit-style options and
+formatting entry point remain explicitly unsupported. DurationFormat consumes
+the shared decimal core plus these patterns, preserving QuickJS's fallback to
+literal unit identifiers where a locale/unit has no row.

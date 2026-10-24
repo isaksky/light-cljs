@@ -149,3 +149,25 @@ if perl "$script_dir/repack-lists.pl" "$output_dir/first" "$output_dir/drift" "$
 fi
 test ! -e "$output_dir/lists-drift-result/export.c"
 echo 'PASS: list separators, repeatability, corruption detection and input pinning'
+
+# Unit data passes through the same complete C/Rust wire comparison above.
+# Verify the split representation, repeatability and a targeted corruption.
+perl "$script_dir/repack-intl.pl" "$output_dir/first" "$output_dir/intl-first"
+perl "$script_dir/repack-intl.pl" "$output_dir/second" "$output_dir/intl-second"
+for file in "$output_dir/intl-first/"*; do
+    cmp "$file" "$output_dir/intl-second/${file##*/}"
+done
+cmp <(sed -n '/^pub static nf_unit_patterns:/,$p' "$output_dir/intl-first/units.rs" | tr -d ' \n') \
+    <(sed -n '/^pub static nf_unit_patterns:/,/^];/p' "$output_dir/first/tables.rs" | tr -d ' \n')
+mkdir "$output_dir/unit-corrupt"
+cp "$output_dir/first/verify.rs" "$output_dir/unit-corrupt/"
+sed 's/{number} mins/{number} minx/' "$output_dir/first/tables.rs" > "$output_dir/unit-corrupt/tables.rs"
+if cmp -s "$output_dir/first/tables.rs" "$output_dir/unit-corrupt/tables.rs"; then
+    echo 'unit mutation did not apply' >&2; exit 1
+fi
+rustc --edition=2021 "$output_dir/unit-corrupt/verify.rs" -o "$output_dir/unit-corrupt/verify"
+"$output_dir/unit-corrupt/verify" > "$output_dir/unit-corrupt/rust-values.bin"
+if cmp -s "$output_dir/first/c-values.bin" "$output_dir/unit-corrupt/rust-values.bin"; then
+    echo 'incorrect unit pattern escaped comparison' >&2; exit 1
+fi
+echo 'PASS: Intl repack repeatability, unit preservation and corruption detection'

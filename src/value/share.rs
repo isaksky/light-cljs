@@ -22,7 +22,7 @@
 //! Ordinary objects (`crate::object`, clj-quickjs-114) are the mutable JavaScript
 //! objects of `design.md` §4: task-owned mutation, never shareable, whatever
 //! their properties hold (an object literal is rejected like a builder).
-//! This includes Intl.ListFormat, Intl.Segmenter, Segments and Segment Iterator instances: their internal options have no
+//! This includes Intl.ListFormat, Intl.DurationFormat, Intl.Segmenter, Segments and Segment Iterator instances: their internal options have no
 //! heap edges, but freezing public properties never makes them shareable.
 //! The same applies to ArrayBuffer objects, including detached buffers: their
 //! mutable backing stores and ordinary properties are task-owned. Typed-array
@@ -211,7 +211,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Generator(_) | HeapObject::AsyncState(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
-        // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules, Intl.Collator, Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.DisplayNames, Intl.Segmenter, Segments, Segment Iterators and
+        // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules, Intl.Collator, Intl.DateTimeFormat, Intl.RelativeTimeFormat, Intl.DisplayNames, Intl.DurationFormat, Intl.Segmenter, Segments, Segment Iterators and
         // RegExp instances and Number/String/Symbol wrappers have task-owned ordinary properties.
         HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,

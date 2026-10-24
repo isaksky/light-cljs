@@ -5605,3 +5605,30 @@ coercions use ordinary resumable calls; calendar validation is budgeted.
 Explicit gaps: `type: 'language'` can be constructed with dialect/standard
 languageDisplay but its `of` throws a documented TypeError until -224. Generic
 Object.prototype.toString consumption of Symbol.toStringTag remains deferred.
+
+### Execution: Intl.DurationFormat (clj-quickjs-225)
+
+`new Intl.DurationFormat(locales?, options?)` supports long, short (default),
+narrow and digital styles, per-unit styles and auto/always displays, numbering
+systems and fractionalDigits (0–9). Options are read and converted in order;
+format and formatToParts read duration objects alphabetically: days, hours,
+microseconds, milliseconds, minutes, months, nanoseconds, seconds, weeks,
+years. Each defined field undergoes resumable ToNumber and must be finite and
+integral; at least one field must be defined. Mixed signs and out-of-range
+durations throw RangeError. Nonobjects, including ISO duration strings, throw
+TypeError. Calling the constructor without new or a method with the wrong
+receiver also throws TypeError.
+
+Numeric hours/minutes/seconds form colon-separated groups; subseconds combine
+exactly into fractional seconds (or milliseconds/microseconds) and truncate to
+the requested fractionalDigits. Only the first displayed component carries
+the negative sign. Digital defaults display all three clock fields; auto
+suppresses zeros except an intervening minute needed between hour and second.
+Parts include unit metadata on number, unit and unit-affix parts; list and
+clock separators have no unit. resolvedOptions, supportedLocalesOf and the
+Intl.DurationFormat toStringTag are supported.
+
+Explicit gaps: duration strings and Temporal objects' private duration slots
+are unsupported. Unit spellings follow the pinned QuickJS finite table, with
+its literal unit-identifier fallback where patterns are absent; this is not
+complete CLDR coverage. NumberFormat style unit still throws RangeError.

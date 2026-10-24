@@ -120,12 +120,25 @@ for my $name (qw(intl_all_numbering_systems nf_digit_base hanidec_cps)) {
     $decls{$name} = {type => $name eq 'intl_all_numbering_systems' ? 'char*' : 'uint32_t', array => 1, value => $values};
     push @decl_order, $name;
 }
+# Unit patterns are literal rows beside NumberFormat code. Preserve every
+# nullable spelling; C evaluates escapes and Rust verifies all values.
+my $nf = strip_comments(read_file("$root/intl/numberformat.c"));
+$nf =~ /static const UnitPatternEntry unit_patterns\[\]\s*=\s*(\{.*?\n\});/s
+    or die "missing unit patterns\n";
+my $unit_rows = node($1);
+my @unit_values;
+for my $row (@$unit_rows) {
+    die "unit row shape\n" unless ref($row) && @$row == 8;
+    push @unit_values, @$row;
+}
+string_array("nf_unit_patterns", \@unit_values);
+
 # Relative-time data is embedded in the pinned service source. Flatten only its
 # literal tables and literal-return switches; no service implementation is linked.
 my $rtf = strip_comments(read_file("$root/intl/relativetimeformat.c"));
 sub string_array {
     my ($name, $values) = @_;
-    die "nonliteral relative-time data\n" if grep { !/^(?:"(?:\\.|[^"\\])*"|NULL)$/s } @$values;
+    die "nonliteral service data\n" if grep { !/^(?:"(?:\\.|[^"\\])*"|NULL)$/s } @$values;
     push @number_declarations, "static const char *$name\[\] = {" . join(',', @$values) . '};';
     $decls{$name} = {type => 'char*', array => 1, value => $values};
     push @decl_order, $name;

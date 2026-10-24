@@ -90,3 +90,16 @@ fn relative_time_literals_and_auto_switches_survive() {
         assert!(row[32..].iter().all(Option::is_none));
     }
 }
+
+#[test]
+fn duration_unit_patterns_preserve_nullable_forms() {
+    assert_eq!(nf_unit_patterns.len(), 28 * 8);
+    let rows: Vec<_> = nf_unit_patterns.chunks_exact(8).collect();
+    let gb = rows.iter().find(|r| r[0] == Some(&b"en-GB\0"[..]) && r[1] == Some(&b"minute\0"[..])).unwrap();
+    assert_eq!(gb[2], Some(&b"{number} mins\0"[..]));
+    assert_eq!(gb[3], Some(&b"{number} min\0"[..]));
+    let de = rows.iter().find(|r| r[0] == Some(&b"de\0"[..]) && r[1] == Some(&b"hour\0"[..])).unwrap();
+    assert_eq!(de[2], Some(&b"{number} Std.\0"[..]));
+    assert_eq!(de[3], None);
+    assert_eq!(rows.last().unwrap()[6], Some("{number} 秒\0".as_bytes()));
+}

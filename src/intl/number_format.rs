@@ -185,18 +185,30 @@ impl NumberFormat {
     /// Parts of a finite unsigned decimal, sharing the formatter's rounding,
     /// grouping and digit mapping. RelativeTimeFormat adds its unit metadata.
     pub fn unsigned_decimal_parts(&self, n: f64) -> Result<Vec<(&'static str, String)>, Fault> {
-        let Value::String(formatted) = self.format(&Value::Number(n))? else {
+        self.decimal_parts(&Value::Number(n))
+    }
+    /// Decimal parts also accepting an exact bounded decimal string (used by
+    /// DurationFormat to combine subseconds without binary-float rounding).
+    pub fn decimal_parts(&self, value: &Value) -> Result<Vec<(&'static str, String)>, Fault> {
+        let Value::String(formatted) = self.format(value)? else {
             unreachable!()
         };
         let text = formatted.to_string_lossy();
         let decimal = self.data.decimal_separator().unwrap();
         let group = self.data.group_separator().unwrap();
         let digits = map_digits(self.numbering, "0123456789");
+        let minus = table_string(
+            numbers::minusSign_tab,
+            self.data.symbols.minusSign_idx as usize,
+        )
+        .unwrap();
         let mut parts: Vec<(&'static str, String)> = Vec::new();
         let mut rest = text.as_str();
         let mut fraction = false;
         while !rest.is_empty() {
-            let (kind, length) = if !decimal.is_empty() && rest.starts_with(decimal) {
+            let (kind, length) = if !minus.is_empty() && rest.starts_with(minus) {
+                ("minusSign", minus.len())
+            } else if !decimal.is_empty() && rest.starts_with(decimal) {
                 fraction = true;
                 ("decimal", decimal.len())
             } else if !group.is_empty() && rest.starts_with(group) {

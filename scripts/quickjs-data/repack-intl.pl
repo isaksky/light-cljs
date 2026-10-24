@@ -41,6 +41,8 @@ for my $name (@order) {
         next unless $compact{$name}; $module = 'numbers';
     } elsif ($name =~ /^(?:month_|weekday_|era_|ampm_|dayperiod_|date_pattern_|time_pattern_|combined_pattern_)/) {
         $module = 'dates';
+    } elsif ($name =~ /^nf_unit_patterns/) {
+        $module = 'units';
     } elsif ($name =~ /^rtf_/) {
         $module = 'relative_time';
     } elsif ($name =~ /^(?:LocaleData|locale_data_)/) {

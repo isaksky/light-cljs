@@ -430,6 +430,12 @@ pub(crate) enum Builtin {
     IntlDisplayNamesOf,
     IntlDisplayNamesResolvedOptions,
     IntlDisplayNamesSupportedLocales,
+
+    IntlDurationFormat,
+    IntlDurationFormatFormat,
+    IntlDurationFormatToParts,
+    IntlDurationFormatResolvedOptions,
+    IntlDurationFormatSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -493,6 +499,11 @@ impl Builtin {
             Builtin::BigIntPrototypeToString => "toString",
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
+            Builtin::IntlDurationFormat => "DurationFormat",
+            Builtin::IntlDurationFormatFormat => "format",
+            Builtin::IntlDurationFormatToParts => "formatToParts",
+            Builtin::IntlDurationFormatResolvedOptions => "resolvedOptions",
+            Builtin::IntlDurationFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlRelativeTimeFormat => "RelativeTimeFormat",
             Builtin::IntlDisplayNames => "DisplayNames",
             Builtin::IntlDisplayNamesOf => "of",
@@ -734,6 +745,10 @@ impl Builtin {
             | Builtin::IntlListFormatFormatToParts
             | Builtin::IntlListFormatSupportedLocales => 1,
 
+            Builtin::IntlDurationFormat | Builtin::IntlDurationFormatResolvedOptions => 0,
+            Builtin::IntlDurationFormatFormat
+            | Builtin::IntlDurationFormatToParts
+            | Builtin::IntlDurationFormatSupportedLocales => 1,
             Builtin::IntlRelativeTimeFormat | Builtin::IntlRelativeTimeFormatResolvedOptions => 0,
             Builtin::IntlRelativeTimeFormatFormat | Builtin::IntlRelativeTimeFormatToParts => 2,
             Builtin::IntlRelativeTimeFormatSupportedLocales => 1,
@@ -960,6 +975,17 @@ pub(crate) fn call(
         }
         Builtin::IntlDisplayNamesResolvedOptions => {
             crate::intl::display_names::record(heap, task, this)?.resolved(heap, task)
+        }
+        Builtin::IntlDurationFormat => {
+            Err(Fault::TypeError("Intl.DurationFormat requires new".into()))
+        }
+        Builtin::IntlDurationFormatFormat
+        | Builtin::IntlDurationFormatToParts
+        | Builtin::IntlDurationFormatSupportedLocales => Err(Fault::Internal(
+            "DurationFormat requires native continuation",
+        )),
+        Builtin::IntlDurationFormatResolvedOptions => {
+            crate::intl::duration_format::record(heap, task, this)?.resolved(heap, task)
         }
         Builtin::IntlRelativeTimeFormat => Err(Fault::TypeError(
             "Intl.RelativeTimeFormat requires new".into(),

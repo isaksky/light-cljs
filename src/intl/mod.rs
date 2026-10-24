@@ -270,3 +270,5 @@ pub(crate) mod relative_time_format;
 pub(crate) mod segmenter;
 
 pub(crate) mod display_names;
+
+pub(crate) mod duration_format;

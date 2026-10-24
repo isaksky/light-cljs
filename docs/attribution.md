@@ -1216,3 +1216,17 @@ QuickJS MIT notice is retained in that test file. Runtime code is written
 fresh in Rust. Name data reuses `src/intl/data/display_names.rs`, already
 exported and repacked by `scripts/quickjs-data/`; its provenance, QuickJS
 license and `docs/UNICODE-LICENSE` remain applicable and unchanged.
+
+### Intl.DurationFormat (clj-quickjs-225)
+
+DurationFormat semantics were researched in `research/quickjs/intl/durationformat.c`
+and `research/quickjs/temporal/duration.c` at pinned revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), with
+Rust-native continuations and integer subsecond composition. Unit pattern
+literals are imported from `research/quickjs/intl/numberformat.c` through
+`scripts/quickjs-data`; the existing full MIT notice in
+`src/intl/data/QUICKJS-LICENSE` and Unicode notice in `docs/UNICODE-LICENSE`
+apply. Input and converter hashes are retained in unit_provenance.txt.
+The first three assertions in `tests/js_source.rs::intl_duration_format`
+adapt `research/quickjs/tests/test_intl.js::test_durationFormat`;
+the existing QuickJS MIT notice in that test file applies.

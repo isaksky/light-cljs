@@ -330,6 +330,7 @@ pub(crate) struct OrdinaryObject {
     // Immutable Rust strings/static tables only; no additional GC edges.
     intl_service: Option<Box<IntlServiceSlots>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
+    duration_format: Option<Box<crate::intl::duration_format::DurationFormat>>,
 }
 
 impl OrdinaryObject {
@@ -345,6 +346,17 @@ impl OrdinaryObject {
             Some(IntlServiceSlots::DisplayNames(data)) => Some(data),
             _ => None,
         }
+    }
+
+    pub(crate) fn with_duration_format(
+        mut self,
+        data: crate::intl::duration_format::DurationFormat,
+    ) -> Self {
+        self.duration_format = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn duration_format(&self) -> Option<&crate::intl::duration_format::DurationFormat> {
+        self.duration_format.as_deref()
     }
 
     pub(crate) fn with_segmenter(mut self, data: crate::intl::segmenter::Data) -> Self {
@@ -401,6 +413,7 @@ impl OrdinaryObject {
 
             intl_service: None,
             segmenter: None,
+            duration_format: None,
         }
     }
 

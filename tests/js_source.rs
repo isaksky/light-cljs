@@ -25349,3 +25349,233 @@ fn intl_display_names_callback_failures() {
         assert_eq!(waited, 1);
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. The first three cases adapt
+/// QuickJS tests/test_intl.js::test_durationFormat (MIT notice above).
+#[test]
+fn intl_duration_format() {
+    for source in [
+        "new Intl.DurationFormat('en',{style:'short'}).format({hours:1,minutes:30}) === '1 hr, 30 min'",
+        "new Intl.DurationFormat('en-GB',{style:'short'}).format({hours:1,minutes:30}) === '1 hr, 30 mins'",
+        "new Intl.DurationFormat('de',{style:'short'}).format({hours:1,minutes:30}) === '1 Std., 30 Min.'",
+        "new Intl.DurationFormat('en',{style:'long'}).format({hours:1,minutes:30}) === '1 hour, 30 minutes'",
+        "new Intl.DurationFormat('en',{style:'short'}).format({hours:1}) === '1 hr'",
+        "new Intl.DurationFormat('en',{style:'digital'}).format({hours:1,minutes:30}) === '1:30:00'",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:1,minutes:-30});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:1.5});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({});}catch(e){ok=e instanceof TypeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format(5);}catch(e){ok=e instanceof TypeError;}ok",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_duration_format_options_parts_and_validation() {
+    for source in [
+        "new Intl.DurationFormat('en',{style:'narrow'}).format({hours:1,minutes:30}) === '1h 30m'",
+        "new Intl.DurationFormat('en',{hours:'long',minutes:'narrow'}).format({hours:1,minutes:30}) === '1 hour, 30m'",
+        "new Intl.DurationFormat('en').format({seconds:0}) === ''",
+        "new Intl.DurationFormat('en',{hoursDisplay:'always'}).format({seconds:0}) === '0 hr'",
+        "new Intl.DurationFormat('en',{hours:'long'}).format({seconds:0}) === '0 hours'",
+        "new Intl.DurationFormat('en',{style:'digital'}).format({seconds:0}) === '0:00:00'",
+        "new Intl.DurationFormat('en',{style:'digital',hoursDisplay:'auto',minutesDisplay:'auto',secondsDisplay:'auto'}).format({minutes:2}) === '02'",
+        "new Intl.DurationFormat('en',{style:'digital',hoursDisplay:'auto'}).format({minutes:2,seconds:3}) === '02:03'",
+        "new Intl.DurationFormat('en',{style:'digital',minutesDisplay:'auto'}).format({hours:1,seconds:2}) === '1:00:02'",
+        "new Intl.DurationFormat('en',{style:'digital'}).format({hours:-1,minutes:-30}) === '-1:30:00'",
+        "new Intl.DurationFormat('en',{style:'digital'}).format({minutes:-2}) === '-0:02:00'",
+        "new Intl.DurationFormat('en',{style:'long'}).format({hours:-1,minutes:-30}) === '-1 hour, 30 minutes'",
+        "new Intl.DurationFormat('en',{style:'digital'}).format({seconds:1,milliseconds:2,microseconds:3,nanoseconds:4}) === '0:00:01.002003004'",
+        "new Intl.DurationFormat('en',{style:'digital',fractionalDigits:3}).format({seconds:1,milliseconds:234,microseconds:999}) === '0:00:01.234'",
+        "new Intl.DurationFormat('de',{style:'digital',fractionalDigits:2}).format({seconds:1,milliseconds:250}) === '0:00:01,25'",
+        "new Intl.DurationFormat('en',{style:'digital',fractionalDigits:0}).format({seconds:59,milliseconds:999}) === '0:00:59'",
+        "new Intl.DurationFormat('en',{milliseconds:'numeric'}).format({seconds:1,milliseconds:500}) === '1.5 sec'",
+        "new Intl.DurationFormat('en',{microseconds:'numeric',fractionalDigits:2}).format({milliseconds:1,microseconds:234}) === '1.23 millisecond'",
+        "new Intl.DurationFormat('en').format({years:2,months:1,weeks:3,days:4,milliseconds:5,microseconds:6,nanoseconds:7}) === '2 yrs, 1 mth, 3 wks, 4 days, 5 millisecond, 6 microsecond, 7 nanosecond'",
+        "new Intl.DurationFormat('fr',{style:'long'}).format({hours:2}) === '2 hour'",
+        "new Intl.DurationFormat('en-GB').format({minutes:1}) === '1 min'",
+        "let f=new Intl.DurationFormat('en',{style:'long'});let p=f.formatToParts({hours:1,minutes:30});let text='';for(let i=0;i<p.length;i++){text+=p[i].value;}p.length===7 && p[0].type==='integer' && p[0].unit==='hour' && p[1].type==='literal' && p[1].unit==='hour' && p[2].type==='unit' && p[2].value==='hour' && p[2].unit==='hour' && p[3].type==='literal' && p[3].unit===undefined && p[4].unit==='minute' && text===f.format({hours:1,minutes:30})",
+        "let p=new Intl.DurationFormat('en',{style:'digital',fractionalDigits:2}).formatToParts({seconds:-1,milliseconds:-250});let text='';for(let i=0;i<p.length;i++){text+=p[i].value;}text==='-0:00:01.25' && p[0].type==='minusSign' && p[0].unit==='hour' && p[2].type==='literal' && p[2].unit===undefined && p[6].type==='decimal' && p[7].type==='fraction' && p[7].unit==='second'",
+        "let r=new Intl.DurationFormat('en',{style:'digital',fractionalDigits:4}).resolvedOptions();r.locale==='en' && r.numberingSystem==='latn' && r.style==='digital' && r.years==='short' && r.yearsDisplay==='auto' && r.hours==='numeric' && r.hoursDisplay==='always' && r.minutes==='2-digit' && r.seconds==='2-digit' && r.milliseconds==='numeric' && r.millisecondsDisplay==='auto' && r.fractionalDigits===4 && Object.keys(r).length===24",
+        "let r=new Intl.DurationFormat('en').resolvedOptions();r.fractionalDigits===undefined && Object.keys(r).length===23",
+        "new Intl.DurationFormat()[Symbol.toStringTag]==='Intl.DurationFormat' && Intl.DurationFormat.length===0 && Intl.DurationFormat.prototype.format.length===1 && Intl.DurationFormat.prototype.formatToParts.length===1",
+        "Intl.DurationFormat.supportedLocalesOf(['xx','de','en-GB','de']).join(',')==='de,en-GB'",
+        "new Intl.DurationFormat('en',{numberingSystem:'arab',style:'digital'}).format({hours:1,minutes:2,seconds:3})==='١:٠٢:٠٣'",
+        "new Intl.DurationFormat('en-u-nu-arab',{style:'digital'}).resolvedOptions().numberingSystem==='arab'",
+        "let r=new Intl.DurationFormat('en-u-nu-arab',{numberingSystem:'latn'}).resolvedOptions();r.locale==='en' && r.numberingSystem==='latn'",
+        "new Intl.DurationFormat('en',{numberingSystem:'foobar'}).resolvedOptions().numberingSystem==='latn'",
+        "new Intl.DurationFormat('en').format({hours:' 0x1 ',minutes:'3e1'}) === '1 hr, 30 min'",
+        "new Intl.DurationFormat('en').format({hours:true,minutes:null}) === '1 hr'",
+        "let log='';let d={get days(){log+='d';return 0;},get hours(){log+='h';return 1;},get microseconds(){log+='u';return 0;},get milliseconds(){log+='l';return 0;},get minutes(){log+='m';return 30;},get months(){log+='o';return 0;},get nanoseconds(){log+='n';return 0;},get seconds(){log+='s';return 0;},get weeks(){log+='w';return 0;},get years(){log+='y';return 0;}};new Intl.DurationFormat('en').format(d)==='1 hr, 30 min' && log==='dhulmonswy'",
+        "let log='';let f=new Intl.DurationFormat('en',{get hours(){log+='h';return 'numeric';},get hoursDisplay(){log+='d';return 'auto';},get minutes(){log+='m';return 'numeric';},get minutesDisplay(){log+='e';return 'auto';}});log==='hdme' && f.format({hours:1,minutes:2})==='1:02:00'",
+        "let touched=false;let ok=false;try{Intl.DurationFormat.prototype.format.call({}, {get hours(){touched=true;return 1;}});}catch(e){ok=e instanceof TypeError;}ok && !touched",
+        "let ok=false;try{Intl.DurationFormat();}catch(e){ok=e instanceof TypeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format('PT1H');}catch(e){ok=e instanceof TypeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:1n});}catch(e){ok=e instanceof TypeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:Symbol()});}catch(e){ok=e instanceof TypeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:Infinity});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({hours:NaN});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({years:4294967296});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en').format({seconds:9007199254740991,nanoseconds:1000000000});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en',{hours:'numeric',seconds:'long'});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en',{milliseconds:'numeric',microseconds:'long'});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en',{milliseconds:'numeric',millisecondsDisplay:'always'});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en',{fractionalDigits:10});}catch(e){ok=e instanceof RangeError;}ok",
+        "let ok=false;try{new Intl.DurationFormat('en',{style:'bogus'});}catch(e){ok=e instanceof RangeError;}ok",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_duration_format_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let f=new Intl.DurationFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'en';}},
+            {get style(){log+='s';__rt.need(3,1);return {toString(){log+='c';__rt.need(4,1);return 'digital';}};},
+             get fractionalDigits(){log+='f';return {valueOf(){log+='v';__rt.need(5,1);return '3';}};}});
+        let p=f.formatToParts({get hours(){log+='h';__rt.need(6,1);return {valueOf(){log+='n';__rt.need(7,1);return '1';}};},minutes:30,
+            get milliseconds(){log+='m';__rt.need(8,1);return 250;}});
+        let text='';for(let i=0;i<p.length;i++){text+=p[i].value;}
+        text==='1:30:00.250' && log==='ltscfvhnm'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..4000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 8);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 8);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("DurationFormat continuation did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_duration_format_host_and_ownership() {
+    struct LocaleHost(usize);
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            self.0 += 1;
+            "de".into()
+        }
+    }
+    let rt = Runtime::new();
+    let mut host = LocaleHost(0);
+    for (source, calls) in [
+        (
+            "new Intl.DurationFormat().format({hours:1,minutes:30})==='1 Std., 30 Min.'",
+            1,
+        ),
+        (
+            "new Intl.DurationFormat('en').resolvedOptions().locale==='en'",
+            0,
+        ),
+        ("Intl.DurationFormat.supportedLocalesOf('xx').length===0", 0),
+        (
+            "let ok=false;try{new Intl.DurationFormat(undefined,{numberingSystem:'x'});}catch(e){ok=e instanceof RangeError;}ok",
+            0,
+        ),
+    ] {
+        host.0 = 0;
+        let result = rt
+            .spawn(&exe(source), &[])
+            .unwrap()
+            .run_with(Budget::UNLIMITED, &mut host)
+            .unwrap();
+        assert!(
+            matches!(result,RunOutcome::Complete(v) if v.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+        assert_eq!(host.0, calls);
+    }
+    for source in [
+        "new Intl.DurationFormat('en')",
+        "Object.freeze(new Intl.DurationFormat('en'))",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("DurationFormat construction")
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "Intl.DurationFormat.prototype.format.call(value,{hours:1})",
+            "Intl.DurationFormat.prototype.formatToParts.call(value,{hours:1})",
+            "Intl.DurationFormat.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            assert!(
+                matches!(rt.spawn(&code,&[&value]).unwrap().run().unwrap(),RunOutcome::Failed(e) if matches!(e.kind(),VmErrorKind::ForeignObject{..}))
+            );
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_duration_format_long_numeric_strings_are_budgeted() {
+    let rt = Runtime::new();
+    let code = exe(
+        "let s='0';for(let i=0;i<15;i++){s=s+s;}s=s+'1';new Intl.DurationFormat('en').format({hours:{valueOf(){return s;}}})==='1 hr'",
+    );
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut yielded = 0;
+    for _ in 0..4000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yielded += 1;
+                if yielded % 100 == 0 {
+                    rt.collect().unwrap();
+                }
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yielded > 500);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("DurationFormat numeric scan did not finish");
+}
