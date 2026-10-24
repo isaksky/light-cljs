@@ -859,8 +859,9 @@ Deferred:
   catchable and skip catch and finally blocks. Failed or cancelled
   dependencies became catchable, and cancellation runs finally blocks, in
   clj-quickjs-27 (below).
-- Engine-raised errors still have no JavaScript properties or `instanceof`
-  support (clj-quickjs-230). JavaScript-created Error instances are supported
+- Engine-raised errors expose `stack`; their other JavaScript properties and
+  `instanceof` support remain deferred (clj-quickjs-230). JavaScript-created
+  Error instances are supported
   (clj-quickjs-228, below), including NativeError constructors (clj-quickjs-229).
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
@@ -2573,8 +2574,7 @@ as a dependency failure, is rejected as task-owned mutation.
 
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
-Engine-raised errors as instances,
-subclasses and `Reflect.construct` remain deferred.
+Engine-raised errors as instances, subclasses and `Reflect.construct` remain deferred.
 
 ### String splitting (clj-quickjs-157)
 

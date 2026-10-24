@@ -2304,7 +2304,7 @@ so truncating from 4294967295 does not scan billions of holes.
 
 Explicit gaps: an object length value needs resumable ToPrimitive
 (clj-quickjs-70) and fails explicitly with `UnsupportedOperand`. RangeError
-uses the existing opaque immutable VM error object; engine-raised errors'
+uses the existing immutable VM error object with a stack; engine-raised errors'
 prototype, `name` and `message` properties remain deferred (clj-quickjs-230).
 The RangeError constructor is supported (clj-quickjs-229).
 Synthetic fixtures, not light-cljs output:
@@ -2481,7 +2481,7 @@ The constants' descriptors have all three flags false; strict writes throw
 catchable TypeError.
 
 The two globals are task-owned global-object properties (clj-quickjs-104),
-and lexical declarations shadow them. Engine-raised errors remain opaque
+and lexical declarations shadow them. Engine-raised errors expose stacks only
 (clj-quickjs-230); tests assert caught failures and the runtime's TypeError kind.
 `Number.parseInt` and `Number.parseFloat` belong to the parsing pellet.
 
@@ -2532,7 +2532,7 @@ their pellets. Global-object integration remains clj-quickjs-104; lexical
 bindings shadow `Math`. Like every realm intrinsic, Math is shared and
 immutable despite its methods' writable/configurable descriptor flags.
 `Math()` and `new Math()` throw catchable TypeErrors; engine-raised errors
-remain opaque, so tests verify caught failures and the runtime error kind.
+expose stacks only, so tests verify caught failures and the runtime error kind.
 
 ### Global object bindings (clj-quickjs-104)
 
@@ -2619,9 +2619,9 @@ try { throw Error('getter'); } catch (caught) { caught.message === 'getter'; }
 
 ### Error stack strings (clj-quickjs-59)
 
-`Error(...)`, `new Error(...)` and all NativeError constructors capture `stack` at construction, including
-when the object is never thrown. Catchable engine errors capture it at the
-failing instruction, before unwinding. Reading it later or rethrowing the
+`Error(...)`, `new Error(...)` and all NativeError constructors capture `stack`
+at construction, including when the object is never thrown. Catchable engine
+errors capture it at the failing instruction, before unwinding. Reading it later or rethrowing the
 object keeps the creation positions. The first line is the creating/failing
 frame; each following line is its caller at the call's `(` token. Callback
 callers use the JS operation that invoked the native continuation (for
@@ -2689,9 +2689,9 @@ not an ECMAScript standard constructor. Each constructor inherits from
 The realm intrinsics remain shared and immutable, with writable task-owned
 global bindings. AggregateError and SuppressedError remain deferred.
 
-Every constructor uses Error's resumable message/cause handling and stack capture, and creates
-a task-owned ordinary object with the internal error marker. Its instances
-are instances of both its own constructor and Error; different NativeError
+Every constructor uses Error's resumable message/cause handling and stack
+capture, and creates a task-owned ordinary object with the internal error
+marker. Its instances are instances of both its own constructor and Error; different NativeError
 kinds have distinct prototypes. Message conversions, cause getters and
 inherited stringification can yield, wait, survive GC and migrate. These
 constructors do not change the representation of engine-raised failures

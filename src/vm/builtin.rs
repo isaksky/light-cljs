@@ -243,7 +243,6 @@ pub(crate) enum Builtin {
     /// Array brand test (clj-quickjs-153).
     ArrayIsArray,
 
-
     /// NativeError constructors share Error's resumable implementation.
     NativeError(NativeErrorKind),
 }

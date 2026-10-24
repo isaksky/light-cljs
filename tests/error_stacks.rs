@@ -181,43 +181,101 @@ fn stack_preserves_utf16_function_names() {
 }
 
 #[test]
-fn constructor_stacks_survive_callback_waits() {
-    // Both the message conversion (including its method getter) and the
-    // accessor cause suspend before the constructor can install its stack.
-    let source = "function make() {\n  return Error({get toString() { __rt.need(1, 1); return function() { __rt.need(2, 1); return 'message'; }; }},\n    {get cause() { __rt.need(3, 1); return 42; }});\n}\nmake().stack;";
-    let rt = Runtime::new();
-    let exe = compile_script("stack-test.js", source).unwrap();
-    let mut task = rt.spawn(&exe, &[]).unwrap();
-    for expected in 1..=3 {
-        let (next, outcome) = std::thread::spawn(move || {
-            let outcome = task.run().unwrap();
-            (task, outcome)
-        })
-        .join()
-        .unwrap();
-        task = next;
-        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
-        rt.collect().unwrap();
-        let requests = task.take_producer_requests();
-        assert_eq!(requests.len(), 1);
-        let request = &requests[0];
+fn native_error_stacks_share_error_capture() {
+    for name in [
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        for create in [format!("{name}('saved')"), format!("new {name}('saved')")] {
+            let source = format!(
+                "function make() {{ return {create}; }}\nlet e = make();\ntry {{ throw e; }} catch (x) {{ x.stack; }}"
+            );
+            let column = if create.starts_with("new ") {
+                26
+            } else {
+                26 + name.len()
+            };
+            assert_eq!(
+                run(&source),
+                format!(
+                    "    at make (stack-test.js:1:{column})\n    at <anonymous> (stack-test.js:2:13)\n"
+                ),
+                "{name}"
+            );
+        }
         assert_eq!(
-            request.key().dependency(),
-            clj_quickjs::DependencyId::new(expected)
+            run(&format!("const E = {name}.bind(null);\nnew E().stack;")),
+            "    at <anonymous> (stack-test.js:2:1)\n",
+            "{name}"
         );
-        let ready = rt.root(Primitive::Undefined);
-        task = rt
-            .complete(request.key(), request.producer(), Completion::Ready(&ready))
-            .unwrap()
-            .into_runnable()
-            .pop()
-            .unwrap();
+        assert_eq!(
+            run(&format!(
+                "let e = {name}('message', {{cause: 0}}); let d = Object.getOwnPropertyDescriptor(e, 'stack'); let keys = Object.getOwnPropertyNames(e); d.value === e.stack && d.writable && d.configurable && !d.enumerable && keys.length === 3 && keys[2] === 'stack' && Object.keys(e).length === 0 ? 'ok' : 'bad';"
+            )),
+            "ok",
+            "{name}"
+        );
     }
-    let stack = std::thread::spawn(move || string(task.run().unwrap()))
-        .join()
-        .unwrap();
-    assert_eq!(
-        stack,
-        "    at make (stack-test.js:2:15)\n    at <anonymous> (stack-test.js:5:5)\n"
-    );
+}
+
+#[test]
+fn constructor_stacks_survive_callback_waits() {
+    for name in [
+        "Error",
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        // Both the message conversion (including its method getter) and the
+        // accessor cause suspend before the constructor can install its stack.
+        let source = "function make() {\n  return Error({get toString() { __rt.need(1, 1); return function() { __rt.need(2, 1); return 'message'; }; }},\n    {get cause() { __rt.need(3, 1); return 42; }});\n}\nmake().stack;".replace("return Error(", &format!("return {name}("));
+        let rt = Runtime::new();
+        let exe = compile_script("stack-test.js", &source).unwrap();
+        let mut task = rt.spawn(&exe, &[]).unwrap();
+        for expected in 1..=3 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task.run().unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+            rt.collect().unwrap();
+            let requests = task.take_producer_requests();
+            assert_eq!(requests.len(), 1);
+            let request = &requests[0];
+            assert_eq!(
+                request.key().dependency(),
+                clj_quickjs::DependencyId::new(expected)
+            );
+            let ready = rt.root(Primitive::Undefined);
+            task = rt
+                .complete(request.key(), request.producer(), Completion::Ready(&ready))
+                .unwrap()
+                .into_runnable()
+                .pop()
+                .unwrap();
+        }
+        let stack = std::thread::spawn(move || string(task.run().unwrap()))
+            .join()
+            .unwrap();
+        assert_eq!(
+            stack,
+            format!(
+                "    at make (stack-test.js:2:{})\n    at <anonymous> (stack-test.js:5:5)\n",
+                10 + name.len()
+            ),
+            "{name}"
+        );
+    }
 }
