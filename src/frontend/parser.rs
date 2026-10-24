@@ -1414,8 +1414,32 @@ impl<'a> Parser<'a> {
                         next.kind,
                         TokenKind::Identifier(_) | TokenKind::Punct(Punct::LBrace)
                     ) || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
-                        && next.span.start > self.tok.span.end))
+                        && self.using_array_pattern()))
             })
+    }
+
+    /// Retain the subset's explicit rejection of `using [a] = resource`
+    /// binding-pattern attempts without mistaking computed reads for them.
+    /// Token spacing/comments never affect this decision.
+    fn using_array_pattern(&self) -> bool {
+        let mut lexer = self.lexer.clone();
+        let mut depth = 0;
+        while let Ok(token) = lexer.next_token() {
+            match token.kind {
+                TokenKind::Punct(Punct::LBracket) => depth += 1,
+                TokenKind::Punct(Punct::RBracket) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return lexer
+                            .next_token()
+                            .is_ok_and(|next| next.kind == TokenKind::Punct(Punct::Assign));
+                    }
+                }
+                TokenKind::Eof => break,
+                _ => {}
+            }
+        }
+        false
     }
 
     #[inline(never)]

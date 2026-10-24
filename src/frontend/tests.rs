@@ -71,6 +71,13 @@ fn using_declarations() {
         assert!(compile_script("using", source).is_err(), "{source}");
     }
     assert!(super::parse_module("using x = null; export {x};").is_ok());
+    for source in [
+        "let using = [42]; using [0];",
+        "let using = [42]; using/*comment*/[0];",
+        "let using = [42]; if (true) using [0];",
+    ] {
+        assert!(parse_script(source).is_ok(), "{source}");
+    }
 }
 
 #[test]

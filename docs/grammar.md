@@ -452,7 +452,10 @@ Notes on the grammar:
 - `UsingDeclaration` (clj-quickjs-236): `using` remains contextual;
   `using of = resource` declares `of`, while `using = 1`, `using.x`,
   `using[0]`, `using(1)` and `let using` retain their expression/binding
-  meanings. `using` followed by a line break starts an expression statement.
+  meanings, including computed reads with spaces or comments (`using [0]`,
+  `using/*comment*/[0]`). The subset rejects the explicit array binding-pattern
+  attempt `using [a] = resource`; computed reads have no following `=`.
+  `using` followed by a line break starts an expression statement.
   Each resource requires an initializer and a simple binding identifier.
   Bindings have the same temporal dead zone, immutability and redeclaration
   checks as `const`. Validation completes before binding initialization.

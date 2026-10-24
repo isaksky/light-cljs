@@ -36,6 +36,24 @@ fn using_declarations() {
     }
     // Disposal is an empty completion and must preserve the block's value.
     assert_eq!(eval("{ using x = null; 17; }"), ValueView::Number(17.0));
+    for source in [
+        "let using = [42]; using [0];",
+        "let using = [42]; using/*comment*/[0];",
+        "let using = [42]; if (true) using [0];",
+    ] {
+        assert_eq!(eval(source), ValueView::Number(42.0), "{source}");
+    }
+}
+
+#[test]
+fn using_disposal_errors_override_returns_and_jumps() {
+    for source in [
+        "let log = '', sentinel = {}, caught; function f() { using a = {[Symbol.dispose]() { log += 'a'; }}, b = {[Symbol.dispose]() { log += 'b'; throw sentinel; }}; return 42; } try { f(); log += 'returned'; } catch(e) { caught = e; } caught === sentinel && log === 'ba'",
+        "let log = '', sentinel = {}, caught, resumed = false; try { while (true) { using a = {[Symbol.dispose]() { log += 'a'; }}, b = {[Symbol.dispose]() { log += 'b'; throw sentinel; }}; break; } resumed = true; } catch(e) { caught = e; } caught === sentinel && log === 'ba' && !resumed",
+        "let log = '', sentinel = {}, caught, updates = 0, bodies = 0; try { for (let i = 0; i < 2; i++, updates++) { bodies++; using a = {[Symbol.dispose]() { log += 'a'; }}, b = {[Symbol.dispose]() { log += 'b'; throw sentinel; }}; continue; } } catch(e) { caught = e; } caught === sentinel && log === 'ba' && updates === 0 && bodies === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
 }
 
 /// Synthetic fixture, not light-cljs output. Doubling retains rope children;

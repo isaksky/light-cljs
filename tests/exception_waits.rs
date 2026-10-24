@@ -211,6 +211,35 @@ fn cancellation_disposes_nested_scopes_after_disposal_errors() {
 }
 
 #[test]
+fn cancellation_during_dispose_getter_disposes_only_prior_resources() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        try {
+            using a = {n: 1, [Symbol.dispose]() { __rt.effect(1, this.n); }};
+            using b = {n: 2, [Symbol.dispose]() { __rt.effect(1, this.n); }};
+            using c = {get [Symbol.dispose]() {
+                __rt.need(5, 3);
+                return function() { __rt.effect(1, 99); };
+            }};
+            using d = {[Symbol.dispose]() { __rt.effect(1, 98); }};
+            __rt.effect(1, 97);
+        } catch(e) { __rt.effect(1, 96); }
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    assert!(log.0.is_empty());
+    rt.collect().unwrap();
+    let task = cancel_parked(&task);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [2.0, 1.0]);
+}
+
+#[test]
 fn using_dispose_getter_waits_before_binding_initialization() {
     let rt = Runtime::new();
     let task = spawn(
