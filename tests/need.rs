@@ -1532,6 +1532,7 @@ fn array_from_iterator_waits_on_dependency() {
         "let n = 0, o = {}; o[Symbol.iterator] = function() { n++; __rt.effect(1, 3); __rt.need(5, 3); return [1, 2].values(); }; Array.from(o).join() === '1,2' && n === 1",
         "let n = 0, o = {get next() { n++; __rt.effect(1, 3); __rt.need(5, 3); return function() { return {done: true}; }; }}; o[Symbol.iterator] = function() { return this; }; Array.from(o).length === 0 && n === 1",
         "let n = 0; let a = Array.from([{x: 1}, {x: 2}], function(v, i) { n++; if (i === 1) { __rt.effect(1, 3); __rt.need(5, 3); } return {x: this.x + v.x}; }, {x: 4}); a[0].x === 5 && a[1].x === 6 && n === 2",
+        "let n = 0; let a = Array.from({length: 2, 0: {x: 1}, 1: {x: 2}}, function(v, i) { n++; if (i === 1) { __rt.effect(1, 3); __rt.need(5, 3); } return {x: this.x + v.x}; }, {x: 4}); a[0].x === 5 && a[1].x === 6 && n === 2",
         "let n = 0, o = {get length() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }, 0: 'a', 1: 'b'}; Array.from(o).join() === 'a,b' && n === 1",
         "let n = 0, o = {length: {valueOf() { n++; __rt.effect(1, 3); return __rt.need(5, 3) - 5; }}, 0: 'a', 1: 'b'}; Array.from(o).join() === 'a,b' && n === 1",
         "let n = 0, o = {length: 2, 0: {x: 1}, get 1() { n++; __rt.effect(1, 3); return {x: __rt.need(5, 3)}; }}; let a = Array.from(o); a[0].x === 1 && a[1].x === 7 && n === 1",
