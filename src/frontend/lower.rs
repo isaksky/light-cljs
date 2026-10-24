@@ -1152,6 +1152,24 @@ impl<'s> Lowerer<'s> {
                 self.out().branch(Opcode::Jump, start, span);
                 self.out().bind(end);
             }
+            // start: <body>
+            // cont:  <test>; jump_if_false end; jump start
+            // end:
+            StmtKind::DoWhile { body, test } => {
+                self.reset_completion(span);
+                let start = self.out().label();
+                let cont = self.out().label();
+                let end = self.out().label();
+                self.out().bind(start);
+                self.cur_mut().exits.push(Exit::Loop { brk: end, cont });
+                self.statement(body)?;
+                self.cur_mut().exits.pop();
+                self.out().bind(cont);
+                self.expr(test)?;
+                self.out().branch(Opcode::JumpIfFalse, end, test.span);
+                self.out().branch(Opcode::Jump, start, span);
+                self.out().bind(end);
+            }
             StmtKind::Throw(e) => {
                 self.expr(e)?;
                 self.out().op(Opcode::Throw, span);

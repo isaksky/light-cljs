@@ -214,6 +214,9 @@ fn render_stmt(s: &Stmt) -> String {
         StmtKind::While { test, body } => {
             format!("(while {} {})", render_expr(test), render_stmt(body))
         }
+        StmtKind::DoWhile { body, test } => {
+            format!("(do {} {})", render_stmt(body), render_expr(test))
+        }
         StmtKind::Break => "(break)".into(),
         StmtKind::Continue => "(continue)".into(),
         StmtKind::Empty => "(empty)".into(),
@@ -450,6 +453,41 @@ fn break_and_continue() {
     rejects_with("while (x) continue l;", Unsupported, 1, 11, "labelled");
     rejects("while (x) break 1;", UnexpectedToken, 1, 17);
     rejects("while (x) break if;", UnexpectedToken, 1, 17);
+}
+
+/// `do`-`while` (clj-quickjs-80), including its ASI rule: the `;` after
+/// `while (...)` is inserted even without a line break.
+#[test]
+fn do_while_statements() {
+    use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken};
+    assert_eq!(ast("do x; while (y);"), "(do x y)");
+    assert_eq!(ast("do { } while (y)"), "(do (block) y)");
+    assert_eq!(ast("do x; while (0) y;"), "(do x 0) y");
+    assert_eq!(ast("do x; while (0)\ny"), "(do x 0) y");
+    assert_eq!(ast("do ; while (a, b);"), "(do (empty) (, a b))");
+    assert_eq!(
+        ast("do { if (a) break; continue; } while (b);"),
+        "(do (block (if a (break)) (continue)) b)"
+    );
+    assert_eq!(ast("do do x; while (a) while (b)"), "(do (do x a) b)");
+    assert_eq!(ast("{ do x; while (y) }"), "(block (do x y))");
+    assert_eq!(ast("if (a) do x; while (b) else y;"), "(if a (do x b) y)");
+    // A declaration cannot be the body.
+    rejects_with(
+        "do let a = 1; while (0);",
+        Invalid,
+        1,
+        4,
+        "cannot be the body",
+    );
+    rejects("do function f() {} while (0);", Invalid, 1, 4);
+    // `break`/`continue` belong to the body only, not to the test.
+    rejects("do x; while (y); break;", Invalid, 1, 18);
+    rejects("do x; while (function () { break; });", Invalid, 1, 28);
+    // The `while` part is required.
+    rejects("do x; y;", UnexpectedToken, 1, 7);
+    rejects("do x;", UnexpectedEnd, 1, 6);
+    rejects("do x; while y;", UnexpectedToken, 1, 13);
 }
 
 #[test]
@@ -1417,7 +1455,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("function* g() {}", 1, 1, "generator"),
         ("var x = 1;", 1, 1, "var"),
         ("for (;;) {}", 1, 1, "for"),
-        ("do {} while (x);", 1, 1, "do"),
         ("switch (x) {}", 1, 1, "switch"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("label: x;", 1, 1, "labelled"),
@@ -1502,6 +1539,7 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("{}{}", "{".repeat(n), "}".repeat(n)),
         format!("{}x;", "if (1) ".repeat(n)),
         format!("{}x;", "while (1) ".repeat(n)),
+        format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n)),
         format!("{}{}", "function f() {".repeat(n), "}".repeat(n)),
         format!(
             "x = {}1{};",
@@ -1564,6 +1602,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("blocks", |n| format!("{}{}", "{".repeat(n), "}".repeat(n))),
         ("if", |n| format!("{}x;", "if (1) ".repeat(n))),
         ("while", |n| format!("{}x;", "while (1) ".repeat(n))),
+        ("do-while", |n| {
+            format!("{}x;{}", "do ".repeat(n), " while (1)".repeat(n))
+        }),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
         ("exponent", |n| format!("x = 1{};", " ** 1".repeat(n))),

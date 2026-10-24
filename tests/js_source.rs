@@ -391,6 +391,26 @@ fn script_completion_value_follows_javascript() {
         eval("let i = 0; while (i < 2) { i = i + 1; try { 6; } finally { continue; } }"),
         ValueView::Undefined
     );
+    // `do`-`while` (clj-quickjs-80): reset to undefined on entry, then the
+    // value the body produced last (kept across iterations); the test's
+    // value is never the completion value.
+    assert_eq!(num("5; do { 6; } while (false)"), 6.0);
+    assert_eq!(eval("5; do { } while (false)"), ValueView::Undefined);
+    assert_eq!(eval("5; do ; while (false)"), ValueView::Undefined);
+    assert_eq!(num("let i = 0; do { i = i + 1; } while (i < 3)"), 3.0);
+    assert_eq!(num("let i = 0; do i = i + 1; while (i < 3) 4"), 4.0);
+    assert_eq!(
+        num("let i = 0; do { i = i + 1; if (i < 3) continue; 7; } while (i < 3)"),
+        7.0
+    );
+    assert_eq!(
+        eval("let i = 0; 1; do { i = i + 1; if (i == 2) { continue; } 8; } while (i < 2)"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("let i = 0; do { 6; try { i = i + 1; break; } finally { 7; } } while (true)"),
+        1.0
+    );
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
@@ -575,6 +595,182 @@ fn while_break_and_continue() {
     ] {
         assert_eq!(num(src), expected, "{src}");
     }
+}
+
+/// `do`-`while` loops (clj-quickjs-80). `TEST_DO_WHILE` is adapted from
+/// `test_do_while` in `research/quickjs/tests/test_loop.js` (QuickJS,
+/// revision 7d1c13c5d8f8; see `docs/architecture.md` for the attribution):
+/// `let` for `var`, `x = x + 1` for `x++`, and the asserted condition is
+/// the completion value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn do_while_loops() {
+    const TEST_DO_WHILE: &str = "
+        let i, c;
+        i = 0;
+        c = 0;
+        do {
+            c = c + 1;
+            i = i + 1;
+        } while (i < 3);
+        c === 3 && i === 3";
+    assert_eq!(eval(TEST_DO_WHILE), ValueView::Bool(true));
+    // The same loop under a 3-instruction budget yields inside it and
+    // resumes there with the same result.
+    let looping = exe(TEST_DO_WHILE);
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 1, "{yields} yields");
+
+    // The body runs once even when the test is false from the start.
+    assert_eq!(num("let n = 0; do { n = n + 1; } while (false); n"), 1.0);
+    // ASI after `while (...)` without a line break: two statements.
+    assert_eq!(num("let n = 0; do n = n + 1; while (n < 4) n * 10"), 40.0);
+
+    // Run under a bounded budget, so a `continue` that skipped the test
+    // fails here instead of looping forever.
+    let bounded = |src: &str| {
+        let looping = exe(src);
+        let task = Runtime::new().spawn(&looping, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(100_000), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Complete(v) => match v.view() {
+                ValueView::Number(n) => n,
+                other => panic!("{src}: expected a number, got {other:?}"),
+            },
+            other => panic!("{src}: expected Complete, got {other:?}"),
+        }
+    };
+    // `continue` jumps to the test, which here holds the only update.
+    assert_eq!(
+        bounded(
+            "let i = 0, n = 0; do { n = n + 1; continue; n = 99; } while ((i = i + 1) < 3); n * 10 + i"
+        ),
+        33.0
+    );
+    // `continue` skips the rest of the body: the odd numbers below 10.
+    assert_eq!(
+        bounded(
+            "let i = 0, sum = 0;
+             do {
+                 i = i + 1;
+                 if (i % 2 === 0) continue;
+                 sum = sum + i;
+             } while (i < 9);
+             sum"
+        ),
+        25.0
+    );
+    // `break` leaves the loop before the test; only the innermost loop.
+    assert_eq!(
+        bounded(
+            "let i = 0, log = 0;
+             do {
+                 i = i + 1;
+                 let j = 0;
+                 do { j = j + 1; if (j > i) break; log = log * 10 + j; } while (true);
+                 if (i === 3) break;
+                 log = log * 10;
+             } while (true);
+             log * 10 + i"
+        ),
+        // i = 1: 1; i = 2: 1 2; i = 3: 1 2 3, then the outer break.
+        10120123.0 * 10.0 + 3.0
+    );
+    // Nested in a `while` loop, and a `while` loop nested in it.
+    assert_eq!(
+        bounded(
+            "let a = 0, b = 0;
+             while (a < 2) { a = a + 1; do { b = b + 1; continue; } while (false); }
+             do { while (true) { break; } b = b * 10; } while (false);
+             b"
+        ),
+        20.0
+    );
+    // Loop bodies make new bindings each iteration.
+    assert_eq!(
+        bounded(
+            "let fs = 0, i = 0;
+             do {
+                 i = i + 1;
+                 const k = i;
+                 if (k === 1) { fs = () => k; continue; }
+             } while (i < 3);
+             fs() * 10 + i"
+        ),
+        13.0
+    );
+    // In a function: `return` from the body.
+    assert_eq!(
+        bounded(
+            "function find(n) {
+                 let i = 0;
+                 do { if (i * i >= n) return i; i = i + 1; } while (true);
+             }
+             find(10) * 100 + find(0)"
+        ),
+        400.0
+    );
+    // Through `try` statements: a jump pops catch handlers and runs finally
+    // blocks on the way (clj-quickjs-78, -79).
+    assert_eq!(
+        bounded(
+            "let r = 0, n = 0;
+             do { try { n = n + 1; continue; } finally { r = r + 1; } } while (n < 3);
+             do { try { break; } catch (e) { r = 99; } } while (true);
+             try { throw 4; } catch (e) { r = r * 10 + e; }
+             r"
+        ),
+        34.0
+    );
+    assert_eq!(
+        bounded(
+            "let r = 0;
+             do { try { throw 1; } catch (e) { r = e; break; } finally { r = r * 10; } } while (true);
+             r"
+        ),
+        10.0
+    );
+    // The test runs outside the body's scope: it sees the outer binding.
+    assert_eq!(
+        bounded("let x = 2; do { let x = 0; } while ((x = x - 1) > 0); x"),
+        0.0
+    );
+
+    // Completion values (ECMAScript UpdateEmpty).
+    assert_eq!(num("5; do { 6; } while (false)"), 6.0);
+    assert_eq!(eval("5; do { } while (false)"), ValueView::Undefined);
+    assert_eq!(num("5; do { 6; break; } while (true)"), 6.0);
+    assert_eq!(eval("5; do { break; } while (true)"), ValueView::Undefined);
 }
 
 #[test]

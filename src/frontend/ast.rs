@@ -57,6 +57,7 @@ impl Stmt {
                 .max(consequent.height)
                 .max(alternate.as_ref().map_or(0, |s| s.height)),
             StmtKind::While { test, body } => test.height.max(body.height),
+            StmtKind::DoWhile { body, test } => body.height.max(test.height),
             StmtKind::Try {
                 block,
                 handler,
@@ -100,6 +101,12 @@ pub enum StmtKind {
     While {
         test: Expr,
         body: Box<Stmt>,
+    },
+    /// `do body while (test);` (clj-quickjs-80): the body runs before the
+    /// first test.
+    DoWhile {
+        body: Box<Stmt>,
+        test: Expr,
     },
     /// `throw expr;`
     Throw(Expr),

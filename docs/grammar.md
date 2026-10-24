@@ -12,17 +12,18 @@ compile that way (`frontend::tests::grammar_doc_examples`).
 Status: everything below parses. Everything except string values and
 property access also compiles to VM bytecode and executes
 (`frontend::compile_script`; see "Execution" below): literals, bindings,
-operators, assignment, blocks, `if`/`else`, `while`, function declarations
+operators, assignment, blocks, `if`/`else`, `while`, `do`-`while`
+(clj-quickjs-80), function declarations
 and expressions, calls, closures (clj-quickjs-21), arrow functions
 (clj-quickjs-53), and the
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). String values and property access parse but are rejected by the
 compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`
-loops (clj-quickjs-78) parse and execute, including jumps out of `try`
-statements that run their finally blocks on the way (clj-quickjs-79). Prefix
-and postfix `++`/`--` on identifier bindings (clj-quickjs-64) parse and
-execute.
+and `do`-`while` loops (clj-quickjs-78, -80) parse and execute, including
+jumps out of `try` statements that run their finally blocks on the way
+(clj-quickjs-79). Prefix and postfix `++`/`--` on identifier bindings
+(clj-quickjs-64) parse and execute.
 
 ## Semantics model
 
@@ -59,13 +60,14 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 ```
 Script              = { StatementListItem } EOF
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
-Statement           = Block | ";" | IfStatement | WhileStatement
+Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
                     | ReturnStatement | ThrowStatement | TryStatement
                     | BreakStatement | ContinueStatement
                     | ExpressionStatement
 Block               = "{" { StatementListItem } "}"
 IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
 WhileStatement      = "while" "(" Expression ")" Statement
+DoWhileStatement    = "do" Statement "while" "(" Expression ")" [ ";" ]   (* ";" always optional *)
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
 ThrowStatement      = "throw" [no LineTerminator here] Expression ";"
 BreakStatement      = "break" ";"        (* [no LineTerminator here] before a label *)
@@ -137,13 +139,15 @@ Notes on the grammar:
   decrement.
 - `ReturnStatement` is accepted only inside a function body.
 - `BreakStatement` and `ContinueStatement` (clj-quickjs-78) are accepted
-  only inside the body of a `while` loop of the same function: a function
+  only inside the body of a `while` or `do`-`while` loop of the same
+  function (not in the test of a `do`-`while`): a function
   nested in the loop starts a new context (`while (x) { function f() {
   break; } }` is an early error). They are unlabelled; a label after the
   keyword on the same line (`break l;`) is rejected as unsupported.
 - `FunctionDeclaration` and `LexicalDeclaration` are statement-list items:
   allowed in the script, a function body or a block, but not as the direct
-  body of `if`/`else`/`while` (strict mode rejects that; wrap it in a block).
+  body of `if`/`else`/`while`/`do` (strict mode rejects that; wrap it in a
+  block).
 - Function parameter names must be distinct (strict mode).
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
@@ -156,7 +160,7 @@ Notes on the grammar:
   returns. `async` arrows remain unsupported; `async => async` is an arrow
   with a parameter named `async`.
 - The comma operator (clj-quickjs-61) appears only where the grammar has
-  Expression: expression statements, parentheses, `if`/`while` tests and
+  Expression: expression statements, parentheses, `if`/`while`/`do`-`while` tests and
   `return`/`throw` operands. Arguments, declarators, `? :` branches and
   concise arrow bodies are AssignmentExpressions, so `f(a, b)` passes two
   arguments, `f((a, b))` one, `let a = 1, b;` declares two bindings,
@@ -183,6 +187,9 @@ statement the next token can continue, exactly as in JavaScript: `a` newline
 followed by a line break returns `undefined` (restricted production).
 Likewise a line break after `break` or `continue` ends the statement
 (`while (1) break` newline `x` is a loop and the statement `x`).
+After `do` Statement `while (` Expression `)` a missing `;` is always
+inserted, even on the same line (ECMAScript ASI rule for `do`-`while`):
+`do x; while (0) y;` is two statements, the loop and `y`.
 Postfix `++`/`--` is a restricted production: after a line break the
 operator begins a new statement as a prefix update (`a` newline `++b` is
 `a; ++b;`). No semicolon is ever inserted to create an empty
@@ -208,7 +215,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var`, `for`, `do`-`while`, `switch`, labelled statements, labelled `break`/`continue`, `debugger`, `with` | Unsupported |
+| `var`, `for`, `switch`, labelled statements, labelled `break`/`continue`, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -220,7 +227,7 @@ Every form below is rejected where it starts. Error kinds:
 | reserved word as a binding name or reference; binding, assigning, incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do` body, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -243,7 +250,7 @@ checks left to later stages:
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
-  plus 1 for a block or an `if`/`while`/`try`; a function or arrow
+  plus 1 for a block or an `if`/`while`/`do`-`while`/`try`; a function or arrow
   function 3 plus its body block (or, for a concise arrow body, its
   assignment);
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
@@ -280,8 +287,10 @@ checks left to later stages:
 a script to a validated `Executable` (`src/frontend/lower.rs`); a task
 running it completes with the script's **completion value**, the value
 JavaScript `eval` would return (the last expression statement that ran;
-`if`, `while` and `try` produce `undefined` unless their body produced a
-value; a `try` statement's value is that of its block or catch body, never
+`if`, `while`, `do`-`while` and `try` produce `undefined` unless their
+body produced a value (a loop keeps the value its body produced last, so
+`5; do { 6; } while (false)` is 6 and `5; do { } while (false)` is
+`undefined`); a `try` statement's value is that of its block or catch body, never
 that of a finally block that completes normally; a `break` or `continue`
 keeps the value its loop body produced so far, as ECMAScript `UpdateEmpty`
 does, so `5; while (true) { 6; break; }` is 6 and
@@ -305,11 +314,12 @@ Executed, with JavaScript semantics:
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
-| `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
+| `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
+| `do body while (test)` (clj-quickjs-80) | runs the body, then evaluates the test, and repeats while it is truthy: the body always runs at least once |
 | `break`, `continue` (unlabelled) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
@@ -393,7 +403,9 @@ Gaps specific to execution:
   leaves a `try` block for its catch or finally block (outside the scope
   of the block's bindings); an unlabelled `break` only leaves scopes and
   `continue` jumps to the loop test, from which the body is entered again
-  at its start (clj-quickjs-78); a `break` or `continue` through finally
+  at its start (clj-quickjs-78; the test of a `do`-`while` follows its body
+  outside the body's scope, and its back edge also enters the body at its
+  start, clj-quickjs-80); a `break` or `continue` through finally
   blocks enters each one at its start and then goes on leaving scopes
   (clj-quickjs-79), so no jump enters a scope past a declaration. So
   within the function that declares a binding, whether it is initialized at a reference is
@@ -548,6 +560,13 @@ while (x) {
 ```
 
 ```js accept
+// `do`-`while` (clj-quickjs-80): `continue` jumps to the test; the `;` after
+// `while (...)` is inserted even on the same line.
+let n = 0;
+do { n = n + 1; if (n < 3) continue; } while (n < 5) n
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -689,6 +708,14 @@ while (x) {
 while (x) break outer;
 ```
 
+```js reject Invalid 1:4
+do let a = 1; while (0);
+```
+
+```js reject UnexpectedToken 1:7
+do x; y;
+```
+
 ```js reject UnexpectedToken 1:11
 let a = 1 let b = 2;
 ```
@@ -768,6 +795,13 @@ its early errors), `push_break_entry` and `close_scopes`; for jumps through
 finally blocks (clj-quickjs-79), `emit_break`'s `OP_gosub` to each
 enclosing finally block and the `OP_ret` it returns through (here a pending
 jump completion of the task-owned handler stack, `src/vm/exception.rs`).
+For `do`-`while` (clj-quickjs-80): the `TOK_DO` case of
+`js_parse_statement_or_decl` (`continue` targets the test; a missing `;`
+after `while (...)` is inserted, as `js_parse_expect_semi` documents); its
+`set_eval_ret_undefined` on every iteration is not followed, since
+ECMAScript keeps the completion value across iterations. `test_do_while`
+of `research/quickjs/tests/test_loop.js` is adapted in
+`tests/js_source.rs` `do_while_loops` with the notice.
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks` and in
 `tests/fixtures/js/quickjs_try_catch.js`, each with the notice. The tests

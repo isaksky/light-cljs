@@ -1432,3 +1432,11 @@ and Charlie Gordon) and is listed here with its source path and revision:
   ToPrimitive). The test carries the full notice.
   `research/quickjs/quickjs.c` `js_eq_slow` was consulted only. No code
   was copied.
+- `tests/js_source.rs` `do_while_loops` (clj-quickjs-80): the body of
+  `test_do_while` (line 49) of `research/quickjs/tests/test_loop.js`,
+  revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
+  Modified: `let` for `var`, `x = x + 1` for `x++`, and the asserted
+  condition is the script's completion value. The test carries the full
+  notice. The `TOK_DO` case of `js_parse_statement_or_decl` in
+  `research/quickjs/quickjs.c` (`continue` targets the test; the optional
+  `;` after `while (...)`) was consulted only. No code was copied.

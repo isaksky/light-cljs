@@ -351,9 +351,9 @@ Deferred:
   intrinsic binding compile since clj-quickjs-21, below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `for`, `do`-`while`, labels, `switch`, `var`, update and compound
+- `for`, labels, `switch`, `var`, update and compound
   assignment operators (rejected by the parser). (Unlabelled `break` and
-  `continue`: clj-quickjs-78, below.)
+  `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80, below.)
 
 ### Parking and wakeups (clj-quickjs-7)
 
@@ -1260,7 +1260,8 @@ Supported (`cargo test --lib frontend::tests::break_and_continue`,
 
 Deferred:
 
-- Labels (`break l;` is `Unsupported`), `do`-`while`, `for` and `switch`.
+- Labels (`break l;` is `Unsupported`), `for` and `switch`. (`do`-`while`:
+  clj-quickjs-80, below.)
 
 ### Exponentiation operator (clj-quickjs-63)
 
@@ -1324,3 +1325,26 @@ Deferred:
 - `++`/`--` on properties (`a.b++` is `Unsupported`; clj-quickjs-76);
   object operands wait for ToPrimitive (they fail with
   `UnsupportedOperand`); compound assignment stays rejected.
+
+### `do`-`while` loops (clj-quickjs-80)
+
+Supported (`cargo test --lib frontend::tests::do_while_statements`,
+`cargo test --test js_source do_while_loops`):
+
+- `do Statement while (Expression);`: the body runs, then the test, and the
+  loop repeats while the test is truthy, so the body always runs at least
+  once. The `;` after `while (...)` is optional even on the same line
+  (`do x; while (0) y;` is two statements). A declaration as the body is
+  an early error (`Invalid`).
+- Unlabelled `break` leaves the loop; `continue` jumps to the test. Both
+  pop catch handlers and run finally blocks on the way, as in `while`
+  loops. The loop is ordinary branches, so a task may yield, wait or
+  migrate anywhere in it. QuickJS `test_do_while` runs from source
+  (adapted, with notice).
+- Completion values follow ECMAScript `UpdateEmpty`:
+  `5; do { 6; } while (false)` is 6, `5; do { } while (false)` is
+  `undefined`.
+
+Deferred:
+
+- Labelled `do`-`while` (labels: clj-quickjs-82).

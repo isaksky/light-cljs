@@ -242,7 +242,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Statement (single-statement position: `if`/`while` bodies).
+    /// Statement (single-statement position: `if`/`while`/`do` bodies).
     fn parse_statement(&mut self) -> PResult<Stmt> {
         let saved = self.depth;
         self.deeper(cost::STATEMENT)?;
@@ -255,6 +255,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Keyword(Keyword::If) => self.parse_if()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while()?,
+            TokenKind::Keyword(Keyword::Do) => self.parse_do_while()?,
             TokenKind::Keyword(Keyword::Return) => self.parse_return()?,
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw()?,
             TokenKind::Keyword(Keyword::Try) => self.parse_try()?,
@@ -283,13 +284,13 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Function) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
-                "a function declaration cannot be the body of `if`/`while`; wrap it in a block",
+                "a function declaration cannot be the body of `if`/`while`/`do`; wrap it in a block",
             )),
             TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
                 format!(
-                    "a `{}` declaration cannot be the body of `if`/`while`; wrap it in a block",
+                    "a `{}` declaration cannot be the body of `if`/`while`/`do`; wrap it in a block",
                     k.as_str()
                 ),
             )),
@@ -330,7 +331,7 @@ impl<'a> Parser<'a> {
         Ok(body)
     }
 
-    /// `(` Expression `)` after `if` / `while`.
+    /// `(` Expression `)` after `if` / `while` (also `do` ... `while`).
     fn parse_paren_condition(&mut self) -> PResult<Expr> {
         self.expect_punct(Punct::LParen)?;
         let test = self.parse_expression()?;
@@ -368,6 +369,28 @@ impl<'a> Parser<'a> {
         self.in_loop = outer;
         self.depth = saved;
         Ok(StmtKind::While { test, body })
+    }
+
+    /// DoWhileStatement: `do` Statement `while` `(` Expression `)` `;`
+    /// (clj-quickjs-80). The `;` is consumed if present and otherwise always
+    /// inserted, even without a line break (the ECMAScript ASI rule for
+    /// `do`-`while`; QuickJS `TOK_DO` in `js_parse_statement_or_decl`), so
+    /// `do x; while (0) y;` is two statements.
+    fn parse_do_while(&mut self) -> PResult<StmtKind> {
+        let saved = self.depth;
+        self.deeper(cost::BODY)?;
+        self.advance()?;
+        let outer = std::mem::replace(&mut self.in_loop, true);
+        let body = Box::new(self.parse_statement()?);
+        self.in_loop = outer;
+        if !self.is_keyword(Keyword::While) {
+            return Err(self.unexpected("`while`"));
+        }
+        self.advance()?;
+        let test = self.parse_paren_condition()?;
+        self.eat_punct(Punct::Semicolon)?;
+        self.depth = saved;
+        Ok(StmtKind::DoWhile { body, test })
     }
 
     fn parse_return(&mut self) -> PResult<StmtKind> {
@@ -1345,7 +1368,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Var => "`var` declarations are (use `let` or `const`)",
         Keyword::For => "`for` loops are (use `while`)",
-        Keyword::Do => "`do`-`while` loops are (use `while`)",
         Keyword::Switch => "`switch` is",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",
