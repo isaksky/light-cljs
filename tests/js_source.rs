@@ -1729,6 +1729,8 @@ fn eval_in_parameter_expressions() {
         r#"function F(a=eval('new.target')) { this.ok=a===F; } new F().ok"#,
         r#"function f(a=eval(...['var c=1']), b=c) { return b===1; } f()"#,
         r#"function f(a=eval('var c=1'), b=eval('delete c')) { return b && typeof c==='undefined'; } f()"#,
+        r#"let base={m() { return this.n; }}; let o={__proto__:base, n:7, m(a=eval('var c=super.m()'), probe=()=>c) { var c=2; return c===2 && probe()===7; }}; o.m()"#,
+        r#"class Base {} class Derived extends Base { constructor(a=eval('super()'), probe=()=>eval('this')) { this.ok=probe()===this; } } new Derived().ok"#,
     ] {
         assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
     }
