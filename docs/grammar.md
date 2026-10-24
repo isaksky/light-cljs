@@ -2886,3 +2886,9 @@ let caught = false;
 try { new Symbol(); } catch (e) { caught = true; }
 caught && String(Symbol(3)) === 'Symbol(3)';
 ```
+
+Numeric binary operators finish ToNumber of the left operand before invoking
+conversion callbacks on the right, so a symbol on the left immediately throws.
+Plus and relational comparisons first obtain both primitive operands.
+Inherited symbol-keyed setters run as ordinary resumable calls and retain the
+receiver, assigned value and assignment-expression result through waits and GC.

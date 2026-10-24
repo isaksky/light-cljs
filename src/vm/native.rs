@@ -1967,6 +1967,15 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        // Numeric binary operators complete ToNumeric on
+                        // each operand in order. A symbol on the left must
+                        // throw before any right-hand conversion callback.
+                        // Plus and comparisons instead need both primitives.
+                        if matches!(target, ConvertTarget::Instruction(Instr::ToNumberPair)) {
+                            operands[*next] = Value::Number(dispatch::to_number(receiver)?);
+                            *next += 1;
+                            continue;
+                        }
                         if let ConvertTarget::StringSplit {
                             limit_undefined, ..
                         } = target

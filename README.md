@@ -212,7 +212,7 @@ Deferred:
   clj-quickjs-19 below.
 - Publication rules for collections containing mutable objects: superseded,
   see clj-quickjs-18 below.
-- Strings/keywords/symbols, structural map keys, ordered maps, sets, lists,
+- Keywords, structural map keys, ordered maps, sets, lists,
   and JavaScript property access on collections.
 
 ### Collection intrinsics and transient builders (clj-quickjs-19)
@@ -1716,12 +1716,13 @@ Supported (`cargo test --lib frontend::tests::computed_member_access`,
   and call chains (`a[b][c]`, `a.b[c].d`, `a[b](c)`), on ordinary objects
   and arrays, with ToPropertyKey of primitive keys: `o[1]` is `o["1"]`,
   `o[-0]` is `o["0"]`, `o[1.5]` is `o["1.5"]`, `o[true]` is `o.true`.
+  Symbol keys retain identity and stay distinct from string keys (clj-quickjs-127).
 - Evaluation order base, key, right-hand side; an `undefined`/`null` base
   throws a catchable `TypeError`.
 
 Deferred:
 
-- Symbol keys (clj-quickjs-127) fail explicitly; boolean bases fail with
+- Boolean bases fail with
   `UnsupportedOperand` (clj-quickjs-39; numbers and strings read through their prototypes since
   clj-quickjs-73); optional chaining.
   (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
@@ -2090,7 +2091,8 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 - `Object.keys(o)` (enumerable keys) and `Object.getOwnPropertyNames(o)` (all string keys) return
   a fresh array in ECMAScript order: array indices (`0 ..= 2^32 - 2`) ascending, then the other
   names in creation order (an array's `length` first among them); holes and inherited properties
-  are not listed. Works on the running task's objects and arrays, embedder objects, built-in
+  are not listed. Symbol keys are excluded by both APIs (clj-quickjs-127).
+  Works on the running task's objects and arrays, embedder objects, built-in
   objects and functions, including ordinary function objects; values without JavaScript
   properties list nothing. `undefined`/`null` throw a catchable `TypeError`.
 - The order is one helper (`vm::keys::own_property_keys`) for `for`-`in` (clj-quickjs-85) and
@@ -2099,7 +2101,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 Deferred:
 
 - Engine-raised error objects (clj-quickjs-230) fail with `UnsupportedOperand`.
-  Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
+  `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`.
 
 ### `instanceof` (clj-quickjs-75)
@@ -2161,7 +2163,7 @@ Deferred:
 
 - Names `Function.prototype` does not have yet
   (`toString`; `call`/`apply`/`bind` are supported) and engine-raised error objects' properties (clj-quickjs-230) fail
-  with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
+  with `UnsupportedOperand`. Symbol keys use identity (clj-quickjs-127).
 
 ### `for`-`in` over own properties (clj-quickjs-85)
 
@@ -2459,7 +2461,8 @@ reference retain neither the object nor extra arguments.
 
 Deferred: sloppy parameter aliasing, `callee`'s restricted accessor, the
 arguments brand for `Object.prototype.toString`, and `Symbol.iterator`
-(symbols are clj-quickjs-127). Verify with `cargo test --test js_functions arguments_`.
+protocol dispatch (the identity is exposed by clj-quickjs-127).
+Verify with `cargo test --test js_functions arguments_`.
 
 ### Concise object-literal methods (clj-quickjs-126)
 

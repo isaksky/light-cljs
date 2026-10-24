@@ -12785,3 +12785,103 @@ fn symbol_callbacks_wait_yield_collect_and_migrate() {
     }
     panic!("symbol callback did not finish");
 }
+
+/// Synthetic fixtures, not light-cljs output: numeric operators finish
+/// ToNumber on the left before invoking conversion on the right.
+#[test]
+fn symbol_numeric_coercion_stops_before_rhs() {
+    for op in ["-", "*", "/", "%", "**", "<<", ">>", ">>>", "&", "|", "^"] {
+        for (left, expected) in [("s", ""), ("({valueOf() { log += 'l'; return s; }})", "l")] {
+            for right in [
+                "({valueOf() { log += 'r'; return 1; }})",
+                "({valueOf() { throw 42; }})",
+                "({valueOf() { __rt.need(1274, 1); return 1; }})",
+            ] {
+                let expression = format!("{left} {op} {right}");
+                let source = format!(
+                    "let s = Symbol(); let log = ''; let caught = false; try {{ {expression}; }} catch (e) {{ caught = true; }} caught && log === '{expected}'"
+                );
+                assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+                let uncaught = format!("let s = Symbol(); let log = ''; {expression}");
+                assert_eq!(
+                    failure(&uncaught).kind(),
+                    VmErrorKind::TypeError,
+                    "{uncaught}"
+                );
+            }
+        }
+    }
+    // Plus and relational operators first convert both objects to primitives.
+    for expression in ["s + rhs", "s < rhs", "s > rhs", "s <= rhs", "s >= rhs"] {
+        let source = format!(
+            "let log = ''; let s = Symbol(); let rhs = {{valueOf() {{ log += 'r'; return 1; }}}}; try {{ {expression}; }} catch (e) {{}} log === 'r'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output: an inherited symbol setter
+/// keeps its receiver and argument through VM waits, GC and migration.
+#[test]
+fn symbol_setters_wait_yield_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r"
+        let key = Symbol('setter');
+        let proto = {};
+        let receiver = Object.create(proto);
+        let value = {payload: 7};
+        let sawThis = false;
+        let sawValue = false;
+        let calls = 0;
+        Object.defineProperty(proto, key, {set(v) {
+            calls++;
+            __rt.need(1275, 1);
+            sawThis = this === receiver;
+            __rt.need(1276, 1);
+            sawValue = v === value;
+            this.saved = v.payload;
+        }});
+        let result = (receiver[key] = value);
+        result === value && sawThis && sawValue && calls === 1 && receiver.saved === 7
+            && Object.getOwnPropertyDescriptor(receiver, key) === undefined
+            && Object.keys(receiver).join() === 'saved'
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Null);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("symbol setter did not finish");
+}

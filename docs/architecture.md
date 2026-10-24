@@ -2341,7 +2341,7 @@ Contract: `src/vm/prototype.rs` (`instance_of`), `src/vm/instr.rs`
 (`BinaryOp::Instanceof`), lowered by the existing out-of-line
 `binary_expr` helper to one appended opcode, as QuickJS's
 `OP_instanceof`. The opcode is InstanceofOperator without the
-`@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance. Bound
+`@@hasInstance` lookup (protocol dispatch deferred), then OrdinaryHasInstance. Bound
 functions delegate to their targets (clj-quickjs-103); otherwise the right operand must be a callable
 object, a primitive left operand is `false`, `F.prototype` is read with
 the ordinary property walk (a built-in method such as `Object.is`
@@ -4233,3 +4233,10 @@ Symbol.prototype, wrappers, registry operations, further well-known symbols
 and well-known protocol dispatch are deferred to their own pellets. This change
 exposes the three identities without changing iteration, instanceof or
 OrdinaryToPrimitive protocol lookup.
+
+Numeric binary conversions complete ToNumber of the left primitive before
+converting the right object. This matters when the left operand is a symbol,
+including an object that returns one: TypeError prevents any right-hand
+conversion callback or wait. The native ToNumberPair continuation stores each
+converted Number before advancing. Plus and relational comparisons preserve
+their distinct rule of first obtaining both primitive operands.

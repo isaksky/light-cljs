@@ -378,7 +378,7 @@ pub(crate) fn set_literal_proto(
 /// `v instanceof target` (`Instanceof`, clj-quickjs-75): ECMAScript
 /// InstanceofOperator and OrdinaryHasInstance, after QuickJS
 /// `JS_IsInstanceOf` and `JS_OrdinaryIsInstanceOf`. `target` must be an
-/// object (`Symbol.hasInstance` is not consulted: symbols do not exist yet)
+/// object (`Symbol.hasInstance` is not consulted: protocol dispatch is deferred)
 /// and callable; a primitive `v` is not an instance of anything; otherwise
 /// `target.prototype` must be an object and the answer is whether it is on
 /// `v`'s prototype chain, compared by identity. Bound functions delegate
