@@ -96,11 +96,13 @@ enum Holder {
     PromiseResolvingFunctions,
     IteratorSource,
     SuspendedGenerator,
+    WeakNotification,
+    EphemeronValue,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 36] = [
+const HOLDERS: [Holder; 38] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -137,17 +139,20 @@ const HOLDERS: [Holder; 36] = [
     Holder::PromiseResolvingFunctions,
     Holder::IteratorSource,
     Holder::SuspendedGenerator,
+    Holder::WeakNotification,
+    Holder::EphemeronValue,
 ];
 
 /// Every root category; a new one fails to compile in
 /// [`holders_of_category`] until it is mapped, and must be listed here.
-const CATEGORIES: [RootCategory; 6] = [
+const CATEGORIES: [RootCategory; 7] = [
     RootCategory::PersistentHandle,
     RootCategory::ScopeLocal,
     RootCategory::TaskFrame,
     RootCategory::ExecutableConstant,
     RootCategory::DependencyOutcome,
     RootCategory::Intrinsic,
+    RootCategory::WeakNotification,
 ];
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
@@ -197,6 +202,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             EngineErrorCause,
             JsMapEntries,
             TypedArrayEdges,
+            EphemeronValue,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -217,6 +223,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
         RootCategory::Intrinsic => &[Intrinsic, TemplateCache],
+        RootCategory::WeakNotification => &[WeakNotification],
     }
 }
 
@@ -236,7 +243,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             TaskGlobalObject,
             EngineErrorCause,
         ],
-        ObjectKind::Native => &[NativePayloadEdges],
+        ObjectKind::Native => &[NativePayloadEdges, EphemeronValue, WeakNotification],
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
             &[PersistentCollectionEdges, DependencyOutcome]
         }
@@ -262,6 +269,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
 /// Where a test lives.
 #[derive(Clone, Copy, Debug)]
 enum File {
+    Collector,
     Promises,
     /// `tests/gc_roots.rs`: through the public API.
     GcRoots,
@@ -284,6 +292,14 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::WeakNotification => Coverage {
+            retains: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
+            reclaims: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
+        },
+        Holder::EphemeronValue => Coverage {
+            retains: (Collector, "ephemeron_value_lives_only_with_key"),
+            reclaims: (Collector, "ephemeron_value_lives_only_with_key"),
+        },
         Holder::IteratorSource => Coverage {
             retains: (Inventory, "builtin_iterator_source_retains_and_reclaims"),
             reclaims: (Inventory, "builtin_iterator_source_retains_and_reclaims"),
@@ -431,6 +447,7 @@ fn every_category_and_kind_has_retention_and_reclamation_tests() {
         let Coverage { retains, reclaims } = coverage(holder);
         for (file, name) in [retains, reclaims] {
             let source = match file {
+                File::Collector => include_str!("gc.rs"),
                 File::GcRoots => GC_ROOTS_SOURCE,
                 File::Inventory => INVENTORY_SOURCE,
                 File::Gc => GC_SOURCE,

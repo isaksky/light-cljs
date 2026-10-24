@@ -23,6 +23,35 @@
 //! * [`RootCategory`] names every root source kind; each root is reported
 //!   with its category so tests can inspect the root snapshot.
 //!
+//! # Conditional heap edges
+//!
+//! [`Trace::trace`] still reports only strong edges. Heap objects and native
+//! payloads enumerate [`WeakSlot`] and [`EphemeronTable`] storage through
+//! [`Trace::trace_conditional`], without performing any mutation themselves.
+//! These payloads are task-owned. Weak targets never mark; a table value
+//! marks only when both its owner and key have marked. Reached entries with
+//! unmarked keys wait in a key-indexed worklist. Marking a key awakens its
+//! entries once; discovering another table adds its entries to the same
+//! worklist. Draining it and the strong grey stack reaches the least
+//! fixpoint, including chains and cycles, without rescanning all tables.
+//! Conditional marking/clearing costs expected O(live objects + strong
+//! edges + entries/weak slots in reached owners), with O(live objects +
+//! reached entries) temporary storage; the existing sweep scans all slots.
+//!
+//! Before sweep, reached owners lose entries with unmarked keys and their
+//! weak slots with unmarked targets are emptied. Cleared notifying slots
+//! produce [`ClearedWeakSlot`] records (owner + owner-defined token; never
+//! the dead target). The internal list in [`CollectionReport`] is delivered
+//! to observers after the pause and every heap lock ends. Each retained
+//! record is a registered [`RootCategory::WeakNotification`] root of its
+//! owner, preserving callback/held-data strong edges through subsequent or
+//! reentrant collections until the record is dropped. It does not retain
+//! the heap itself. Consumers retain/clone records if queuing later work;
+//! no JavaScript or user callbacks run during marking or clearing. The
+//! embedder's [`WeakHandle`](super::WeakHandle) remains generation-checked
+//! and lazy, separate from heap-internal slots. JavaScript WeakMap, WeakRef
+//! job keep-alives and FinalizationRegistry scheduling are later layers.
+//!
 //! # Mutators
 //!
 //! A thread is **in heap access** while it holds at least one mutator
@@ -130,7 +159,7 @@
 //! (`research/quickjs/doc/quickjs.texi`, "Runtime and contexts"); the
 //! registry and rendezvous above are what replace that restriction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard, PoisonError, Weak};
@@ -161,15 +190,186 @@ pub(crate) enum RootCategory {
     /// and the built-in functions, from the realm's creation until the
     /// heap is dropped.
     Intrinsic,
+    /// Owners of cleared weak slots while their notification is retained.
+    WeakNotification,
 }
 
 /// Report every heap reference held by `self`.
 ///
-/// Implementations must visit each [`ObjectId`] stored directly in the
+/// Implementations must visit each strong [`ObjectId`] stored directly in the
 /// structure; they must not allocate on the heap, take heap locks, or run
 /// bytecode (the collector calls them while holding the heap locks).
 pub(crate) trait Trace {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId));
+
+    /// Report every conditional edge separately from strong edges. Called
+    /// on reached heap objects for discovery and again for clearing before
+    /// sweep. Implementations only enumerate storage; the visitor performs
+    /// all mutations. No callbacks, heap access, or payload destruction.
+    fn trace_conditional(&mut self, _visit: &mut dyn ConditionalVisitor) {}
+}
+
+/// Collector-owned operations on conditional storage inside a heap object.
+/// Wrappers must forward this method to every embedded conditional field.
+pub(crate) trait ConditionalVisitor {
+    fn weak_slot(&mut self, slot: &mut WeakSlot);
+    fn ephemeron_table(&mut self, table: &mut EphemeronTable);
+}
+
+/// A heap-internal edge that never retains its target. Access requires the
+/// owner's normal heap access discipline, including rooting a dereferenced
+/// target before leaving that access. Not an embedder `WeakHandle`.
+#[derive(Debug)]
+pub(crate) struct WeakSlot {
+    target: Option<ObjectId>,
+    notification: Option<u64>,
+}
+
+// Constructors/accessors are consumed by the later weak-object pellets.
+#[allow(dead_code)]
+impl WeakSlot {
+    pub(crate) fn new(target: ObjectId) -> Self {
+        Self {
+            target: Some(target),
+            notification: None,
+        }
+    }
+
+    /// `token` identifies this registration within its owner. Clearing
+    /// reports the owner and token, never the reclaimed target identity.
+    pub(crate) fn notifying(target: ObjectId, token: u64) -> Self {
+        Self {
+            target: Some(target),
+            notification: Some(token),
+        }
+    }
+
+    pub(crate) fn get(&self) -> Option<ObjectId> {
+        self.target
+    }
+}
+
+impl Trace for WeakSlot {
+    fn trace(&self, _visit: &mut dyn FnMut(ObjectId)) {}
+
+    fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
+        visit.weak_slot(self);
+    }
+}
+
+/// A table's values are strong only if both its owner and each key are
+/// reachable independently. Keys use private identity comparison. Report
+/// this storage through `trace_conditional`, never through `trace`.
+#[derive(Debug, Default)]
+pub(crate) struct EphemeronTable {
+    entries: HashMap<ObjectId, Value>,
+}
+
+#[allow(dead_code)]
+impl EphemeronTable {
+    pub(crate) fn insert(&mut self, key: ObjectId, value: Value) -> Option<Value> {
+        self.entries.insert(key, value)
+    }
+
+    pub(crate) fn get(&self, key: ObjectId) -> Option<&Value> {
+        self.entries.get(&key)
+    }
+
+    pub(crate) fn remove(&mut self, key: ObjectId) -> Option<Value> {
+        let removed = self.entries.remove(&key);
+        self.compact();
+        removed
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// HashMap iteration visits capacity, so keep it proportional to the
+    /// remaining entries after deletions (amortized linear shrink work).
+    fn compact(&mut self) {
+        if self.entries.capacity() > self.entries.len().saturating_mul(4) {
+            self.entries.shrink_to_fit();
+        }
+    }
+}
+
+impl Trace for EphemeronTable {
+    fn trace(&self, _visit: &mut dyn FnMut(ObjectId)) {}
+
+    fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
+        visit.ephemeron_table(self);
+    }
+}
+
+/// A retained notification roots its owner (and its callback/held-data
+/// strong edges) until consumed by dropping the notification. The target
+/// that died is never rooted or exposed. Cloning extends the root lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClearedWeakSlot {
+    root: Arc<NotificationRoot>,
+    token: u64,
+}
+
+#[allow(dead_code)]
+impl ClearedWeakSlot {
+    pub(crate) fn owner(&self) -> ObjectId {
+        self.root.owner
+    }
+    pub(crate) fn token(&self) -> u64 {
+        self.token
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NotificationRoot {
+    owner: ObjectId,
+}
+
+impl RootSource for NotificationRoot {
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
+        visit(RootCategory::WeakNotification, self.owner);
+    }
+}
+
+#[derive(Default)]
+struct DiscoverConditional {
+    entries: Vec<(ObjectId, Value)>,
+    has_storage: bool,
+}
+
+impl ConditionalVisitor for DiscoverConditional {
+    fn weak_slot(&mut self, _slot: &mut WeakSlot) {
+        self.has_storage = true;
+    }
+
+    fn ephemeron_table(&mut self, table: &mut EphemeronTable) {
+        self.has_storage = true;
+        self.entries
+            .extend(table.entries.iter().map(|(&k, v)| (k, v.clone())));
+    }
+}
+
+struct ClearConditional<'a> {
+    marked: &'a HashSet<ObjectId>,
+    owner: ObjectId,
+    cleared: &'a mut Vec<(ObjectId, u64)>,
+}
+
+impl ConditionalVisitor for ClearConditional<'_> {
+    fn weak_slot(&mut self, slot: &mut WeakSlot) {
+        if slot.target.is_some_and(|id| !self.marked.contains(&id)) {
+            slot.target = None;
+            if let Some(token) = slot.notification {
+                self.cleared.push((self.owner, token));
+            }
+        }
+    }
+
+    fn ephemeron_table(&mut self, table: &mut EphemeronTable) {
+        table.entries.retain(|key, _| self.marked.contains(key));
+        table.compact();
+    }
 }
 
 impl Trace for Value {
@@ -191,6 +391,10 @@ impl Trace for Value {
 impl<T: Trace> Trace for [T] {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.iter().for_each(|v| v.trace(visit));
+    }
+
+    fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
+        self.iter_mut().for_each(|v| v.trace_conditional(visit));
     }
 }
 
@@ -451,6 +655,10 @@ pub struct CollectionReport {
     /// Unregistered threads outside heap access are not listed.
     pub participants: Vec<(ThreadId, MutatorState)>,
     pub stats: CollectStats,
+    /// Collector-internal hand-off for weak-object implementations. Each
+    /// retained entry roots its owner until it is consumed (dropped).
+    #[allow(dead_code)] // No JavaScript weak-object surface in this pellet.
+    pub(crate) cleared_weak_slots: Vec<ClearedWeakSlot>,
 }
 
 /// Told about every completed collection
@@ -754,7 +962,8 @@ impl Heap {
         let scopes = lock(&self.scopes);
         // Strong references keep sources alive while traced; they are dropped
         // after every heap lock is released.
-        let sources = lock(&self.sources).live();
+        let mut registry = lock(&self.sources);
+        let sources = registry.live();
 
         let mut grey = Vec::new();
         let mut root_count = 0;
@@ -772,11 +981,57 @@ impl Heap {
 
         let mut objects = lock(&self.objects);
         let mut live = 0;
+        let mut marked = HashSet::new();
+        // Only reached owners contribute entries. Each waiting entry is
+        // awakened once, exactly when its key first becomes marked.
+        let mut pending: HashMap<ObjectId, Vec<Value>> = HashMap::new();
+        let mut conditional_owners = Vec::new();
         while let Some(id) = grey.pop() {
             if objects.mark(id, &mut |child| grey.push(child)) {
                 live += 1;
+                marked.insert(id);
+                if let Some(values) = pending.remove(&id) {
+                    values.trace(&mut |child| grey.push(child));
+                }
+                let mut discovery = DiscoverConditional::default();
+                objects
+                    .get_mut(id)
+                    .unwrap()
+                    .trace_conditional(&mut discovery);
+                if discovery.has_storage {
+                    conditional_owners.push(id);
+                }
+                for (key, value) in discovery.entries {
+                    if marked.contains(&key) {
+                        value.trace(&mut |child| grey.push(child));
+                    } else {
+                        pending.entry(key).or_default().push(value);
+                    }
+                }
             }
         }
+        // Empty grey plus no awakened values is the ephemeron fixpoint.
+        // Clear before sweep, while all identities and marks are valid.
+        let mut cleared = Vec::new();
+        for owner in conditional_owners {
+            objects
+                .get_mut(owner)
+                .unwrap()
+                .trace_conditional(&mut ClearConditional {
+                    marked: &marked,
+                    owner,
+                    cleared: &mut cleared,
+                });
+        }
+        let cleared_weak_slots = cleared
+            .into_iter()
+            .map(|(owner, token)| {
+                let root = Arc::new(NotificationRoot { owner });
+                let source: Arc<dyn RootSource> = root.clone();
+                registry.register(Arc::downgrade(&source));
+                ClearedWeakSlot { root, token }
+            })
+            .collect();
         let garbage: Vec<HeapObject> = objects.sweep();
         // No atom operation is in progress (the world is stopped), so every
         // retired atom box is unreachable: release them now rather than at
@@ -801,8 +1056,9 @@ impl Heap {
                 .filter_map(|(&id, t)| Some((id, t.stop_state()?)))
                 .collect(),
             stats,
+            cleared_weak_slots,
         };
-        drop((objects, scopes, roots, world));
+        drop((objects, registry, scopes, roots, world));
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, retired, sources));
@@ -909,6 +1165,339 @@ mod tests {
 
     fn plain(heap: &Heap) -> ObjectId {
         heap.alloc(HeapObject::host_object()).unwrap()
+    }
+
+    #[derive(Debug, Default)]
+    struct ConditionalEdges {
+        strong: Vec<Value>,
+        weak: Vec<WeakSlot>,
+        table: EphemeronTable,
+        visits: Option<Arc<AtomicUsize>>,
+    }
+
+    impl Trace for ConditionalEdges {
+        fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+            self.strong.trace(visit);
+        }
+
+        fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
+            if let Some(count) = &self.visits {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+            self.weak.trace_conditional(visit);
+            self.table.trace_conditional(visit);
+        }
+    }
+
+    impl NativePayload for ConditionalEdges {
+        fn shareability(&self) -> Shareability {
+            Shareability::TaskOwned
+        }
+    }
+
+    fn conditional(heap: &Heap, payload: ConditionalEdges) -> ObjectId {
+        heap.alloc(HeapObject::Native(Box::new(payload))).unwrap()
+    }
+
+    fn conditional_read<R>(heap: &Heap, id: ObjectId, f: impl FnOnce(&ConditionalEdges) -> R) -> R {
+        heap.read(id, |o| {
+            let HeapObject::Native(payload) = o else {
+                panic!("not native")
+            };
+            let any: &dyn Any = &**payload;
+            f(any.downcast_ref::<ConditionalEdges>().unwrap())
+        })
+        .unwrap()
+    }
+
+    fn table(heap: &Heap, key: ObjectId, value: Value) -> ObjectId {
+        let mut table = EphemeronTable::default();
+        table.insert(key, value);
+        conditional(
+            heap,
+            ConditionalEdges {
+                table,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn weak_slot_does_not_retain_and_is_cleared() {
+        let heap = Arc::new(Heap::default());
+        let target = plain(&heap);
+        let owner = conditional(
+            &heap,
+            ConditionalEdges {
+                weak: vec![WeakSlot::new(target)],
+                ..Default::default()
+            },
+        );
+        let _owner = Rooted::new(&heap, Value::Object(owner));
+        let target_root = Rooted::new(&heap, Value::Object(target));
+        for _ in 0..2 {
+            heap.collect().unwrap();
+            assert_eq!(
+                conditional_read(&heap, owner, |p| p.weak[0].get()),
+                Some(target)
+            );
+        }
+        drop(target_root);
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert_eq!(conditional_read(&heap, owner, |p| p.weak[0].get()), None);
+        assert!(!heap.is_live(target));
+        let replacement = plain(&heap);
+        assert_ne!(replacement, target);
+        assert_eq!(conditional_read(&heap, owner, |p| p.weak[0].get()), None);
+    }
+
+    #[test]
+    fn ephemeron_value_lives_only_with_key() {
+        let heap = Arc::new(Heap::default());
+        let (key, value) = (plain(&heap), plain(&heap));
+        let owner = table(&heap, key, Value::Object(value));
+        let _owner = Rooted::new(&heap, Value::Object(owner));
+        let key_root = Rooted::new(&heap, Value::Object(key));
+        heap.collect().unwrap();
+        assert!(heap.is_live(value));
+        assert_eq!(
+            conditional_read(&heap, owner, |p| p.table.get(key).cloned()),
+            Some(Value::Object(value))
+        );
+        drop(key_root);
+        assert_eq!(heap.collect().unwrap().reclaimed, 2);
+        assert_eq!(conditional_read(&heap, owner, |p| p.table.len()), 0);
+        assert!(!heap.is_live(key) && !heap.is_live(value));
+    }
+
+    #[test]
+    fn ephemeron_cycles_are_reclaimed() {
+        let heap = Arc::new(Heap::default());
+        let parent = native(&heap, vec![]);
+        let child = native(&heap, vec![Value::Object(parent)]);
+        set_edges(&heap, parent, vec![Value::Object(child)]);
+        let value = plain(&heap);
+        let first = table(&heap, child, Value::Object(value));
+        let second = table(&heap, value, Value::Number(1.0));
+        let _roots = [first, second].map(|id| Rooted::new(&heap, Value::Object(id)));
+        assert_eq!(heap.collect().unwrap().reclaimed, 3);
+        for id in [first, second] {
+            assert_eq!(conditional_read(&heap, id, |p| p.table.len()), 0);
+        }
+        assert!([parent, child, value].iter().all(|&id| !heap.is_live(id)));
+    }
+
+    #[test]
+    fn ephemeron_chain_reaches_fixpoint() {
+        let heap = Arc::new(Heap::default());
+        let keys: Vec<_> = (0..101).map(|_| plain(&heap)).collect();
+        let visits = Arc::new(AtomicUsize::new(0));
+        let tables: Vec<_> = (0..100)
+            .map(|i| {
+                let mut table = EphemeronTable::default();
+                table.insert(keys[i], Value::Object(keys[i + 1]));
+                conditional(
+                    &heap,
+                    ConditionalEdges {
+                        table,
+                        visits: Some(visits.clone()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let _roots: Vec<_> = tables
+            .iter()
+            .map(|&id| Rooted::new(&heap, Value::Object(id)))
+            .collect();
+        let first = Rooted::new(&heap, Value::Object(keys[0]));
+        let stats = heap.collect().unwrap();
+        assert_eq!((stats.live, stats.reclaimed), (201, 0));
+        assert_eq!(
+            visits.swap(0, Ordering::Relaxed),
+            200,
+            "one discovery and one cleanup visit per table"
+        );
+        assert!(keys.iter().all(|&id| heap.is_live(id)));
+        drop(first);
+        assert_eq!(heap.collect().unwrap().reclaimed, 101);
+        assert_eq!(visits.load(Ordering::Relaxed), 200);
+        for id in tables {
+            assert_eq!(conditional_read(&heap, id, |p| p.table.len()), 0);
+        }
+    }
+
+    #[test]
+    fn value_referencing_its_own_key_does_not_retain_it() {
+        let heap = Arc::new(Heap::default());
+        let key = plain(&heap);
+        let value = native(&heap, vec![Value::Object(key)]);
+        let owner = table(&heap, key, Value::Object(value));
+        let _root = Rooted::new(&heap, Value::Object(owner));
+        assert_eq!(heap.collect().unwrap().reclaimed, 2);
+        assert_eq!(conditional_read(&heap, owner, |p| p.table.len()), 0);
+    }
+
+    #[test]
+    fn cleared_weak_slots_are_notified_after_the_pause() {
+        struct Observer {
+            heap: Arc<Heap>,
+            seen: std::sync::Mutex<Vec<ClearedWeakSlot>>,
+        }
+        impl CollectionObserver for Observer {
+            fn collected(&self, report: &CollectionReport) {
+                // Every heap lock and the pause must have ended before delivery.
+                let _access = self.heap.enter_mutator(Access::Op);
+                let _allocated = plain(&self.heap);
+                lock(&self.seen).extend(report.cleared_weak_slots.iter().cloned());
+            }
+        }
+        let heap = Arc::new(Heap::default());
+        let target = plain(&heap);
+        let held = plain(&heap);
+        let owner = conditional(
+            &heap,
+            ConditionalEdges {
+                strong: vec![Value::Object(held)],
+                weak: vec![WeakSlot::notifying(target, 42), WeakSlot::new(target)],
+                ..Default::default()
+            },
+        );
+        let root = Rooted::new(&heap, Value::Object(owner));
+        let observer = Arc::new(Observer {
+            heap: heap.clone(),
+            seen: Default::default(),
+        });
+        heap.observe_collections(Arc::downgrade(&observer) as _);
+        heap.collect().unwrap();
+        assert!(!heap.is_live(target));
+        {
+            let seen = lock(&observer.seen);
+            assert_eq!(seen.len(), 1);
+            assert_eq!((seen[0].owner(), seen[0].token()), (owner, 42));
+        }
+        drop(root);
+        heap.collect().unwrap();
+        assert_eq!(
+            lock(&observer.seen).len(),
+            1,
+            "clear is reported exactly once"
+        );
+        assert!(
+            heap.is_live(owner) && heap.is_live(held),
+            "unconsumed notification roots owner and its held data"
+        );
+        assert!(
+            heap.root_snapshot()
+                .unwrap()
+                .contains(&(RootCategory::WeakNotification, owner))
+        );
+        lock(&observer.seen).clear();
+        heap.collect().unwrap();
+        assert!(!heap.is_live(owner) && !heap.is_live(held));
+    }
+
+    #[test]
+    fn ephemeron_values_discover_tables_and_keep_weak_targets() {
+        let heap = Arc::new(Heap::default());
+        let key = plain(&heap);
+        let target = plain(&heap);
+        let second = table(&heap, key, Value::Object(target));
+        let first = table(&heap, key, Value::Object(second));
+        let owner = conditional(
+            &heap,
+            ConditionalEdges {
+                weak: vec![WeakSlot::new(target)],
+                ..Default::default()
+            },
+        );
+        // Only the first table is directly rooted. Its value discovers the
+        // second table after marking has already reached the key.
+        let _roots = [key, first, owner].map(|id| Rooted::new(&heap, Value::Object(id)));
+        heap.collect().unwrap();
+        assert!(heap.is_live(second) && heap.is_live(target));
+        assert_eq!(
+            conditional_read(&heap, owner, |p| p.weak[0].get()),
+            Some(target)
+        );
+    }
+
+    #[test]
+    fn notifications_are_roots_during_reentrant_collection() {
+        struct Observer {
+            heap: Arc<Heap>,
+            release: std::sync::Mutex<Option<Rooted>>,
+            owner: ObjectId,
+        }
+        impl CollectionObserver for Observer {
+            fn collected(&self, report: &CollectionReport) {
+                if !report.cleared_weak_slots.is_empty() {
+                    drop(lock(&self.release).take());
+                    self.heap.collect().unwrap();
+                    assert!(
+                        self.heap.is_live(self.owner),
+                        "outer report roots the owner before consumption"
+                    );
+                }
+            }
+        }
+        let heap = Arc::new(Heap::default());
+        let target = plain(&heap);
+        let owner = conditional(
+            &heap,
+            ConditionalEdges {
+                weak: vec![WeakSlot::notifying(target, 7)],
+                ..Default::default()
+            },
+        );
+        let observer = Arc::new(Observer {
+            release: std::sync::Mutex::new(Some(Rooted::new(&heap, Value::Object(owner)))),
+            heap: heap.clone(),
+            owner,
+        });
+        heap.observe_collections(Arc::downgrade(&observer) as _);
+        heap.collect().unwrap();
+        assert!(heap.is_live(owner));
+        heap.collect().unwrap();
+        assert!(!heap.is_live(owner), "unretained report has been consumed");
+    }
+
+    #[test]
+    fn unreachable_table_does_not_retain_value_for_a_rooted_key() {
+        let heap = Arc::new(Heap::default());
+        let (key, value) = (plain(&heap), plain(&heap));
+        let owner = table(&heap, key, Value::Object(value));
+        let _key = Rooted::new(&heap, Value::Object(key));
+        assert_eq!(heap.collect().unwrap().reclaimed, 2);
+        assert!(!heap.is_live(owner) && !heap.is_live(value));
+    }
+
+    #[test]
+    fn stale_conditional_keys_and_targets_cannot_match_reused_slots() {
+        let heap = Arc::new(Heap::default());
+        let stale = plain(&heap);
+        heap.collect().unwrap();
+        let live = plain(&heap);
+        assert_eq!(stale.index, live.index);
+        assert_ne!(stale.generation, live.generation);
+        let value = plain(&heap);
+        let mut table = EphemeronTable::default();
+        table.insert(stale, Value::Object(value));
+        let owner = conditional(
+            &heap,
+            ConditionalEdges {
+                table,
+                weak: vec![WeakSlot::new(stale)],
+                ..Default::default()
+            },
+        );
+        let _roots = [live, owner].map(|id| Rooted::new(&heap, Value::Object(id)));
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        conditional_read(&heap, owner, |p| {
+            assert_eq!(p.table.len(), 0);
+            assert_eq!(p.weak[0].get(), None);
+        });
+        assert!(!heap.is_live(value));
     }
 
     fn set_edges(heap: &Heap, id: ObjectId, edges: Vec<Value>) {

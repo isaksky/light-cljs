@@ -133,6 +133,67 @@ collected by a precise, nonmoving, stop-the-world mark/sweep
 - **No unsafe code.** Objects are reached only under the `objects` lock;
   reclaimed objects are dropped after all heap locks are released.
 
+### Weak slots and ephemerons (clj-quickjs-172)
+
+`Trace::trace` keeps its strong-edge meaning. A heap kind or `NativePayload`
+enumerates mutable conditional storage in `Trace::trace_conditional` by
+calling `ConditionalVisitor::weak_slot` and `ephemeron_table`. The visitor
+owns discovery and clearing; implementations only enumerate fields, with
+the same no-callback/no-heap-access rule as strong tracing. `HeapObject`
+forwards the method to its payload. No new object kind is needed; native
+payloads with this mutable storage declare `TaskOwned`, and ordinary Map
+entries keep their existing strong semantics.
+
+- `WeakSlot::new(target)` holds an optional `ObjectId` without retaining it.
+  `get()` returns that identity until collection empties the slot. Reading
+  or upgrading requires the owner's normal mutator/heap access discipline;
+  root the target before leaving that access. This differs from the
+  embedder's lazy, generation-checked `WeakHandle`.
+- `EphemeronTable` stores private identity keys and arbitrary `Value`s,
+  with `insert`, `get`, `remove` and `len`. Neither keys nor values are
+  reported as strong edges. The value marks only if both the table's owner
+  and its key mark independently. A value pointing back to its own key,
+  or a cycle involving several keys/tables, cannot establish that initial
+  reachability.
+- Marking drains the strong grey stack and discovers conditional storage
+  only in reached owners. An entry with an already-marked key queues its
+  value immediately; otherwise a temporary index stores it under the key.
+  Marking that key awakens its waiting values once. Values can reach more
+  tables, whose entries join the same index. Empty worklists give the least
+  fixpoint. Every reached entry is discovered once and activated at most
+  once, including the 100-table chain. Expected marking/clearing work is
+  O(live objects + strong edges + reached entries/weak slots), with O(live
+  objects + reached entries) temporary storage. Sparse tables shrink after
+  deletion to keep iteration capacity proportional to entries; the existing
+  sweep scans all object slots.
+- Before sweep, inside the same pause, the visitor removes entries with
+  unmarked keys and empties slots with unmarked targets. Thus surviving
+  conditional storage never points into reclaimed/reused slots; generation
+  checks remain a second defence. Unreachable owners are swept normally.
+- `WeakSlot::notifying(target, token)` requests a `ClearedWeakSlot` when
+  emptied. The owner supplies a token unique to that registration. The
+  internal `CollectionReport::cleared_weak_slots` list contains owner/token
+  pairs, never dead-target identities. Every record registers a root source
+  in the appended `WeakNotification` category before the pause ends. It
+  roots the owner, whose ordinary strong edges must retain callback/held
+  data; it never revives the target. Retaining/cloning a record preserves
+  that root through concurrent/reentrant collections, and dropping the last
+  copy consumes it. Queues retaining records belong outside the heap, like
+  persistent roots; storing them in payloads would root cycles forever.
+  Records do not retain the runtime itself.
+
+Observers receive the list only after the rendezvous and all heap locks
+end, alongside the ordinary collection report. They may allocate and retain
+notifications for later processing; no JavaScript, host callback or payload
+destructor runs in the pause. There is no JavaScript surface here: WeakMap
+and WeakSet build on ephemerons, WeakRef must add job keep-alives, and
+FinalizationRegistry must add registration, held-data and job scheduling.
+Collector tests use original native payload fixtures in `heap::gc::tests`.
+QuickJS's `test_weak_map_cycles`, `test_weak_ref` and
+`test_finalization_registry` (`research/quickjs/tests/test_builtin.js`,
+revision `7d1c13c5d8f8`) informed the semantics; its reference-count/cycle
+removal algorithm is not used and no upstream text was adapted.
+
 ## Safepoints and mutator registration (clj-quickjs-17)
 
 `src/heap/gc.rs` (registry, rendezvous, contract), `src/vm/dispatch.rs`
@@ -211,6 +272,8 @@ public API cannot reach.
 | persistent collection edges | `PersistentHandle` (`Map` → `Vector` → `Occurrence`) | `persistent_collection_edges_retain` | `persistent_collection_edges_reclaim` |
 | executable object constants | `ExecutableConstant` | `executable_constant_retains` *(lib)* | `executable_constant_reclaims` *(lib)* |
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
+| ephemeron values, conditional on reached owner and key | `PersistentHandle` (`Native`, conditional storage) | `ephemeron_value_lives_only_with_key` *(lib, heap::gc)* | `ephemeron_value_lives_only_with_key` *(lib, heap::gc)* |
+| unconsumed cleared-slot notification owner and held data | `WeakNotification` (`Native`) | `cleared_weak_slots_are_notified_after_the_pause` *(lib, heap::gc)* | `cleared_weak_slots_are_notified_after_the_pause` *(lib, heap::gc)* |
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
 | realm template-site cache | `Intrinsic` (`Array`, cooked → raw) | `template_cache_retains_and_reclaims` *(lib)* | `template_cache_retains_and_reclaims` *(lib)* |

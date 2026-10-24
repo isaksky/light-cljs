@@ -3340,3 +3340,13 @@ Set compilation and string matching share the existing catchable step bounds;
 normal builds use the existing generated Unicode 17 tables without new data
 or dependencies. Run `CARGO_BUILD_JOBS=3 cargo test --lib regexp:: -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
+
+### Collector weak edges (clj-quickjs-172)
+
+Supported internally (`cargo test --lib heap::gc::`): heap/native payload
+weak slots, ephemeron tables with a key-indexed marking fixpoint, and
+cleared-slot notifications delivered after the collection pause. Retained
+notifications root their owners and held data until consumed. Existing Map
+entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
+Deferred JavaScript surfaces: WeakMap/WeakSet, WeakRef job keep-alives and
+FinalizationRegistry registration and cleanup jobs.

@@ -4262,3 +4262,12 @@ Literal pattern errors retain the current catchable construction-time policy.
 ! /[[a-z]--[aeiou]]/v.test('e');
 'aAbBcC#4'.replace(/\P{Lower}/gvi, 'X') === 'aAbBcCXX';
 ```
+
+### Collector weak edges (clj-quickjs-172)
+
+Execution: the collector supports heap-internal weak slots and ephemeron
+tables, clears dead conditional edges before sweeping, and hands notifying
+slots to observers after the pause with rooted owners. This introduces no
+JavaScript syntax or globals and does not change ordinary Map semantics.
+Explicit gaps: JavaScript WeakMap/WeakSet, WeakRef and its job keep-alives,
+and FinalizationRegistry registration and cleanup scheduling remain deferred.

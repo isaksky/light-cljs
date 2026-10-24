@@ -161,12 +161,16 @@ pub(crate) enum ObjectKind {
 
 /// Rust data stored inside a heap object, for native operations.
 ///
-/// The payload's [`Trace`] must report every [`ObjectId`] it stores; an
+/// The payload's [`Trace`] must report every strong [`ObjectId`] it stores;
+/// weak slots and ephemeron tables must instead be enumerated by
+/// [`Trace::trace_conditional`]. Such mutable conditional payloads are
+/// task-owned, and their callback/held-data fields remain strong edges. An
 /// unreported edge is a dangling reference after the next collection (seen as
 /// a stale identity, never as memory unsafety). A payload must not own a
-/// [`Rooted`]: that would keep its target (and any cycle through it) alive
-/// forever. Reclaimed payloads are dropped after the collector has released
-/// every heap lock. Payloads are reached only under the heap's object lock,
+/// [`Rooted`] or a cleared-slot notification: those roots would keep their
+/// targets (and any cycles through them) alive forever. Notification queues
+/// belong outside the heap. Reclaimed payloads are dropped after the collector
+/// has released every heap lock. Payloads are reached only under the heap's object lock,
 /// so they need `Send` but not `Sync`.
 ///
 /// Every payload type must also declare its publication category
@@ -288,6 +292,31 @@ impl Trace for HeapObject {
             HeapObject::PromiseReaction(r) => r.trace(visit),
             HeapObject::PromiseResolving(r) => r.trace(visit),
             HeapObject::Generator(g) => g.trace(visit),
+        }
+    }
+
+    fn trace_conditional(&mut self, visit: &mut dyn gc::ConditionalVisitor) {
+        match self {
+            HeapObject::Plain(o) => o.trace_conditional(visit),
+            HeapObject::Native(p) => p.trace_conditional(visit),
+            HeapObject::Vector(v) => v.trace_conditional(visit),
+            HeapObject::Map(m) => m.trace_conditional(visit),
+            HeapObject::Occurrence(o) => o.trace_conditional(visit),
+            HeapObject::Builder(b) => b.trace_conditional(visit),
+            HeapObject::Function(f) => f.trace_conditional(visit),
+            HeapObject::Cell(c) => c.trace_conditional(visit),
+            // Atom contents are exclusively strong, read through its Arc.
+            HeapObject::Atom(_) => {}
+            HeapObject::Builtin(f) => f.trace_conditional(visit),
+            HeapObject::Array(a) => a.trace_conditional(visit),
+            HeapObject::BoundFunction(f) => f.trace_conditional(visit),
+            HeapObject::JsMap(m) => m.trace_conditional(visit),
+            HeapObject::ArrayBuffer(b) => b.trace_conditional(visit),
+            HeapObject::TypedArray(a) => a.trace_conditional(visit),
+            HeapObject::Promise(p) => p.trace_conditional(visit),
+            HeapObject::PromiseReaction(r) => r.trace_conditional(visit),
+            HeapObject::PromiseResolving(r) => r.trace_conditional(visit),
+            HeapObject::Generator(g) => g.trace_conditional(visit),
         }
     }
 }
