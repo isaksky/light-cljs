@@ -1067,7 +1067,8 @@ fn realm_intrinsics_retain() {
     // NumberFormat adds one prototype and five built-ins (-213).
     // Date non-locale formatting adds four built-ins (-183).
     // Iteration adds three prototypes and six built-ins (-237).
-    assert_eq!(rt.heap_usage().objects.builtin, 202);
+    // BigInt width wrapping adds two built-in methods (-204).
+    assert_eq!(rt.heap_usage().objects.builtin, 204);
     assert_eq!(rt.heap_usage().objects.plain, 38);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
