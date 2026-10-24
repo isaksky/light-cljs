@@ -551,3 +551,14 @@ Semantic references: `research/quickjs/quickjs.c` (`JS_ToBigIntCtorFree`,
 `research/quickjs/tests/test_bigint.js::test_bigint2`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The implementation and synthetic
 source tests are written fresh; no QuickJS source or fixture is copied.
+
+## Date UTC field access (clj-quickjs-181)
+
+`tests/js_source.rs::date_utc_fields` adapts the `setUTCHours(18, 10, 11)`
+timestamp/ISO row from `research/quickjs/tests/test_builtin.js::test_date`
+(lines 660–663), revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). The QuickJS copyright and MIT permission notice from
+`research/quickjs/LICENSE` is retained on that test. Other fixtures are
+synthetic, not light-cljs output. `research/quickjs/quickjs.c::get_date_field`,
+`set_date_field` and `set_date_fields` were semantic references at that revision;
+the table-driven Rust methods and continuation extension were written afresh.

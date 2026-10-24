@@ -5230,3 +5230,27 @@ comparisons finish both observable ToPrimitive conversions in source order
 before entering this parser. Budget boundaries preserve parse progress across
 GC, migration and cancellation. Arithmetic retains its existing one-instruction
 leaf policy; long StringToBigInt operations explicitly use native steps.
+
+## Date UTC field getters and setters (clj-quickjs-181)
+
+Two append-only parameterized built-in kinds install fifteen methods after
+Date's existing intrinsics. The getter index selects one of the eight shared
+UTC decomposition fields. The setter index selects its first field and a
+metadata table supplies the maximum argument count and method length.
+Getters are bounded leaves; the shared integer decomposition covers the full
+TimeClip range without host input.
+
+`native::ConvertTarget::DateSetUtcField` retains the original numeric time
+before callbacks run. Its ordinary traced operand vector retains the receiver
+and up to four arguments, including arguments still awaiting conversion.
+The receiver is branded before conversion and excluded from ToPrimitive.
+Each argument completes ToNumber (with the existing numeric-string limit)
+before the next begins, even for invalid dates and non-finite earlier numbers.
+Missing first arguments become undefined; absent optional fields are retained.
+
+Completion uses the original time's decomposition, replaces supplied fields,
+then calls shared MakeDay/MakeTime/MakeDate and the existing TimeClip slot
+writer. Invalid original times return NaN without writing the slot, except
+that the full-year setter uses the epoch as its base. This preserves callback
+slot mutations where required while normal completion overwrites them using
+the original snapshot. No new heap kind or host effect is introduced.

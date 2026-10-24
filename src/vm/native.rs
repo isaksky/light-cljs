@@ -367,6 +367,10 @@ enum ConvertTarget {
     DateConstructor,
     DateUtc,
     DateSetTime,
+    DateSetUtcField {
+        first: u8,
+        time: f64,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -1153,6 +1157,20 @@ pub(crate) fn start_builtin(
             }
             (ConvertTarget::DateUtc, fields, Hint::Number)
         }
+        Builtin::DateSetUtcField(first) if !construct => {
+            let time = super::date::this_time_value(heap, state.diag.task, this)?;
+            let count = super::date::UTC_SETTERS[first as usize].1 as usize;
+            let mut operands = vec![this.clone()];
+            operands.extend(args.iter().take(count).cloned());
+            if args.is_empty() {
+                operands.push(Value::Undefined);
+            }
+            (
+                ConvertTarget::DateSetUtcField { first, time },
+                operands,
+                Hint::Number,
+            )
+        }
         Builtin::DateSetTime if !construct => {
             super::date::this_time_value(heap, state.diag.task, this)?;
             (
@@ -1420,6 +1438,8 @@ pub(crate) fn start_builtin(
         (1, operands.len())
     } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
         (0, 1)
+    } else if matches!(target, ConvertTarget::DateSetUtcField { .. }) {
+        (1, operands.len())
     } else if matches!(
         target,
         ConvertTarget::PropertyBuiltin { .. } | ConvertTarget::DateSetTime
@@ -2354,7 +2374,12 @@ impl NativeState {
                             *next += 1;
                             continue;
                         }
-                        if matches!(target, ConvertTarget::DateUtc | ConvertTarget::DateSetTime) {
+                        if matches!(
+                            target,
+                            ConvertTarget::DateUtc
+                                | ConvertTarget::DateSetTime
+                                | ConvertTarget::DateSetUtcField { .. }
+                        ) {
                             // Finish each ToNumber before observing the next argument.
                             // Even NaN must not skip later coercion side effects.
                             operands[*next] =
@@ -2497,6 +2522,15 @@ impl NativeState {
                         super::date::construct(heap, task, &operands[0]).map(Action::Return)
                     }
                     ConvertTarget::DateUtc => super::date::utc(operands).map(Action::Return),
+                    ConvertTarget::DateSetUtcField { first, time } => super::date::set_utc_field(
+                        heap,
+                        task,
+                        &operands[0],
+                        first,
+                        time,
+                        &operands[1..],
+                    )
+                    .map(Action::Return),
                     ConvertTarget::DateSetTime => super::date::set_time(
                         heap,
                         task,

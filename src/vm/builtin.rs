@@ -308,6 +308,9 @@ pub(crate) enum Builtin {
 
     /// BigInt conversion is callable, never constructible (clj-quickjs-201).
     BigInt,
+
+    DateGetUtcField(u8),
+    DateSetUtcField(u8),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -461,6 +464,8 @@ impl Builtin {
             Builtin::DateValueOf => "valueOf",
             Builtin::DateSetTime => "setTime",
             Builtin::DateToISOString => "toISOString",
+            Builtin::DateGetUtcField(field) => super::date::UTC_GETTERS[field as usize],
+            Builtin::DateSetUtcField(first) => super::date::UTC_SETTERS[first as usize].0,
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -560,6 +565,8 @@ impl Builtin {
             Builtin::DateGetTime | Builtin::DateValueOf => 0,
             Builtin::DateSetTime => 1,
             Builtin::DateToISOString => 0,
+            Builtin::DateGetUtcField(_) => 0,
+            Builtin::DateSetUtcField(first) => super::date::UTC_SETTERS[first as usize].1,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -645,13 +652,16 @@ pub(crate) fn call(
             "ArrayBuffer methods require a resumable frame",
         )),
 
-        Builtin::Date | Builtin::DateUtc | Builtin::DateSetTime => Err(Fault::Internal(
-            "Date conversion requires a resumable frame",
-        )),
+        Builtin::Date | Builtin::DateUtc | Builtin::DateSetTime | Builtin::DateSetUtcField(_) => {
+            Err(Fault::Internal(
+                "Date conversion requires a resumable frame",
+            ))
+        }
         Builtin::DateGetTime | Builtin::DateValueOf => {
             super::date::this_time_value(heap, task, this).map(Value::Number)
         }
         Builtin::DateToISOString => super::date::to_iso_string(heap, task, this),
+        Builtin::DateGetUtcField(field) => super::date::get_utc_field(heap, task, this, field),
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)

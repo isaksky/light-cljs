@@ -17,7 +17,7 @@ use crate::vm::dispatch::{Fault, to_number};
 
 pub(crate) const MS_PER_DAY: f64 = 86_400_000.0;
 
-/// UTC calendar fields, shared with future UTC getters/setters. Month is
+/// UTC calendar fields shared by ISO formatting and UTC getters/setters. Month is
 /// zero-based and weekday counts from Sunday (zero), as in ECMA-262.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct UtcFields {
@@ -29,6 +29,94 @@ pub(crate) struct UtcFields {
     pub(crate) seconds: u8,
     pub(crate) milliseconds: u16,
     pub(crate) weekday: u8,
+}
+
+pub(crate) const UTC_GETTERS: [&str; 8] = [
+    "getUTCFullYear",
+    "getUTCMonth",
+    "getUTCDate",
+    "getUTCHours",
+    "getUTCMinutes",
+    "getUTCSeconds",
+    "getUTCMilliseconds",
+    "getUTCDay",
+];
+
+/// Indexed by the first field replaced, in MakeDay/MakeTime field order.
+pub(crate) const UTC_SETTERS: [(&str, u32); 7] = [
+    ("setUTCFullYear", 3),
+    ("setUTCMonth", 2),
+    ("setUTCDate", 1),
+    ("setUTCHours", 4),
+    ("setUTCMinutes", 3),
+    ("setUTCSeconds", 2),
+    ("setUTCMilliseconds", 1),
+];
+
+impl UtcFields {
+    fn numbers(&self) -> [f64; 7] {
+        [
+            f64::from(self.year),
+            f64::from(self.month),
+            f64::from(self.date),
+            f64::from(self.hours),
+            f64::from(self.minutes),
+            f64::from(self.seconds),
+            f64::from(self.milliseconds),
+        ]
+    }
+}
+
+pub(crate) fn get_utc_field(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    field: u8,
+) -> Result<Value, Fault> {
+    let number = utc_fields(this_time_value(heap, task, this)?).map_or(f64::NAN, |fields| {
+        if field == 7 {
+            f64::from(fields.weekday)
+        } else {
+            fields.numbers()[field as usize]
+        }
+    });
+    Ok(Value::Number(number))
+}
+
+/// `time` is captured before the first observable argument conversion. All
+/// arguments have completed ordered ToNumber in the traced native frame.
+pub(crate) fn set_utc_field(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    first: u8,
+    time: f64,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let time = if first == 0 && time.is_nan() {
+        0.0
+    } else {
+        time
+    };
+    let Some(fields) = utc_fields(time) else {
+        // Invalid original times return NaN without overwriting changes that
+        // argument callbacks may have made to the receiver's slot.
+        return Ok(Value::Number(f64::NAN));
+    };
+    let mut numbers = fields.numbers();
+    for (out, arg) in numbers[first as usize..].iter_mut().zip(args) {
+        *out = to_number(arg)?;
+    }
+    let [year, month, date, hour, minute, second, ms] = numbers;
+    set_time(
+        heap,
+        task,
+        this,
+        make_date(
+            make_day(year, month, date),
+            make_time(hour, minute, second, ms),
+        ),
+    )
 }
 
 /// Decompose a TimeClipped value without host inputs or floating calendar

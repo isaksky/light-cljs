@@ -3434,7 +3434,7 @@ the parsing gap below, without scanning their contents.
 
 Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
 construction fail with UnsupportedOperand pending host clock/local time work
-(clj-quickjs-182). String construction/parsing, non-ISO formatting, UTC calendar
+(clj-quickjs-182). String construction/parsing, non-ISO formatting, local calendar
 getters/setters and Date's Symbol.toPrimitive/default conversion remain
 separate Date/protocol work. A value lookup reaching Date.prototype for its
 deferred toString/toJSON fails explicitly rather than using Object.prototype's
@@ -3458,8 +3458,7 @@ NaN throws a catchable RangeError with message `Invalid time value`;
 unbranded receivers throw TypeError. Foreign task receivers retain the
 existing ownership failure. The method is non-constructible.
 
-Explicit gaps: UTC calendar getters/setters belong to clj-quickjs-181;
-`toJSON`, other Date formats, parsing and local-time/host behavior remain
+Explicit gaps: `toJSON`, other Date formats, parsing and local-time/host behavior remain
 deferred as above. ISO formatting consumes no clock or zone input.
 
 ## Floating-point typed arrays (clj-quickjs-167)
@@ -3541,3 +3540,33 @@ Explicit gaps: BigInt wrapper objects, prototype conversion methods/ToString,
 `Number(bigint)` and `asIntN`/`asUintN` remain with their sibling pellets.
 Reads of deferred BigInt `toString`/`valueOf` fail with UnsupportedOperand,
 including reads during ToPrimitive on BigInt.prototype.
+
+### Execution: Date UTC field access (clj-quickjs-181)
+
+`Date.prototype` supplies `getUTCFullYear`, `getUTCMonth`, `getUTCDate`,
+`getUTCDay`, `getUTCHours`, `getUTCMinutes`, `getUTCSeconds` and
+`getUTCMilliseconds` (length 0). They read the own branded slot, return NaN
+on invalid dates, and ignore arguments. Months count from zero; weekdays
+count from Sunday = 0.
+
+`setUTCFullYear(y[, m[, d]])`, `setUTCMonth(m[, d])`, `setUTCDate(d)`,
+`setUTCHours(h[, m[, s[, ms]]])`, `setUTCMinutes(m[, s[, ms]])`,
+`setUTCSeconds(s[, ms])` and `setUTCMilliseconds(ms)` have lengths 3, 2, 1,
+4, 3, 2 and 1. All methods have ordinary method flags and reject unbranded
+receivers before observable coercion. Setters capture the time before
+coercion, run ToNumber on accepted arguments from left to right through
+resumable frames, preserve omitted fields, normalize overflows and return
+the stored MakeDate/TimeClip result. Explicit undefined or a missing first
+argument produces NaN. Years 0..99 stay literal years. Excess arguments are
+ignored. Non-finite numbers do not suppress later conversions; a conversion
+exception stops immediately and prevents the setter's final slot write.
+The shared 4096 UTF-16-unit numeric-string conversion cap still applies.
+
+Invalid original dates still undergo argument coercion. Except for
+`setUTCFullYear`, they then return NaN without overwriting slot changes made
+by callbacks. `setUTCFullYear` uses +0 as the base for invalid original dates.
+Frozen dates remain mutable through these internal-slot setters. Waits,
+instruction yields, collection and worker migration preserve pending receivers,
+arguments and the original numeric time. Foreign-task access remains rejected.
+Explicit gaps: local-time field access, parsing, host input, other formats
+and `toJSON` remain separate pellets.

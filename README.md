@@ -2935,7 +2935,7 @@ and signed-zero clipping, ordered resumable argument coercion, two-digit
 UTC years, overflowing components and the specified floating-point order.
 Deferred: `Date()`, no-argument/current-time and multiple-argument/local-time
 construction, string parsing, default Date-to-primitive conversion, non-ISO formatting,
-calendar getters/setters and host zones. These constructor/conversion forms
+local calendar getters/setters and host zones. These constructor/conversion forms
 fail explicitly, as does JSON serialization requiring Date's deferred toJSON;
 an own toJSON override works. Numeric strings for UTC/setTime are capped at 4096 UTF-16
 units (RangeError) until budgeted numeric parsing lands.
@@ -2949,9 +2949,17 @@ valid dates in UTC as `YYYY-MM-DDTHH:mm:ss.sssZ`, using signed six-digit years
 outside 0..9999. It throws a catchable RangeError (`Invalid time value`) for
 invalid dates and TypeError for receivers without an own Date slot. Pure
 integer calendar decomposition covers the entire ±8.64e15 ms range without
-host input. UTC calendar getters/setters, other formats and `toJSON` remain
+host input. Other formats and `toJSON` remain
 deferred. Tests: `cargo test --lib vm::date::tests::date_utc` and
 `cargo test --test js_source date_to_iso_string`.
+
+Date UTC fields (clj-quickjs-181): all eight `getUTC*` calendar getters and
+seven `setUTC*` setters are supported. Setters preserve omitted fields,
+normalize overflowing components and TimeClip the result. Argument ToNumber
+runs in order through resumable frames, including on invalid dates;
+`setUTCFullYear` can revive an invalid date using the epoch as its base.
+The same 4096 UTF-16-unit numeric-string limit applies. Local-time methods
+and `toJSON` remain deferred. Tests: `cargo test --test js_source date_utc_fields`.
 
 ### Floating-point typed arrays (clj-quickjs-167)
 

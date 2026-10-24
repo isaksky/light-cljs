@@ -1531,6 +1531,8 @@ fn date_objects_are_task_owned() {
             "function f(d) {return Date.prototype.getTime.call(d);}",
             "function f(d) {return Date.prototype.setTime.call(d, 1);}",
             "function f(d) {return Date.prototype.toISOString.call(d);}",
+            "function f(d) {return Date.prototype.getUTCFullYear.call(d);}",
+            "function f(d) {return Date.prototype.setUTCHours.call(d, 1);}",
             "function f(d) {return new Date(d);}",
         ] {
             let reader = rt
@@ -16278,4 +16280,215 @@ fn bigint_object_coercion_completes_with_each_primitive_kind() {
         eval("('toString' in BigInt.prototype) && ('valueOf' in BigInt.prototype)"),
         ValueView::Bool(true)
     );
+}
+/// Synthetic fixtures, not light-cljs output. The setUTCHours timestamp row
+/// adapts QuickJS tests/test_builtin.js::test_date, revision 7d1c13c5d8f8.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn date_utc_fields() {
+    for src in [
+        "let d = new Date(1506098258091); d.setUTCHours(18, 10, 11) === 1506103811091 && d.toISOString() === '2017-09-22T18:10:11.091Z'",
+        "let d = new Date(1506098258091); d.setUTCHours(25); d.toISOString() === '2017-09-23T01:37:38.091Z'",
+        "let d = new Date(Date.UTC(2017, 0, 15)); d.setUTCMonth(1, 30); d.toISOString() === '2017-03-02T00:00:00.000Z'",
+        "let d = new Date(NaN); d.setUTCFullYear(2000) === 946684800000 && d.toISOString() === '2000-01-01T00:00:00.000Z'",
+        "let d = new Date(NaN); Number.isNaN(d.setUTCMinutes(1)) && Number.isNaN(d.getTime())",
+        "let d = new Date(1506098258091); d.setUTCDate(0); d.toISOString() === '2017-08-31T16:37:38.091Z'",
+        "let d = new Date(1506098258091); d.setUTCMinutes(-1, 60, 1000); d.toISOString() === '2017-09-22T16:00:01.000Z'",
+        "let d = new Date(1506098258091); d.setUTCSeconds(60); d.toISOString() === '2017-09-22T16:38:00.091Z'",
+        "let d = new Date(1506098258091); d.setUTCMilliseconds(-1.9); d.toISOString() === '2017-09-22T16:37:37.999Z'",
+        "let d = new Date(0); d.setUTCFullYear(1); d.toISOString() === '0001-01-01T00:00:00.000Z'",
+        "let d = new Date(-1); d.setUTCFullYear(2000, 1, 29); d.toISOString() === '2000-02-29T23:59:59.999Z'",
+        "let d = new Date(8640000000000000); d.setUTCMilliseconds(1); Number.isNaN(d.getTime())",
+        "let d = new Date(-8640000000000000); d.setUTCMilliseconds(-1); Number.isNaN(d.getTime())",
+        "let d = new Date(0); Object.is(d.setUTCMilliseconds(-0.9), 0)",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (name, expected) in [
+        ("getUTCFullYear", 2017),
+        ("getUTCMonth", 8),
+        ("getUTCDate", 22),
+        ("getUTCDay", 5),
+        ("getUTCHours", 16),
+        ("getUTCMinutes", 37),
+        ("getUTCSeconds", 38),
+        ("getUTCMilliseconds", 91),
+    ] {
+        let src = format!(
+            "new Date(1506098258091).{name}() === {expected} && Number.isNaN(new Date(NaN).{name}())"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: receiver validation, descriptors,
+/// observable ToNumber order and snapshotting before callbacks mutate the slot.
+#[test]
+fn date_utc_fields_coercion() {
+    for (name, args) in [
+        ("setUTCFullYear", &["2017", "8", "22"][..]),
+        ("setUTCMonth", &["8", "22"][..]),
+        ("setUTCHours", &["16", "37", "38", "91"][..]),
+        ("setUTCMinutes", &["37", "38", "91"][..]),
+        ("setUTCSeconds", &["38", "91"][..]),
+    ] {
+        for optional in 1..args.len() {
+            let omitted = args[..optional].join(", ");
+            let src = format!(
+                "let d = new Date(1506098258091); d.{name}({omitted}) === 1506098258091 && d.getTime() === 1506098258091"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+
+            let mut explicit: Vec<String> = args.iter().map(|s| (*s).into()).collect();
+            explicit[optional] = "undefined".into();
+            for later in explicit.iter_mut().skip(optional + 1) {
+                *later = format!("{{valueOf() {{calls++; return {later};}}}}");
+            }
+            let later_count = args.len() - optional - 1;
+            let explicit = explicit.join(", ");
+            let src = format!(
+                "let calls = 0; let d = new Date(1506098258091); Number.isNaN(d.{name}({explicit})) && Number.isNaN(d.getTime()) && calls === {later_count}"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for (name, length) in [
+        ("getUTCFullYear", 0),
+        ("getUTCMonth", 0),
+        ("getUTCDate", 0),
+        ("getUTCDay", 0),
+        ("getUTCHours", 0),
+        ("getUTCMinutes", 0),
+        ("getUTCSeconds", 0),
+        ("getUTCMilliseconds", 0),
+        ("setUTCFullYear", 3),
+        ("setUTCMonth", 2),
+        ("setUTCDate", 1),
+        ("setUTCHours", 4),
+        ("setUTCMinutes", 3),
+        ("setUTCSeconds", 2),
+        ("setUTCMilliseconds", 1),
+    ] {
+        let src = format!(
+            "let m = Date.prototype.{name}; let p = Object.getOwnPropertyDescriptor(Date.prototype, '{name}'); m.name === '{name}' && m.length === {length} && p.value === m && p.writable && !p.enumerable && p.configurable"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for receiver in [
+            "{}",
+            "Date.prototype",
+            "Object.create(new Date(0))",
+            "null",
+            "1",
+        ] {
+            let src = format!(
+                "let converted = false; let caught = false; try {{Date.prototype.{name}.call({receiver}, {{valueOf() {{converted = true; return 1;}}}});}} catch(e) {{caught = e instanceof TypeError;}} caught && !converted"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        let src = format!(
+            "let caught = false; try {{new Date.prototype.{name}();}} catch(e) {{caught = e instanceof TypeError;}} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        if length > 0 {
+            for args in ["", "undefined", "NaN", "Infinity"] {
+                let src = format!(
+                    "let d = new Date(0); Number.isNaN(d.{name}({args})) && Number.isNaN(d.getTime())"
+                );
+                assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+            }
+            let src = format!(
+                "let d = new Date(1); let caught = false; try {{d.{name}(Symbol());}} catch(e) {{caught = e instanceof TypeError;}} caught && d.getTime() === 1"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for src in [
+        "let log = ''; let d = new Date(NaN); let result = d.setUTCHours({valueOf() {log += 'h'; return NaN;}}, {valueOf() {log += 'm'; return 1;}}, {valueOf() {log += 's'; return 2;}}, {valueOf() {log += 'f'; return 3;}}, {valueOf() {throw 4;}}); log === 'hmsf' && Number.isNaN(result)",
+        "let log = ''; let d = new Date(1); try {d.setUTCMinutes({valueOf() {log += 'm'; return 1;}}, {valueOf() {log += 's'; throw 2;}}, {valueOf() {log += 'f'; return 3;}});} catch(e) {log += e;} log === 'ms2' && d.getTime() === 1",
+        "let log = ''; try {new Date(NaN).setUTCMinutes(Symbol(), {valueOf() {log += 's'; return 1;}});} catch(e) {log += e instanceof TypeError;} log === 'true'",
+        "let d = new Date(1506098258091); d.setUTCHours({valueOf() {d.setTime(0); return 18;}}); d.toISOString() === '2017-09-22T18:37:38.091Z'",
+        "let d = new Date(NaN); let r = d.setUTCMinutes({valueOf() {d.setTime(0); return 1;}}); Number.isNaN(r) && d.getTime() === 0",
+        "let d = new Date(NaN); d.setUTCFullYear({valueOf() {d.setTime(100000); return 2000;}}); d.toISOString() === '2000-01-01T00:00:00.000Z'",
+        "let d = new Date(1); Object.freeze(d); d.setUTCSeconds(1) === 1001 && d.getUTCSeconds() === 1",
+        "let d = new Date(1); Object.setPrototypeOf(d, null); Date.prototype.setUTCSeconds.call(d, 1) === 1001 && Date.prototype.getUTCSeconds.call(d) === 1",
+        "new Date(-1).getUTCDay({valueOf() {throw 1;}}) === 3",
+        "let d = new Date(1); let caught = false; try {d.setUTCSeconds('5'.padStart(4097, ' '));} catch(e) {caught = e instanceof RangeError;} caught && d.getTime() === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Pending setter receivers and later
+/// arguments survive tiny budgets, dependency waits, collection and migration.
+#[test]
+fn date_utc_fields_waits_collects_and_migrates() {
+    let rt = Runtime::new();
+    let src = r"
+        let log = '';
+        let result = new Date(1506098258091).setUTCHours(
+            {get valueOf() {log += 'g'; __rt.need(1, 1);
+                return function() {log += 'h'; __rt.need(2, 1); return 18;};}},
+            {valueOf() {log += 'm'; __rt.need(3, 1); return 10;}},
+            {valueOf() {log += 's'; __rt.need(4, 1); return 11;}});
+        let invalid = new Date(NaN);
+        let nan = invalid.setUTCMinutes({valueOf() {log += 'i'; __rt.need(5, 1); return 1;}});
+        invalid.setUTCFullYear({valueOf() {log += 'y'; __rt.need(6, 1); return 2000;}});
+        result === 1506103811091 && Number.isNaN(nan) && log === 'ghmsiy'
+            && invalid.toISOString() === '2000-01-01T00:00:00.000Z'
+    ";
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut waited = 0;
+    let mut complete = false;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waited, 6);
 }
