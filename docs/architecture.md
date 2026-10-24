@@ -6608,6 +6608,7 @@ copy loop uses GetElem between descriptor checks and definitions, so getters
 can suspend, mutate later properties, throw, or trigger GC without retaining a
 Rust stack. OwnKeys is an allocation poll point; the other new instructions
 allocate no heap objects. There are no new heap kinds or native continuations.
-Their dispatch helper keeps these temporaries out of the main instruction
-frame, preserving execution on 64 KiB worker stacks. Computed object literal
+The instruction loop routes these leaves before entering the main dispatch
+frame. Ordinary VM calls also keep native forwarding temporaries in a separate
+slow path, preserving execution on 64 KiB worker stacks. Computed object literal
 execution and object spread remain deferred.

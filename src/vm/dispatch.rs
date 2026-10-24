@@ -515,6 +515,28 @@ pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
 /// completion and its result replaces the operands.
 fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flow, Fault> {
     let argc = usize::from(argc);
+    let operands = top_operands(state, argc + 1 + usize::from(method))?;
+    let (this, rest) = match operands.split_first() {
+        Some((this, rest)) if method => (this.clone(), rest),
+        _ => (Value::Undefined, operands),
+    };
+    let [f, ..] = rest else {
+        return Err(Fault::Internal("operand stack underflow"));
+    };
+    if let Callee::Code(id, code) = callee(heap, f)? {
+        if method {
+            state.remove_operand(argc + 1)?;
+        }
+        state.enter(code, id, this, argc)?;
+        return Ok(Flow::FrameChanged);
+    }
+    call_slow(state, heap, argc, method)
+}
+
+/// Forwarding and native-call temporaries must not burden ordinary VM
+/// recursion on 64 KiB workers. This re-reads only task-owned operands.
+#[inline(never)]
+fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Result<Flow, Fault> {
     let task = state.diag.task;
     let operands = top_operands(state, argc + 1 + usize::from(method))?;
     let (this, rest) = match operands.split_first() {
@@ -525,13 +547,6 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
         return Err(Fault::Internal("operand stack underflow"));
     };
     let popped = argc + 1 + usize::from(method);
-    if let Callee::Code(id, code) = callee(heap, f)? {
-        if method {
-            state.remove_operand(argc + 1)?;
-        }
-        state.enter(code, id, this, argc)?;
-        return Ok(Flow::FrameChanged);
-    }
     let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
     let forward = builtin::Forward {
         callee: f.clone(),
@@ -839,6 +854,8 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
         .map(|at| &operands[at..])
         .ok_or(Fault::Internal("operand stack underflow"))
 }
+
+type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> Result<Flow, Fault>;
 
 /// Keep object-pattern temporaries out of the general dispatch frame, which
 /// must also run unrelated calls on 64 KiB worker stacks.
@@ -1649,7 +1666,11 @@ pub(crate) fn step(
             require_iterator_object(state)?;
         }
         Instr::RequireCoercible | Instr::OwnKeys | Instr::IsEnumerable | Instr::DefineElem => {
-            return object_pattern_step(state, code, heap, host, instr);
+            // These leaves run directly from execute_budgeted and never
+            // enter a conversion native which could resume through step.
+            return Err(Fault::Internal(
+                "object pattern instruction bypassed leaf dispatch",
+            ));
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
@@ -2199,13 +2220,7 @@ pub(crate) fn execute_budgeted(
                         state.top_mut().pc = pc + 1;
                         // Route pattern leaves without the general dispatch frame
                         // beneath enumeration and descriptor lookup.
-                        let execute: fn(
-                            &mut VmState,
-                            &Code,
-                            &Heap,
-                            &mut dyn Host,
-                            Instr,
-                        ) -> Result<Flow, Fault> = if matches!(
+                        let execute: InstructionStep = if matches!(
                             instr,
                             Instr::RequireCoercible
                                 | Instr::OwnKeys
