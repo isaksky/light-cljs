@@ -107,6 +107,7 @@ use crate::vm::prototype;
 /// How a run of the interpreter loop ended.
 #[derive(Debug)]
 pub(crate) enum Exit {
+    CollectionPoint,
     Return(Value),
     Fail(VmError),
     /// The budget ran out; the task can be run again.
@@ -2577,6 +2578,9 @@ pub(crate) fn execute_budgeted(
     // Run entry is a poll point.
     heap.safepoint(state);
     loop {
+        if std::mem::take(&mut state.collection_point) {
+            return Exit::CollectionPoint;
+        }
         if let Some(left) = budget {
             if *left == 0 {
                 return Exit::Yield;

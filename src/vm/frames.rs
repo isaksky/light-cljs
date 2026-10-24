@@ -228,6 +228,8 @@ pub(crate) struct GlobalLexical {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    pub(crate) sim_host: Option<crate::host::sim::facilities::TaskHost>,
+    pub(crate) collection_point: bool,
     pub(crate) jobs: std::sync::Weak<crate::job::JobInbox>,
     /// The script body's completion value, retained while jobs run.
     pub(crate) script_result: Option<Value>,
@@ -388,6 +390,8 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            sim_host: None,
+            collection_point: false,
             jobs: std::sync::Weak::new(),
             script_result: None,
             suspended_async: Vec::new(),
@@ -473,6 +477,7 @@ impl VmState {
     }
 
     fn replace_activation(&mut self, mut next: Self) {
+        next.sim_host = self.sim_host.take();
         next.jobs = self.jobs.clone();
         next.global_object = self.global_object.take();
         next.global_lexicals = std::mem::take(&mut self.global_lexicals);
@@ -1115,6 +1120,9 @@ impl VmState {
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(host) = &self.sim_host {
+            host.trace(visit);
+        }
         if let Some(value) = &self.script_result {
             value.trace(visit);
         }

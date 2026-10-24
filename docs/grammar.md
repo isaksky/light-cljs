@@ -4861,3 +4861,30 @@ errors. At 2^53 elements a RangeError closes the iterator, per the
 [Math.sumPrecise specification](https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.sumprecise).
 Explicit gaps: async iterables are not accepted by this synchronous method.
 Other Math methods/constants retain their existing supported/deferred status.
+
+### Execution: optional simulated host facilities (clj-quickjs-175)
+
+After the embedder calls `Task::install_sim_host_bindings()`, a fixture can
+call `std.gc()` to collect synchronously before its next statement, and
+`os.setTimeout(callback, delay)` / `os.clearTimeout(id)` to manage task-local
+virtual timers. These namespace properties are absent by default. GC returns
+undefined; timer registration returns an increasing task-local numeric ID.
+Collection notifications are processed before the requesting task resumes.
+The script body runs first, then jobs drain, then the earliest timer runs as
+a resumable callback job; jobs it enqueues drain before the next timer.
+Equal due times preserve registration order. Completion waits for all timers
+and preserves the body's result. Timer callbacks can yield, wait and migrate.
+
+Delays use resumable ToNumber conversion, then truncate finite milliseconds
+and clamp negative values to zero. Omitted delay is zero. Nonfinite/unsafe
+delays or virtual-time overflow throw RangeError; noncallable callbacks throw
+TypeError. Clear cancels an existing ID and ignores unknown IDs. Timers and
+captures are precise roots; task failure/cancellation discards pending timers.
+No timer uses real time or sleeps.
+
+Explicit gaps: these are test/host bindings, not QuickJS module imports or
+new default engine globals. Intervals, string callbacks, extra callback
+arguments, automatic collection and Date-clock coupling remain deferred.
+Collection points inside an enclosing heap scope/native operation/additional
+run guard, or reentered from the same collection's observer, fail explicitly.
+WeakRef/FinalizationRegistry semantics remain owned by their separate pellets.

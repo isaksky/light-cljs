@@ -3603,3 +3603,21 @@ the iterator. Iterator getters/calls and close can suspend, collect and migrate.
 Check: `cargo test --test js_source math_sum_precise -- --exact` and
 `cargo test --test need math_sum_precise_waits_and_migrates -- --exact`.
 Async iterables remain outside this synchronous API.
+
+### Optional simulated host facilities (clj-quickjs-175)
+
+Supported after `task.install_sim_host_bindings()`: `std.gc()` completes a
+stop-the-world collection and notification processing before the next statement;
+`os.setTimeout(callback, delay)` and `os.clearTimeout(id)` use task-local virtual
+time. Jobs drain before each timer; equal deadlines preserve registration order.
+Callbacks use ordinary resumable VM frames and remain GC roots while pending.
+The task returns its body's value after jobs and timers finish. These test/host
+namespace bindings are absent unless installed. No sleeping or wall clock is used.
+
+Delays convert through resumable ToNumber, truncate to finite safe integer
+milliseconds and clamp negatives to zero; invalid/overflowing times throw
+RangeError. Deferred: intervals, string callbacks, extra callback arguments,
+automatic collection and coupling to the simulated Date clock. Collection points
+require no enclosing heap scope/native operation or second run guard.
+Verify with `CARGO_BUILD_JOBS=3 cargo test --lib task::sim_tests:: -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --test sim_facilities -- --test-threads=3`.

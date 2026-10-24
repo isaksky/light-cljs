@@ -163,7 +163,7 @@
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, ThreadId};
 
 use super::{Heap, HeapObject, ObjectId, lock};
@@ -740,6 +740,64 @@ struct Stopped<'h> {
     requested: bool,
 }
 
+/// Requests registered before a batch starts share its collection and
+/// post-pause notifications. Task drivers join before dropping their run
+/// token, and wait only after exposing their saved frames.
+#[derive(Debug)]
+pub(crate) struct PointBatch {
+    accepting: std::sync::atomic::AtomicBool,
+    previous: Option<Arc<PointBatch>>,
+    result: Mutex<Option<Result<CollectStats, CollectError>>>,
+    changed: std::sync::Condvar,
+}
+
+impl PointBatch {
+    fn wait(&self) -> Result<CollectStats, CollectError> {
+        let mut result = lock(&self.result);
+        while result.is_none() {
+            result = self
+                .changed
+                .wait(result)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        result.expect("completed batch")
+    }
+}
+
+pub(crate) struct PointTicket {
+    batch: Arc<PointBatch>,
+    leader: bool,
+}
+
+/// A panicking observer must also release other tasks in its batch.
+struct FinishPoint<'h> {
+    heap: &'h Heap,
+    batch: Arc<PointBatch>,
+    result: Result<CollectStats, CollectError>,
+}
+
+thread_local! {
+    static IN_POINT_REQUEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct PointRequestMark;
+impl Drop for PointRequestMark {
+    fn drop(&mut self) {
+        IN_POINT_REQUEST.with(|active| active.set(false));
+    }
+}
+
+impl Drop for FinishPoint<'_> {
+    fn drop(&mut self) {
+        let mut current = lock(&self.heap.point_batch);
+        *lock(&self.batch.result) = Some(self.result);
+        if current.ptr_eq(&Arc::downgrade(&self.batch)) {
+            *current = Weak::new();
+        }
+        self.batch.changed.notify_all();
+    }
+}
+
 impl Drop for Stopped<'_> {
     fn drop(&mut self) {
         if !self.requested {
@@ -761,6 +819,79 @@ impl Drop for Stopped<'_> {
 }
 
 impl Heap {
+    pub(crate) fn collection_point_ticket(&self) -> Result<PointTicket, CollectError> {
+        // Post-pause observers cannot join a request whose delivery is
+        // still on their own stack.
+        if IN_POINT_REQUEST.with(std::cell::Cell::get) {
+            return Err(CollectError::MutatorActive);
+        }
+        let gc = lock(&self.gc);
+        // An enclosing native operation/scope or another run cannot be
+        // parked by this driver. Refuse before joining a batch, otherwise
+        // another requester could wait for access held by its own waiter.
+        if !gc
+            .threads
+            .get(&thread::current().id())
+            .is_some_and(|t| t.runs == 1 && t.scopes == 0 && t.ops == 0)
+        {
+            return Err(CollectError::MutatorActive);
+        }
+        drop(gc);
+        let mut current = lock(&self.point_batch);
+        if let Some(batch) = current
+            .upgrade()
+            .filter(|batch| batch.accepting.load(Ordering::Acquire))
+        {
+            return Ok(PointTicket {
+                batch,
+                leader: false,
+            });
+        }
+        let batch = Arc::new(PointBatch {
+            accepting: std::sync::atomic::AtomicBool::new(true),
+            previous: current.upgrade(),
+            result: Mutex::new(None),
+            changed: std::sync::Condvar::new(),
+        });
+        *current = Arc::downgrade(&batch);
+        Ok(PointTicket {
+            batch,
+            leader: true,
+        })
+    }
+
+    pub(crate) fn serve_collection_point(
+        &self,
+        ticket: PointTicket,
+    ) -> Result<CollectStats, CollectError> {
+        if ticket.leader {
+            // Close admission before requesting the pause. A request made
+            // during post-pause notification delivery needs a fresh GC:
+            // it may have dropped values allocated after the first sweep.
+            {
+                let _current = lock(&self.point_batch);
+                ticket.batch.accepting.store(false, Ordering::Release);
+            }
+            IN_POINT_REQUEST.with(|active| active.set(true));
+            let _active = PointRequestMark;
+            let mut finish = FinishPoint {
+                heap: self,
+                batch: ticket.batch,
+                result: Err(CollectError::MutatorActive),
+            };
+            if let Some(previous) = &finish.batch.previous {
+                // Late requests need a fresh pause, but must not overtake
+                // earlier weak-slot notification delivery.
+                previous.wait()?;
+            }
+            finish.result = self.request_collection();
+            // request_collection returns only after all post-pause observers
+            // consumed the notifications. Publish completion afterwards.
+            finish.result
+        } else {
+            ticket.batch.wait()
+        }
+    }
     /// Register the current thread as a collection participant
     /// ([`ThreadRegistration`]). Never waits: it is not heap access.
     pub(crate) fn register_thread(&self) -> ThreadRegistration<'_> {
@@ -1197,6 +1328,81 @@ mod tests {
 
     fn plain(heap: &Heap) -> ObjectId {
         heap.alloc(HeapObject::host_object()).unwrap()
+    }
+
+    #[test]
+    fn collection_point_requests_merge_and_finish_notifications() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        let heap = Arc::new(Heap::default());
+        let (joined_tx, joined_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let observer_count = Arc::new(AtomicUsize::new(0));
+        struct Observer(Arc<AtomicUsize>);
+        impl CollectionObserver for Observer {
+            fn collected(&self, _: &CollectionReport) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let observer = Arc::new(Observer(observer_count.clone()));
+        heap.observe_collections(Arc::downgrade(&observer) as _);
+        let runner = {
+            let heap = heap.clone();
+            let observer_count = observer_count.clone();
+            thread::spawn(move || {
+                let access = heap.enter_mutator(Access::Run);
+                let ticket = heap.collection_point_ticket().unwrap();
+                assert!(ticket.leader);
+                drop(access);
+                joined_tx.send(()).unwrap();
+                release_rx.recv_timeout(TIMEOUT).unwrap();
+                let stats = heap.serve_collection_point(ticket).unwrap();
+                assert_eq!(observer_count.load(Ordering::SeqCst), 1);
+                done_tx.send(stats).unwrap();
+            })
+        };
+        joined_rx.recv_timeout(TIMEOUT).unwrap();
+        let access = heap.enter_mutator(Access::Run);
+        let ticket = heap.collection_point_ticket().unwrap();
+        assert!(!ticket.leader);
+        drop(access);
+        release_tx.send(()).unwrap();
+        // The leader has no dependency on this thread, so a broken merge
+        // fails on this bounded receive instead of hanging in serve.
+        let stats = done_rx.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(heap.serve_collection_point(ticket).unwrap(), stats);
+        assert_eq!(lock(&heap.gc).collections, 1);
+        assert_eq!(observer_count.load(Ordering::SeqCst), 1);
+        runner.join().unwrap();
+    }
+
+    #[test]
+    fn late_collection_point_gets_a_new_pause_without_losing_its_batch() {
+        let heap = Heap::default();
+        let access = heap.enter_mutator(Access::Run);
+        let first = heap.collection_point_ticket().unwrap();
+        // The first driver has begun its rendezvous; late arrivals may have
+        // allocated/dropped values since its sweep and need another pause.
+        first.batch.accepting.store(false, Ordering::Release);
+        let second = heap.collection_point_ticket().unwrap();
+        assert!(second.leader);
+        assert!(Arc::ptr_eq(
+            second.batch.previous.as_ref().unwrap(),
+            &first.batch
+        ));
+        drop(access);
+        heap.serve_collection_point(first).unwrap();
+        // Completing the old batch must not clear the newer admission slot.
+        let access = heap.enter_mutator(Access::Run);
+        let third = heap.collection_point_ticket().unwrap();
+        assert!(!third.leader);
+        assert!(Arc::ptr_eq(&third.batch, &second.batch));
+        drop(access);
+        let stats = heap.serve_collection_point(second).unwrap();
+        assert_eq!(heap.serve_collection_point(third).unwrap(), stats);
+        assert_eq!(lock(&heap.gc).collections, 2);
     }
 
     #[derive(Debug, Default)]

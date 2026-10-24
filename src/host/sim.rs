@@ -132,6 +132,8 @@
 //! never reported.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+pub(crate) mod facilities;
+pub use facilities::BindingError;
 use std::fmt;
 use std::sync::Arc;
 

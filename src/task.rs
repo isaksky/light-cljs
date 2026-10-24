@@ -265,10 +265,13 @@ mod handoff_tests;
 mod job_tests;
 #[cfg(test)]
 mod need_tests;
+#[cfg(test)]
+mod sim_tests;
 mod state;
 mod stats;
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use crate::dep::{
@@ -308,7 +311,8 @@ pub struct UnhandledRejections {
 /// Result of one run of a task.
 #[derive(Debug)]
 pub enum RunOutcome {
-    /// The body returned a value and its task-owned job queue drained.
+    /// The body returned a value and its task-owned jobs and optional
+    /// simulated-host timers drained.
     /// The body's original value is delivered as a persistent root so it
     /// stays valid after the task is dropped. Job return values are ignored.
     Complete(Rooted),
@@ -472,6 +476,9 @@ pub(crate) struct TaskInner {
     log: Mutex<DependencyLog>,
     /// Locked only by the execution claim's owner (and the collector).
     body: Mutex<TaskBody>,
+    /// The driver released body/access at a collection point while keeping
+    /// its execution claim. Written only by that claim's owner.
+    collection_paused: AtomicBool,
     /// Producer requests claimed by this task's VM `Need` instructions, until
     /// the embedder takes them ([`Task::take_producer_requests`]). A leaf
     /// lock; holds no heap values.
@@ -485,9 +492,10 @@ pub(crate) struct TaskInner {
 ///
 /// An executing task's body is held by its run guard, whose thread is
 /// stopped at a VM safepoint during any collection and reported these
-/// frames itself (`crate::heap::gc`); its body is skipped, never waited
-/// for. Otherwise the body is free or held for an instant by a diagnostic
-/// reader, so the lock is short.
+/// frames itself (`crate::heap::gc`); its body is skipped. A driver at a
+/// collection point explicitly releases the body/access while retaining the
+/// claim, and marks it for tracing here. Otherwise the body is free or held
+/// for an instant by a diagnostic reader, so the lock is short.
 impl RootSource for TaskInner {
     fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge)) {
         self.executable
@@ -500,8 +508,12 @@ impl RootSource for TaskInner {
         // During a collection no thread is between registering for a run
         // and holding its body, or between releasing the body and
         // deregistering (those threads are in heap access and not stopped),
-        // so `Executing` here means a run parked at a safepoint.
-        if let Phase::Executing { .. } = self.exec.snapshot().phase {
+        // so an executing run is either parked at a safepoint or explicitly
+        // paused at a collection point with its body available. Distinguish
+        // these explicitly: a diagnostic reader may briefly lock that body.
+        if matches!(self.exec.snapshot().phase, Phase::Executing { .. })
+            && !self.collection_paused.load(Ordering::Acquire)
+        {
             return;
         }
         // A poisoned body (a run panicked) is traced as-is: its values are
@@ -629,6 +641,15 @@ pub struct RunGuard<'t> {
 }
 
 impl Task {
+    /// Install the optional QuickJS-style `std.gc`, `os.setTimeout` and
+    /// `os.clearTimeout` test/host bindings on this task. Absent by default.
+    /// Repeated installation preserves existing virtual time and timers.
+    pub fn install_sim_host_bindings(&self) -> Result<(), crate::host::sim::BindingError> {
+        use crate::host::sim::{BindingError, facilities};
+        let mut guard = self.try_begin_run().map_err(BindingError::Run)?;
+        let vm = guard.vm().ok_or(BindingError::Run(RunError::Finished))?;
+        facilities::install(&self.0.heap, vm).ok_or(BindingError::OutOfMemory)
+    }
     pub(crate) fn new(
         id: TaskId,
         world: WorldId,
@@ -648,6 +669,7 @@ impl Task {
             exec: ExecState::new(),
             log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(Box::new(vm))),
+            collection_paused: AtomicBool::new(false),
             produce: Mutex::new(Vec::new()),
             suspended_async: Mutex::new(Vec::new()),
             jobs,
@@ -848,6 +870,9 @@ impl Task {
             claim.end(End::Finished);
             return Err(RunError::Finished);
         }
+        // Also clears the marker left by an unwound post-pause observer.
+        // This run is registered and holds the body before clearing it.
+        self.0.collection_paused.store(false, Ordering::Release);
         Ok(RunGuard {
             task: &self.0,
             body,
@@ -865,6 +890,8 @@ impl Task {
 
     /// Acquire the guard and run on the calling thread for at most `budget`
     /// instructions, sending leaf host effects to `host`.
+    /// Optional collection points release heap access and complete their
+    /// safepoint rendezvous and notifications before executing further code.
     pub fn run_with(&self, budget: Budget, host: &mut dyn Host) -> Result<RunOutcome, RunError> {
         Ok(self.try_begin_run()?.run_with(budget, host))
     }
@@ -1267,6 +1294,52 @@ impl RunGuard<'_> {
                     },
                     None => execute_budgeted(vm, &task.heap, host, &mut budget),
                 };
+                if matches!(exit, Exit::CollectionPoint) {
+                    // Keep exclusive execution ownership while exposing the
+                    // complete saved VM state to the collector. No body or
+                    // heap lock, or mutator token, crosses the wait.
+                    let ticket = match task.heap.collection_point_ticket() {
+                        Ok(ticket) => ticket,
+                        Err(_) => {
+                            break Exit::Fail(guard_failure(
+                                task,
+                                VmErrorKind::Internal,
+                                "collection point requires no enclosing heap access",
+                                0,
+                            ));
+                        }
+                    };
+                    let RunGuard {
+                        task,
+                        body,
+                        claim,
+                        subscribed,
+                        _mutator,
+                    } = self;
+                    task.collection_paused.store(true, Ordering::Release);
+                    drop(body);
+                    drop(_mutator);
+                    let result = task.heap.serve_collection_point(ticket);
+                    let mutator = task.heap.enter_mutator(Access::Run);
+                    let body = task.body.lock().unwrap_or_else(PoisonError::into_inner);
+                    task.collection_paused.store(false, Ordering::Release);
+                    self = RunGuard {
+                        task,
+                        body,
+                        claim,
+                        subscribed,
+                        _mutator: mutator,
+                    };
+                    if result.is_err() {
+                        break Exit::Fail(guard_failure(
+                            task,
+                            VmErrorKind::Internal,
+                            "collection point requires no enclosing run guard or native operation",
+                            0,
+                        ));
+                    }
+                    continue;
+                }
                 if let Exit::Return(value) = exit {
                     if self.cleaning_up() {
                         return self.end_cancelled();
@@ -1276,7 +1349,20 @@ impl RunGuard<'_> {
                         vm.script_result = Some(value);
                     }
                     task.jobs.boundary();
-                    if let Some(job) = task.jobs.next_or_close() {
+                    let timers_pending = self
+                        .vm()
+                        .expect("live activation")
+                        .sim_host
+                        .as_ref()
+                        .is_some_and(|host| host.pending());
+                    let job = task.jobs.next_or_close(timers_pending).or_else(|| {
+                        self.vm()
+                            .expect("live activation")
+                            .sim_host
+                            .as_mut()
+                            .and_then(|host| host.next())
+                    });
+                    if let Some(job) = job {
                         let vm = self.vm().expect("live activation");
                         if let Err(error) = vm.start_job(&task.heap, job) {
                             break Exit::Fail(*error);
@@ -1372,6 +1458,7 @@ impl RunGuard<'_> {
                     "need left unhandled",
                     pc,
                 )),
+                Exit::CollectionPoint => unreachable!("collection point handled by driver"),
             }
         };
         // Completion or failure releases the task's frames and its open

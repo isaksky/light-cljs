@@ -284,6 +284,11 @@ enum Failure {
 pub(crate) enum Action {
     /// Enter newly compiled eval code after releasing the native borrow.
     Eval(super::executable::Executable),
+    SimTimer {
+        callback: Value,
+        delay: f64,
+        clear: bool,
+    },
     /// Keep this native frame runnable for another budgeted step.
     Continue,
     /// Complete a property write through the same resumable conversion and
@@ -349,6 +354,9 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    SimTimer {
+        clear: bool,
+    },
     TypedArray {
         kind: crate::object::typed_array::ElementType,
         from_buffer: bool,
@@ -1151,6 +1159,12 @@ fn start_builtin_slow(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::SimGc {
+        state.truncate_operands(state.stack_len() - popped)?;
+        state.push(Value::Undefined);
+        state.collection_point = true;
+        return Ok(true);
+    }
     if which == Builtin::GeneratorNext {
         let id = super::generator::receiver(heap, state.diag.task, this)?;
         let value = args.first().cloned().unwrap_or(Value::Undefined);
@@ -1886,6 +1900,25 @@ fn start_builtin_slow(
                 Hint::String,
             )
         }
+        Builtin::SimSetTimeout | Builtin::SimClearTimeout => {
+            let clear = which == Builtin::SimClearTimeout;
+            let callback = if clear {
+                Value::Undefined
+            } else {
+                let callback = args.first().cloned().unwrap_or(Value::Undefined);
+                crate::host::sim::facilities::validate_callback(heap, &callback)?;
+                callback
+            };
+            let delay = args
+                .get(usize::from(!clear))
+                .cloned()
+                .unwrap_or(Value::Number(0.0));
+            (
+                ConvertTarget::SimTimer { clear },
+                vec![callback, delay],
+                Hint::Number,
+            )
+        }
         _ => return Ok(false),
     };
     // A built-in callback can start another native at the same call depth.
@@ -1919,7 +1952,9 @@ fn start_builtin_slow(
         (1, operands.len())
     } else if matches!(
         target,
-        ConvertTarget::PropertyBuiltin { .. } | ConvertTarget::DateSetTime
+        ConvertTarget::PropertyBuiltin { .. }
+            | ConvertTarget::DateSetTime
+            | ConvertTarget::SimTimer { .. }
     ) {
         (1, 2)
     } else {
@@ -2046,6 +2081,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SuspendAsync(_)
             | Action::ResumeAsync { .. }
             | Action::Eval(_)
+            | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::Call { .. }
             | Action::ToNumber(_)
@@ -2173,6 +2209,19 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             state.enter(code, id, Value::Undefined, 0)?;
             state.top_mut().eval = true;
             Ok(Flow::FrameChanged)
+        }
+        Action::SimTimer {
+            callback,
+            delay,
+            clear,
+        } => {
+            let host = state.sim_host.as_mut().ok_or(Fault::TypeError(
+                "simulated host bindings are not installed".into(),
+            ))?;
+            let value = host.timer(callback, delay, clear)?;
+            state.natives.pop();
+            state.push(value);
+            Ok(Flow::Next)
         }
         Action::DefaultLocale => {
             let locale = crate::intl::default_locale(Some(host));
@@ -3428,6 +3477,11 @@ impl NativeState {
                         )
                         .map(Action::Return)
                     }
+                    ConvertTarget::SimTimer { clear } => Ok(Action::SimTimer {
+                        callback: operands[0].clone(),
+                        delay: dispatch::to_number(&operands[1])?,
+                        clear,
+                    }),
                     ConvertTarget::DateConstructor => {
                         if let Value::String(text) = &operands[0] {
                             *self = NativeState::DateParse {

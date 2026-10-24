@@ -6949,3 +6949,69 @@ addition, subtraction and rounding each scan at most 34 limbs. Empty/all-negativ
 zero inputs yield -0; other exact zero sums yield +0. No heap kind or dependency
 was added. GC, waiting and worker migration preserve the accumulator in the
 native continuation rather than on a Rust stack.
+
+## Simulated collection points and timers (clj-quickjs-175)
+
+`Task::install_sim_host_bindings()` installs task-owned `std` and `os`
+namespace properties for synthetic fixtures and embedding tests. They are
+absent on ordinary tasks. The namespaces contain `std.gc()`,
+`os.setTimeout(callback, delay)` and `os.clearTimeout(id)`. Installation is
+idempotent and preserves pending timers and virtual time; call it before
+running the script. These are optional host facilities, rather than engine
+globals or imports of QuickJS's libc modules.
+
+The GC built-in completes its call with undefined and sets an explicit VM
+collection request. At that instruction boundary the run driver retains its
+exclusive execution claim but releases the task-body lock and run mutator
+token. The task root source traces the unlocked saved body even though its
+claim remains executing; an ordinary run stopped at a safepoint still reports
+its frames through the existing poll. The driver calls the heap's existing
+`request_collection` rendezvous, then reacquires heap access and the body.
+No task or heap lock spans the wait, no other worker may claim the task,
+and no Rust callback stack is retained across a VM suspension. The remaining
+instruction budget is preserved. An enclosing heap scope, native operation
+or extra run guard is rejected explicitly rather than deadlocking.
+
+Overlapping task requests join a runtime-local collection batch before
+releasing access, while that batch has not started its rendezvous. Later
+requests wait for earlier notification delivery, then perform a fresh pause. One driver serves the rendezvous and publishes completion
+only after synchronous post-pause collection observers return. Other batch
+members wait outside heap access, so cleared-weak-slot observers have queued
+their jobs before any requesting task's next statement. The batch metadata
+has no heap edges, and its short locks never span collection or notification
+processing. Observer panic releases batch waiters with failure. Reentry into
+a collection point from the collecting thread's own observer is refused.
+The public `Runtime::request_collection` contract remains unchanged:
+independent explicit calls each collect. FinalizationRegistry's consumer of
+these notifications is separate work.
+
+`src/host/sim/facilities.rs` holds each task's virtual clock and pending
+`(due time, sequence, callback)` records in traced VM state. Timer IDs increase
+per task. Delay conversion uses the ordinary resumable ToNumber protocol,
+including getters and `valueOf` calls that may wait, yield, collect or migrate.
+Finite delays are truncated to integer milliseconds; negative delays become
+zero. Missing delay is zero. Nonfinite delays and values/times beyond the
+safe-integer range throw RangeError. Callback validation throws TypeError.
+Clear removes a matching numeric timer ID and otherwise does nothing.
+
+After the body or a callback returns, the job queue drains first. Only when
+it is empty does the next timer advance virtual time and start through the
+ordinary job trampoline; its return is followed by another job drain. Equal
+deadlines use registration order, and timers added by a callback are relative
+to the current virtual time. A pending timer keeps job admission open across
+an empty checkpoint. Callback closures and captures survive GC, dependency
+waits and worker migration. The final task outcome preserves the body's
+value and waits for all jobs and timers. Failure/cancellation drops pending
+callbacks without running them. There are no wall-clock waits or implicit GC
+triggers; intervals, string callbacks, extra callback arguments and integration
+with the simulated Date clock are deferred.
+
+Tests in `src/task/sim_tests.rs`, `tests/sim_facilities.rs` and
+`heap::gc::tests` cover statement/notification ordering, jobs before timers,
+virtual ordering, callback lifetime and waits, merged requests and two-worker
+completion with bounded deadlines. Semantic references are `js_std_gc`,
+`js_os_setTimeout` and the jobs-first libc event loop in
+`research/quickjs/quickjs-libc.c`, plus the weak-object cases in
+`research/quickjs/tests/test_builtin.js`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No upstream source/test text was
+adapted.

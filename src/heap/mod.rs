@@ -499,6 +499,9 @@ pub(crate) struct Heap {
     /// Notified when a thread stops at a safepoint or leaves heap access,
     /// and when a collection request ends ([`gc`] module docs).
     gc_changed: Condvar,
+    /// In-flight task collection-point batch; no heap edges. This metadata
+    /// lock is never held across a rendezvous, notification or wait.
+    point_batch: Mutex<Weak<gc::PointBatch>>,
     /// True while a collection request is pending: what VM polls read.
     /// Written only under the `gc` lock.
     requested: AtomicBool,

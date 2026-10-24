@@ -392,6 +392,10 @@ pub(crate) enum Builtin {
     Eval,
 
     MathSumPrecise,
+
+    SimGc,
+    SimSetTimeout,
+    SimClearTimeout,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -586,6 +590,9 @@ impl Builtin {
             Builtin::MathLog2 => "log2",
             Builtin::Map => "Map",
             Builtin::WeakMap => "WeakMap",
+            Builtin::SimGc => "gc",
+            Builtin::SimSetTimeout => "setTimeout",
+            Builtin::SimClearTimeout => "clearTimeout",
             Builtin::WeakMapSet => "set",
             Builtin::WeakMapGet => "get",
             Builtin::WeakMapHas => "has",
@@ -766,6 +773,9 @@ impl Builtin {
             | Builtin::WeakMapHas
             | Builtin::WeakMapDelete => 1,
             Builtin::MapClear | Builtin::MapSize => 0,
+            Builtin::SimGc => 0,
+            Builtin::SimSetTimeout => 2,
+            Builtin::SimClearTimeout => 1,
             Builtin::Date => 7,
             Builtin::DateNow | Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset => 0,
             Builtin::DateSetLocalField(first) => super::date::LOCAL_SETTERS[first as usize].1,
@@ -821,6 +831,9 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::SimGc | Builtin::SimSetTimeout | Builtin::SimClearTimeout => Err(Fault::Internal(
+            "simulated host binding requires task state",
+        )),
         Builtin::ArrayPrototypeSort => Err(Fault::Internal("sort requires a resumable frame")),
         Builtin::ArrayFrom => Err(Fault::Internal("Array.from requires a resumable frame")),
         Builtin::MathSumPrecise => Err(Fault::Internal("sumPrecise requires a resumable frame")),

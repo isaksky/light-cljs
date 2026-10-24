@@ -136,12 +136,13 @@ impl JobInbox {
 
     /// Empty-check and close share the enqueue linearization point. Once
     /// this returns None, no later publication can append a stranded job.
-    pub(crate) fn next_or_close(&self) -> Option<Job> {
+    /// Timers keep the inbox open across the empty job checkpoint.
+    pub(crate) fn next_or_close(&self, timers_pending: bool) -> Option<Job> {
         #[cfg(test)]
         run_hook(&self.before_next);
         let mut inbox = self.inbox.lock().unwrap();
         let next = inbox.queue.pop_front();
-        if next.is_none() {
+        if next.is_none() && !timers_pending {
             #[cfg(test)]
             run_hook(&self.before_close);
             inbox.closed = true;
