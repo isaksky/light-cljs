@@ -9206,6 +9206,10 @@ fn primitive_wrapper_constructors_and_methods() {
     }
 }
 
+/// The first three expressions adapt the wrapper rows of `test_eq` in
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8, with
+/// unsupported conversion asserted until clj-quickjs-70. QuickJS copyright
+/// and MIT license notice: see `loose_equality_with_a_boolean_left_operand`.
 #[test]
 fn primitive_wrappers_report_deferred_conversions_and_string_properties() {
     // clj-quickjs-70 owns implicit OrdinaryToPrimitive, including wrapper
@@ -9262,6 +9266,29 @@ fn primitive_wrappers_report_deferred_conversions_and_string_properties() {
         let (kind, _, line, actual_column) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand);
         assert_eq!((line, actual_column), (2, column), "{src}");
+    }
+}
+
+#[test]
+fn primitive_wrappers_reject_inherited_string_index_writes() {
+    for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+        let src = "let o = Object.create(new String('abc')); o[0] = 'x'; o[0]";
+        let script = compile_script_with("inherited wrapper index", src, options).unwrap();
+        match run(&script, &[]) {
+            RunOutcome::Failed(error) => {
+                assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand);
+                assert!(error.message().contains("string wrapper"), "{error}");
+            }
+            other => panic!("expected UnsupportedOperand, got {other:?}"),
+        }
+        // An index at the string's length is an ordinary inherited miss,
+        // so the receiver gets its own writable property in either mode.
+        let src = "let o = Object.create(new String('abc')); o[3] = 'x'; o[3] === 'x'";
+        let script = compile_script_with("inherited wrapper boundary", src, options).unwrap();
+        match run(&script, &[]) {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("expected Complete, got {other:?}"),
+        }
     }
 }
 

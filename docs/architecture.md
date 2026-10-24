@@ -3324,9 +3324,13 @@ they need clj-quickjs-70's resumable ToPrimitive, which is absent on master.
 No constructor runs a JavaScript callback on the Rust stack. String exotic
 own properties and own-key enumeration are explicitly deferred to -142.
 
-Semantic references only (no upstream code or test text copied):
+Semantic references only (no upstream implementation code copied):
 `research/quickjs/quickjs.c` at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_number_constructor`,
-`js_string_constructor`, `js_thisNumberValue`, `js_thisStringValue`;
-`research/quickjs/tests/test_language.js`, `test_eq`, identifies the implicit
-conversion acceptance cases still blocked by clj-quickjs-70.
+`js_string_constructor`, `js_thisNumberValue`, `js_thisStringValue`.
+The first three snippets in `tests/js_source.rs`
+`primitive_wrappers_report_deferred_conversions_and_string_properties` adapt
+the wrapper expressions of `research/quickjs/tests/test_language.js`, `test_eq`,
+at that revision, asserting explicit unsupported conversion until
+clj-quickjs-70. The test references the full QuickJS copyright and MIT notice
+on `loose_equality_with_a_boolean_left_operand` in the same file.
