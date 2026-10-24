@@ -192,7 +192,7 @@ pub(crate) fn lower_script(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, false, None)
+    lower_script_kind(name, source, script, false, None, true)
 }
 
 pub(crate) fn lower_eval(
@@ -200,7 +200,7 @@ pub(crate) fn lower_eval(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, None)
+    lower_script_kind(name, source, script, true, None, true)
 }
 
 pub(crate) fn lower_direct_eval(
@@ -208,8 +208,9 @@ pub(crate) fn lower_direct_eval(
     source: &str,
     script: &Script,
     bindings: &[EvalBinding],
+    receiver_strict: bool,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, Some(bindings))
+    lower_script_kind(name, source, script, true, Some(bindings), receiver_strict)
 }
 
 fn lower_script_kind(
@@ -218,6 +219,7 @@ fn lower_script_kind(
     script: &Script,
     eval: bool,
     bindings: Option<&[EvalBinding]>,
+    receiver_strict: bool,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
@@ -242,6 +244,7 @@ fn lower_script_kind(
         lower.enter_function(None, true, script.strict);
         if let Some(bindings) = bindings {
             lower.cur_mut().captures = vec![Place::This; bindings.len() + 1];
+            lower.cur_mut().this_strict = receiver_strict;
         }
         lower.cur_mut().global_declarations = !eval || (!script.strict && bindings.is_none());
         lower.cur_mut().script_lexicals = !eval;
@@ -407,6 +410,8 @@ enum Place {
     Current,
     /// The nearest ordinary function's immutable frame receiver.
     This,
+    /// Transport an unevaluated receiver solely for a potential eval call.
+    RawThis,
 }
 
 fn eval_source(place: Place) -> EvalSource {
@@ -415,7 +420,7 @@ fn eval_source(place: Place) -> EvalSource {
         Place::Local(i) => EvalSource::Local(i),
         Place::Capture(i) => EvalSource::Capture(i),
         Place::Current => EvalSource::CurrentFunction,
-        Place::This => EvalSource::This,
+        Place::This | Place::RawThis => EvalSource::This,
     }
 }
 
@@ -512,6 +517,7 @@ impl Emitter {
             Place::Capture(i) => self.op_u16(Opcode::GetCapture, i, span),
             Place::Current => self.op(Opcode::CurrentFunction, span),
             Place::This => self.op(Opcode::GetThis, span),
+            Place::RawThis => self.op(Opcode::GetRawThis, span),
         }
     }
 }
@@ -551,6 +557,10 @@ struct FnCtx {
     /// Capture index for that receiver, shared by all its uses and any
     /// nested arrows that need it. No cell: a frame's receiver is immutable.
     this_capture: Option<u16>,
+    raw_this_capture: Option<u16>,
+    /// Strictness of the ordinary function supplying lexical `this`, which
+    /// can differ from an arrow/eval's own directive-selected strictness.
+    this_strict: bool,
 
     /// Private identity for the implicit arguments binding, separate from
     /// source offsets and the function's self-binding.
@@ -755,6 +765,8 @@ impl<'s> Lowerer<'s> {
             constructor_kind: ConstructorKind::None,
             lexical_this: false,
             this_capture: None,
+            raw_this_capture: None,
+            this_strict: strict,
 
             arguments_key,
             self_name,
@@ -1499,21 +1511,30 @@ impl<'s> Lowerer<'s> {
     /// ordinary function or the script global object. Capture counts are
     /// checked by `closure`, as for named bindings.
     #[inline(never)]
-    fn resolve_this(&mut self, level: usize) -> Place {
+    fn resolve_this(&mut self, level: usize, raw: bool) -> Place {
         if self.fns[level].completion.is_some() {
             return self.eval_this.map_or(Place::GlobalObject, Place::Capture);
         }
         if !self.fns[level].lexical_this {
-            return Place::This;
+            return if raw { Place::RawThis } else { Place::This };
         }
-        if let Some(index) = self.fns[level].this_capture {
+        let captured = if raw {
+            self.fns[level].raw_this_capture
+        } else {
+            self.fns[level].this_capture
+        };
+        if let Some(index) = captured {
             return Place::Capture(index);
         }
-        let parent = self.resolve_this(level - 1);
+        let parent = self.resolve_this(level - 1, raw);
         let ctx = &mut self.fns[level];
         let index = ctx.captures.len().min(MAX_COUNT) as u16;
         ctx.captures.push(parent);
-        ctx.this_capture = Some(index);
+        if raw {
+            ctx.raw_this_capture = Some(index);
+        } else {
+            ctx.this_capture = Some(index);
+        }
         Place::Capture(index)
     }
 
@@ -1734,11 +1755,12 @@ impl<'s> Lowerer<'s> {
                 "too many direct eval bindings",
             ));
         }
-        let receiver = eval_source(self.resolve_this(self.fns.len() - 1));
+        let receiver = eval_source(self.resolve_this(self.fns.len() - 1, true));
         Ok(EvalSite {
             offset: self.cur().out.code.len() as u32,
             bindings,
             receiver,
+            receiver_strict: self.cur().this_strict,
         })
     }
 
@@ -1974,6 +1996,7 @@ impl<'s> Lowerer<'s> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
+        let parent_this_strict = self.cur().this_strict;
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor_kind = constructor_kind(f);
         self.cur_mut().own_arguments = matches!(
@@ -1985,6 +2008,9 @@ impl<'s> Lowerer<'s> {
         );
         self.cur_mut().lexical_this =
             matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
+        if self.cur().lexical_this {
+            self.cur_mut().this_strict = parent_this_strict;
+        }
         self.function_body(f)?;
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
@@ -4072,8 +4098,21 @@ impl<'s> Lowerer<'s> {
             ExprKind::Null => self.constant(Primitive::Null, span),
             ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span),
             ExprKind::This => {
-                let place = self.resolve_this(self.fns.len() - 1);
+                let place = self.resolve_this(self.fns.len() - 1, false);
                 self.out().load(place, span);
+                // Imported receivers have not been evaluated in the caller.
+                // Check only when `this` is actually read, including inside
+                // arrows created by eval. Ordinary function reads still use
+                // GetThis and ordinary non-eval captures keep their fast path.
+                let imported = self
+                    .fns
+                    .iter()
+                    .rev()
+                    .find(|ctx| !ctx.lexical_this)
+                    .is_some_and(|ctx| ctx.completion.is_some() && self.eval_this.is_some());
+                if imported && !self.cur().this_strict {
+                    self.out().op(Opcode::CheckSloppyThis, span);
+                }
                 Ok(())
             }
             ExprKind::Undefined => {
@@ -4307,6 +4346,19 @@ impl<'s> Lowerer<'s> {
         op_span: Span,
     ) -> Result<(), SyntaxError> {
         let direct = matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval");
+        let parameter_call = direct && self.fns.iter().any(|f| f.in_parameters);
+        if parameter_call
+            && !self.eval_bindings.contains_key("eval")
+            && !self.fns.iter().any(|ctx| {
+                ctx.scopes.iter().any(|scope| scope.contains_key("eval"))
+                    || ctx
+                        .self_name
+                        .as_ref()
+                        .is_some_and(|(name, _)| name == "eval")
+            })
+        {
+            return Err(self.unsupported(callee.span, "direct eval in parameter expressions"));
+        }
         let method = callee.is_method_callee();
         if let ExprKind::Member {
             object, property, ..
@@ -4319,8 +4371,17 @@ impl<'s> Lowerer<'s> {
             self.method_callee(callee)?;
         } else {
             self.expr(callee)?;
+            if parameter_call {
+                self.out().op(Opcode::CheckDirectEval, callee.span);
+            }
         }
-        self.call_arguments(args, method, span, op_span, direct.then_some(callee.span))
+        self.call_arguments(
+            args,
+            method,
+            span,
+            op_span,
+            (direct && !parameter_call).then_some(callee.span),
+        )
     }
 
     #[inline(never)]

@@ -985,7 +985,9 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | DefineGetterElem
         | DefineSetterElem
         | SetComputedName(_)
-        | CheckDirectEval => false,
+        | CheckDirectEval
+        | GetRawThis
+        | CheckSloppyThis => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -1182,6 +1184,7 @@ pub(crate) fn start_direct_eval(
         strict: state.top().code.strict,
         bindings: site.bindings,
         captures,
+        receiver_strict: site.receiver_strict,
     });
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Eval(Box::new(native)))?;

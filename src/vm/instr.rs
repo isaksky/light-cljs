@@ -126,7 +126,9 @@
 //! | `DefineGetterElem` | 0x85 | – | object key function → object | define own enumerable/configurable getter, merging an existing setter |
 //! | `DefineSetterElem` | 0x86 | – | object key function → object | define own enumerable/configurable setter, merging an existing getter |
 //! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
-//! | `CheckDirectEval` | 0x88 | – | callee → callee | legacy intrinsic-eval rejection guard; source calls use executable scope descriptors |
+//! | `CheckDirectEval` | 0x88 | – | callee → callee | reject intrinsic parameter eval; ordinary source eval calls use scope descriptors |
+//! | `GetRawThis` | 0x91 | – | → this | transport a receiver for a potential direct eval without evaluating it |
+//! | `CheckSloppyThis` | 0x92 | – | this → this | enforce deferred sloppy receiver substitution gap at an actual eval this read |
 //! | `DeclareGlobalLet` | 0x89 | u16 name | cell → cell | register a script lexical binding in the task environment |
 //! | `DeclareGlobalConst` | 0x8A | u16 name | cell → cell | register an immutable script lexical binding |
 //! | `InitGlobalLexical` | 0x8B | u16 name | value → – | initialize a registered script lexical cell |
@@ -641,6 +643,8 @@ pub enum Opcode {
     DeleteGlobal = 0x8E,
     DeclareGlobalConstValue = 0x8F,
     CheckGlobalLexicalConflict = 0x90,
+    GetRawThis = 0x91,
+    CheckSloppyThis = 0x92,
 }
 
 /// Operand encoding of an opcode.
@@ -812,6 +816,8 @@ impl Opcode {
             0x83 => AsyncStart,
             0x84 => Await,
             0x88 => CheckDirectEval,
+            0x91 => GetRawThis,
+            0x92 => CheckSloppyThis,
             0x89 => DeclareGlobalLet,
             0x8A => DeclareGlobalConst,
             0x8B => InitGlobalLexical,
@@ -965,6 +971,8 @@ impl Opcode {
             AsyncStart => "async_start",
             Await => "await",
             CheckDirectEval => "check_direct_eval",
+            GetRawThis => "get_raw_this",
+            CheckSloppyThis => "check_sloppy_this",
             DeclareGlobalLet => "declare_global_let",
             DeclareGlobalConst => "declare_global_const",
             InitGlobalLexical => "init_global_lexical",
@@ -1057,7 +1065,7 @@ impl Opcode {
             | Await => OperandKind::None,
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
-            CheckDirectEval => OperandKind::None,
+            CheckDirectEval | GetRawThis | CheckSloppyThis => OperandKind::None,
         }
     }
 }
@@ -1256,6 +1264,8 @@ pub(crate) enum Instr {
     DeleteGlobal(u16),
     DeclareGlobalConstValue(u16),
     CheckGlobalLexicalConflict(u16),
+    GetRawThis,
+    CheckSloppyThis,
 }
 
 impl Instr {
@@ -1377,6 +1387,8 @@ impl Instr {
             Instr::AsyncStart => Opcode::AsyncStart,
             Instr::Await => Opcode::Await,
             Instr::CheckDirectEval => Opcode::CheckDirectEval,
+            Instr::GetRawThis => Opcode::GetRawThis,
+            Instr::CheckSloppyThis => Opcode::CheckSloppyThis,
             Instr::DeclareGlobalLet(_) => Opcode::DeclareGlobalLet,
             Instr::DeclareGlobalConst(_) => Opcode::DeclareGlobalConst,
             Instr::InitGlobalLexical(_) => Opcode::InitGlobalLexical,
@@ -1446,7 +1458,8 @@ impl Instr {
             SetComputedName(_) => (2, 2),
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
-            CheckSpreadArguments | CheckDirectEval => (1, 1),
+            CheckSpreadArguments | CheckDirectEval | CheckSloppyThis => (1, 1),
+            GetRawThis => (0, 1),
             ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
@@ -1486,6 +1499,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 144);
+        assert_eq!(assigned, 146);
     }
 }

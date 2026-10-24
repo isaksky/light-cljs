@@ -624,7 +624,7 @@ fn check_direct_eval(state: &VmState, heap: &Heap) -> Result<Flow, Fault> {
     };
     if intrinsic {
         return Err(Fault::Unsupported(
-            "direct eval is not supported; use an indirect call".into(),
+            "direct eval in parameter expressions is not supported; use an indirect call".into(),
         ));
     }
     Ok(Flow::Next)
@@ -911,9 +911,13 @@ pub(super) fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, F
 /// remains explicitly unsupported; script `this` uses `GetGlobalObject`.
 fn this_value(state: &VmState) -> Result<Value, Fault> {
     let frame = state.top();
-    match &frame.this {
+    checked_this(&frame.this, frame.code.strict)
+}
+
+fn checked_this(value: &Value, strict: bool) -> Result<Value, Fault> {
+    match value {
         this @ Value::Object(_) => Ok(this.clone()),
-        this if frame.code.strict => Ok(this.clone()),
+        this if strict => Ok(this.clone()),
         this => Err(Fault::Unsupported(format!(
             "`this` of sloppy-mode code called with {} as its receiver is not supported (it needs the global object or a primitive wrapper)",
             describe(this)
@@ -2218,6 +2222,14 @@ fn step_instruction(
             let this = this_value(state)?;
             state.push(this);
         }
+        Instr::GetRawThis => state.push(state.top().this.clone()),
+        Instr::CheckSloppyThis => {
+            let value = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("missing eval receiver"))?;
+            checked_this(value, false)?;
+        }
         Instr::CheckDirectEval => return check_direct_eval(state, heap),
         Instr::GetGlobalObject
         | Instr::GetGlobal(_)
@@ -2541,6 +2553,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::AppendHole
         | Instr::CheckSpreadArguments
         | Instr::CheckDirectEval
+        | Instr::GetRawThis
+        | Instr::CheckSloppyThis
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2
         | Instr::ToPropertyKey

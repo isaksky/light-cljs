@@ -13,6 +13,7 @@ pub(super) struct Caller {
     pub(super) strict: bool,
     pub(super) bindings: Vec<EvalBinding>,
     pub(super) captures: Vec<Value>,
+    pub(super) receiver_strict: bool,
 }
 
 pub(crate) const MAX_SOURCE_UNITS: usize = 16_384;
@@ -81,14 +82,21 @@ impl State {
         // compilation (including AST teardown on errors) on a bounded helper
         // stack; no JavaScript or task continuation runs on this thread.
         let source = std::mem::take(&mut self.source);
-        let scope = self.caller.as_ref().map(|c| (c.strict, c.bindings.clone()));
+        let scope = self
+            .caller
+            .as_ref()
+            .map(|c| (c.strict, c.bindings.clone(), c.receiver_strict));
         let executable = std::thread::Builder::new()
             .name("eval-compiler".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || match scope {
-                Some((strict, bindings)) => {
-                    crate::frontend::compile_direct_eval("<eval>", &source, strict, &bindings)
-                }
+                Some((strict, bindings, receiver_strict)) => crate::frontend::compile_direct_eval(
+                    "<eval>",
+                    &source,
+                    strict,
+                    &bindings,
+                    receiver_strict,
+                ),
                 None => crate::frontend::compile_eval("<eval>", &source),
             })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?

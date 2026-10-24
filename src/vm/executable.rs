@@ -91,6 +91,8 @@ pub struct EvalSite {
     pub offset: u32,
     pub bindings: Vec<EvalBinding>,
     pub receiver: EvalSource,
+    /// Originating ordinary function's mode, independent of eval directives.
+    pub receiver_strict: bool,
 }
 
 /// Input to [`Executable::load`].
@@ -597,6 +599,8 @@ impl Executable {
                 Opcode::AsyncStart => Instr::AsyncStart,
                 Opcode::Await => Instr::Await,
                 Opcode::CheckDirectEval => Instr::CheckDirectEval,
+                Opcode::GetRawThis => Instr::GetRawThis,
+                Opcode::CheckSloppyThis => Instr::CheckSloppyThis,
                 Opcode::DeclareGlobalLet => Instr::DeclareGlobalLet(operand as u16),
                 Opcode::DeclareGlobalConst => Instr::DeclareGlobalConst(operand as u16),
                 Opcode::InitGlobalLexical => Instr::InitGlobalLexical(operand as u16),

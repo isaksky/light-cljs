@@ -579,6 +579,7 @@ fn strict_direct_eval() {
         r#"function f() { eval('f=7'); } f(); f === 7"#,
         r#"function f() { try { eval('010'); } catch(e) { return e instanceof SyntaxError; } } f()"#,
         r#"function f() { let x=7; return eval.call(null, 'typeof x') === 'undefined' && eval.bind(null)('typeof x') === 'undefined' && (0,eval)('typeof x') === 'undefined'; } f()"#,
+        r#"function f() { let x=7; return eval?.('typeof x') === 'undefined' && (eval)?.(...['typeof x']) === 'undefined' && eval('x') === 7; } f()"#,
         r#"let n=0; try { eval('1', (()=>{throw 7;})()); } catch(e) { n=e; } n === 7"#,
         r#"function f() { let x=1; return eval('x', x=4) === 4; } f()"#,
         r#"try { throw 8; } catch(e) { eval('e') === 8; }"#,
@@ -629,6 +630,56 @@ fn strict_direct_eval() {
         assert!(yields < 1000);
     }
     assert!(yields > 1);
+}
+
+/// Synthetic fixtures: publication policy and serialized scope descriptors.
+#[test]
+fn direct_eval_receiver_semantics() {
+    for source in [
+        r#"function h(eval) { return (() => eval(1, 2))(); } h((a,b) => a+b)"#,
+        r#"function f() { return (() => eval(3))(); } f()"#,
+        r#"function f() { return (() => eval('1+2'))(); } f()"#,
+        r#"function f() { return (() => eval('"use strict"; 1+2'))(); } f()"#,
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Number(3.0), "{source}");
+    }
+    for source in [
+        r#"function f() { return eval('this'); } f.call(7)"#,
+        r#"function f() { return eval('"use strict"; this'); } f.call(7)"#,
+        r#"function f() { return eval('"use strict"; eval("this")'); } f.call(7)"#,
+        r#"function f() { return (() => eval('this'))(); } f.call(7)"#,
+        r#"function f() { return eval('() => this')(); } f.call(7)"#,
+        r#"function f() { return (() => { 'use strict'; return eval('this'); })(); } f.call(7)"#,
+    ] {
+        let code = compile_script_with("receiver.js", source, ScriptOptions::SLOPPY).unwrap();
+        let RunOutcome::Failed(error) = run(&code, &[]) else {
+            panic!("{source}")
+        };
+        assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand, "{source}");
+    }
+    for source in [
+        r#"function f() { return (() => eval('this'))(); } let o={}; f.call(o) === o"#,
+        r#"function f() { return eval('"use strict"; this'); } let o={}; f.call(o) === o"#,
+        r#"function f() { return eval('() => this'); } typeof f.call(7) === 'function'"#,
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn shadowed_eval_in_parameter_defaults() {
+    for source in [
+        "function f(eval, x=eval(1,2)) { return x; } f((a,b)=>a+b)",
+        "function f(eval, x=eval(...[1,2])) { return x; } f((a,b)=>a+b)",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Number(3.0), "{source}");
+    }
+    let source = "function f(eval, x=eval('1')) { return x; } f(globalThis.eval)";
+    let code = compile_script_with("parameter.js", source, ScriptOptions::SLOPPY).unwrap();
+    let RunOutcome::Failed(error) = run(&code, &[]) else {
+        panic!("{source}")
+    };
+    assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand);
 }
 
 /// Synthetic fixtures: publication policy and serialized scope descriptors.

@@ -7188,6 +7188,13 @@ ExecutableSpec round trips. Native continuation tracing covers values until
 the new function object owns them. Cell ownership and publication checks are
 unchanged: a closure holding an eval-visible cell is not publishable.
 
+Receiver-only captures use `GetRawThis` (0x91) instead of evaluating
+`GetThis`. The descriptor retains the originating ordinary function's mode;
+an imported sloppy receiver is checked with `CheckSloppyThis` (0x92) only
+when eval source actually reads it. Ordinary receiver captures outside eval
+keep their existing path. Shadowed `eval` calls in parameter expressions use
+the existing intrinsic rejection guard until parameter eval is supported.
+
 Strict eval declarations use a private variable environment; lexical
 declarations always remain private. Sloppy var/function declaration injection
 is explicitly rejected until -108; parameter-expression eval remains -109.

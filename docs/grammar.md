@@ -5023,6 +5023,11 @@ directive can also make the eval source strict. Eval reads and writes the
 caller's visible lexical and variable bindings, including parameters, implicit
 `arguments`, enclosing closures, catch bindings, and the current loop
 iteration's `let` cells. `this` comes from the caller, lexically through arrows.
+Receiver transport does not evaluate `this`: shadowed calls and non-string
+eval inside arrows work without reading the receiver. Eval retains the
+originating receiver mode even when its source or an intervening arrow has
+a strict directive. Reading a primitive/undefined sloppy receiver keeps the
+existing explicit UnsupportedOperand gap for sloppy substitution.
 Const writes throw TypeError, uninitialized reads/writes throw ReferenceError,
 and a named function expression's immutable name rejects writes with TypeError.
 Strict eval's own `var` and function declarations stay in the eval frame;
@@ -5038,8 +5043,10 @@ The native compiler continuation traces its captured environment; eval executes
 in a fresh task-owned frame and can yield, wait, collect, and migrate, including
 on 64 KiB worker stacks. Source preparation and limits match indirect eval.
 
-Rejected forms and explicit gaps: syntactic direct eval in parameter
-expressions is rejected by the compiler with Unsupported (-109). Sloppy eval
+Rejected forms and explicit gaps: unshadowed direct eval in parameter
+expressions is rejected by the compiler with Unsupported (-109). A shadowed
+callee named `eval` remains an ordinary call there; passing intrinsic eval
+to that call is rejected at runtime before argument evaluation. Sloppy eval
 with `var` or top-level function declarations is rejected during runtime
 compilation with a catchable SyntaxError until caller hoisting lands (-108);
 sloppy eval without those declarations works. `new.target` (-99) and `super`
