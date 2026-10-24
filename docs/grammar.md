@@ -3231,3 +3231,22 @@ equality), retaining source conversion order and exceptions.
 Explicit gaps: BigInt/String comparisons throw UnsupportedOperand pending
 StringToBigInt (clj-quickjs-201), including strings returned by ToPrimitive.
 Strict equality continues to distinguish Number and BigInt.
+
+## Task-owned job execution (clj-quickjs-174)
+
+Execution: after a script body completes normally, engine-enqueued jobs run
+in FIFO order as ordinary resumable activations. Jobs appended by a job run
+after the existing tail. `Complete` returns the body's original value only
+after all jobs drain; an uncaught job exception fails the task and discards
+the tail. Jobs share the run's instruction budget and can yield, migrate or
+wait on `__rt.need`; a wait suspends the whole task, including queued jobs.
+Consumer cancellation discards pending jobs and uses the active activation's
+existing finally cleanup. An internal boundary hook runs after the body and
+after jobs for future WeakRef kept-object clearing.
+
+Explicit gaps: enqueue is crate-internal, with no new syntax or global API.
+Promises, async functions, FinalizationRegistry cleanup producers, WeakRef
+kept-object clearing and host timers are not implemented by this queue.
+Cross-task delivery transfers shareable arguments to an owner-registered
+callable without running JavaScript during publication. Future rejection
+reporting waits for quiescence after jobs and timers, not individual jobs.

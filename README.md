@@ -2807,3 +2807,18 @@ No binary-size cap applies at this stage. Regeneration uses the existing
 pinned hashes and provenance; normal builds require no generator or network.
 Deferred: locale-tag canonicalization, Intl.Locale and all Intl service
 constructors, general resumable `@@toStringTag` reads, and full UCA/UAX #29 data.
+
+### Task-owned job queue (clj-quickjs-174)
+
+Supported: engine-internal FIFO jobs drain after a successful script body as
+resumable VM activations, sharing budgets and surviving dependency waits,
+collection and worker migration. `Complete` carries the original body value
+once jobs drain; an uncaught job error fails the task, and cancellation drops
+pending jobs. Owner-registered senders accept shareable arguments from other
+tasks without executing JavaScript during publication. Dependency waits
+continue to suspend the whole task. The boundary hook is ready for WeakRef
+kept-object clearing. Details: `docs/architecture.md`, "Task-owned jobs".
+
+Deferred: JavaScript-visible enqueue APIs, promise reaction producers, async
+resumes, FinalizationRegistry producers, WeakRef kept-object clearing, timers
+and rejection reporting. The queue itself adds none of those built-ins.

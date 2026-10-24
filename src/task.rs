@@ -262,6 +262,8 @@ mod cancel_tests;
 #[cfg(test)]
 mod handoff_tests;
 #[cfg(test)]
+mod job_tests;
+#[cfg(test)]
 mod need_tests;
 mod state;
 mod stats;
@@ -280,7 +282,7 @@ use crate::host::{Host, NoHost};
 use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WakeHandle, WorldId};
 use crate::value::Value;
 use crate::vm::Executable;
-use crate::vm::dispatch::{Exit, execute, raise_failure};
+use crate::vm::dispatch::{Exit, execute_budgeted, raise_failure};
 use crate::vm::frames::{PendingNeed, VmState};
 use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
 pub use stats::TaskStats;
@@ -288,10 +290,11 @@ pub use stats::TaskStats;
 /// Result of one run of a task.
 #[derive(Debug)]
 pub enum RunOutcome {
-    /// The task returned a value, delivered as a persistent root so it stays
-    /// valid after the task is dropped.
+    /// The body returned a value and its task-owned job queue drained.
+    /// The body's original value is delivered as a persistent root so it
+    /// stays valid after the task is dropped. Job return values are ignored.
     Complete(Rooted),
-    /// The task failed at run time.
+    /// The body or a queued job failed at run time; later jobs are dropped.
     Failed(VmError),
     /// The task is parked waiting on this dependency: it occupies no worker,
     /// cannot be run, and becomes runnable exactly once, through the
@@ -455,6 +458,7 @@ pub(crate) struct TaskInner {
     /// the embedder takes them ([`Task::take_producer_requests`]). A leaf
     /// lock; holds no heap values.
     produce: Mutex<Vec<ProducerRequest>>,
+    jobs: Arc<crate::job::JobInbox>,
 }
 
 /// A task is a root source while any handle to it exists: its saved frames
@@ -470,6 +474,10 @@ impl RootSource for TaskInner {
         self.executable
             .0
             .trace(&mut |id| visit(RootCategory::ExecutableConstant, id));
+        // The inbox is independent of the body and must also be traced
+        // when the runner reports only its VM state at a safepoint.
+        self.jobs
+            .trace(&mut |id| visit(RootCategory::TaskFrame, id));
         // During a collection no thread is between registering for a run
         // and holding its body, or between releasing the body and
         // deregistering (those threads are in heap access and not stopped),
@@ -505,6 +513,7 @@ impl TaskInner {
 /// release its transient builders and VM state, so nothing it held stays a
 /// root. The caller then releases the claim with [`End::Cancelled`].
 fn cleanup_cancelled(task: &TaskInner, body: &mut TaskBody) {
+    task.jobs.close();
     dep::withdraw(&task.deps, &task.log, task.id);
     if let TaskBody::Ready(vm) = body {
         vm.builders.release_all(&task.heap, task.id);
@@ -610,6 +619,7 @@ impl Task {
             log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(Box::new(vm))),
             produce: Mutex::new(Vec::new()),
+            jobs: Arc::new(crate::job::JobInbox::default()),
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
         inner.heap.register_source(source);
@@ -833,6 +843,30 @@ impl Task {
 }
 
 impl RunGuard<'_> {
+    /// Register a callable already belonging to this task. Engine callers
+    /// must obtain it from this task's live VM values, never another task's
+    /// mutable closure graph. The opaque sender preserves that destination.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "internal hook for promise jobs")
+    )]
+    pub(crate) fn job_sender(&self, callable: Value) -> crate::job::JobSender {
+        crate::job::JobSender::new(&self.task.jobs, &self.task.heap, callable)
+    }
+
+    /// Owner-side enqueue also permits this task's mutable argument values.
+    /// All values must already be live roots belonging to this task.
+    #[cfg_attr(not(test), expect(dead_code, reason = "internal hook for engine jobs"))]
+    pub(crate) fn enqueue_job(
+        &self,
+        callable: Value,
+        args: Vec<Value>,
+    ) -> Result<(), crate::job::JobError> {
+        if args.len() >= usize::from(u16::MAX) {
+            return Err(crate::job::JobError::TooManyArguments);
+        }
+        self.task.jobs.push(crate::job::Job { callable, args })
+    }
     /// The task being run.
     pub fn task_id(&self) -> TaskId {
         self.task.id
@@ -1075,6 +1109,7 @@ impl RunGuard<'_> {
     /// up (a second observation, a `need` inside a finally block, ends it);
     /// the caller then ends the run with terminal cleanup.
     fn begin_cleanup(&mut self) -> bool {
+        self.task.jobs.close();
         dep::withdraw(&self.task.deps, &self.task.log, self.task.id);
         self.subscribed = None;
         let Some(vm) = self.vm() else {
@@ -1169,8 +1204,32 @@ impl RunGuard<'_> {
                         pc,
                         budget,
                     },
-                    None => execute(vm, &task.heap, host, budget),
+                    None => execute_budgeted(vm, &task.heap, host, &mut budget),
                 };
+                if let Exit::Return(value) = exit {
+                    if self.cleaning_up() {
+                        return self.end_cancelled();
+                    }
+                    let vm = self.vm().expect("live activation");
+                    if vm.script_result.is_none() {
+                        vm.script_result = Some(value);
+                    }
+                    task.jobs.boundary();
+                    if let Some(job) = task.jobs.next_or_close() {
+                        let vm = self.vm().expect("live activation");
+                        if let Err(error) = vm.start_job(&task.heap, job) {
+                            break Exit::Fail(*error);
+                        }
+                        continue;
+                    }
+                    break Exit::Return(
+                        self.vm()
+                            .expect("live activation")
+                            .script_result
+                            .take()
+                            .expect("body returned"),
+                    );
+                }
                 let Exit::Need {
                     dependency,
                     kind,
@@ -1226,7 +1285,10 @@ impl RunGuard<'_> {
             // collection can run while the value is held only in a Rust local.
             match exit {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
-                Exit::Fail(error) => RunOutcome::Failed(error),
+                Exit::Fail(error) => {
+                    task.jobs.boundary();
+                    RunOutcome::Failed(error)
+                }
                 // The budget boundary is an observation point: the finally
                 // blocks run from the next run on (the budget is used up).
                 Exit::Yield if task.exec.snapshot().cancelled && !self.cleaning_up() => {
@@ -1255,6 +1317,7 @@ impl RunGuard<'_> {
         if let Some(vm) = self.vm() {
             vm.builders.release_all(&task.heap, task.id);
         }
+        task.jobs.close();
         *self.body = TaskBody::Finished;
         let RunGuard {
             body,

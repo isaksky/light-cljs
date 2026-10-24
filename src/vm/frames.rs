@@ -188,6 +188,8 @@ pub(crate) enum Raised {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    /// The script body's completion value, retained while jobs run.
+    pub(crate) script_result: Option<Value>,
     /// Mutable global state belongs to the task, independently of workers.
     pub(crate) global_object: Option<ObjectId>,
     /// The frame the task started in.
@@ -241,6 +243,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            script_result: None,
             global_object: None,
             entry: Frame {
                 code: Arc::clone(code),
@@ -262,6 +265,69 @@ impl VmState {
             natives: Vec::new(),
             cancelling: false,
         }
+    }
+
+    /// Replace the completed activation with a fresh job entry. The small
+    /// trampoline uses ordinary Call/Return, including built-ins, bound
+    /// functions, native continuations, argument binding and resource checks.
+    /// Task-wide globals, builders and the script result survive the switch.
+    pub(crate) fn start_job(
+        &mut self,
+        heap: &crate::heap::Heap,
+        job: crate::job::Job,
+    ) -> Result<(), Box<VmError>> {
+        if let Ok(crate::vm::dispatch::Callee::Code(id, code)) =
+            crate::vm::dispatch::callee(heap, &job.callable)
+        {
+            let needed = usize::from(code.locals)
+                .saturating_add(code.max_stack)
+                .saturating_add(if code.uses_arguments {
+                    job.args.len()
+                } else {
+                    0
+                });
+            if needed > self.limits.max_stack_values {
+                return Err(Box::new(self.failure(
+                    VmErrorKind::StackOverflow,
+                    "job activation exceeds the stack limit".into(),
+                    self.top().pc,
+                )));
+            }
+            let mut next = Self::new(&code, &job.args, self.diag, self.limits);
+            next.entry.callee = Some(id);
+            self.replace_activation(next);
+            return Ok(());
+        }
+        let slots = job.args.len() + 1;
+        if slots > usize::from(u16::MAX) || slots.saturating_mul(2) > self.limits.max_stack_values {
+            return Err(Box::new(self.failure(
+                VmErrorKind::StackOverflow,
+                "job arguments exceed the stack limit".into(),
+                self.top().pc,
+            )));
+        }
+        let mut asm = crate::vm::Assembler::new();
+        for i in 0..slots {
+            asm.get_local(i as u16);
+        }
+        asm.call(job.args.len() as u16)
+            .op(crate::vm::Opcode::Return);
+        let code = asm
+            .finish("<job>", slots as u16, slots as u16)
+            .expect("valid job trampoline");
+        let mut args = Vec::with_capacity(slots);
+        args.push(job.callable);
+        args.extend(job.args);
+        let next = Self::new(&code.0, &args, self.diag, self.limits);
+        self.replace_activation(next);
+        Ok(())
+    }
+
+    fn replace_activation(&mut self, mut next: Self) {
+        next.global_object = self.global_object.take();
+        next.script_result = self.script_result.take();
+        next.builders = std::mem::take(&mut self.builders);
+        *self = next;
     }
 
     /// The running (innermost) frame.
@@ -860,6 +926,9 @@ impl VmState {
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        if let Some(value) = &self.script_result {
+            value.trace(visit);
+        }
         if let Some(id) = self.global_object {
             visit(id);
         }

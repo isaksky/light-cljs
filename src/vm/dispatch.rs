@@ -1825,18 +1825,29 @@ fn polls(instr: Instr, pc: usize) -> bool {
 
 /// Run until the task returns or fails, or until `budget` instructions have
 /// executed (`None`: unlimited).
+#[cfg(test)]
 pub(crate) fn execute(
     state: &mut VmState,
     heap: &Heap,
     host: &mut dyn Host,
     mut budget: Option<u64>,
 ) -> Exit {
+    execute_budgeted(state, heap, host, &mut budget)
+}
+
+/// Preserve the remaining run budget across activation boundaries.
+pub(crate) fn execute_budgeted(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn Host,
+    budget: &mut Option<u64>,
+) -> Exit {
     native::assert_no_borrow("reentering the dispatch loop");
     let mut code = Arc::clone(&state.top().code);
     // Run entry is a poll point.
     heap.safepoint(state);
     loop {
-        if let Some(left) = &mut budget {
+        if let Some(left) = budget {
             if *left == 0 {
                 return Exit::Yield;
             }
@@ -1882,7 +1893,7 @@ pub(crate) fn execute(
                     dependency,
                     kind,
                     pc,
-                    budget,
+                    budget: *budget,
                 };
             }
             Err(Fault::Thrown(v)) => {

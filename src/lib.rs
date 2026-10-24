@@ -22,6 +22,10 @@
 //!   up, or a park found its wake already delivered: run again),
 //!   `Waiting(key)` (parked by [`RunGuard::park`] until a wake), and
 //!   `Cancelled` (the run observed [`Task::cancel`] and cleaned up).
+//!   `Complete` carries the script body's value after task-owned engine
+//!   jobs drain. Jobs share the run budget and may yield or wait; a wait
+//!   blocks the whole task. An uncaught job error fails the task and drops
+//!   later jobs; cancellation drops pending jobs. Enqueue is crate-internal.
 //! * Dependency cells ([`dep`]): [`RunGuard::need`] reads or subscribes to the
 //!   single-assignment cell of a [`DependencyKey`] (world, definition, result
 //!   kind); [`Runtime::complete`] publishes its outcome, delivers each waiter's
@@ -89,6 +93,10 @@ mod runtime;
 pub mod task;
 mod value;
 pub mod vm;
+// Internal enqueue APIs have no production producer until the promise and
+// FinalizationRegistry pellets land; this pellet exercises them in lib tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod job;
 
 pub mod regexp;
 

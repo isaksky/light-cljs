@@ -4725,3 +4725,75 @@ command above and record the executable's `stat` size; replace the body with
 the same number of `std::hint::black_box(&());` statements, rebuild and compare.
 Restore the original main even if either build fails. The generated source is
 about 1 MB. No binary-size cap or size optimization is imposed at this stage.
+
+## Task-owned jobs (clj-quickjs-174)
+
+Each task owns a FIFO `JobInbox` (`src/job.rs`) in addition to its VM state.
+An entry is a callable and argument values. Engine code holding the task's
+`RunGuard` can enqueue values from that task directly, or register a
+`JobSender` for a callable obtained from its live VM values. There is no
+JavaScript-visible enqueue API. A sender is an opaque capability bound to
+that inbox: another task may deliver shareable arguments through it, but
+cannot inspect the callable or execute its closure cells. Registration must
+happen on the callable's owning task; immutable shareable callables can also
+be registered there. Future promise reaction records retain these senders,
+and async resumes must target the activation's owning task.
+
+Cross-task delivery validates the arguments with the ordinary transitive
+publication check and rejects foreign-runtime handles. It enters heap access,
+then briefly locks inbox metadata to append; it runs no JavaScript or host
+callback and takes no task body or dependency-cell lock. A sender roots its
+callable until dropped, and holds only a weak inbox reference, so it does not
+keep the destination task alive. Engine callers should release reaction
+senders when the reaction is consumed. Delivery to a finished or dropped task
+returns `Closed`. Pending raw entries are traced as `TaskFrame` roots by the
+task root source, including when its executing body is skipped by the
+collector; active jobs and the saved body result are traced by `VmState` at
+safepoints. No queue operation or payload destruction executes user code in
+the collector pause.
+
+FIFO order is the order of insertion under the inbox mutex, including owner
+and foreign producers; racing producers have no earlier implied order. The
+runner removes one entry at a time. A job that appends more work places it
+after the existing tail. The final empty check closes admission under that
+same lock: an enqueue racing completion either enters the FIFO before the
+check or receives `Closed`, never a successful but stranded delivery. A
+running or ready task needs no new wake. A task waiting on `__rt.need` remains
+parked even when jobs arrive: the wait blocks the whole task and only its
+dependency wake (or cancellation) can resume it. Senders do not schedule work
+inline, and a completed task cannot be resurrected. The reference executor
+uses the existing task outcomes and needs no separate job scheduling path.
+
+After the script body returns normally, its value is saved in traced task
+state and jobs run as fresh VM activations with `this = undefined`. JavaScript
+functions enter directly; other callable forms use a small ordinary
+Call/Return trampoline, so built-ins, bound functions and native continuations
+use their existing resumable protocols and resource checks. Task identity,
+world, globals and open transient builders survive activation changes. A
+single run's instruction budget continues across the body and every job;
+yields, waits and migration keep all continuation state in the task. The
+internal argument limit is 65,534 values. There is no Rust stack retained
+across runs.
+
+The boundary hook runs after the body and after each normally completed or
+uncaught-failing job, before starting the next job or reporting completion.
+It currently has no production effect; WeakRef's `ClearKeptObjects` belongs
+there. `Complete(value)` reports the original body's value only once the
+queue is empty. An uncaught job exception reports `Failed(error)` and drops
+the tail. A failed body never starts jobs. Observing consumer cancellation
+closes admission and drops pending jobs before running the active activation's
+existing finally cleanup; cleanup can still yield. No queued job runs as
+cancellation cleanup. Sender-held callables remain roots until those senders
+are dropped, independently of pending-job cleanup.
+
+Tests in `src/task/job_tests.rs` use synthetic JavaScript fixtures and a
+crate-internal enqueue helper; they cover FIFO order, appended jobs, boundary
+counts, shared budgets, migration after waits, cross-task delivery, closure
+ownership and GC retention/reclamation. QuickJS's `JS_EnqueueJob2`,
+`JS_ExecutePendingJob`, `js_finrec_job` and `tests/test_builtin.js`
+(`test_finalization_registry`, `test_weak_ref`) were consulted as semantic
+references at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`; no source or
+test text was adapted. Promise settlement/reactions, async resumes, WeakRef
+kept-object clearing, FinalizationRegistry producers and timers are deferred.
+Future unhandled-rejection checks must run only at quiescence after jobs and
+timers drain, rather than after each job; this pellet adds no rejection check.
