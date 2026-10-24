@@ -13,6 +13,9 @@
 //!   A [`WeakHandle`] names a value without keeping it alive.
 //! * [`Runtime::collect`]: deterministic stop-the-world mark/sweep of the
 //!   shared heap ([`heap::gc`]).
+//! * [`Runtime::publish`]: the publication check for handing a value to
+//!   another task; rejects values reaching task-owned mutation with a
+//!   [`PublishError`] naming the path (`value::share`).
 //! * [`RunOutcome`]: `Complete(value)`, `Failed(error)`, `Yielded` (budget used
 //!   up; run again to continue), and the reserved `Waiting(key)`.
 //!
@@ -26,7 +29,7 @@
 //! | [`task`] | [`Task`], execution guard, [`RunOutcome`] |
 //! | [`vm`] | instruction format, executable validation, task-owned frames, dispatch, test assembler |
 //! | [`heap`] | object storage and identity, roots and scoped handles ([`heap::roots`]), tracing contract ([`heap::gc`]) |
-//! | `value` | raw VM values (crate-private) and root-free views |
+//! | `value` | raw VM values (crate-private), root-free views, and publication rules (`value::share`) |
 //! | `ids` | private task/world/dependency identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
@@ -63,6 +66,7 @@ pub use host::{Host, HostCall};
 pub use ids::{DependencyId, TaskId, WaitKey, WorldId};
 pub use runtime::Runtime;
 pub use task::{Budget, RunError, RunGuard, RunOutcome, Task, TaskStatus};
+pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{Primitive, ValueView};
 pub use vm::{
     Assembler, Executable, ExecutableSpec, Label, Opcode, ValidationError, ValidationErrorKind,

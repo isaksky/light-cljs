@@ -41,6 +41,10 @@
 //! bodies are immutable `Arc` trie nodes outside the object table, shared
 //! between versions; the owning object's `Trace` reports every heap edge in
 //! its trie, and reads take the `objects` lock only to clone the body's `Arc`.
+//!
+//! **Publication.** Each slot also carries a sticky known-shareable bit,
+//! set when a persistent object is allocated from known-shareable parts or
+//! proven shareable by the publication check (`value::share`).
 
 pub mod gc;
 pub mod roots;
@@ -55,6 +59,8 @@ pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
 
 use crate::collections::{Builder, Occurrence, PMap, PVector};
+use crate::value::Value;
+use crate::value::share::{self, Shareability};
 
 /// Stable identity of a heap object: slot index plus the slot's generation
 /// at allocation time. Crate-private: see the module docs.
@@ -114,7 +120,16 @@ pub(crate) enum ObjectKind {
 /// forever. Reclaimed payloads are dropped after the collector has released
 /// every heap lock. Payloads are reached only under the heap's object lock,
 /// so they need `Send` but not `Sync`.
-pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {}
+///
+/// Every payload type must also declare its publication category
+/// ([`NativePayload::shareability`]; see [`crate::value::share`]).
+pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
+    /// The payload's publication category. It must not change during the
+    /// payload's lifetime, and a [`Shareability::Persistent`] payload must
+    /// never change the edges its [`Trace`] reports: the publication check
+    /// walks those edges and caches a positive answer in the object's slot.
+    fn shareability(&self) -> Shareability;
+}
 
 /// Storage of one heap object.
 #[derive(Debug)]
@@ -170,6 +185,11 @@ struct Slot {
     generation: u32,
     /// Mark bit; only set during a collection.
     marked: bool,
+    /// The object is known to be transitively shareable
+    /// ([`crate::value::share`]): set at allocation or by a successful
+    /// publication check, never cleared while the object lives (the sticky
+    /// bit invariant documented there), and rewritten when the slot is reused.
+    shareable: bool,
     object: Option<Box<HeapObject>>,
 }
 
@@ -182,11 +202,13 @@ struct ObjectTable {
 }
 
 impl ObjectTable {
-    fn alloc(&mut self, object: HeapObject) -> Option<ObjectId> {
+    fn alloc(&mut self, object: HeapObject, shareable: bool) -> Option<ObjectId> {
         let object = Some(Box::new(object));
         let index = match self.free.pop() {
             Some(index) => {
-                self.slots[index as usize].object = object;
+                let slot = &mut self.slots[index as usize];
+                slot.object = object;
+                slot.shareable = shareable;
                 index
             }
             None => {
@@ -194,6 +216,7 @@ impl ObjectTable {
                 self.slots.push(Slot {
                     generation: 0,
                     marked: false,
+                    shareable,
                     object,
                 });
                 index
@@ -203,6 +226,22 @@ impl ObjectTable {
         Some(ObjectId {
             index,
             generation: self.slots[index as usize].generation,
+        })
+    }
+
+    /// True when `v` is a primitive or a live object known to be transitively
+    /// shareable: its sticky bit is set, or it is an explicit concurrent
+    /// reference (shareable without descending into it).
+    fn known_shareable(&self, v: Value) -> bool {
+        let Value::Object(id) = v else {
+            return true;
+        };
+        self.slot(id).is_some_and(|slot| {
+            slot.shareable
+                || slot
+                    .object
+                    .as_deref()
+                    .is_some_and(|o| share::classify(o) == Shareability::ConcurrentReference)
         })
     }
 
@@ -311,7 +350,65 @@ impl Heap {
     /// holding a guard, or a scope on the collecting thread), which is what
     /// prevents a collection in between.
     pub(crate) fn alloc(&self, object: HeapObject) -> Option<ObjectId> {
-        lock(&self.objects).alloc(object)
+        lock(&self.objects).alloc(object, false)
+    }
+
+    /// [`Heap::alloc`] for a persistent object, recording at allocation
+    /// whether it is already known to be transitively shareable
+    /// ([`crate::value::share`]): it is when every value in `parts` is
+    /// known shareable. `parts` must cover every direct edge of `object`
+    /// that is not inside a part (for an update: the old collection plus the
+    /// values it adds); `None` means "every direct edge of `object`".
+    /// One object-table lock; the work is O(parts).
+    pub(crate) fn alloc_persistent(
+        &self,
+        object: HeapObject,
+        parts: Option<&[Value]>,
+    ) -> Option<ObjectId> {
+        debug_assert_eq!(share::classify(&object), Shareability::Persistent);
+        let mut table = lock(&self.objects);
+        let shareable = match parts {
+            Some(parts) => parts.iter().all(|&v| table.known_shareable(v)),
+            None => {
+                let mut all = true;
+                object.trace(&mut |id| all = all && table.known_shareable(Value::Object(id)));
+                all
+            }
+        };
+        table.alloc(object, shareable)
+    }
+
+    /// Run `f` on a live object and its known-shareable bit under the object
+    /// lock; `None` if `id` is stale or foreign. Same rules as [`Heap::read`].
+    pub(crate) fn read_shareable<R>(
+        &self,
+        id: ObjectId,
+        f: impl FnOnce(&HeapObject, bool) -> R,
+    ) -> Option<R> {
+        let table = lock(&self.objects);
+        let slot = table.slot(id)?;
+        slot.object.as_deref().map(|o| f(o, slot.shareable))
+    }
+
+    /// Set the known-shareable bit of every live object in `ids`: the caller
+    /// has just proved each one transitively shareable. Stale ids are
+    /// ignored. One object-table lock.
+    pub(crate) fn mark_shareable(&self, ids: &[ObjectId]) {
+        let mut table = lock(&self.objects);
+        for &id in ids {
+            let Some(slot) = table.slots.get_mut(id.index as usize) else {
+                continue;
+            };
+            if slot.generation == id.generation && slot.object.is_some() {
+                slot.shareable = true;
+            }
+        }
+    }
+
+    /// The known-shareable bit of a live object (tests).
+    #[cfg(test)]
+    pub(crate) fn known_shareable(&self, id: ObjectId) -> Option<bool> {
+        lock(&self.objects).slot(id).map(|s| s.shareable)
     }
 
     /// True when `id` names a live (not reclaimed) object of this heap.

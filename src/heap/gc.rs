@@ -287,6 +287,7 @@ mod tests {
     use super::*;
     use crate::heap::{NativePayload, ObjectKind, Rooted};
     use crate::value::Primitive;
+    use crate::value::share::Shareability;
     use crate::vm::executable::Code;
     use crate::vm::instr::Instr;
     use crate::vm::{Executable, Opcode};
@@ -305,7 +306,12 @@ mod tests {
         }
     }
 
-    impl NativePayload for Edges {}
+    impl NativePayload for Edges {
+        // Mutable (`set_edges`), so task-owned.
+        fn shareability(&self) -> Shareability {
+            Shareability::TaskOwned
+        }
+    }
 
     impl Drop for Edges {
         fn drop(&mut self) {

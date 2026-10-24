@@ -114,8 +114,10 @@
 //! * Embedder access to builders (they are created and used only by VM
 //!   code), builders seeded from an existing persistent value, and in-place
 //!   editing of map trie nodes (a map builder path-copies internally).
-//! * Publication checks: a collection may contain a plain (future mutable)
-//!   object; transitive publication rules are pellet clj-quickjs-18.
+//! * Construction-time shareability restrictions: a collection may hold a
+//!   plain object or a builder, and is then rejected only when published
+//!   (`crate::value::share`; collections built from shareable parts are
+//!   marked known shareable at allocation).
 //! * Strings, keywords and symbols (no string values exist yet), structural
 //!   (value-based) map keys, sorted or insertion-ordered maps, sets, lists,
 //!   slicing, iteration protocols, and JavaScript property access on
@@ -285,8 +287,15 @@ fn map_body(heap: &Heap, v: Value) -> Result<PMap, CollectionError> {
     }
 }
 
-fn alloc(heap: &Heap, object: HeapObject) -> Result<Value, CollectionError> {
-    heap.alloc(object)
+/// Allocate a persistent collection object. `parts` are the values it was
+/// derived from, for the known-shareable bit (`Heap::alloc_persistent`):
+/// `None` for "all of its contents".
+fn alloc(
+    heap: &Heap,
+    object: HeapObject,
+    parts: Option<&[Value]>,
+) -> Result<Value, CollectionError> {
+    heap.alloc_persistent(object, parts)
         .map(Value::Object)
         .ok_or(CollectionError::OutOfMemory)
 }
@@ -317,14 +326,18 @@ pub(crate) fn kind_of(heap: &Heap, v: Value) -> Option<PersistentKind> {
 }
 
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
-    alloc(heap, HeapObject::Vector(PVector::from_values(items)))
+    alloc(
+        heap,
+        HeapObject::Vector(PVector::from_values(items)),
+        Some(items),
+    )
 }
 
 pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, CollectionError> {
     let map = entries
         .iter()
         .fold(PMap::default(), |m, &(k, v)| m.assoc(k, v).unwrap_or(m));
-    alloc(heap, HeapObject::Map(map))
+    alloc(heap, HeapObject::Map(map), None)
 }
 
 pub(crate) fn new_occurrence(
@@ -335,6 +348,7 @@ pub(crate) fn new_occurrence(
     alloc(
         heap,
         HeapObject::Occurrence(Occurrence { value, provenance }),
+        Some(&[value]),
     )
 }
 
@@ -394,7 +408,11 @@ pub(crate) fn assoc(
             let index = index_from_value(key)?;
             let count = vec.len();
             if index == count {
-                return alloc(heap, HeapObject::Vector(vec.push(value)));
+                return alloc(
+                    heap,
+                    HeapObject::Vector(vec.push(value)),
+                    Some(&[coll, value]),
+                );
             }
             let old = vec
                 .get(index)
@@ -405,10 +423,10 @@ pub(crate) fn assoc(
             let updated = vec
                 .set(index, value)
                 .ok_or(CollectionError::IndexOutOfBounds { index, count })?;
-            alloc(heap, HeapObject::Vector(updated))
+            alloc(heap, HeapObject::Vector(updated), Some(&[coll, value]))
         }
         Body::Map(map) => match map.assoc(key, value) {
-            Some(updated) => alloc(heap, HeapObject::Map(updated)),
+            Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[coll, key, value])),
             None => Ok(coll),
         },
         other => Err(wrong("vector or map", &other)),
@@ -425,21 +443,21 @@ fn identical(a: Value, b: Value) -> bool {
 
 pub(crate) fn dissoc(heap: &Heap, map: Value, key: Value) -> Result<Value, CollectionError> {
     match map_body(heap, map)?.dissoc(key) {
-        Some(updated) => alloc(heap, HeapObject::Map(updated)),
+        Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[map])),
         None => Ok(map),
     }
 }
 
 pub(crate) fn conj(heap: &Heap, vec: Value, value: Value) -> Result<Value, CollectionError> {
     let updated = vector_body(heap, vec)?.push(value);
-    alloc(heap, HeapObject::Vector(updated))
+    alloc(heap, HeapObject::Vector(updated), Some(&[vec, value]))
 }
 
 pub(crate) fn pop(heap: &Heap, vec: Value) -> Result<Value, CollectionError> {
     let updated = vector_body(heap, vec)?
         .pop()
         .ok_or(CollectionError::IndexOutOfBounds { index: 0, count: 0 })?;
-    alloc(heap, HeapObject::Vector(updated))
+    alloc(heap, HeapObject::Vector(updated), Some(&[vec]))
 }
 
 pub(crate) fn items(heap: &Heap, vec: Value) -> Result<Vec<Value>, CollectionError> {

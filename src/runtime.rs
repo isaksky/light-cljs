@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::heap::{CollectError, CollectStats, HandleError, Heap, HeapStats, Rooted, Scope};
 use crate::ids::{TaskId, WorldId};
 use crate::task::Task;
+use crate::value::share::{self, PublishError};
 use crate::value::{Primitive, Value};
 use crate::vm::Executable;
 use crate::vm::frames::{DiagnosticContext, VmState};
@@ -69,8 +70,31 @@ impl Runtime {
         Rooted::new(&self.0.heap, Value::from(value))
     }
 
+    /// Check that `value` may be handed to another task: the embedding's
+    /// publication entry point (`docs/design.md` §4).
+    ///
+    /// Succeeds when `value` is a primitive or reaches only persistent
+    /// objects (vectors, maps, occurrences) and explicit concurrent
+    /// references; nothing is copied, so a task given the value afterwards
+    /// sees the same identities. Fails with [`PublishError::NotShareable`],
+    /// naming the path to the first task-owned object found (a transient
+    /// builder in any state, or a plain object), or
+    /// [`PublishError::Handle`] for a handle of another runtime. Cycles and
+    /// deep graphs are walked iteratively; a value known shareable (built
+    /// from shareable parts, or published before) is accepted in O(1). See
+    /// `value::share` for the categories and the cache.
+    pub fn publish(&self, value: &Rooted) -> Result<(), PublishError> {
+        let value = value.value_in(&self.0.heap).map_err(PublishError::Handle)?;
+        share::check(&self.0.heap, value)
+    }
+
     /// Create a task that will run `executable` with `args` bound to its
     /// parameters. The task is not run; the caller drives it.
+    ///
+    /// Arguments are not publication-checked here: the embedder decides what
+    /// each new task receives, and checks values it hands from one task to
+    /// another with [`Runtime::publish`] first. (Task-owned builders stay
+    /// protected regardless: only their owning task's run can use them.)
     pub fn spawn(&self, executable: &Executable, args: &[&Rooted]) -> Result<Task, HandleError> {
         let args = args
             .iter()

@@ -161,9 +161,8 @@ poll points) are pellet clj-quickjs-17.
   (clj-quickjs-19, below) call these directly; their callers must be
   registered mutators (run guard or scope) so a freshly allocated result is
   stored before any collection can start.
-- **Open for later pellets.** Publication rules (clj-quickjs-18) must
-  classify these kinds as shareable only when their contents are, and
-  reject transient builders.
+- **Publication.** These kinds are `Persistent` in the publication rules
+  (below): shareable exactly when their contents are.
 
 ## Collection intrinsics and transient builders (clj-quickjs-19)
 
@@ -201,7 +200,56 @@ poll points) are pellet clj-quickjs-17.
 - **Deferred.** Embedder (`Scope`) access to builders, builders seeded from
   an existing persistent value, in-place map trie editing, releasing the
   builders of a task that is dropped unfinished (they stay unusable by any
-  other task), and rejecting builders at publication (clj-quickjs-18).
+  other task). Builders are rejected at publication (below).
+
+## Publication rules (clj-quickjs-18)
+
+`src/value/share.rs` (categories, check, cache; full contract in its module
+docs), entry point `Runtime::publish`. Design: `design.md` §4.
+
+- **Categories.** Every heap object kind declares one, in the exhaustive
+  `share::classify` match (a new kind does not compile until it does):
+
+  | Category | Kinds | Shareable |
+  |----------|-------|-----------|
+  | `Persistent` | vector, map, occurrence; natives declaring it | when everything it references is |
+  | `TaskOwned` | builders in every state, plain objects, natives declaring it | never |
+  | `ConcurrentReference` | reserved for atoms (clj-quickjs-10) and dependency cells (clj-quickjs-6) | always; not descended into |
+
+  Primitives are shareable. Plain objects are the ordinary mutable
+  JavaScript objects of §4 (property storage comes later), so they count as
+  task-owned mutation now. A native payload declares its category through
+  `NativePayload::shareability`.
+- **The check** walks the value graph breadth-first with an explicit queue
+  and a visited set: no recursion (depth is bounded only by memory), each
+  object inspected once (cycles through natives or builders terminate;
+  shared DAGs cost their distinct objects, not their paths). It reads each
+  object under one short object-table lock and walks collection bodies
+  with no lock held. The first task-owned object fails the check with
+  `PublishError::NotShareable { path, found, owner }`, where `path` is a
+  shortest path from the published value (`value[1]{7}[1]`; `{k}.key` for a
+  map key, `.value` through an occurrence, `.edge(n)` through a native).
+- **Cache.** Each heap slot has a sticky known-shareable bit. A persistent
+  object gets it at allocation when all its parts already have it
+  (`Heap::alloc_persistent`: O(parts) for an update, never a walk), and
+  every object a successful check expanded gets it afterwards. The walk
+  stops at known objects, so values built bottom-up from shareable parts,
+  republished values, and versions derived from them are accepted in O(1).
+  This is valid because persistent edges never change and no object's
+  category changes; the bit is rewritten when a slot is reused.
+- **Entry point.** `Runtime::publish(&Rooted)` is what the embedder calls
+  before handing a value from one task to another. Nothing is copied, so
+  the receiving task sees the same identities. `Runtime::spawn` does not
+  check its arguments: the embedder decides what each task receives, and
+  builders stay protected by their owner check regardless. Later runtime
+  handoffs (dependency results, atom contents, closure captures) call
+  `share::check` themselves.
+- **What later kinds declare.** A category. If `Persistent`: edges that
+  never change after allocation (closures qualify only with an immutable
+  captured environment) and allocation through `alloc_persistent`. If
+  `ConcurrentReference`: a `share::check` of every value it installs.
+- **Deferred.** No VM intrinsic exposes the check (the instruction set is
+  unchanged), and `spawn` arguments are not checked.
 
 ## Task/dependency continuation shape (planned)
 

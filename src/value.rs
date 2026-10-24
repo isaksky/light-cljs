@@ -14,6 +14,8 @@
 //! Equality and identity are distinct: [`Value::strict_equals`] is JavaScript
 //! `===`; [`Value::same_object`] is heap identity only.
 
+pub(crate) mod share;
+
 use crate::heap::ObjectId;
 
 /// A raw VM value. See the module docs for why this is crate-private.

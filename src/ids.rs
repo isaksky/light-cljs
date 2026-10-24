@@ -15,7 +15,7 @@ use std::fmt;
 pub struct TaskId(u64);
 
 impl TaskId {
-    pub(crate) fn from_raw(raw: u64) -> Self {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
         TaskId(raw)
     }
 }

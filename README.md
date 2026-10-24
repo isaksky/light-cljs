@@ -24,6 +24,8 @@ cargo test --test collections     # persistent vectors/maps, identity, provenanc
 cargo test --lib collections::    # trie internals, structural sharing, key contract
 cargo test --test collection_intrinsics   # collection intrinsics and transient builders
 cargo test --lib vm::intrinsics:: # cross-task builder rejection
+cargo test --test publication     # publication check: paths, identity, deep/shared graphs
+cargo test --lib value::share::   # categories, known-shareable cache, cycles
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -163,8 +165,8 @@ Deferred:
 
 - VM intrinsics for collections and transient builders: superseded, see
   clj-quickjs-19 below.
-- Publication rules for collections containing mutable objects
-  (clj-quickjs-18).
+- Publication rules for collections containing mutable objects: superseded,
+  see clj-quickjs-18 below.
 - Strings/keywords/symbols, structural map keys, ordered maps, sets, lists,
   and JavaScript property access on collections.
 
@@ -198,5 +200,36 @@ Deferred:
   persistent value (`transient`); in-place map trie editing (map builders
   path-copy internally); `count`/lookups on builders.
 - Releasing builders of a task dropped without finishing (they remain
-  unusable by other tasks), and rejecting builders at publication
-  (clj-quickjs-18).
+  unusable by other tasks). Rejecting builders at publication: see
+  clj-quickjs-18 below.
+
+### Publication rules (clj-quickjs-18)
+
+Supported:
+
+- Three value categories (`design.md` §4), declared by every heap object
+  kind: persistent (vectors, maps, occurrences: shareable when their
+  contents are), task-owned mutation (transient builders in any state,
+  plain objects: never shareable), and a reserved explicit-concurrent-
+  reference category for atoms and dependency cells (shareable without
+  being immutable; no kind uses it yet). Primitives are shareable.
+- `Runtime::publish(&Rooted)`: the embedder's check before handing a value
+  to another task. It walks the graph iteratively (deep, cyclic and heavily
+  shared graphs are fine) and fails with `PublishError::NotShareable`,
+  naming the path to the offending object (e.g. `value[1]{7}[1]`), its
+  kind and its owning task. Published values are not copied: receiving
+  tasks see the same identities.
+- Values built from shareable parts are known shareable from allocation
+  (a sticky per-object bit), and a successful check caches its result, so
+  republishing or publishing a derived version does not re-walk the graph.
+- Contract: `src/value/share.rs` module docs; summary in
+  [`docs/architecture.md`](docs/architecture.md). Tests:
+  `cargo test --test publication` and `cargo test --lib value::share::`.
+
+Deferred:
+
+- `Runtime::spawn` does not check its arguments; embedders call `publish`
+  when a value moves between tasks.
+- No VM intrinsic for the check; dependency results (clj-quickjs-6), atom
+  contents (clj-quickjs-10) and closure captures (clj-quickjs-20) will call
+  it at their handoffs.

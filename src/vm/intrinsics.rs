@@ -67,8 +67,8 @@
 //!
 //! Builders are heap objects with identity; `===` compares them by identity
 //! and they may be stored in locals, operands and even persistent
-//! collections, but they are not shareable values (publication checks are
-//! pellet clj-quickjs-18).
+//! collections, but they are not shareable values: `Runtime::publish`
+//! rejects any value that reaches one (`crate::value::share`).
 //!
 //! # Rooting
 //!

@@ -65,8 +65,8 @@
 //! Builders are not shareable values: a builder handle that escapes its task
 //! (as a task result, or inside a persistent collection) can be passed
 //! around and compared by identity, but no other task can mutate or freeze
-//! it. Publication checks that reject such values outright are pellet
-//! clj-quickjs-18. A task dropped without finishing does not release its
+//! it. The publication check (`crate::value::share`) rejects any value
+//! that reaches a builder, in any state. A task dropped without finishing does not release its
 //! builders; they remain unusable by every other task.
 
 use std::fmt;
@@ -167,6 +167,10 @@ pub(crate) struct Builder {
 }
 
 impl Builder {
+    pub(crate) fn owner(&self) -> TaskId {
+        self.owner
+    }
+
     pub(crate) fn kind(&self) -> BuilderKind {
         self.kind
     }
@@ -343,7 +347,8 @@ pub(crate) fn freeze(heap: &Heap, caller: TaskId, b: Value) -> Result<Value, Bui
         Draft::Vector(items) => HeapObject::Vector(PVector::from_values(&items)),
         Draft::Map(map) => HeapObject::Map(map),
     };
-    heap.alloc(object)
+    // Known shareable at once when every drafted value already is.
+    heap.alloc_persistent(object, None)
         .map(Value::Object)
         .ok_or(BuildFault::Collection(CollectionError::OutOfMemory))
 }
