@@ -21419,6 +21419,34 @@ fn regexp_flags_errors_and_internal_state() {
     }
 }
 
+/// Synthetic fixture, not light-cljs output. The generic getter reads each
+/// property once, including flags that cannot all coexist on a RegExp.
+#[test]
+fn regexp_generic_flags_reads_all_eight_in_order() {
+    assert_eq!(
+        eval(
+            r#"
+            let reads = [];
+            let receiver = {
+                get hasIndices() { reads.push('hasIndices'); return true; },
+                get global() { reads.push('global'); return true; },
+                get ignoreCase() { reads.push('ignoreCase'); return true; },
+                get multiline() { reads.push('multiline'); return true; },
+                get dotAll() { reads.push('dotAll'); return true; },
+                get unicode() { reads.push('unicode'); return true; },
+                get unicodeSets() { reads.push('unicodeSets'); return true; },
+                get sticky() { reads.push('sticky'); return true; }
+            };
+            let get = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get;
+            let flags = get.call(receiver);
+            flags === 'dgimsuvy' &&
+                reads.join(',') === 'hasIndices,global,ignoreCase,multiline,dotAll,unicode,unicodeSets,sticky'
+            "#,
+        ),
+        ValueView::Bool(true)
+    );
+}
+
 /// Synthetic fixture, not light-cljs output. Programs survive serialization;
 /// object mutation remains task-owned and rejects cross-task publication.
 #[test]
