@@ -5668,8 +5668,8 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `test_async_promise_rejection`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The implementation is written
 fresh. The opening rejection-counter case in `tests/promises.rs` adapts
-`test_async_promise_rejection`, replacing its timer with a final reaction
-job; that file preserves the QuickJS LICENSE notice. Other fixtures are
+`test_async_promise_rejection`, using an optional simulated-host timer;
+that file preserves the QuickJS LICENSE notice. Other fixtures are
 synthetic and were written for this runtime.
 
 ## Date host clock and runtime zone (clj-quickjs-182)
@@ -6884,8 +6884,10 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 The implementation is written fresh. The opening body of
 `unhandled_rejections_reported_at_quiescence` adapts
 `research/quickjs/tests/test_std.js::test_async_promise_rejection` at that
-revision, replacing its timer with a final reaction job until simulated timers
-land; `tests/promises.rs` retains the upstream copyright/license notice.
+revision, using an optional simulated-host timer; `tests/promises.rs` retains
+the upstream copyright/license notice. Timer and nested-timer cases also prove
+that handlers can remove earlier rejections before the quiescence report,
+and that unhandled rejections from timer-created jobs reach the final report.
 
 ### Runtime compilation for indirect eval (clj-quickjs-106)
 

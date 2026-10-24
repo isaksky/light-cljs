@@ -672,9 +672,9 @@ independently; no C engine implementation was copied or linked.
 
 `tests/promises.rs` adapts the rejection-counter case from
 `research/quickjs/tests/test_std.js`, `test_async_promise_rejection`, at
-revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The timer becomes a final
-Promise job; the QuickJS LICENSE copyright and permission notice is retained
-in the test file. The Rust implementation is written fresh, consulting the
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The timer uses the optional
+simulated-host bindings; the QuickJS LICENSE copyright and permission notice
+is retained in the test file. The Rust implementation is written fresh, consulting the
 Promise routines in `research/quickjs/quickjs.c` listed in architecture.md.
 
 ## Date host rule tables (clj-quickjs-182)

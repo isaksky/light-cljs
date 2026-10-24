@@ -88,11 +88,23 @@ fn promise_then_catch_jobs() {
 #[test]
 fn unhandled_rejections_reported_at_quiescence() {
     // The first body adapts test_async_promise_rejection (license above),
-    // replacing its timer with a final reaction job until timers land.
+    // using the optional simulated-host timer to observe the drained jobs.
     for (source, reasons) in [
         (
-            "let counter=0; let p1=Promise.reject(); let p2=Promise.reject(); let p3=Promise.resolve(); p1.catch(() => counter++); p2.catch(() => counter++); p3.then(() => counter++); Promise.resolve().then(() => { if(counter !== 3) throw counter; }); 42;",
+            "let counter=0; let p1=Promise.reject(); let p2=Promise.reject(); let p3=Promise.resolve(); p1.catch(() => counter++); p2.catch(() => counter++); p3.then(() => counter++); os.setTimeout(() => { if(counter !== 3) throw counter; }, 10); 42;",
             vec![],
+        ),
+        (
+            "let p=Promise.reject(7); os.setTimeout(() => p.catch(() => {}), 10); 42;",
+            vec![],
+        ),
+        (
+            "os.setTimeout(() => { let p=Promise.reject(8); os.setTimeout(() => p.catch(() => {}), 5); }, 10); 42;",
+            vec![],
+        ),
+        (
+            "os.setTimeout(() => { Promise.resolve().then(() => Promise.reject(9)); }, 10); 42;",
+            vec![9.],
         ),
         ("Promise.reject(1); 42;", vec![1.]),
         (
@@ -114,6 +126,7 @@ fn unhandled_rejections_reported_at_quiescence() {
         let task = rt
             .spawn(&compile_script("rejections", source).unwrap(), &[])
             .unwrap();
+        task.install_sim_host_bindings().unwrap();
         // Budget boundaries are not reporting boundaries. Collect around
         // every instruction to exercise the new task roots while running.
         let mut complete = false;
