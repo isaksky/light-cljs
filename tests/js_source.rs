@@ -15736,6 +15736,60 @@ fn map_receivers_properties_and_explicit_gaps() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. BigInt rows adapt QuickJS
+/// tests/test_builtin.js::test_map/test_map1 at 7d1c13c5d8f8.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
+/// MIT permission notice retained in docs/attribution.md, "JavaScript Map tests".
+#[test]
+fn map_bigint_keys() {
+    for source in [
+        "let m = new Map(); m.set(1n, 1n); m.get(1n) === 1n && m.get(2n**1000n - (2n**1000n - 1n)) === 1n",
+        "let m = new Map(); m.set(1n, 'a'); m.set(1, 'b'); m.size === 2 && m.get(1n) === 'a' && m.get(1) === 'b'",
+        "let m = new Map(); m.set(0n, 1); m.get(-0n) === 1 && m.get(-0n) === m.get(0n) && m.size === 1",
+        // Separate limb allocations, signs and both sides of the inline boundary.
+        "let m = new Map(); m.set(9223372036854775807n, 1); m.set(9223372036854775808n, 2); m.set(-9223372036854775808n, 3); m.set(-9223372036854775809n, 4); m.size === 4 && m.get((1n << 63n) - 1n) === 1 && m.get(1n << 63n) === 2 && m.get(-(1n << 63n)) === 3 && m.get(-(1n << 63n) - 1n) === 4",
+        "let m = new Map(); m.set(0x100000000000000000000000000000001n, 'old'); m.set((1n << 128n) + 1n, 'new'); m.set(-((1n << 128n) + 1n), 'negative'); m.size === 2 && m.get(0x100000000000000000000000000000001n) === 'new' && m.get(-0x100000000000000000000000000000001n) === 'negative' && !m.has((1n << 128n) + 2n)",
+        // The largest permitted magnitude still hashes by content in a leaf call.
+        "let m = new Map(); m.set(1n << 1048575n, 7); m.get(2n << 1048574n) === 7 && m.has(2n << 1048574n) && m.delete(2n << 1048574n) && m.size === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for offset in ["0n", "1n << 128n"] {
+        let source = format!(
+            r#"
+            let m = new Map(); let values = []; let offset = {offset};
+            for (let i = 0; i < 1000; i++) {{
+                let v = {{id: i}}; values.push(v); m.set(BigInt(i) + offset, v);
+            }}
+            let ok = m.size === 1000;
+            for (let i = 0; i < 1000; i++) {{
+                let key = BigInt(i + 1) + offset - 1n;
+                if (m.get(key) !== values[i] || !m.has(key)) ok = false;
+                m.set(key, values[i]);
+            }}
+            ok = ok && m.size === 1000;
+            for (let i = 0; i < 1000; i++) {{
+                let key = BigInt(i + 2) + offset - 2n;
+                if (!m.has(key) || !m.delete(key) || m.has(key)) ok = false;
+            }}
+            ok && m.size === 0
+            "#
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{offset}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output; upstream attribution as above.
+#[test]
+fn map_bigint_for_each_deletes_all_keys() {
+    for offset in ["0n", "1n << 128n"] {
+        let source = format!(
+            "let m = new Map(); let offset = {offset}; for (let i = 0; i < 1000; i++) m.set(BigInt(i) + offset, i); let i = 0; m.forEach(function(v, k) {{ if (k !== BigInt(i) + offset || v !== i || !m.has(k) || !m.delete(k) || m.has(k)) throw 1; i++; }}); i === 1000 && m.size === 0"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{offset}");
+    }
+}
+
 #[test]
 fn maps_reject_access_from_another_task() {
     let rt = Runtime::new();

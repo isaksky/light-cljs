@@ -4384,6 +4384,16 @@ UTF-16 contents, objects by stable heap identity (generation included).
 Hash collisions always compare actual keys, with no user code, coercion or
 property access. The heap is nonmoving and live identities are never reused.
 Symbols compare by their stable primitive identity (clj-quickjs-127).
+BigInt keys compare by mathematical value, independently of literal,
+conversion or arithmetic construction (clj-quickjs-171). Their canonical
+`JsBigInt` representation makes derived equality and hashing consistent:
+inline integers hash their value; heap-backed `Arc<[u32]>` bodies hash sign
+and limb contents, never allocation identity. BigInt and Number keys stay
+distinct, and BigInt negative zero is already canonical zero. The shared
+key helpers invoke no JavaScript and allocate no limb copies. Hashing and
+worst-case equality are O(limbs), at most 32,768 base-2^32 limbs under the
+existing 1 Mbit cap, within a leaf Map call; there is no per-limb budget
+charge or yield poll. The persistent HAMT key contract is unchanged.
 Keys of future primitive kinds must extend those helpers consistently.
 
 Updating an existing key preserves its slot. Deletion empties the slot;
@@ -4400,9 +4410,12 @@ property and custom-prototype edges with only the Map result rooted.
 The realm appends an immutable ordinary `Map.prototype`, constructor,
 methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
 with a non-nullish argument explicitly throws TypeError until resumable
-iterable construction exists. Iteration methods and dedicated BigInt-key
-coverage belong to later pellets. Once BigInt primitives exist, generic key
-storage uses their shared equality/hashing without another representation.
+iterable construction exists. Iteration methods belong to later pellets.
+`map_bigint_keys` covers fresh equal keys, updates, membership and deletion
+for 1000 inline and 1000 larger-than-128-bit values.
+`map_bigint_for_each_deletes_all_keys` covers the upstream callback deletion
+loop for both key ranges, checking insertion order, membership and deletion
+until all 1000 callbacks have run and the Map is empty (clj-quickjs-171).
 The prototype also owns the non-writable, non-enumerable,
 configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
 is exposed on `Symbol`.

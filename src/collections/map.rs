@@ -62,6 +62,9 @@ pub(crate) fn key_hash(key: &Value) -> u64 {
         Value::String(s) => s.content_hash() ^ 0x7374_7269_6e67_0000,
         Value::Symbol(s) => s.identity() ^ 0x7379_6d62_6f6c_0000,
         Value::BigInt(n) => {
+            // JsBigInt has one canonical form per value. Its derived Hash
+            // reads the sign and limb contents (Arc hashes its slice, not
+            // its address), in O(limbs) within MAX_BIGINT_BITS, without JS.
             use std::hash::{DefaultHasher, Hash, Hasher};
             let mut hasher = DefaultHasher::new();
             n.hash(&mut hasher);

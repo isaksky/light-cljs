@@ -339,6 +339,16 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+`tests/js_source.rs::map_bigint_keys` and
+`map_bigint_for_each_deletes_all_keys` (clj-quickjs-171) adapt the
+BigInt cases in `research/quickjs/tests/test_builtin.js::test_map` (lines
+899-905) and `test_map1` (line 845), at the same revision above. Fresh-key
+lookups, updates and direct deletion extend the original fixture. The
+upstream callback/deletion loops cover both 1000-key BigInt ranges.
+`research/quickjs/quickjs.c::map_hash_key` (line 54339) was
+consulted as a semantic reference; no implementation was copied. These
+synthetic fixtures retain the QuickJS copyright and MIT notice above.
+
 ## Rope strings (clj-quickjs-146)
 
 `tests/fixtures/js/quickjs_rope.js` retains `rope_concat` and `test_rope`
