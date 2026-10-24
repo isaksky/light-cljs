@@ -4445,7 +4445,8 @@ ordinary task-owned instances with immutable internal options. The `compare`
 accessor returns the same bound two-argument function on every read; detached
 calls convert their arguments to strings in left-to-right order, allowing waits
 inside object hooks. `resolvedOptions()` returns locale, usage, sensitivity,
-ignorePunctuation, collation (`default`), numeric and caseFirst, in that order.
+ignorePunctuation, collation (`default` or German `phonebk`), numeric and
+caseFirst, in that order.
 `Intl.Collator.supportedLocalesOf` shares the canonical locale-list and matcher
 helpers. Instances inherit `Symbol.toStringTag = 'Intl.Collator'`.
 The detached function is an `Array.prototype.sort` comparator: en/de root
@@ -4461,8 +4462,8 @@ RangeError; well-formed unsupported collations resolve to default. Option
 objects use the shared undefined-or-object policy. Wrong receiver brands and
 symbol compare arguments throw TypeError; foreign task objects are rejected.
 
-Explicit gaps: all test locales currently use root rules; usage is recorded
-without locale search tailoring. Primary weights are folded NFD scalar order,
+Explicit gaps: locales use root rules except the German/Turkish mappings
+described below. Primary weights are folded NFD scalar order,
 secondary weights preserve the snapshot's combining-mark order, and case-only
 tertiary weights use the pinned Unicode Uppercase property, lowercase first
 (or explicit upper). Same-case variants remain equal at case sensitivity;
@@ -4472,7 +4473,7 @@ characters; lone surrogates remain distinct. Punctuation filtering follows the
 snapshot's ASCII alphanumeric / non-ASCII ID_Start rule. Numeric runs are ASCII
 digits, compared by significant length and digits without integer conversion;
 leading zeroes do not break ties. These root rules do not supply full UCA/DUCET
-weights or locale tailorings. Unlike the snapshot's unused numeric flag and
+weights. Unlike the snapshot's unused numeric flag and
 uncached getter, numeric comparison and function identity follow this pellet's
 explicit acceptance requirements. Full folding is completed to an idempotent
 closure, including capital sharp S; collation-option rope validation is budgeted.
@@ -4525,3 +4526,23 @@ Map's current constructor boundary. WeakSet, WeakRef and FinalizationRegistry
 remain deferred. WeakMap has no enumeration, size, clear or iterator API;
 the host-only entry-count test hook is not a JavaScript property. Generic
 Object.prototype.toString symbol-tag consumption remains deferred.
+
+### Intl.Collator German and Turkish tailorings (clj-quickjs-219)
+
+Execution: German `de-u-co-phonebk` or an explicit `{collation:'phonebk'}`
+selects phonebook primary/secondary keys: ä/ö/ü become ae/oe/ue, with equivalent
+uppercase and canonically decomposed spellings. Variant sensitivity retains
+the original NFD fallback. German default sort uses a/o/u followed by the
+snapshot's small intervening umlaut weight; German search uses phonebook
+weights while reporting collation `default`. Turkish `tr` orders ı before i,
+and I before İ at default sensitivity. Other locales retain root ordering.
+`resolvedOptions().collation` reports `phonebk` only for supported German sort;
+the resolved locale preserves `-u-co-phonebk` when selected by that extension.
+Explicit collation options win over the extension. Well-formed unsupported
+collations resolve to `default` and drop `co`, preserving independent `kn`/`kf`
+resolution. Malformed collation options still throw RangeError.
+
+Explicit gaps: the pinned snapshot's Turkish mapping changes dotless ı only;
+I/İ retain root folding, so full locale-specific uppercase equivalences are
+deferred. Azerbaijani is not in the agreed locale set. Additional collations
+and UCA/DUCET weights remain deferred.

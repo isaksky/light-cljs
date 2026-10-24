@@ -26,6 +26,7 @@ my %pins = (
     'cutils.h' => 'd2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647',
     'cutils.c' => 'b73a403a59da30726257ddbdf5e399298941c1def997782ee0d4d33f796a80a2',
     'quickjs.h' => '09d208759171634a5b1e60aa314fd00da5d088ac28621b7ae4682ba2fb103415',
+    'intl/collator.c' => '848d92ed46dcb6caa62bb3e0c901a61e7667fd578a33a744760d84010fcf395f',
 );
 for my $name (sort keys %pins) {
     die "unpinned $name\n" unless sha256_hex(read_file("$source/$name")) eq $pins{$name};
@@ -36,14 +37,47 @@ my $tables = read_file("$import/tables.rs");
 for my $name (qw(unicode_cc_table unicode_decomp_table1 case_conv_table1)) {
     die "missing verified $name\n" unless $tables =~ /pub static $name:/;
 }
+my $collator = read_file("$source/intl/collator.c");
+my ($declarations) = $collator =~ /(enum \{.*?\} JSCollatorData;)/s;
+die "collator declarations\n" unless defined $declarations;
+my $functions = '';
+for my $name (qw(is_combining_mark is_significant transform_string)) {
+    my ($function) = $collator =~ /(^static [^\n]*\b\Q$name\E\(.*?^\})/ms;
+    die "collator function $name\n" unless defined $function;
+    $functions .= "$function\n";
+}
 make_path($out);
-write_file("$out/export.c", <<'C');
+my $export = <<'C';
+/* Offline reference only. QuickJS MIT notice: QUICKJS-LICENSE. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "cutils.h"
 #include "libunicode.h"
 static void *resize(void *opaque, void *ptr, size_t size) {
     (void)opaque; return realloc(ptr, size);
+}
+typedef void JSContext;
+#define JS_GetRuntime(ctx) NULL
+#define js_realloc_rt resize
+#define js_malloc(ctx, size) malloc(size)
+#define js_realloc(ctx, ptr, size) realloc(ptr, size)
+#define js_free(ctx, ptr) free(ptr)
+C
+$export .= $declarations . "\n" . $functions . <<'C';
+static void tailoring(char kind, JSCollatorData *s, uint32_t cp, int umlaut) {
+    uint32_t input[2] = {cp, 0x0308};
+    int length[2];
+    uint32_t *key[2];
+    for (int level = 0; level < 2; level++) {
+        key[level] = transform_string(NULL, s, input, umlaut ? 2 : 1, &length[level], level);
+        if (!key[level] || length[level] < 1 || length[level] > 3) exit(1);
+    }
+    if (length[0] != length[1] || memcmp(key[0], key[1], length[0] * sizeof(uint32_t))) exit(1);
+    printf("%c %X", kind, cp);
+    for (int i = 0; i < length[0]; i++) printf(" %X", key[0][i]);
+    puts("");
+    free(key[0]); free(key[1]);
 }
 int main(void) {
     for (uint32_t cp = 0; cp <= 0x10ffff; cp++) {
@@ -65,25 +99,34 @@ int main(void) {
         unsigned cc = unicode_get_cc(cp);
         if (cc) printf("C %X %X\n", cp, cc);
     }
+    JSCollatorData s = {.locale = "de", .collation = "phonebk"};
+    const char *umlauts = "AOUaou";
+    for (int i = 0; umlauts[i]; i++) tailoring('P', &s, umlauts[i], 1);
+    s.collation = "default";
+    for (int i = 0; umlauts[i]; i++) tailoring('G', &s, umlauts[i], 1);
+    s.locale = "tr";
+    tailoring('T', &s, 0x0131, 0);
     return 0;
 }
 C
+write_file("$out/export.c", $export);
 system($ENV{CC} // 'cc', '-std=c11', '-O2', '-ffunction-sections', '-fdata-sections',
     '-Wl,--gc-sections', '-I', $source, "$out/export.c", "$source/libunicode.c", "$source/cutils.c",
     '-o', "$out/export") == 0 or die "compile reference\n";
 open my $pipe, '-|', "$out/export" or die $!;
-my %rows = (N => [], F => [], C => []);
+my %rows = map { $_ => [] } qw(N F C P G T);
 my (%raw_fold, %complete_fold, %visiting);
 my $reference = '';
 while (<$pipe>) {
     $reference .= $_;
-    /^([NFC]) ([0-9A-F]+)((?: [0-9A-F]+)+)\n$/ or die "reference record\n";
+    /^([NFCPGT]) ([0-9A-F]+)((?: [0-9A-F]+)+)\n$/ or die "reference record\n";
     my ($kind, $cp, $rest) = ($1, hex($2), $3);
     my @values = map { hex($_) } split ' ', $rest;
     $raw_fold{$cp} = [@values] if $kind eq 'F';
     die "invalid scalar\n" if grep { $_ > 0x10ffff } ($cp, @values);
     die "canonical expansion exceeds reserved bound\n" if $kind eq 'N' && @values > 4;
     die "full folding exceeds reserved bound\n" if $kind eq 'F' && @values > 3;
+    die "tailoring exceeds reserved bound\n" if $kind =~ /[PGT]/ && @values > 3;
     my $value = $kind eq 'C' ? $values[0] : '&[' . join(',', map { sprintf('0x%X', $_) } @values) . ']';
     push @{$rows{$kind}}, sprintf("(0x%X,%s),\n", $cp, $value);
 }
@@ -109,8 +152,8 @@ my $rust = "// Generated from QuickJS 7d1c13c5d8f8 Unicode snapshot. Do not edit
     "// Copyright (c) 2017-2018 Fabrice Bellard. MIT: QUICKJS-LICENSE.\n" .
     "// Unicode data: docs/UNICODE-LICENSE. Regenerate: scripts/quickjs-data/README.md.\n" .
     "#![forbid(unsafe_code)]\n";
-for my $kind (qw(N F C)) {
-    my $name = {N => 'NFD', F => 'FOLD', C => 'CCC'}->{$kind};
+for my $kind (qw(N F C P G T)) {
+    my $name = {N => 'NFD', F => 'FOLD', C => 'CCC', P => 'PHONEBOOK', G => 'GERMAN_SORT', T => 'TURKISH'}->{$kind};
     my $ty = $kind eq 'C' ? 'u8' : '&[u32]';
     $rust .= "#[rustfmt::skip]\npub(crate) static $name: &[(u32, $ty)] = &[\n" . join('', @{$rows{$kind}}) . "];\n";
 }
@@ -161,11 +204,19 @@ fn main() {
             output += &format!("C {cp:X} {:X}\n", data::CCC[i].1);
         }
     }
+    for (kind, table) in [('P', data::PHONEBOOK), ('G', data::GERMAN_SORT), ('T', data::TURKISH)] {
+        for &(cp, values) in table {
+            output += &format!("{kind} {cp:X}");
+            for v in values { output += &format!(" {v:X}"); }
+            output.push('\n');
+        }
+    }
     assert_eq!(output, expected);
 }
 RUST
 write_file("$out/provenance.txt", $provenance .
     "Collation: NFD, idempotent closure of full case folding and canonical combining classes; pinned offline libunicode decoder.\n" .
+    "Tailorings: German phonebook/search, German default sort and Turkish dotless i; pinned offline transform_string primary/secondary weights.\n" .
     join('', map { "$pins{$_}  $_\n" } sort keys %pins) .
     sha256_hex(read_file($0)) . "  repack-collation.pl\n");
-print "PASS: expanded NFD, full folding and combining classes\n";
+print "PASS: expanded NFD, full folding, combining classes and locale tailorings\n";

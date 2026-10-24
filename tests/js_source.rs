@@ -20446,6 +20446,114 @@ fn intl_collator_root_order() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. The first five assertions adapt
+/// QuickJS tests/test_intl.js test_collator at 7d1c13c5d8f8; its MIT notice is
+/// retained in src/intl/data/QUICKJS-LICENSE (see docs/attribution.md).
+#[test]
+fn intl_collator_tailorings() {
+    for source in [
+        "new Intl.Collator('de-u-co-phonebk').compare('ä','z') < 0",
+        "new Intl.Collator('de-u-co-phonebk').compare('ä','a') > 0",
+        "new Intl.Collator('tr').compare('i','ı') > 0",
+        "new Intl.Collator('tr').compare('ı','i') < 0",
+        "new Intl.Collator('tr').compare('I','İ') < 0",
+        "new Intl.Collator('de').compare('ä','ad') < 0 && new Intl.Collator('de-u-co-phonebk').compare('ä','ad') > 0",
+        "let r=new Intl.Collator('de-u-co-phonebk').resolvedOptions(); r.collation === 'phonebk' && r.locale === 'de-u-co-phonebk'",
+        "new Intl.Collator('de-u-co-phonebk',{collation:'phonebk'}).resolvedOptions().locale === 'de-u-co-phonebk'",
+        "let r=new Intl.Collator('en-u-co-phonebk').resolvedOptions(); r.collation === 'default' && r.locale === 'en'",
+        "let c=new Intl.Collator('de',{collation:'phonebk'}); c.resolvedOptions().collation === 'phonebk' && c.resolvedOptions().locale === 'de' && c.compare('ä','ad') > 0",
+        "new Intl.Collator('en').compare('i','ı') < 0",
+        "let r=new Intl.Collator('de-u-co-phonebk-kn-kf-upper',{collation:'default'}).resolvedOptions(); r.collation === 'default' && r.locale === 'de-u-kf-upper-kn' && r.numeric && r.caseFirst === 'upper'",
+        "let r=new Intl.Collator('de-u-co-phonebk',{collation:'unknown'}).resolvedOptions(); r.collation === 'default' && r.locale === 'de'",
+        "new Intl.Collator('de-u-co-unknown',{collation:'phonebk'}).resolvedOptions().collation === 'phonebk'",
+        "new Intl.Collator('de-DE-u-co-phonebk').resolvedOptions().locale === 'de-u-co-phonebk'",
+        "new Intl.Collator('tr-TR-u-co-phonebk').resolvedOptions().locale === 'tr'",
+        "let r=new Intl.Collator('de-u-co-phonebk',{usage:'search'}).resolvedOptions(); r.collation === 'default' && r.locale === 'de'",
+        "let c=new Intl.Collator('de-u-co-phonebk',{sensitivity:'base'}); c.compare('ä','ae') === 0 && c.compare('Ö','oe') === 0 && c.compare('ü','ue') === 0 && c.compare('Ä','ae') === 0",
+        "let c=new Intl.Collator('de-u-co-phonebk',{sensitivity:'accent'}); c.compare('ä','ae') === 0 && c.compare('ö','oe') === 0 && c.compare('ü','ue') === 0",
+        "let c=new Intl.Collator('de-u-co-phonebk'); c.compare('ä','ä') === 0 && c.compare('ä','ae') !== 0",
+        "let c=new Intl.Collator('de',{usage:'search',sensitivity:'base'}); c.compare('ä','ae') === 0 && c.resolvedOptions().collation === 'default'",
+        "let c=new Intl.Collator('tr',{sensitivity:'base'}); c.compare('h','ı') < 0 && c.compare('ı','i') < 0 && c.compare('i','j') < 0",
+        // Keep the pinned transform's asymmetric uppercase folding explicit.
+        "let c=new Intl.Collator('tr',{sensitivity:'base'}); c.compare('I','i') === 0 && c.compare('İ','i') === 0 && c.compare('ı','I') < 0",
+        "['z','ad','ä','a'].sort(new Intl.Collator('de-u-co-phonebk').compare).join() === 'a,ad,ä,z'",
+        "let log=''; let c=new Intl.Collator('de-u-co-phonebk',{get collation(){log+='g';return {toString(){log+='s';return 'default';}};}}); log === 'gs' && c.resolvedOptions().locale === 'de'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Tailored comparisons retain
+/// decomposed rope state across budget yields, collection and worker migration;
+/// the collation getter and each argument's ToString also wait exactly once.
+#[test]
+fn intl_collator_tailoring_waits_and_rope_budget() {
+    for (locale, collation, left, right, order) in [
+        ("de-u-co-phonebk", "phonebk", "ä", "ae", 0),
+        ("tr", "default", "ı", "i", -1),
+    ] {
+        let rt = Runtime::new();
+        let mut rope = clj_quickjs::JsString::from("");
+        for _ in 0..1500 {
+            rope = rope.concat(&clj_quickjs::JsString::from(left)).unwrap();
+        }
+        let flat = right.repeat(1500);
+        let a = rt.root(Primitive::String(rope));
+        let b = rt.root(Primitive::String(clj_quickjs::JsString::from(
+            flat.as_str(),
+        )));
+        let code = compile_function(&format!(
+            "function f(a,b){{let log='';let c=new Intl.Collator('{locale}',{{sensitivity:'base',get collation(){{log+='c';__rt.need(1,1);return '{collation}';}}}});let result=c.compare({{toString(){{log+='a';__rt.need(2,1);return a;}}}},{{toString(){{log+='b';__rt.need(3,1);return b;}}}});return result === {order} && log === 'cab';}}"
+        )).unwrap();
+        let mut task = rt.spawn(&code, &[&a, &b]).unwrap();
+        let mut yields = 0;
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..3000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 3);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    assert_eq!(waits, 3);
+                    assert!(
+                        yields > 100,
+                        "tailored comparison yielded only {yields} times"
+                    );
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete, "tailored comparison did not finish");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. The sort alone retains the cached
 /// comparator and receiver while its nested ToString frames wait and migrate.
 #[test]

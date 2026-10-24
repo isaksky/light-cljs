@@ -298,4 +298,18 @@ Run `cargo test --lib intl::collator:: -- --test-threads=3` and
 `cargo test --test js_source intl_collator -- --test-threads=3` for normalization,
 ordering, option/coercion, bound-function, ownership, GC/migration and long-rope
 budget semantics. Input hashes and Unicode/QuickJS notices follow the existing
-pipeline. Future locale tailorings can reuse these immutable root readers.
+pipeline.
+
+## Collator German and Turkish tailorings (clj-quickjs-219)
+
+The same repacker also pins `intl/collator.c` and extracts `transform_string`
+with its two character-classification helpers into the offline exporter. It
+exports phonebook/search and German default-sort keys for decomposed umlauts,
+and the Turkish dotless-i key. Primary and secondary outputs must agree and
+fit the reserved expansion bound. The generated `PHONEBOOK`, `GERMAN_SORT`
+and `TURKISH` arrays share `collation.rs` and its provenance file; regenerate
+with the commands above. `verify.sh` compares each weight to the C reference
+stream, repeats generation, detects phonebook-weight corruption, and rejects
+modified tailoring source. This uses only the pinned snapshot's rules;
+neither complete Turkish contextual folding nor a separate CLDR release is
+inferred. See the runtime's documented tailoring limits in docs/architecture.md.

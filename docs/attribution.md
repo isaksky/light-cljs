@@ -848,6 +848,19 @@ QuickJS copyright and MIT permission: `src/intl/data/QUICKJS-LICENSE`;
 Unicode data notice: `docs/UNICODE-LICENSE`. These tables are a normalization
 and folding snapshot, not a complete DUCET database or a verified CLDR release.
 
+### Intl.Collator locale tailorings (clj-quickjs-219)
+
+`research/quickjs/intl/collator.c` (`transform_string`, locale collation
+selection) and `research/quickjs/tests/test_intl.js` (`test_collator`) at
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` supply the semantic reference and
+five adapted source assertions for German phonebook and Turkish ordering.
+The existing offline repacker additionally pins and extracts the transform
+and its two classification helpers to export the tailoring weights. Their
+generated data shares `src/intl/data/collation_provenance.txt`, the QuickJS
+copyright/MIT notice in `src/intl/data/QUICKJS-LICENSE`, and the Unicode notice
+in `docs/UNICODE-LICENSE`. No C code is linked into the Rust runtime. Other
+new tests are synthetic fixtures, not light-cljs output.
+
 ## Number fixed decimal formatting (clj-quickjs-150)
 
 Semantic references: `research/quickjs/quickjs.c` (`js_number_toFixed`) and

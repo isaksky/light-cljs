@@ -1,6 +1,6 @@
 //! Root rule set from the pinned QuickJS snapshot: NFD, folded scalar order,
 //! combining-mark secondary order, then case. This is not a DUCET database.
-//! Locale tailoring is deliberately separate from these immutable root readers.
+//! Generated locale tailoring weights reuse these immutable root readers.
 use super::{data::collation as data, service};
 use crate::{
     heap::{Heap, HeapObject},
@@ -22,9 +22,15 @@ pub(crate) struct Collator {
     pub ignore_punctuation: bool,
     pub numeric: bool,
     pub case_first: &'static str,
+    pub collation: &'static str,
+    german: bool,
+    turkish: bool,
 }
 impl Collator {
     pub fn new(locale: String) -> Self {
+        let language = locale.split('-').next().unwrap_or("");
+        let german = language == "de";
+        let turkish = language == "tr";
         Self {
             locale,
             usage: "sort",
@@ -32,6 +38,16 @@ impl Collator {
             ignore_punctuation: false,
             numeric: false,
             case_first: "false",
+            collation: "default",
+            german,
+            turkish,
+        }
+    }
+    pub fn supported_collation(&self, value: &str) -> &'static str {
+        if self.german && self.usage == "sort" && value == "phonebk" {
+            "phonebk"
+        } else {
+            "default"
         }
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
@@ -44,7 +60,7 @@ impl Collator {
                 ("usage", text(self.usage)),
                 ("sensitivity", text(self.sensitivity)),
                 ("ignorePunctuation", Value::Bool(self.ignore_punctuation)),
-                ("collation", text("default")),
+                ("collation", text(self.collation)),
                 ("numeric", Value::Bool(self.numeric)),
                 ("caseFirst", text(self.case_first)),
             ],
@@ -190,7 +206,24 @@ impl Keys {
         if options.ignore_punctuation && !significant(cp) {
             return Ok(false);
         }
-        let folded = mapping(data::FOLD, cp).unwrap_or(std::slice::from_ref(&cp));
+        let umlaut = options.german && self.nfd.get(self.at) == Some(&0x0308);
+        let tailored = if umlaut {
+            mapping(
+                if options.collation == "phonebk" || options.usage == "search" {
+                    data::PHONEBOOK
+                } else {
+                    data::GERMAN_SORT
+                },
+                cp,
+            )
+        } else if options.turkish {
+            mapping(data::TURKISH, cp)
+        } else {
+            None
+        };
+        let folded = tailored
+            .or_else(|| mapping(data::FOLD, cp))
+            .unwrap_or(std::slice::from_ref(&cp));
         if !mark(cp) {
             self.keys[0].extend_from_slice(folded);
             // Align tertiary weights with primary fold expansions (ß -> ss).
@@ -208,6 +241,14 @@ impl Keys {
         }
         self.keys[1].extend_from_slice(folded);
         self.keys[3].push(cp);
+        if umlaut && tailored.is_some() {
+            // Only primary/secondary consume the diaeresis. Preserve the full
+            // canonical input for the variant fallback, including this mark.
+            self.at += 1;
+            if !options.ignore_punctuation {
+                self.keys[3].push(0x0308);
+            }
+        }
         Ok(false)
     }
 }

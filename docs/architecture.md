@@ -6363,8 +6363,8 @@ and final sigma compare equally at case sensitivity. Lowercase precedes
 uppercase by default; explicit upper reverses their weights. Only variant
 sensitivity compares the final case-preserving NFD fallback. Numeric runs
 retain digit identities in every key so leading zeroes remain equivalent.
-All advertised locales currently share this root. Locale-specific mappings
-belong in a separate tailoring stage in clj-quickjs-219. Complete UCA weights
+Advertised locales use this root with the separate German/Turkish tailoring
+stage described below (clj-quickjs-219). Complete UCA weights
 remain deferred. Numeric digit-run ordering and stable getter identity follow
 the acceptance contract, correcting the snapshot's unused numeric flag and
 fresh-function getter. Punctuation filtering follows the snapshot, including
@@ -6382,6 +6382,39 @@ survives an option getter, coercion, wait, collection or worker migration.
 Collation-option validation uses the same saved rope cursor in 128-step chunks;
 fixed enumerated options reject overlong strings by cached length before the
 shared option helper can flatten them.
+
+### Intl.Collator German and Turkish tailorings (clj-quickjs-219)
+
+The same collation repacker now pins `intl/collator.c`, extracts its pure
+`transform_string` and classification helpers, and runs that transform only
+offline with allocation adapters. Generated tables contain German phonebook
+and default-sort primary/secondary weights for NFD A/O/U/a/o/u + diaeresis,
+and Turkish dotless-i weights. Both levels are checked equal before emission;
+the independent Rust verifier compares every emitted weight to the C stream.
+Repeat generation, deliberate phonebook corruption and modified-source guards
+run in `verify.sh`. No QuickJS service is called by the runtime.
+
+Immutable Collator slots record the selected collation and locale flags.
+Shared Intl resolution retains `co`, `kn` and `kf`; the service removes
+unsupported keys, and conflicting explicit collation options remove `co`.
+Only German sort selects `phonebk`. German search resolves to `default` while
+using phonebook comparison weights, matching the snapshot's search transform.
+Option validation keeps a bounded exact-name match alongside its budgeted
+rope cursor, without flattening or storing an input-sized option buffer.
+
+The key builder matches at most two NFD scalars per step, before full folding.
+German phonebook/search emits ae/oe/ue; default German sort emits a/o/u plus
+the snapshot's synthetic U+0001 weight. Consumed diaereses remain in the variant
+fallback unless punctuation filtering removes marks. Case weights align with
+the tailored expansion, using the existing Unicode case policy. Turkish ı
+emits h + U+FFFF, placing it before i. I and İ retain root NFD folding, as in
+the pinned QuickJS transform: the snapshot does not pair I with dotless ı at
+base sensitivity or implement full Turkish contextual case folding. This
+preserves the recorded snapshot-output policy. Azerbaijani is outside the
+agreed test-locale inventory; additional collation types and full UCA remain
+deferred. All expansions fit the existing three-scalar reserved key bound.
+Tests cover normalization, option precedence, sort and search, plus tailored
+rope comparison with waits, collection and worker migration.
 
 ## Exact fixed decimal formatting (clj-quickjs-150)
 

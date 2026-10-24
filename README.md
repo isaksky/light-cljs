@@ -3402,13 +3402,14 @@ parameters and destructuring iteration heads remain deferred. Run:
 
 Supported: `Intl.Collator` with or without `new`, cached bound `compare`,
 `resolvedOptions`, `supportedLocalesOf`, and the Intl.Collator tag.
-All advertised test locales use the root rule set: canonical NFD equivalence,
+The baseline for advertised test locales is canonical NFD equivalence,
 folded primary order, accents, then lowercase-first Unicode case weights and
 a variant fallback; `sensitivity`,
 `usage`, `ignorePunctuation`, `numeric` digit runs and `caseFirst` are supported.
 Option getters, object ToString and long rope comparisons yield, wait, collect
 and migrate through saved continuations. The host supplies the default locale.
-Deferred: locale tailorings (clj-quickjs-219) and complete UCA/DUCET weights.
+German and Turkish tailorings are described below. Complete UCA/DUCET weights
+remain deferred.
 The pinned snapshot rule set is documented in
 [architecture](docs/architecture.md#intl-collator-root-order-clj-quickjs-218).
 The cached bound function can be passed directly to `Array.prototype.sort`;
@@ -3443,3 +3444,18 @@ Object.prototype.toString. WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --test publication weak_maps_ -- --test-threads=3`.
+
+### Intl.Collator German and Turkish tailorings (clj-quickjs-219)
+
+Supported: `de-u-co-phonebk` and `{collation:'phonebk'}` on German locales
+expand decomposed ä/ö/ü (including uppercase forms) to ae/oe/ue in primary
+and secondary keys. German search uses these weights with resolved collation
+`default`; German default sort uses the snapshot's intervening umlaut weight.
+Turkish `tr` places dotless ı between h and i, preserving the pinned snapshot's
+root folding for I and İ. Other test locales retain root ordering.
+The `co` key is preserved only for supported German phonebook sort; an explicit
+collation option wins, and unsupported values resolve to `default` and remove
+the key. Other supported Unicode keys still resolve independently.
+Deferred: additional locale/collation types, Azerbaijani locale coverage and
+full Turkish contextual uppercase folding beyond the pinned snapshot.
+Run `CARGO_BUILD_JOBS=3 cargo test --test js_source intl_collator -- --test-threads=3`.

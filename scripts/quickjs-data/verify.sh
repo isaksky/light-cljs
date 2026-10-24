@@ -100,3 +100,25 @@ if "$output_dir/collation-corrupt/verify" "$output_dir/collation-first/reference
     echo 'incorrect collation value escaped comparison' >&2; exit 1
 fi
 echo 'PASS: collation full-domain expansion, repeatability and corruption detection'
+
+# Tailoring weights come from the pinned offline transform, independently of
+# Rust readers. Corrupt a phonebook weight and prove that comparison detects it.
+sed 's/(0x41,&\[0x61,0x65\])/(0x41,\&[0x61,0x64])/' \
+    "$output_dir/collation-first/collation.rs" > "$output_dir/collation-corrupt/collation.rs"
+if cmp -s "$output_dir/collation-first/collation.rs" "$output_dir/collation-corrupt/collation.rs"; then
+    echo 'tailoring mutation did not apply' >&2; exit 1
+fi
+rustc --edition=2024 -D warnings "$output_dir/collation-corrupt/verify.rs" -o "$output_dir/collation-corrupt/verify"
+if "$output_dir/collation-corrupt/verify" "$output_dir/collation-first/reference.txt" > "$output_dir/tailoring-corruption.log" 2>&1; then
+    echo 'incorrect tailoring value escaped comparison' >&2; exit 1
+fi
+cp "$source_dir/cutils.c" "$output_dir/drift/cutils.c"
+cp "$source_dir/intl/collator.c" "$output_dir/drift/intl/collator.c"
+echo '/* intentional tailoring drift */' >> "$output_dir/drift/intl/collator.c"
+if perl "$script_dir/repack-collation.pl" "$output_dir/first" "$output_dir/drift" "$output_dir/tailoring-drift-result" \
+    > "$output_dir/tailoring-drift.log" 2>&1; then
+    echo 'unpinned tailoring input was accepted' >&2; exit 1
+fi
+test ! -e "$output_dir/tailoring-drift-result/export.c"
+test "$(cat "$output_dir/tailoring-drift.log")" = 'unpinned intl/collator.c'
+echo 'PASS: phonebook corruption detection and tailoring input pinning'

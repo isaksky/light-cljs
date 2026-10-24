@@ -51,6 +51,7 @@ pub(super) struct State {
     comparison: Option<Comparison>,
     validation: Option<UnitCursor>,
     subtag_len: usize,
+    collation_match: usize,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -106,6 +107,7 @@ impl State {
             comparison: None,
             validation: None,
             subtag_len: 0,
+            collation_match: 0,
         })
     }
     fn result(input: Input) -> Result<Value, Fault> {
@@ -118,6 +120,12 @@ impl State {
     fn set_locale(&mut self, tag: String) {
         let mut parsed = LanguageTag::parse(&tag).expect("resolved locale");
         let mut slots = Collator::new(tag);
+        if let Some(co) = parsed.keywords.get("co") {
+            slots.collation = slots.supported_collation(co);
+            if slots.collation == "default" {
+                parsed.keywords.remove("co");
+            }
+        }
         if let Some(kn) = parsed.keywords.get("kn") {
             if kn.is_empty() || kn == "true" {
                 slots.numeric = true;
@@ -178,16 +186,24 @@ impl State {
         let slots = self.slots.as_mut().unwrap();
         let mut remove = None;
         match self.option {
-            1 => slots.usage = service::string_option(&value, &["sort", "search"])?,
+            1 => {
+                slots.usage = service::string_option(&value, &["sort", "search"])?;
+                if slots.usage == "search" {
+                    slots.collation = "default";
+                    remove = Some("co");
+                }
+            }
             2 => {
                 slots.sensitivity =
                     service::string_option(&value, &["base", "accent", "case", "variant"])?
             }
             3 => slots.ignore_punctuation = value.truthy(),
             4 => {
-                // Root only; well-formed unsupported collations use default.
+                // Validate arbitrarily long ropes while remembering only a
+                // bounded match against the one supported collation name.
                 self.validation = Some(UnitCursor::new(dispatch::to_js_string(&value)?));
                 self.subtag_len = 0;
+                self.collation_match = 0;
                 self.stage = Stage::Collation;
                 return Ok(Action::Continue);
             }
@@ -246,7 +262,8 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Resolve => {
-                let selected = service::resolve_locale(heap, task, &self.locales, &["kn", "kf"])?;
+                let selected =
+                    service::resolve_locale(heap, task, &self.locales, &["co", "kn", "kf"])?;
                 if selected.is_none() && !self.supported {
                     self.stage = Stage::Default;
                     return Ok(Action::DefaultLocale);
@@ -259,8 +276,9 @@ impl State {
                 let Value::String(default) = Self::result(input)? else {
                     return Err(Fault::Internal("default locale"));
                 };
-                let tag = service::supported_locale(&default.to_string_lossy(), &["kn", "kf"])
-                    .map_or_else(|| "en-US".into(), |(tag, _)| tag);
+                let tag =
+                    service::supported_locale(&default.to_string_lossy(), &["co", "kn", "kf"])
+                        .map_or_else(|| "en-US".into(), |(tag, _)| tag);
                 self.set_locale(tag);
                 self.stage = Stage::Read;
                 Ok(Action::Continue)
@@ -287,11 +305,33 @@ impl State {
                                 return Err(Fault::RangeError("invalid collation option".into()));
                             }
                             self.validation = None;
+                            let slots = self.slots.as_mut().unwrap();
+                            let collation = slots.supported_collation(
+                                if self.collation_match == b"phonebk".len() {
+                                    "phonebk"
+                                } else {
+                                    "default"
+                                },
+                            );
+                            if slots.collation != collation {
+                                let mut parsed =
+                                    LanguageTag::parse(&slots.locale).expect("resolved locale");
+                                parsed.keywords.remove("co");
+                                slots.locale = parsed.to_string();
+                            }
+                            slots.collation = collation;
                             self.option += 1;
                             self.stage = Stage::Read;
                             return Ok(Action::Continue);
                         }
                         CursorStep::Unit(c) => {
+                            if b"phonebk".get(self.collation_match).copied().map(u16::from)
+                                == Some(c)
+                            {
+                                self.collation_match += 1;
+                            } else {
+                                self.collation_match = usize::MAX;
+                            }
                             if c == u16::from(b'-') && (3..=8).contains(&self.subtag_len) {
                                 self.subtag_len = 0;
                             } else if c <= 127
