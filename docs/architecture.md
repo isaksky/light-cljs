@@ -4400,12 +4400,38 @@ property and custom-prototype edges with only the Map result rooted.
 The realm appends an immutable ordinary `Map.prototype`, constructor,
 methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
 with a non-nullish argument explicitly throws TypeError until resumable
-iterable construction exists. Iteration/forEach and dedicated BigInt-key
+iterable construction exists. Iteration methods and dedicated BigInt-key
 coverage belong to later pellets. Once BigInt primitives exist, generic key
 storage uses their shared equality/hashing without another representation.
 The prototype also owns the non-writable, non-enumerable,
 configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
 is exposed on `Symbol`.
+
+## Live resumable Map forEach (clj-quickjs-170)
+
+`MapForEach` appends a built-in identity and a non-enumerable, writable,
+configurable method (length 1) to `Map.prototype`. Its native uses the
+existing `vm::native::iterator::State` and native trampoline, with a Map
+entry stage and a stable entry index rather than a separate cursor object.
+The receiver is validated before the callback's callability, even for an
+empty Map. The state traces the Map, callback and `thisArg` through the
+existing native-frame root path.
+
+Each budgeted step reads exactly one current entry slot under a short heap
+read, advances the index, and releases the read before returning a callback
+action. Tombstones consume a step but invoke nothing. Current keys/values
+move to the ordinary callback arguments; callback return values are ignored.
+After a callback, the next native step re-reads the Map, observing changed
+values, deleted entries and appends. `clear` leaves tombstones, so pending
+entries disappear while later appends are visited. No entry compaction ever
+occurs, including while a cursor is suspended; no cursor remapping or active
+iteration counter is needed. The Map retains tombstone slot storage until it
+dies. Exceptions and cancellation use the existing native unwind/drop path.
+
+`map_for_each_live_iteration` covers live mutation and the adapted 1000-entry
+deletion loop. `map_for_each_suspends_in_callback` waits on the second entry,
+collects while parked, migrates to a new thread, and finishes under one-step
+budgets without replaying effects, including an entry appended after resume.
 
 ## Rope strings (clj-quickjs-146)
 

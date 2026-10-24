@@ -61,7 +61,7 @@
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
-//! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
+//! | `Map`, `Map.prototype` (clj-quickjs-169, -170) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete`, resumable `forEach` (length 1), `clear` (length 0), `size` getter (length 0) |
 //! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; unbranded ordinary prototype | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
 //! | `Date.prototype.toISOString` (clj-quickjs-180) | leaf built-in | length 0; method flags |
 //! | `Date.prototype` UTC fields (clj-quickjs-181) | eight leaf getters, seven resumable setters | getter lengths 0; setter lengths 3, 2, 1, 4, 3, 2, 1; method flags |
@@ -1313,6 +1313,7 @@ fn map_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obje
         Builtin::MapHas,
         Builtin::MapDelete,
         Builtin::MapClear,
+        Builtin::MapForEach,
     ] {
         let method = b.function(which, &[])?;
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;

@@ -15621,6 +15621,58 @@ fn map_number_and_object_keys() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. The 1000-entry deletion loop
+/// adapts QuickJS tests/test_builtin.js::test_map1 (7d1c13c5d8f8).
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon; MIT permission
+/// notice retained in docs/attribution.md, "JavaScript Map tests".
+#[test]
+fn map_for_each_live_iteration() {
+    for src in [
+        r#"
+        let m = new Map(); let tab = [];
+        for (let i = 0; i < 1000; i++) {
+            let k = {id: i}; let v = {};
+            tab.push([k, v]); m.set(k, v);
+        }
+        let i = 0; let ok = true; let receiver = {};
+        let result = m.forEach(function(v, k, map) {
+            if (k !== tab[i][0] || v !== tab[i][1] || map !== m ||
+                this !== receiver || !m.has(k)) ok = false;
+            i++;
+            if (!m.delete(k) || m.has(k)) ok = false;
+        }, receiver);
+        ok && i === 1000 && m.size === 0 && result === undefined
+        "#,
+        "let m = new Map().set(1, 10).set(2, 20).set(3, 30); let seen = ''; m.forEach(function(v, k) { seen += k + ':' + v + ';'; if (k === 1) { m.delete(2); m.set(3, 31); m.set(4, 40); } }); seen === '1:10;3:31;4:40;'",
+        "let m = new Map().set(1, 10).set(2, 20); let seen = ''; m.forEach(function(v, k) { seen += k; if (v === 10) { m.delete(1); m.set(1, 11); } }); seen === '121'",
+        "let m = new Map().set(1, 10).set(2, 20); let seen = ''; m.forEach(function(v, k) { seen += k; m.clear(); }); seen === '1' && m.size === 0",
+        "let m = new Map().set(1, 10).set(2, 20); let seen = ''; m.forEach(function(v, k) { seen += k; if (k === 1) { m.clear(); m.set(3, 30); } }); seen === '13'",
+        "let m = new Map().set(1, 10).set(2, 20); let seen = ''; m.forEach(function(v, k) { m.forEach(function(v, inner) { seen += k + ':' + inner + ';'; }); }); seen === '1:1;1:2;2:1;2:2;'",
+        "let m = new Map().set(1, 10).set(2, 20); let seen = 0; let caught = false; try { m.forEach(function() { seen++; throw 7; }); } catch(e) { caught = e === 7; } caught && seen === 1 && m.size === 2",
+        "let caught = false; try { new Map().forEach(1); } catch(e) { caught = e instanceof TypeError; } caught",
+        "let caught = false; try { new Map().forEach(); } catch(e) { caught = e instanceof TypeError; } caught",
+        "let m = new Map().set(1, 10); let ok = false; m.forEach(function() { 'use strict'; ok = this === undefined; }); ok && new Map().forEach(function() { throw 1; }) === undefined",
+        "let d = Object.getOwnPropertyDescriptor(Map.prototype, 'forEach'); d.writable && !d.enumerable && d.configurable && d.value.name === 'forEach' && d.value.length === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for receiver in [
+        "undefined",
+        "null",
+        "1",
+        "{}",
+        "Map.prototype",
+        "Object.create(Map.prototype)",
+    ] {
+        let src = format!("Map.prototype.forEach.call({receiver}, function() {{}})");
+        assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+    assert_eq!(
+        failure("new Map.prototype.forEach()").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
 /// Synthetic fixtures, not light-cljs output: brand checks and the ordinary
 /// property store must remain independent of the entry storage.
 #[test]

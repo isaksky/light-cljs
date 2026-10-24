@@ -53,6 +53,31 @@ fn cursor<R>(
     .ok_or(Fault::Internal("iterator was reclaimed"))?
 }
 
+fn map<R>(
+    heap: &Heap,
+    task: TaskId,
+    value: &Value,
+    f: impl FnOnce(&crate::object::map::MapObject) -> R,
+) -> Result<R, Fault> {
+    let invalid = || Fault::TypeError("Map.prototype.forEach requires a Map receiver".into());
+    let Value::Object(id) = value else {
+        return Err(invalid());
+    };
+    heap.read(*id, |o| {
+        let HeapObject::JsMap(map) = o else {
+            return Err(invalid());
+        };
+        if map.object().owner() != Some(task) {
+            return Err(Fault::ForeignObject {
+                owner: map.object().owner(),
+                caller: task,
+            });
+        }
+        Ok(f(map))
+    })
+    .ok_or(Fault::Internal("Map was reclaimed"))?
+}
+
 fn object(heap: &Heap, task: TaskId, fields: &[(&str, Value)]) -> Result<Value, Fault> {
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
     let mut o = OrdinaryObject::with_prototype(task, realm.object_prototype);
@@ -112,6 +137,7 @@ enum Stage {
     LengthValue,
     Element,
     ElementValue,
+    MapEntry,
 }
 
 #[derive(Debug)]
@@ -122,12 +148,16 @@ pub(crate) struct State {
     index: u64,
     kind: Kind,
     done: bool,
+    callback: Value,
+    this_arg: Value,
 }
 
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.source.trace(visit);
         self.iterator.trace(visit);
+        self.callback.trace(visit);
+        self.this_arg.trace(visit);
     }
 }
 
@@ -142,7 +172,26 @@ impl State {
             index: 0,
             kind: Kind::Array,
             done: false,
+            callback: Value::Undefined,
+            this_arg: Value::Undefined,
         }
+    }
+
+    pub(super) fn map_for_each(
+        heap: &Heap,
+        task: TaskId,
+        source: Value,
+        callback: Value,
+        this_arg: Value,
+    ) -> Result<Self, Fault> {
+        map(heap, task, &source, |_| ())?;
+        dispatch::callee(heap, &callback)?;
+        Ok(Self {
+            stage: Stage::MapEntry,
+            callback,
+            this_arg,
+            ..Self::get_iterator(source)
+        })
     }
 
     pub(super) fn string(source: Value) -> Result<Self, Fault> {
@@ -174,6 +223,8 @@ impl State {
             index: data.index,
             kind: data.kind,
             done: data.done,
+            callback: Value::Undefined,
+            this_arg: Value::Undefined,
         })
     }
 
@@ -227,6 +278,24 @@ impl State {
         input: Input,
     ) -> Result<Action, Fault> {
         match self.stage {
+            Stage::MapEntry => {
+                // One slot per budgeted step, including tombstones. The
+                // stable cursor advances before reentry, and the heap read
+                // ends before invoking JavaScript or reaching a safepoint.
+                let entry = map(heap, task, &self.source, |m| m.entry(self.index).cloned())?;
+                let Some(entry) = entry else {
+                    return Ok(Action::Return(Value::Undefined));
+                };
+                self.index += 1;
+                match entry {
+                    Some((key, value)) => Ok(Action::Call {
+                        callee: self.callback.clone(),
+                        this: self.this_arg.clone(),
+                        args: vec![value, key, self.source.clone()],
+                    }),
+                    None => Ok(Action::Continue),
+                }
+            }
             Stage::Method => {
                 if matches!(self.source, Value::Bool(_) | Value::Symbol(_)) {
                     return Err(Fault::TypeError("value is not iterable".into()));

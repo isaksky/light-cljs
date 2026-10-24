@@ -2725,11 +2725,19 @@ Keys use SameValueZero, string content and object identity, with stable
 insertion positions; Maps are task-owned and rejected by atom publication.
 Own properties and prototype/integrity operations follow ordinary objects.
 Deferred: iterable construction (non-nullish arguments throw TypeError),
-iteration/forEach and dedicated BigInt-key coverage (clj-quickjs-171).
+iteration methods and dedicated BigInt-key coverage (clj-quickjs-171).
 BigInt keys use the shared primitive key helpers; Symbol keys compare by identity;
 `Map.prototype[Symbol.toStringTag]` is "Map". Generic Object.prototype.toString
 consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
 calling it on a Map explicitly fails with UnsupportedOperand.
+
+JavaScript Map forEach (clj-quickjs-170): `forEach(callback, thisArg)` calls
+the callback with `(value, key, map)` in live insertion order and returns
+`undefined`. It skips deleted entries, sees appends and reinsertion, and
+allows deleting the current entry or clearing the Map. The callback runs in
+a resumable VM frame: dependency waits, collection, yields and migration
+preserve its position. Invalid receivers and non-callable callbacks throw
+TypeError, including on empty Maps.
 
 ### Regular expression pattern parser (clj-quickjs-186)
 

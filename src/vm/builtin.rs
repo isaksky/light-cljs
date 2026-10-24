@@ -361,6 +361,7 @@ pub(crate) enum Builtin {
     IntlPluralRulesSupportedLocales,
 
     DateParse,
+    MapForEach,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -406,6 +407,7 @@ impl Builtin {
             Builtin::ArrayValues | Builtin::TypedArrayValues => "values",
             Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
             Builtin::IteratorNext(_) => "next",
+            Builtin::MapForEach => "forEach",
             Builtin::BigInt => "BigInt",
             Builtin::BigIntAsIntN => "asIntN",
             Builtin::BigIntAsUintN => "asUintN",
@@ -682,7 +684,11 @@ impl Builtin {
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
             Builtin::MathSqrt | Builtin::MathLog2 => 1,
-            Builtin::Map | Builtin::MapGet | Builtin::MapHas | Builtin::MapDelete => 1,
+            Builtin::Map
+            | Builtin::MapGet
+            | Builtin::MapHas
+            | Builtin::MapDelete
+            | Builtin::MapForEach => 1,
             Builtin::MapSet => 2,
             Builtin::MapClear | Builtin::MapSize => 0,
             Builtin::Date => 7,
@@ -750,9 +756,9 @@ pub(crate) fn call(
             super::native::iterator::Kind::TypedArray,
         ),
         Builtin::IteratorIdentity => Ok(this.clone()),
-        Builtin::StringIterator | Builtin::IteratorNext(_) => Err(Fault::Internal(
-            "iterator callback requires a resumable frame",
-        )),
+        Builtin::StringIterator | Builtin::IteratorNext(_) | Builtin::MapForEach => Err(
+            Fault::Internal("iterator callback requires a resumable frame"),
+        ),
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),

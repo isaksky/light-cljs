@@ -301,7 +301,7 @@ fixtures, not light-cljs output. `js_symbol_for` and `js_symbol_keyFor` in
 `research/quickjs/quickjs.c` at that revision were semantic references;
 the runtime-owned Rust registry and continuation were written afresh.
 
-## JavaScript Map tests (clj-quickjs-169)
+## JavaScript Map tests (clj-quickjs-169, clj-quickjs-170)
 
 `tests/js_source.rs::map_number_and_object_keys` adapts the integer-key,
 -2147483648 arithmetic-equivalence and 1000 object-identity cases in
@@ -311,6 +311,11 @@ Fixtures are synthetic, not light-cljs output. The implementation was
 written afresh; `map_normalize_key`, `js_map_constructor`, `js_map_set`,
 `js_map_get`, `js_map_has`, `js_map_delete`, `js_map_clear` and
 `js_map_get_size` in `research/quickjs/quickjs.c` were semantic references.
+`tests/js_source.rs::map_for_each_live_iteration` also adapts the 1000-entry
+object-key callback deletion loop from `test_map1` at the same revision.
+`js_map_forEach` in `research/quickjs/quickjs.c` was a semantic reference for
+live visitation; the Rust resumable state machine was written afresh.
+
 The adapted tests retain this notice from `research/quickjs/LICENSE`:
 
 Copyright (c) 2017-2021 Fabrice Bellard

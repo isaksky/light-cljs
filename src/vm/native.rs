@@ -1121,6 +1121,9 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::MapForEach => Some(NativeState::Iterator(Box::new(
+                iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
+            ))),
             Builtin::IteratorNext(kind) => Some(NativeState::Iterator(Box::new(
                 iterator::State::next(heap, state.diag.task, this, kind)?,
             ))),

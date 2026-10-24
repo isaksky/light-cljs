@@ -157,6 +157,66 @@ fn suspended_at(task: &Task) -> (u32, u32) {
     (at.line, at.column)
 }
 
+/// Synthetic fixture, not light-cljs output. A Map native, callback and
+/// dependency wait survive collection and migration without replaying effects.
+#[test]
+fn map_for_each_suspends_in_callback() {
+    let rt = Runtime::new();
+    let exe = compile_function(
+        r#"function iterate() {
+        let m = new Map().set({id: 1}, {n: 10}).set({id: 2}, {n: 20}).set({id: 3}, {n: 30});
+        let remaining = 3;
+        let callback = function(v, k, map) {
+            // Leave the native as the only owner between callback frames.
+            if (k.id === 1) { m = null; callback = null; context = null; }
+            __rt.effect(2, k.id);
+            if (k.id === 2) __rt.need(170, 0);
+            __rt.effect(3, v.n + this.offset);
+            map.delete(k);
+            if (k.id === 2) map.set({id: 4}, {n: 40});
+            remaining = map.size;
+        };
+        let context = {offset: 1};
+        let result = m.forEach(callback, context);
+        return result === undefined ? remaining : 100;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let dependency = key(&rt, 170, 0);
+    assert_eq!(
+        waiting(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        dependency
+    );
+    assert_eq!(task.status(), TaskStatus::Waiting);
+    assert_eq!(host.op(2), [1.0, 2.0]);
+    assert_eq!(host.op(3), [11.0]);
+    let request = one_request(&task, dependency);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 0.0));
+    let resumed_rt = rt.clone();
+    let (outcome, host) = thread::spawn(move || {
+        for _ in 0..10000 {
+            let outcome = resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap();
+            if !matches!(outcome, RunOutcome::Yielded) {
+                return (outcome, host);
+            }
+            resumed_rt.collect().unwrap();
+        }
+        panic!("Map forEach failed to finish within 10000 instructions");
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(&complete(outcome)), 0.0);
+    assert_eq!(host.op(2), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(host.op(3), [11.0, 21.0, 31.0, 41.0]);
+    assert_eq!(task.status(), TaskStatus::Finished);
+    assert_eq!(task.dependency_log().edges(), &[dependency]);
+}
+
 /// Acceptance 1: native → JavaScript callback → dependency wait → callback
 /// resume → native continuation. The fold's first callback captures the
 /// live local `seen`, performs its effect, and needs a helper nobody has

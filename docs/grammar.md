@@ -3193,12 +3193,26 @@ Updating a key preserves insertion position; deleting and reinserting
 moves it to the end. No user conversion or comparison code is invoked.
 
 Explicit gaps: non-nullish constructor arguments throw TypeError instead of
-consuming iterables. Map iteration and `forEach` (clj-quickjs-170) and dedicated
+consuming iterables. Map iteration methods and dedicated
 BigInt-key coverage (clj-quickjs-171) are deferred. Generic key storage accepts
 BigInt values through the shared primitive equality/hashing helpers.
 Generic Object.prototype.toString
 consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
 calling it on a Map explicitly fails with UnsupportedOperand.
+
+### Execution: Map forEach (clj-quickjs-170)
+
+`Map.prototype.forEach(callback, thisArg)` validates the Map brand and
+callback callability before iteration, calls the callback with `thisArg`
+and `(value, key, map)`, and returns `undefined`. The callback follows normal
+function `this` rules. Each step re-reads the live insertion-ordered entries:
+updates preserve position, deleted entries are skipped, and appended or
+reinserted entries are visited later. A callback can delete its current
+entry. `clear()` removes all pending entries; entries appended afterward
+are still visited. Callback exceptions propagate to the caller, ending the
+iteration. Callbacks may yield or wait on `__rt.need`, including across GC
+and worker migration. Explicit gaps: Map iterator methods and iterable
+construction remain deferred.
 
 ## Regular expression pattern parsing API (clj-quickjs-186)
 

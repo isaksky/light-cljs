@@ -2,7 +2,7 @@
 //!
 //! Entries keep insertion positions for the lifetime of the Map. Deletion
 //! and clear empty slots, releasing their edges; reinsertion appends. No
-//! compaction occurs, so a future live iterator can retain a slot cursor.
+//! compaction occurs, so live iteration can retain a slot cursor.
 //! Hashing and equality are private, never calling JavaScript.
 
 use std::collections::HashMap;
@@ -43,6 +43,14 @@ impl MapObject {
 
     pub(crate) fn size(&self) -> usize {
         self.size
+    }
+
+    /// None is the current end; Some(None) is a tombstone. Callers re-read
+    /// on every step so appends and deletions during callbacks stay visible.
+    pub(crate) fn entry(&self, index: u64) -> Option<&Option<(Value, Value)>> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.entries.get(i))
     }
 
     fn find(&self, key: &Value) -> Option<usize> {
