@@ -42,6 +42,7 @@ fn base_classes() {
         "class C { constructor() { return {x: 9}; } } new C().x === 9",
         "class C { constructor() { this.x = 7; return 3; } } new C().x === 7",
         "{ class C {} } typeof C === 'undefined'",
+        "class C { get y() { return 12; } } typeof Object.getOwnPropertyDescriptor(C.prototype, 'y').get === 'function' && new C().y === 12",
         "class C { a() {} \\u0069f() { return 7; } } new C().if() === 7",
         "function* g() { let D = class C { [yield 'key']() { return C; } }; return D; } let it = g(); let a = it.next(); let C = it.next('m').value; a.value === 'key' && new C().m() === C",
         "let b = {x: 1}; let count = 0; for (let C = class { ['x' in b]() { return 1; } }; count < 1; count++) { if (new C().true() !== 1) throw 1; } count === 1",
