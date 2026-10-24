@@ -319,6 +319,9 @@ enum ConvertTarget {
         concat_len: usize,
     },
     NumberPredicate(builtin::Builtin),
+    NumberToString {
+        number: f64,
+    },
     NumberParse {
         integer: bool,
     },
@@ -607,6 +610,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
 /// protocol as coercing instructions. Forwarding is resolved before entry;
 /// only operands needed after argument evaluation are retained in the frame.
 pub(crate) fn start_builtin(
+    heap: &Heap,
     state: &mut VmState,
     which: builtin::Builtin,
     this: &Value,
@@ -671,6 +675,19 @@ pub(crate) fn start_builtin(
         return Ok(true);
     }
     let (target, operands, hint) = match which {
+        Builtin::NumberPrototypeToString if !construct => {
+            // thisNumberValue must reject an invalid receiver before any
+            // observable radix conversion, even through call/apply/bind.
+            let number = builtin::this_number_value(heap, state.diag.task, this, "toString")?;
+            let Some(radix @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::NumberToString { number },
+                vec![radix.clone()],
+                Hint::Number,
+            )
+        }
         Builtin::GlobalIsNaN | Builtin::GlobalIsFinite if !construct => {
             let Some(value @ Value::Object(_)) = args.first() else {
                 return Ok(false);
@@ -1025,7 +1042,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         }
         Action::Builtin { which, args } => {
             state.natives.pop();
-            if !start_builtin(state, which, &Value::Undefined, &args, false, 0)? {
+            if !start_builtin(heap, state, which, &Value::Undefined, &args, false, 0)? {
                 let result = builtin::call(heap, state.diag.task, which, &Value::Undefined, &args)?;
                 state.push(result);
             }
@@ -1042,7 +1059,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 (Callee::Code(id, code), call) => (id, code, call),
                 (Callee::Builtin(which), call) => {
                     set_awaiting(state, Awaiting::CallResult)?;
-                    if start_builtin(state, which, &call.this, &call.args, false, 0)? {
+                    if start_builtin(heap, state, which, &call.this, &call.args, false, 0)? {
                         return Ok(Flow::Next);
                     }
                     // Runs to completion (`crate::vm::builtin`); no safepoint
@@ -1678,6 +1695,12 @@ impl NativeState {
                     }
                     ConvertTarget::NumberPredicate(which) => {
                         builtin::number_predicate(which, &operands[0]).map(Action::Return)
+                    }
+                    ConvertTarget::NumberToString { number } => {
+                        // An object whose primitive is undefined converts to
+                        // NaN; only an originally undefined radix means 10.
+                        let radix = Value::Number(dispatch::to_number(&operands[0])?);
+                        builtin::number_to_string(number, &radix).map(Action::Return)
                     }
                     ConvertTarget::StringBuiltin { which, access, .. } => {
                         if builtin::is_string_build(which) {

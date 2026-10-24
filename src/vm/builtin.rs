@@ -77,7 +77,7 @@
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); `getOwnPropertyNames` of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-261) |
-//! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
+//! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; radixes 2..36 (clj-quickjs-149) produce exact integer and shortest round-trip fractional digits; object radixes use resumable ToNumber; an invalid radix throws catchable `RangeError`; any other receiver: catchable `TypeError` |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
 //! | `String.prototype.charAt`, `.charCodeAt`, `.codePointAt` (clj-quickjs-143) | RequireObjectCoercible, ToString, ToIntegerOrInfinity; UTF-16 unit access (a surrogate pair for `codePointAt`); out of bounds: empty string / NaN / undefined; object coercion uses a resumable native frame |
 //! | `String.fromCharCode`, `.fromCodePoint` (clj-quickjs-143) | ToNumber then ToUint16 / integral code point validation; invalid point: catchable `RangeError`; object coercion uses a resumable native frame |
@@ -98,7 +98,7 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PrimitiveData};
 use crate::realm;
-use crate::value::string::number_to_string;
+use crate::value::string::number_to_string_radix;
 use crate::value::{JsString, Value};
 use crate::vm::descriptor;
 use crate::vm::dispatch::{Fault, to_js_string, to_number};
@@ -161,7 +161,7 @@ pub(crate) enum Builtin {
     /// `Number` (clj-quickjs-72): ToNumber, or a wrapper when constructed.
     Number,
     /// `Number.prototype.toString` (QuickJS `js_number_toString`;
-    /// clj-quickjs-73), radix 10 only.
+    /// clj-quickjs-73/-149), radix 2..36.
     NumberPrototypeToString,
     /// `Number.prototype.valueOf` (QuickJS `js_number_valueOf`;
     /// clj-quickjs-73).
@@ -418,17 +418,7 @@ pub(crate) fn call(
         Builtin::Number | Builtin::String => primitive_constructor(heap, task, which, args, false),
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
-            match arg(0) {
-                Value::Undefined => {}
-                Value::Number(10.0) => {}
-                _ => {
-                    return Err(Fault::Unsupported(
-                        "Number.prototype.toString with a radix other than 10 is not supported"
-                            .to_string(),
-                    ));
-                }
-            }
-            Ok(Value::String(JsString::from(number_to_string(n).as_str())))
+            number_to_string(n, &arg(0))
         }
         Builtin::NumberPrototypeValueOf => {
             this_number_value(heap, task, this, "valueOf").map(Value::Number)
@@ -692,10 +682,33 @@ pub(crate) fn string_build(
         .ok_or_else(|| Fault::RangeError("string too long".to_string()))
 }
 
+/// Receiver validation precedes radix coercion; the continuation retains only
+/// the validated numeric value and the radix operand.
+pub(crate) fn number_to_string(n: f64, radix: &Value) -> Result<Value, Fault> {
+    let radix = if matches!(radix, Value::Undefined) {
+        10.0
+    } else {
+        to_number(radix)?.trunc()
+    };
+    if !(2.0..=36.0).contains(&radix) {
+        return Err(Fault::RangeError(
+            "radix must be between 2 and 36".to_string(),
+        ));
+    }
+    Ok(Value::String(JsString::from(
+        number_to_string_radix(n, radix as u32).as_str(),
+    )))
+}
+
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a
 /// number receiver is itself; a Number wrapper yields its [[NumberData]],
 /// including `Number.prototype`'s +0. Other receivers throw a TypeError.
-fn this_number_value(heap: &Heap, task: TaskId, this: &Value, method: &str) -> Result<f64, Fault> {
+pub(crate) fn this_number_value(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    method: &str,
+) -> Result<f64, Fault> {
     if let Value::Number(n) = this {
         return Ok(*n);
     }

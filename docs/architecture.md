@@ -1423,7 +1423,7 @@ Design: `design.md` §§4, 11.
   `1000000000000000.25` is `"1000000000000000.2"`), laid out by the
   ECMA-262 rules
   (plain decimal for `1e-6 <= |x| < 1e21`, else `1e+21` / `1e-7`;
-  `"0"` for `-0`). Radix 2..36 is clj-quickjs-149. The compiler emits
+  `"0"` for `-0`). Radix 2..36 formatting is implemented by `number_to_string_radix` (clj-quickjs-149; see below). The compiler emits
   `add` when both operands are statically numbers and `plus` otherwise, so
   `+` never applies ToNumber to a string. `to_number` on a string is
   StringToNumber (`string_to_number`, clj-quickjs-67; QuickJS `js_atof`
@@ -3708,3 +3708,31 @@ inheritance, integrity, enumeration, function metadata and native-call cases;
 every one-instruction yield and while parked, then migrates the resumed run.
 Cancellation and dependency failure exercise unwind; GC tests cover accessor
 slots and home-object cycles.
+
+### Number radix formatting (clj-quickjs-149)
+
+`value::string::number_to_string_radix` delegates radix 10 to the existing
+formatter. Other radixes extract the binary significand and exponent;
+integer division uses fixed 34-limb storage, preserving every bit even for
+integers above 2^53. Fractional remainders and half-ulp boundaries use the
+common exact denominator 2^1075. Each step multiplies them by the radix,
+emits one digit, and tests the truncated and rounded-up candidates against
+the binary64 rounding interval. Powers of two have a narrower lower boundary
+except at the subnormal transition. Midpoint inclusion follows the even
+binary significand; if both candidates fit, choose the nearer one, ties to
+an even radix coefficient. Carry propagation and trailing-zero removal finish
+the output. This is an independent exact-interval implementation, using
+`js_dtoa` in `research/quickjs/dtoa.c` at revision `7d1c13c5d8f8` as a
+semantic reference for shortest-sufficient output.
+
+This leaf computation is bounded by binary64: at most 1024 integer digits or
+1075 fractional digits; every arithmetic pass touches at most 34 u32 limbs.
+The buffers contain no collector edges and require no new heap kind.
+Receiver validation uses `builtin::this_number_value` before any radix
+callback. An object radix enters `native::ConvertTarget::NumberToString`,
+retaining the validated f64 and tracing the radix through the existing
+conversion operands. OrdinaryToPrimitive uses number hint and ordinary VM
+frames, so callbacks can yield, wait, survive collection and migrate.
+Converted undefined is explicitly passed through ToNumber to distinguish it
+from an originally undefined radix. Invalid radixes use the catchable
+`Fault::RangeError` path introduced for array lengths (clj-quickjs-154).

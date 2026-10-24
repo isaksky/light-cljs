@@ -13,6 +13,113 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output. Four rows adapt QuickJS
+/// test_builtin.js::test_number, revision 7d1c13c5d8f8. The full QuickJS
+/// copyright and MIT notice is retained on string_code_unit_access below.
+#[test]
+fn number_to_string_with_radix() {
+    for src in [
+        r#"(1-2**-53).toString(12) === '0.bbbbbbbbbbbbbba'"#,
+        r#"(1.3).toString(7) === '1.2046204620462046205'"#,
+        r#"(1.3).toString(35) === '1.ahhhhhhhhhm'"#,
+        r#"(1000000000000000128).toString() === '1000000000000000100'"#,
+        r#"(10).toString(undefined) === '10' && (10).toString('10') === '10'"#,
+        r#"(255).toString(16) === 'ff' && (-255).toString(2) === '-11111111'"#,
+        r#"(0.5).toString(2) === '0.1' && (35).toString(36) === 'z'"#,
+        r#"(new Number(31)).toString(16) === '1f' && Number.prototype.toString(2) === '0'"#,
+        r#"(-0).toString(2) === '0' && NaN.toString(2) === 'NaN' && (-Infinity).toString(16) === '-Infinity'"#,
+        r#"(10).toString(2.9) === '1010' && (10).toString({valueOf() {return 16;}}) === 'a'"#,
+        r#"let log = ''; let radix = {valueOf() {log += 'v'; return {};}, toString() {log += 's'; return '2';}}; (10).toString(radix) === '1010' && log === 'vs'"#,
+        r#"let touched = false; try {Number.prototype.toString.call('1', {valueOf() {touched = true; return 2;}});} catch(e) {} !touched"#,
+        r#"let caught = false; try {(1).toString({valueOf() {throw 42;}});} catch(e) {caught = e === 42;} caught"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for radix in [
+        "1",
+        "37",
+        "NaN",
+        "null",
+        "false",
+        "Infinity",
+        "-Infinity",
+        "0",
+        "-2",
+        "{}",
+        "{valueOf() {return undefined;}}",
+    ] {
+        let src = format!(
+            "let caught = false; try {{(10).toString({radix});}} catch(e) {{caught = true;}} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        assert_eq!(
+            failure(&format!("(10).toString({radix})")).kind(),
+            VmErrorKind::RangeError
+        );
+    }
+    assert_eq!(
+        failure("Number.prototype.toString.call('1')").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Object radix coercion runs once
+/// across a dependency wait, GC, one-instruction yields and worker migration.
+#[test]
+fn number_radix_coercion_waits_yields_collects_and_migrates() {
+    for expression in [
+        "n.toString(r) === 'ff'",
+        "Number.prototype.toString.call(n, r) === 'ff'",
+        "Number.prototype.toString.apply(n, [r]) === 'ff'",
+        "Number.prototype.toString.bind(n)(r) === 'ff'",
+        "Number.prototype.toString.call(n, {valueOf: Number.bind(null, {valueOf() {count++; __rt.need(149, 1); return 2;}})}) === '11111111'",
+        "(() => {try {n.toString({valueOf() {count++; __rt.need(149, 1); throw 42;}});} catch(e) {return e === 42;} return false;})()",
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let count = 0; let n = new Number(255); let r = {{valueOf() {{count++; __rt.need(149, 1); return 16;}}}}; ({expression}) && count === 1"
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Bool(true), "{src}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{src}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {src}");
+        assert_eq!(waits, 1);
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output (clj-quickjs-147).
 /// The three invalid Number string conversions adapt test_number in QuickJS
 /// tests/test_builtin.js, revision 7d1c13c5d8f8. The full QuickJS copyright
@@ -9654,21 +9761,17 @@ fn methods_on_primitive_bases() {
         other => panic!("expected Complete, got {other:?}"),
     }
 
-    // Explicitly unsupported until their pellets: boolean properties (clj-quickjs-39),
-    // radixes other than 10 (clj-quickjs-39).
+    // Explicitly unsupported until their pellet: boolean properties (clj-quickjs-39).
     // Not catchable: no JavaScript sees a wrong answer.
-    for (src, needle) in [
-        ("let b = true;\nb.toString();", "of a boolean"),
-        ("let n = 1;\nn.toString(2);", "radix other than 10"),
-        ("let n = 1;\nn.toString('10');", "radix other than 10"),
-    ] {
+    {
+        let (src, needle) = ("let b = true;\nb.toString();", "of a boolean");
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains(needle), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
     }
-    let (kind, ..) = failure_at("let r; try { (1).toString(2); } catch (e) { r = 1; } r");
-    assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+    truth("let n = 1; n.toString(2) === '1' && n.toString('10') === '1'");
+    truth("let r = 0; try { (1).toString(2); } catch (e) { r = 1; } r === 0");
 
     // The `docs/grammar.md` example lines, each true.
     for src in [

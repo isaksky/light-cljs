@@ -402,8 +402,8 @@ fn write_escaped_run(f: &mut fmt::Formatter<'_>, run: &str) -> fmt::Result {
 ///
 /// Only the layout below is JavaScript's own; Rust's `{}` layout differs
 /// (`1e21` prints `1000000000000000000000`, `1e-7` prints `0.0000001`) and
-/// is not used. The digits are [`shortest_digits`]. Radix 2..36 is
-/// clj-quickjs-149.
+/// is not used. The digits are [`shortest_digits`]. Other radixes use
+/// [`number_to_string_radix`].
 pub fn number_to_string(x: f64) -> String {
     if x.is_nan() {
         return "NaN".to_string();
@@ -485,6 +485,201 @@ fn shortest_digits(x: f64) -> (String, i32) {
         return parse(&closest);
     }
     (digits, n)
+}
+
+/// Number formatting in radix 2..36 (clj-quickjs-149). Radix 10 retains
+/// Number::toString's decimal layout; other radixes never use exponents.
+///
+/// Semantic reference: `js_dtoa`'s free-format path in
+/// research/quickjs/dtoa.c, revision 7d1c13c5d8f8. Written afresh using exact
+/// remainders and binary64 rounding boundaries rather than floating-point
+/// repeated multiplication. Integers are emitted exactly at every magnitude.
+/// A fractional prefix stops as soon as rounding it up or down identifies x;
+/// when both do, choose the nearest, ties to even. Boundary inclusion follows
+/// the even binary significand, including subnormals and powers of two.
+///
+/// This leaf has a fixed bound: at most 1024 integer digits or 1075 fractional
+/// digits, each operating on 34 u32 limbs (1088 bits). No input-sized loop,
+/// JavaScript callback, heap edge or retained native continuation is needed.
+///
+/// # Panics
+/// Panics if radix is outside 2..36. Callers validate it before entry.
+pub fn number_to_string_radix(x: f64, radix: u32) -> String {
+    assert!((2..=36).contains(&radix));
+    if radix == 10 || !x.is_finite() || x == 0.0 {
+        return number_to_string(x);
+    }
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let bits = x.abs().to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let mut mantissa = bits & ((1 << 52) - 1);
+    let e = if exponent == 0 {
+        -1074
+    } else {
+        mantissa |= 1 << 52;
+        exponent - 1023 - 52
+    };
+    let mut integer = if e >= 0 {
+        RadixInteger::shifted(mantissa, e as usize)
+    } else {
+        RadixInteger::shifted(mantissa.checked_shr((-e) as u32).unwrap_or(0), 0)
+    };
+    let mut digits = Vec::new();
+    loop {
+        digits.push(integer.divide(radix) as u8);
+        if integer == RadixInteger::ZERO {
+            break;
+        }
+    }
+    digits.reverse();
+    let mut integer_len = digits.len();
+    if e < 0 {
+        // One common exact denominator 2^1075 covers every binary64 half-ulp.
+        let fractional_bits = if -e >= 64 {
+            mantissa
+        } else {
+            mantissa & ((1 << -e) - 1)
+        };
+        let mut remainder = RadixInteger::shifted(fractional_bits, (e + 1075) as usize);
+        if remainder != RadixInteger::ZERO {
+            let upper_bit = (e + 1074) as usize;
+            let mut upper = RadixInteger::shifted(1, upper_bit);
+            let mut lower = RadixInteger::shifted(
+                1,
+                upper_bit - usize::from(exponent > 1 && mantissa == 1 << 52),
+            );
+            let inclusive = mantissa & 1 == 0;
+            for _ in 0..1075 {
+                remainder.multiply(radix);
+                digits.push(remainder.take_digit() as u8);
+                lower.multiply(radix);
+                upper.multiply(radix);
+                let down = remainder.within(&lower, inclusive);
+                let up = RadixInteger::DENOMINATOR
+                    .minus(&remainder)
+                    .within(&upper, inclusive);
+                if !down && !up {
+                    continue;
+                }
+                let half = RadixInteger::shifted(1, 1074);
+                let round_up = up
+                    && (!down
+                        || remainder.cmp(&half).is_gt()
+                        || (remainder == half
+                            && digits
+                                .iter()
+                                .fold(0, |p, d| (p * radix + u32::from(*d)) & 1)
+                                != 0));
+                if round_up {
+                    let mut at = digits.len();
+                    loop {
+                        at -= 1;
+                        digits[at] += 1;
+                        if u32::from(digits[at]) != radix {
+                            break;
+                        }
+                        digits[at] = 0;
+                        if at == 0 {
+                            // A non-integer binary64 is below 2^52, so its
+                            // exact integer part cannot overflow to a new digit
+                            // except through this final fractional rounding.
+                            digits.insert(0, 1);
+                            integer_len += 1;
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    while digits.len() > integer_len && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    let mut out = String::with_capacity(digits.len() + 2);
+    if x < 0.0 {
+        out.push('-');
+    }
+    for (i, digit) in digits.into_iter().enumerate() {
+        if i == integer_len {
+            out.push('.');
+        }
+        out.push(DIGITS[digit as usize] as char);
+    }
+    out
+}
+
+/// Fixed storage for radix formatting only. The denominator is 2^1075;
+/// multiplying a remainder or boundary by at most 36 fits in 1088 bits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RadixInteger([u32; 34]);
+
+impl RadixInteger {
+    const ZERO: Self = Self([0; 34]);
+    const DENOMINATOR: Self = {
+        let mut limbs = [0; 34];
+        limbs[33] = 1 << 19;
+        Self(limbs)
+    };
+
+    fn shifted(value: u64, shift: usize) -> Self {
+        let mut out = Self::ZERO;
+        for bit in 0..64 {
+            if value & (1 << bit) != 0 {
+                let at = shift + bit;
+                out.0[at / 32] |= 1 << (at % 32);
+            }
+        }
+        out
+    }
+
+    fn multiply(&mut self, radix: u32) {
+        let mut carry = 0;
+        for limb in &mut self.0 {
+            carry += u64::from(*limb) * u64::from(radix);
+            *limb = carry as u32;
+            carry >>= 32;
+        }
+        debug_assert_eq!(carry, 0);
+    }
+
+    fn divide(&mut self, radix: u32) -> u32 {
+        let mut remainder = 0;
+        for limb in self.0.iter_mut().rev() {
+            let value = (remainder << 32) | u64::from(*limb);
+            *limb = (value / u64::from(radix)) as u32;
+            remainder = value % u64::from(radix);
+        }
+        remainder as u32
+    }
+
+    fn take_digit(&mut self) -> u32 {
+        let digit = self.0[33] >> 19;
+        self.0[33] &= (1 << 19) - 1;
+        digit
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.iter().rev().cmp(other.0.iter().rev())
+    }
+
+    fn within(&self, boundary: &Self, inclusive: bool) -> bool {
+        let order = self.cmp(boundary);
+        order.is_lt() || (inclusive && order.is_eq())
+    }
+
+    fn minus(&self, other: &Self) -> Self {
+        let mut out = *self;
+        let mut borrow = false;
+        for (limb, rhs) in out.0.iter_mut().zip(other.0) {
+            let (value, a) = limb.overflowing_sub(rhs);
+            let (value, b) = value.overflowing_sub(u32::from(borrow));
+            *limb = value;
+            borrow = a || b;
+        }
+        debug_assert!(!borrow);
+        out
+    }
 }
 
 /// True for a StrWhiteSpaceChar code unit (ECMA-262 StringToNumber):
@@ -1006,6 +1201,73 @@ mod tests {
     }
 
     use super::*;
+
+    /// Upstream rows adapt QuickJS test_builtin.js::test_number,
+    /// revision 7d1c13c5d8f8; copyright and MIT notice are retained with
+    /// tests/js_source.rs::string_code_unit_access. Other rows are synthetic.
+    #[test]
+    fn number_to_string_with_radix() {
+        for (x, radix, expected) in [
+            (1.0 - 2.0f64.powi(-53), 12, "0.bbbbbbbbbbbbbba".to_string()),
+            (1.3, 7, "1.2046204620462046205".to_string()),
+            (1.3, 35, "1.ahhhhhhhhhm".to_string()),
+            (1000000000000000128.0, 10, "1000000000000000100".to_string()),
+            (255.0, 16, "ff".to_string()),
+            (-255.0, 2, "-11111111".to_string()),
+            (0.5, 2, "0.1".to_string()),
+            (
+                0.1,
+                2,
+                "0.0001100110011001100110011001100110011001100110011001101".to_string(),
+            ),
+            (2.0f64.powi(60), 2, format!("1{}", "0".repeat(60))),
+            (35.0, 36, "z".to_string()),
+            (-0.0, 2, "0".to_string()),
+            (f64::NAN, 2, "NaN".to_string()),
+            (-f64::INFINITY, 16, "-Infinity".to_string()),
+        ] {
+            assert_eq!(number_to_string_radix(x, radix), expected, "{x:e}, {radix}");
+        }
+    }
+
+    #[test]
+    fn radix_extremes_and_exact_integers() {
+        assert_eq!(
+            number_to_string_radix(f64::from_bits(1), 2),
+            format!("0.{}1", "0".repeat(1073))
+        );
+        assert_eq!(
+            number_to_string_radix(f64::MAX, 2),
+            format!("{}{}", "1".repeat(53), "0".repeat(971))
+        );
+        assert_eq!(
+            number_to_string_radix(f64::MIN_POSITIVE, 16),
+            format!("0.{}4", "0".repeat(255))
+        );
+        assert_eq!(
+            number_to_string_radix(1000000000000000128.0, 16),
+            "de0b6b3a7640080"
+        );
+        // Every digit and radix, checked with independent native integer arithmetic.
+        for radix in 2..=36 {
+            for x in [1u64, 35, 255, 123456789, (1 << 53) - 1] {
+                let text = number_to_string_radix(x as f64, radix);
+                assert_eq!(u64::from_str_radix(&text, radix), Ok(x));
+            }
+            for x in [
+                f64::from_bits(1),
+                f64::MIN_POSITIVE,
+                0.1,
+                0.5,
+                1.3,
+                1.0 - f64::EPSILON / 2.0,
+            ] {
+                let text = number_to_string_radix(x, radix);
+                assert!(text.len() <= 1077, "{x:e} base {radix}: {text}");
+                assert!(!text.ends_with('0'), "{x:e} base {radix}: {text}");
+            }
+        }
+    }
 
     #[test]
     fn number_to_string_matches_javascript() {

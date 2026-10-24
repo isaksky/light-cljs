@@ -135,3 +135,17 @@ for this runtime, not light-cljs output. `JS_GetPropertyInternal`,
 `JS_SetPropertyInternal`, `js_parse_object_literal`, `js_parse_property_name`
 and `js_get_function_name` in `research/quickjs/quickjs.c` at that revision
 serve as semantic references; no upstream C implementation was copied.
+
+## Number radix formatting (clj-quickjs-149)
+
+`tests/js_source.rs::number_to_string_with_radix` and the formatter unit test
+adapt the four radix/decimal assertions in `test_number`, lines 385-386 and
+399-400 of `research/quickjs/tests/test_builtin.js`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`tests/js_source.rs::string_code_unit_access` (see `research/quickjs/LICENSE`).
+Other tests are synthetic fixtures, not light-cljs output.
+`js_number_toString` in `research/quickjs/quickjs.c` and `js_dtoa` in
+`research/quickjs/dtoa.c` at that revision were consulted as semantic
+references. The fixed-size exact-interval Rust formatter was written afresh;
+no upstream implementation code was copied.
