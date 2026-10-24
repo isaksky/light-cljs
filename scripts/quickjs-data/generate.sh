@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# != 2 ]]; then
+    echo "usage: bash $0 QUICKJS_SOURCE NEW_OUTPUT_DIRECTORY" >&2
+    exit 2
+fi
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source_dir=$(realpath "$1")
+# Refuse to replace a previous result or write generated files into the source.
+output_dir=$(realpath -m "$2")
+case "$output_dir/" in
+    "$source_dir/"*) echo 'output must be outside the QuickJS source' >&2; exit 2 ;;
+esac
+mkdir -- "$2"
+output_dir=$(realpath "$2")
+(
+    cd "$source_dir"
+    sha256sum --check "$script_dir/inputs.sha256"
+)
+command -v rustc >/dev/null
+perl "$script_dir/export.pl" "$source_dir" "$output_dir" > "$output_dir/inventory.txt"
+# Optimization is unnecessary for this one-shot exporter. Some compiler
+# wrappers warn that their default fortify setting is inactive at -O0.
+"${CC:-cc}" -std=c11 -O0 -I "$source_dir" "$output_dir/export.c" -o "$output_dir/export"
+"$output_dir/export" > "$output_dir/tables.rs"
+"$output_dir/export" --wire > "$output_dir/c-values.bin"
+rustc --edition=2021 -D warnings "$output_dir/verify.rs" -o "$output_dir/verify"
+"$output_dir/verify" > "$output_dir/rust-values.bin"
+cmp "$output_dir/c-values.bin" "$output_dir/rust-values.bin"
+(
+    cd "$source_dir"
+    sha256sum --check "$script_dir/inputs.sha256" >/dev/null
+)
+{
+    echo 'Source: QuickJS 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2'
+    echo 'Representation: immutable Rust values; C string bytes include terminal NUL.'
+    echo 'Unicode compressed representation retained; runtime decoders not implemented.'
+    echo 'Validation: all exported logical values match the compiled C representation.'
+    cat "$script_dir/inputs.sha256"
+    (cd "$script_dir" && sha256sum export.pl generate.sh inputs.sha256)
+    "${CC:-cc}" --version | head -n 1
+    rustc --version
+    perl -e 'printf "perl %vd\n", $^V'
+} > "$output_dir/provenance.txt"
+cp "$source_dir/LICENSE" "$output_dir/QUICKJS-LICENSE"
+cat "$output_dir/inventory.txt"
+wc -c "$output_dir/tables.rs" "$output_dir/c-values.bin"
+echo "PASS: generated Rust matches compiled C data: $output_dir"
