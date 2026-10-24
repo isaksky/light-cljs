@@ -13163,3 +13163,87 @@ fn json_stringify_rejects_foreign_objects() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. StringToNumber is a bounded
+/// leaf after resumable Number-wrapper ToPrimitive, including fallback to
+/// toString. Oversized callback results fail before any input-sized scan.
+#[test]
+fn json_stringify_number_wrapper_conversion_is_budgeted() {
+    for fallback in [false, true] {
+        let methods = if fallback {
+            "n.valueOf = function(){calls += 1; return {};}; n.toString = function(){calls += 1; return text;};"
+        } else {
+            "n.valueOf = function(){calls += 1; return text;};"
+        };
+        let code = compile_function(&format!(
+            "function stringify(text) {{ let n = new Number(3); let calls = 0; {methods} let result = JSON.stringify(n); return result === '7' && calls === {}; }}",
+            if fallback { 2 } else { 1 }
+        )).unwrap();
+        let text = format!("{}7", "0".repeat(4095));
+        let rt = Runtime::new();
+        let root = rt.root(Primitive::String(text.as_str().into()));
+        let task = rt.spawn(&code, &[&root]).unwrap();
+        drop(root);
+        let mut complete = false;
+        let mut yields = 0;
+        for _ in 0..1000 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    assert!(yields > 10);
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete);
+        let code = compile_function(&format!("function stringify(text) {{ let n = new Number(3); let calls = 0; {methods} return JSON.stringify(n); }}")).unwrap();
+        for length in [4097, 65536] {
+            let text = "1".repeat(length);
+            let root = rt.root(Primitive::String(text.as_str().into()));
+            let task = rt.spawn(&code, &[&root]).unwrap();
+            drop(root);
+            let mut failed = false;
+            for _ in 0..1000 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Failed(error) => {
+                        assert_eq!(error.kind(), VmErrorKind::RangeError);
+                        assert!(error.message().contains("Number conversion limit of 4096"));
+                        failed = true;
+                        break;
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            assert!(failed);
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Snapshot selection is own-only;
+/// reads of selected keys and of toJSON follow the prototype chain.
+#[test]
+fn json_stringify_inherited_property_reads() {
+    for source in [
+        r#"let a = [,2]; Object.setPrototypeOf(a, {0:7}); JSON.stringify(a) === '[7,2]'"#,
+        r#"let o = {get a(){delete this.b; return 1;}, b:2}; Object.setPrototypeOf(o, {b:3}); JSON.stringify(o) === '{"a":1,"b":3}'"#,
+        r#"let p = {toJSON(k){return this.n + k;}}; let o = Object.create(p); o.n = 7; JSON.stringify({a:o}) === '{"a":"7a"}'"#,
+        r#"let a = [,2]; let reads = 0; Object.setPrototypeOf(a, {get 0(){reads += 1; return 7;}}); JSON.stringify(a) === '[7,2]' && reads === 1"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}

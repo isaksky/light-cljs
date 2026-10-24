@@ -442,6 +442,9 @@ use std::collections::HashSet;
 // Own-key collection is a shared leaf API. Bound its scan/sort here; arrays
 // stream their indices and have no corresponding element-count limit.
 const MAX_OBJECT_PROPERTIES: usize = 4096;
+// StringToNumber remains a leaf; bound strings returned by a Number
+// wrapper's observable ToPrimitive before invoking its scanner/parser.
+pub(super) const MAX_NUMBER_CONVERSION_UNITS: usize = 4096;
 
 #[derive(Debug)]
 enum Members {

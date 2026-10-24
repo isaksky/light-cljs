@@ -4275,8 +4275,13 @@ Until own-key enumeration itself is resumable, ordinary objects are limited
 to 4096 stored properties: a bounded preflight scan rejects excess before
 calling its leaf scan/sort. Member names are capped at 4096 UTF-16 units before
 property lookup to bound shared key hashing. Traversal caps open containers
-at 512. Limits throw catchable RangeError and are independent of native stack
-size; array lengths and string values retain their underlying limits.
+at 512. Number-wrapper ToPrimitive uses a limited-number conversion target:
+after its observable callbacks complete, string results longer than 4096
+UTF-16 units throw RangeError before the shared leaf StringToNumber scan.
+This bounds whitespace scanning, grammar validation, radix/decimal parsing
+and copying without changing other users of the shared ToNumber path.
+Limits throw catchable RangeError and are independent of native stack size;
+array lengths and quoted string values retain their underlying limits.
 Unsupported replacer and space arguments fail explicitly. Boolean wrappers
 and Symbol primitives remain prerequisites absent from this value model;
 no placeholder values or alternative serialization are introduced for them.

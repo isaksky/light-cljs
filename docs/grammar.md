@@ -3021,8 +3021,13 @@ boundaries per step. Output retains the normal `2^30 - 1` code-unit limit.
 Shared leaf own-key enumeration is bounded by a limit of 4096 stored
 properties per ordinary object, including non-enumerable properties. Member
 names read during serialization are limited to 4096 UTF-16 units to bound
-leaf key hashing. Both resource limits throw catchable RangeError. Arrays
-stream indices and have no corresponding element-count limit.
+leaf key hashing. Strings returned by Number-wrapper ToPrimitive are limited
+to 4096 UTF-16 units (including whitespace), checked before the shared leaf
+StringToNumber scan; larger results throw RangeError naming the Number
+conversion limit. Wrapper getters/methods still run once and resumably before
+this check. These limits throw catchable RangeError. Arrays stream indices
+and have no corresponding element-count limit. Primitive string values and
+String-wrapper results are quoted in chunks without this conversion limit.
 
 Explicit gaps: every non-undefined replacer throws TypeError
 `"JSON.stringify replacer is not supported"`; every non-undefined space

@@ -268,6 +268,8 @@ enum Action {
     Continue,
 
     ToNumber(Value),
+    /// Limit leaf StringToNumber after observable ToPrimitive completes.
+    ToNumberLimited(Value, usize),
     ToString(Value),
     /// Replace a completed conversion with the remaining built-in work.
     Builtin {
@@ -343,6 +345,7 @@ enum ConvertTarget {
         // Largest absolute operand, gathered during ToNumber for hypot.
         magnitude: f64,
     },
+    NumberValueLimited(usize),
 }
 
 /// The operation-specific state of a native frame.
@@ -1291,6 +1294,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Continue
             | Action::Call { .. }
             | Action::ToNumber(_)
+            | Action::ToNumberLimited(_, _)
             | Action::ToString(_)
             | Action::Builtin { .. }
             | Action::Need { .. }
@@ -1357,9 +1361,14 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.truncate_operands(base)?;
     match action {
-        Action::ToNumber(_) | Action::ToString(_) => {
+        Action::ToNumber(_) | Action::ToNumberLimited(_, _) | Action::ToString(_) => {
             let (value, target, hint) = match action {
                 Action::ToNumber(value) => (value, ConvertTarget::NumberValue, Hint::Number),
+                Action::ToNumberLimited(value, limit) => (
+                    value,
+                    ConvertTarget::NumberValueLimited(limit),
+                    Hint::Number,
+                ),
                 Action::ToString(value) => (value, ConvertTarget::StringValue, Hint::String),
                 _ => unreachable!(),
             };
@@ -1562,7 +1571,9 @@ impl NativeState {
                     StringifyStep::Call { callee, this, args } => {
                         Action::Call { callee, this, args }
                     }
-                    StringifyStep::ToNumber(value) => Action::ToNumber(value),
+                    StringifyStep::ToNumber(value) => {
+                        Action::ToNumberLimited(value, super::json::MAX_NUMBER_CONVERSION_UNITS)
+                    }
                     StringifyStep::ToString(value) => Action::ToString(value),
                     StringifyStep::Return(value) => Action::Return(value),
                 })
@@ -2161,7 +2172,15 @@ impl NativeState {
                         ));
                         Ok(Action::Continue)
                     }
-                    ConvertTarget::NumberValue => {
+                    ConvertTarget::NumberValue | ConvertTarget::NumberValueLimited(_) => {
+                        if let ConvertTarget::NumberValueLimited(limit) = target
+                            && let Value::String(text) = &operands[0]
+                            && text.len() > *limit
+                        {
+                            return Err(Fault::RangeError(format!(
+                                "JSON.stringify Number conversion limit of {limit} UTF-16 units exceeded"
+                            )));
+                        }
                         dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))
                     }
                     ConvertTarget::StringValue => dispatch::to_js_string(&operands[0])
