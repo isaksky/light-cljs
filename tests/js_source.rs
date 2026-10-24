@@ -13454,10 +13454,19 @@ fn maps_reject_access_from_another_task() {
 /// identity and never coerce to strings while hashing or comparing keys.
 #[test]
 fn map_symbol_keys_and_tag() {
-    assert_eq!(
-        failure("Object.prototype.toString.call(new Map())").kind(),
-        VmErrorKind::UnsupportedOperand
-    );
+    for receiver in [
+        "new Map()",
+        "Map.prototype",
+        "Object.create(Map.prototype)",
+        "Object.create(Object.create(Map.prototype))",
+    ] {
+        let src = format!("Object.prototype.toString.call({receiver})");
+        assert_eq!(
+            failure(&src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
     for src in [
         "let m = new Map(); let a = Symbol('key'); let b = Symbol('key'); m.set(a, 1); m.set(b, 2); m.set('Symbol(key)', 3); m.size === 3 && m.get(a) === 1 && m.get(b) === 2 && m.get('Symbol(key)') === 3 && !m.has(Symbol('key'))",
         "let m = new Map(); let s = Symbol(); m.set(s, 1); m.set(s, 2); m.size === 1 && m.get(s) === 2 && m.delete(s) && !m.delete(s) && !m.has(s)",
@@ -13467,5 +13476,26 @@ fn map_symbol_keys_and_tag() {
         "let d = Object.getOwnPropertyDescriptor(Symbol, 'toStringTag'); d.value === Symbol.toStringTag && !d.writable && !d.enumerable && !d.configurable",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Deferred tag consumption
+/// rejects presence without calling getters, even before a branded fallback.
+#[test]
+fn object_to_string_rejects_deferred_tags() {
+    for receiver in ["{}", "[]", "function() {}", "new Error()", "new Number(1)"] {
+        for descriptor in [
+            "{ value: undefined }",
+            "{ get: function() { throw new Error('tag getter ran'); } }",
+        ] {
+            let src = format!(
+                "let o = {receiver}; Object.defineProperty(o, Symbol.toStringTag, {descriptor}); Object.prototype.toString.call(o)"
+            );
+            assert_eq!(
+                failure(&src).kind(),
+                VmErrorKind::UnsupportedOperand,
+                "{src}"
+            );
+        }
     }
 }

@@ -519,7 +519,7 @@ pub(crate) fn call(
         | Builtin::MathLog2 => math(which, args),
         Builtin::MathHypot => Err(Fault::Internal("hypot requires a budgeted native frame")),
         Builtin::ObjectPrototypeToString => {
-            let tag = to_string_tag(heap, this)?;
+            let tag = to_string_tag(heap, task, this)?;
             Ok(Value::String(JsString::from(
                 format!("[object {tag}]").as_str(),
             )))
@@ -1242,10 +1242,23 @@ fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
         .ok_or(Fault::Internal("array test argument was reclaimed"))
 }
 
-/// The builtinTag of `Object.prototype.toString` (ECMAScript
-/// Object.prototype.toString steps 1-14; no `@@toStringTag` while symbols
-/// do not exist).
-fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
+/// The builtinTag of `Object.prototype.toString`. Reject an own or
+/// inherited `@@toStringTag` until resumable tag consumption is supported.
+fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str, Fault> {
+    // HasProperty walks outside object-table locks and never invokes a
+    // getter. The receiver and its prototype chain stay rooted by the frame.
+    if matches!(this, Value::Object(_))
+        && crate::vm::property::has_property(
+            heap,
+            task,
+            this,
+            &crate::vm::property::Key::Symbol(crate::value::symbol::well_known("toStringTag")),
+        )?
+    {
+        return Err(Fault::Unsupported(
+            "Object.prototype.toString: Symbol.toStringTag lookup is not supported".to_string(),
+        ));
+    }
     if is_array(heap, this)? {
         return Ok("Array");
     }
@@ -1267,10 +1280,7 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
                     Ok("Function")
                 }
                 HeapObject::Array(_) => Ok("Array"),
-                HeapObject::Native(_) => Ok("Object"),
-                HeapObject::JsMap(_) => {
-                    unsupported("a Map: Symbol.toStringTag lookup is not supported")
-                }
+                HeapObject::Native(_) | HeapObject::JsMap(_) => Ok("Object"),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
