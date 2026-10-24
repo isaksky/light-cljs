@@ -1089,6 +1089,7 @@ fn async_operands_and_handlers_survive_collection_at_every_step() {
         "try { return {n:17}; } finally { await 0; await null; }",
         "try { throw {n:17}; } finally { await 0; }",
         "try { return 2 + await Promise.reject({n:17}); } catch(e) { return e; }",
+        "let {[await 'x']: value = await 17} = {}; return value;",
     ] {
         let rt = Runtime::new();
         let source = format!(
