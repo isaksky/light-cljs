@@ -307,6 +307,44 @@ fn cross_task_delivery_does_not_run_jobs_during_publication_or_wait() {
 }
 
 #[test]
+fn cross_task_bigint_arguments_survive_collection() {
+    let (rt, task, jobs, mut host) = setup(
+        "function a(small, large, zero) { if (small === 17n && large === 515377520732011331036461129765621272702107522001n && zero === 0n) { __rt.effect(0, 1); } else { __rt.effect(0, 0); } } __rt.effect(0, -1); 77n;",
+    );
+    let producer = rt
+        .spawn(
+            &compile_script(
+                "bigint-publisher.js",
+                "515377520732011331036461129765621272702107522001n;",
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+    let small = rt.root(Primitive::BigInt(crate::JsBigInt::from(17)));
+    let zero = rt.root(Primitive::BigInt(crate::JsBigInt::from(0)));
+    let sender = jobs[0].clone();
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let RunOutcome::Complete(large) = producer.run().unwrap() else {
+            panic!("BigInt producer must complete")
+        };
+        tx.send(sender.enqueue(&[small, large, zero])).unwrap();
+    });
+    rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    worker.join().unwrap();
+    // The publishing task and its argument roots have been dropped. The
+    // receiving queue retains the inline and shared-limb primitives.
+    rt.collect().unwrap();
+    assert_eq!(host.0, [-1.0]);
+    let RunOutcome::Complete(value) = task.run_with(Budget::UNLIMITED, &mut host).unwrap() else {
+        panic!("receiver must complete after its job")
+    };
+    assert_eq!(value.bigint(), Some(crate::JsBigInt::from(77)));
+    assert_eq!(host.0, [-1.0, 1.0]);
+}
+
+#[test]
 fn queue_roots_arguments_and_cancellation_releases_them() {
     let (rt, task, jobs, mut host) =
         setup("function a(x) { __rt.effect(0, x.n); } __rt.effect(0, -1); a = undefined; 42;");
