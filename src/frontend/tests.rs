@@ -4273,6 +4273,14 @@ fn regexp_pattern_early_errors() {
         (r"/\u{110000}/u", "invalid Unicode escape"),
         ("/(?<n>a)(?<n>b)/", "duplicate group name"),
         ("/aaa]/v", "unexpected"),
+        (
+            "/a{18446744073709551617,18446744073709551616}/u",
+            "quantifier range out of order",
+        ),
+        (
+            "/a{00018446744073709551617,18446744073709551616}/v",
+            "quantifier range out of order",
+        ),
     ] {
         let source = format!("\n  {literal}");
         rejects_with(&source, SyntaxErrorKind::Invalid, 2, 3, problem);
@@ -4296,7 +4304,16 @@ fn regexp_pattern_early_errors() {
         23,
         "unterminated group",
     );
-    for literal in [r"/aaa]/", r"/(?<n>a)\k<n>/u", r"/[\]]/u", r"/[\]]/v"] {
+    for literal in [
+        r"/aaa]/",
+        r"/(?<n>a)\k<n>/u",
+        r"/[\]]/u",
+        r"/[\]]/v",
+        "/a{18446744073709551616}/",
+        "/a{18446744073709551616,}/u",
+        "/a{0,18446744073709551616}/v",
+        "/a{18446744073709551616,00018446744073709551616}/u",
+    ] {
         parse_script(literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
         compile_script("regexp", literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
     }

@@ -571,13 +571,19 @@ impl<'a> Parser<'a> {
         if !self.eat(123) {
             return Ok(None);
         }
+        let min_start = self.pos;
         let min = self.count();
+        let min_end = self.pos;
+        let mut max_digits = min_start..min_end;
         let max = if self.eat(44) {
-            if digit(self.peek()).is_some() {
+            max_digits.start = self.pos;
+            let max = if digit(self.peek()).is_some() {
                 Some(self.count())
             } else {
                 None
-            }
+            };
+            max_digits.end = self.pos;
+            max
         } else {
             Some(min)
         };
@@ -588,6 +594,16 @@ impl<'a> Parser<'a> {
             } else {
                 Ok(None)
             };
+        }
+        if self.syntax_only {
+            let lower = significant_decimal_digits(&self.text[min_start..min_end]);
+            let upper = significant_decimal_digits(&self.text[max_digits]);
+            if max.is_some() && (lower.len(), lower) > (upper.len(), upper) {
+                return Err(error(start, "quantifier range out of order"));
+            }
+            // The disposable arena needs only bounded/unbounded shape. Decimal
+            // comparison above validates mathematical bounds without a capacity limit.
+            return Ok(Some((0, max.map(|_| 0))));
         }
         let min = min
             .unwrap()
@@ -1048,6 +1064,10 @@ impl<'a> Parser<'a> {
         self.pos += len;
         Some(cp)
     }
+}
+
+fn significant_decimal_digits(digits: &[u16]) -> &[u16] {
+    &digits[digits.iter().take_while(|&&unit| unit == 48).count()..]
 }
 
 fn digit(unit: Option<u16>) -> Option<u32> {

@@ -21241,6 +21241,19 @@ fn regexp_v_outside_class_unicode_parity() {
 }
 
 #[test]
+fn regexp_quantifier_capacity_is_a_runtime_limit() {
+    // Synthetic fixtures, not light-cljs output.
+    assert_eq!(
+        eval("false && /a{18446744073709551616}/"),
+        ValueView::Bool(false)
+    );
+    assert_eq!(
+        eval("try { /a{18446744073709551616}/u; false } catch(e) { e instanceof SyntaxError }"),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_unsupported_properties_remain_runtime_errors() {
     // Synthetic fixtures, not light-cljs output.
     assert_eq!(

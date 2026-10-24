@@ -2623,6 +2623,12 @@ throw /x/;
 false && /\p{Script=Greek}/u;
 false && /\p{Script_Extensions=Grek}/u;
 false && /\p{RGI_Emoji}/v;
+false && /a{18446744073709551616}/;
+/a{18446744073709551616,00018446744073709551616}/u;
+```
+
+```js reject Invalid 1:1
+/a{18446744073709551617,18446744073709551616}/u
 ```
 
 ```js reject Invalid 1:1
@@ -3957,7 +3963,7 @@ noncapturing and scoped i/m/s groups, assertions and lookaround, greedy/lazy
 quantifiers, character classes/ranges, character/class escapes, Annex B
 non-Unicode forms, and strict u-mode parsing with surrogate-pair joining.
 Errors include messages and UTF-16 offsets (flag errors index the flags).
-Quantifier counts above u64::MAX fail explicitly.
+Matcher parsing rejects quantifier counts above u64::MAX explicitly at runtime.
 
 Explicit gaps: v patterns and Script/Script_Extensions property escapes remain
 deferred. Binary and General_Category property escapes execute in u mode
@@ -3973,7 +3979,9 @@ unsupported properties compile in unevaluated expressions; evaluating them
 retains the runtime's catchable SyntaxError. Invalid names/values, string
 properties in u mode or in `\P`, and complemented classes that may contain
 strings are early errors. Script aliases use the pinned Unicode 17 name pool.
-The shared parser's existing quantifier-count limit also applies to validation.
+Literal syntax validation accepts arbitrary-length decimal quantifier bounds,
+comparing their mathematical values to reject reversed ranges. The matcher's
+u64 capacity limit remains a catchable runtime error when the literal executes.
 RegExp objects and methods execute (clj-quickjs-188);
 Unicode matching executes (clj-quickjs-190); case-insensitive matching remains deferred.
 
