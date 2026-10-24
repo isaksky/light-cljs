@@ -314,8 +314,12 @@ impl State {
                     })?;
                     return self.result(heap, task, value, false);
                 }
-                if self.kind == Kind::TypedArray {
-                    let view = typed_array::receiver(heap, task, &self.source)?;
+                // Array.prototype.values may be borrowed onto a typed array:
+                // the receiver's brand, rather than the factory, selects
+                // internal length and detachment validation at each next.
+                if let Value::Object(id) = self.source
+                    && let Some(view) = crate::object::typed_array::view(heap, task, id)?
+                {
                     if view.is_detached(heap)? {
                         return Err(Fault::TypeError("ArrayBuffer is detached".into()));
                     }

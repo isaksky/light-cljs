@@ -179,6 +179,18 @@ fn for_of_builtin_iterators() {
     }
 }
 
+#[test]
+fn for_of_borrowed_array_iterator_on_typed_array() {
+    for src in [
+        "let a = new Uint8Array([7]); Object.defineProperty(a, 'length', {value: 0}); let it = Array.prototype.values.call(a); it.next().value === 7 && it.next().done",
+        "let a = new Uint8Array([7]); Object.defineProperty(a, 'length', {get() { throw 99; }}); Array.prototype.values.call(a).next().value === 7",
+        "let a = new Uint8Array([7]); let it = Array.prototype.values.call(a); a.buffer.transfer(); let caught = false; try { it.next(); } catch (e) { caught = e instanceof TypeError; } caught",
+        "let a = new Uint8Array([7]); a.buffer.transfer(); let it = Array.prototype.values.call(a); let caught = false; try { it.next(); } catch (e) { caught = e instanceof TypeError; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. The order of cleanup and
 /// precedence of exceptions must match IteratorClose, even through finally.
 #[test]

@@ -94,11 +94,12 @@ enum Holder {
     PromiseReactions,
     PromiseResults,
     PromiseResolvingFunctions,
+    IteratorSource,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 34] = [
+const HOLDERS: [Holder; 35] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -133,6 +134,7 @@ const HOLDERS: [Holder; 34] = [
     Holder::PromiseReactions,
     Holder::PromiseResults,
     Holder::PromiseResolvingFunctions,
+    Holder::IteratorSource,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -174,6 +176,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
     use Holder::*;
     match category {
         RootCategory::PersistentHandle => &[
+            IteratorSource,
             PromiseReactions,
             PromiseResults,
             PromiseResolvingFunctions,
@@ -222,6 +225,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::PromiseReaction => &[PromiseReactions],
         ObjectKind::PromiseResolving => &[PromiseResolvingFunctions],
         ObjectKind::PlainObject => &[
+            IteratorSource,
             PersistentHandle,
             ObjectProperty,
             TaskGlobalObject,
@@ -275,6 +279,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::IteratorSource => Coverage {
+            retains: (Inventory, "builtin_iterator_source_retains_and_reclaims"),
+            reclaims: (Inventory, "builtin_iterator_source_retains_and_reclaims"),
+        },
         Holder::TypedArrayEdges => Coverage {
             retains: (Gc, "typed_array_retains_buffer_and_properties"),
             reclaims: (Gc, "typed_array_retains_buffer_and_properties"),
@@ -457,6 +465,37 @@ fn assert_stale(heap: &Arc<Heap>, ids: &[ObjectId]) {
 
 fn plain(heap: &Heap) -> ObjectId {
     heap.alloc(HeapObject::host_object()).unwrap()
+}
+
+#[test]
+fn builtin_iterator_source_retains_and_reclaims() {
+    let heap = Arc::new(Heap::default());
+    let task = crate::ids::TaskId::from_raw(1);
+    let source =
+        crate::vm::property::new_array(&heap, task).unwrap_or_else(|_| panic!("array allocation"));
+    let Value::Object(source_id) = source else {
+        panic!("expected array");
+    };
+    let cursor = crate::vm::native::iterator::create(
+        &heap,
+        task,
+        &source,
+        crate::vm::native::iterator::Kind::Array,
+    )
+    .unwrap_or_else(|_| panic!("iterator allocation"));
+    let Value::Object(cursor_id) = cursor else {
+        panic!("expected cursor");
+    };
+    let held = Rooted::new(&heap, cursor);
+    heap.request_collection().unwrap();
+    assert!(
+        heap.is_live(source_id),
+        "the internal slot is the array's only holder"
+    );
+    assert!(heap.is_live(cursor_id));
+    drop(held);
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 2);
+    assert_stale(&heap, &[source_id, cursor_id]);
 }
 
 /// `return constant[0]`, with an object constant. Loaded code only has

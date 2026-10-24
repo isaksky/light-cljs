@@ -223,6 +223,7 @@ public API cannot reach.
 | engine Error's original internal cause, after replacing or deleting its own cause property (clj-quickjs-230) | `PersistentHandle` (`PlainObject` → cause) | `engine_error_cause_retains_and_reclaims` *(lib)* | `engine_error_cause_retains_and_reclaims` *(lib)* |
 
 | typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
+| built-in iterator source internal slot | `PersistentHandle` (`PlainObject` cursor → source array) | `builtin_iterator_source_retains_and_reclaims` *(lib)* | `builtin_iterator_source_retains_and_reclaims` *(lib)* |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -5317,6 +5318,8 @@ Next uses a traced native continuation for length/index getters and object
 length coercion. It advances the cursor before the indexed getter, reads live
 array lengths, and permanently releases the source on exhaustion. Typed
 arrays use their view's internal length and validate detachment per step.
+Borrowing Array.prototype.values onto a typed array selects the same checks
+when next runs, without validating detachment prematurely in the generic factory.
 Strings preserve UTF-16 code-point boundaries, including lone surrogates.
 No lock or Rust frame survives user code, a wait or a safepoint.
 

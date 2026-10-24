@@ -248,6 +248,61 @@ fn for_of_builtin_iterator_getters_survive_waits() {
     assert_eq!(number(outcome), 42.0);
 }
 
+#[test]
+fn for_of_builtin_cursor_survives_body_wait() {
+    let rt = Runtime::new();
+    // Once next returns, only the cursor's internal slot holds this array.
+    let task = spawn(
+        &rt,
+        "let sum = 0; for (const x of [1, 2]) { sum += x; __rt.need(5, 3); } sum",
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    let (outcome, _) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 3.0);
+}
+
+#[test]
+fn for_of_get_iterator_waits_resume_once() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let iterable = {}, n = 0;
+        Object.defineProperty(iterable, Symbol.iterator, { get() {
+            __rt.effect(1, 1); __rt.need(5, 3);
+            return function() {
+                __rt.effect(1, 2); __rt.need(6, 3);
+                return { get next() {
+                    __rt.effect(1, 3); __rt.need(7, 3);
+                    return function() { n++; return {value: n, done: n > 2}; };
+                }};
+            };
+        }});
+        let sum = 0; for (const x of iterable) sum += x; sum
+    "#,
+    );
+    let mut current = task;
+    let mut log = Log::default();
+    for (index, dependency) in [5, 6, 7].into_iter().enumerate() {
+        let (outcome, next_log) = run_elsewhere(current.clone(), log);
+        log = next_log;
+        assert_eq!(
+            waiting(outcome),
+            key(&rt, (DependencyId::new(dependency), ResultKind::new(3)))
+        );
+        assert_eq!(log.0.len(), index + 1);
+        rt.collect().unwrap();
+        current = publish(&rt, &current, 0.0);
+    }
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(current, log);
+    assert_eq!(number(outcome), 3.0);
+    assert_eq!(log.0, [1.0, 2.0, 3.0]);
+}
+
 /// A `do`-`while` loop (clj-quickjs-80) parks in its test after a
 /// `continue` through a finally block, then in its body: each time a
 /// collection runs while it is parked and it resumes on another thread

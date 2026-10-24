@@ -771,6 +771,25 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
         .ok_or(Fault::Internal("operand stack underflow"))
 }
 
+/// Keep protocol validation temporaries out of the main dispatch frame:
+/// even a worker with a 64 KiB Rust stack must execute ordinary calls.
+#[inline(never)]
+fn require_iterator_object(state: &VmState) -> Result<(), Fault> {
+    if !matches!(top_operands(state, 1)?, [Value::Object(_)]) {
+        return Err(Fault::TypeError("iterator must return an object".into()));
+    }
+    Ok(())
+}
+
+/// OrdinaryObject's internal slots grow independently of the dispatcher.
+/// Keep its construction off the stack used by every bytecode instruction.
+#[inline(never)]
+fn new_null_object(heap: &Heap, task: crate::ids::TaskId) -> Result<Value, Fault> {
+    heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
 /// Run `f` on the binding of `cell` for the running task: fails if `cell` is
 /// not a binding cell, or belongs to another task.
 fn with_cell<R>(
@@ -1464,9 +1483,7 @@ pub(crate) fn step(
             state.push(iterator);
         }
         Instr::RequireObject => {
-            if !matches!(top_operands(state, 1)?, [Value::Object(_)]) {
-                return Err(Fault::TypeError("iterator must return an object".into()));
-            }
+            require_iterator_object(state)?;
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
@@ -1585,11 +1602,8 @@ pub(crate) fn step(
             // can run in between because this run holds a mutator guard. It
             // is owned by the running task (`crate::object`); its prototype
             // is null.
-            let object = OrdinaryObject::new(Some(state.diag.task));
-            let id = heap
-                .alloc(HeapObject::Plain(object))
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-            state.push(Value::Object(id));
+            let object = new_null_object(heap, state.diag.task)?;
+            state.push(object);
         }
         Instr::NewObjectLiteral => {
             // As `NewObject`, but inheriting from `Object.prototype`
