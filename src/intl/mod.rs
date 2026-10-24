@@ -259,5 +259,6 @@ pub(crate) mod locale;
 pub(crate) mod number_format;
 pub mod tag;
 
+pub(crate) mod collator;
 pub(crate) mod plural_rules;
 pub(crate) mod service;

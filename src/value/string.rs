@@ -340,6 +340,47 @@ impl StringFlatten {
     }
 }
 
+/// One bounded traversal step, including rope-node visits. No lazy flattening.
+#[derive(Debug)]
+pub(crate) enum CursorStep {
+    Unit(u16),
+    Continue,
+    End,
+}
+
+#[derive(Debug)]
+pub(crate) struct UnitCursor {
+    // A deep rope must not cause an input-sized stack reallocation in a step.
+    pending: std::collections::LinkedList<(JsString, usize)>,
+}
+impl UnitCursor {
+    pub(crate) fn new(text: JsString) -> Self {
+        Self {
+            pending: std::iter::once((text, 0)).collect(),
+        }
+    }
+    pub(crate) fn step(&mut self) -> CursorStep {
+        let Some((text, offset)) = self.pending.pop_back() else {
+            return CursorStep::End;
+        };
+        match &text.0.storage {
+            Storage::Flat(units) => {
+                let Some(&unit) = units.get(offset) else {
+                    return CursorStep::Continue;
+                };
+                self.pending.push_back((text, offset + 1));
+                CursorStep::Unit(unit)
+            }
+            Storage::Rope(Some((left, right))) => {
+                self.pending.push_back((right.clone(), 0));
+                self.pending.push_back((left.clone(), 0));
+                CursorStep::Continue
+            }
+            Storage::Rope(None) => unreachable!("live rope has children"),
+        }
+    }
+}
+
 /// Incremental flat-string construction. Each part names a source, starting
 /// unit, and output length. A part longer than the source suffix repeats it
 /// (padding). All storage is task-owned Rust data with no collector edges.

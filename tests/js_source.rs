@@ -19779,3 +19779,217 @@ fn array_sort_native_comparators() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Sorting rows follow QuickJS
+/// tests/test_intl.js at 7d1c13c5d8f8; its license notice appears above
+/// intl_number_format_decimal and in src/intl/data/QUICKJS-LICENSE.
+#[test]
+fn intl_collator_root_order() {
+    for source in [
+        "new Intl.Collator('en').compare('a','b') < 0",
+        "new Intl.Collator('en',{sensitivity:'base'}).compare('a','A') === 0",
+        "new Intl.Collator('en',{sensitivity:'accent'}).compare('a','á') !== 0",
+        "new Intl.Collator('en',{numeric:true}).compare('2','10') < 0",
+        "let c=new Intl.Collator('en'); let f=c.compare; f === c.compare && f('a','b') < 0 && f.length === 2 && f.name === ''",
+        "let c=new Intl.Collator('en'); c.compare('a','A') < 0 && c.compare('A','á') < 0 && c.compare('á','b') < 0 && c.compare('é','é') === 0",
+        "new Intl.Collator('en').resolvedOptions().collation === 'default'",
+        "let caught=false; try {new Intl.Collator('en',{sensitivity:'bogus'});} catch(e){caught=e instanceof RangeError;} caught",
+        // Required upstream rows: intentionally fail while the separately
+        // assigned Array.prototype.sort prerequisite (-208) is absent.
+        "['z','a','Z','A'].sort(new Intl.Collator('en').compare).join(',') === 'a,A,z,Z'",
+        "['z','a','Z','A'].sort(new Intl.Collator('de').compare).join(',') === 'a,A,z,Z'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_collator_options_and_brands() {
+    for source in [
+        "let c=Intl.Collator('en'); c instanceof Intl.Collator && c[Symbol.toStringTag] === 'Intl.Collator' && Intl.Collator.length === 0 && Intl.Collator.supportedLocalesOf.length === 1",
+        "let c=new Intl.Collator('en',{sensitivity:'case'}); c.compare('á','a') === 0 && c.compare('a','A') < 0",
+        "new Intl.Collator('en',{caseFirst:'upper'}).compare('a','A') > 0 && new Intl.Collator('en',{caseFirst:'lower'}).compare('a','A') < 0",
+        "new Intl.Collator('en',{ignorePunctuation:true}).compare('a- b!','ab') === 0",
+        "new Intl.Collator('en',{numeric:true}).compare('x0002','x2') === 0 && new Intl.Collator('en').compare('item2','item10') > 0",
+        "let c=new Intl.Collator('en',{sensitivity:'base'}); c.compare('Straße','STRASSE') === 0 && c.compare('Σ','σ') === 0",
+        r"new Intl.Collator('en').compare('\ud800','\ud801') < 0 && new Intl.Collator('en').compare('\ud800','�') !== 0",
+        r"new Intl.Collator('en').compare('a\u0315\u0300','à\u0315') === 0 && new Intl.Collator('en').compare('각','\u1100\u1161\u11a8') === 0",
+        "Intl.Collator.supportedLocalesOf(['EN-us-u-kn','de-DE','xx']).join() === 'en-US-u-kn,de-DE'",
+        "let c=new Intl.Collator('en-US-u-kf-upper-kn'); c.resolvedOptions().numeric && c.resolvedOptions().caseFirst === 'upper' && c.compare('2','10') < 0 && c.compare('a','A') > 0",
+        "new Intl.Collator('en-u-kf-upper-kn',{numeric:false,caseFirst:'lower'}).resolvedOptions().locale === 'en'",
+        "new Intl.Collator('en-u-co-phonebk').resolvedOptions().collation === 'default' && new Intl.Collator('de',{usage:'search',collation:'phonebk'}).resolvedOptions().collation === 'default'",
+        "let c=new Intl.Collator('en'); Object.keys(c.resolvedOptions()).join() === 'locale,usage,sensitivity,ignorePunctuation,collation,numeric,caseFirst' && !c.resolvedOptions().numeric && c.resolvedOptions().caseFirst === 'false'",
+        "let c=new Intl.Collator('en'); let d=Object.getOwnPropertyDescriptor(Intl.Collator.prototype,'compare'); typeof d.get === 'function' && !d.enumerable && d.configurable && d.set === undefined && c.resolvedOptions.length === 0",
+        "let c=new Intl.Collator('en'); let f=c.compare; let caught=false; try {c.compare=9;} catch(e){caught=e instanceof TypeError;} caught && f === c.compare && f.call(null,'a','b') < 0",
+        "let c=new Intl.Collator('en'); c.compare(undefined,'undefined') === 0 && c.compare(2n,'2') === 0 && c.compare(null,'null') === 0",
+        "let log=''; let caught=false; try {new Intl.Collator('en').compare({toString(){log+='a';throw 7;}},{toString(){log+='b';return 'b';}});} catch(e){caught=e === 7;} caught && log === 'a'",
+        "let log=''; let caught=false; try {new Intl.Collator('en',{sensitivity:{toString(){log+='s';return 'bad';}},get numeric(){log+='n';return true;}});} catch(e){caught=e instanceof RangeError;} caught && log === 's'",
+        "let calls=0; new Intl.Collator('en',{numeric:{valueOf(){calls++;return 0;}},ignorePunctuation:{toString(){calls++;return '';}}}).resolvedOptions().numeric && calls === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for call in [
+        "Intl.Collator.prototype.resolvedOptions.call({})",
+        "Object.getOwnPropertyDescriptor(Intl.Collator.prototype,'compare').get.call({})",
+        "new Intl.Collator('en').compare(Symbol(),'a')",
+        "new Intl.Collator('en',null)",
+        "new Intl.Collator('en',5)",
+        "new Intl.Collator.supportedLocalesOf('en')",
+    ] {
+        let source = format!(
+            "let caught=false; try {{{call};}} catch(e) {{caught=e instanceof TypeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for options in [
+        "{usage:'bad'}",
+        "{caseFirst:'bad'}",
+        "{localeMatcher:'bad'}",
+        "{collation:'a!'}",
+    ] {
+        let source = format!(
+            "let caught=false; try {{new Intl.Collator('en',{options});}} catch(e) {{caught=e instanceof RangeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Every JavaScript callback waits;
+/// the native state and bound callable survive collection and thread migration.
+#[test]
+fn intl_collator_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let c=new Intl.Collator({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'EN';}},
+            {get sensitivity(){log+='s';__rt.need(3,1);return {toString(){log+='v';__rt.need(4,1);return 'variant';}};}});
+        let f=c.compare; let same=f === c.compare; c=null;
+        let result=f({toString(){log+='a';__rt.need(5,1);return 'a';}}, {toString(){log+='b';__rt.need(6,1);return 'b';}});
+        same && result < 0 && log === 'ltsvab'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..2500 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 6);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("Collator continuation did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Equal long rope inputs force
+/// complete traversal, normalization, key comparison and long numeric scans.
+#[test]
+fn intl_collator_long_ropes_are_budgeted() {
+    for numeric in [false, true] {
+        let rt = Runtime::new();
+        let mut rope = clj_quickjs::JsString::from("x");
+        for _ in 0..3000 {
+            rope = rope.concat(&clj_quickjs::JsString::from("0")).unwrap();
+        }
+        rope = rope
+            .concat(&clj_quickjs::JsString::from("2a\u{315}\u{300}"))
+            .unwrap();
+        let a = rt.root(Primitive::String(rope.clone()));
+        let b = rt.root(Primitive::String(rope));
+        let code = compile_function(&format!("function f(a,b){{return new Intl.Collator('en',{{numeric:{numeric}}}).compare(a,b) === 0;}}")).unwrap();
+        let mut task = rt.spawn(&code, &[&a, &b]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..4000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    assert!(yields > 200, "{yields} yields with numeric={numeric}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_collator_ownership_and_host_default() {
+    let rt = Runtime::new();
+    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    host.set_default_locale("fr");
+    let task = rt
+        .spawn(
+            &exe("new Intl.Collator().resolvedOptions().locale === 'fr'"),
+            &[],
+        )
+        .unwrap();
+    assert!(
+        matches!(task.run_with(Budget::UNLIMITED, &mut host).unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    for source in [
+        "new Intl.Collator('en')",
+        "Object.freeze(new Intl.Collator('en'))",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("Collator construction");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "value.compare",
+            "Intl.Collator.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            assert!(
+                matches!(rt.spawn(&code, &[&value]).unwrap().run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. }))
+            );
+        }
+    }
+}

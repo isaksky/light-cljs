@@ -78,3 +78,25 @@ if [[ $# == 3 ]]; then
     test ! -e "$output_dir/ucd-drift-result/export.c"
     echo 'PASS: Unicode repeatability, full-domain runtime comparison, corruption and version guards'
 fi
+
+# Root collation consumes the same verified Unicode snapshot through a pinned
+# offline decoder. Compare every expanded NFD/fold/CCC value, repeat generation,
+# and prove that corrupting the emitted representation is detected.
+perl "$script_dir/repack-collation.pl" "$output_dir/first" "$source_dir" "$output_dir/collation-first"
+perl "$script_dir/repack-collation.pl" "$output_dir/second" "$source_dir" "$output_dir/collation-second"
+for file in collation.rs provenance.txt reference.txt; do
+    cmp "$output_dir/collation-first/$file" "$output_dir/collation-second/$file"
+done
+rustc --edition=2024 -D warnings "$output_dir/collation-first/verify.rs" -o "$output_dir/collation-first/verify"
+"$output_dir/collation-first/verify" "$output_dir/collation-first/reference.txt"
+mkdir "$output_dir/collation-corrupt"
+cp "$output_dir/collation-first/verify.rs" "$output_dir/collation-corrupt/"
+sed '0,/0x41/s/0x41/0x40/' "$output_dir/collation-first/collation.rs" > "$output_dir/collation-corrupt/collation.rs"
+if cmp -s "$output_dir/collation-first/collation.rs" "$output_dir/collation-corrupt/collation.rs"; then
+    echo 'collation mutation did not apply' >&2; exit 1
+fi
+rustc --edition=2024 -D warnings "$output_dir/collation-corrupt/verify.rs" -o "$output_dir/collation-corrupt/verify"
+if "$output_dir/collation-corrupt/verify" "$output_dir/collation-first/reference.txt" > "$output_dir/collation-corruption.log" 2>&1; then
+    echo 'incorrect collation value escaped comparison' >&2; exit 1
+fi
+echo 'PASS: collation full-domain expansion, repeatability and corruption detection'

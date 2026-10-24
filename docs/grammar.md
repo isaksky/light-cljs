@@ -921,7 +921,7 @@ non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
 and `new Intl()` throw catchable TypeErrors. The namespace follows shared
 intrinsic mutation restrictions. Decimal/percent/currency `Intl.NumberFormat` and
-`Intl.PluralRules` are installed;
+`Intl.PluralRules` and root `Intl.Collator` are installed;
 other formatting service constructors remain deferred.
 
 `Intl.getCanonicalLocales(locales)` canonicalizes a string, Locale, or array-like
@@ -4365,3 +4365,36 @@ let first = g.next();
 let last = g.next();
 first.value === 2 && !first.done && last.value === 1 && last.done
 ```
+
+### Intl.Collator root order (clj-quickjs-218)
+
+Execution: `Intl.Collator(locales, options)` and `new Intl.Collator(...)` create
+ordinary task-owned instances with immutable internal options. The `compare`
+accessor returns the same bound two-argument function on every read; detached
+calls convert their arguments to strings in left-to-right order, allowing waits
+inside object hooks. `resolvedOptions()` returns locale, usage, sensitivity,
+ignorePunctuation, collation (`default`), numeric and caseFirst, in that order.
+`Intl.Collator.supportedLocalesOf` shares the canonical locale-list and matcher
+helpers. Instances inherit `Symbol.toStringTag = 'Intl.Collator'`.
+
+Options: `localeMatcher` lookup/best fit, `usage` sort/search, `sensitivity`
+base/accent/case/variant, `ignorePunctuation` boolean, `numeric` boolean and
+`caseFirst` upper/lower/false. The supported `kn` and `kf` Unicode keys provide
+defaults; conflicting explicit options remove their keys from the resolved
+locale. Malformed collation options and invalid enumerated values throw
+RangeError; well-formed unsupported collations resolve to default. Option
+objects use the shared undefined-or-object policy. Wrong receiver brands and
+symbol compare arguments throw TypeError; foreign task objects are rejected.
+
+Explicit gaps: all test locales currently use root rules; usage is recorded
+without locale search tailoring. Primary weights are folded NFD scalar order,
+secondary weights preserve the snapshot's combining-mark order, and case ties
+use ASCII lowercase first (or explicit upper). Canonical combining-class
+ordering applies to the full snapshot's NFD data, including Hangul and non-BMP
+characters; lone surrogates remain distinct. Punctuation filtering follows the
+snapshot's ASCII alphanumeric / non-ASCII ID_Start rule. Numeric runs are ASCII
+digits, compared by significant length and digits without integer conversion;
+leading zeroes do not break ties. These root rules do not supply full UCA/DUCET
+weights or locale tailorings. Unlike the snapshot's unused numeric flag and
+uncached getter, numeric comparison and function identity follow this pellet's
+explicit acceptance requirements.

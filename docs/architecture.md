@@ -6297,3 +6297,46 @@ original slot layout and default lowering. No new opcode, heap kind, native
 iterator protocol or Rust callback stack is introduced. Iterator methods,
 getters, default expressions and target setters remain resumable VM calls,
 including dependency waits, budget yields, collection and worker migration.
+
+### Intl.Collator root order (clj-quickjs-218)
+
+`intl/collator.rs` owns immutable root options and an incremental comparison
+state, separate from the resumable locale/option/coercion stages in
+`vm/native/collator.rs`. Service resolution and option getters use the shared
+Intl helpers. The ordinary object stores an immutable boxed record and a cached
+bound function, whose cycle back to the receiver is traced by the collector.
+The object remains task-owned even when frozen; all public entry points check
+ownership and internal-slot brand. Compare copies the edge-free options into
+its continuation, then requests two resumable ToString operations in order.
+
+`scripts/quickjs-data/repack-collation.pl` extends the verified snapshot pipeline
+by offline-expanding its compressed NFD, full folding and combining-class
+records through pinned `libunicode.c` / `cutils.c`. The generated immutable
+`intl/data/collation.rs` is self-contained, with no runtime C, generator,
+network or dependencies. `verify.sh` compares every emitted value to the pinned
+reference decoder across the Unicode domain, repeats the expansion byte for
+byte and detects a deliberately corrupted value. Consumer tests separately
+check cross-scalar canonical ordering, decomposed Hangul and supplementary
+characters. Unicode policy remains the existing QuickJS Unicode 17 snapshot;
+no independent CLDR/DUCET release is inferred.
+
+The documented root rule set uses folded primary NFD scalars with the
+snapshot's five combining-mark blocks removed, then folded accent keys, then
+case-preserving keys (ASCII lowercase first, or explicit upper). Sensitivity
+selects these levels; variant retains the case-preserving NFD fallback.
+All advertised locales currently share this root. Locale-specific mappings
+belong in a separate tailoring stage in clj-quickjs-219. Complete UCA weights
+remain deferred. Numeric digit-run ordering and stable getter identity follow
+the acceptance contract, correcting the snapshot's unused numeric flag and
+fresh-function getter. Punctuation filtering follows the snapshot, including
+its removal of combining marks when ignorePunctuation is true.
+
+Each comparison step charges at most 128 traversal/key/ordering operations.
+`value::string::UnitCursor` explicitly visits rope nodes and UTF-16 units,
+avoiding an unbudgeted lazy flatten; surrogate decoding preserves lone halves.
+Single-code-point decompositions are statically bounded; cross-code-point
+canonical reordering saves its insertion position after each swap. Keys and
+all comparison cursors live in native state across yields. Digit runs scan
+one scalar per operation, skip leading zeros, compare significant lengths and
+then digits, with no float/integer overflow. No Rust stack or heap borrow
+survives an option getter, coercion, wait, collection or worker migration.

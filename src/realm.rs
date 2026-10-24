@@ -397,6 +397,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) intl_plural_rules_prototype: ObjectId,
     pub(crate) generator_prototype: ObjectId,
+    pub(crate) intl_collator_prototype: ObjectId,
+    pub(crate) intl_collator_bound: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1079,6 +1081,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;
     b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
+    let (intl_collator_prototype, intl_collator_bound) =
+        intl_collator_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1153,6 +1157,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_number_format_bound,
         intl_plural_rules_prototype,
         generator_prototype,
+        intl_collator_prototype,
+        intl_collator_bound,
     })
 }
 
@@ -1848,6 +1854,67 @@ fn intl_plural_rules_intrinsics(
     Some(prototype)
 }
 
+fn intl_collator_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlCollator,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "Collator", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlCollatorSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    let resolved = b.function(Builtin::IntlCollatorResolvedOptions, &[])?;
+    b.add(
+        prototype,
+        "resolvedOptions",
+        resolved,
+        PropertyFlags::METHOD,
+    )?;
+    let getter = b.function(Builtin::IntlCollatorGetCompare, &[])?;
+    let key = heap.keys().intern(&JsString::from("compare"))?;
+    let descriptor = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    if heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+        _ => unreachable!(),
+    })? != DefineOutcome::Done
+    {
+        return None;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.Collator")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    let bound = b.function(Builtin::IntlCollatorBound, &[])?;
+    Some((prototype, bound))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1965,7 +2032,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 253); // Includes generators (-243) and sort (-208).
+        assert_eq!(first.all.len(), 259); // Includes generators, sort and root Collator.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

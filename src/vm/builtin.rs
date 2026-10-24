@@ -367,6 +367,11 @@ pub(crate) enum Builtin {
     GeneratorNext,
 
     ArrayPrototypeSort,
+    IntlCollator,
+    IntlCollatorGetCompare,
+    IntlCollatorBound,
+    IntlCollatorResolvedOptions,
+    IntlCollatorSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -427,6 +432,11 @@ impl Builtin {
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
             Builtin::IntlPluralRules => "PluralRules",
+            Builtin::IntlCollator => "Collator",
+            Builtin::IntlCollatorGetCompare => "get compare",
+            Builtin::IntlCollatorBound => "",
+            Builtin::IntlCollatorResolvedOptions => "resolvedOptions",
+            Builtin::IntlCollatorSupportedLocales => "supportedLocalesOf",
             Builtin::IntlPluralRulesSelect => "select",
             Builtin::IntlPluralRulesResolvedOptions => "resolvedOptions",
             Builtin::IntlPluralRulesSupportedLocales => "supportedLocalesOf",
@@ -606,6 +616,11 @@ impl Builtin {
             | Builtin::IntlPluralRulesSelect
             | Builtin::IntlPluralRulesSupportedLocales => 1,
             Builtin::IntlPluralRulesResolvedOptions => 0,
+            Builtin::IntlCollator
+            | Builtin::IntlCollatorGetCompare
+            | Builtin::IntlCollatorResolvedOptions => 0,
+            Builtin::IntlCollatorBound => 2,
+            Builtin::IntlCollatorSupportedLocales => 1,
             Builtin::IntlNumberFormat
             | Builtin::IntlNumberFormatBound
             | Builtin::IntlNumberFormatSupportedLocales => 1,
@@ -776,6 +791,15 @@ pub(crate) fn call(
             Fault::Internal("typed array method requires a resumable frame"),
         ),
         Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
+        Builtin::IntlCollator
+        | Builtin::IntlCollatorBound
+        | Builtin::IntlCollatorSupportedLocales => {
+            Err(Fault::Internal("Collator requires native frame"))
+        }
+        Builtin::IntlCollatorGetCompare => crate::intl::collator::get_compare(heap, task, this),
+        Builtin::IntlCollatorResolvedOptions => {
+            crate::intl::collator::record(heap, task, this)?.resolved(heap, task)
+        }
         Builtin::IntlPluralRulesSelect | Builtin::IntlPluralRulesSupportedLocales => {
             Err(Fault::Internal("PluralRules requires native frame"))
         }

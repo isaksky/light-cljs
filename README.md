@@ -2817,7 +2817,8 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Decimal/percent/currency `Intl.NumberFormat` and `Intl.PluralRules`, including their
+Decimal/percent/currency `Intl.NumberFormat`, `Intl.PluralRules` and root
+`Intl.Collator`, including their
 `supportedLocalesOf` methods, use the test locales above
 (clj-quickjs-213, clj-quickjs-212).
 Deferred: other Intl formatting service constructors, general resumable
@@ -3381,3 +3382,19 @@ live iterators on early completion or consumer errors. Iterator callbacks,
 defaults and setters can wait, yield and migrate. Object patterns, rest
 parameters and destructuring iteration heads remain deferred. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source array_destructuring -- --test-threads=3`.
+
+### Intl.Collator root order (clj-quickjs-218)
+
+Supported: `Intl.Collator` with or without `new`, cached bound `compare`,
+`resolvedOptions`, `supportedLocalesOf`, and the Intl.Collator tag.
+All advertised test locales use the root rule set: canonical NFD equivalence,
+folded primary order, accents, then lowercase-first ASCII case; `sensitivity`,
+`usage`, `ignorePunctuation`, `numeric` digit runs and `caseFirst` are supported.
+Option getters, object ToString and long rope comparisons yield, wait, collect
+and migrate through saved continuations. The host supplies the default locale.
+Deferred: locale tailorings (clj-quickjs-219), complete UCA/DUCET weights and
+non-ASCII case-first tailoring. The pinned snapshot rule set is documented in
+[architecture](docs/architecture.md#intl-collator-root-order-clj-quickjs-218).
+The required array sort rows currently fail explicitly: Array.prototype.sort
+is the separate unlanded prerequisite clj-quickjs-208. Bound compare already
+has the comparator signature and can be passed directly when sort lands.

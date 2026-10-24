@@ -813,3 +813,20 @@ implementation is fresh Rust over existing attributed Unicode data.
 The reserved punctuation grammar and static MayContainStrings rules follow
 [ECMA-262 RegExp patterns](https://tc39.es/ecma262/multipage/text-processing.html#sec-patterns)
 and [MayContainStrings](https://tc39.es/ecma262/multipage/text-processing.html#sec-static-semantics-maycontainstrings).
+### Intl.Collator root rules and normalization (clj-quickjs-218)
+
+Semantic references: `research/quickjs/intl/collator.c` (transform_string,
+compare_case_order, is_combining_mark, is_significant and constructor/options)
+and `research/quickjs/tests/test_intl.js` (test_collator sort rows), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Synthetic sorting tests adapt those
+rows under the QuickJS MIT notice already included in tests/js_source.rs.
+The engine implementation uses its own saved native continuations and root
+primary/secondary/tertiary passes; no QuickJS execution engine is embedded.
+
+The existing exporter plus `scripts/quickjs-data/repack-collation.pl` expand
+`research/quickjs/libunicode-table.h` through the pinned offline `libunicode.c`
+and `cutils.c` decoder. Generated NFD, full folding and combining-class tables
+retain snapshot provenance in `src/intl/data/collation_provenance.txt`.
+QuickJS copyright and MIT permission: `src/intl/data/QUICKJS-LICENSE`;
+Unicode data notice: `docs/UNICODE-LICENSE`. These tables are a normalization
+and folding snapshot, not a complete DUCET database or a verified CLDR release.

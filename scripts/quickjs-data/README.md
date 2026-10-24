@@ -268,3 +268,31 @@ preserving u-mode complement-before-folding semantics. Verification covers
 all aliases, positive/complement membership and both iu images across the
 entire domain, and rejects an intentionally corrupted property bit. Run the
 language tests with `cargo test --test js_source regexp_property_escapes -- --exact`.
+
+## Collator root normalization and folding (clj-quickjs-218)
+
+`repack-collation.pl` consumes a verified export containing compressed combining
+classes, canonical decompositions and case tables. It pins the same decoder
+files as `repack-unicode.pl`, plus `cutils.c` needed for normalization, and
+expands NFD, full case folding and canonical combining classes by compiling the
+snapshot decoder solely as an offline tool. There is no DUCET input: the root
+rule set and its limits live in docs/architecture.md. Normal builds read only
+the checked-in Rust arrays.
+
+`verify.sh` now always repeats this expansion, compares every emitted value
+against its C reference stream over U+0000..U+10FFFF, and verifies that a
+corrupted generated scalar is detected. Regenerate with new output directories:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/collation-import-new
+cp target/collation-import-new/collation-first/collation.rs src/intl/data/
+cp target/collation-import-new/collation-first/provenance.txt \
+  src/intl/data/collation_provenance.txt
+```
+
+Run `cargo test --lib intl::collator:: -- --test-threads=3` and
+`cargo test --test js_source intl_collator -- --test-threads=3` for normalization,
+ordering, option/coercion, bound-function, ownership, GC/migration and long-rope
+budget semantics. Input hashes and Unicode/QuickJS notices follow the existing
+pipeline. Future locale tailorings can reuse these immutable root readers.

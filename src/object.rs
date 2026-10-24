@@ -296,6 +296,8 @@ pub(crate) struct OrdinaryObject {
     iterator: Option<Box<crate::vm::native::iterator::Data>>,
 
     plural_rules: Option<Box<crate::intl::plural_rules::PluralRules>>,
+    collator: Option<Box<crate::intl::collator::Collator>>,
+    collator_bound: Option<Value>,
 }
 
 impl OrdinaryObject {
@@ -331,6 +333,8 @@ impl OrdinaryObject {
             iterator: None,
 
             plural_rules: None,
+            collator: None,
+            collator_bound: None,
         }
     }
 
@@ -403,6 +407,19 @@ impl OrdinaryObject {
     ) -> Self {
         self.plural_rules = Some(Box::new(data));
         self
+    }
+    pub(crate) fn with_collator(mut self, data: crate::intl::collator::Collator) -> Self {
+        self.collator = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn collator(&self) -> Option<&crate::intl::collator::Collator> {
+        self.collator.as_deref()
+    }
+    pub(crate) fn collator_bound(&self) -> Option<&Value> {
+        self.collator_bound.as_ref()
+    }
+    pub(crate) fn set_collator_bound(&mut self, value: Value) {
+        self.collator_bound = Some(value);
     }
     pub(crate) fn plural_rules(&self) -> Option<&crate::intl::plural_rules::PluralRules> {
         self.plural_rules.as_deref()
@@ -829,6 +846,11 @@ impl Trace for OrdinaryObject {
         // NumberFormat options own strings/static data; the cached bound
         // callable is a heap edge, including its cycle back to this object.
         if let Some(bound) = &self.number_format_bound {
+            bound.trace(visit);
+        }
+        // Collator's immutable options contain no heap edges. The bound
+        // compare cache forms a traced cycle through its bound receiver.
+        if let Some(bound) = &self.collator_bound {
             bound.trace(visit);
         }
         if let Some(error) = &self.engine_error {
