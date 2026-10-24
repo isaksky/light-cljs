@@ -1112,6 +1112,7 @@ pub(crate) fn super_receiver_descriptor(
     let Value::Object(id) = receiver else {
         return rejected();
     };
+    check_super_receiver_mutability(heap, *id, key)?;
     let own = get_own_property(heap, task, *id, key)?;
     if let Some(own) = &own
         && (own.accessor.is_some() || !own.flags.writable)
@@ -1147,6 +1148,18 @@ pub(crate) fn put_super_receiver(
     } else {
         receiver
     };
+    check_super_receiver_mutability(heap, receiver, key)?;
+    match define_own_property(heap, task, receiver, key, desc) {
+        Err(Fault::TypeError(_)) if !strict => Ok(()),
+        result => result,
+    }
+}
+
+fn check_super_receiver_mutability(
+    heap: &Heap,
+    receiver: ObjectId,
+    key: &Key,
+) -> Result<(), Fault> {
     let immutable = heap
         .read(receiver, |object| {
             matches!(object, HeapObject::Plain(o) if o.is_intrinsic())
@@ -1156,10 +1169,7 @@ pub(crate) fn put_super_receiver(
     if immutable {
         return Err(immutable_define(key));
     }
-    match define_own_property(heap, task, receiver, key, desc) {
-        Err(Fault::TypeError(_)) if !strict => Ok(()),
-        result => result,
-    }
+    Ok(())
 }
 
 /// `base[key] = value` on a primitive `base` (module docs, "Primitive

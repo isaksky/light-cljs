@@ -145,6 +145,8 @@ fn super_property_access() {
         "let p = {m() { return this; }}; let o = {__proto__: p, f() { return super.m?.(); }}; o.f() === o",
         "let o = {__proto__: null, m() { return super.x; }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof TypeError; } ok",
         "let n = 0; class C {} class D extends C { constructor() { let ok = false; try { super[n++]; } catch(e) { ok = e instanceof ReferenceError; } super(); this.ok = ok; }} new D().ok && n === 0",
+        "class C { get x() { return this; } set y(v) { this.value = v; } m() { return this.value; }} class D extends C { constructor() { super(); this.same = super.x === this; super.y = 7; this.result = super.m(); }} let d = new D(); d.same && d.value === 7 && d.result === 7 && C.prototype.value === undefined",
+        "class C { constructor() { this.same = super.x === this; super.y = 7; this.result = super.m(); }} let p = {get x() { return this; }, set y(v) { this.value = v; }, m() { return this.value; }}; Object.setPrototypeOf(C.prototype, p); let c = new C(); c.same && c.value === 7 && c.result === 7 && p.value === undefined",
         "class C { static get x() { return this; } static set z(v) { this.y = v; }} class D extends C { static get x() { return super.x; } static set z(v) { super.z = v; }} D.z = 5; D.x === D && D.y === 5 && C.y === undefined",
         "let key = Symbol('x'); let p = {[key]: 7}; let o = {__proto__: p, m() { super[key] = super[key] + 1; }}; o.m(); o[key] === 8 && p[key] === 7",
         "let p = {x: 7}; let o = {__proto__: p, m(x = super.x) { return x; }}; o.m() === 7",
@@ -193,6 +195,14 @@ fn super_property_access() {
 
 #[test]
 fn super_property_access_typed_array_receivers() {
+    for source in [
+        "let a = new Uint8Array(1); let o = {__proto__: a, m(v) { return super[2] = v; }}; let ok = false; try { o.m.call(a, Symbol()); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let calls = 0; let a = new Uint8Array(1); let o = {__proto__: a, m(v) { return super[2] = v; }}; let v = {valueOf() { calls++; return 7; }}; o.m.call(a, v) === v && calls === 1 && a[0] === 0",
+        "let calls = 0; let a = new Uint8Array(1); let o = {__proto__: a, m(v) { return super[0] = v; }}; a.buffer.transfer(); let v = {valueOf() { calls++; return 7; }}; o.m.call(a, v) === v && calls === 1 && a[0] === undefined",
+        "let a = new Uint8Array(1); let o = {__proto__: a, m(v) { return super[0] = v; }}; a.buffer.transfer(); let ok = false; try { o.m.call(a, Symbol()); } catch(e) { ok = e instanceof TypeError; } ok",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
     for index in ["1", "-1", "NaN", "'-0'"] {
         for value in [
             "7",
@@ -219,6 +229,12 @@ fn super_property_access_typed_array_receivers() {
 
 #[test]
 fn super_property_access_sloppy_immutable_receivers() {
+    for name in ["name", "prototype"] {
+        let source = format!(
+            "let o = {{m() {{ super.{name} = 1; }}}}; let ok = false; try {{ o.m.call(Object); }} catch(e) {{ ok = e instanceof TypeError; }} ok"
+        );
+        assert_eq!(sloppy_eval(&source), ValueView::Bool(true), "{source}");
+    }
     assert_eq!(
         sloppy_eval(
             "let o = {m() { super.x = 1; }}; let ok = false; try { o.m.call(Object.prototype); } catch(e) { ok = e instanceof TypeError; } ok"

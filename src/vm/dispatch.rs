@@ -1061,6 +1061,22 @@ fn property_step(
             let key = property::to_property_key(&raw_key)?;
             let receiver = state.pop()?;
             let task = state.diag.task;
+            // IntegerIndexed [[Set]] coerces even an invalid index when
+            // the lookup object itself is the receiver. A separate receiver
+            // instead follows OrdinarySet's descriptor validation below.
+            if base == receiver
+                && let Value::Object(id) = base
+                && crate::object::typed_array::numeric_key(&key).is_some()
+                && crate::object::typed_array::view(heap, task, id)?.is_some()
+            {
+                if native::typed_array_write(heap, state, &receiver, &key, &value)? {
+                    return Ok(Flow::Next);
+                }
+                let setter =
+                    property::prepare_put(heap, task, &receiver, &key, value.clone(), strict)?;
+                native::write_result(state, setter, receiver, value)?;
+                return Ok(Flow::Next);
+            }
             match property::super_write(heap, task, &base, &key, strict)? {
                 property::SuperWrite::Setter(setter) => {
                     native::write_result(state, Some(setter), receiver, value)?;

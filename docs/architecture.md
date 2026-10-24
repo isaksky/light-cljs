@@ -7995,7 +7995,10 @@ strictness inside sloppy surrounding code. `ToSuperKey` reuses the string-hint
 resumable conversion continuation without checking base coercibility. Assignment
 converts through PutSuperElem after the right-hand side; typed-array receiver
 descriptors validate before value coercion. Sharing faults are checked outside
-sloppy ordinary-rejection suppression. `Dup3`
+sloppy ordinary-rejection suppression, including before rejecting a read-only
+own descriptor on a built-in receiver. A numeric super write whose lookup base
+is the typed-array receiver itself uses IntegerIndexed Set, preserving value
+coercion even for invalid indices or detached buffers. `Dup3`
 retains the triple for compound assignments and updates. Destructuring targets
 use the same reference representation. Calls and tagged templates keep a second
 receiver below the triple and use ordinary method-call instructions. Deletion
