@@ -55,7 +55,7 @@ pub(super) struct Intl {
     base_applied: bool,
 }
 impl Trace for Intl {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.source.trace(visit);
         self.options.trace(visit);
         self.result.trace(visit);

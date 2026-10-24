@@ -30,8 +30,8 @@ pub(crate) struct Resolving {
     resolved: bool,
 }
 impl Trace for Resolving {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        visit(self.promise);
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        visit(self.promise.into());
     }
 }
 
@@ -61,8 +61,8 @@ impl Registration {
     }
 }
 impl Trace for Promise {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        visit(self.prototype);
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        visit(self.prototype.into());
         if let Some(result) = &self.result {
             result.value.trace(visit);
         }
@@ -84,13 +84,13 @@ pub(crate) struct Reaction {
     forwarding: Option<ObjectId>,
 }
 impl Trace for Reaction {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        visit(self.source);
-        visit(self.derived);
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        visit(self.source.into());
+        visit(self.derived.into());
         self.fulfilled.trace(visit);
         self.rejected.trace(visit);
         if let Some(guard) = self.forwarding {
-            visit(guard);
+            visit((guard).into());
         }
     }
 }
@@ -274,16 +274,16 @@ pub(crate) enum PromiseState {
     },
 }
 impl Trace for PromiseState {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
             Self::RejectTypeError {
                 promise,
                 forwarding,
                 ..
             } => {
-                visit(*promise);
+                visit((*promise).into());
                 if let Some(guard) = forwarding {
-                    visit(*guard);
+                    visit((*guard).into());
                 }
             }
             Self::Return(value) => value.trace(visit),
@@ -293,7 +293,7 @@ impl Trace for PromiseState {
                 value,
                 ..
             } => {
-                visit(*promise);
+                visit((*promise).into());
                 resolve.trace(visit);
                 value.trace(visit);
             }
@@ -305,8 +305,8 @@ impl Trace for PromiseState {
                 reject,
                 ..
             } => {
-                visit(*promise);
-                visit(*guard);
+                visit((*promise).into());
+                visit((*guard).into());
                 executor.trace(visit);
                 resolve.trace(visit);
                 reject.trace(visit);
@@ -320,8 +320,8 @@ impl Trace for PromiseState {
                 reject,
                 ..
             } => {
-                visit(*promise);
-                visit(*guard);
+                visit((*promise).into());
+                visit((*guard).into());
                 thenable.trace(visit);
                 then.trace(visit);
                 resolve.trace(visit);
@@ -333,14 +333,14 @@ impl Trace for PromiseState {
                 value,
                 ..
             } => {
-                visit(*promise);
+                visit((*promise).into());
                 if let Some(guard) = guard {
-                    visit(*guard);
+                    visit((*guard).into());
                 }
                 value.trace(visit);
             }
             Self::Resolve { promise, value, .. } => {
-                visit(*promise);
+                visit((*promise).into());
                 value.trace(visit);
             }
             Self::Reaction { reaction, .. } => reaction.trace(visit),

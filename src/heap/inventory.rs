@@ -98,11 +98,12 @@ enum Holder {
     SuspendedGenerator,
     WeakNotification,
     EphemeronValue,
+    WeakMapEntries,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 38] = [
+const HOLDERS: [Holder; 39] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -141,6 +142,7 @@ const HOLDERS: [Holder; 38] = [
     Holder::SuspendedGenerator,
     Holder::WeakNotification,
     Holder::EphemeronValue,
+    Holder::WeakMapEntries,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -157,7 +159,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 19] = [
+const KINDS: [ObjectKind; 20] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -177,6 +179,7 @@ const KINDS: [ObjectKind; 19] = [
     ObjectKind::PromiseReaction,
     ObjectKind::PromiseResolving,
     ObjectKind::Generator,
+    ObjectKind::WeakMap,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -203,6 +206,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             JsMapEntries,
             TypedArrayEdges,
             EphemeronValue,
+            WeakMapEntries,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -260,6 +264,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Array => &[ArrayElement],
         ObjectKind::BoundFunction => &[BoundFunction],
         ObjectKind::JsMap => &[JsMapEntries],
+        ObjectKind::WeakMap => &[WeakMapEntries],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -295,6 +300,10 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::WeakNotification => Coverage {
             retains: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
             reclaims: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
+        },
+        Holder::WeakMapEntries => Coverage {
+            retains: (Gc, "weak_map_value_kept_while_key_reachable"),
+            reclaims: (Gc, "weak_map_drops_entries_of_unreachable_keys"),
         },
         Holder::EphemeronValue => Coverage {
             retains: (Collector, "ephemeron_value_lives_only_with_key"),
@@ -591,7 +600,7 @@ fn executable_constant_reclaims() {
 struct Edges(Vec<Value>);
 
 impl Trace for Edges {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.0.trace(visit);
     }
 }
@@ -769,10 +778,14 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     let mut ids = Vec::new();
     let prototype = {
         let intrinsics = crate::realm::intrinsics(&heap).unwrap();
-        intrinsics.trace(&mut |id| ids.push(id));
+        intrinsics.trace(&mut |edge| {
+            if let super::gc::TraceEdge::Object(id) = edge {
+                ids.push(id);
+            }
+        });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 260); // Includes root Collator and Number.prototype.toFixed.
+    assert_eq!(ids.len(), 266); // Includes Collator, toFixed and six WeakMap intrinsics.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

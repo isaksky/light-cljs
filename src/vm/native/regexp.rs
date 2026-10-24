@@ -1,8 +1,8 @@
 //! Resumable RegExp coercions and generic property access. Matching itself is
 //! a bounded leaf (MAX_MATCH_STEPS), without JavaScript calls or GC edges.
 use super::{Action, Input};
+use crate::heap::Heap;
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, ObjectId};
 use crate::ids::TaskId;
 use crate::regexp::object::{self, key};
 use crate::value::{JsString, Value};
@@ -44,7 +44,7 @@ pub(super) enum State {
     },
 }
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
             Self::Constructor {
                 pattern,

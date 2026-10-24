@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{Action, Input};
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::regexp::{matcher, object};
@@ -54,7 +54,7 @@ pub(super) struct State {
 }
 
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.this.trace(visit);
         self.search.trace(visit);
         self.replacement.trace(visit);

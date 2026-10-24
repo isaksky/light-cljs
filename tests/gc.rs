@@ -588,3 +588,329 @@ fn typed_array_retains_buffer_and_properties() {
     assert_eq!(rt.heap_usage().objects.typed_array, 0);
     assert_eq!(rt.heap_usage().array_buffer_bytes, 0);
 }
+
+/// Adapted from QuickJS tests/test_builtin.js test_weak_map at revision
+/// 7d1c13c5d8f8. Synthetic fixture, not light-cljs output. Copyright and
+/// MIT permission notice: docs/attribution.md, "JavaScript WeakMap tests".
+#[test]
+fn weak_map_drops_entries_of_unreachable_keys() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function make() {
+        let a = new WeakMap(); let tab = []; let values = __rt.vector(); let o;
+        for (let i = 0; i < 10; i++) {
+            let v = {};
+            if (i & 1) o = Symbol('x' + i); else o = {id: i};
+            tab[i] = [o, v]; values = __rt.conj(values, v); a.set(o, v);
+        }
+        o = null;
+        for (let i = 0; i < 5; i++) a.delete(tab[i][0]);
+        for (let i = 5; i < 10; i++) tab[i][0] = null;
+        return __rt.vector(a, values);
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    let (map, weak_values) = rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        let map = s.persist(s.nth(result, 0).unwrap());
+        let values = s.nth(result, 1).unwrap();
+        let weak = (0..10)
+            .map(|i| s.downgrade(s.nth(values, i).unwrap()))
+            .collect::<Vec<_>>();
+        (map, weak)
+    });
+    assert_eq!(map.weak_map_live_entry_count(), Some(5));
+    drop((task, result));
+    rt.collect().unwrap();
+    assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    assert!(map.downgrade().is_live());
+    for weak in weak_values {
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+}
+
+/// QuickJS test_weak_map_cycles, same source/revision and notice as above.
+/// The second value is also an object so both value lifetimes are observable.
+#[test]
+fn weak_map_cycles_are_reclaimed() {
+    use clj_quickjs::frontend::{compile_function, compile_script};
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function make() {
+        const weak1 = new WeakMap(); const weak2 = new WeakMap();
+        const parent = {}; const child = {parent}; parent.child = child;
+        const value1 = {}; const value2 = {};
+        weak1.set(child, value1); weak2.set(value1, value2);
+        return __rt.vector(weak1, weak2, parent, child, value1, value2);
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    let (maps, weak) = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        let maps = [
+            s.persist(s.nth(r, 0).unwrap()),
+            s.persist(s.nth(r, 1).unwrap()),
+        ];
+        let weak = (2..6)
+            .map(|i| s.downgrade(s.nth(r, i).unwrap()))
+            .collect::<Vec<_>>();
+        (maps, weak)
+    });
+    drop((task, result));
+    rt.collect().unwrap();
+    for map in &maps {
+        assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    }
+    for weak in weak {
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+    rt.collect().unwrap();
+
+    // Exercise get after collection on the owning task. The two needs are
+    // deterministic GC boundaries; no task transfer bypasses ownership.
+    let code = compile_script(
+        "weak-cycle-resume",
+        r#"
+        const weak1 = new WeakMap(); const weak2 = new WeakMap();
+        (function() { const parent = {}; const child = {parent}; parent.child = child;
+            const value = {}; weak1.set(child, value); weak2.set(value, 1); })();
+        __rt.need(91, 1);
+        if (weak2.get({}) !== undefined) throw 'stale entry';
+        __rt.need(92, 1);
+        __rt.vector(weak1, weak2)
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let requests = task.take_producer_requests();
+        assert_eq!(requests.len(), 1);
+        let r = &requests[0];
+        let ready = rt.root(Primitive::Undefined);
+        let wakeups = rt
+            .complete(
+                r.key(),
+                r.producer(),
+                clj_quickjs::Completion::Ready(&ready),
+            )
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+    let result = complete(task.run().unwrap());
+    rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        for i in 0..2 {
+            assert_eq!(
+                s.persist(s.nth(r, i).unwrap()).weak_map_live_entry_count(),
+                Some(0)
+            );
+        }
+    });
+}
+
+/// Synthetic fixture, not light-cljs output. A symbol rooted as a primitive
+/// participates in exactly the same ephemeron fixpoint as an object key.
+#[test]
+fn weak_map_value_kept_while_key_reachable() {
+    use clj_quickjs::frontend::compile_function;
+    for key in ["{}", "Symbol('s')"] {
+        let rt = Runtime::new();
+        let code = compile_function(&format!("function make() {{ let m = new WeakMap(); let k = {key}; let v = {{}}; m.set(k, v); return __rt.vector(m, k, v); }}")).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let result = complete(task.run().unwrap());
+        let (map, key, weak) = rt.scope(|s| {
+            let r = s.local(&result).unwrap();
+            (
+                s.persist(s.nth(r, 0).unwrap()),
+                s.persist(s.nth(r, 1).unwrap()),
+                s.downgrade(s.nth(r, 2).unwrap()),
+            )
+        });
+        drop((task, result));
+        for _ in 0..2 {
+            rt.collect().unwrap();
+            assert_eq!(map.weak_map_live_entry_count(), Some(1));
+            assert!(weak.is_live());
+        }
+        drop(key);
+        rt.collect().unwrap();
+        assert_eq!(map.weak_map_live_entry_count(), Some(0));
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+}
+
+/// The symbol intern table and Arc clones in garbage are not roots.
+/// Only symbol values/keys reached through the tracing graph activate entries.
+#[test]
+fn weak_map_symbol_keys_follow_traced_reachability() {
+    use clj_quickjs::frontend::compile_function;
+    for holder in [
+        "(function() { let o = {}; o[s] = 1; return o; })()",
+        "{symbol: s}",
+        "new Map().set(s, 1)",
+        "function() { return s; }",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "function make() {{ const s = Symbol('key'); const v = {{}}; const m = new WeakMap(); m.set(s, v); return __rt.vector(m, {holder}, v); }}"
+        );
+        let task = rt.spawn(&compile_function(&source).unwrap(), &[]).unwrap();
+        let result = complete(task.run().unwrap());
+        let (map, holder, weak) = rt.scope(|s| {
+            let r = s.local(&result).unwrap();
+            (
+                s.persist(s.nth(r, 0).unwrap()),
+                s.persist(s.nth(r, 1).unwrap()),
+                s.downgrade(s.nth(r, 2).unwrap()),
+            )
+        });
+        drop((task, result));
+        rt.collect().unwrap();
+        assert_eq!(map.weak_map_live_entry_count(), Some(1), "{source}");
+        assert!(weak.is_live());
+        drop(holder);
+        rt.collect().unwrap();
+        assert_eq!(map.weak_map_live_entry_count(), Some(0), "{source}");
+        assert!(!weak.is_live());
+    }
+    for value in [
+        "s",
+        "{symbol: s}",
+        "(function() { let o = {}; o[s] = s; return o; })()",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "function make() {{ const s = Symbol('cycle'); const m = new WeakMap(); m.set(s, {value}); return m; }}"
+        );
+        let task = rt.spawn(&compile_function(&source).unwrap(), &[]).unwrap();
+        let map = complete(task.run().unwrap());
+        drop(task);
+        rt.collect().unwrap();
+        assert_eq!(map.weak_map_live_entry_count(), Some(0), "{source}");
+    }
+}
+
+#[test]
+fn weak_map_ephemeron_values_activate_symbol_keys() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let code = compile_function("function make() { let a = new WeakMap(); let b = new WeakMap(); let k = {}; let s = Symbol(); let v = {}; a.set(k, s); b.set(s, v); return __rt.vector(a, b, k, v); }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    let (maps, key, weak) = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        (
+            [
+                s.persist(s.nth(r, 0).unwrap()),
+                s.persist(s.nth(r, 1).unwrap()),
+            ],
+            s.persist(s.nth(r, 2).unwrap()),
+            s.downgrade(s.nth(r, 3).unwrap()),
+        )
+    });
+    drop((task, result));
+    rt.collect().unwrap();
+    for map in &maps {
+        assert_eq!(map.weak_map_live_entry_count(), Some(1));
+    }
+    assert!(weak.is_live());
+    drop(key);
+    rt.collect().unwrap();
+    for map in &maps {
+        assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    }
+    assert!(!weak.is_live());
+}
+
+#[test]
+fn weak_map_properties_and_prototype_are_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let prototype = new_rooted_object(&rt);
+    let property = new_rooted_object(&rt);
+    let weak = [prototype.downgrade(), property.downgrade()];
+    let code = compile_function("function make(p, v) { let m = new WeakMap(); m.own = v; Object.setPrototypeOf(m, p); return m; }").unwrap();
+    let task = rt.spawn(&code, &[&prototype, &property]).unwrap();
+    let map = complete(task.run().unwrap());
+    drop((task, prototype, property));
+    rt.collect().unwrap();
+    for w in &weak {
+        assert!(w.is_live());
+    }
+    drop(map);
+    rt.collect().unwrap();
+    for w in &weak {
+        assert!(!w.is_live());
+    }
+}
+
+/// The descriptor's converted symbol key is the only surviving key path
+/// while its value getter waits in a resumable native frame.
+#[test]
+fn weak_map_symbol_key_in_native_continuation_is_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let value = new_rooted_object(&rt);
+    let weak = value.downgrade();
+    let code = compile_function(
+        r#"function make(v) {
+        let key = Symbol(); const m = new WeakMap(); m.set(key, v); v = null;
+        const out = {};
+        Object.defineProperty(out, key, {get value() { key = null; __rt.need(93, 1); return 1; }});
+        return __rt.vector(m, out);
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&value]).unwrap();
+    drop(value);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    let requests = task.take_producer_requests();
+    let r = &requests[0];
+    let ready = rt.root(Primitive::Undefined);
+    let wakeups = rt
+        .complete(
+            r.key(),
+            r.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap();
+    assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    let result = complete(task.run().unwrap());
+    let map = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        s.persist(s.nth(r, 0).unwrap())
+    });
+    drop((task, result, wakeups));
+    rt.collect().unwrap();
+    assert_eq!(map.weak_map_live_entry_count(), Some(0));
+    assert!(!weak.is_live());
+}
+
+#[test]
+fn weak_map_unreachable_owner_does_not_retain_values() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let key = new_rooted_object(&rt);
+    let value = new_rooted_object(&rt);
+    let weak = value.downgrade();
+    let code =
+        compile_function("function make(k, v) { let m = new WeakMap(); m.set(k, v); return m; }")
+            .unwrap();
+    let task = rt.spawn(&code, &[&key, &value]).unwrap();
+    let map = complete(task.run().unwrap());
+    let weak_map = map.downgrade();
+    drop((task, map, value));
+    rt.collect().unwrap();
+    assert!(key.downgrade().is_live());
+    assert!(!weak_map.is_live());
+    assert!(!weak.is_live());
+}

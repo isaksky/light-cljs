@@ -708,7 +708,7 @@ fn reaction_sender_edges_are_traced_without_permanent_roots() {
     #[derive(Debug)]
     struct Reaction(RawJobSender);
     impl Trace for Reaction {
-        fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
             self.0.trace(visit);
         }
     }

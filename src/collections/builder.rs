@@ -193,7 +193,7 @@ impl Builder {
 }
 
 impl Trace for Builder {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
             State::Open(Draft::Vector(items)) => items.trace(visit),
             State::Open(Draft::Map(map)) => map.trace(visit),

@@ -484,7 +484,7 @@ impl ArrayObject {
 /// The collector traces every element, then the ordinary part (named
 /// property values and the prototype).
 impl Trace for ArrayObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         for (_, value) in self.elements() {
             value.trace(visit);
         }

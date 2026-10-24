@@ -396,6 +396,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Atom(_)
                 | HeapObject::Array(_)
                 | HeapObject::JsMap(_)
+                | HeapObject::WeakMap(_)
                 | HeapObject::ArrayBuffer(_)
                 | HeapObject::TypedArray(_)
                 | HeapObject::Promise(_)
@@ -719,6 +720,11 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             return Ok(Flow::Next);
         }
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(Callee::Builtin(Builtin::WeakMap)) => {
+            let result = builtin::weak_map_constructor(heap, task, &args)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(Builtin::Map)) => {
             let result = builtin::map_constructor(heap, task, &args)?;
             state.replace(argc + 1, result)?;

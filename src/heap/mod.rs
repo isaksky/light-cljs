@@ -157,6 +157,7 @@ pub(crate) enum ObjectKind {
     PromiseReaction,
     PromiseResolving,
     Generator,
+    WeakMap,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -235,6 +236,7 @@ pub(crate) enum HeapObject {
     PromiseReaction(crate::vm::promise::Reaction),
     PromiseResolving(crate::vm::promise::Resolving),
     Generator(Box<crate::vm::generator::Generator>),
+    WeakMap(Box<crate::object::weak_map::WeakMapObject>),
 }
 
 impl HeapObject {
@@ -259,6 +261,7 @@ impl HeapObject {
             HeapObject::Builtin(_) => ObjectKind::Builtin,
             HeapObject::Array(_) => ObjectKind::Array,
             HeapObject::JsMap(_) => ObjectKind::JsMap,
+            HeapObject::WeakMap(_) => ObjectKind::WeakMap,
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
             HeapObject::ArrayBuffer(_) => ObjectKind::ArrayBuffer,
             HeapObject::TypedArray(_) => ObjectKind::TypedArray,
@@ -271,7 +274,7 @@ impl HeapObject {
 }
 
 impl Trace for HeapObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
             HeapObject::Plain(o) => o.trace(visit),
             HeapObject::Native(payload) => payload.trace(visit),
@@ -285,6 +288,7 @@ impl Trace for HeapObject {
             HeapObject::Builtin(f) => f.trace(visit),
             HeapObject::Array(a) => a.trace(visit),
             HeapObject::JsMap(m) => m.trace(visit),
+            HeapObject::WeakMap(m) => m.trace(visit),
             HeapObject::BoundFunction(f) => f.trace(visit),
             HeapObject::ArrayBuffer(b) => b.trace(visit),
             HeapObject::TypedArray(a) => a.trace(visit),
@@ -311,6 +315,7 @@ impl Trace for HeapObject {
             HeapObject::Array(a) => a.trace_conditional(visit),
             HeapObject::BoundFunction(f) => f.trace_conditional(visit),
             HeapObject::JsMap(m) => m.trace_conditional(visit),
+            HeapObject::WeakMap(m) => m.trace_conditional(visit),
             HeapObject::ArrayBuffer(b) => b.trace_conditional(visit),
             HeapObject::TypedArray(a) => a.trace_conditional(visit),
             HeapObject::Promise(p) => p.trace_conditional(visit),
@@ -409,7 +414,7 @@ impl ObjectTable {
 
     /// Set the mark bit of a live object and report its children. Returns
     /// `false` (and reports nothing) for stale ids and already-marked objects.
-    fn mark(&mut self, id: ObjectId, children: &mut dyn FnMut(ObjectId)) -> bool {
+    fn mark(&mut self, id: ObjectId, children: &mut dyn FnMut(crate::heap::gc::TraceEdge)) -> bool {
         let Some(slot) = self.slots.get_mut(id.index as usize) else {
             return false;
         };
@@ -554,7 +559,11 @@ impl Heap {
             Some(parts) => parts.iter().all(|v| table.known_shareable(v)),
             None => {
                 let mut all = true;
-                object.trace(&mut |id| all = all && table.known_shareable(&Value::Object(id)));
+                object.trace(&mut |edge| {
+                    if let gc::TraceEdge::Object(id) = edge {
+                        all = all && table.known_shareable(&Value::Object(id));
+                    }
+                });
                 all
             }
         };

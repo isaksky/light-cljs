@@ -35,7 +35,6 @@ use std::sync::Arc;
 
 use super::instr::{Instr, Opcode, OperandKind, ThrowKind};
 use crate::error::SourceLocation;
-use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::value::{JsString, Primitive, Value};
 
@@ -725,7 +724,7 @@ impl Executable {
 /// primitives, so this visits nothing for loaded code; a later pellet that
 /// allows heap constants must also root code that no live task runs yet.
 impl Trace for Code {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.constants.trace(visit);
     }
 }

@@ -28,7 +28,7 @@ pub(crate) struct ArrayBuffer {
 }
 
 impl Trace for ArrayBuffer {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
     }
 }

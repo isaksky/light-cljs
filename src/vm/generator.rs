@@ -26,7 +26,7 @@ pub(crate) struct Generator {
 }
 
 impl Trace for Generator {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
         if let State::SuspendedStart(a) | State::SuspendedYield(a) | State::SuspendedYieldStar(a) =
             &self.state

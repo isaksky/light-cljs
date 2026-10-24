@@ -150,7 +150,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use crate::heap::gc::{RootCategory, RootSource, Trace};
-use crate::heap::{HandleError, Heap, ObjectId, Rooted};
+use crate::heap::{HandleError, Heap, Rooted};
 use crate::ids::{DependencyKey, ProducerId, TaskId, WakeHandle};
 use crate::task::{TaskInner, Wake, deliver_wake};
 use crate::value::Value;
@@ -214,7 +214,7 @@ struct Cell {
 /// A cell roots its terminal value or error while it exists. Reads the
 /// outcome without taking the cell lock.
 impl RootSource for Cell {
-    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge)) {
         if let Some(value) = self.outcome.get().and_then(|t| t.value()) {
             value.trace(&mut |id| visit(RootCategory::DependencyOutcome, id));
         }

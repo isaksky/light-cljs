@@ -69,6 +69,7 @@
 
 pub(crate) mod array;
 pub(crate) mod map;
+pub(crate) mod weak_map;
 
 pub(crate) mod array_buffer;
 pub(crate) mod typed_array;
@@ -85,7 +86,7 @@ use crate::value::{JsString, JsSymbol, Value};
 /// Interned identity of a property name: a private id issued by
 /// [`PropertyKeys`]. Equal names in one runtime always have the same key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PropertyKey(u32);
+pub(crate) struct PropertyKey(u32, Option<u64>);
 
 /// The runtime-wide property-key table (one per heap). Its lock is a leaf:
 /// it is never held while another heap lock is taken, nor taken while one
@@ -126,7 +127,7 @@ impl PropertyKeys {
         if let Some(&key) = table.ids.get(name) {
             return Some(key);
         }
-        let key = PropertyKey(u32::try_from(table.names.len()).ok()?);
+        let key = PropertyKey(u32::try_from(table.names.len()).ok()?, None);
         table.names.push(StoredKey::Name(name.clone()));
         table.ids.insert(name.clone(), key);
         Some(key)
@@ -149,7 +150,10 @@ impl PropertyKeys {
         if let Some(&key) = table.symbols.get(symbol) {
             return Some(key);
         }
-        let key = PropertyKey(u32::try_from(table.names.len()).ok()?);
+        let key = PropertyKey(
+            u32::try_from(table.names.len()).ok()?,
+            Some(symbol.identity()),
+        );
         table.names.push(StoredKey::Symbol(symbol.clone()));
         table.symbols.insert(symbol.clone(), key);
         Some(key)
@@ -851,7 +855,7 @@ pub(crate) enum DeleteOutcome {
 
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(iterator) = &self.iterator {
             iterator.trace(visit);
         }
@@ -870,7 +874,10 @@ impl Trace for OrdinaryObject {
         if let Some(error) = &self.engine_error {
             error.trace(visit);
         }
-        for (_, property) in &self.entries {
+        for (key, property) in &self.entries {
+            if let Some(id) = key.1 {
+                visit(crate::heap::gc::TraceEdge::Symbol(id));
+            }
             property.value.trace(visit);
             if let Some((get, set)) = &property.accessor {
                 get.trace(visit);
@@ -878,7 +885,7 @@ impl Trace for OrdinaryObject {
             }
         }
         if let Some(prototype) = self.prototype {
-            visit(prototype);
+            visit(prototype.into());
         }
     }
 }

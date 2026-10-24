@@ -185,8 +185,9 @@ entries keep their existing strong semantics.
 Observers receive the list only after the rendezvous and all heap locks
 end, alongside the ordinary collection report. They may allocate and retain
 notifications for later processing; no JavaScript, host callback or payload
-destructor runs in the pause. There is no JavaScript surface here: WeakMap
-and WeakSet build on ephemerons, WeakRef must add job keep-alives, and
+destructor runs in the pause. The collector substrate has no JavaScript
+surface itself: WeakMap builds on it (clj-quickjs-173); WeakSet remains
+deferred, WeakRef must add job keep-alives, and
 FinalizationRegistry must add registration, held-data and job scheduling.
 Collector tests use original native payload fixtures in `heap::gc::tests`.
 QuickJS's `test_weak_map_cycles`, `test_weak_ref` and
@@ -1549,8 +1550,9 @@ thread, so an object migrates with its task between workers. No per-object
 lock exists: the owner is the only reader and writer, and each access takes
 the one short object-table lock every heap read takes.
 
-**Property keys.** A `PropertyKey` is a private `u32` issued by the
-runtime-wide `PropertyKeys` table owned by the heap (one per runtime). Names
+**Property keys.** A `PropertyKey` carries a private `u32` issued by the
+runtime-wide `PropertyKeys` table owned by the heap (one per runtime), plus
+an optional symbol identity for tracing symbol keys without a table lock. Names
 are interned on first definition (`PutField`, `DefineField`); `GetField`
 only looks up, so reading a never-defined name grows nothing. Keys compare
 and hash by their private id (derived Rust equality), never by a user hook;
@@ -6443,3 +6445,65 @@ adapted in `tests/js_source.rs::generator_yield_star_delegation` with `let` in
 place of `var` and rewritten assertions. Its copyright and MIT permission notice
 are retained in the test. This is a semantic reference; no QuickJS C code or
 saved C/Rust stack is used.
+
+## JavaScript WeakMap objects (clj-quickjs-173)
+
+`HeapObject::WeakMap` wraps an ordinary task-owned property store and the
+collector's `EphemeronTable`. Only the prototype and ordinary properties are
+strong heap edges. Entry keys are private object identities or non-registered
+symbol identities; values are conditional edges, enumerated through
+`trace_conditional`. The existing key-indexed worklist computes one least
+fixpoint across both kinds, including symbols reached as ephemeron values.
+Unmarked entries disappear before sweep in the same collection as their keys.
+There is no JavaScript enumeration, size property, clear method or iterator.
+`Rooted::weak_map_live_entry_count` is a host-only test diagnostic.
+
+Symbols retain their immutable Arc bodies outside the object table. Arc
+ownership, the property-name intern table, and clones held by garbage do not
+establish weak-key liveness. `TraceEdge` therefore distinguishes object slots
+from process-wide symbol identities. Every traced `Value::Symbol` reports its
+identity; a symbol property key carries that identity in its private
+`PropertyKey` and ordinary-object tracing reports keys as well as values.
+Saved native descriptor keys are traced too. Root tables, task frames (including
+parked runs and generator activations), closure captures, collection edges and
+native continuations use the same tracing interface. A host must retain a
+symbol in a `Rooted` or scope local to preserve its weak entries; an unrooted
+`JsSymbol` clone keeps the immutable primitive usable but is not a GC root.
+`Symbol.for` bodies carry an immutable registered flag, so they remain invalid
+weak keys even if passed between runtimes as host primitives. Well-known
+symbols are non-registered and rooted by the realm's symbol properties.
+Symbol identities do not count as heap objects in collection statistics.
+Tracking adds O(reached symbol identities) temporary marking space.
+
+WeakMaps classify as `TaskOwned`, including empty and frozen instances. Direct
+publication, persistent wrappers and closure captures, atoms and dependency
+outcomes reject them before traversing entries. Spawn does not publish-check
+arguments, matching ordinary objects; explicit handoff still cannot bypass
+owner checks on properties, prototypes, integrity operations or borrowed
+WeakMap methods. Ordinary property freezing leaves entry mutation available
+to the owning task. No publication cloning or cross-task WeakMap snapshot is
+provided.
+
+The constructor/prototype pair and methods are appended to the realm/global
+and built-in registries. Construction without `new` throws TypeError; nullish
+arguments create an empty map. Non-nullish iterable arguments throw the same
+explicit unsupported-construction TypeError as Map. `set` validates
+CanBeHeldWeakly and returns its receiver; invalid keys give undefined/false
+for get/has/delete. These are leaf operations: no coercion, getter, callback
+or iterator runs while the object-table lock is held. The ordinary prototype
+exposes the fixed `Symbol.toStringTag` data value `WeakMap`; general
+Object.prototype.toString consumption of inherited symbol tags remains the
+existing explicit gap.
+
+Root inventory: WeakMapEntries maps the WeakMap heap kind to persistent-root
+coverage in `tests/gc.rs`: `weak_map_value_kept_while_key_reachable` retains a
+value only through a live object or symbol key;
+`weak_map_drops_entries_of_unreachable_keys` reclaims ten values after five
+deletions and dropping the remaining object/symbol keys.
+`weak_map_cycles_are_reclaimed` checks cyclic object keys and chained tables,
+then resumes the owning task to get a fresh absent key between collections.
+`weak_map_symbol_keys_follow_traced_reachability` covers property-key,
+property-value, Map-key and closure retention plus symbol self cycles;
+`weak_map_ephemeron_values_activate_symbol_keys` covers mixed-kind fixpoints.
+`weak_map_properties_and_prototype_are_traced` covers independent ordinary
+strong edges and their reclamation.

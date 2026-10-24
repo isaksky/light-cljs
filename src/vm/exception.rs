@@ -118,7 +118,7 @@
 
 use crate::error::VmError;
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::heap::{Heap, HeapObject};
 use crate::value::Value;
 
 /// Engine-only slot of an ordinary Error instance. Immutable even when
@@ -133,7 +133,7 @@ pub(crate) struct ErrorObject {
 }
 
 impl Trace for ErrorObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.cause.trace(visit);
     }
 }
@@ -201,7 +201,7 @@ pub(crate) struct Handler {
 }
 
 impl Trace for Handler {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.kind {
             HandlerKind::Catch { .. }
             | HandlerKind::Finally { .. }

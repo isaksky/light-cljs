@@ -50,7 +50,7 @@ pub(super) struct State {
     max_significant: Option<usize>,
 }
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(list) = &self.list {
             list.trace(visit);
         }

@@ -287,6 +287,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                 ..Raw::default()
             })
         }
+        HeapObject::WeakMap(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
         HeapObject::ArrayBuffer(b) => {
             readable(b.object.owner())?;
             Ok(Raw {
@@ -551,9 +558,9 @@ impl ForInIterator {
 }
 
 impl Trace for ForInIterator {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(object) = self.object {
-            visit(object);
+            visit(object.into());
         }
     }
 }
@@ -847,7 +854,7 @@ mod tests {
         let mut edges = Vec::new();
         heap.read(it_id, |o| o.trace(&mut |e| edges.push(e)))
             .unwrap();
-        assert_eq!(edges, [id]);
+        assert_eq!(edges, [id.into()]);
         let next = |heap: &Heap| ok(for_in_next(heap, task, &it)).map(|s| s.to_string());
         assert_eq!(next(&heap).as_deref(), Some("1"));
         // `b` becomes non-enumerable before it is reached.
@@ -923,11 +930,11 @@ mod tests {
             edges
         };
         let next = || ok(for_in_next(&heap, task, &it)).map(|s| s.to_string());
-        assert_eq!(edges(), [o]);
+        assert_eq!(edges(), [o.into()]);
         assert_eq!(next().as_deref(), Some("a"));
-        assert_eq!(edges(), [o]);
+        assert_eq!(edges(), [o.into()]);
         assert_eq!(next().as_deref(), Some("p"));
-        assert_eq!(edges(), [proto]);
+        assert_eq!(edges(), [proto.into()]);
         assert_eq!(next(), None);
         assert!(edges().is_empty(), "Object.prototype was entered");
         assert_eq!(next(), None);

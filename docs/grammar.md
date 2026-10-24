@@ -4375,7 +4375,7 @@ Execution: the collector supports heap-internal weak slots and ephemeron
 tables, clears dead conditional edges before sweeping, and hands notifying
 slots to observers after the pause with rooted owners. This introduces no
 JavaScript syntax or globals and does not change ordinary Map semantics.
-Explicit gaps: JavaScript WeakMap/WeakSet, WeakRef and its job keep-alives,
+Explicit gaps: JavaScript WeakSet, WeakRef and its job keep-alives,
 and FinalizationRegistry registration and cleanup scheduling remain deferred.
 
 ## Array.prototype.sort (clj-quickjs-208)
@@ -4483,3 +4483,28 @@ if (g.next().value !== 1 || g.next().value !== 2) throw 'array yields';
 let end = g.next();
 if (!end.done || end.value !== undefined) throw 'array completion';
 ```
+
+### Execution: WeakMap (clj-quickjs-173)
+
+`new WeakMap()` and nullish constructor arguments create empty task-owned
+WeakMaps. `set(key, value)` accepts objects and non-registered symbols and
+returns the map; primitives and `Symbol.for` keys throw catchable TypeErrors.
+`get`, `has` and `delete` compare private identities without coercion; absent
+or invalid keys return undefined, false and false respectively. Methods
+validate receiver brand and task ownership before inspecting the key.
+Ordinary own properties, prototypes and integrity operations use the same
+rules as Map. Freezing properties does not freeze entry mutation.
+The prototype exposes `Symbol.toStringTag` equal to `WeakMap`.
+
+Entries are ephemerons: a reachable map retains a value only while its key is
+independently reachable, including symbol keys reached through live values,
+property keys, closures, frames or host roots. Dead-key entries and their
+otherwise unreachable values disappear in the same collection, including
+self cycles and cycles between tables. WeakMaps cannot be published across
+tasks, directly or through persistent values or captures.
+
+Explicit gaps: non-nullish iterable construction throws TypeError, matching
+Map's current constructor boundary. WeakSet, WeakRef and FinalizationRegistry
+remain deferred. WeakMap has no enumeration, size, clear or iterator API;
+the host-only entry-count test hook is not a JavaScript property. Generic
+Object.prototype.toString symbol-tag consumption remains deferred.

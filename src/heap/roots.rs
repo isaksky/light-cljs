@@ -77,7 +77,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::gc::{Access, MutatorToken, Trace};
-use super::{Heap, HeapObject, ObjectId};
+use super::{Heap, HeapObject};
 use crate::error::VmError;
 use crate::value::{JsString, Primitive, Value, ValueView};
 use crate::vm::exception::error_object;
@@ -118,7 +118,7 @@ impl RootTable {
 }
 
 impl Trace for RootTable {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.slots.iter().flatten().for_each(|v| v.trace(visit));
     }
 }
@@ -171,7 +171,7 @@ impl ScopeTable {
 }
 
 impl Trace for ScopeTable {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.entries
             .iter()
             .flatten()
@@ -224,6 +224,22 @@ impl Rooted {
     /// Root-free view of the value.
     pub fn view(&self) -> ValueView {
         self.value.view()
+    }
+
+    /// Collector test hook: live WeakMap entries, or `None` for another kind.
+    /// This diagnostic is never exposed to JavaScript. It takes only the
+    /// object-table lock and does not inspect any key or value.
+    #[doc(hidden)]
+    pub fn weak_map_live_entry_count(&self) -> Option<usize> {
+        let Value::Object(id) = self.value else {
+            return None;
+        };
+        self.heap
+            .read(id, |object| match object {
+                HeapObject::WeakMap(map) => Some(map.len()),
+                _ => None,
+            })
+            .flatten()
     }
 
     /// The contents of a string value (`None` for any other value). The
@@ -624,7 +640,7 @@ mod tests {
         drop(Rooted::new(&heap, Value::Object(dead)));
         let mut seen = Vec::new();
         heap.roots().trace(&mut |o| seen.push(o));
-        assert_eq!(seen, vec![id]);
+        assert_eq!(seen, vec![id.into()]);
     }
 
     #[test]

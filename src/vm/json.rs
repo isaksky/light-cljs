@@ -70,7 +70,7 @@ pub(super) struct Parser {
 }
 
 impl Trace for Parser {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         for container in &self.stack {
             container.value.trace(visit);
         }
@@ -507,7 +507,7 @@ pub(super) struct Stringifier {
 }
 
 impl Trace for Stringifier {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.value.trace(visit);
         for container in &self.stack {
             container.value.trace(visit);

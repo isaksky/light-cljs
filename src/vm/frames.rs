@@ -145,9 +145,9 @@ pub(crate) struct DetachedActivation {
 }
 
 impl Trace for DetachedActivation {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(id) = self.frame.callee {
-            visit(id);
+            visit(id.into());
         }
         self.frame.this.trace(visit);
         self.frame.code.trace(visit);
@@ -1093,17 +1093,17 @@ impl VmState {
 /// arguments and intermediate values. The builder list is deliberately not
 /// traced.
 impl Trace for VmState {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(value) = &self.script_result {
             value.trace(visit);
         }
         if let Some(id) = self.global_object {
-            visit(id);
+            visit(id.into());
         }
         self.stack.iter().for_each(|v| v.trace(visit));
         for frame in std::iter::once(&self.entry).chain(&self.calls) {
             if let Some(id) = frame.callee {
-                visit(id);
+                visit(id.into());
             }
             frame.this.trace(visit);
             if let Some(args) = &frame.arguments {

@@ -157,7 +157,7 @@ pub(crate) struct Occurrence {
 }
 
 impl Trace for Occurrence {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.value.trace(visit);
     }
 }
@@ -264,6 +264,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Builtin(_) => "built-in function",
         HeapObject::Array(_) => "array",
         HeapObject::JsMap(_) => "Map",
+        HeapObject::WeakMap(_) => "WeakMap",
 
         HeapObject::ArrayBuffer(_) => "ArrayBuffer",
         HeapObject::TypedArray(_) => "typed array",
@@ -818,8 +819,8 @@ mod tests {
             heap.read(id(l), |o| o.trace(&mut |e| out.push(e))).unwrap();
             out
         };
-        assert_eq!(edges(vec), vec![id(leaf), id(leaf)]);
-        assert_eq!(edges(map), vec![id(key), id(vec)]);
-        assert_eq!(edges(occ), vec![id(map)]);
+        assert_eq!(edges(vec), vec![id(leaf).into(), id(leaf).into()]);
+        assert_eq!(edges(map), vec![id(key).into(), id(vec).into()]);
+        assert_eq!(edges(occ), vec![id(map).into()]);
     }
 }

@@ -32,8 +32,8 @@
 //! already in the object being allocated; it never invokes the accessor
 //! being reflected.
 
+use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject};
-use crate::heap::{ObjectId, gc::Trace};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, Property, PropertyDescriptor, PropertyFlags};
 use crate::realm;
@@ -195,8 +195,11 @@ pub(crate) enum DefineStep {
 }
 
 impl Trace for DefineProperty {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.target.trace(visit);
+        if let Key::Symbol(symbol) = &self.key {
+            visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
+        }
         self.attributes.trace(visit);
         for v in [&self.desc.value, &self.desc.get, &self.desc.set]
             .into_iter()

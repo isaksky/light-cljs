@@ -374,6 +374,13 @@ pub(crate) enum Builtin {
     IntlCollatorSupportedLocales,
 
     NumberPrototypeToFixed,
+
+
+    WeakMap,
+    WeakMapSet,
+    WeakMapGet,
+    WeakMapHas,
+    WeakMapDelete,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -558,6 +565,11 @@ impl Builtin {
             Builtin::MathSqrt => "sqrt",
             Builtin::MathLog2 => "log2",
             Builtin::Map => "Map",
+            Builtin::WeakMap => "WeakMap",
+            Builtin::WeakMapSet => "set",
+            Builtin::WeakMapGet => "get",
+            Builtin::WeakMapHas => "has",
+            Builtin::WeakMapDelete => "delete",
             Builtin::MapSet => "set",
             Builtin::MapGet => "get",
             Builtin::MapHas => "has",
@@ -721,7 +733,11 @@ impl Builtin {
             | Builtin::MapHas
             | Builtin::MapDelete
             | Builtin::MapForEach => 1,
-            Builtin::MapSet => 2,
+            Builtin::MapSet | Builtin::WeakMapSet => 2,
+            Builtin::WeakMap
+            | Builtin::WeakMapGet
+            | Builtin::WeakMapHas
+            | Builtin::WeakMapDelete => 1,
             Builtin::MapClear | Builtin::MapSize => 0,
             Builtin::Date => 7,
             Builtin::DateNow | Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset => 0,
@@ -756,12 +772,12 @@ pub(crate) struct BuiltinFunction {
 }
 
 impl Trace for BuiltinFunction {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.properties.trace(visit);
         match self.which {
             Builtin::PromiseResolver(id, _)
             | Builtin::PromiseReaction(id)
-            | Builtin::PromiseResolveThenable(id) => visit(id),
+            | Builtin::PromiseResolveThenable(id) => visit(id.into()),
             _ => {}
         }
     }
@@ -909,6 +925,11 @@ pub(crate) fn call(
         | Builtin::JsonStringify => Err(Fault::Internal("built-in requires a resumable frame")),
         Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
         Builtin::Map => Err(Fault::TypeError("Map requires new".to_string())),
+        Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
+        Builtin::WeakMapSet
+        | Builtin::WeakMapGet
+        | Builtin::WeakMapHas
+        | Builtin::WeakMapDelete => weak_map_operation(heap, task, which, this, args),
         Builtin::MapSet
         | Builtin::MapGet
         | Builtin::MapHas
@@ -1791,7 +1812,9 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                     Ok("Function")
                 }
                 HeapObject::Array(_) => Ok("Array"),
-                HeapObject::Native(_) | HeapObject::JsMap(_) => Ok("Object"),
+                HeapObject::Native(_) | HeapObject::JsMap(_) | HeapObject::WeakMap(_) => {
+                    Ok("Object")
+                }
                 HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
@@ -1816,6 +1839,73 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),
     }
+}
+
+/// Same explicit iterable gap as Map: no iterator callbacks in a leaf native.
+pub(crate) fn weak_map_constructor(
+    heap: &Heap,
+    task: TaskId,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    if !matches!(args.first(), None | Some(Value::Undefined | Value::Null)) {
+        return Err(Fault::TypeError(
+            "WeakMap iterable construction is not supported".into(),
+        ));
+    }
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .weak_map_prototype;
+    heap.alloc(HeapObject::WeakMap(Box::new(
+        crate::object::weak_map::WeakMapObject::new(task, prototype),
+    )))
+    .map(Value::Object)
+    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+fn weak_map_operation(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let invalid = || {
+        Fault::TypeError(format!(
+            "WeakMap.prototype.{} requires a WeakMap receiver",
+            which.name()
+        ))
+    };
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    // Receiver and arguments are rooted by the frame throughout this leaf.
+    heap.with_object_mut(*id, |object| {
+        let HeapObject::WeakMap(map) = object else {
+            return Err(invalid());
+        };
+        if map.object().owner() != Some(task) {
+            return Err(Fault::ForeignObject {
+                owner: map.object().owner(),
+                caller: task,
+            });
+        }
+        let key = args.first().and_then(crate::object::weak_map::weak_key);
+        Ok(match which {
+            Builtin::WeakMapSet => {
+                let key = key.ok_or_else(|| Fault::TypeError("invalid WeakMap key".into()))?;
+                map.set(key, args.get(1).cloned().unwrap_or(Value::Undefined));
+                this.clone()
+            }
+            Builtin::WeakMapGet => key
+                .and_then(|k| map.get(k))
+                .cloned()
+                .unwrap_or(Value::Undefined),
+            Builtin::WeakMapHas => Value::Bool(key.is_some_and(|k| map.get(k).is_some())),
+            Builtin::WeakMapDelete => Value::Bool(key.is_some_and(|k| map.delete(k))),
+            _ => return Err(Fault::Internal("not a WeakMap operation")),
+        })
+    })
+    .unwrap_or(Err(Fault::Internal("WeakMap receiver was reclaimed")))
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::value::Value;
@@ -435,7 +436,7 @@ fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value) -> Dissoc {
 }
 
 impl Trace for PMap {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.for_each(|k, v| {
             k.trace(visit);
             v.trace(visit);

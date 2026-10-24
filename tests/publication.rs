@@ -1217,3 +1217,53 @@ fn javascript_maps_cannot_be_published_through_atoms() {
         assert_eq!(rt.atom_load(&atom).unwrap().view(), ValueView::Number(0.0));
     }
 }
+
+/// Weak entries do not make a mutable table publishable, even when empty
+/// or frozen. Persistent wrappers and closures cannot hide its ownership.
+#[test]
+fn weak_maps_are_task_owned_at_publication_boundaries() {
+    use clj_quickjs::AtomError;
+    let rt = Runtime::new();
+    for src in [
+        "new WeakMap()",
+        "new WeakMap().set({}, {})",
+        "Object.freeze(new WeakMap())",
+    ] {
+        let task = rt
+            .spawn(&compile_script("weak-map-publication", src).unwrap(), &[])
+            .unwrap();
+        let map = complete(task.run().unwrap());
+        assert_eq!(
+            not_shareable(rt.publish(&map).unwrap_err()),
+            (vec![], "WeakMap", Some(task.id()))
+        );
+        let check = |error| match error {
+            AtomError::NotShareable(e) => {
+                assert_eq!(not_shareable(e), (vec![], "WeakMap", Some(task.id())))
+            }
+            other => panic!("expected task-owned rejection, got {other:?}"),
+        };
+        check(rt.new_atom(&map).unwrap_err());
+        let initial = rt.root(num(0.0));
+        let atom = rt.new_atom(&initial).unwrap();
+        let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+        check(publisher.publish(&map).unwrap_err());
+        check(rt.atom_compare_and_set(&atom, &initial, &map).unwrap_err());
+        assert_eq!(rt.atom_load(&atom).unwrap().view(), ValueView::Number(0.0));
+    }
+    for src in [
+        "__rt.vector(new WeakMap())",
+        "(function() { const m = new WeakMap(); return function() { return m; }; })()",
+    ] {
+        let task = rt
+            .spawn(
+                &compile_script("weak-map-transitive-publication", src).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let value = complete(task.run().unwrap());
+        let (path, found, owner) = not_shareable(rt.publish(&value).unwrap_err());
+        assert!(!path.is_empty());
+        assert_eq!((found, owner), ("WeakMap", Some(task.id())));
+    }
+}

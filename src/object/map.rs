@@ -104,7 +104,7 @@ impl MapObject {
 }
 
 impl Trace for MapObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
         for (key, value) in self.entries.iter().flatten() {
             key.trace(visit);

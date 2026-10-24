@@ -131,9 +131,9 @@ pub(crate) struct TypedArray {
 }
 
 impl Trace for TypedArray {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
-        visit(self.view.buffer);
+        visit(self.view.buffer.into());
     }
 }
 

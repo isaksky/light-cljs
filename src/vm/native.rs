@@ -741,13 +741,13 @@ pub(crate) fn generator_boundary(state: &VmState) -> Option<ObjectId> {
 }
 
 impl Trace for NativeFrame {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Generator { id, failed } => {
-                visit(*id);
+                visit((*id).into());
                 failed.iter().for_each(|e| e.value.trace(visit));
             }
             NativeState::TypedArray(array) => array.trace(visit),
@@ -3798,7 +3798,7 @@ mod tests {
         let Value::Object(v) = vec else {
             panic!("a vector is an object")
         };
-        assert!(traced.contains(&v), "{traced:?}");
+        assert!(traced.contains(&v.into()), "{traced:?}");
     }
 
     /// Run `f` and return its panic message (it must panic).

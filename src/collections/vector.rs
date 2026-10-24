@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 
-use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::value::Value;
 
@@ -254,7 +253,7 @@ fn pop_in(node: &Node, level: u32, index: usize) -> Option<Node> {
 }
 
 impl Trace for PVector {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.for_each(|v| v.trace(visit));
     }
 }

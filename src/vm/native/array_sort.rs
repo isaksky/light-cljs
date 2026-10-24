@@ -46,7 +46,7 @@ pub(super) struct State {
 }
 
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.this.trace(visit);
         self.comparator.trace(visit);
         for value in self.source.iter().chain(&self.destination) {

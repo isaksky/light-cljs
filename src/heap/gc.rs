@@ -49,8 +49,9 @@
 //! the heap itself. Consumers retain/clone records if queuing later work;
 //! no JavaScript or user callbacks run during marking or clearing. The
 //! embedder's [`WeakHandle`](super::WeakHandle) remains generation-checked
-//! and lazy, separate from heap-internal slots. JavaScript WeakMap, WeakRef
-//! job keep-alives and FinalizationRegistry scheduling are later layers.
+//! and lazy, separate from heap-internal slots. JavaScript WeakMap uses this
+//! storage (`crate::object::weak_map`); WeakRef job keep-alives and
+//! FinalizationRegistry scheduling are later layers.
 //!
 //! # Mutators
 //!
@@ -194,13 +195,25 @@ pub(crate) enum RootCategory {
     WeakNotification,
 }
 
-/// Report every heap reference held by `self`.
-///
-/// Implementations must visit each strong [`ObjectId`] stored directly in the
-/// structure; they must not allocate on the heap, take heap locks, or run
+/// Strong tracing includes symbol identities even though their immutable
+/// bodies live outside the heap. Arc ownership is not GC reachability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum TraceEdge {
+    Object(ObjectId),
+    Symbol(u64),
+}
+
+impl From<ObjectId> for TraceEdge {
+    fn from(id: ObjectId) -> Self {
+        Self::Object(id)
+    }
+}
+
+/// Report every strong object reference and symbol identity held by `self`.
+/// Implementations must not allocate on the heap, take heap locks, or run
 /// bytecode (the collector calls them while holding the heap locks).
 pub(crate) trait Trace {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId));
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge));
 
     /// Report every conditional edge separately from strong edges. Called
     /// on reached heap objects for discovery and again for clearing before
@@ -250,7 +263,7 @@ impl WeakSlot {
 }
 
 impl Trace for WeakSlot {
-    fn trace(&self, _visit: &mut dyn FnMut(ObjectId)) {}
+    fn trace(&self, _visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {}
 
     fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
         visit.weak_slot(self);
@@ -262,21 +275,21 @@ impl Trace for WeakSlot {
 /// this storage through `trace_conditional`, never through `trace`.
 #[derive(Debug, Default)]
 pub(crate) struct EphemeronTable {
-    entries: HashMap<ObjectId, Value>,
+    entries: HashMap<TraceEdge, Value>,
 }
 
 #[allow(dead_code)]
 impl EphemeronTable {
-    pub(crate) fn insert(&mut self, key: ObjectId, value: Value) -> Option<Value> {
-        self.entries.insert(key, value)
+    pub(crate) fn insert(&mut self, key: impl Into<TraceEdge>, value: Value) -> Option<Value> {
+        self.entries.insert(key.into(), value)
     }
 
-    pub(crate) fn get(&self, key: ObjectId) -> Option<&Value> {
-        self.entries.get(&key)
+    pub(crate) fn get(&self, key: impl Into<TraceEdge>) -> Option<&Value> {
+        self.entries.get(&key.into())
     }
 
-    pub(crate) fn remove(&mut self, key: ObjectId) -> Option<Value> {
-        let removed = self.entries.remove(&key);
+    pub(crate) fn remove(&mut self, key: impl Into<TraceEdge>) -> Option<Value> {
+        let removed = self.entries.remove(&key.into());
         self.compact();
         removed
     }
@@ -295,7 +308,7 @@ impl EphemeronTable {
 }
 
 impl Trace for EphemeronTable {
-    fn trace(&self, _visit: &mut dyn FnMut(ObjectId)) {}
+    fn trace(&self, _visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {}
 
     fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
         visit.ephemeron_table(self);
@@ -327,14 +340,14 @@ struct NotificationRoot {
 }
 
 impl RootSource for NotificationRoot {
-    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
-        visit(RootCategory::WeakNotification, self.owner);
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge)) {
+        visit(RootCategory::WeakNotification, self.owner.into());
     }
 }
 
 #[derive(Default)]
 struct DiscoverConditional {
-    entries: Vec<(ObjectId, Value)>,
+    entries: Vec<(TraceEdge, Value)>,
     has_storage: bool,
 }
 
@@ -351,14 +364,17 @@ impl ConditionalVisitor for DiscoverConditional {
 }
 
 struct ClearConditional<'a> {
-    marked: &'a HashSet<ObjectId>,
+    marked: &'a HashSet<TraceEdge>,
     owner: ObjectId,
     cleared: &'a mut Vec<(ObjectId, u64)>,
 }
 
 impl ConditionalVisitor for ClearConditional<'_> {
     fn weak_slot(&mut self, slot: &mut WeakSlot) {
-        if slot.target.is_some_and(|id| !self.marked.contains(&id)) {
+        if slot
+            .target
+            .is_some_and(|id| !self.marked.contains(&id.into()))
+        {
             slot.target = None;
             if let Some(token) = slot.notification {
                 self.cleared.push((self.owner, token));
@@ -373,23 +389,23 @@ impl ConditionalVisitor for ClearConditional<'_> {
 }
 
 impl Trace for Value {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match *self {
-            Value::Object(id) => visit(id),
+            Value::Object(id) => visit(id.into()),
+            Value::Symbol(ref symbol) => visit(TraceEdge::Symbol(symbol.identity())),
             // A string is not a heap object (`crate::value::string`).
             Value::Undefined
             | Value::Null
             | Value::Bool(_)
             | Value::Number(_)
             | Value::String(_)
-            | Value::Symbol(_)
             | Value::BigInt(_) => {}
         }
     }
 }
 
 impl<T: Trace> Trace for [T] {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.iter().for_each(|v| v.trace(visit));
     }
 
@@ -405,7 +421,7 @@ impl<T: Trace> Trace for [T] {
 /// state a stopped run keeps: a task body held by a run parked at a
 /// safepoint is skipped (its runner reported those frames).
 pub(crate) trait RootSource: Send + Sync {
-    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId));
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge));
 }
 
 /// Registered root sources.
@@ -459,7 +475,7 @@ struct ThreadAccess {
     ops: u32,
     /// The frames of the thread's run, reported when it parked at a
     /// safepoint; `Some` exactly while it is parked there.
-    parked: Option<Vec<ObjectId>>,
+    parked: Option<Vec<TraceEdge>>,
     /// The thread is blocked in its own collection request.
     requesting: bool,
     /// Thread registrations ([`ThreadRegistration`]): the thread is a named
@@ -552,7 +568,7 @@ impl GcState {
     }
 
     /// Frames reported by runs parked at safepoints.
-    fn parked_roots(&self) -> impl Iterator<Item = ObjectId> + '_ {
+    fn parked_roots(&self) -> impl Iterator<Item = TraceEdge> + '_ {
         self.threads
             .values()
             .filter_map(|t| t.parked.as_deref())
@@ -926,9 +942,9 @@ impl Heap {
         roots: &super::RootTable,
         scopes: &super::ScopeTable,
         sources: &[Arc<dyn RootSource>],
-        parked: impl Iterator<Item = ObjectId>,
+        parked: impl Iterator<Item = TraceEdge>,
         realm: &crate::realm::Realm,
-        visit: &mut dyn FnMut(RootCategory, ObjectId),
+        visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge),
     ) {
         roots.trace(&mut |id| visit(RootCategory::PersistentHandle, id));
         scopes.trace(&mut |id| visit(RootCategory::ScopeLocal, id));
@@ -984,15 +1000,27 @@ impl Heap {
         let mut marked = HashSet::new();
         // Only reached owners contribute entries. Each waiting entry is
         // awakened once, exactly when its key first becomes marked.
-        let mut pending: HashMap<ObjectId, Vec<Value>> = HashMap::new();
+        let mut pending: HashMap<TraceEdge, Vec<Value>> = HashMap::new();
         let mut conditional_owners = Vec::new();
-        while let Some(id) = grey.pop() {
-            if objects.mark(id, &mut |child| grey.push(child)) {
-                live += 1;
-                marked.insert(id);
-                if let Some(values) = pending.remove(&id) {
-                    values.trace(&mut |child| grey.push(child));
+        while let Some(edge) = grey.pop() {
+            if marked.contains(&edge) {
+                continue;
+            }
+            let object = match edge {
+                TraceEdge::Object(id) => {
+                    if !objects.mark(id, &mut |child| grey.push(child)) {
+                        continue;
+                    }
+                    live += 1;
+                    Some(id)
                 }
+                TraceEdge::Symbol(_) => None,
+            };
+            marked.insert(edge);
+            if let Some(values) = pending.remove(&edge) {
+                values.trace(&mut |child| grey.push(child));
+            }
+            if let Some(id) = object {
                 let mut discovery = DiscoverConditional::default();
                 objects
                     .get_mut(id)
@@ -1099,7 +1127,11 @@ impl Heap {
             &sources,
             world.gc.parked_roots(),
             &self.realm,
-            &mut |c, id| out.push((c, id)),
+            &mut |c, edge| {
+                if let TraceEdge::Object(id) = edge {
+                    out.push((c, id));
+                }
+            },
         );
         drop((scopes, roots, world));
         drop(sources);
@@ -1138,7 +1170,7 @@ mod tests {
     }
 
     impl Trace for Edges {
-        fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
             self.edges.trace(visit);
         }
     }
@@ -1176,7 +1208,7 @@ mod tests {
     }
 
     impl Trace for ConditionalEdges {
-        fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
             self.strong.trace(visit);
         }
 
@@ -1518,6 +1550,7 @@ mod tests {
             HeapObject::Array(_)
             | HeapObject::BoundFunction(_)
             | HeapObject::JsMap(_)
+            | HeapObject::WeakMap(_)
             | HeapObject::ArrayBuffer(_)
             | HeapObject::TypedArray(_)
             | HeapObject::Promise(_)

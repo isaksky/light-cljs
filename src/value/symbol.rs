@@ -31,7 +31,7 @@ impl SymbolRegistry {
         if let Some(symbol) = entries.by_key.get(&key) {
             return symbol.clone();
         }
-        let symbol = JsSymbol::new(Some(key.clone()));
+        let symbol = JsSymbol::create(Some(key.clone()), true);
         entries.by_id.insert(symbol.identity(), key.clone());
         entries.by_key.insert(key, symbol.clone());
         symbol
@@ -67,6 +67,8 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
 
 /// An immutable, identity-compared JavaScript symbol. Cloning preserves
 /// identity; constructing a symbol always creates a fresh identity.
+/// To retain WeakMap entries keyed by this symbol across collection, keep
+/// it in a runtime `Rooted` or scope local. A bare Rust clone is not a GC root.
 #[derive(Clone, Debug)]
 pub struct JsSymbol(Arc<SymbolData>);
 
@@ -74,15 +76,24 @@ pub struct JsSymbol(Arc<SymbolData>);
 struct SymbolData {
     id: u64,
     description: Option<JsString>,
+    registered: bool,
 }
 
 impl JsSymbol {
     /// A fresh symbol with an optional description (distinct from its key).
     pub fn new(description: Option<JsString>) -> Self {
+        Self::create(description, false)
+    }
+
+    fn create(description: Option<JsString>, registered: bool) -> Self {
         let id = NEXT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("symbol identities exhausted");
-        Self(Arc::new(SymbolData { id, description }))
+        Self(Arc::new(SymbolData {
+            id,
+            description,
+            registered,
+        }))
     }
 
     /// The original description; an absent description differs from `""`.
@@ -92,6 +103,10 @@ impl JsSymbol {
 
     pub(crate) fn identity(&self) -> u64 {
         self.0.id
+    }
+
+    pub(crate) fn can_be_held_weakly(&self) -> bool {
+        !self.0.registered
     }
 }
 

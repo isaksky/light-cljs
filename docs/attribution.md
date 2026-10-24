@@ -861,3 +861,42 @@ no C implementation is copied. The six rounding cases from
 is retained in `src/intl/data/QUICKJS-LICENSE` and the existing
 `string_code_unit_access` notice in the source tests. Other fixtures are
 synthetic, not light-cljs output.
+
+
+## JavaScript WeakMap tests (clj-quickjs-173)
+
+`tests/gc.rs::weak_map_drops_entries_of_unreachable_keys` and
+`weak_map_cycles_are_reclaimed` adapt the object/symbol entries, five deletes,
+dropped keys and cyclic/chained WeakMap scenarios from
+`research/quickjs/tests/test_builtin.js`, `test_weak_map` and
+`test_weak_map_cycles`, inspected revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Collection is driven by the embedding API; returned persistent vectors let
+host tests retain maps and acquire weak handles before collection. The second
+cycle value is an object to observe reclamation. Other tests are fresh
+synthetic fixtures, not light-cljs output. `research/quickjs/quickjs.c`
+`js_weakref_is_target`, `js_map_constructor`, `js_map_set`, `js_map_get`,
+`js_map_delete` and `js_weak_map_proto_funcs` were semantic references only;
+implementation is new Rust over the existing collector, with no C source port.
+The adapted tests retain the upstream LICENSE notice:
+
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

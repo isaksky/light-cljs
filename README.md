@@ -3363,7 +3363,7 @@ weak slots, ephemeron tables with a key-indexed marking fixpoint, and
 cleared-slot notifications delivered after the collection pause. Retained
 notifications root their owners and held data until consumed. Existing Map
 entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
-Deferred JavaScript surfaces: WeakMap/WeakSet, WeakRef job keep-alives and
+Deferred JavaScript surfaces: WeakSet, WeakRef job keep-alives and
 FinalizationRegistry registration and cleanup jobs.
 
 ### `Array.prototype.sort` (clj-quickjs-208)
@@ -3424,3 +3424,22 @@ Invalid iterables and primitive next results throw catchable TypeErrors.
 Protocol getters and calls support task waits, budgets, GC and worker migration.
 Generator `return()`/`throw()` methods are still absent, including forwarding
 those operations through a delegate.
+
+### JavaScript WeakMap (clj-quickjs-173)
+
+Supported: `new WeakMap()`, nullish constructor arguments, `set`/`get`/`has`/
+`delete`, object and non-registered symbol keys, catchable invalid-key and
+receiver TypeErrors, ordinary properties/prototypes and freezing, and
+`WeakMap.prototype[Symbol.toStringTag]`. The collector reclaims entries and
+values with unreachable keys in one collection, including object/symbol
+cycles and chained tables. A rooted key preserves its value. Symbols use
+traced identity reachability rather than Arc counts or intern-table retention.
+WeakMaps are task-owned and reject publication, even when empty or frozen;
+foreign tasks cannot use borrowed methods to bypass ownership.
+
+Deferred: non-nullish iterable construction (explicit TypeError, as for Map),
+WeakSet, WeakRef, FinalizationRegistry and generic symbol-tag consumption by
+Object.prototype.toString. WeakMap intentionally has no size or enumeration
+API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
+`CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
+`CARGO_BUILD_JOBS=3 cargo test --test publication weak_maps_ -- --test-threads=3`.

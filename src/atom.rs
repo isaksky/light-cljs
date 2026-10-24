@@ -134,7 +134,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::collections::object_name;
 use crate::heap::gc::Trace;
-use crate::heap::{HandleError, Heap, HeapObject, Local, ObjectId, Rooted, Scope};
+use crate::heap::{HandleError, Heap, HeapObject, Local, Rooted, Scope};
 use crate::runtime::Runtime;
 use crate::value::Value;
 use crate::value::share::{self, PublishError};
@@ -339,7 +339,7 @@ impl AtomCell {
 }
 
 impl Trace for AtomCell {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         // The collector runs only while no atom operation is in progress (an
         // operation contains no safepoint), so no writer can replace or
         // retire the current box during the trace.

@@ -209,11 +209,12 @@ pub(crate) enum Global {
 
     BigInt = 36,
     Promise = 37,
+    WeakMap = 38,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 38] = [
+    const ALL: [Global; 39] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -252,6 +253,7 @@ impl Global {
         Global::RegExp,
         Global::BigInt,
         Global::Promise,
+        Global::WeakMap,
     ];
 
     /// The JavaScript name.
@@ -283,6 +285,7 @@ impl Global {
 
             Global::Symbol => "Symbol",
             Global::Map => "Map",
+            Global::WeakMap => "WeakMap",
 
             Global::ArrayBuffer => "ArrayBuffer",
 
@@ -371,6 +374,8 @@ pub(crate) struct Intrinsics {
     symbol: ObjectId,
     pub(crate) map_prototype: ObjectId,
     map: ObjectId,
+    pub(crate) weak_map_prototype: ObjectId,
+    weak_map: ObjectId,
 
     pub(crate) array_buffer_prototype: ObjectId,
     array_buffer: ObjectId,
@@ -480,6 +485,7 @@ impl Intrinsics {
             Global::Float64Array => Value::Object(self.typed_array_constructors[9]),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
+            Global::WeakMap => Value::Object(self.weak_map),
             Global::Date => Value::Object(self.date),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
@@ -523,18 +529,22 @@ impl Intrinsics {
 
 /// Report every intrinsic object.
 impl Trace for Intrinsics {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         // The views copy property values of these objects, which are
         // intrinsics (listed here) or primitives, so they need no report of
         // their own (`realm_views_hold_only_intrinsics` checks it).
-        self.all.iter().copied().for_each(&mut *visit);
+        self.all
+            .iter()
+            .copied()
+            .map(Into::into)
+            .for_each(&mut *visit);
         for (_, id) in self
             .templates
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .values()
         {
-            visit(*id);
+            visit((*id).into());
         }
     }
 }
@@ -938,6 +948,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(json, "stringify", stringify, PropertyFlags::METHOD)?;
 
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
+    let (weak_map_prototype, weak_map) = weak_map_intrinsics(&mut b, object_prototype)?;
 
     let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
 
@@ -1146,6 +1157,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         symbol,
         map_prototype,
         map,
+        weak_map_prototype,
+        weak_map,
         intl,
         intl_locale_prototype,
 
@@ -1917,6 +1930,48 @@ fn intl_collator_intrinsics(
     Some((prototype, bound))
 }
 
+/// WeakMap has an ordinary prototype, no size, iteration or clear method.
+fn weak_map_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::WeakMap,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::WeakMapSet,
+        Builtin::WeakMapGet,
+        Builtin::WeakMapHas,
+        Builtin::WeakMapDelete,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let tag_key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    b.heap
+        .with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("WeakMap")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
+    Some((prototype, constructor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2034,7 +2089,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 260); // Includes root Collator and Number.prototype.toFixed.
+        assert_eq!(first.all.len(), 266); // Includes Collator, toFixed and six WeakMap intrinsics.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2096,7 +2151,9 @@ mod tests {
         assert_eq!(Global::from_u16(36), Some(Global::BigInt));
         assert_eq!(Global::from_name("Promise"), Some(Global::Promise));
         assert_eq!(Global::from_u16(37), Some(Global::Promise));
-        assert_eq!(Global::from_u16(38), None);
+        assert_eq!(Global::from_name("WeakMap"), Some(Global::WeakMap));
+        assert_eq!(Global::from_u16(38), Some(Global::WeakMap));
+        assert_eq!(Global::from_u16(39), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

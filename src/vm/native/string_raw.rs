@@ -31,7 +31,7 @@ pub(super) struct StringRaw {
 }
 
 impl Trace for StringRaw {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.raw.trace(visit);
         for value in &self.substitutions {
             value.trace(visit);

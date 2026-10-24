@@ -20643,3 +20643,80 @@ fn intl_collator_long_option_ropes_are_budgeted() {
     }
     panic!("collation option validation did not finish");
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn weak_map_operations() {
+    for source in [
+        "let m = new WeakMap(); let k = {}; let s = Symbol('s'); let v = {}; m.set(k, v) === m && m.set(s, 7) === m && m.get(k) === v && m.has(s) && m.get(s) === 7 && m.delete(k) && !m.delete(k) && !m.has(k) && m.get(k) === undefined && m.get(1) === undefined && !m.has(1) && m.delete(1) === false",
+        "let m = new WeakMap(); let n = 0; for (let k of [1, 'k', Symbol.for('r'), null, undefined, true, 1n]) { try { m.set(k, 1); } catch(e) { if (e instanceof TypeError) n++; } } n === 7",
+        "let m = new WeakMap(); let k = {}; m.set(k, 1); m.set(k, 2); m.get(k) === 2 && !m.has({}) && m.set(Symbol.iterator, 3).get(Symbol.iterator) === 3",
+        "let m = new WeakMap(); m instanceof WeakMap && m.constructor === WeakMap && WeakMap.name === 'WeakMap' && WeakMap.length === 1 && Object.getPrototypeOf(m) === WeakMap.prototype && m[Symbol.toStringTag] === 'WeakMap' && m.size === undefined && m.clear === undefined && m[Symbol.iterator] === undefined",
+        "let m = new WeakMap(); let k = {}; m.own = 7; Object.freeze(m); m.set(k, 3); m.get(k) === 3 && m.own === 7 && Object.isFrozen(m) && Object.keys(m).length === 1",
+        "new WeakMap(undefined) instanceof WeakMap && new WeakMap(null) instanceof WeakMap",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in ["WeakMap()", "new WeakMap([])", "new WeakMap(1)"] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+    for (method, length) in [("set", 2), ("get", 1), ("has", 1), ("delete", 1)] {
+        let source = format!(
+            "let d = Object.getOwnPropertyDescriptor(WeakMap.prototype, '{method}'); d.writable && !d.enumerable && d.configurable && d.value.name === '{method}' && d.value.length === {length}"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true));
+        for receiver in [
+            "undefined",
+            "null",
+            "1",
+            "{}",
+            "new Map()",
+            "WeakMap.prototype",
+            "Object.create(WeakMap.prototype)",
+        ] {
+            assert_eq!(
+                failure(&format!(
+                    "WeakMap.prototype.{method}.call({receiver}, 1, 2)"
+                ))
+                .kind(),
+                VmErrorKind::TypeError
+            );
+        }
+        assert_eq!(
+            failure(&format!("new WeakMap.prototype.{method}()")).kind(),
+            VmErrorKind::TypeError
+        );
+    }
+}
+
+#[test]
+fn weak_maps_reject_access_from_another_task() {
+    let rt = Runtime::new();
+    for source in ["new WeakMap()", "new WeakMap().set({}, {})"] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(map) = owner.run().unwrap() else {
+            panic!("expected WeakMap");
+        };
+        for body in [
+            "m.get(1)",
+            "m.set({}, 3)",
+            "WeakMap.prototype.get.call(m, 1)",
+            "WeakMap.prototype.set.call(m, {}, 3)",
+            "WeakMap.prototype.has.call(m, 1)",
+            "WeakMap.prototype.delete.call(m, 1)",
+            "m.foo = 3",
+            "Object.keys(m)",
+            "Object.getPrototypeOf(m)",
+            "Object.isFrozen(m)",
+            "Object.freeze(m)",
+            "Object.prototype.toString.call(m)",
+        ] {
+            let code = compile_function(&format!("function read(m) {{ return {body}; }}")).unwrap();
+            let task = rt.spawn(&code, &[&map]).unwrap();
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+                "{source}: {body}"
+            );
+        }
+    }
+}

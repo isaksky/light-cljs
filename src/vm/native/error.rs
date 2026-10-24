@@ -3,7 +3,7 @@
 //! 7d1c13c5d8f8, implemented over task-owned ordinary objects.
 use super::{Action, Fault, Input};
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::value::{JsString, Value};
@@ -27,7 +27,7 @@ pub(super) enum ErrorState {
 }
 
 impl Trace for ErrorState {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
             Self::Constructor {
                 object,

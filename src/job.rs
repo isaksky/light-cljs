@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::heap::gc::{Access, Trace};
-use crate::heap::{Heap, ObjectId, Rooted};
+use crate::heap::{Heap, Rooted};
 use crate::value::{Value, share};
 
 #[derive(Debug)]
@@ -14,7 +14,7 @@ pub(crate) struct Job {
 }
 
 impl Trace for Job {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.callable.trace(visit);
         self.args.iter().for_each(|v| v.trace(visit));
     }
@@ -112,7 +112,7 @@ impl JobInbox {
 }
 
 impl Trace for JobInbox {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.inbox
             .lock()
             .unwrap()
@@ -183,7 +183,7 @@ impl JobSender {
 }
 
 impl Trace for JobSender {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.callable.trace(visit);
     }
 }

@@ -277,7 +277,7 @@ use crate::dep::{
 };
 use crate::error::{SourceLocation, VmError, VmErrorKind};
 use crate::heap::gc::{Access, MutatorToken, RootCategory, RootSource, Trace};
-use crate::heap::{Heap, ObjectId, Rooted};
+use crate::heap::{Heap, Rooted};
 use crate::host::{Host, NoHost};
 use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WakeHandle, WorldId};
 use crate::value::Value;
@@ -431,7 +431,7 @@ enum TaskBody {
 }
 
 impl Trace for TaskBody {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
             TaskBody::Ready(vm) => vm.trace(visit),
             TaskBody::Finished => {}
@@ -470,7 +470,7 @@ pub(crate) struct TaskInner {
 /// for. Otherwise the body is free or held for an instant by a diagnostic
 /// reader, so the lock is short.
 impl RootSource for TaskInner {
-    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge)) {
         self.executable
             .0
             .trace(&mut |id| visit(RootCategory::ExecutableConstant, id));
@@ -834,7 +834,7 @@ impl Task {
     /// not accessible (the task is running). Test helper; the collector
     /// reaches tasks through their `RootSource` registration.
     #[cfg(test)]
-    pub(crate) fn trace_frames(&self, visit: &mut dyn FnMut(ObjectId)) -> bool {
+    pub(crate) fn trace_frames(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) -> bool {
         match self.0.body.try_lock() {
             Ok(body) => {
                 body.trace(visit);

@@ -23,7 +23,7 @@ pub(crate) struct Data {
 }
 
 impl Trace for Data {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.source.trace(visit);
     }
 }
@@ -154,7 +154,7 @@ pub(crate) struct State {
 }
 
 impl Trace for State {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.source.trace(visit);
         self.iterator.trace(visit);
         self.callback.trace(visit);

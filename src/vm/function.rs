@@ -196,14 +196,14 @@ impl FunctionObject {
 }
 
 impl Trace for FunctionObject {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.code.trace(visit);
         self.captures.trace(visit);
         if let Some(home) = self.home_object {
-            visit(home);
+            visit(home.into());
         }
         if let Some(record) = self.properties {
-            visit(record);
+            visit(record.into());
         }
     }
 }
@@ -221,13 +221,13 @@ pub(crate) struct BoundFunction {
 }
 
 impl Trace for BoundFunction {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.target.trace(visit);
         self.this.trace(visit);
         self.args.trace(visit);
-        visit(self.metadata);
+        visit(self.metadata.into());
         if let Some(properties) = self.properties {
-            visit(properties);
+            visit(properties.into());
         }
     }
 }
@@ -947,7 +947,7 @@ pub(crate) struct BindingCell {
 }
 
 impl Trace for BindingCell {
-    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.value.iter().for_each(|v| v.trace(visit));
     }
 }
