@@ -315,6 +315,133 @@ fn generator_next_and_yield() {
 }
 
 #[test]
+fn generator_yield_star_delegation() {
+    // Adapted from QuickJS tests/test_builtin.js::test_generator (f1/f2),
+    // revision 7d1c13c5d8f8: let replaces var; assertions are rewritten.
+    // Copyright (c) 2017-2021 Fabrice Bellard
+    // Copyright (c) 2017-2021 Charlie Gordon
+    // Permission is hereby granted, free of charge, to any person obtaining a copy
+    // of this software and associated documentation files (the "Software"), to deal
+    // in the Software without restriction, including without limitation the rights
+    // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    // copies of the Software, and to permit persons to whom the Software is
+    // furnished to do so, subject to the following conditions:
+    // The above copyright notice and this permission notice shall be included in
+    // all copies or substantial portions of the Software.
+    // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    // THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+    // THE SOFTWARE.
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(
+        eval(
+            r#"
+        function* f2() { yield 1; yield 2; return 'ret_val'; }
+        function* f1() {
+            let ret = yield* f2();
+            if (ret !== 'ret_val') throw 'return value';
+            return 3;
+        }
+        let g = f1(), a = g.next(), b = g.next(), c = g.next(), d = g.next();
+        if (a.value !== 1 || a.done !== false || b.value !== 2 || b.done !== false ||
+            c.value !== 3 || c.done !== true || d.value !== undefined || d.done !== true)
+            throw 'upstream rows';
+        function* receive() { return yield 'ready'; }
+        function* forward() { return yield* receive(); }
+        g = forward();
+        if (g.next('ignored').value !== 'ready' || g.next(42).value !== 42)
+            throw 'forwarding';
+        function* array() { return yield* [1, 2]; }
+        g = array(); a = g.next(); b = g.next(); c = g.next();
+        if (a.value !== 1 || a.done || b.value !== 2 || b.done ||
+            c.value !== undefined || !c.done) throw 'array';
+        let reads = 0, acquisitions = 0, steps = 0, values = 0;
+        let fixed = {done: false, get value() { values++; return 7; }};
+        let it = {
+            get next() {
+                reads++;
+                return function(v) {
+                    if (this !== it) throw 'receiver';
+                    steps++;
+                    if (steps === 1 && (arguments.length !== 1 || v !== undefined))
+                        throw 'initial argument';
+                    if (steps === 2 && v !== 19) throw 'next argument';
+                    return steps === 1 ? fixed : {done: true, value: v};
+                };
+            }
+        };
+        it[Symbol.iterator] = function() { acquisitions++; return this; };
+        function* custom() { return 2 + (yield* it); }
+        g = custom(); a = g.next(123);
+        if (a !== fixed || values !== 0) throw 'identity or eager value';
+        Object.defineProperty(it, 'next', {value: function() { throw 'uncached'; }});
+        b = g.next(19);
+        if (b.value !== 21 || !b.done || reads !== 1 || acquisitions !== 1 || steps !== 2)
+            throw 'cached protocol';
+        let caught = 0;
+        function* invalid() { try { yield* 1; } catch(e) { return e instanceof TypeError; } }
+        if (invalid().next().value !== true) throw 'non iterable';
+        let bad = {next() { return 1; }};
+        bad[Symbol.iterator] = function() { return this; };
+        function* invalidResult() {
+            try { yield* bad; } catch(e) { caught += e instanceof TypeError ? 1 : 100; }
+            finally { caught += 2; }
+            return caught;
+        }
+        if (invalidResult().next().value !== 3) throw 'non object';
+        true
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn generator_yield_star_handlers_and_nested_delegates() {
+    // Synthetic fixtures, not light-cljs output. Pending completions and
+    // multiple delegation sites share the generic detachable activation.
+    assert_eq!(
+        eval(
+            r#"
+        function* cleanup() { try { return 7; } finally { yield* [1, 2]; } }
+        function* outer() { return 3 + (yield* cleanup()); }
+        let g = outer();
+        if (g.next().value !== 1 || g.next().value !== 2) throw 'cleanup yields';
+        let end = g.next();
+        if (end.value !== 10 || !end.done) throw 'pending return';
+        function* choose() { return yield* (yield* []); }
+        let caught = false;
+        try { choose().next(); } catch(e) { caught = e instanceof TypeError; }
+        if (!caught) throw 'nested operand';
+        let stage = 0, closed = 0;
+        let it = {next() {
+            if (stage === 0) throw 11;
+            if (stage === 1) return {get done() { throw 12; }};
+            if (stage === 2) return {done: true, get value() { throw 13; }};
+            return {done: 'truthy', value: 14};
+        }, return() { closed++; return {}; }};
+        it[Symbol.iterator] = function() { return this; };
+        function* errors() { try { return yield* it; } catch(e) { return e; } }
+        for (stage = 0; stage < 4; stage++) {
+            end = errors().next();
+            if (end.value !== 11 + stage || !end.done) throw 'protocol error';
+        }
+        if (closed !== 0) throw 'unexpected close';
+        function* sequential() { yield* [1]; return yield* [2]; }
+        g = sequential();
+        if (g.next().value !== 1 || g.next().value !== 2 || !g.next().done)
+            throw 'temporary reuse';
+        true
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn generator_rejected_resume_preserves_suspension() {
     // Synthetic fixture, not light-cljs output. The deepest caller fits,
     // but attaching the generator above it exceeds the task's frame limit.

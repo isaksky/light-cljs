@@ -876,7 +876,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
         | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow | CallSpread
         | CallMethodSpread | ConstructSpread | CheckSpreadArguments => false,
-        GeneratorStart | GeneratorYield | GeneratorInitialYield => false,
+        GeneratorStart | GeneratorYield | GeneratorInitialYield | GeneratorYieldStar => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -2344,7 +2344,19 @@ impl NativeState {
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("generator expected result"));
                 };
-                let yielded = heap.read(*id, |o| matches!(o, crate::heap::HeapObject::Generator(g) if matches!(g.state, super::generator::State::SuspendedYield(_)))).unwrap_or(false);
+                let (yielded, delegated) = heap
+                    .read(*id, |o| match o {
+                        crate::heap::HeapObject::Generator(g) => match g.state {
+                            super::generator::State::SuspendedYield(_) => (true, false),
+                            super::generator::State::SuspendedYieldStar(_) => (true, true),
+                            _ => (false, false),
+                        },
+                        _ => (false, false),
+                    })
+                    .unwrap_or((false, false));
+                if delegated {
+                    return Ok(Action::Return(value));
+                }
                 if !yielded {
                     super::generator::complete(heap, *id);
                 }

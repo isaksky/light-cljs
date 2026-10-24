@@ -6133,7 +6133,8 @@ registries, preserving earlier intrinsic identities.
 ## Detachable task-owned activations and generators (clj-quickjs-243)
 
 A generator is a task-owned heap object with ordinary properties, an owner task,
-and one of SuspendedStart, SuspendedYield, Executing or Completed. Suspended
+and one of SuspendedStart, SuspendedYield, SuspendedYieldStar (clj-quickjs-245),
+Executing or Completed. Suspended
 states own a `DetachedActivation`: shared `Arc<Code>`, the callee, receiver,
 program counter, retained arguments, locals and operands, handlers (including
 pending completions) and native frames. Frame indices, handler heights and native
@@ -6184,7 +6185,8 @@ and `js_create_iterator_result`, revision
 `research/quickjs/tests/test_builtin.js` `test_generator` are expressed as new
 synthetic assertions in `tests/js_source.rs::generator_next_and_yield`, with let
 bindings and one combined failure check. No upstream source/test text copied.
-Generator return/throw methods and delegated yield remain deferred.
+Generator return/throw methods remain deferred; delegated yield is implemented
+by clj-quickjs-245 below.
 
 The generator prototype inherits the existing `%IteratorPrototype%` installed by
 clj-quickjs-237, including its identity `[Symbol.iterator]`. The realm builder
@@ -6378,6 +6380,7 @@ survives an option getter, coercion, wait, collection or worker migration.
 Collation-option validation uses the same saved rope cursor in 128-step chunks;
 fixed enumerated options reject overlong strings by cached length before the
 shared option helper can flatten them.
+
 ## Exact fixed decimal formatting (clj-quickjs-150)
 
 `src/number.rs` owns the shared `Decimal` coefficient/point representation,
@@ -6405,3 +6408,35 @@ Digit-count strings are limited to 4096 UTF-16 units before leaf StringToNumber
 can scan or flatten them, including strings produced by resumable callbacks.
 Oversized strings throw RangeError after receiver validation and ToPrimitive;
 generic budgeted numeric conversion remains clj-quickjs-265.
+
+## Generator delegation (clj-quickjs-245)
+
+The compiler lowers `yield* operand` into GetIterator followed by an ordinary
+VM loop. Task-owned hidden locals hold the iterator, cached next method, current
+result object and received argument. Each iteration calls next with the iterator
+as receiver and exactly one argument (undefined initially), validates the result
+as an object and reads done. If truthy, value becomes the expression result;
+otherwise the append-only GeneratorYieldStar instruction detaches the activation
+with a SuspendedYieldStar state. The next boundary returns that result object
+unchanged, without reading value or wrapping it. Resuming either suspended yield
+state uses the same generic activation attach/check/rebase implementation.
+Protocol errors follow ordinary JS handlers, and every getter/call is resumable
+through existing bytecode/native frames. Locals are cleared on normal exhaustion.
+Cancellation continues to use task unwinding; generator return/throw methods
+remain absent, so forwarding those resumes remains an explicit grammar gap.
+
+`generator_yield_star_delegation` covers result identity, cached acquisition,
+receiver and argument forwarding, array iteration, return values and catchable
+TypeErrors. `yield_star_inner_next_waits` collects at instruction boundaries and
+migrates a suspended task, checking exact effects and result sequence. The saved
+activation GC test also retains a delegate's closure solely through hidden locals.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`,
+`js_parse_assign_expr2` (yield-star iterator loop), `OP_yield_star`, and
+`js_generator_next` (SUSPENDED_YIELD_STAR returns the result object itself),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The f1/f2 rows from
+`research/quickjs/tests/test_builtin.js::test_generator` at that revision are
+adapted in `tests/js_source.rs::generator_yield_star_delegation` with `let` in
+place of `var` and rewritten assertions. Its copyright and MIT permission notice
+are retained in the test. This is a semantic reference; no QuickJS C code or
+saved C/Rust stack is used.

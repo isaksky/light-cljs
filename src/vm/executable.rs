@@ -530,6 +530,7 @@ impl Executable {
                 Opcode::GeneratorStart => Instr::GeneratorStart,
                 Opcode::GeneratorYield => Instr::GeneratorYield,
                 Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
+                Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
 
                 Opcode::GetGlobalObject => Instr::GetGlobalObject,
                 Opcode::GetGlobal => Instr::GetGlobal(operand as u16),

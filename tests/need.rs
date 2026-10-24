@@ -189,6 +189,71 @@ fn generator_body_waits_and_resumes() {
 }
 
 #[test]
+fn yield_star_inner_next_waits() {
+    // Synthetic fixture, not light-cljs output. Effects detect repeated next
+    // calls; collection at every budget yield covers attached/detached state.
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "yield-star-wait",
+        r#"
+        let n = 0;
+        let it = {next(v) {
+            n++; __rt.effect(1, n);
+            let dependency = __rt.need(5, 3);
+            return {done: n > 2, value: dependency + n + (v === undefined ? 0 : v)};
+        }};
+        it[Symbol.iterator] = function() { return this; };
+        function* outer() { return 10 + (yield* it); }
+        let g = outer(), a = g.next(), b = g.next(20), c = g.next(30), d = g.next();
+        if (a.value !== 8 || a.done || b.value !== 29 || b.done ||
+            c.value !== 50 || !c.done || d.value !== undefined || !d.done || n !== 3)
+            throw 'delegated sequence';
+        c.value
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let expected = key(&rt, NUMBER);
+    for step in 0..2000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            outcome => {
+                assert_eq!(waiting(outcome), expected);
+                break;
+            }
+        }
+        assert!(step < 1999, "never reached inner need");
+    }
+    let request = one_request(&task, expected);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+    let value = thread::spawn(move || {
+        for step in 0..3000 {
+            match resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(host.effects, [1.0, 2.0, 3.0]);
+                    return number(outcome);
+                }
+            }
+            assert!(step < 2999, "delegation did not complete");
+        }
+        unreachable!()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(value, 50.0);
+}
+
+#[test]
 fn generator_cancellation_runs_finally() {
     // Synthetic fixture, not light-cljs output.
     let rt = Runtime::new();

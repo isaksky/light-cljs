@@ -114,6 +114,7 @@
 //! | `GeneratorStart` | 0x7B | – | – | mark non-constructor generator code before parameter initialization |
 //! | `GeneratorYield` | 0x7C | – | yielded → resumed | detach activation; next supplies the resumed operand |
 //! | `GeneratorInitialYield` | 0x7D | – | – | detach initialized activation and return a fresh generator to its caller |
+//! | `GeneratorYieldStar` | 0x7E | – | result object → resumed | detach activation and return the iterator result object unchanged |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -599,6 +600,7 @@ pub enum Opcode {
     GeneratorStart = 0x7B,
     GeneratorYield = 0x7C,
     GeneratorInitialYield = 0x7D,
+    GeneratorYieldStar = 0x7E,
 }
 
 /// Operand encoding of an opcode.
@@ -758,6 +760,7 @@ impl Opcode {
             0x7B => GeneratorStart,
             0x7C => GeneratorYield,
             0x7D => GeneratorInitialYield,
+            0x7E => GeneratorYieldStar,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -891,6 +894,7 @@ impl Opcode {
             GeneratorStart => "generator_start",
             GeneratorYield => "generator_yield",
             GeneratorInitialYield => "generator_initial_yield",
+            GeneratorYieldStar => "generator_yield_star",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -953,7 +957,9 @@ impl Opcode {
             | Dec | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
                 OperandKind::None
             }
-            GeneratorStart | GeneratorYield | GeneratorInitialYield => OperandKind::None,
+            GeneratorStart | GeneratorYield | GeneratorInitialYield | GeneratorYieldStar => {
+                OperandKind::None
+            }
         }
     }
 }
@@ -1131,6 +1137,7 @@ pub(crate) enum Instr {
     GeneratorStart,
     GeneratorYield,
     GeneratorInitialYield,
+    GeneratorYieldStar,
 }
 
 impl Instr {
@@ -1240,6 +1247,7 @@ impl Instr {
             Instr::GeneratorStart => Opcode::GeneratorStart,
             Instr::GeneratorYield => Opcode::GeneratorYield,
             Instr::GeneratorInitialYield => Opcode::GeneratorInitialYield,
+            Instr::GeneratorYieldStar => Opcode::GeneratorYieldStar,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1280,7 +1288,7 @@ impl Instr {
             | DeclareGlobalFunction(_)
             | GeneratorStart
             | GeneratorInitialYield => (0, 0),
-            GeneratorYield => (1, 1),
+            GeneratorYield | GeneratorYieldStar => (1, 1),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
@@ -1331,6 +1339,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 125);
+        assert_eq!(assigned, 126);
     }
 }

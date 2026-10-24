@@ -2502,7 +2502,7 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// Shared protocol lowering for for-of and spread. Acquisition itself
+    /// Shared protocol lowering for for-of, spread and yield*. Acquisition itself
     /// runs the existing resumable native iterator state machine.
     #[inline(never)]
     fn iterator_acquire(
@@ -2528,6 +2528,46 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::SetLocal, next, span);
         self.iterator_field("iterator", span)?;
         self.out().op_u16(Opcode::SetLocal, it, span);
+        Ok(())
+    }
+
+    /// Delegate with cached protocol values in traced frame locals. The raw
+    /// result is yielded without reading value until the iterator is done.
+    #[inline(never)]
+    fn yield_star(&mut self, operand: &Expr, span: Span) -> Result<(), SyntaxError> {
+        let saved_slot = self.cur().next_slot;
+        let it = self.temp(span)?;
+        let next = self.temp(span)?;
+        let result = self.temp(span)?;
+        let received = self.temp(span)?;
+        self.iterator_acquire(operand, it, next, span)?;
+        self.out().op(Opcode::Undefined, span);
+        self.out().op_u16(Opcode::SetLocal, received, span);
+        let start = self.out().label();
+        let done = self.out().label();
+        self.out().bind(start);
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op_u16(Opcode::GetLocal, next, span);
+        self.out().op_u16(Opcode::GetLocal, received, span);
+        self.out().op_u16(Opcode::CallMethod, 1, span);
+        self.out().op(Opcode::RequireObject, span);
+        self.out().op_u16(Opcode::SetLocal, result, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("done", span)?;
+        self.out().op(Opcode::Not, span);
+        self.out().branch(Opcode::JumpIfFalse, done, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.out().op(Opcode::GeneratorYieldStar, span);
+        self.out().op_u16(Opcode::SetLocal, received, span);
+        self.out().branch(Opcode::Jump, start, span);
+        self.out().bind(done);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("value", span)?;
+        for slot in [it, next, result, received] {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.cur_mut().next_slot = saved_slot;
         Ok(())
     }
 
@@ -3494,10 +3534,18 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::GeneratorYield, span);
                 Ok(())
             }
-            ExprKind::Yield { .. } | ExprKind::Await(_) => Err(self.error(
+            ExprKind::Yield {
+                value: Some(value),
+                delegate: true,
+            } => self.yield_star(value, span),
+            ExprKind::Yield {
+                value: None,
+                delegate: true,
+            } => Err(self.internal(span, "delegated yield without operand")),
+            ExprKind::Await(_) => Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 e.span,
-                "delegated yield/await cannot be executed yet",
+                "await cannot be executed yet",
             )),
             ExprKind::Sequence { left, right } => self.sequence(left, right, span),
             ExprKind::Delete { operand, op_span } => self.delete(operand, *op_span),

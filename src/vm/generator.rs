@@ -2,6 +2,7 @@
 //! activation; `next` is a native boundary around ordinary attached frames.
 use super::dispatch::{Fault, Flow};
 use super::frames::{DetachedActivation, VmState};
+use super::instr::Instr;
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
@@ -14,6 +15,7 @@ pub(crate) enum State {
     SuspendedYield(DetachedActivation),
     Executing,
     Completed,
+    SuspendedYieldStar(DetachedActivation),
 }
 
 #[derive(Debug)]
@@ -26,7 +28,9 @@ pub(crate) struct Generator {
 impl Trace for Generator {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.object.trace(visit);
-        if let State::SuspendedStart(a) | State::SuspendedYield(a) = &self.state {
+        if let State::SuspendedStart(a) | State::SuspendedYield(a) | State::SuspendedYieldStar(a) =
+            &self.state
+        {
             a.trace(visit);
         }
     }
@@ -56,8 +60,8 @@ pub(crate) fn initialize_function(
 
 /// Keep generator instruction temporaries out of the ordinary dispatch
 /// frame, including the error path on workers with small Rust stacks.
-pub(crate) fn step(heap: &Heap, vm: &mut VmState, initial: bool) -> Result<Flow, Fault> {
-    if initial {
+pub(crate) fn step(heap: &Heap, vm: &mut VmState, instr: Instr) -> Result<Flow, Fault> {
+    if instr == Instr::GeneratorInitialYield {
         create(heap, vm)?;
     } else if vm.activation_cancelling() {
         // Like a dependency wait during cancellation, yielding abandons
@@ -68,7 +72,7 @@ pub(crate) fn step(heap: &Heap, vm: &mut VmState, initial: bool) -> Result<Flow,
             Flow::CleanupEnded
         });
     } else {
-        suspend(heap, vm)?;
+        suspend(heap, vm, instr == Instr::GeneratorYieldStar)?;
     }
     Ok(Flow::FrameChanged)
 }
@@ -139,7 +143,9 @@ pub(crate) fn resume(
 ) -> Result<bool, Fault> {
     heap.read(id, |o| match o {
         HeapObject::Generator(g) => match &g.state {
-            State::SuspendedStart(a) | State::SuspendedYield(a) => vm.check_activation(a),
+            State::SuspendedStart(a) | State::SuspendedYield(a) | State::SuspendedYieldStar(a) => {
+                vm.check_activation(a)
+            }
             _ => Ok(()),
         },
         _ => Err(Fault::Internal("generator missing")),
@@ -153,7 +159,7 @@ pub(crate) fn resume(
         .ok_or(Fault::Internal("generator reclaimed"))?;
     match old {
         State::SuspendedStart(a) => vm.attach_activation(a),
-        State::SuspendedYield(a) => {
+        State::SuspendedYield(a) | State::SuspendedYieldStar(a) => {
             vm.attach_activation(a);
             vm.push(value);
         }
@@ -168,14 +174,18 @@ pub(crate) fn resume(
     Ok(true)
 }
 
-pub(crate) fn suspend(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
+pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, delegated: bool) -> Result<(), Fault> {
     let id =
         super::native::generator_boundary(vm).ok_or(Fault::Internal("yield outside generator"))?;
     let value = vm.pop()?;
     let activation = vm.detach_activation()?;
     heap.with_object_mut(id, |o| {
         if let HeapObject::Generator(g) = o {
-            g.state = State::SuspendedYield(activation);
+            g.state = if delegated {
+                State::SuspendedYieldStar(activation)
+            } else {
+                State::SuspendedYield(activation)
+            };
         }
     })
     .ok_or(Fault::Internal("generator reclaimed"))?;

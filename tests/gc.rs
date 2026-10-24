@@ -33,6 +33,7 @@ fn suspended_generator_operands_and_completions_are_traced() {
         "function read(a,b) { return a; } return read({n:17}, yield 0);",
         "try { return {n:17}; } finally { yield 0; }",
         "try { throw {n:17}; } finally { yield 0; }",
+        "return yield* (function() { let held={n:17}; let count=0; let it={next() { return count++ === 0 ? {value:0,done:false} : {value:held,done:true}; }}; it[Symbol.iterator]=function() { return this; }; return it; })();",
     ] {
         let rt = Runtime::new();
         let source = format!(

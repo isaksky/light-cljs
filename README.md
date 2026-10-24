@@ -3330,7 +3330,7 @@ Uncaught exceptions complete it and propagate to the caller; re-entrant next and
 incompatible receivers throw TypeError. Activations detach into traced heap
 storage between yields and reattach to ordinary VM frames, preserving dependency
 waits, budgets, collection and worker migration. Publication and foreign-task
-access are rejected. Deferred: `yield*`, generator `return`/`throw`, async/await.
+access are rejected. Deferred: generator `return`/`throw`, async/await.
 Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
 Generator functions eagerly create their own task-owned prototype records, so
@@ -3384,7 +3384,8 @@ completions across calls from different depths. For example,
 `try { return 1; } finally { yield 2; }` yields 2, then completes with 1.
 A resumed finally block may wait on `__rt.need`, survive collection and migrate
 to another worker before finishing its pending return or throw. Generator
-`return()`/`throw()` methods, delegated `yield*` and async/await remain deferred.
+`return()`/`throw()` methods and async/await remain deferred; delegated `yield*`
+executes as described below.
 
 ### Array destructuring (clj-quickjs-131)
 
@@ -3412,3 +3413,14 @@ The pinned snapshot rule set is documented in
 [architecture](docs/architecture.md#intl-collator-root-order-clj-quickjs-218).
 The cached bound function can be passed directly to `Array.prototype.sort`;
 the en/de root rows sort `['z', 'a', 'Z', 'A']` to `a,A,z,Z`.
+
+### Generator delegation (clj-quickjs-245)
+
+`yield* iterable` supports generators, arrays and user iterables through the
+shared resumable iterator protocol. It caches the iterator/next method once,
+forwards `next(value)` arguments (undefined initially), returns each non-done
+iterator result object by identity, and evaluates to the final result's value.
+Invalid iterables and primitive next results throw catchable TypeErrors.
+Protocol getters and calls support task waits, budgets, GC and worker migration.
+Generator `return()`/`throw()` methods are still absent, including forwarding
+those operations through a delegate.

@@ -4005,20 +4005,13 @@ fn generator_async_context_and_precedence() {
             (generator, asynchronous),
             "{src}"
         );
-        if generator && !asynchronous && !src.contains("yield *") {
+        if generator && !asynchronous {
             compile_script("syntax", src).unwrap();
         } else {
             let e = compile_script("syntax", src).unwrap_err();
             assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-            assert_eq!(
-                e.span.start,
-                src.find("yield *").unwrap_or(start),
-                "{src}: {e}"
-            );
-            assert!(
-                e.message
-                    .contains(if asynchronous { "async" } else { "yield" })
-            );
+            assert_eq!(e.span.start, start, "{src}: {e}");
+            assert!(e.message.contains("async"));
         }
     }
     for src in [
@@ -4503,8 +4496,8 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
     std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
-            // Generator functions compile at every accepted depth; async
-            // functions and delegated yield remain explicitly unsupported.
+            // Generator functions, including delegation, compile at every
+            // accepted depth; async functions remain explicitly unsupported.
             for (name, make) in syntax_makers {
                 let mut deepest = 0;
                 for n in 1..=MAX_NESTING {
@@ -4512,10 +4505,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                     match parse_script(&src) {
                         Ok(_) => {
                             deepest = n;
-                            if src.contains("async")
-                                || src.contains("yield*")
-                                || src.contains("yield *")
-                            {
+                            if src.contains("async") {
                                 let e = compile_script(name, &src).unwrap_err();
                                 assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{name}: {e}");
                             } else {

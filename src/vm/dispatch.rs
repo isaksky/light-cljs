@@ -1649,8 +1649,9 @@ pub(crate) fn step(
             }
         }
         Instr::GeneratorStart => {}
-        Instr::GeneratorInitialYield => return super::generator::step(heap, state, true),
-        Instr::GeneratorYield => return super::generator::step(heap, state, false),
+        Instr::GeneratorInitialYield | Instr::GeneratorYield | Instr::GeneratorYieldStar => {
+            return super::generator::step(heap, state, instr);
+        }
         Instr::Return => {
             let v = state.pop()?;
             return return_flow(state, v);
@@ -1922,7 +1923,7 @@ pub(crate) fn step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
-        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield => true,
+        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.
