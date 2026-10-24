@@ -3724,13 +3724,14 @@ cannot be published. Verify with `cargo test --test js_source base_classes` and
 
 Derived classes and `super()` execute (-137), including static/prototype
 inheritance, receiver initialization checks, default argument forwarding and
-suspension inside parent constructors. Internal new-target forwarding preserves
-the most derived prototype. Parent classes/functions and `Object` are supported;
+suspension inside parent constructors. The shared `new.target` binding preserves
+the most derived prototype and is available in constructors, lexical arrows and
+direct eval before and after `super()`. Parent classes/functions and `Object` are supported;
 construction of other built-in subclasses is explicitly rejected. Verify with
 `cargo test --test js_source derived_classes` and
 `cargo test --test need derived_constructor_waits_inside_super`.
 
-Deferred: source `new.target`, super properties (-138), fields and static
+Deferred: super properties (-138), fields and static
 initialization blocks (-139), and super calls from runtime eval source.
 
 ### Intl.ListFormat (clj-quickjs-220)

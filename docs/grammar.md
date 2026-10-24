@@ -539,6 +539,8 @@ remain deferred; the CLI and `compile_script` still take scripts only.
 
 Super properties and class fields remain deferred (clj-quickjs-138/139).
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
+Source `new.target` in base and derived constructors, lexical arrows and direct
+eval uses the leaf construction target, including before `super()`.
 Constructor rejection messages use the source spelling of an identifier or
 member callee (`G`, `o.m`, `o[k]`), independently of its mutable `name` property.
 Other callees use the value kind (`function` for an anonymous arrow), or the
@@ -4162,8 +4164,8 @@ fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
 the outer reaction: the adoption call and the inner forwarding reaction.
 Thenable calls can yield, wait, migrate and survive collection like reactions.
 
-Rejected forms: async generators and derived class syntax retain explicit
-rejections. Explicit gaps: subclass capabilities,
+Rejected forms: async generators and construction of Promise subclasses retain
+explicit rejections. Explicit gaps: subclass capabilities,
 species, combinators, `finally` and arbitrary Promise own properties are
 deferred. Only the intrinsic Promise constructor is
 accepted as `this` for static resolve/reject.
@@ -5248,7 +5250,9 @@ ReferenceError, including through arrows and direct eval. A second successful
 `super()` runs the parent and then throws ReferenceError when binding `this`.
 Default derived constructors forward all original arguments without iteration.
 Parent constructors run on resumable VM frames and allocate using the most
-derived constructor's prototype. An object return overrides the receiver;
+derived constructor's prototype. Source `new.target` uses that same constructor
+in every parent frame, lexical arrow and direct eval, even before `super()`.
+An object return overrides the receiver;
 undefined returns the initialized receiver, otherwise ReferenceError if missing.
 Any other primitive return throws TypeError. Finally blocks finish before these
 return checks.
@@ -5260,9 +5264,9 @@ Rejected forms: `super()` outside a derived constructor or its arrows, and
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
-Explicit gaps: source `new.target`, super properties (-138), fields and static
-blocks (-139), and inherited super-call context in runtime eval source. Internal
-new-target plumbing supports ordinary/class parents and `Object`; constructing
+Explicit gaps: super properties (-138), fields and static blocks (-139), and
+inherited super-call context in runtime eval source. Construction with the
+derived new target supports ordinary/class parents and `Object`; constructing
 other built-in subclasses is explicitly rejected with UnsupportedOperand.
 
 ```js accept
@@ -5270,6 +5274,12 @@ class A { constructor(a, b) { this.s = a + b; } }
 class B extends A {}
 class C extends B { constructor() { super(...[1, 2]); this.z = 20; } }
 let c = new C(); c.s === 3 && c.z === 20;
+```
+
+```js accept
+class A { constructor() { this.target = new.target; } }
+class B extends A { constructor() { let f = () => new.target; super(); this.same = f() === new.target; } }
+let b = new B(); b.target === B && b.same;
 ```
 
 ```js reject Invalid 1:32

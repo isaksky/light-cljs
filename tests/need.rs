@@ -38,6 +38,7 @@ fn derived_constructor_waits_inside_super() {
         "class C { constructor() { this.x = __rt.need(5, 3); } } class D extends C { constructor() { let f = () => this; super(); this.z = f() === this ? 20 : 0; } } let d = new D(); d.x + d.z",
         "class C { constructor(a,b) { this.x = __rt.need(5, 3) + a + b; } } class D extends C {} class E extends D { constructor() { super(1, 2); this.z = 17; } } let d = new E(); d.x + d.z",
         "class C { constructor(x) { this.x = x; } } let parent = C.bind(null, 10); Object.defineProperty(parent, 'prototype', {get() { __rt.need(5, 3); return C.prototype; }}); class D extends parent { constructor() { super(); this.z = 20; } } let d = new D(); d.x + d.z",
+        "class C { constructor() { let target = () => new.target; this.x = __rt.need(5, 3); this.target = target; this.same = target() === new.target; } } class D extends C {} class E extends D { constructor() { let target = () => new.target; let before = target(); (() => super())(); this.z = before === E && target() === E && this.target() === E && this.same && eval('new.target') === E ? 20 : 0; } } let d = new E(); d.x + d.z",
     ] {
         let rt = Runtime::new();
         let code = compile_script("super-wait", source).unwrap();

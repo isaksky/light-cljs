@@ -86,12 +86,32 @@ fn derived_classes() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Constructor targets share the
+/// ordinary function/arrow/eval binding introduced by clj-quickjs-99.
+#[test]
+fn derived_classes_new_target() {
+    for source in [
+        "class C { constructor() { this.target = new.target; } } let c = new C(); c.target === C",
+        "class C { constructor() { this.base = new.target; } } class D extends C { constructor() { let target = new.target; super(); this.derived = target; } } let d = new D(); d.base === D && d.derived === D && Object.getPrototypeOf(d) === D.prototype",
+        "class C { constructor(a,b) { this.target = new.target; this.sum = a+b; } } class D extends C {} class E extends D { constructor() { let target = new.target; super(...[1,2]); this.same = target === new.target; } } let e = new E(); e.target === E && e.sum === 3 && e.same && Object.getPrototypeOf(e) === E.prototype",
+        "class C { constructor(a = () => new.target) { this.target = a; } } class D extends C { constructor(f = () => () => new.target) { let before = f()(); super(); this.same = before === new.target && f()() === new.target; this.arrow = () => new.target; } } let d = new D(); d.same && d.target() === D && d.arrow.call(null) === D",
+        "class C { constructor() { this.target = new.target; } } class D extends C { constructor() { let target = () => new.target; let make = () => super(); let before = target(); make(); this.same = before === target() && target() === D; this.targetArrow = target; } } let d = new D(); d.same && d.target === D && d.targetArrow() === D",
+        "class C { constructor() { this.target = eval('new.target'); } } class D extends C { constructor() { let target = eval('() => eval(\"new.target\")'); let before = target(); super(); this.same = before === new.target && target() === new.target; this.arrow = target; } } let d = new D(); d.same && d.target === D && d.arrow() === D",
+        "class C { constructor() { this.target = new.target; } } class D extends C {} let Bound = D.bind(null); let d = new Bound(); d.target === D && Object.getPrototypeOf(d) === D.prototype",
+        "class C { constructor() { this.target = new.target; } } let parent = C.bind(null); parent.prototype = C.prototype; class D extends parent {} let d = new D(); d.target === D && Object.getPrototypeOf(d) === D.prototype",
+        "class C { constructor() { this.arrow = () => new.target; } } class D extends C { constructor() { function f() { return new.target; } let before = f(); super(); this.same = before === undefined && f() === undefined && new f() === f; } } let d = new D(); d.same && d.arrow() === D",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 #[test]
 fn derived_classes_on_small_worker_stack() {
     for source in [
         "class C { constructor(v) { this.x = v; } static f() { return 2; } } class D extends C { constructor() { super(...[7]); this.z = 3; } } let d = new D(); return d.x + d.z + D.f() === 12;",
         "class C { constructor(a,b) { this.s = a+b; } } class D extends C {} class E extends D {} return new E(1,2).s === 3;",
         "class D extends Object {} return new D() instanceof D;",
+        "class C { constructor() { this.target = new.target; } } class D extends C { constructor() { let f = () => new.target; (() => super())(); this.same = f() === new.target; } } let d = new D(); return d.same && d.target === D;",
     ] {
         let rt = Runtime::new();
         rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();

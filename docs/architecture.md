@@ -7321,17 +7321,21 @@ heritage keeps Function.prototype for the constructor and uses a null instance
 prototype link. No new heap kind is introduced.
 
 Appended ConstructorKind variants distinguish explicit and default derived
-constructors. Each construct frame carries a traced internal new_target value;
+constructors. Each construct frame uses the traced new_target value from
+clj-quickjs-99, shared with source `new.target`, lexical arrows and direct eval;
 ordinary base allocation uses that constructor's prototype. Derived frames
 allocate an existing task-owned BindingCell instead of an instance receiver.
 GetRawThis transports the cell through lexical captures and eval descriptors;
 ResolveThis checks and reads it only at a source `this` occurrence. Arrows can
 therefore be created before super() and see the initialized receiver afterward.
-The internal constructor/new-target pair is also captured through arrows that
-call super(). Source new.target remains explicitly unsupported (-99).
+The executing constructor is captured through arrows that call super(); the
+target uses the existing immutable lexical capture path. Source `new.target`
+is available before super() initializes the receiver and remains the derived
+constructor through all parent frames.
 
 Appended instructions CheckHeritage and InitHeritage validate/install the class
-links; GetSuperConstructor and GetNewTarget load internal construction context.
+links; GetSuperConstructor loads the executing constructor's parent, while the
+existing GetNewTarget instruction loads the shared construction target.
 ConstructSuper/ConstructSuperSpread enter the parent through the normal checked
 construct path with an alternate new target. BindThis runs after the parent
 returns, rejects an already initialized receiver, and yields the returned object.

@@ -138,6 +138,14 @@
 //! | `DeclareGlobalConstValue` | 0x8F | u16 name | – | create the environment copy of a value-represented const |
 //! | `CheckGlobalLexicalConflict` | 0x90 | u16 name | – | reject a global var/function name conflicting with a lexical before property checks |
 //! | `GetNewTarget` | 0x9A | – | → constructor or undefined | ordinary function construct target; arrows/eval capture it lexically (clj-quickjs-99) |
+//! | `CheckHeritage` | 0x9B | – | parent → parent | require a constructor or null |
+//! | `InitHeritage` | 0x9C | – | class parent prototype → class | install constructor and instance prototype inheritance |
+//! | `GetSuperConstructor` | 0x9D | – | constructor → parent | read the executing constructor's internal prototype |
+//! | `ConstructSuper` | 0x9E | u16 argc | parent target args… → result | construct in a resumable frame with the shared new.target |
+//! | `ConstructSuperSpread` | 0x9F | – | parent target packed-arguments → result | spread form of parent construction |
+//! | `BindThis` | 0xA0 | – | receiver-cell result → result | initialize derived this exactly once |
+//! | `ResolveThis` | 0xA1 | – | receiver-or-cell → receiver | read this with its initialization check |
+//! | `ForwardArguments` | 0xA2 | – | → packed-arguments | forward default derived constructor arguments |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -1130,8 +1138,8 @@ impl Opcode {
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
             GetRawThis | GetNewTarget | CheckSloppyThis => OperandKind::None,
-            CheckHeritage | InitHeritage | GetSuperConstructor
-            | ConstructSuperSpread | BindThis | ResolveThis | ForwardArguments => OperandKind::None,
+            CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuperSpread
+            | BindThis | ResolveThis | ForwardArguments => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }

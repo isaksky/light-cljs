@@ -1620,7 +1620,8 @@ impl<'s> Lowerer<'s> {
         let constructor = self.resolve_super_constructor(level);
         self.out().load(constructor, span);
         self.out().op(Opcode::GetSuperConstructor, span);
-        let target = self.resolve_new_target(level)
+        let target = self
+            .resolve_new_target(level)
             .ok_or_else(|| self.internal(span, "super outside a constructor"))?;
         self.out().load(target, span);
         if forward {
