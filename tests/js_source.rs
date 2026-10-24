@@ -14748,6 +14748,9 @@ fn bigint_power_size_limit_and_errors() {
         "2n ** 18446744073709551616n",
         "3n ** 1048576n",
         "(2n ** 1048576n) * 0n",
+        // The preliminary bound is exactly 1 Mbit; the checked products
+        // discover that the actual result needs 1,048,577 bits.
+        "let b = 3n * (2n ** 349524n); b ** 3n",
     ] {
         let caught = format!(
             "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof RangeError && e.message === 'BigInt is too large'; }} caught"
@@ -14755,6 +14758,7 @@ fn bigint_power_size_limit_and_errors() {
         assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
     }
     for src in [
+        "let b = 3n * (2n ** 349524n); let original = b; let caught = false; try { b **= 3n; } catch (e) { caught = e instanceof RangeError && e.message === 'BigInt is too large'; } caught && b === original",
         "let x = 2n; try { x **= 1048576n; } catch (e) {} x === 2n",
         "let x = 3n; try { x /= 0n; } catch (e) {} x === 3n",
         "let o = {x: 3n}; try { o.x %= 0n; } catch (e) {} o.x === 3n",
@@ -14763,6 +14767,13 @@ fn bigint_power_size_limit_and_errors() {
     }
     assert_eq!(
         eval("let a = 2n ** 1048575n; a / a === 1n && a % a === 0n && a / 2n === 2n ** 1048574n"),
+        ValueView::Bool(true)
+    );
+    // The same preliminary bound can also describe a legal result.
+    assert_eq!(
+        eval(
+            "let a = 2n ** 349525n; (a + 1n) ** 3n === 2n ** 1048575n + 3n * (2n ** 699050n) + 3n * a + 1n"
+        ),
         ValueView::Bool(true)
     );
 }
