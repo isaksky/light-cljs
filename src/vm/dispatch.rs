@@ -1201,6 +1201,22 @@ pub(crate) fn step(
         Instr::BitAnd | Instr::BitOr | Instr::BitXor | Instr::Shl | Instr::Sar | Instr::UShr => {
             let b = state.pop()?;
             let a = state.pop()?;
+            if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
+                let result = match instr {
+                    Instr::BitAnd => x.checked_and(y),
+                    Instr::BitOr => x.checked_or(y),
+                    Instr::BitXor => x.checked_xor(y),
+                    Instr::Shl => x.checked_shl(y),
+                    Instr::Sar => x.checked_shr(y),
+                    _ => {
+                        return Err(Fault::TypeError(
+                            "BigInt has no unsigned right shift".into(),
+                        ));
+                    }
+                };
+                state.push(bigint_result(result)?);
+                return Ok(Flow::Next);
+            }
             let (x, y) = numbers(instr.opcode(), &a, &b)?;
             let (i, j) = (to_int32(x), to_int32(y));
             // Shift counts are ToUint32(y) & 31; masking the bits of
@@ -1218,6 +1234,7 @@ pub(crate) fn step(
             }));
         }
         Instr::BitNot => match state.pop()? {
+            Value::BigInt(x) => state.push(bigint_result(x.checked_not())?),
             Value::Number(x) => state.push(Value::Number(f64::from(!to_int32(x)))),
             v => {
                 return Err(Fault::Unsupported(format!(

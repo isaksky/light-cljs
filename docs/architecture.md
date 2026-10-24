@@ -4499,8 +4499,8 @@ with no crate dependency. Values fitting `i64` are inline; larger values use an
 immutable `Arc<[u32]>` body. `from_sign_magnitude` is the checked normalization
 boundary: it removes high zero limbs, canonicalizes negative zero to zero and
 selects the inline form whenever possible. Its representation is private, so
-value equality and hashing never depend on the construction path. Future
-divrem/pow/shift/logic and radix-conversion implementations extend this type
+value equality and hashing never depend on the construction path. Arithmetic,
+shift/logic and future radix-conversion implementations extend this type
 and pass every result through the same boundary. Addition, subtraction,
 multiplication, negation and updates are described under clj-quickjs-198 below.
 
@@ -4988,3 +4988,34 @@ the iterator rechecks each descriptor before visiting it. Inherited writes
 stop at a typed array's canonical numeric keys: valid elements allow an own
 property on the receiver, while invalid indices are successful no-ops without
 value conversion or further prototype traversal.
+
+## BigInt bitwise and shift execution (clj-quickjs-200)
+
+`JsBigInt::checked_and`, `checked_or` and `checked_xor` stream the finite
+operand words from sign/magnitude into two's complement, applying invert plus
+carry for negative inputs. The result sign is computed separately from the
+infinite sign words. Each output word is converted back immediately; no
+infinite sign extension or extra sign-word allocation is needed. A final
+magnitude carry is checked against the cap before extending the buffer.
+`checked_not` uses `-x - 1`, with checked subtraction for the extra result bit.
+All returned results use the canonical `from_sign_magnitude` boundary.
+
+`checked_shl`/`checked_shr` read the count's exact sign and magnitude. Negative
+counts reverse direction; counts beyond the cap are resolved directly to an
+overflow or a right-shift sign result (0/-1), without narrowing or allocating
+for the count. Zero operands and zero counts return immediately. A left
+shift's exact bit length is checked against 1 Mbit before allocating its
+buffer. A right shift drops magnitude words/bits and increments a negative
+magnitude if any discarded bit was nonzero, implementing floor division by a
+power of two. All these computations use linear limb time and bounded storage.
+
+The existing `BitNot`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and `Sar` dispatch
+paths accept BigInts after resumable ToNumeric. `UShr` rejects BigInts with
+catchable TypeError; mixed numeric types also throw TypeError. Oversized
+results throw RangeError with `BigInt is too large`, before any compound
+assignment store. Each leaf operation costs one instruction with no internal
+budget poll. The existing continuation roots, GC/publication rules, object
+conversion order and Number semantics remain in force; no opcode, dependency
+or heap kind is added. Source tests include conversion waits, instruction
+budget yields, collection and migration, plus cap-boundary and native i128
+comparisons for complement carries, signs, rounding and word-aligned shifts.

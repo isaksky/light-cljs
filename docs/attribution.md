@@ -463,3 +463,15 @@ copyright/permission notice is retained alongside these fixtures.
 and VM integration were written afresh. Reference revision:
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), license:
 `research/quickjs/LICENSE`. Other fixtures are synthetic, not light-cljs output.
+
+## BigInt bitwise and shift operators (clj-quickjs-200)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_bigint_logic`,
+`js_bigint_not`, `js_bigint_shl`, `js_bigint_shr`, `js_binary_logic_slow`,
+`js_shr_slow`), revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). The Rust limb algorithms were written afresh.
+`tests/js_source.rs::bigint_bitwise_and_shift_operators` adapts the bitwise
+and shift assertions of `research/quickjs/tests/test_bigint.js::test_bigint1`
+and `test_bigint3`, comparing string-conversion cases by exact integer value.
+Its full QuickJS copyright and MIT permission notice is retained on the test.
+Other new cases are synthetic fixtures, not light-cljs output.

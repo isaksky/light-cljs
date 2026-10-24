@@ -2754,8 +2754,9 @@ survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
 `Scope::bigint`, returning immutable `JsBigInt` with decimal `Display` and
 sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
 with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
-TypeError. Division, remainder, exponentiation, bitwise operators and JavaScript conversions remain
-deferred to clj-quickjs-198–204 and fail explicitly; JSON serialization throws TypeError.
+TypeError. Arithmetic and bitwise operators are supported below. JavaScript
+conversions remain deferred to clj-quickjs-201–204 and fail explicitly;
+JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
 `cargo test --test js_source bigint -- --test-threads=3`.
@@ -2869,8 +2870,8 @@ BigInt `+`, `-`, `*`, unary minus, prefix/postfix `++`/`--` and their compound
 assignments produce exact results, including binding and property updates.
 Mixed numeric types and unary plus throw TypeError; results above 1 Mbit throw
 RangeError before assignment. Object conversion remains resumable. Each
-arithmetic operation consumes one instruction. BigInt string conversion
-and bitwise operations remain deferred; division and exponentiation are supported below.
+arithmetic operation consumes one instruction. BigInt string conversion remains
+deferred; division, exponentiation and bitwise operations are supported below.
 Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
 `cargo test --lib value::bigint:: -- --test-threads=3`.
 
@@ -2902,3 +2903,15 @@ and undefined elements. Allocation uses ArrayBuffer's fallible 16 MiB bound.
 Deferred: floating-point and BigInt views, iterable/array-like/copy constructors,
 resizable buffers, species/subclassing, and typed-array methods (`set`, `fill`,
 `join`, etc.). Non-buffer object constructor arguments fail explicitly.
+
+### BigInt bitwise and shifts (clj-quickjs-200)
+
+BigInt `~`, `&`, `|`, `^`, `<<` and `>>` use infinite two's-complement
+semantics. Right shifts round toward negative infinity; negative counts reverse
+direction. Counts are exact BigInts with no 32-bit masking. Mixed numeric types
+and BigInt `>>>` throw TypeError. Left shifts check the 1 Mbit result cap before
+allocation; oversized results throw RangeError (`BigInt is too large`).
+Compound assignments store only on success, object conversion remains resumable,
+and each operation consumes one instruction. Conversion APIs remain deferred.
+Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
+`cargo test --lib value::bigint:: -- --test-threads=3`.

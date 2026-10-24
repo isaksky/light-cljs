@@ -412,17 +412,10 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 }
 
 /// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// bitwise operations and conversions.
+/// conversions.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "1n & 1n",
-        "1n | 1n",
-        "1n ^ 1n",
-        "1n << 1n",
-        "1n >> 1n",
-        "1n >>> 1n",
-        "~1n",
         "1n < '2'",
         "'1' < 2n",
         "1n == '1'",
@@ -464,6 +457,7 @@ fn bigint_deferred_operations_fail_explicitly() {
         "1n ** 1",
         "1 & 1n",
         "1n << 1",
+        "1n >>> 1n",
         "1n - {valueOf() { return 1; }}",
         "({valueOf() { return 1n; }}) * 1",
     ] {
@@ -14684,6 +14678,12 @@ fn bigint_arithmetic_resumes_object_conversion() {
         "a / b === 1n",
         "a % b === 3n",
         "a ** b === 2401n",
+        "(a & b) === 4n",
+        "(a | b) === 7n",
+        "(a ^ b) === 3n",
+        "a << b === 112n",
+        "a >> b === 0n",
+        "~a === -8n",
         "-a === -7n",
         "a++ === 7n && a === 8n",
         "++a === 8n",
@@ -15056,4 +15056,115 @@ fn bigint_power_size_limit_and_errors() {
         ),
         ValueView::Bool(true)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. The upstream bitwise/shift rows
+/// adapt QuickJS tests/test_bigint.js::test_bigint1/test_bigint3 at revision
+/// 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2; string rows compare exact values.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_bitwise_and_shift_operators() {
+    for src in [
+        "1n << 31n === 2147483648n",
+        "1n << 32n === 4294967296n",
+        "1n << 100n === 1267650600228229401496703205376n",
+        "-1n << 100n === -1267650600228229401496703205376n",
+        "1n << 100n === 0o2000000000000000000000000000000000n",
+        "0x5a4653ca673768565b41f775n << 78n === 8443945299673273647701379149826607537748959488376832n",
+        "-0x5a4653ca673768565b41f775n << 78n === -8443945299673273647701379149826607537748959488376832n",
+        "0x5a4653ca673768565b41f775n >> 78n === 92441n",
+        "-0x5a4653ca673768565b41f775n >> 78n === -92442n",
+        "~0x5a653ca6n === -1516584103n",
+        "(0x5a463ca6n | 0x67376856n) === 2138537206n",
+        "(0x5a463ca6n & 0x67376856n) === 1107699718n",
+        "(0x5a463ca6n ^ 0x67376856n) === 1030837488n",
+        "-1n >> 1000n === -1n",
+        "-5n >> 1n === -3n && -6n >> 1n === -3n",
+        "5n << -1n === 2n && -5n << -1n === -3n && 5n >> -1n === 10n",
+        "(-1n & 0xffn) === 255n",
+        "(-6n | 5n) === -1n && (-6n ^ 3n) === -7n && ~-1n === 0n",
+        "(1n << 64n) === 18446744073709551616n && (1n << 128n) === 340282366920938463463374607431768211456n",
+        "(1n << 192n) === 6277101735386680763835789423207666416102355444464034512896n",
+        "-9223372036854775808n >> 63n === -1n && -9223372036854775808n << 1n === -18446744073709551616n",
+        "~9223372036854775807n === -9223372036854775808n && ~-9223372036854775809n === 9223372036854775808n",
+        "let a = 1n << 100n; (-a & -1n) === -a && (-a | a) === -a && (-a ^ -1n) === a - 1n",
+        "let a = 1n << 100n; (a ^ a) === 0n && (~a & a) === 0n && (a | ~a) === -1n",
+        "0n << 18446744073709551616n === 0n && 0n >> -18446744073709551616n === 0n",
+        "1n >> 18446744073709551616n === 0n && -5n << -18446744073709551616n === -1n",
+        "let x = 3n; x <<= 70n; x >>= 69n; x |= 1n; x &= 6n; x ^= 2n; x === 4n",
+        "let o = {x: 3n}; o.x <<= 70n; o['x'] >>= 69n; o.x |= 1n; o.x &= 6n; o.x ^= 2n; o.x === 4n",
+        "let x = 1n; typeof ~x === 'bigint' && typeof (x << 2n) === 'bigint' && -(x <<= 2n) === -4n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "1n >>> 0n",
+        "1n >>> 0",
+        "1 >>> 0n",
+        "1n & 1",
+        "1 & 1n",
+        "1n | 1",
+        "1 | 1n",
+        "1n ^ 1",
+        "1 ^ 1n",
+        "1n << 1",
+        "1 << 1n",
+        "1n >> 1",
+        "1 >> 1n",
+        "1n & true",
+        "null | 1n",
+        "1n << '1'",
+    ] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Size checks apply to each
+/// intermediate result and failed compound assignments preserve their targets.
+#[test]
+fn bigint_bitwise_and_shift_size_limits() {
+    for src in [
+        "1n << 1048576n",
+        "-1n << 1048576n",
+        "1n >> -1048576n",
+        "1n << 18446744073709551616n",
+        "1n >> -18446744073709551616n",
+        "(1n << 1048576n) & 0n",
+        "let max = (1n << 1048575n) + ((1n << 1048575n) - 1n); ~max",
+        "let max = (1n << 1048575n) + ((1n << 1048575n) - 1n); max ^ -1n",
+    ] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof RangeError && e.message === 'BigInt is too large'; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "let a = 1n << 1048575n; a >> 1048575n === 1n && -a >> 1048575n === -1n && a >> 1048576n === 0n",
+        "let max = (1n << 1048575n) + ((1n << 1048575n) - 1n); (max & -1n) === max && (max | 0n) === max && ~-max === max - 1n",
+        "let x = 1n; try { x <<= 1048576n; } catch (e) {} x === 1n",
+        "let o = {x: -1n}; try { o.x >>= -1048576n; } catch (e) {} o.x === -1n",
+        "let x = 1n; try { x >>>= 0n; } catch (e) {} x === 1n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
 }

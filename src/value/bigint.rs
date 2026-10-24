@@ -77,6 +77,129 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    /// Infinite two's-complement NOT: ~x = -x - 1. The intermediate negation
+    /// preserves magnitude; the subtraction checks any extra result bit.
+    pub fn checked_not(&self) -> Result<Self, BigIntError> {
+        self.negated().checked_sub(&Self::from(1))
+    }
+
+    pub fn checked_and(&self, other: &Self) -> Result<Self, BigIntError> {
+        self.checked_logic(other, |a, b| a & b)
+    }
+
+    pub fn checked_or(&self, other: &Self) -> Result<Self, BigIntError> {
+        self.checked_logic(other, |a, b| a | b)
+    }
+
+    pub fn checked_xor(&self, other: &Self) -> Result<Self, BigIntError> {
+        self.checked_logic(other, |a, b| a ^ b)
+    }
+
+    /// Stream finite two's-complement words, keeping the infinite sign word
+    /// separately. Convert back in place, without allocating sign extension.
+    fn checked_logic(
+        &self,
+        other: &Self,
+        op: impl Fn(u32, u32) -> u32,
+    ) -> Result<Self, BigIntError> {
+        let (mut small_a, mut small_b) = ([0; 2], [0; 2]);
+        let (negative_a, a) = self.magnitude(&mut small_a);
+        let (negative_b, b) = other.magnitude(&mut small_b);
+        let negative = op(u32::from(negative_a), u32::from(negative_b)) != 0;
+        let (mut carry_a, mut carry_b, mut carry_out) = (negative_a, negative_b, negative);
+        let mut out = Vec::with_capacity(a.len().max(b.len()));
+        for i in 0..a.len().max(b.len()) {
+            let x = complement_word(a.get(i).copied().unwrap_or(0), negative_a, &mut carry_a);
+            let y = complement_word(b.get(i).copied().unwrap_or(0), negative_b, &mut carry_b);
+            out.push(complement_word(op(x, y), negative, &mut carry_out));
+        }
+        if carry_out {
+            // A negative result with all-zero finite words needs one more
+            // magnitude word (e.g. -1 ^ (2^32 - 1) = -2^32).
+            if out.len() == MAX_BIGINT_BITS / 32 {
+                return Err(BigIntError::TooLarge);
+            }
+            out.push(1);
+        }
+        Self::from_sign_magnitude(negative, out)
+    }
+
+    /// Signed shift counts are exact BigInts: negative counts reverse direction.
+    pub fn checked_shl(&self, count: &Self) -> Result<Self, BigIntError> {
+        self.checked_shift(count, true)
+    }
+
+    /// Arithmetic right shift, rounding negative results toward minus infinity.
+    pub fn checked_shr(&self, count: &Self) -> Result<Self, BigIntError> {
+        self.checked_shift(count, false)
+    }
+
+    fn checked_shift(&self, count: &Self, left: bool) -> Result<Self, BigIntError> {
+        let (mut small_a, mut small_count) = ([0; 2], [0; 2]);
+        let (negative, a) = self.magnitude(&mut small_a);
+        let (negative_count, count) = count.magnitude(&mut small_count);
+        if a.is_empty() || count.is_empty() {
+            return Ok(self.clone());
+        }
+        let left = left ^ negative_count;
+        // Counts above the cap cannot produce any nonzero left-shift result
+        // or any right-shift result beyond 0/-1. Never narrow a huge count.
+        if count.len() > 1 || count[0] as usize > MAX_BIGINT_BITS {
+            return if left {
+                Err(BigIntError::TooLarge)
+            } else {
+                Ok(Self::from(if negative { -1 } else { 0 }))
+            };
+        }
+        let count = count[0] as usize;
+        let bits = (a.len() - 1) * 32 + 32 - a.last().unwrap().leading_zeros() as usize;
+        let (words, shift) = (count / 32, count % 32);
+        if left {
+            // Exact bit length is known before allocating the result buffer.
+            if count > MAX_BIGINT_BITS - bits {
+                return Err(BigIntError::TooLarge);
+            }
+            let mut out = vec![0; (bits + count).div_ceil(32)];
+            for (i, &limb) in a.iter().enumerate() {
+                let word = (limb as u64) << shift;
+                out[words + i] |= word as u32;
+                if word >> 32 != 0 {
+                    out[words + i + 1] |= (word >> 32) as u32;
+                }
+            }
+            Self::from_sign_magnitude(negative, out)
+        } else {
+            if count >= bits {
+                return Ok(Self::from(if negative { -1 } else { 0 }));
+            }
+            let mut out = Vec::with_capacity(a.len() - words);
+            for i in words..a.len() {
+                let mut word = a[i] >> shift;
+                if shift != 0 {
+                    word |= a.get(i + 1).copied().unwrap_or(0) << (32 - shift);
+                }
+                out.push(word);
+            }
+            let discarded =
+                a[..words].iter().any(|&word| word != 0) || a[words] & ((1u32 << shift) - 1) != 0;
+            if negative && discarded {
+                // Floor(-a/2^count) = -ceil(a/2^count). The increment fits
+                // within the original magnitude because count is nonzero.
+                let mut carry = true;
+                for word in &mut out {
+                    (*word, carry) = word.overflowing_add(u32::from(carry));
+                    if !carry {
+                        break;
+                    }
+                }
+                if carry {
+                    out.push(1);
+                }
+            }
+            Self::from_sign_magnitude(negative, out)
+        }
+    }
+
     /// Exact addition, checked against the magnitude cap.
     pub fn checked_add(&self, other: &Self) -> Result<Self, BigIntError> {
         self.add_signed(other, false)
@@ -448,6 +571,18 @@ impl JsBigInt {
     }
 }
 
+/// One word of a sign/magnitude <-> two's-complement conversion. The same
+/// invert-plus-one operation works in either direction for a negative value.
+fn complement_word(word: u32, negative: bool, carry: &mut bool) -> u32 {
+    if negative {
+        let (word, next) = (!word).overflowing_add(u32::from(*carry));
+        *carry = next;
+        word
+    } else {
+        word
+    }
+}
+
 /// Unsigned division, with nonempty b and a >= b. Knuth's normalized long
 /// division (Algorithm D), implemented here over the in-tree limb format.
 fn divide_magnitudes(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
@@ -621,6 +756,69 @@ mod tests {
             JsBigInt::from_sign_magnitude(false, vec![1; MAX_BIGINT_BITS / 32 + 1]),
             Err(BigIntError::TooLarge)
         );
+    }
+
+    #[test]
+    fn bitwise_and_shifts_match_native_i128() {
+        let exact = |n: i128| {
+            let magnitude = n.unsigned_abs();
+            JsBigInt::from_sign_magnitude(
+                n < 0,
+                (0..4).map(|i| (magnitude >> (i * 32)) as u32).collect(),
+            )
+            .unwrap()
+        };
+        let mut state = 0x9824_7b6c_a5d3_f102u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let a = (((next() as u128) << 64) | next() as u128) as i128;
+            let b = (((next() as u128) << 64) | next() as u128) as i128;
+            let (x, y) = (exact(a), exact(b));
+            assert_eq!(x.checked_not().unwrap(), exact(!a));
+            assert_eq!(x.checked_and(&y).unwrap(), exact(a & b));
+            assert_eq!(x.checked_or(&y).unwrap(), exact(a | b));
+            assert_eq!(x.checked_xor(&y).unwrap(), exact(a ^ b));
+            for shift in [0, 1, 31, 32, 33, 63, 64, 65, 95, 96, 127] {
+                let count = JsBigInt::from(shift);
+                assert_eq!(x.checked_shr(&count).unwrap(), exact(a >> shift));
+                assert_eq!(x.checked_shl(&count.negated()).unwrap(), exact(a >> shift));
+                // Restrict the left operand so its exact shifted value fits
+                // i128; native overflowing shifts would wrap instead.
+                let small = a >> shift;
+                assert_eq!(
+                    exact(small).checked_shl(&count).unwrap(),
+                    exact(small << shift)
+                );
+                assert_eq!(
+                    exact(small).checked_shr(&count.negated()).unwrap(),
+                    exact(small << shift)
+                );
+            }
+        }
+        // Explicit zeros, signed boundaries and trailing-zero limbs exercise
+        // canonical inline results and complement carry chains.
+        for a in [
+            i128::MIN,
+            i64::MIN as i128,
+            -4294967296,
+            -1,
+            0,
+            1,
+            i64::MAX as i128,
+            i128::MAX,
+        ] {
+            assert_eq!(exact(a).checked_not().unwrap(), exact(!a));
+            for b in [-4294967296, -1, 0, 1, 4294967295] {
+                assert_eq!(exact(a).checked_and(&exact(b)).unwrap(), exact(a & b));
+                assert_eq!(exact(a).checked_or(&exact(b)).unwrap(), exact(a | b));
+                assert_eq!(exact(a).checked_xor(&exact(b)).unwrap(), exact(a ^ b));
+            }
+        }
     }
 
     #[test]

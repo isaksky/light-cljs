@@ -3200,8 +3200,7 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 `Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
 BigInt primitive; `for-in` over it performs no iterations.
 
-Explicit gaps: BigInt bitwise operations,
-comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
+Explicit gaps: comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
 wrappers, literal property names and BigInt property keys remain assigned to
 later pellets. Available but deferred operators/conversions throw
 UnsupportedOperand naming BigInt; mixing BigInt and Number in arithmetic
@@ -3316,7 +3315,7 @@ instruction, independent of limb count. Every intermediate result obeys the
 Mixing BigInt with Number, boolean, undefined or null throws catchable TypeError
 (`cannot mix BigInt and other types`); unary plus on BigInt also throws TypeError.
 Object operands use resumable ToPrimitive in source order, including waits.
-Explicit gaps: bitwise operations and shifts remain deferred. String concatenation involving BigInt still fails explicitly
+Explicit gaps: string concatenation involving BigInt still fails explicitly
 pending BigInt ToString (clj-quickjs-202).
 
 ### BigInt division, remainder and exponentiation (clj-quickjs-199)
@@ -3333,8 +3332,8 @@ ToNumeric conversion in source order. Compound assignments reuse these
 operators and store only after success. Each operation costs one instruction.
 Powers reject sizes beyond the 1 Mbit cap with RangeError (`BigInt is too
 large`), including oversized intermediate operations later cancelled by zero.
-Explicit gaps: BigInt bitwise/shifts and the conversion APIs remain assigned
-to their sibling pellets; this change adds no new conversions.
+Explicit gaps: the conversion APIs remain assigned to their sibling pellets;
+this change adds no new conversions.
 
 ## Integer typed arrays (clj-quickjs-166)
 
@@ -3367,3 +3366,20 @@ cannot be frozen (preventing extensions still succeeds).
 Explicit gaps: floating-point and BigInt typed arrays, iterable/array-like/copy
 construction, typed-array methods, resizable buffers and subclass/species
 construction remain deferred. Unsupported object construction fails explicitly.
+
+### BigInt bitwise and shift operators (clj-quickjs-200)
+
+Lexical grammar: existing `~`, `&`, `|`, `^`, `<<`, `>>`, `>>>` tokens and
+their compound assignment forms suffice; no literal syntax changes.
+Execution: BigInt `~`, `&`, `|` and `^` use infinite two's-complement semantics.
+BigInt `<<` and `>>` take exact BigInt counts without 32-bit masking; negative
+counts reverse direction. Right shifts round toward negative infinity, so
+`-5n >> 1n` is `-3n`; arbitrarily large right shifts give `0n` or `-1n`.
+Zero stays zero for any shift count. `>>>` with a BigInt and mixed
+BigInt/Number pairs throw catchable TypeError. Resumable ToNumeric converts
+object operands in source order, including waits, yields and collection.
+Each operation costs one instruction. Every result obeys the 1 Mbit magnitude
+cap: left shifts check the exact result size before allocation; overflowing
+bitwise results also throw RangeError (`BigInt is too large`). Compound stores
+occur only on success.
+Explicit gaps: BigInt conversion APIs remain assigned to their sibling pellets.

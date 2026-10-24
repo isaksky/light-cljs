@@ -218,14 +218,19 @@
 //! pushed when the continuation returns.
 //!
 //! Opcodes `0x3F`–`0x45` are JavaScript's bitwise and shift operators
-//! (clj-quickjs-62). Like the arithmetic opcodes they take Number operands
-//! only (the compiler applies ToNumber first). Each applies ToInt32 to its
-//! operands (`UShr` applies ToUint32 to its left one): NaN and ±Infinity
+//! (clj-quickjs-62, clj-quickjs-200). The compiler applies ToNumeric first.
+//! For Number operands each applies ToInt32 (`UShr` applies ToUint32 to its
+//! left one): NaN and ±Infinity
 //! become 0, other values are truncated toward zero and wrapped modulo
 //! 2^32. A shift count is `ToUint32(b) & 31`. Results are 32-bit integers
 //! as doubles (unsigned for `UShr`), never `-0`. The names follow QuickJS's
 //! `and`/`or`/`xor`/`shl`/`sar`/`shr`/`not` opcodes
 //! (`research/quickjs/quickjs-opcode.h`); `UShr` is QuickJS's `shr`.
+//! BigInt operands use infinite two's-complement semantics and exact signed
+//! shift counts; negative counts reverse direction and right shifts round
+//! toward minus infinity. `UShr` on BigInts and mixed numeric types throw
+//! TypeError. Results exceeding the 1 Mbit magnitude cap throw RangeError;
+//! left shifts check size before allocation. Each operation costs one instruction.
 //!
 //! Opcode `0x46` `Pow` is JavaScript's `**` (clj-quickjs-63), Number-only
 //! like the arithmetic opcodes. It computes Number::exponentiate: IEEE 754
