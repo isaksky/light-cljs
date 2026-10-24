@@ -161,6 +161,97 @@ impl From<&str> for JsString {
     }
 }
 
+/// Incremental KMP search over UTF-16 units. Prefix construction and scanning
+/// both resume between bounded batches of comparisons. Buffers are immutable
+/// leaf strings and Rust-owned indices, with no collector edges.
+#[derive(Debug)]
+pub(crate) struct StringSearch {
+    text: JsString,
+    needle: JsString,
+    prefix: Vec<usize>,
+    matched: usize,
+    next: usize,
+    end: usize,
+    last: bool,
+    result: isize,
+    done: bool,
+}
+
+impl StringSearch {
+    /// Position is already clamped to [0, text.len()]. For reverse search,
+    /// scan forward through the last eligible match and retain its start.
+    pub(crate) fn new(text: JsString, needle: JsString, position: usize, last: bool) -> Self {
+        let done = needle.is_empty() || needle.len() > text.len();
+        let result = if needle.is_empty() {
+            position as isize
+        } else {
+            -1
+        };
+        let end = if last {
+            position.saturating_add(needle.len()).min(text.len())
+        } else {
+            text.len()
+        };
+        Self {
+            text,
+            needle,
+            prefix: vec![0],
+            matched: 0,
+            next: if last { 0 } else { position },
+            end,
+            last,
+            result,
+            done,
+        }
+    }
+
+    /// At most `comparisons` code-unit comparisons, including KMP fallback
+    /// work. O(text.len() + needle.len()) total, O(needle.len()) index storage.
+    pub(crate) fn advance(&mut self, comparisons: usize) -> Option<isize> {
+        if self.done {
+            return Some(self.result);
+        }
+        let needle = self.needle.code_units();
+        for _ in 0..comparisons {
+            if self.prefix.len() < needle.len() {
+                if needle[self.prefix.len()] == needle[self.matched] {
+                    self.matched += 1;
+                    self.prefix.push(self.matched);
+                } else if self.matched > 0 {
+                    self.matched = self.prefix[self.matched - 1];
+                } else {
+                    self.prefix.push(0);
+                }
+                if self.prefix.len() == needle.len() {
+                    self.matched = 0;
+                }
+                continue;
+            }
+            if self.next == self.end {
+                self.done = true;
+                return Some(self.result);
+            }
+            if self.text.code_units()[self.next] == needle[self.matched] {
+                self.next += 1;
+                self.matched += 1;
+                if self.matched == needle.len() {
+                    self.result = (self.next - needle.len()) as isize;
+                    if !self.last {
+                        self.done = true;
+                        return Some(self.result);
+                    }
+                    self.matched = self.prefix[self.matched - 1];
+                }
+            } else if self.matched > 0 {
+                self.matched = self.prefix[self.matched - 1];
+            } else {
+                self.next += 1;
+            }
+        }
+        None
+    }
+}
+
 impl PartialEq for JsString {
     fn eq(&self, other: &Self) -> bool {
         self.same_body(other) || self.code_units() == other.code_units()
@@ -501,6 +592,71 @@ fn radix_integer(digits: &[u8], bits_per_digit: u32) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incremental_search_matches_code_unit_windows() {
+        use super::{JsString, StringSearch};
+
+        // Exhaust all short binary strings, including a lone surrogate.
+        // Slice windows are an independent oracle for both search directions.
+        let strings = |max_len| {
+            (0..=max_len)
+                .flat_map(|len| {
+                    (0..1usize << len).map(move |bits| {
+                        JsString::from_code_units(
+                            (0..len)
+                                .map(|i| if bits & (1 << i) == 0 { 97 } else { 0xd800 })
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        for text in strings(5) {
+            for needle in strings(4) {
+                for position in 0..=text.len() {
+                    for last in [false, true] {
+                        let expected = if needle.is_empty() {
+                            position as isize
+                        } else {
+                            let mut candidates = text
+                                .code_units()
+                                .windows(needle.len())
+                                .enumerate()
+                                .filter(|(i, units)| {
+                                    *units == needle.code_units()
+                                        && if last { *i <= position } else { *i >= position }
+                                })
+                                .map(|(i, _)| i as isize);
+                            if last {
+                                candidates.next_back()
+                            } else {
+                                candidates.next()
+                            }
+                            .unwrap_or(-1)
+                        };
+                        let mut search =
+                            StringSearch::new(text.clone(), needle.clone(), position, last);
+                        let mut result = None;
+                        // One comparison per step forces every KMP state to
+                        // survive a boundary, including prefix fallback.
+                        for _ in 0..64 {
+                            result = search.advance(1);
+                            if result.is_some() {
+                                break;
+                            }
+                        }
+                        assert_eq!(
+                            result,
+                            Some(expected),
+                            "{text:?} / {needle:?}, {position}, last={last}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

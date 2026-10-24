@@ -465,6 +465,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         Builtin::StringPrototypeCharAt,
         Builtin::StringPrototypeCharCodeAt,
         Builtin::StringPrototypeCodePointAt,
+        Builtin::StringPrototypeIndexOf,
+        Builtin::StringPrototypeLastIndexOf,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -705,7 +707,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 40);
+        assert_eq!(first.all.len(), 42);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

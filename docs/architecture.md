@@ -3516,3 +3516,29 @@ Semantic references inspected, without porting implementation code:
 in `research/quickjs/tests/test_language.js` at that revision, under the
 copyright/license notice on `object_literals_and_named_properties` in the same
 file. All other new fixtures are synthetic, not light-cljs output.
+
+## String substring search (clj-quickjs-144)
+
+Two appended built-ins add `indexOf` and `lastIndexOf` as non-enumerable
+`String.prototype` methods with length 1. They require a non-null receiver
+and use generic ToString, including observable String-wrapper conversions.
+The existing `NativeState::Convert` visits receiver and search with string
+hint, then position with number hint, in order. It retains all unconverted
+operands as traced values while callbacks yield, wait, collect or migrate.
+Absent search becomes `"undefined"`. Position truncates toward zero and
+clamps to the UTF-16 length; NaN means zero for `indexOf` and positive
+infinity for `lastIndexOf`.
+
+Every call, including primitive-only calls and forwarded native callbacks,
+then uses `NativeState::StringSearch`. Its `StringSearch` owns immutable
+`JsString` leaves and a Rust-owned KMP prefix table, with no heap edges.
+Prefix construction and scanning perform at most 256 code-unit comparisons
+per native step; each step charges the instruction budget and allows a
+safepoint. Total search work is O(receiver length + search length), with
+O(search length) auxiliary indices. The index vector grows through normal
+Rust allocations (amortized linear copying); allocation itself is not
+interruptible. Reverse search scans forward through the last eligible match
+end and retains the latest start, preserving overlapping matches. Empty
+search returns the clamped position. Unwind and cancellation drop the search
+with the existing native-frame protocol. Primitive coercion still has the
+bulk-conversion limitation tracked by clj-quickjs-265.

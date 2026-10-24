@@ -203,6 +203,9 @@ pub(crate) enum Builtin {
     StringPrototypeCodePointAt,
     StringFromCharCode,
     StringFromCodePoint,
+    /// UTF-16 substring search (clj-quickjs-144).
+    StringPrototypeIndexOf,
+    StringPrototypeLastIndexOf,
 }
 
 impl Builtin {
@@ -241,6 +244,8 @@ impl Builtin {
             Builtin::StringPrototypeCodePointAt => "codePointAt",
             Builtin::StringFromCharCode => "fromCharCode",
             Builtin::StringFromCodePoint => "fromCodePoint",
+            Builtin::StringPrototypeIndexOf => "indexOf",
+            Builtin::StringPrototypeLastIndexOf => "lastIndexOf",
         }
     }
 
@@ -275,7 +280,9 @@ impl Builtin {
             | Builtin::StringPrototypeCharCodeAt
             | Builtin::StringPrototypeCodePointAt
             | Builtin::StringFromCharCode
-            | Builtin::StringFromCodePoint => 1,
+            | Builtin::StringFromCodePoint
+            | Builtin::StringPrototypeIndexOf
+            | Builtin::StringPrototypeLastIndexOf => 1,
         }
     }
 }
@@ -389,6 +396,9 @@ pub(crate) fn call(
         Builtin::StringFromCharCode | Builtin::StringFromCodePoint => {
             string_from_codes(which, args)
         }
+        Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf => Err(
+            Fault::Internal("string search requires a resumable native frame"),
+        ),
     }
 }
 
@@ -490,6 +500,9 @@ pub(crate) fn string_builtin_operand(
         | Builtin::StringPrototypeCodePointAt
             if index == 0 =>
         {
+            crate::vm::dispatch::to_js_string(value).map(Value::String)
+        }
+        Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf if index < 2 => {
             crate::vm::dispatch::to_js_string(value).map(Value::String)
         }
         _ => {

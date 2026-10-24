@@ -68,3 +68,16 @@ not light-cljs output. `js_string_charAt`, `js_string_charCodeAt`,
 `js_string_fromCodePoint` in `research/quickjs/quickjs.c` at the same
 revision were consulted for semantics; the Rust implementation was written
 afresh.
+
+## String substring search (clj-quickjs-144)
+
+`tests/js_source.rs::string_index_of_and_last_index_of` adapts all 47
+`indexOf` / `lastIndexOf` assertions from `research/quickjs/tests/test_builtin.js`,
+`test_string` lines 265-315, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+It refers to the full QuickJS copyright and MIT permission notice retained
+on `string_code_unit_access` in the same file (`research/quickjs/LICENSE`).
+Other search tests are synthetic fixtures, not light-cljs output.
+`js_string_indexOf` in `research/quickjs/quickjs.c` at that revision was read
+as a semantic reference. The incremental Rust KMP implementation was written
+afresh; no upstream implementation code was copied.

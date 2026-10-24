@@ -417,6 +417,9 @@ checks left to later stages:
   and construction execute, including resumable object coercion. Other
   string methods remain deferred. Bulk primitive-string conversion can
   delay yielding and collection (clj-quickjs-265). See "String code-unit access" below.
+- **Substring search** (clj-quickjs-144): `indexOf` and `lastIndexOf` now
+  execute with UTF-16 indices, position clamping and resumable object
+  coercion; long scans are budgeted. See "String substring search" below.
 - **Scope errors are checked by the compiler, not the parser.**
   `parse_script` accepts redeclaration (`let a; let a;`), a `let` that
   repeats a parameter name and declarations of the reserved binding `__rt`;
@@ -779,6 +782,10 @@ delete a[o];
 ```
 
 ## Execution
+
+String substring searches `indexOf` and `lastIndexOf` execute with generic
+ToString receivers and searches, clamped positions and budgeted UTF-16
+scans (clj-quickjs-144; see "String substring search" below).
 
 `frontend::compile_script(name, source)` parses, resolves bindings and lowers
 a script to a validated `Executable` (`src/frontend/lower.rs`); a task
@@ -2220,3 +2227,30 @@ Bulk primitive-string coercion in the static constructors currently runs
 inside a leaf call. Repeated large string arguments can delay yielding and
 collection even within the value-stack limit; clj-quickjs-265 tracks bounded,
 resumable conversion for this case.
+
+### String substring search (clj-quickjs-144)
+
+`String.prototype.indexOf(search, position)` returns the first matching
+UTF-16 code-unit index at or after the clamped position, or -1.
+`lastIndexOf(search, position)` returns the last matching start at or before
+that position, or -1. Both convert the receiver and search to strings,
+then position to a number. Fractions truncate toward zero; negative values
+and negative infinity clamp to zero, and positive infinity and positions
+past the end clamp to the string length. For `indexOf`, absent, undefined
+and NaN positions become zero. For `lastIndexOf`, they become the length.
+An empty search returns the clamped position, and absent search means
+`"undefined"`. Null/undefined receivers throw catchable TypeError before
+argument coercion. String wrappers and generic receivers use their observable
+conversion methods through resumable VM callbacks. Long scans yield between
+bounded batches. Synthetic fixtures, not light-cljs output:
+
+```js accept
+'abcabc'.indexOf('cab') === 2 && 'abcabc'.lastIndexOf('abc') === 3;
+'aaa'.indexOf('', Infinity) === 3 && 'aaa'.lastIndexOf('a', NaN) === 2;
+'a\u{10000}b'.indexOf('b') === 3 && 'x'.indexOf() === -1;
+new String('abc').indexOf({toString: () => 'b'}, {valueOf: () => 1}) === 1;
+```
+
+Explicit gaps: other string search methods remain deferred. Bulk primitive
+coercion may delay yielding (clj-quickjs-265); substring scanning itself is
+budgeted. Error constructors/properties remain deferred as documented above.

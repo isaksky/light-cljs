@@ -125,6 +125,16 @@ fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
             2,
         ),
         (
+            "String.prototype.indexOf.call(receiver(), search(), position()) === 1",
+            "sbp",
+            3,
+        ),
+        (
+            "Reflect.apply(String.prototype.lastIndexOf, receiver(), [search(), position()]) === 1",
+            "sbp",
+            3,
+        ),
+        (
             "Reflect.apply(String.prototype.codePointAt, receiver(), [position()]) === 98",
             "sp",
             2,
@@ -155,6 +165,7 @@ fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
             "let order = '';
              function receiver() {{ return {{toString: function () {{ order += 's'; __rt.need(143, 1); return 'abc'; }} }}; }}
              function position() {{ return {{valueOf: function () {{ order += 'p'; __rt.need(144, 1); return 1; }} }}; }}
+             function search() {{ return {{toString: function () {{ order += 'b'; __rt.need(145, 1); return 'b'; }} }}; }}
              function code(n, key) {{ return {{n: n, key: key, valueOf: function () {{ order += 'n'; __rt.need(this.key, 1); return this.n; }} }}; }}
              let ok = {expression}; ok && order === '{expected_order}'"
         );
@@ -242,6 +253,152 @@ fn string_code_unit_method_descriptors() {
         eval("Object.keys(String.prototype).length === 0 && Object.keys(String).length === 0"),
         ValueView::Bool(true)
     );
+}
+
+/// Search cases adapted from QuickJS tests/test_builtin.js, test_string,
+/// revision 7d1c13c5d8f8, under the full QuickJS copyright and MIT permission
+/// notice on string_code_unit_access above. Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_index_of_and_last_index_of() {
+    for (src, expected) in [
+        (r#""abcabc".indexOf("cab")"#, 2.0),
+        (r#""abcabc".indexOf("cab2")"#, -1.0),
+        (r#""abc".indexOf("c")"#, 2.0),
+        (r#""aaa".indexOf("a")"#, 0.0),
+        (r#""aaa".indexOf("a", NaN)"#, 0.0),
+        (r#""aaa".indexOf("a", -Infinity)"#, 0.0),
+        (r#""aaa".indexOf("a", -1)"#, 0.0),
+        (r#""aaa".indexOf("a", -0)"#, 0.0),
+        (r#""aaa".indexOf("a", 0)"#, 0.0),
+        (r#""aaa".indexOf("a", 1)"#, 1.0),
+        (r#""aaa".indexOf("a", 2)"#, 2.0),
+        (r#""aaa".indexOf("a", 3)"#, -1.0),
+        (r#""aaa".indexOf("a", 4)"#, -1.0),
+        (r#""aaa".indexOf("a", Infinity)"#, -1.0),
+        (r#""aaa".indexOf("")"#, 0.0),
+        (r#""aaa".indexOf("", NaN)"#, 0.0),
+        (r#""aaa".indexOf("", -Infinity)"#, 0.0),
+        (r#""aaa".indexOf("", -1)"#, 0.0),
+        (r#""aaa".indexOf("", -0)"#, 0.0),
+        (r#""aaa".indexOf("", 0)"#, 0.0),
+        (r#""aaa".indexOf("", 1)"#, 1.0),
+        (r#""aaa".indexOf("", 2)"#, 2.0),
+        (r#""aaa".indexOf("", 3)"#, 3.0),
+        (r#""aaa".indexOf("", 4)"#, 3.0),
+        (r#""aaa".indexOf("", Infinity)"#, 3.0),
+        (r#""aaa".lastIndexOf("a")"#, 2.0),
+        (r#""aaa".lastIndexOf("a", NaN)"#, 2.0),
+        (r#""aaa".lastIndexOf("a", -Infinity)"#, 0.0),
+        (r#""aaa".lastIndexOf("a", -1)"#, 0.0),
+        (r#""aaa".lastIndexOf("a", -0)"#, 0.0),
+        (r#""aaa".lastIndexOf("a", 0)"#, 0.0),
+        (r#""aaa".lastIndexOf("a", 1)"#, 1.0),
+        (r#""aaa".lastIndexOf("a", 2)"#, 2.0),
+        (r#""aaa".lastIndexOf("a", 3)"#, 2.0),
+        (r#""aaa".lastIndexOf("a", 4)"#, 2.0),
+        (r#""aaa".lastIndexOf("a", Infinity)"#, 2.0),
+        (r#""aaa".lastIndexOf("")"#, 3.0),
+        (r#""aaa".lastIndexOf("", NaN)"#, 3.0),
+        (r#""aaa".lastIndexOf("", -Infinity)"#, 0.0),
+        (r#""aaa".lastIndexOf("", -1)"#, 0.0),
+        (r#""aaa".lastIndexOf("", -0)"#, 0.0),
+        (r#""aaa".lastIndexOf("", 0)"#, 0.0),
+        (r#""aaa".lastIndexOf("", 1)"#, 1.0),
+        (r#""aaa".lastIndexOf("", 2)"#, 2.0),
+        (r#""aaa".lastIndexOf("", 3)"#, 3.0),
+        (r#""aaa".lastIndexOf("", 4)"#, 3.0),
+        (r#""aaa".lastIndexOf("", Infinity)"#, 3.0),
+        (r#""a\u{10000}b".indexOf("b")"#, 3.0),
+        (r#""x".indexOf()"#, -1.0),
+    ] {
+        assert_eq!(eval(src), ValueView::Number(expected), "{src}");
+    }
+    let src = "String.prototype.indexOf.call(null, 'a')";
+    assert_eq!(failure(src).kind(), VmErrorKind::TypeError);
+    assert_eq!(
+        eval(&format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught"
+        )),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_search_coercion_and_boundaries() {
+    for src in [
+        "'abcabc'.indexOf('abc', 1.9) === 3 && 'abcabc'.lastIndexOf('abc', 2.9) === 0",
+        "'abcabc'.lastIndexOf('abc', 3.9) === 3 && 'aaa'.lastIndexOf('aa', 1) === 1",
+        "'abc'.indexOf('abcd') === -1 && 'abc'.lastIndexOf('abcd') === -1",
+        "''.indexOf('') === 0 && ''.lastIndexOf('') === 0 && ''.lastIndexOf('x') === -1",
+        "'abc'.indexOf('', -0.9) === 0 && 'abc'.lastIndexOf('', -0.9) === 0",
+        "'abc'.indexOf('b', '1.9') === 1 && 'abc'.lastIndexOf('', undefined) === 3",
+        "'abc'.lastIndexOf('b', null) === -1 && 'abc'.indexOf('a', false) === 0",
+        "'undefined'.indexOf() === 0 && 'undefined'.lastIndexOf() === 0",
+        "'a\\u{10000}b'.lastIndexOf('b') === 3 && '\\ud800x\\ud800'.indexOf('\\ud800', 1) === 2 && '\\ud800x\\ud800'.lastIndexOf('\\ud800', 1) === 0",
+        "'\\ud800\\udc00'.indexOf('\\udc00') === 1 && '\\ud800\\udc00'.lastIndexOf('\\ud800') === 0",
+        "String.prototype.indexOf.call(123, 2) === 1 && String.prototype.lastIndexOf.call(false, 'a') === 1",
+        "new String('abcabc').indexOf(new String('abc'), new Number(1)) === 3 && new String('abcabc').lastIndexOf(new String('abc')) === 3",
+        "let s = new String('abc'); s.toString = () => 'xyz'; s.indexOf('y') === 1",
+        "let r = {toString: () => 'abc'}; String.prototype.indexOf.call(r, {toString: () => 'b'}, {valueOf: () => 1}) === 1",
+        "let order = ''; let r = {toString: () => {order += 'r'; return 'abc'; }}; let s = {toString: () => {order += 's'; return 'b'; }, valueOf: () => {throw 1; }}; let p = {valueOf: () => {order += 'p'; return NaN; }, toString: () => {throw 2; }}; String.prototype.lastIndexOf.call(r, s, p) === 1 && order === 'rsp'",
+        "let n = 0; let bad = {toString: () => {n++; throw 42; }}; let p = {valueOf: () => {n += 10; return 0; }}; let caught = 0; try { 'abc'.indexOf(bad, p); } catch (e) { caught = e; } caught === 42 && n === 1",
+        "let n = 0; let s = {toString: () => {n++; return 'x'; }}; let caught = false; try { String.prototype.lastIndexOf.call(undefined, s); } catch (e) { caught = true; } caught && n === 0",
+        "let bad = {toString: () => ({}), valueOf: () => ({})}; let caught = false; try { 'x'.lastIndexOf(bad); } catch (e) { caught = true; } caught",
+        "let s = {toString: String.prototype.indexOf.bind('abc', {toString: () => 'b'})}; '1'.indexOf(s) === 0",
+        "let f = String.prototype.indexOf.bind('abcabc', {toString: () => 'abc'}); f.apply(null, [{valueOf: () => 1}]) === 3",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for name in ["indexOf", "lastIndexOf"] {
+        let src = format!(
+            "let d = Object.getOwnPropertyDescriptor(String.prototype, '{name}'); \
+             d.writable && !d.enumerable && d.configurable && \
+             d.value.name === '{name}' && d.value.length === 1"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Repetitive input exercises
+/// prefix fallback, overlapping matches and scan work across budget slices.
+#[test]
+fn string_search_long_scans_yield_and_migrate() {
+    for name in ["indexOf", "lastIndexOf"] {
+        let src = format!("'{}b'.{name}('{}b')", "a".repeat(8192), "a".repeat(4096));
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..200 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Number(4096.0), "{name}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(complete, "{name} exceeded instruction bound");
+        assert!(
+            yields > 32,
+            "{name} did not budget prefix construction and scanning"
+        );
+    }
 }
 
 /// A host for budgeted runs of code that performs no host effects.
@@ -9543,7 +9700,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k.length === 7",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k.length === 9",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",

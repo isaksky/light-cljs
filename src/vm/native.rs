@@ -260,6 +260,8 @@ enum Failure {
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
 enum Action {
+    /// Keep this native frame runnable for another budgeted step.
+    Continue,
     /// Call `callee` with these arguments in a new VM frame.
     Call {
         callee: Value,
@@ -340,6 +342,7 @@ enum NativeState {
         hint: Hint,
         method: usize,
     },
+    StringSearch(crate::value::string::StringSearch),
 }
 
 /// A pending resumable native operation. See the module docs.
@@ -374,6 +377,7 @@ impl Trace for NativeFrame {
                     v.trace(visit);
                 }
             }
+            NativeState::StringSearch(_) => {} // Strings have no heap edges.
         }
     }
 }
@@ -539,6 +543,29 @@ pub(crate) fn start_builtin_conversion(
                 Hint::String,
             )
         }
+        Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf if !construct => {
+            if matches!(this, Value::Null | Value::Undefined) {
+                return Err(Fault::TypeError(format!(
+                    "String.prototype.{} called on {}",
+                    which.name(),
+                    this.type_name()
+                )));
+            }
+            // Always retain a native frame, including primitive-only calls:
+            // prefix construction and long string scans must be budgeted too.
+            (
+                ConvertTarget::StringBuiltin {
+                    which,
+                    access: true,
+                },
+                vec![
+                    this.clone(),
+                    args.first().cloned().unwrap_or(Value::Undefined),
+                    args.get(1).cloned().unwrap_or(Value::Undefined),
+                ],
+                Hint::String,
+            )
+        }
         Builtin::StringFromCharCode | Builtin::StringFromCodePoint if !construct => {
             if !args.iter().any(|v| matches!(v, Value::Object(_))) {
                 return Ok(false);
@@ -665,7 +692,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Unwind => {
                 natives.pop();
             }
-            Action::Call { .. }
+            Action::Continue
+            | Action::Call { .. }
             | Action::Need { .. }
             | Action::Return(_)
             | Action::Resume { .. } => {
@@ -759,6 +787,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             state.enter(code, id, call.this, argc)?;
             Ok(Flow::FrameChanged)
         }
+        Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
             set_awaiting(state, Awaiting::Dependency)?;
             Ok(Flow::Need(dependency, kind))
@@ -879,9 +908,18 @@ impl NativeState {
                         if let ConvertTarget::StringBuiltin { which, .. } = *target {
                             operands[*next] =
                                 builtin::string_builtin_operand(which, *next, receiver)?;
-                            // Access converts its receiver with string hint,
-                            // then its position with number hint.
-                            *hint = Hint::Number;
+                            // Search converts receiver and search with string
+                            // hint, then position with number hint.
+                            *hint = if matches!(
+                                which,
+                                builtin::Builtin::StringPrototypeIndexOf
+                                    | builtin::Builtin::StringPrototypeLastIndexOf
+                            ) && *next == 0
+                            {
+                                Hint::String
+                            } else {
+                                Hint::Number
+                            };
                         }
                         *next += 1;
                         continue;
@@ -923,6 +961,25 @@ impl NativeState {
                             .map(Action::Return)
                     }
                     ConvertTarget::StringBuiltin { which, access } => {
+                        if matches!(
+                            which,
+                            builtin::Builtin::StringPrototypeIndexOf
+                                | builtin::Builtin::StringPrototypeLastIndexOf
+                        ) {
+                            let text = dispatch::to_js_string(&operands[0])?;
+                            let search = dispatch::to_js_string(&operands[1])?;
+                            let last = which == builtin::Builtin::StringPrototypeLastIndexOf;
+                            let mut position = dispatch::to_number(&operands[2])?;
+                            if position.is_nan() {
+                                position = if last { f64::INFINITY } else { 0.0 };
+                            }
+                            let position = position.trunc().clamp(0.0, text.len() as f64) as usize;
+                            *self =
+                                NativeState::StringSearch(crate::value::string::StringSearch::new(
+                                    text, search, position, last,
+                                ));
+                            return Ok(Action::Continue);
+                        }
                         let (this, args) = if access {
                             (&operands[0], &operands[1..])
                         } else {
@@ -932,6 +989,10 @@ impl NativeState {
                     }
                 }
             }
+            NativeState::StringSearch(search) => Ok(match search.advance(256) {
+                Some(index) => Action::Return(Value::Number(index as f64)),
+                None => Action::Continue,
+            }),
         }
     }
 
@@ -946,7 +1007,8 @@ impl NativeState {
             (
                 NativeState::Reduce { .. }
                 | NativeState::NeedAll { .. }
-                | NativeState::Convert { .. },
+                | NativeState::Convert { .. }
+                | NativeState::StringSearch(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }
