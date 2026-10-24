@@ -48,6 +48,22 @@
 //! the end consults the chain from `Array.prototype` before the element is
 //! added.
 //!
+//! Each read-only or non-extensible `TypeError` above is ECMAScript's
+//! `[[Set]]` returning false (clj-quickjs-119): it is thrown in strict code
+//! only; sloppy code (the running code's `Code::strict`, clj-quickjs-95)
+//! ignores the write. A write to a realm intrinsic is this runtime's sharing
+//! rule, not a `[[Set]]` result, and throws in both modes.
+//!
+//! **Property attributes** (clj-quickjs-119): [`define_own_property`] and
+//! [`get_own_property`] are `[[DefineOwnProperty]]` and
+//! `[[GetOwnProperty]]` for `Object.defineProperty` and
+//! `Object.getOwnPropertyDescriptor` (`crate::vm::descriptor`), with the
+//! same owner and kind rules as the table above. Array elements and
+//! `length` keep their attributes in the array (`crate::object::array`): a
+//! read-only element rejects writes like a read-only named property, and a
+//! read-only `length` rejects new elements at or beyond it; a define that
+//! would change `length` fails with `UnsupportedOperand` (clj-quickjs-39).
+//!
 //! # Property keys
 //!
 //! A computed key goes through ToPropertyKey ([`to_property_key`]) when the
@@ -73,7 +89,9 @@ use crate::collections::object_name;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::array::{ArrayObject, array_index, number_index};
-use crate::object::{OrdinaryObject, PropertyKey, SetOutcome};
+use crate::object::{
+    DefineOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyKey, SetOutcome,
+};
 use crate::realm;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Value};
@@ -324,6 +342,19 @@ fn read_store(
 /// `base[key]` for the running task `task` (`[[Get]]`; QuickJS `get_field`
 /// and `get_array_el`).
 pub(crate) fn get(heap: &Heap, task: TaskId, base: &Value, key: &Key) -> Result<Value, Fault> {
+    find(heap, task, base, key).map(|v| v.unwrap_or(Value::Undefined))
+}
+
+/// [`get`] that tells an absent property (`None`: neither the object nor
+/// its prototype chain has it) from one whose value is `undefined`
+/// (HasProperty then Get, as ToPropertyDescriptor reads a descriptor;
+/// clj-quickjs-119).
+pub(crate) fn find(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+) -> Result<Option<Value>, Fault> {
     let Value::Object(mut id) = *base else {
         return Err(primitive_base(base, key, Access::Read));
     };
@@ -343,14 +374,14 @@ pub(crate) fn get(heap: &Heap, task: TaskId, base: &Value, key: &Key) -> Result<
                 continue;
             };
             match k.and_then(|k| view.get_own(k)) {
-                Some(property) => return Ok(property.value.clone()),
+                Some(property) => return Ok(Some(property.value.clone())),
                 None if view.builtin => return Err(function_prototype_miss(key, Access::Read)),
                 None => match view.prototype {
                     Some(prototype) => {
                         id = prototype;
                         continue;
                     }
-                    None => return Ok(Value::Undefined),
+                    None => return Ok(None),
                 },
             }
         }
@@ -367,16 +398,16 @@ pub(crate) fn get(heap: &Heap, task: TaskId, base: &Value, key: &Key) -> Result<
                 },
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
-                    None => Ok(Lookup::Found(Value::Undefined)),
+                    None => Ok(Lookup::Next(None)),
                 },
             })
             // The frame keeps the base alive and every object keeps its
             // prototype alive; a stale id is reported, not trusted.
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match step {
-            Lookup::Found(v) => return Ok(v),
+            Lookup::Found(v) => return Ok(Some(v)),
             Lookup::Next(Some(prototype)) => id = prototype,
-            Lookup::Next(None) => return Ok(Value::Undefined),
+            Lookup::Next(None) => return Ok(None),
             Lookup::NeedsName => interned = Some(heap.keys().lookup(&key.to_name())),
         }
     }
@@ -401,14 +432,17 @@ enum Stored {
     /// The receiver lacks the property and has this prototype: the chain
     /// decides (module docs).
     Inherited(ObjectId),
+    /// `[[Set]]` returned false (a read-only property, a non-extensible
+    /// receiver): the strict-mode TypeError (module docs).
+    Rejected(Fault),
 }
 
 /// The receiver's outcome of OrdinarySet.
 fn stored(outcome: SetOutcome, key: &Key, prototype: Option<ObjectId>) -> Result<Stored, Fault> {
     match outcome {
         SetOutcome::Done => Ok(Stored::Done),
-        SetOutcome::ReadOnly => Err(read_only(key)),
-        SetOutcome::NotExtensible => Err(not_extensible(key)),
+        SetOutcome::ReadOnly => Ok(Stored::Rejected(read_only(key))),
+        SetOutcome::NotExtensible => Ok(Stored::Rejected(not_extensible(key))),
         SetOutcome::Inherited => prototype
             .map(Stored::Inherited)
             .ok_or(Fault::Internal("an inherited write without a prototype")),
@@ -444,6 +478,7 @@ fn store(
                     let prototype = a.object().prototype();
                     stored(a.set(*index, value.clone()), key, prototype)
                 }
+                _ if key.is_length() && !a.length_writable() => Ok(Stored::Rejected(read_only(key))),
                 _ if key.is_length() => Err(Fault::Unsupported(
                     "cannot set property 'length' of an array: changing an array's length by assignment is not supported"
                         .to_string(),
@@ -462,15 +497,18 @@ fn intern(heap: &Heap, name: &JsString) -> Result<PropertyKey, Fault> {
         .ok_or(Fault::OutOfMemory("property key table exhausted"))
 }
 
-/// `base[key] = value` for the running task `task` (`[[Set]]` in strict
-/// mode: a rejected write is a TypeError; QuickJS `put_field` and
-/// `put_array_el`). Module docs, "Writes and the prototype chain".
+/// `base[key] = value` for the running task `task` (`[[Set]]`; QuickJS
+/// `put_field` and `put_array_el`). `strict` is the mode of the running
+/// code: a write `[[Set]]` rejects (a read-only property, a non-extensible
+/// receiver) is a TypeError in strict code and does nothing in sloppy code
+/// (clj-quickjs-119). Module docs, "Writes and the prototype chain".
 pub(crate) fn put(
     heap: &Heap,
     task: TaskId,
     base: &Value,
     key: &Key,
     value: Value,
+    strict: bool,
 ) -> Result<(), Fault> {
     let Value::Object(id) = *base else {
         return Err(primitive_base(base, key, Access::Write));
@@ -479,6 +517,8 @@ pub(crate) fn put(
         Key::Name(name) => Some(intern(heap, name)?),
         Key::Index(_) => None,
     };
+    // `[[Set]]` returned false (module docs).
+    let rejected = |fault: Fault| if strict { Err(fault) } else { Ok(()) };
     let prototype = loop {
         let outcome = heap
             .with_object_mut(id, |object| store(object, task, key, interned, &value))
@@ -487,6 +527,7 @@ pub(crate) fn put(
             Stored::Done => return Ok(()),
             Stored::NeedsName => interned = Some(intern(heap, &key.to_name())?),
             Stored::Inherited(prototype) => break prototype,
+            Stored::Rejected(fault) => return rejected(fault),
         }
     };
     // An index name that was never interned is on no object of the chain.
@@ -495,23 +536,32 @@ pub(crate) fn put(
         None => heap.keys().lookup(&key.to_name()),
     };
     if let Some(k) = chain_key {
-        check_inherited(heap, task, prototype, k, key)?;
+        match check_inherited(heap, task, prototype, k, key) {
+            // The walk's only TypeError is an inherited read-only property.
+            Err(fault @ Fault::TypeError(_)) => return rejected(fault),
+            other => other?,
+        }
     }
     // Only the running task changes the receiver, so it still lacks `key`.
+    let added = |done: bool| match done {
+        true => SetOutcome::Done,
+        false => SetOutcome::NotExtensible,
+    };
     let added = heap
         .with_object_mut(id, |object| match (object, key) {
             (HeapObject::Array(a), Key::Index(index)) => Ok(a.add(*index, value)),
-            (HeapObject::Array(a), _) => {
-                Ok(chain_key.is_some_and(|k| a.object_mut().add(k, value)))
-            }
-            (HeapObject::Plain(o), _) => Ok(chain_key.is_some_and(|k| o.add(k, value))),
+            (HeapObject::Array(a), _) => Ok(added(
+                chain_key.is_some_and(|k| a.object_mut().add(k, value)),
+            )),
+            (HeapObject::Plain(o), _) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
             _ => Err(Fault::Internal("property base changed kind")),
         })
         .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
-    if added {
-        Ok(())
-    } else {
-        Err(not_extensible(key))
+    match added {
+        SetOutcome::Done => Ok(()),
+        SetOutcome::ReadOnly => rejected(read_only(key)),
+        SetOutcome::NotExtensible => rejected(not_extensible(key)),
+        SetOutcome::Inherited => Err(Fault::Internal("an inherited write was not decided")),
     }
 }
 
@@ -522,8 +572,9 @@ pub(crate) fn put_field(
     base: &Value,
     name: &JsString,
     value: Value,
+    strict: bool,
 ) -> Result<(), Fault> {
-    put(heap, task, base, &Key::from_name(name), value)
+    put(heap, task, base, &Key::from_name(name), value, strict)
 }
 
 /// The prototype-chain part of OrdinarySet for a property the receiver does
@@ -563,10 +614,14 @@ fn check_inherited(
         let next = heap
             .read(id, |object| match visit(object, task)? {
                 Visit::Store(o, builtin) => in_store(o, builtin),
-                // Elements are writable data properties.
                 Visit::Array(a) => match key {
-                    Key::Index(index) if a.get(*index).is_some() => Ok(None),
-                    Key::Index(_) => Ok(a.object().prototype()),
+                    Key::Index(index) => match a.element(*index) {
+                        Some(element) if !element.flags.writable => Err(read_only(key)),
+                        Some(_) => Ok(None),
+                        None => Ok(a.object().prototype()),
+                    },
+                    _ if key.is_length() && !a.length_writable() => Err(read_only(key)),
+                    _ if key.is_length() => Ok(None),
                     _ => in_store(a.object(), false),
                 },
                 // No other kind is ever a prototype; it has no properties.
@@ -616,6 +671,125 @@ pub(crate) fn define_field(
         ))),
     })
     .unwrap_or(Err(Fault::Internal("object literal was reclaimed")))
+}
+
+/// `[[DefineOwnProperty]]` of `key` on the object `target` for the running
+/// task `task`, throwing on a rejection (DefinePropertyOrThrow, as
+/// `Object.defineProperty` uses it; clj-quickjs-119). The kinds follow the
+/// module table: an owned ordinary object validates and applies `desc`
+/// ([`OrdinaryObject::define_own_property`]); an owned array does the same
+/// for its named properties, and ArrayDefineOwnProperty for its elements and
+/// `length` (`ArrayObject::define_element`, `ArrayObject::define_length`; a
+/// define that would change `length` is `UnsupportedOperand`,
+/// clj-quickjs-39); a realm intrinsic
+/// is a TypeError (immutable); another task's object is `ForeignObject`; a
+/// function or error object is `UnsupportedOperand`; the other heap kinds
+/// have no properties and are not extensible (TypeError).
+pub(crate) fn define_own_property(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    key: &Key,
+    desc: &PropertyDescriptor,
+) -> Result<(), Fault> {
+    // An array index of an array needs no name; every other key does.
+    let element = matches!(key, Key::Index(_))
+        && heap
+            .read(target, |o| matches!(o, HeapObject::Array(_)))
+            .unwrap_or(false);
+    let interned = match element {
+        true => None,
+        false => Some(intern(heap, &key.to_name())?),
+    };
+    let named = |o: &mut OrdinaryObject| {
+        let k = interned.ok_or(Fault::Internal("a property name was not interned"))?;
+        defined(o.define_own_property(k, desc), key)
+    };
+    let unsupported = |what: &str| {
+        Err(Fault::Unsupported(format!(
+            "cannot define property '{key}' of {what}: its properties are not supported"
+        )))
+    };
+    heap.with_object_mut(target, |object| match object {
+        HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable_define(key)),
+        HeapObject::Builtin(_) => Err(immutable_define(key)),
+        HeapObject::Plain(o) => {
+            check_write(o, task)?;
+            named(o)
+        }
+        HeapObject::Array(a) => {
+            check_write(a.object(), task)?;
+            match key {
+                Key::Index(index) => defined(a.define_element(*index, desc), key),
+                _ if key.is_length() => match a.define_length(desc) {
+                    Some(outcome) => defined(outcome, key),
+                    None => Err(Fault::Unsupported(
+                        "cannot define property 'length' of an array: changing an array's length is not supported"
+                            .to_string(),
+                    )),
+                },
+                Key::Name(_) => named(a.object_mut()),
+            }
+        }
+        HeapObject::Function(_) => unsupported("a function"),
+        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
+            unsupported("an error object")
+        }
+        other => Err(Fault::TypeError(format!(
+            "cannot define property '{key}' of a {}: it has no JavaScript properties",
+            object_name(other)
+        ))),
+    })
+    .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+}
+
+/// The fault of a [`DefineOutcome`].
+fn defined(outcome: DefineOutcome, key: &Key) -> Result<(), Fault> {
+    match outcome {
+        DefineOutcome::Done => Ok(()),
+        DefineOutcome::Rejected(reason) => Err(Fault::TypeError(format!(
+            "cannot define property '{key}': {reason}"
+        ))),
+        DefineOutcome::Accessor => Err(Fault::Unsupported(format!(
+            "cannot define property '{key}': accessor properties (get/set) are not supported"
+        ))),
+    }
+}
+
+/// The own property `key` of the object `target` for the running task
+/// `task` (`[[GetOwnProperty]]`, as `Object.getOwnPropertyDescriptor` uses
+/// it; clj-quickjs-119): `None` if absent. Ordinary objects (realm
+/// intrinsics included), arrays and built-in functions report their own
+/// properties; another task's object is `ForeignObject`; a function or
+/// error object is `UnsupportedOperand`; the other heap kinds have none.
+pub(crate) fn get_own_property(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    key: &Key,
+) -> Result<Option<Property>, Fault> {
+    let k = heap.keys().lookup(&key.to_name());
+    let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
+    heap.read(target, |object| match visit(object, task)? {
+        Visit::Store(o, _) => Ok(named(o)),
+        Visit::Array(a) => Ok(match key {
+            Key::Index(index) => a.element(*index),
+            _ if key.is_length() => Some(a.length_property()),
+            Key::Name(_) => named(a.object()),
+        }),
+        Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+            Some(fault) => Err(fault),
+            None => Ok(None),
+        },
+    })
+    .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+}
+
+/// The failure of a define on a realm intrinsic (`crate::realm`).
+fn immutable_define(key: &Key) -> Fault {
+    Fault::TypeError(format!(
+        "cannot define property '{key}' of a built-in object: built-in objects are shared by all tasks and immutable"
+    ))
 }
 
 /// A new empty array owned by the running task whose prototype is
@@ -756,11 +930,11 @@ mod tests {
             get_field(&heap, task, &native, &name),
             Ok(Value::Undefined)
         ));
-        match put_field(&heap, task, &native, &name, Value::Null) {
+        match put_field(&heap, task, &native, &name, Value::Null, true) {
             Err(Fault::TypeError(m)) => assert!(m.contains("no JavaScript properties"), "{m}"),
             _ => panic!("expected a TypeError"),
         }
-        match put(&heap, task, &native, &Key::Index(0), Value::Null) {
+        match put(&heap, task, &native, &Key::Index(0), Value::Null, true) {
             Err(Fault::TypeError(m)) => assert!(m.contains("property '0'"), "{m}"),
             _ => panic!("expected a TypeError"),
         }
@@ -805,10 +979,60 @@ mod tests {
             Some(Value::Undefined)
         );
         assert_eq!(heap.keys().lookup(&JsString::from("7")), None);
-        assert!(put(&heap, task, &o, &Key::Index(7), Value::Bool(true)).is_ok());
+        assert!(put(&heap, task, &o, &Key::Index(7), Value::Bool(true), true).is_ok());
         assert_eq!(
             get_field(&heap, task, &o, &JsString::from("7")).ok(),
             Some(Value::Bool(true))
         );
+    }
+
+    /// OrdinarySet with an inherited non-writable data property
+    /// (clj-quickjs-119): strict code throws, sloppy code ignores the write,
+    /// and the receiver gets no own property either way. Source code cannot
+    /// build the prototype link until `Object.create` (clj-quickjs-121).
+    #[test]
+    fn inherited_read_only_properties_reject_writes() {
+        fn ok<T>(result: Result<T, Fault>) -> T {
+            result.unwrap_or_else(|_| panic!("unexpected fault"))
+        }
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let name = JsString::from("k");
+        let k = Key::from_name(&name);
+        let parent = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+            .unwrap();
+        let desc = PropertyDescriptor {
+            value: Some(Value::Number(1.0)),
+            ..PropertyDescriptor::default()
+        };
+        ok(define_own_property(&heap, task, parent, &k, &desc));
+        let child = OrdinaryObject::with_prototype(task, parent);
+        let child = Value::Object(heap.alloc(HeapObject::Plain(child)).unwrap());
+        match put_field(&heap, task, &child, &name, Value::Number(2.0), true) {
+            Err(Fault::TypeError(m)) => {
+                assert_eq!(m, "cannot assign to read-only property 'k'")
+            }
+            _ => panic!("expected a TypeError"),
+        }
+        assert!(put_field(&heap, task, &child, &name, Value::Number(3.0), false).is_ok());
+        let Value::Object(id) = child else {
+            unreachable!()
+        };
+        assert!(ok(get_own_property(&heap, task, id, &k)).is_none());
+        let inherited = ok(get_field(&heap, task, &child, &name));
+        assert_eq!(inherited, Value::Number(1.0));
+        // A writable inherited property lets the receiver add its own.
+        let writable = PropertyDescriptor {
+            writable: Some(true),
+            ..PropertyDescriptor::default()
+        };
+        assert!(define_own_property(&heap, task, parent, &k, &writable).is_err());
+        let other = Key::from_name(&JsString::from("w"));
+        ok(define_own_property(&heap, task, parent, &other, &writable));
+        ok(put(&heap, task, &child, &other, Value::Number(4.0), true));
+        let own = ok(get_own_property(&heap, task, id, &other)).unwrap();
+        assert_eq!(own.value, Value::Number(4.0));
+        assert_eq!(own.flags, crate::object::PropertyFlags::DATA);
     }
 }

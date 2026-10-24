@@ -50,6 +50,8 @@
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 //! | `Array.prototype.toString()` (clj-quickjs-118) | `UnsupportedOperand` until `Array.prototype.join` exists (clj-quickjs-39), never `Object.prototype.toString`'s answer |
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
+//! | `Object.defineProperty(o, k, attributes)` | define or update the own data property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError`; an accessor descriptor: `UnsupportedOperand` (clj-quickjs-120) |
+//! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -58,6 +60,7 @@ use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
 use crate::realm;
 use crate::value::{JsString, Value};
+use crate::vm::descriptor;
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 
@@ -80,6 +83,12 @@ pub(crate) enum Builtin {
     /// `Array.prototype.constructor`; fails when called until the Array
     /// constructor exists (clj-quickjs-39).
     Array,
+    /// `Object.defineProperty` (QuickJS `js_object_defineProperty`;
+    /// clj-quickjs-119, `crate::vm::descriptor`).
+    ObjectDefineProperty,
+    /// `Object.getOwnPropertyDescriptor` (QuickJS
+    /// `js_object_getOwnPropertyDescriptor`; clj-quickjs-119).
+    ObjectGetOwnPropertyDescriptor,
 }
 
 impl Builtin {
@@ -92,6 +101,8 @@ impl Builtin {
             Builtin::ObjectPrototypeValueOf => "valueOf",
             Builtin::ArrayPrototypeToString => "toString",
             Builtin::Array => "Array",
+            Builtin::ObjectDefineProperty => "defineProperty",
+            Builtin::ObjectGetOwnPropertyDescriptor => "getOwnPropertyDescriptor",
         }
     }
 
@@ -103,6 +114,8 @@ impl Builtin {
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
             | Builtin::ArrayPrototypeToString => 0,
+            Builtin::ObjectDefineProperty => 3,
+            Builtin::ObjectGetOwnPropertyDescriptor => 2,
         }
     }
 }
@@ -164,6 +177,10 @@ pub(crate) fn call(
         Builtin::Array => Err(Fault::Unsupported(
             "the Array constructor is not supported".to_string(),
         )),
+        Builtin::ObjectDefineProperty => descriptor::define_property(heap, task, args),
+        Builtin::ObjectGetOwnPropertyDescriptor => {
+            descriptor::get_own_property_descriptor(heap, task, args)
+        }
     }
 }
 

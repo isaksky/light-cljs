@@ -836,7 +836,7 @@ fn step(
             let object = state.pop()?;
             let task = state.diag.task;
             if let Instr::PutField(_) = instr {
-                property::put_field(heap, task, &object, &name, v.clone())?;
+                property::put_field(heap, task, &object, &name, v.clone(), code.strict)?;
                 state.push(v);
             } else {
                 property::define_field(heap, task, &object, &name, v)?;
@@ -857,7 +857,7 @@ fn step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, true)?;
-            property::put(heap, state.diag.task, &base, &key, v.clone())?;
+            property::put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
             state.push(v);
         }
         Instr::NewArray => {

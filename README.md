@@ -1875,3 +1875,30 @@ Deferred:
   `UnsupportedOperand`); spread elements and array destructuring
   (`Unsupported`); object keys in `o[k]` (ToPrimitive, clj-quickjs-70).
   `__rt.vector` values stay persistent vectors, not arrays.
+
+### `Object.defineProperty`, `Object.getOwnPropertyDescriptor` and data property attributes (clj-quickjs-119)
+
+Supported (`cargo test --test js_source define_property`,
+`cargo test --lib vm::property::tests::inherited_read_only_properties_reject_writes`,
+`cargo test --lib vm::descriptor`; decision record
+in `docs/architecture.md`, "Property attributes"):
+
+- `Object.defineProperty(o, k, d)` creates or updates an own data property of an ordinary object
+  with ECMAScript validation (absent fields default to `undefined`/false on creation and are kept on
+  update; a non-configurable property allows only `writable` true to false and SameValue rewrites)
+  and returns `o`; ToPropertyDescriptor reads `d`'s fields with `[[Get]]`, inherited ones included.
+- `Object.getOwnPropertyDescriptor(o, k)` gives `undefined` or a fresh
+  `{value, writable, enumerable, configurable}` object, also for built-in objects' properties and
+  for array elements and `length`, whose attributes `defineProperty` also sets (a read-only `length`
+  rejects new elements at or beyond it).
+- `o.k = v` of an own or inherited read-only property, or on a non-extensible object, throws a
+  catchable `TypeError` in strict code and does nothing in sloppy code.
+
+Deferred:
+
+- Accessor descriptors (`get`/`set`) fail with `UnsupportedOperand` (clj-quickjs-120); so do
+  primitive targets of `getOwnPropertyDescriptor` (wrapper objects, clj-quickjs-72), object keys
+  (ToPrimitive, clj-quickjs-70) and function targets (clj-quickjs-101/-125). `Object.create`,
+  needed to inherit a read-only property from source, is clj-quickjs-121.
+  `length` changes on arrays fail explicitly (ArraySetLength, clj-quickjs-39). Built-in objects stay immutable: `defineProperty` on one
+  is a `TypeError`.

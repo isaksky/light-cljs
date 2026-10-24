@@ -4938,3 +4938,518 @@ fn array_literals() {
     a.unwrap();
     b.unwrap();
 }
+
+/// Run sloppy (non-strict) script `src` to completion.
+fn sloppy_eval(src: &str) -> ValueView {
+    let exe = compile_script_with("sloppy", src, ScriptOptions::SLOPPY)
+        .unwrap_or_else(|e| panic!("{src:?}: {e}"));
+    match run(&exe, &[]) {
+        RunOutcome::Complete(v) => v.view(),
+        other => panic!("{src:?}: expected Complete, got {other:?}"),
+    }
+}
+
+/// `Object.defineProperty` and `Object.getOwnPropertyDescriptor` with data
+/// property attributes, and `[[Set]]` honouring `writable`
+/// (clj-quickjs-119; `src/vm/descriptor.rs`). The `a.y === 3` row follows
+/// `test` (line 124) of `research/quickjs/tests/test_builtin.js`, revision
+/// 7d1c13c5d8f8 (`new Object()` written `Object()`, the `assert` call as a
+/// Rust assertion); the QuickJS MIT notice on
+/// `object_literals_and_named_properties` covers it. The rest are
+/// synthetic fixtures, not light-cljs output.
+#[test]
+fn define_property_data_descriptors() {
+    let caught = |body: &str| string(&format!("let r = 'none'; {body}"));
+    // The upstream row.
+    assert_eq!(
+        num("let a = Object(); a.x = 1; \
+             Object.defineProperty(a, 'y', { value: 3, writable: true, configurable: true, enumerable: true }); \
+             a.y"),
+        3.0
+    );
+    // defineProperty returns its target; absent attributes are false.
+    assert_eq!(
+        eval("let o = {}; Object.defineProperty(o, 'k', {value: 1}) === o"),
+        ValueView::Bool(true)
+    );
+    let k = "let o = {}; Object.defineProperty(o, 'k', {value: 1}); \
+             let d = Object.getOwnPropertyDescriptor(o, 'k');";
+    assert_eq!(
+        eval(&format!(
+            "{k} d.value === 1 && d.writable === false && d.enumerable === false && d.configurable === false"
+        )),
+        ValueView::Bool(true)
+    );
+    // Assigning the non-writable `k` throws a catchable TypeError (strict
+    // code) and changes nothing.
+    assert_eq!(
+        caught(&format!(
+            "{k} try {{ o.k = 2; }} catch (e) {{ r = 'caught'; }} r + ':' + o.k"
+        )),
+        "caught:1"
+    );
+    let (kind, message, line, column) =
+        failure_at("let o = {};\nObject.defineProperty(o, 'k', {value: 1});\no.k = 2;");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "cannot assign to read-only property 'k'",
+            3,
+            2
+        )
+    );
+    // Redefining the non-configurable `k` with another value throws.
+    assert_eq!(
+        caught(&format!(
+            "{k} try {{ Object.defineProperty(o, 'k', {{value: 2}}); }} catch (e) {{ r = 'caught'; }} r + ':' + o.k"
+        )),
+        "caught:1"
+    );
+    let (kind, message, ..) =
+        failure_at(&format!("{k} Object.defineProperty(o, 'k', {{value: 2}})"));
+    assert_eq!(kind, VmErrorKind::TypeError, "{message}");
+    assert!(message.contains("cannot define property 'k'"), "{message}");
+    // A configurable property can change `writable` and `value`.
+    assert_eq!(
+        caught(
+            "let o = {}; \
+             Object.defineProperty(o, 'p', {value: 1, configurable: true}); \
+             Object.defineProperty(o, 'p', {value: 2, writable: true}); \
+             o.p = 3; \
+             let d = Object.getOwnPropertyDescriptor(o, 'p'); \
+             r = '' + o.p + d.writable + d.enumerable + d.configurable; r"
+        ),
+        "3truefalsetrue"
+    );
+    // A descriptor with both value and get throws.
+    assert_eq!(
+        caught(
+            "let f = () => 1; let o = {}; \
+             try { Object.defineProperty(o, 'x', {value: 1, get: f}); } catch (e) { r = 'caught'; } \
+             r + ':' + Object.getOwnPropertyDescriptor(o, 'x')"
+        ),
+        "caught:undefined"
+    );
+    // A non-object target throws.
+    assert_eq!(
+        caught("try { Object.defineProperty(1, 'x', {}); } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    // A missing property has no descriptor.
+    assert_eq!(
+        eval(
+            "let o = {}; Object.defineProperty(o, 'k', {value: 1}); \
+             Object.getOwnPropertyDescriptor(o, 'missing')"
+        ),
+        ValueView::Undefined
+    );
+    // Literal properties have all three attributes.
+    assert_eq!(
+        eval(
+            "let d = Object.getOwnPropertyDescriptor({x: 1}, 'x'); \
+             d.value === 1 && d.writable && d.enumerable && d.configurable"
+        ),
+        ValueView::Bool(true)
+    );
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#"let o = {}; Object.defineProperty(o, "k", {value: 1}) === o && Object.getOwnPropertyDescriptor(o, "k").writable === false;"#,
+        r#"let p = {}; Object.defineProperty(p, "k", {value: 1}); let r = false; try { p.k = 2; } catch (e) { r = p.k === 1; } r;"#,
+        r#"let d = Object.getOwnPropertyDescriptor({x: 1}, "x"); d.writable && d.enumerable && d.configurable && Object.getOwnPropertyDescriptor({}, "x") === undefined;"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // An object inheriting a non-writable `k`: `Object.create` is the
+    // reflection pellet (clj-quickjs-121), so making one from source fails
+    // explicitly for now (the inherited write is covered by
+    // `vm::property::tests::inherited_read_only_properties_reject_writes`).
+    let (kind, message, ..) = failure_at(
+        "let p = {}; Object.defineProperty(p, 'k', {value: 1}); \
+         let child = Object.create(p); child.k = 1;",
+    );
+    assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{message}");
+    assert!(message.contains("'create'"), "{message}");
+}
+
+/// The rest of ValidateAndApplyPropertyDescriptor, ToPropertyDescriptor and
+/// the targets `defineProperty`/`getOwnPropertyDescriptor` accept or reject
+/// (clj-quickjs-119), and sloppy-mode writes of read-only properties.
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn define_property_validation_and_targets() {
+    let fixed = "let o = {}; Object.defineProperty(o, 'k', {value: 1, writable: true});";
+    let desc = |src: &str| {
+        string(&format!(
+            "{src} let d = Object.getOwnPropertyDescriptor(o, 'k'); \
+             '' + d.value + ':' + d.writable + d.enumerable + d.configurable"
+        ))
+    };
+    // Accepted updates: same-value rewrites of a non-configurable property,
+    // writable true to false, partial updates keeping the other fields.
+    for (update, expected) in [
+        ("{value: 1}", "1:truefalsefalse"),
+        ("{value: 2}", "2:truefalsefalse"),
+        ("{writable: false}", "1:falsefalsefalse"),
+        (
+            "{enumerable: false, configurable: false}",
+            "1:truefalsefalse",
+        ),
+        ("{}", "1:truefalsefalse"),
+    ] {
+        let src = format!("{fixed} Object.defineProperty(o, 'k', {update});");
+        assert_eq!(desc(&src), expected, "{update}");
+    }
+    assert_eq!(
+        desc(&format!(
+            "{fixed} Object.defineProperty(o, 'k', {{writable: false}}); \
+             Object.defineProperty(o, 'k', {{value: 1, writable: false}});"
+        )),
+        "1:falsefalsefalse"
+    );
+    // A configurable property accepts any data update, generic ones keep
+    // the value; ToBoolean of the attributes.
+    assert_eq!(
+        desc(
+            "let o = {k: 1}; Object.defineProperty(o, 'k', {enumerable: 0, writable: ''}); \
+             Object.defineProperty(o, 'k', {configurable: 'yes'});"
+        ),
+        "1:falsefalsetrue"
+    );
+    // A field present with the value undefined is present.
+    assert_eq!(
+        desc("let o = {k: 1}; Object.defineProperty(o, 'k', {value: undefined});"),
+        "undefined:truetruetrue"
+    );
+    assert_eq!(
+        desc("let o = {}; Object.defineProperty(o, 'k', {writable: true});"),
+        "undefined:truefalsefalse"
+    );
+    // A number key is its ToString.
+    assert_eq!(
+        num("let o = {}; Object.defineProperty(o, 1.5, {value: 2}); \
+             Object.getOwnPropertyDescriptor(o, '1.5').value"),
+        2.0
+    );
+    // Rejected: catchable TypeErrors that change nothing.
+    for (setup, define) in [
+        (fixed, "Object.defineProperty(o, 'k', {configurable: true})"),
+        (fixed, "Object.defineProperty(o, 'k', {enumerable: true})"),
+        (
+            "let o = {}; Object.defineProperty(o, 'k', {value: 1});",
+            "Object.defineProperty(o, 'k', {writable: true})",
+        ),
+        (
+            "let o = {}; Object.defineProperty(o, 'k', {value: NaN});",
+            "Object.defineProperty(o, 'k', {value: 0})",
+        ),
+        (
+            "let o = {}; Object.defineProperty(o, 'k', {value: 0});",
+            "Object.defineProperty(o, 'k', {value: -0})",
+        ),
+        (fixed, "Object.defineProperty(o, 'k', {get: () => 1})"),
+        ("let o = {};", "Object.defineProperty(o, 'k', 1)"),
+        ("let o = {};", "Object.defineProperty(o, 'k')"),
+        ("let o = {};", "Object.defineProperty(o, 'k', {get: 1})"),
+        ("let o = {};", "Object.defineProperty(o, 'k', {set: null})"),
+        (
+            "let o = {};",
+            "Object.defineProperty(o, 'k', {writable: true, set: undefined})",
+        ),
+        ("let o = {};", "Object.defineProperty(undefined, 'k', {})"),
+        ("let o = {};", "Object.defineProperty('s', 'k', {})"),
+        ("let o = {};", "Object.getOwnPropertyDescriptor(null, 'k')"),
+        ("let o = {};", "Object.getOwnPropertyDescriptor()"),
+        // Built-in objects are immutable.
+        (
+            "let o = {};",
+            "Object.defineProperty(Object.prototype, 'k', {value: 1})",
+        ),
+        (
+            "let o = {};",
+            "Object.defineProperty(Object, 'name', {value: 'O'})",
+        ),
+        // The runtime's other heap values have no properties and take none.
+        (
+            "let o = {};",
+            "Object.defineProperty(__rt.vector(), 'k', {value: 1})",
+        ),
+    ] {
+        let (kind, message, ..) = failure_at(&format!("{setup} {define}"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{define}: {message}");
+        let src = format!(
+            "{setup} let r = 'none'; try {{ {define}; }} catch (e) {{ r = 'caught'; }} \
+             let d = Object.getOwnPropertyDescriptor(o, 'k'); \
+             r + ':' + (d === undefined ? 'absent' : '' + d.value + d.writable + d.enumerable + d.configurable)"
+        );
+        let unchanged = string(&src);
+        assert!(unchanged.starts_with("caught:"), "{define}: {unchanged}");
+        if setup == fixed {
+            assert_eq!(unchanged, "caught:1truefalsefalse", "{define}");
+        }
+    }
+    // What needs a later pellet fails explicitly: accessors
+    // (clj-quickjs-120), wrapper objects (clj-quickjs-72), ToPrimitive of a
+    // key (clj-quickjs-70), function properties (clj-quickjs-101/-125).
+    for (src, needle) in [
+        ("Object.defineProperty({}, 'k', {get: () => 1})", "accessor"),
+        (
+            "Object.defineProperty({}, 'k', {set: undefined})",
+            "accessor",
+        ),
+        (
+            "let o = {k: 1}; Object.defineProperty(o, 'k', {get: undefined})",
+            "accessor",
+        ),
+        ("Object.getOwnPropertyDescriptor(1, 'k')", "wrapper object"),
+        ("Object.defineProperty({}, {}, {value: 1})", "ToPrimitive"),
+        (
+            "Object.defineProperty(() => 1, 'k', {value: 1})",
+            "a function",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(() => 1, 'k')",
+            "a function",
+        ),
+    ] {
+        let (kind, message, ..) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    }
+    // Descriptors of the realm's intrinsic properties (ECMAScript §18
+    // attributes) and of a value without properties.
+    for (src, expected) in [
+        ("let o = Object; let k = 'length';", "1:falsefalsetrue"),
+        ("let o = Object; let k = 'name';", "Object:falsefalsetrue"),
+        (
+            "let o = Object.prototype; let k = 'constructor';",
+            "true:truefalsetrue",
+        ),
+        (
+            "let o = Object; let k = 'getOwnPropertyDescriptor';",
+            "true:truefalsetrue",
+        ),
+        (
+            "let o = Object; let k = 'prototype';",
+            "true:falsefalsefalse",
+        ),
+    ] {
+        let src = format!(
+            "{src} let d = Object.getOwnPropertyDescriptor(o, k); \
+             let v = typeof d.value === 'object' || typeof d.value === 'function' ? true : d.value; \
+             '' + v + ':' + d.writable + d.enumerable + d.configurable"
+        );
+        assert_eq!(string(&src), expected, "{src}");
+    }
+    assert_eq!(
+        eval("Object.getOwnPropertyDescriptor(__rt.vector(), 'k')"),
+        ValueView::Undefined
+    );
+    assert_eq!(num("Object.defineProperty.length"), 3.0);
+    assert_eq!(
+        string("Object.getOwnPropertyDescriptor.name"),
+        "getOwnPropertyDescriptor"
+    );
+    // Each call returns a fresh descriptor object that inherits from
+    // Object.prototype and can be changed.
+    assert_eq!(
+        eval(
+            "let o = {k: 1}; let a = Object.getOwnPropertyDescriptor(o, 'k'); \
+             let b = Object.getOwnPropertyDescriptor(o, 'k'); \
+             a.value = 2; a !== b && b.value === 1 && a.toString() === '[object Object]'"
+        ),
+        ValueView::Bool(true)
+    );
+
+    // Arrays (clj-quickjs-118): elements and `length` keep attributes too;
+    // named properties are ordinary.
+    for (src, expected) in [
+        (
+            "let a = [1, 2]; Object.defineProperty(a, 0, {value: 5}); '' + a[0] + a.length",
+            "52",
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, '3', {value: 4, writable: true, enumerable: true, configurable: true}); \
+             '' + a[3] + a.length + a[2]",
+            "44undefined",
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, 'length', {value: 1, writable: true}); '' + a.length",
+            "1",
+        ),
+        (
+            "let a = [1]; Object.defineProperty(a, 'x', {value: 2}); let d = Object.getOwnPropertyDescriptor(a, 'x'); \
+             '' + d.value + d.writable + a.length",
+            "2false1",
+        ),
+        (
+            "let d = Object.getOwnPropertyDescriptor([7], 0); '' + d.value + d.writable + d.enumerable + d.configurable",
+            "7truetruetrue",
+        ),
+        (
+            "let d = Object.getOwnPropertyDescriptor([7, , 9], 'length'); '' + d.value + d.writable + d.enumerable + d.configurable",
+            "3truefalsefalse",
+        ),
+        (
+            "'' + Object.getOwnPropertyDescriptor([7, , 9], 1)",
+            "undefined",
+        ),
+    ] {
+        assert_eq!(string(src), expected, "{src}");
+    }
+    let (kind, message, ..) =
+        failure_at("Object.defineProperty([1], 'length', {configurable: true})");
+    assert_eq!(kind, VmErrorKind::TypeError, "{message}");
+    // Changing `length` (ArraySetLength) and accessors fail explicitly.
+    for src in [
+        "Object.defineProperty([1], 'length', {value: 0})",
+        "Object.defineProperty([1], 'length', {value: '1'})",
+        "Object.defineProperty([1], 0, {get: () => 1})",
+    ] {
+        let (kind, message, ..) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+    }
+}
+
+/// Element and `length` attributes of arrays (clj-quickjs-119 over the
+/// arrays of clj-quickjs-118), and computed-key writes of read-only
+/// properties in strict and sloppy code. Synthetic fixtures, not
+/// light-cljs output.
+#[test]
+fn define_property_array_data_attributes() {
+    let desc = |target: &str, key: &str| {
+        format!(
+            "let d = Object.getOwnPropertyDescriptor({target}, {key}); \
+             '' + d.value + ':' + d.writable + d.enumerable + d.configurable"
+        )
+    };
+    // A new element defaults its attributes to false and extends length.
+    let fresh = "let a = []; Object.defineProperty(a, 0, {value: 1});";
+    assert_eq!(
+        string(&format!("{fresh} {} + ':' + a.length", desc("a", "0"))),
+        "1:falsefalsefalse:1"
+    );
+    // A read-only element rejects writes (strict), keeps its value, and
+    // rejects redefinition when it is also non-configurable.
+    for write in [
+        "a[0] = 2",
+        "a['0'] = 2",
+        "Object.defineProperty(a, 0, {value: 2})",
+    ] {
+        let src = format!(
+            "{fresh} let r = 'none'; try {{ {write}; }} catch (e) {{ r = 'caught'; }} r + a[0]"
+        );
+        assert_eq!(string(&src), "caught1", "{write}");
+        let (kind, message, ..) = failure_at(&format!("{fresh} {write}"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{write}: {message}");
+    }
+    let (kind, message, line, column) =
+        failure_at("let a = [1];\nObject.defineProperty(a, 0, {writable: false});\na[0] = 2;");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "cannot assign to read-only property '0'",
+            3,
+            2
+        )
+    );
+    // An existing element: partial updates keep the other attributes; a
+    // configurable one can become writable again.
+    assert_eq!(
+        string(&format!(
+            "let a = [1, 2]; Object.defineProperty(a, 1, {{writable: false}}); {}",
+            desc("a", "1")
+        )),
+        "2:falsetruetrue"
+    );
+    assert_eq!(
+        string(
+            "let a = [1]; Object.defineProperty(a, 0, {writable: false}); \
+             Object.defineProperty(a, 0, {writable: true}); a[0] = 3; '' + a[0]"
+        ),
+        "3"
+    );
+    // A read-only length: reported, kept, and new elements at or beyond it
+    // are rejected; existing elements stay writable.
+    let frozen = "let a = [1, 2]; Object.defineProperty(a, 'length', {writable: false});";
+    assert_eq!(
+        string(&format!("{frozen} {}", desc("a", "'length'"))),
+        "2:falsefalsefalse"
+    );
+    for write in [
+        "a[2] = 3",
+        "a[5] = 3",
+        "a.length = 2",
+        "Object.defineProperty(a, 2, {value: 3})",
+        "Object.defineProperty(a, 'length', {writable: true})",
+        "Object.defineProperty(a, 'length', {value: 3})",
+    ] {
+        let src = format!(
+            "{frozen} let r = 'none'; try {{ {write}; }} catch (e) {{ r = 'caught'; }} r + a.length + a[2]"
+        );
+        assert_eq!(string(&src), "caught2undefined", "{write}");
+    }
+    assert_eq!(
+        string(&format!(
+            "{frozen} a[1] = 5; Object.defineProperty(a, 'length', {{value: 2}}); '' + a[1] + a.length"
+        )),
+        "52"
+    );
+
+    // Computed-key writes of read-only properties: a TypeError at the `[`
+    // in strict code, ignored in sloppy code (the expression is still the
+    // right-hand value).
+    let o = "let o = {}; Object.defineProperty(o, '0', {value: 1}); Object.defineProperty(o, 'k', {value: 1});";
+    for write in ["o[0] = 2", "o['0'] = 2", "o['k'] = 2"] {
+        let (kind, message, line, column) = failure_at(&format!("{o}\n{write};"));
+        assert_eq!(
+            (kind, line, column),
+            (VmErrorKind::TypeError, 2, 2),
+            "{write}: {message}"
+        );
+        let exe = compile_script_with(
+            "sloppy",
+            &format!("{o} let v = ({write}); '' + v + o[0] + o.k"),
+            ScriptOptions::SLOPPY,
+        )
+        .unwrap();
+        match run(&exe, &[]) {
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.string().unwrap().to_string(), "211", "{write}")
+            }
+            other => panic!("{write}: {other:?}"),
+        }
+    }
+    let a = "let a = [1]; Object.defineProperty(a, 0, {writable: false});";
+    assert_eq!(
+        sloppy_eval(&format!("{a} a[0] = 2; a[0] === 1")),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        sloppy_eval(
+            "let a = [1]; Object.defineProperty(a, 'length', {writable: false}); a[1] = 2; a.length === 1 && a[1] === undefined"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Named writes of read-only properties in sloppy code (clj-quickjs-119).
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn define_property_sloppy_writes() {
+    // Sloppy code ignores a write that [[Set]] rejects; strict code in the
+    // same script throws.
+    let setup = "let o = {}; Object.defineProperty(o, 'k', {value: 1});";
+    assert_eq!(
+        sloppy_eval(&format!("{setup} o.k = 2; o.k")),
+        ValueView::Number(1.0)
+    );
+    assert_eq!(
+        sloppy_eval(&format!(
+            "{setup} function f() {{ 'use strict'; o.k = 3; }} \
+             let r = 'none'; try {{ f(); }} catch (e) {{ r = 'caught'; }} r === 'caught' && o.k === 1"
+        )),
+        ValueView::Bool(true)
+    );
+}

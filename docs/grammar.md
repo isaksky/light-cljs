@@ -24,7 +24,9 @@ binding"). Object literals with literal keys, `o.name` reads and
 `o.name = v` assignments (clj-quickjs-114) parse and execute; method
 calls `o.f()` pass their base as the receiver of a built-in function, and
 the built-in global `Object` with `Object.prototype` and `Object.is`
-exists (clj-quickjs-117; see "Built-in globals" under "Execution").
+exists (clj-quickjs-117; see "Built-in globals" under "Execution"), with
+`Object.defineProperty` and `Object.getOwnPropertyDescriptor` for data
+property attributes (clj-quickjs-119).
 `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
 `do`-`while` and `for` loops (clj-quickjs-78, -80, -81) parse and execute, including
@@ -402,6 +404,12 @@ checks left to later stages:
   -260).
   An object literal inherits from `Object.prototype` (clj-quickjs-117);
   an embedder-made object (`Scope::new_object`) has a null prototype.
+  Their attributes (`writable`, `enumerable`, `configurable`) are set
+  with `Object.defineProperty` and read with
+  `Object.getOwnPropertyDescriptor` (clj-quickjs-119); a descriptor with
+  `get`/`set` fails with `UnsupportedOperand` until accessors exist
+  (clj-quickjs-120). Nothing reads `enumerable` yet (`for`-`in`,
+  `Object.keys`: clj-quickjs-85, -123).
 - **Computed keys are primitives** (clj-quickjs-115, with the
   instructions of clj-quickjs-118). A key is converted by ToPropertyKey
   when the access runs, so for a write after the right-hand side has been
@@ -444,7 +452,8 @@ checks left to later stages:
   methods are one set of objects shared by
   every task of a runtime; any write to one (`Object.prototype.x = 1`,
   `Object.is = f`) throws a catchable `TypeError` ("built-in objects are
-  shared by all tasks and immutable"), although their properties report
+  shared by all tasks and immutable"), and so does
+  `Object.defineProperty` on one (clj-quickjs-119), although their properties report
   the standard writable attributes. Programs therefore cannot extend
   built-in prototypes. An ordinary object may still shadow an inherited
   method with its own property (`o.toString = f`).
@@ -463,7 +472,7 @@ checks left to later stages:
   when evaluated instead of giving a wrong value.
 - **Built-in functions have no `Function.prototype` yet**
   (clj-quickjs-102): their own `length`, `name` (and for `Object`,
-  `prototype` and `is`) read normally, any other property read
+  `prototype`, `is`, `defineProperty` and `getOwnPropertyDescriptor`) read normally, any other property read
   (`Object.call`, `Object.is.toString`) fails with `UnsupportedOperand`.
   `Object(v)` of a number, string or boolean and
   `Object.prototype.toString`/`valueOf` of such a receiver need wrapper
@@ -492,8 +501,11 @@ checks left to later stages:
 - **Sloppy mode is partial** (clj-quickjs-95). Non-strict code differs
   from strict code only in allowing `eval` and `arguments` as binding
   names, which are then read and assigned like any binding, legacy
-  octal and leading-zero decimal number literals (clj-quickjs-51), and
-  legacy octal and `\8` `\9` string escapes (clj-quickjs-258). Every other
+  octal and leading-zero decimal number literals (clj-quickjs-51),
+  legacy octal and `\8` `\9` string escapes (clj-quickjs-258), and
+  assignments that `[[Set]]` rejects (`o.k = v` of a read-only property or
+  on a non-extensible object), which sloppy code ignores instead of
+  throwing a `TypeError` (clj-quickjs-119). Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
   named for it: a reference to `arguments` that would denote a function's
   own `arguments` object (clj-quickjs-97) and to `eval` that would denote
@@ -706,7 +718,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property and fails with `UnsupportedOperand` for any other name (no `Function.prototype` yet, clj-quickjs-102); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; function objects, caught error objects, numbers, booleans and strings fail with `UnsupportedOperand` until their properties exist (clj-quickjs-101, -230, -73); an object owned by another task fails with `ForeignObject` |
-| `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes (strict mode): an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only (a `TypeError`), a new own data property is added, so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; the other bases fail as for a read. The expression's value is `v` |
+| `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
 | `[a, , b,]` array literals (clj-quickjs-118) | a new array object owned by the running task (`docs/architecture.md`, "Array objects"), inheriting from `Array.prototype` (a realm intrinsic without methods yet, which inherits from `Object.prototype`; see "Explicit gaps"): the elements are evaluated left to right and each defines the next index; an elision skips an index, leaving a hole (no own property: reading it continues along the prototype chain and gives `undefined`); `length` is the number of elements and holes (`[1, , 3].length` is 3, `[ , ].length` 1, `[1, 2,].length` 2). Two evaluations are distinct objects (`[] !== []`); `typeof` is `"object"`. Lowered to `new_array` and one `append_element`/`append_hole` per element |
 | `o[k]` (clj-quickjs-115, -118) | evaluates `o`, then `k`, then converts `k` by ToPropertyKey (see "Explicit gaps") and reads as `o.name` does: on an ordinary object the key string names the property (`o[1]`, `o["1"]` and `o[1.0]` are one property, `o["01"]` another); on an array an array index (the canonical decimal string of an integer `0` to `2^32 - 2`, from a string or a number: `a[1]`, `a["1"]`, `a[-0]`) names an element, `length` its length, any other key an ordinary property; failures as for `o.name`, at the `[`. Lowered to `get_elem` |
 | `o[k] = v` (clj-quickjs-115, -118) | evaluates `o`, `k`, then `v`, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`), converts `k` and writes as `o.name = v` does; writing an array index at or beyond an array's `length` sets `length` to that index plus one (`let a = [1]; a[3] = 4` gives length 4 with holes at 1 and 2), and any other key adds an ordinary property without changing `length`; assigning an array's `length` fails with `UnsupportedOperand` (clj-quickjs-39). The expression's value is `v`. Lowered to `put_elem` |
@@ -730,6 +742,8 @@ Executed, with JavaScript semantics:
 | `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
 | `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
 | `Object.prototype.toString()`, `.valueOf()` (clj-quickjs-117) | inherited by every literal: `toString` gives `"[object Object]"` for an ordinary object and the runtime's other non-function heap values, `"[object Function]"` for a function, `"[object Undefined]"`/`"[object Null]"` for those receivers (a plain call); `valueOf` gives the receiver itself, and throws a catchable `TypeError` for `undefined`/`null`; primitive receivers and error objects fail with `UnsupportedOperand` (clj-quickjs-72/-73, -230) |
+| `Object.defineProperty(o, k, d)` (clj-quickjs-119) | `o` must be an object (else a catchable `TypeError`); `k` goes through ToPropertyKey as in `o[k]`; `d` must be an object whose `enumerable`, `configurable`, `value`, `writable`, `get`, `set` are read in that order, inherited ones included, and a field present with the value `undefined` counts (ToPropertyDescriptor). A `get`/`set` that is not a function or `undefined`, or one together with `value`/`writable`, is a `TypeError`. A new property takes the given fields, absent ones `undefined`/false (`{value: 1}` is read-only, non-enumerable and non-configurable); an existing one keeps the absent fields. A non-configurable property rejects becoming configurable, a change of `enumerable`, and, when it is also read-only, becoming writable or a value that is not SameValue (`NaN` matches `NaN`, `0` does not match `-0`): a catchable `TypeError` ("cannot define property 'k': ..."), nothing changed. On an array (clj-quickjs-118) an index key defines an element with the same rules (a new index extends `length`; one at or beyond a read-only `length` is a `TypeError`), and `length` (writable, non-enumerable, non-configurable) can be made read-only, after which writes of `length` and of new indices at or beyond it are rejected like other read-only properties; a define that would change `length` fails with `UnsupportedOperand` (ArraySetLength, clj-quickjs-39). Returns `o`. A built-in object as `o` is a `TypeError` (immutable); a value without JavaScript properties (vectors, maps, ...) is not extensible (`TypeError`); a function, error object or a descriptor with `get`/`set` (accessors, clj-quickjs-120) fails with `UnsupportedOperand`; another task's object with `ForeignObject` |
+| `Object.getOwnPropertyDescriptor(o, k)` (clj-quickjs-119) | `undefined` if `o` has no own property `k` (inherited ones do not count), else a new object inheriting from `Object.prototype` with `value`, `writable`, `enumerable`, `configurable` in that order; works on built-in objects (`Object.getOwnPropertyDescriptor(Object, "length")` is `{value: 1, writable: false, enumerable: false, configurable: true}`); an array reports its elements and its `length` with their current attributes; it gives `undefined` for vectors, maps and other values without JavaScript properties. `undefined`/`null` `o` throw a catchable `TypeError`; a number, string or boolean `o` (wrapper objects, clj-quickjs-72), a function or an error object fail with `UnsupportedOperand` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
@@ -1285,6 +1299,15 @@ let counter = {n: 0, add: function (k = 1) { this.n = this.n + k; return this; }
 counter.add().add(2).n === 3 && (counter.add)() === counter;
 function who() { return this; }
 who() === undefined && (0, counter.add) !== undefined;
+```
+
+Data property attributes (clj-quickjs-119); each line below evaluates to
+`true`:
+
+```js accept
+let o = {}; Object.defineProperty(o, "k", {value: 1}) === o && Object.getOwnPropertyDescriptor(o, "k").writable === false;
+let p = {}; Object.defineProperty(p, "k", {value: 1}); let r = false; try { p.k = 2; } catch (e) { r = p.k === 1; } r;
+let d = Object.getOwnPropertyDescriptor({x: 1}, "x"); d.writable && d.enumerable && d.configurable && Object.getOwnPropertyDescriptor({}, "x") === undefined;
 ```
 
 Rejected (`kind line:column` of the reported position):

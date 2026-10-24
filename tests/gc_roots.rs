@@ -736,8 +736,8 @@ fn realm_intrinsics_retain() {
         .collect();
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
-    // clj-quickjs-118.)
-    assert_eq!(rt.heap_usage().objects.builtin, 6);
+    // clj-quickjs-118, and `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119.)
+    assert_eq!(rt.heap_usage().objects.builtin, 8);
     assert_eq!(rt.heap_usage().objects.plain, 2);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

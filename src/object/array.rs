@@ -17,9 +17,10 @@
 //!   foreign-task rules are exactly those of ordinary objects.
 //! * **Elements**, the own properties whose key is an array index (the
 //!   canonical numeric string of an integer `0 ..= 2^32 - 2`, see
-//!   [`array_index`]), as writable, enumerable, configurable data
-//!   properties (the only kind an array element can be until the property
-//!   descriptor pellets):
+//!   [`array_index`]), as data properties, writable, enumerable and
+//!   configurable unless `Object.defineProperty` gave them other attributes
+//!   (clj-quickjs-119; kept in a sorted map of the exceptions, empty for a
+//!   literal):
 //!   - a **dense** vector for indices `0 .. dense.len()`, where `None` is a
 //!     hole (an absent property, not an `undefined` value);
 //!   - a **sparse** ordered map for indices at or beyond `dense.len()`.
@@ -34,16 +35,21 @@
 //!   `a[4294967294] = 1` on an empty array allocates one sparse entry.
 //! * **`length`**, a `u32`: one more than the greatest index present, or
 //!   more (holes at the end: `[ , ]` has length 1 and no elements). It is
-//!   an own data property that is not enumerable, writable and not
+//!   an own data property that is not enumerable, writable (until
+//!   `Object.defineProperty` makes it read-only, clj-quickjs-119) and not
 //!   configurable; it is not stored in `object`. Writing an index at or
-//!   beyond `length` sets `length` to that index plus one.
+//!   beyond `length` sets `length` to that index plus one; a read-only
+//!   `length` rejects that write.
 //!
 //! Reads and writes take only the heap's object-table lock, as for
 //! ordinary objects (`crate::object`).
 
 use std::collections::BTreeMap;
 
-use super::{OrdinaryObject, SetOutcome};
+use super::{
+    DefineOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyFlags, SetOutcome,
+    validate_and_apply,
+};
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::ids::TaskId;
@@ -96,6 +102,12 @@ pub(crate) struct ArrayObject {
     dense: Vec<Option<Value>>,
     sparse: BTreeMap<u32, Value>,
     length: u32,
+    /// The attributes of the elements that are not writable, enumerable and
+    /// configurable (`Object.defineProperty`, clj-quickjs-119); every other
+    /// element has all three.
+    attributes: BTreeMap<u32, PropertyFlags>,
+    /// The `writable` attribute of `length` (`Object.defineProperty`).
+    length_writable: bool,
 }
 
 impl ArrayObject {
@@ -106,6 +118,8 @@ impl ArrayObject {
             dense: Vec::new(),
             sparse: BTreeMap::new(),
             length: 0,
+            attributes: BTreeMap::new(),
+            length_writable: true,
         }
     }
 
@@ -181,9 +195,10 @@ impl ArrayObject {
             if self.object.prototype().is_some() {
                 return SetOutcome::Inherited;
             }
-            if !self.object.extensible() {
-                return SetOutcome::NotExtensible;
-            }
+            return self.add(index, value);
+        }
+        if !self.element_flags(index).writable {
+            return SetOutcome::ReadOnly;
         }
         self.store(index, value);
         SetOutcome::Done
@@ -191,15 +206,111 @@ impl ArrayObject {
 
     /// The end of OrdinarySet once the prototype chain allowed the write of
     /// an element this array does not have ([`SetOutcome::Inherited`], as
-    /// [`OrdinaryObject::add`]): store it, extending `length`. False
-    /// (nothing changed) if the array is not extensible.
-    pub(crate) fn add(&mut self, index: u32, value: Value) -> bool {
+    /// [`OrdinaryObject::add`]): store it as a writable, enumerable,
+    /// configurable element, extending `length`. Nothing changes if the
+    /// array is not extensible (`NotExtensible`) or the index is at or
+    /// beyond a read-only `length` (`ReadOnly`, ArrayDefineOwnProperty).
+    pub(crate) fn add(&mut self, index: u32, value: Value) -> SetOutcome {
         debug_assert!(index <= MAX_INDEX && self.get(index).is_none());
+        if index >= self.length && !self.length_writable {
+            return SetOutcome::ReadOnly;
+        }
         if !self.object.extensible() {
-            return false;
+            return SetOutcome::NotExtensible;
         }
         self.store(index, value);
-        true
+        SetOutcome::Done
+    }
+
+    /// The attributes of a present element.
+    fn element_flags(&self, index: u32) -> PropertyFlags {
+        self.attributes
+            .get(&index)
+            .copied()
+            .unwrap_or(PropertyFlags::DATA)
+    }
+
+    /// The element `index` as a property (value and attributes), if present.
+    pub(crate) fn element(&self, index: u32) -> Option<Property> {
+        self.get(index).map(|value| Property {
+            value: value.clone(),
+            flags: self.element_flags(index),
+        })
+    }
+
+    /// The `length` property: writable (unless made read-only), not
+    /// enumerable, not configurable.
+    pub(crate) fn length_property(&self) -> Property {
+        Property {
+            value: Value::Number(f64::from(self.length)),
+            flags: PropertyFlags {
+                writable: self.length_writable,
+                enumerable: false,
+                configurable: false,
+            },
+        }
+    }
+
+    /// True while `length` is writable.
+    pub(crate) fn length_writable(&self) -> bool {
+        self.length_writable
+    }
+
+    /// `[[DefineOwnProperty]]` of the element `index` (ArrayDefineOwnProperty
+    /// for an array index, clj-quickjs-119): a new element at or beyond a
+    /// read-only `length`, or on a non-extensible array, is rejected;
+    /// otherwise [`validate_and_apply`] decides, and a new element extends
+    /// `length`.
+    pub(crate) fn define_element(
+        &mut self,
+        index: u32,
+        desc: &PropertyDescriptor,
+    ) -> DefineOutcome {
+        debug_assert!(index <= MAX_INDEX);
+        let current = self.element(index);
+        if current.is_none() {
+            if index >= self.length && !self.length_writable {
+                return DefineOutcome::Rejected("the array's length is not writable");
+            }
+            if !self.object.extensible() {
+                return DefineOutcome::Rejected("the object is not extensible");
+            }
+        }
+        let property = match validate_and_apply(current.as_ref(), desc) {
+            Ok(property) => property,
+            Err(outcome) => return outcome,
+        };
+        self.store(index, property.value);
+        if property.flags == PropertyFlags::DATA {
+            self.attributes.remove(&index);
+        } else {
+            self.attributes.insert(index, property.flags);
+        }
+        DefineOutcome::Done
+    }
+
+    /// `[[DefineOwnProperty]]` of `length` (ArraySetLength, clj-quickjs-119)
+    /// for the cases that keep its value: [`validate_and_apply`] against the
+    /// current `length` property (a value numerically equal to it counts as
+    /// the same, as ToUint32 makes it). `None` when the define would change
+    /// the value: truncating or extending an array is clj-quickjs-39.
+    pub(crate) fn define_length(&mut self, desc: &PropertyDescriptor) -> Option<DefineOutcome> {
+        let current = self.length_property();
+        let mut desc = desc.clone();
+        if let Some(Value::Number(n)) = desc.value
+            && n == f64::from(self.length)
+        {
+            desc.value = Some(current.value.clone());
+        }
+        let property = match validate_and_apply(Some(&current), &desc) {
+            Ok(property) => property,
+            Err(outcome) => return Some(outcome),
+        };
+        if !matches!(property.value, Value::Number(n) if n == f64::from(self.length)) {
+            return None;
+        }
+        self.length_writable = property.flags.writable;
+        Some(DefineOutcome::Done)
     }
 
     /// Append an element (`Some`) or a hole (`None`) at index `length`, as

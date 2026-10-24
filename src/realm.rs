@@ -20,8 +20,10 @@
 //! | Object | Kind | Own properties |
 //! |--------|------|----------------|
 //! | `Object.prototype` | ordinary object (`HeapObject::Plain`), null prototype | `constructor` (`Object`), `toString`, `valueOf` |
-//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is` |
+//! | `Object` | built-in function ([`Builtin::Object`]) | `length` (1), `name`, `prototype` (`Object.prototype`), `is`, `defineProperty`, `getOwnPropertyDescriptor` (clj-quickjs-119) |
 //! | `Object.is` | built-in function | `length` (2), `name` |
+//! | `Object.defineProperty` | built-in function | `length` (3), `name` |
+//! | `Object.getOwnPropertyDescriptor` | built-in function | `length` (2), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
 //! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
@@ -236,6 +238,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let to_string = builtin(heap, &mut all, Builtin::ObjectPrototypeToString, &[])?;
     let value_of = builtin(heap, &mut all, Builtin::ObjectPrototypeValueOf, &[])?;
     let is = builtin(heap, &mut all, Builtin::ObjectIs, &[])?;
+    let define_property = builtin(heap, &mut all, Builtin::ObjectDefineProperty, &[])?;
+    let get_own_property_descriptor =
+        builtin(heap, &mut all, Builtin::ObjectGetOwnPropertyDescriptor, &[])?;
 
     let mut prototype = OrdinaryObject::intrinsic(None);
     define(
@@ -262,6 +267,12 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         &[
             ("prototype", object_prototype, PropertyFlags::FIXED),
             ("is", is, PropertyFlags::METHOD),
+            ("defineProperty", define_property, PropertyFlags::METHOD),
+            (
+                "getOwnPropertyDescriptor",
+                get_own_property_descriptor,
+                PropertyFlags::METHOD,
+            ),
         ],
     )?;
     // The one cycle: `Object.prototype.constructor` is `Object`.
@@ -411,7 +422,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 8);
+        assert_eq!(first.all.len(), 10);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

@@ -24,7 +24,10 @@
 //!   position of the first definition. Each property is a data property
 //!   (a [`Value`] and its `writable` / `enumerable` / `configurable`
 //!   [`PropertyFlags`]); accessor properties (clj-quickjs-120) replace the
-//!   value with a getter/setter pair in the same entry.
+//!   value with a getter/setter pair in the same entry. Assignment and
+//!   literals create properties with all three attributes;
+//!   [`OrdinaryObject::define_own_property`] (`Object.defineProperty`,
+//!   clj-quickjs-119) creates and validates any combination.
 //! * **`[[Prototype]]`**, an object or null: `Object.prototype` for an
 //!   object literal or an `Object()` result (clj-quickjs-117,
 //!   [`crate::realm`]), null for an object made by the `NewObject`
@@ -64,6 +67,7 @@ pub(crate) mod array;
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
+use crate::atom::same_value;
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::ids::TaskId;
@@ -376,6 +380,144 @@ impl OrdinaryObject {
         self.push(key, property);
         true
     }
+
+    /// `[[DefineOwnProperty]]` (ECMAScript OrdinaryDefineOwnProperty and
+    /// ValidateAndApplyPropertyDescriptor, clj-quickjs-119; QuickJS
+    /// `JS_DefineProperty`): create `key` from `desc` (absent fields default
+    /// to `undefined`/false) or update the existing property (absent fields
+    /// are kept), unless the update is one a non-configurable property
+    /// forbids. A rejected define changes nothing.
+    pub(crate) fn define_own_property(
+        &mut self,
+        key: PropertyKey,
+        desc: &PropertyDescriptor,
+    ) -> DefineOutcome {
+        let i = self.position(key);
+        if i.is_none() && !self.extensible {
+            return DefineOutcome::Rejected("the object is not extensible");
+        }
+        let current = i.map(|i| &self.entries[i].1);
+        let property = match validate_and_apply(current, desc) {
+            Ok(property) => property,
+            Err(outcome) => return outcome,
+        };
+        match i {
+            Some(i) => self.entries[i].1 = property,
+            None => self.push(key, property),
+        }
+        DefineOutcome::Done
+    }
+}
+
+/// ValidateAndApplyPropertyDescriptor for data properties (clj-quickjs-119),
+/// without the extensibility check, which the caller makes: the property
+/// `desc` makes of `current` (absent fields kept) or, for `None`, creates
+/// (absent fields `undefined`/false), or why not. A non-configurable
+/// `current` rejects becoming configurable, a change of `enumerable`, an
+/// accessor, and, when it is also read-only, becoming writable or a value
+/// that is not SameValue. An accessor descriptor otherwise is
+/// [`DefineOutcome::Accessor`] (clj-quickjs-120). Arrays use it for their
+/// elements (`crate::object::array`).
+pub(crate) fn validate_and_apply(
+    current: Option<&Property>,
+    desc: &PropertyDescriptor,
+) -> Result<Property, DefineOutcome> {
+    let Some(current) = current else {
+        if desc.is_accessor() {
+            return Err(DefineOutcome::Accessor);
+        }
+        return Ok(Property {
+            value: desc.value.clone().unwrap_or(Value::Undefined),
+            flags: PropertyFlags {
+                writable: desc.writable.unwrap_or(false),
+                enumerable: desc.enumerable.unwrap_or(false),
+                configurable: desc.configurable.unwrap_or(false),
+            },
+        });
+    };
+    let flags = current.flags;
+    if !flags.configurable {
+        if desc.configurable == Some(true) {
+            return Err(DefineOutcome::Rejected("it is not configurable"));
+        }
+        if desc.enumerable.is_some_and(|e| e != flags.enumerable) {
+            return Err(DefineOutcome::Rejected(
+                "it is not configurable, so its enumerable attribute cannot change",
+            ));
+        }
+        if desc.is_accessor() {
+            return Err(DefineOutcome::Rejected(
+                "it is a non-configurable data property, so it cannot become an accessor",
+            ));
+        }
+        if !flags.writable {
+            if desc.writable == Some(true) {
+                return Err(DefineOutcome::Rejected(
+                    "it is neither writable nor configurable, so it cannot become writable",
+                ));
+            }
+            if desc
+                .value
+                .as_ref()
+                .is_some_and(|v| !same_value(v, &current.value))
+            {
+                return Err(DefineOutcome::Rejected(
+                    "it is neither writable nor configurable, so its value cannot change",
+                ));
+            }
+        }
+    } else if desc.is_accessor() {
+        return Err(DefineOutcome::Accessor);
+    }
+    Ok(Property {
+        value: desc.value.clone().unwrap_or_else(|| current.value.clone()),
+        flags: PropertyFlags {
+            writable: desc.writable.unwrap_or(flags.writable),
+            enumerable: desc.enumerable.unwrap_or(flags.enumerable),
+            configurable: desc.configurable.unwrap_or(flags.configurable),
+        },
+    })
+}
+
+/// A property descriptor as ToPropertyDescriptor reads it (ECMAScript
+/// "The Property Descriptor Specification Type"): each field may be absent.
+/// A descriptor with `get` or `set` is an accessor descriptor, one with
+/// `value` or `writable` a data descriptor, one with neither a generic
+/// descriptor; ToPropertyDescriptor rejects one that is both.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PropertyDescriptor {
+    pub(crate) value: Option<Value>,
+    pub(crate) writable: Option<bool>,
+    pub(crate) get: Option<Value>,
+    pub(crate) set: Option<Value>,
+    pub(crate) enumerable: Option<bool>,
+    pub(crate) configurable: Option<bool>,
+}
+
+impl PropertyDescriptor {
+    /// IsAccessorDescriptor: `get` or `set` is present.
+    pub(crate) fn is_accessor(&self) -> bool {
+        self.get.is_some() || self.set.is_some()
+    }
+
+    /// IsDataDescriptor: `value` or `writable` is present.
+    pub(crate) fn is_data(&self) -> bool {
+        self.value.is_some() || self.writable.is_some()
+    }
+}
+
+/// What [`OrdinaryObject::define_own_property`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DefineOutcome {
+    /// The property was created or updated.
+    Done,
+    /// ValidateAndApplyPropertyDescriptor returned false (`defineProperty`
+    /// throws a TypeError); the reason, for the message. Nothing changed.
+    Rejected(&'static str),
+    /// The define would create an accessor property, or turn a
+    /// configurable data property into one (clj-quickjs-120). Nothing
+    /// changed.
+    Accessor,
 }
 
 /// The collector traces every property value and the prototype.

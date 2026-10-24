@@ -1565,7 +1565,9 @@ until the heap is dropped. Its objects are:
   `Object.prototype.valueOf`): a new heap kind, `HeapObject::Builtin`
   (`ObjectKind::Builtin`, appended), holding a `Builtin` id naming Rust code
   and an intrinsic `OrdinaryObject` as its property store (`length`,
-  `name`; `Object` also `prototype` and `is`).
+  `name`; `Object` also `prototype` and `is`). clj-quickjs-119 appended
+  `Object.defineProperty` and `Object.getOwnPropertyDescriptor` ("Property
+  attributes" below).
 
 Every task reads them without any lock (an immutable copy of each
 intrinsic's properties and prototype is published with the realm, and
@@ -1670,7 +1672,7 @@ moment (a leaf lock, never taken by the collector).
   through the realm; built-in functions get it as their `[[Prototype]]`.
   Until it exists, reading a property a built-in function does not have
   itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's five objects (and its interned names) live as long as the
+- The realm's objects (ten since clj-quickjs-119) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -1804,6 +1806,87 @@ the element or property is added.
   base. Object keys (ToPrimitive, clj-quickjs-70) fail with
   `UnsupportedOperand`, and `o[k](...)` is a method call passing `o`
   (clj-quickjs-117's `CallMethod`).
+
+## Property attributes (clj-quickjs-119)
+
+Contract: `src/object.rs` (`PropertyFlags`, `PropertyDescriptor`,
+`OrdinaryObject::define_own_property`), `src/vm/descriptor.rs`
+(ToPropertyDescriptor, FromPropertyDescriptor and the two built-ins),
+`src/vm/property.rs` (`define_own_property`, `get_own_property`,
+`find_field`, and `put_field`'s strict/sloppy rejection). Semantics:
+`docs/grammar.md`, "Execution".
+
+**Decision.** The attributes live where clj-quickjs-114 put them: each
+entry of an object's creation-ordered property `Vec` carries its value and
+`writable`/`enumerable`/`configurable` flags, so no new storage, heap kind
+or index was needed. `OrdinaryObject::define_own_property` is ECMAScript's
+OrdinaryDefineOwnProperty with ValidateAndApplyPropertyDescriptor for data
+properties: creation defaults absent fields to `undefined`/false, an update
+keeps absent fields and the entry's position, and a non-configurable
+property rejects every change except `writable` true to false and
+SameValue rewrites. It reports `Rejected(reason)` or `Accessor` (a define
+that needs accessor properties, clj-quickjs-120) and changes nothing in
+either case. `Object.defineProperty` and `Object.getOwnPropertyDescriptor`
+are `Builtin` variants appended to the realm's `Object`; they run inside
+their call instruction like every built-in so far.
+
+- **Descriptor reads are `[[Get]]`s.** ToPropertyDescriptor reads the six
+  fields through `property::find_field`, the prototype-chain read that
+  tells an absent field from one holding `undefined`, so inherited fields
+  count. No field read can run JavaScript until accessors exist; when
+  they do (clj-quickjs-120), these built-ins must become resumable natives
+  (`crate::vm::native`) so a getter runs as an ordinary VM frame across
+  which the task may yield, wait or migrate. The decision point is the
+  `Builtin` dispatch, as "Realm intrinsics" describes.
+- **Writes and modes.** `PutField` passes the running code's
+  `Code::strict` (clj-quickjs-95) to `put_field`: a write that `[[Set]]`
+  rejects (an own or inherited read-only property, a non-extensible
+  receiver) is a catchable `TypeError` in strict code and does nothing in
+  sloppy code. Writes to realm intrinsics stay a `TypeError` in both
+  modes: that is this runtime's sharing rule, not an ECMAScript `[[Set]]`
+  result, and silently dropping it would hide the restriction.
+- **Intrinsics.** `getOwnPropertyDescriptor` reports the standard
+  attributes of built-in objects' properties (`Object.length` is
+  read-only and configurable); `defineProperty` on a built-in object is
+  the same `TypeError` as a write, so a configurable intrinsic property
+  still cannot be reconfigured. The realm's immutable views stay exact.
+- **Descriptor objects** are fresh task-owned ordinary objects inheriting
+  from `Object.prototype`, built with all four properties before they are
+  allocated, so no property value is held only by a Rust local across an
+  allocation.
+
+**Alternatives considered.**
+
+- *A separate attribute table (or shape) per object*: would let objects
+  with identical attributes share them, but nothing needs that before
+  shapes exist ("Ordinary objects", alternatives), and it would split a
+  property across two structures. Rejected.
+- *Validation in the built-in instead of the object*: `delete`
+  (clj-quickjs-124), `Object.freeze` (clj-quickjs-122) and accessor
+  definitions (clj-quickjs-120) need the same rules, so they live on
+  `OrdinaryObject` and the built-in only converts arguments.
+- *Leaving sloppy writes as `TypeError`s until a later pellet*: no sloppy
+  test could then assign a read-only property at all; the mode is already
+  in the code, so the branch is one argument.
+
+**Consequences.**
+
+- Arrays (clj-quickjs-118) keep attributes beside their element storage:
+  `ArrayObject` holds a sorted map of the elements whose attributes are
+  not all true (empty for every literal, so plain arrays pay nothing) and
+  a `length_writable` flag. `define_element` runs the same
+  `validate_and_apply` as ordinary properties (a new element at or beyond
+  a read-only `length` is rejected); `define_length` accepts only defines
+  that keep the value (changing it is ArraySetLength, clj-quickjs-39,
+  `UnsupportedOperand`). Writes consult both: a read-only element is a
+  read-only property for `[[Set]]` (own or inherited), and a read-only
+  `length` rejects new elements at or beyond it and `a.length = v`.
+- clj-quickjs-120 turns the property value into a data/accessor enum and
+  replaces the `Accessor` outcome with real accessor definitions;
+  `getOwnPropertyDescriptor` then reports `get`/`set` instead of
+  `value`/`writable`.
+- `enumerable` is stored and reported but nothing enumerates yet
+  (`for`-`in`, `Object.keys`: clj-quickjs-85, -123).
 
 ## QuickJS references and provenance
 
@@ -2203,3 +2286,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_parse_template`, `js_parse_string` and the template case of
   `js_parse_skip_parens_token` were consulted only, for semantics. No
   code was copied.
+- `tests/js_source.rs` `define_property_data_descriptors`
+  (clj-quickjs-119): the `Object.defineProperty(a, "y", { value: 3,
+  writable: true, configurable: true, enumerable: true }); a.y === 3` case
+  of `test` (line 124) in `research/quickjs/tests/test_builtin.js`,
+  revision 7d1c13c5d8f8. Modified: `new Object()` is `Object()`
+  (clj-quickjs-71) and the `assert` is a Rust assertion. The notice on
+  `object_literals_and_named_properties` covers it.
+  `research/quickjs/quickjs.c` `js_object_defineProperty`,
+  `JS_DefineProperty`, `js_update_property_flags`, `js_obj_to_desc` and
+  `js_object_getOwnPropertyDescriptor` were consulted only, for semantics.
+  No code was copied.

@@ -16,9 +16,12 @@
 //!   error objects of `throw`/`try` (clj-quickjs-11).
 //! * `native`: resumable native operations, the task-owned native
 //!   continuations the loop drives step by step (clj-quickjs-12).
+//! * `descriptor`: property descriptors, `Object.defineProperty` and
+//!   `Object.getOwnPropertyDescriptor` (appended by clj-quickjs-119).
 
 pub mod asm;
 pub(crate) mod builtin;
+pub(crate) mod descriptor;
 pub(crate) mod dispatch;
 pub(crate) mod exception;
 pub mod executable;
