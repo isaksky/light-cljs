@@ -195,7 +195,6 @@ pub(crate) enum Builtin {
     Function,
     /// `Function.prototype.bind` (clj-quickjs-103).
     FunctionPrototypeBind,
-
     /// `Array.prototype.push` (QuickJS `js_array_push`, clj-quickjs-155).
     ArrayPrototypePush,
 }
@@ -230,7 +229,6 @@ impl Builtin {
             Builtin::FunctionPrototypeApply | Builtin::ReflectApply => "apply",
             Builtin::Function => "Function",
             Builtin::FunctionPrototypeBind => "bind",
-
             Builtin::ArrayPrototypePush => "push",
         }
     }
@@ -261,7 +259,6 @@ impl Builtin {
             Builtin::FunctionPrototypeApply => 2,
             Builtin::ReflectApply => 3,
             Builtin::FunctionPrototypeBind => 1,
-
             Builtin::ArrayPrototypePush => 1,
         }
     }
