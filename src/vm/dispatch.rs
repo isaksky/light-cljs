@@ -1643,14 +1643,8 @@ pub(crate) fn step(
             }
         }
         Instr::GeneratorStart => {}
-        Instr::GeneratorInitialYield => {
-            super::generator::create(heap, state)?;
-            return Ok(Flow::FrameChanged);
-        }
-        Instr::GeneratorYield => {
-            super::generator::suspend(heap, state)?;
-            return Ok(Flow::FrameChanged);
-        }
+        Instr::GeneratorInitialYield => return super::generator::step(heap, state, true),
+        Instr::GeneratorYield => return super::generator::step(heap, state, false),
         Instr::Return => {
             let v = state.pop()?;
             return return_flow(state, v);

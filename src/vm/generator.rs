@@ -1,6 +1,6 @@
 //! Task-owned generator objects. Suspended execution lives in a movable VM
 //! activation; `next` is a native boundary around ordinary attached frames.
-use super::dispatch::Fault;
+use super::dispatch::{Fault, Flow};
 use super::frames::{DetachedActivation, VmState};
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
@@ -36,6 +36,17 @@ pub(crate) fn prototype(heap: &Heap) -> Result<ObjectId, Fault> {
     crate::realm::intrinsics(heap)
         .map(|r| r.generator_prototype)
         .ok_or(Fault::OutOfMemory("generator prototype"))
+}
+
+/// Keep generator instruction temporaries out of the ordinary dispatch
+/// frame, including the error path on workers with small Rust stacks.
+pub(crate) fn step(heap: &Heap, vm: &mut VmState, initial: bool) -> Result<Flow, Fault> {
+    if initial {
+        create(heap, vm)?;
+    } else {
+        suspend(heap, vm)?;
+    }
+    Ok(Flow::FrameChanged)
 }
 
 /// Called after normal argument binding, before the body executes.
