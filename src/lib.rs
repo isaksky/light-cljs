@@ -31,19 +31,21 @@
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
 //! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
+//! | [`frontend`] | JavaScript subset lexer, parser and AST with positioned diagnostics (`docs/grammar.md`) |
 //!
 //! The module list is append-only per pellet.
 //!
 //! # Status
 //!
-//! No JavaScript source frontend exists yet. Executables are built from
-//! hand-assembled bytecode ([`Assembler`]), which is an early VM test tool,
-//! not JavaScript source support. Garbage collection is a precise nonmoving
+//! JavaScript source is parsed ([`frontend`]) but not yet compiled.
+//! Executables are built from hand-assembled bytecode ([`Assembler`]), which
+//! is an early VM test tool, not JavaScript source support. Garbage collection is a precise nonmoving
 //! mark/sweep that runs only when no task run or foreign scope is active
 //! (cooperative safepoints are deferred; see [`heap::gc`]).
 
 pub mod collections;
 mod error;
+pub mod frontend;
 pub mod heap;
 pub mod host;
 mod ids;
