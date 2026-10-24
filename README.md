@@ -342,6 +342,9 @@ Supported:
 - Source positions: every compiled instruction has a `SourceLocation`;
   failures report it in `Diagnostic::source`, and `Task::source_location`
   gives the position a ready (for example yielded) task continues at.
+  Operators and calls are located at their token (the operator, the
+  call's `(`, also for caller frames), references at the identifier
+  (clj-quickjs-52).
 - Fixtures: `tests/fixtures/js/` (synthetic, not light-cljs output, plus
   adapted QuickJS `test_op1`/`test_while` cases with their license notice).
 

@@ -470,6 +470,29 @@ column) of the failing reference or operator, and the call chain
 (`Diagnostic::call_chain`). The four run-time errors above are JavaScript
 exceptions: a `try` statement can catch them (see "Exceptions").
 
+The position is the token of the failing operation, as in QuickJS
+(`emit_source_loc` at the operator token; clj-quickjs-52), not the start of
+the enclosing expression. Every form that can fail at run time follows this
+convention, and so must every form added later (`[]` member access, ToPrimitive
+in operators, and so on):
+
+| Failing operation | Position |
+|-------------------|----------|
+| a binary operator (`1 + 2 * f`, `a ** f`, `f < 2`, `a & f`, ...) | the operator token (`*`) |
+| a prefix operator (`-f`, `+f`, `~f`) | the operator token (where the expression starts) |
+| `++`/`--`, prefix or postfix, and compound assignment `x op= v` | the `++`/`--` or `op=` token, for the conversion and the operator |
+| a call `f(a)`, including `__rt.name(...)` intrinsics (a need's wait, a native's failure) | the call's `(` |
+| a caller frame in the call chain (`CallSite::source`), also for `Task::source_location` of a task suspended in a call | that call's `(` |
+| a member access `o.name` (once objects run, clj-quickjs-114) | the `.` (`[` for a computed access) |
+| a reference to, assignment to or update of a binding (ReferenceError, temporal dead zone, `const` TypeError) | the identifier |
+
+For example, `let f = function(){};\n  1 + 2 * f;` fails at 2:9 (the `*`),
+`let n = null;\n 1 + n ( 1234 );` at 2:8 (the `(`), and in
+`function g() { return missing; }\nfunction f() {\n  return 1 + g ( );\n}\nf();`
+the ReferenceError is at 1:23 with the call sites 3:16 and 5:2 in its chain,
+while `\n  1 + not_def` fails at 2:7 and `1 + (not_def = 1)` at 1:6.
+Compile-time errors (`SyntaxError`) keep their own positions, given with each.
+
 ### Exceptions
 
 `throw`, `try`/`catch`/`finally` and `return` through finally blocks follow
@@ -1115,7 +1138,13 @@ assigned at entry, so the last of the same name wins).
 `test_try_catch1`–`test_try_catch8` with their upstream strings and
 `assert` calls in `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-227;
 `let` for `var`, an `assert` that throws its message string, and a counted
-`for` for the `for`-`in` of `test_try_catch8`), each with the notice. The tests
+`for` for the `for`-`in` of `test_try_catch8`), each with the notice.
+For run-time error positions (clj-quickjs-52): `emit_source_loc` calls at
+the operator token in `js_parse_postfix_expr`, `js_parse_unary` and
+`js_parse_assign_expr2`, and `build_backtrace` / `get_line_col` (a caller
+frame at its call); cases of `test_line_column_numbers` of
+`research/quickjs/tests/test_builtin.js` are adapted in `tests/js_source.rs`
+`runtime_error_positions_follow_operator_tokens` with the notice. The tests
 in `src/frontend/tests.rs` are written for this project and are not adapted
 from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
 in `hashbang_comment_only_at_start`, which carries its notice, the name

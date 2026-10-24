@@ -91,7 +91,8 @@ pub struct CallSite {
     /// Index of the caller's `Call` instruction.
     pub instruction: usize,
     pub byte_offset: Option<u32>,
-    /// Source position of the call, for code compiled from JavaScript.
+    /// Source position of the call (its `(` token), for code compiled from
+    /// JavaScript.
     pub source: Option<SourceLocation>,
 }
 
@@ -120,7 +121,10 @@ pub struct Diagnostic {
 /// A position in JavaScript source attached to a compiled instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceLocation {
-    /// Byte range of the source construct the instruction was lowered from.
+    /// Byte range of the source the instruction is attributed to: the
+    /// token of an operator or call (the operator, the call's `(`), the
+    /// identifier of a reference, otherwise the construct it was lowered
+    /// from (`docs/grammar.md`, "Errors").
     pub span: Span,
     /// 1-based line of `span.start`.
     pub line: u32,

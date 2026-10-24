@@ -180,7 +180,11 @@ fn a_callback_waits_inside_the_fold_and_the_fold_completes_after_resume() {
     let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
     assert_eq!(waiting(outcome), helper_key);
     assert_eq!(host.effects, [(1, 10.0), (2, 1.0)]);
-    assert_eq!(suspended_at(&task), (15, 20), "at the need in `step`");
+    assert_eq!(
+        suspended_at(&task),
+        (15, 29),
+        "at the `(` of the need in `step`"
+    );
     let request = one_request(&task, helper_key);
 
     // Collected while parked inside the fold: nothing it needs is lost.
@@ -447,7 +451,11 @@ fn need_all_suspends_in_the_native_for_each_pending_dependency() {
     for (def, value) in [(30, 300.0), (32, 320.0)] {
         let pending = key(&rt, def, 3);
         assert_eq!(waiting(outcome), pending);
-        assert_eq!(suspended_at(&task), (3, 19), "at the needAll call");
+        assert_eq!(
+            suspended_at(&task),
+            (3, 31),
+            "at the `(` of the needAll call"
+        );
         assert_eq!(host.op(2), [1.0], "nothing after the call ran");
         let request = one_request(&task, pending);
         rt.collect().unwrap();
@@ -491,7 +499,7 @@ fn native_failures_name_the_call_site() {
     assert_eq!(e.kind(), VmErrorKind::TypeError);
     assert!(e.to_string().contains("number is not a function"), "{e}");
     let at = e.diagnostic().source.unwrap();
-    assert_eq!((at.line, at.column), (2, 10));
+    assert_eq!((at.line, at.column), (2, 21), "the call's `(`");
 
     // Not a vector.
     let e = run(
@@ -510,7 +518,7 @@ fn native_failures_name_the_call_site() {
     let chain = &e.diagnostic().call_chain;
     assert_eq!(chain.len(), 1, "{chain:?}");
     let at = chain[0].source.unwrap();
-    assert_eq!((at.line, at.column), (3, 10));
+    assert_eq!((at.line, at.column), (3, 21), "the fold call's `(`");
 
     // needAll: a bad definition id fails at the call, after the valid ones.
     let bad = number_vector(&rt, &[1.5]);

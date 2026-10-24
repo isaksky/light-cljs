@@ -35,7 +35,9 @@ fn render_expr(e: &Expr) -> String {
             };
             format!("({op} {})", render_expr(operand))
         }
-        ExprKind::Binary { op, left, right } => {
+        ExprKind::Binary {
+            op, left, right, ..
+        } => {
             let op = binary_name(*op);
             format!("({op} {} {})", render_expr(left), render_expr(right))
         }
@@ -75,7 +77,7 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Assign { target, value } => {
             format!("(= {} {})", target.name, render_expr(value))
         }
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, .. } => {
             let mut out = format!("(call {}", render_expr(callee));
             for arg in args {
                 out.push(' ');
@@ -84,7 +86,9 @@ fn render_expr(e: &Expr) -> String {
             out.push(')');
             out
         }
-        ExprKind::Member { object, property } => {
+        ExprKind::Member {
+            object, property, ..
+        } => {
             format!("(. {} {})", render_expr(object), property.name)
         }
         ExprKind::Function(f) => render_function(f),
@@ -2370,4 +2374,52 @@ fn diagnostics_display_position_and_message() {
         "2:9: SyntaxError: regular expression literals are not supported by this JavaScript subset"
     );
     assert_eq!(e.span.text("let a = 1;\nlet b = /x/;"), "/");
+}
+
+/// Binary operators, calls and member accesses record their operator
+/// token (`op_span`), where run-time failures are reported
+/// (clj-quickjs-52); the node's span still covers the whole expression.
+#[test]
+fn operator_tokens_are_recorded() {
+    fn tokens<'a>(e: &Expr, src: &'a str, out: &mut Vec<&'a str>) {
+        match &e.kind {
+            ExprKind::Binary {
+                left,
+                right,
+                op_span,
+                ..
+            } => {
+                tokens(left, src, out);
+                out.push(op_span.text(src));
+                tokens(right, src, out);
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                op_span,
+            } => {
+                tokens(callee, src, out);
+                out.push(op_span.text(src));
+                for arg in args {
+                    tokens(arg, src, out);
+                }
+            }
+            ExprKind::Member {
+                object, op_span, ..
+            } => {
+                tokens(object, src, out);
+                out.push(op_span.text(src));
+            }
+            _ => {}
+        }
+    }
+    let src = "a * b ** c . d ( 1 << 2 ) >>> f\n(g);";
+    let script = parse_script(src).unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    assert_eq!(e.span.text(src), "a * b ** c . d ( 1 << 2 ) >>> f\n(g)");
+    let mut out = Vec::new();
+    tokens(e, src, &mut out);
+    assert_eq!(out, ["*", "**", ".", "(", "<<", ">>>", "("]);
 }

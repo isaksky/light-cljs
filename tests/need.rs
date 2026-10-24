@@ -122,8 +122,8 @@ fn line_column(e: &VmError) -> (u32, u32) {
     (at.line, at.column)
 }
 
-/// The fixture's line of `__rt.need(5, 3)` and the column of `__rt`.
-const NUMBER_NEED_AT: (u32, u32) = (12, 25);
+/// The fixture's line of `__rt.need(5, 3)` and the column of its `(`.
+const NUMBER_NEED_AT: (u32, u32) = (12, 34);
 
 /// The whole protocol, driven by hand: the consumer runs its pre-need
 /// effect and suspends at a need inside a nested call; the run returns
@@ -461,7 +461,7 @@ fn need_operands_are_validated() {
         let e = failed(task.run().unwrap());
         assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{src}");
         assert!(e.message().contains("non-negative integer"), "{e}");
-        assert_eq!(line_column(&e), (1, 1), "{src}");
+        assert_eq!(line_column(&e), (1, 10), "{src}: at the `(`");
     }
     // Inside a loop, a ready need is read on every iteration, recorded once.
     let rt = Runtime::new();

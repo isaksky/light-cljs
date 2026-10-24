@@ -1801,6 +1801,90 @@ fn unknown_names_fail_with_reference_errors_at_their_position() {
     assert!(e.to_string().contains("at source 1:1"), "{e}");
 }
 
+/// Run-time failure positions follow the operator token (clj-quickjs-52):
+/// a binary operator at the operator, a call at its `(` (also as a caller
+/// frame's call site), references at the identifier. The scripts adapt
+/// cases of `test_line_column_numbers` (line 1118) of
+/// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8, where
+/// `@` marks the expected position. Modified: with no objects or
+/// ToPrimitive yet, a function value stands in for `poisoned_number` (the
+/// operator fails with `UnsupportedOperand` instead of the `valueOf`
+/// throwing), `null` is called through a binding, and the caller-frame
+/// case calls a script function instead of `Error`. The other scripts are
+/// written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn runtime_error_positions_follow_operator_tokens() {
+    // Binary operators: at the operator, not the start of the expression.
+    let (kind, _, line, column) = failure_at("let f = function(){};\n  1 + 2 * f;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 9)
+    );
+    let (kind, _, line, column) = failure_at("let f = function(){};\n  1 + 2 ** f;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 9)
+    );
+    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f < 2");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 5)
+    );
+    // Unary and update operators (unchanged): at the operator.
+    let (_, _, line, column) = failure_at("let f = () => 1;\n  2 * - f");
+    assert_eq!((line, column), (2, 7));
+    let (_, _, line, column) = failure_at("let f = () => 1;\n  2 * f ++");
+    assert_eq!((line, column), (2, 9));
+    // Calls: at the `(`.
+    let (kind, message, line, column) = failure_at("let n = null;\n 1 + n ( 1234 );");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (VmErrorKind::TypeError, "null is not a function", 2, 8)
+    );
+    // Intrinsic calls too.
+    let (_, _, line, column) = failure_at("let v = 1;\n  __rt.nth ( v, 0 );");
+    assert_eq!((line, column), (2, 12));
+    // A caller frame's call site is its call's `(`.
+    let e =
+        failure("function g() { return missing; }\nfunction f() {\n  return 1 + g ( );\n}\nf();");
+    assert_eq!(e.kind(), VmErrorKind::ReferenceError);
+    let d = e.diagnostic();
+    let at = d.source.unwrap();
+    assert_eq!((at.line, at.column), (1, 23));
+    let sites: Vec<_> = d
+        .call_chain
+        .iter()
+        .map(|c| {
+            let at = c.source.unwrap();
+            (at.line, at.column)
+        })
+        .collect();
+    assert_eq!(sites, [(3, 16), (5, 2)]);
+    // References stay at the identifier.
+    let (kind, _, line, column) = failure_at("\n  1 + not_def");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 7));
+    let (kind, _, line, column) = failure_at("1 + (not_def = 1)");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 6));
+}
+
 #[test]
 fn const_reassignment_fails_with_a_type_error() {
     let (kind, message, line, column) = failure_at("const c = 1;\nlet d = 2;\nd = c;\nc = d + 1;");

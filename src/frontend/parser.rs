@@ -1260,9 +1260,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.deeper(cost::OPERATOR)?;
-            self.advance()?;
+            let op_span = self.advance()?.span;
             let right = self.parse_binary(prec + 1)?;
-            left = make_binary(op, left, right);
+            left = make_binary(op, left, right, op_span);
             self.check_height(left.height)?;
         }
         self.depth = saved;
@@ -1294,7 +1294,7 @@ impl<'a> Parser<'a> {
         }
         let saved = self.depth;
         self.deeper(cost::OPERATOR)?;
-        self.advance()?;
+        let op_span = self.advance()?.span;
         let exponent = self.parse_exponent()?;
         self.depth = saved;
         let span = base.span.to(exponent.span);
@@ -1303,6 +1303,7 @@ impl<'a> Parser<'a> {
                 op: BinaryOp::Exp,
                 left: Box::new(base),
                 right: Box::new(exponent),
+                op_span,
             },
             span,
         )
@@ -1382,23 +1383,27 @@ impl<'a> Parser<'a> {
         loop {
             if self.is_punct(Punct::LParen) {
                 self.deeper(cost::CALL)?;
+                let op_span = self.tok.span;
                 let args = self.parse_arguments()?;
                 let span = self.span_from(expr.span.start);
                 expr = self.expr(
                     ExprKind::Call {
                         callee: Box::new(expr),
                         args,
+                        op_span,
                     },
                     span,
                 )?;
             } else if self.is_punct(Punct::Dot) {
                 self.deeper(cost::OPERATOR)?;
+                let op_span = self.tok.span;
                 let property = self.parse_property_name()?;
                 let span = expr.span.to(property.span);
                 expr = self.expr(
                     ExprKind::Member {
                         object: Box::new(expr),
                         property,
+                        op_span,
                     },
                     span,
                 )?;
@@ -1667,11 +1672,16 @@ fn binary_op(kind: &TokenKind) -> Option<(u8, BinOrLogical)> {
     })
 }
 
-fn make_binary(op: BinOrLogical, left: Expr, right: Expr) -> Expr {
+fn make_binary(op: BinOrLogical, left: Expr, right: Expr, op_span: Span) -> Expr {
     let span = left.span.to(right.span);
     let (left, right) = (Box::new(left), Box::new(right));
     let kind = match op {
-        BinOrLogical::Binary(op) => ExprKind::Binary { op, left, right },
+        BinOrLogical::Binary(op) => ExprKind::Binary {
+            op,
+            left,
+            right,
+            op_span,
+        },
         BinOrLogical::Logical(op) => ExprKind::Logical { op, left, right },
     };
     Expr::new(kind, span)

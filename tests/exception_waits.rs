@@ -491,10 +491,10 @@ fn a_producer_failure_is_caught_at_the_need() {
     let error = caught.error().expect("an error object");
     assert_eq!(error.kind(), VmErrorKind::DependencyFailed(key(&rt, A)));
     assert_eq!(error.diagnostic().world, rt.world());
-    assert_eq!(line_column(&error), (3, 43), "{error}");
+    assert_eq!(line_column(&error), (3, 52), "{error}");
     assert_eq!(error.diagnostic().call_chain.len(), 1, "{error}");
     let caller = error.diagnostic().call_chain[0].source.unwrap();
-    assert_eq!((caller.line, caller.column), (7, 15), "{error}");
+    assert_eq!((caller.line, caller.column), (7, 20), "{error}");
     assert!(caught.error_cause().unwrap().same_object(&cause));
 
     // Already failed before the need: caught in the same run, no wait.
@@ -557,7 +557,7 @@ fn a_dependency_error_survives_a_wait_in_finally() {
     let caught = complete(outcome);
     let error = caught.error().expect("the dependency error object");
     assert_eq!(error.kind(), VmErrorKind::DependencyFailed(key(&rt, A)));
-    assert_eq!(line_column(&error), (3, 24), "{error}");
+    assert_eq!(line_column(&error), (3, 33), "{error}");
     assert_eq!(error.diagnostic().call_chain.len(), 1, "{error}");
     let cause = caught.error_cause().unwrap();
     assert!(cause.same_object(&weak_cause.upgrade().unwrap()));

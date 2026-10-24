@@ -190,6 +190,7 @@ fn intrinsic_fixture_runs_collection_and_effect_intrinsics() {
         5.0
     );
     assert_eq!(num("__rt.count(__rt.vector())"), 0.0);
+    // At the call's `(` (clj-quickjs-52).
     let (kind, _, line, column) = failure_at("let n = 1;\n__rt.count(n)");
     assert_eq!(
         (kind, line, column),
@@ -199,7 +200,7 @@ fn intrinsic_fixture_runs_collection_and_effect_intrinsics() {
                 found: "number"
             }),
             2,
-            1
+            11
         )
     );
 }
@@ -244,10 +245,12 @@ fn calls_evaluate_callee_then_arguments_and_bind_parameters() {
 
 #[test]
 fn call_failures_are_type_and_reference_errors_at_the_call() {
+    // A call fails at its `(` (clj-quickjs-52); an unknown callee name at
+    // the name.
     let (kind, message, line, column) = failure_at("let x = 1;\nx(2)");
     assert_eq!(
         (kind, message.as_str(), line, column),
-        (VmErrorKind::TypeError, "number is not a function", 2, 1)
+        (VmErrorKind::TypeError, "number is not a function", 2, 2)
     );
     let (kind, message, line, column) = failure_at("let a = 1;\nmissing(a)");
     assert_eq!(

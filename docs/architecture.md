@@ -425,7 +425,10 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   format; it never affects execution. A failure's `Diagnostic::source` is the
   failing instruction's location, `Task::source_location` is the location of
   the instruction a ready (for example yielded) task will run next, and
-  `throw_error` messages quote the binding name from the source.
+  `throw_error` messages quote the binding name from the source. An
+  operator or call instruction is located at its token (the operator, the
+  call's `(`), a reference at its identifier (clj-quickjs-52; the table is
+  in `docs/grammar.md`, "Errors").
 
 ## Calls and frames (clj-quickjs-4)
 
@@ -1704,3 +1707,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `strings_convert_with_string_to_number`. `research/quickjs/quickjs.c`
   `js_parse_string`, `JS_ConcatString` and `js_string_compare` were
   consulted only, for semantics. No code was copied.
+- `tests/js_source.rs` `runtime_error_positions_follow_operator_tokens`
+  (clj-quickjs-52): the operator, call and reference cases of
+  `test_line_column_numbers` (line 1118) of
+  `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8, where
+  `@` marks the expected position. Modified: a function value stands in
+  for `poisoned_number` (no objects or ToPrimitive yet, so the operator
+  fails with `UnsupportedOperand`), `null` is called through a binding,
+  and the caller-frame case calls a script function instead of `Error`;
+  the member-access cases wait for objects (clj-quickjs-114). The test
+  carries the full notice. `research/quickjs/quickjs.c` `emit_source_loc`
+  in `js_parse_postfix_expr`, `js_parse_unary` and `js_parse_assign_expr2`,
+  `build_backtrace` and `get_line_col` were consulted only. No code was
+  copied.

@@ -30,8 +30,9 @@ fn run() -> Report {
     scenario::run().unwrap_or_else(|e| panic!("scenario: {e}"))
 }
 
-/// Line and column of `__rt.need(7, 2)` in `examples/e2e/consumer.js`.
-const NEED_AT: (u32, u32) = (29, 14);
+/// Line and column of the `(` of `__rt.need(7, 2)` in
+/// `examples/e2e/consumer.js` (a call is located at its `(`).
+const NEED_AT: (u32, u32) = (29, 23);
 
 fn other(worker: WorkerId) -> WorkerId {
     WorkerId::new(1 - worker.index())
@@ -511,8 +512,9 @@ fn events_follow_the_scenario_order() {
 
 /// Line and column of `throw slot;` in `examples/e2e/producer.js`.
 const THROW_AT: (u32, u32) = (11, 5);
-/// Line and column of `__rt.need(7, 2)` in `examples/e2e/companion.js`.
-const COMPANION_NEED_AT: (u32, u32) = (32, 20);
+/// Line and column of the `(` of `__rt.need(7, 2)` in
+/// `examples/e2e/companion.js`.
+const COMPANION_NEED_AT: (u32, u32) = (32, 29);
 
 fn run_variant(variant: Variant) -> Report {
     let report = scenario::run_variant(variant).unwrap_or_else(|e| panic!("{variant:?}: {e}"));

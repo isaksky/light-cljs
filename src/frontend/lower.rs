@@ -1833,10 +1833,15 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             }
-            ExprKind::Binary { op, left, right } => {
+            ExprKind::Binary {
+                op,
+                left,
+                right,
+                op_span,
+            } => {
                 self.expr(left)?;
                 self.expr(right)?;
-                self.binary(*op, is_number(left), is_number(right), span);
+                self.binary(*op, is_number(left), is_number(right), *op_span);
             }
             ExprKind::Logical { op, left, right } => {
                 // The left value is the result unless it selects the right.
@@ -1922,10 +1927,17 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::Pop, op_span);
                 }
             }
-            ExprKind::Call { callee, args } => {
-                if let ExprKind::Member { object, property } = &callee.kind {
+            ExprKind::Call {
+                callee,
+                args,
+                op_span,
+            } => {
+                if let ExprKind::Member {
+                    object, property, ..
+                } = &callee.kind
+                {
                     if self.is_intrinsic_binding(object) {
-                        return self.intrinsic(property, args, span);
+                        return self.intrinsic(property, args, span, *op_span);
                     }
                     return Err(self.unsupported(callee.span, "property access"));
                 }
@@ -1940,9 +1952,11 @@ impl<'s> Lowerer<'s> {
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.out().op_u16(Opcode::Call, args.len() as u16, span);
+                self.out().op_u16(Opcode::Call, args.len() as u16, *op_span);
             }
-            ExprKind::Member { object, property } => {
+            ExprKind::Member {
+                object, property, ..
+            } => {
                 if self.is_intrinsic_binding(object) {
                     return Err(self.error(
                         SyntaxErrorKind::ReservedWord,
@@ -1987,12 +2001,15 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    /// Lower `__rt.<property>(args)` through the intrinsic table.
+    /// Lower `__rt.<property>(args)` through the intrinsic table. Compile
+    /// errors are reported at the call (`span`); the operation runs at its
+    /// `(` token (`at`), as a call does.
     fn intrinsic(
         &mut self,
         property: &Ident,
         args: &[Expr],
         span: Span,
+        at: Span,
     ) -> Result<(), SyntaxError> {
         let name = &property.name;
         let Some(intrinsic) = intrinsics::lookup(name) else {
@@ -2028,7 +2045,7 @@ impl<'s> Lowerer<'s> {
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.out().op(op, span);
+                self.out().op(op, at);
             }
             Lowering::Counted(op) => {
                 for arg in args {
@@ -2039,7 +2056,7 @@ impl<'s> Lowerer<'s> {
                 } else {
                     n
                 };
-                self.out().op_u16(op, count as u16, span);
+                self.out().op_u16(op, count as u16, at);
             }
             Lowering::HostEffect => {
                 let selector = match args[0].kind {
@@ -2059,7 +2076,7 @@ impl<'s> Lowerer<'s> {
                     }
                 };
                 self.expr(&args[1])?;
-                self.out().op_u16(Opcode::HostEffect, selector, span);
+                self.out().op_u16(Opcode::HostEffect, selector, at);
             }
             Lowering::Need => {
                 // The run-time check of `need` (`crate::vm::dispatch`), applied
@@ -2084,7 +2101,7 @@ impl<'s> Lowerer<'s> {
                 for arg in args {
                     self.expr(arg)?;
                 }
-                self.out().op(Opcode::Need, span);
+                self.out().op(Opcode::Need, at);
             }
         }
         Ok(())
@@ -2247,6 +2264,7 @@ fn is_number(e: &Expr) -> bool {
             op: BinaryOp::Add,
             left,
             right,
+            ..
         } => is_number(left) && is_number(right),
         ExprKind::Binary { op, .. } => matches!(
             op,

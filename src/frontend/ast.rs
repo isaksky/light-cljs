@@ -330,7 +330,7 @@ impl Expr {
                 alternate,
             } => test.height.max(consequent.height).max(alternate.height),
             ExprKind::Assign { value, .. } | ExprKind::CompoundAssign { value, .. } => value.height,
-            ExprKind::Call { callee, args } => args
+            ExprKind::Call { callee, args, .. } => args
                 .iter()
                 .map(|a| a.height)
                 .fold(callee.height, usize::max),
@@ -366,6 +366,9 @@ pub enum ExprKind {
         op: BinaryOp,
         left: Box<Expr>,
         right: Box<Expr>,
+        /// The operator token, where run-time failures of the operator are
+        /// reported.
+        op_span: Span,
     },
     /// `&&` and `||` (short-circuiting, value-returning).
     Logical {
@@ -387,6 +390,9 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        /// The `(` token, where run-time failures of the call are reported
+        /// and where a caller frame of a failure is located.
+        op_span: Span,
     },
     /// `object.property` (static property name only). Parsed so later
     /// stages can resolve reserved intrinsic bindings; the subset has no
@@ -394,6 +400,9 @@ pub enum ExprKind {
     Member {
         object: Box<Expr>,
         property: Ident,
+        /// The `.` token, where run-time failures of the access are to be
+        /// reported.
+        op_span: Span,
     },
     /// `++x`, `x++`, `--x` or `x--` on an identifier binding (property
     /// targets are not supported yet). The target may be parenthesized.
