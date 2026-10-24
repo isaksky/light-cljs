@@ -464,7 +464,8 @@ checks left to later stages:
 - **String split** (clj-quickjs-157): string and undefined separators,
   ToUint32 limits, generic receivers and resumable object coercion execute.
   RegExp separators and `Symbol.split` dispatch remain deferred to the RegExp
-  pellets; object separators currently undergo ToString. Long scans and
+  pellets; RegExp separators fail explicitly, and other object separators
+  currently undergo ToString. Long scans and
   result copying are budgeted.
 - **Regular expressions** (clj-quickjs-55): literals produce positioned
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp

@@ -15858,6 +15858,7 @@ fn regexp_flags_errors_and_internal_state() {
         }
     }
     for src in [
+        "let caught = false; try {'a'.split(/a/);} catch(e){caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0;} caught",
         "let r = /a/g; RegExp(r) === r && new RegExp(r) !== r && new RegExp(r).flags === 'g' && RegExp(r, 'm').flags === 'm'",
         "let r = /a/g; let d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); d.value === 0 && d.writable && !d.enumerable && !d.configurable && r instanceof RegExp && r.constructor === RegExp",
         "RegExp.prototype.source === '(?:)' && RegExp.prototype.flags === '' && RegExp.prototype.global === undefined && RegExp.prototype.toString() === '/(?:)/'",

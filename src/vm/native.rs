@@ -1279,6 +1279,11 @@ pub(crate) fn start_builtin(
                 )));
             }
             let separator = args.first().cloned().unwrap_or(Value::Undefined);
+            if crate::regexp::object::data(heap, state.diag.task, &separator)?.is_some() {
+                return Err(Fault::TypeError(
+                    "RegExp separators in String.prototype.split are not supported".into(),
+                ));
+            }
             let limit = args.get(1).cloned().unwrap_or(Value::Undefined);
             (
                 ConvertTarget::StringSplit {

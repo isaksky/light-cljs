@@ -678,7 +678,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 159); // Includes Number typed arrays and Date.toISOString.
+    assert_eq!(ids.len(), 174); // Includes Number typed arrays, Date.toISOString and RegExp.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
