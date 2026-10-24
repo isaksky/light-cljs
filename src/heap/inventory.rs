@@ -463,3 +463,122 @@ fn dependency_outcome_reclaims_with_its_cell() {
     assert_eq!(heap.request_collection().unwrap().reclaimed, ids.len());
     assert_stale(&heap, &ids);
 }
+
+/// Host of the allocating spinner: reports its first effect, then answers
+/// "continue" until `stop` is set (failing after a bound).
+struct SpinHost {
+    entered: Option<std::sync::mpsc::Sender<()>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    deadline: std::time::Instant,
+}
+
+impl crate::Host for SpinHost {
+    fn effect(&mut self, _: crate::HostCall) -> Result<crate::Primitive, String> {
+        if let Some(entered) = self.entered.take() {
+            let _ = entered.send(());
+        }
+        if std::time::Instant::now() > self.deadline {
+            return Err("spin ran past its deadline".to_string());
+        }
+        let stop = self.stop.load(std::sync::atomic::Ordering::Acquire);
+        Ok(crate::Primitive::Bool(!stop))
+    }
+}
+
+/// The crate-internal holders under the multi-worker conditions of
+/// `every_holder_retains_while_other_workers_allocate_and_collect` in
+/// `tests/gc_roots.rs`: worker 0 runs an allocating loop without a budget
+/// while worker 1 requests every collection, so each collection stops
+/// worker 0 at a VM safepoint mid-run. (A dependency outcome is covered
+/// there; its cell table cannot be dropped while the runtime lives.)
+#[test]
+fn crate_internal_holders_retain_while_other_workers_allocate_and_collect() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    use crate::exec::{EventKind, ExecutorConfig, Placement, WorkerId};
+
+    const COLLECTIONS: usize = 6;
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    let (allocator, collector) = (WorkerId::new(0), WorkerId::new(1));
+    let rt = crate::Runtime::new();
+    let heap = Arc::clone(rt.heap());
+    let constant = plain(&heap);
+    let constant_task = spawn_with_constant(&rt, constant);
+    let (native_root, native_ids) = native_holding(&heap);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let entered_tx = Mutex::new(Some(entered_tx));
+    let exec = {
+        let stop = Arc::clone(&stop);
+        ExecutorConfig::new()
+            .workers(2)
+            .host(move |_| {
+                Box::new(SpinHost {
+                    entered: entered_tx.lock().unwrap().clone(),
+                    stop: Arc::clone(&stop),
+                    deadline: Instant::now() + TIMEOUT,
+                })
+            })
+            .driver(|guard, cx| guard.run_with(crate::Budget::UNLIMITED, &mut *cx.host))
+            .start(&rt)
+            .unwrap()
+    };
+    let spinner = crate::frontend::compile_function(
+        "function f() { while (__rt.effect(0, 0)) { const g = __rt.vector(1, 2); } return 0; }",
+    )
+    .unwrap();
+    let task = rt.spawn(&spinner, &[]).unwrap();
+    let id = task.id();
+    exec.submit_with(task, Placement::Worker(allocator))
+        .unwrap();
+    // Only the spinner runs effects, and only on worker 0.
+    entered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("the spinner never started");
+
+    for _ in 0..COLLECTIONS {
+        exec.schedule_collection(Placement::Worker(collector));
+    }
+    let mut collections = Vec::new();
+    assert!(exec.wait_for(TIMEOUT, |events| {
+        collections = events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::Collected(c) if c.requester == Some(collector) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        collections.len() >= COLLECTIONS
+    }));
+    // The first request had to wait for the running worker; a later one may
+    // find it still parked from the previous collection.
+    assert!(collections[0].waited);
+    for c in &collections {
+        assert_eq!(
+            c.state_of(allocator),
+            Some(crate::MutatorState::Safepoint),
+            "collection {}: the allocating worker was not stopped mid-run",
+            c.number
+        );
+    }
+    // Reclamation is permanent, so live now means live through every
+    // collection above.
+    assert!(heap.is_live(constant));
+    assert!(native_ids.iter().all(|&id| heap.is_live(id)));
+
+    stop.store(true, Ordering::Release);
+    let outcome = exec
+        .take_outcome(id, TIMEOUT)
+        .expect("the spinner finished");
+    assert!(matches!(outcome, crate::RunOutcome::Complete(_)));
+    drop(exec.shutdown(TIMEOUT).unwrap());
+
+    drop((constant_task, native_root));
+    rt.request_collection().unwrap();
+    let mut ids = native_ids;
+    ids.push(constant);
+    assert_stale(&heap, &ids);
+}

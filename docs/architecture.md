@@ -215,11 +215,14 @@ public API cannot reach.
   category or kind does not compile until it is mapped, and its test
   checks that every holder's two tests exist and are named in this table.
 - **Multi-worker.** `every_holder_retains_while_other_workers_allocate_and_collect`
-  keeps every holder (and a scope local, released while waiting) alive
-  while two executor workers run allocating tasks, spinning tasks (running
-  frames on workers) and collection jobs; a collection observer checks
-  after each collection that nothing held was reclaimed, then every holder
-  is released and everything it held is reclaimed.
+  keeps every public holder (and a scope local, released while waiting)
+  alive while worker 0 runs an allocating loop without a budget and worker
+  1 runs allocating tasks and requests every collection; each collection
+  must report worker 0 stopped at a VM safepoint mid-run. A collection
+  observer checks after each collection that nothing held was reclaimed,
+  then every holder is released and everything it held is reclaimed.
+  `crate_internal_holders_retain_while_other_workers_allocate_and_collect`
+  *(lib)* does the same for object constants and native payload edges.
 - **Not reclaimable while the runtime lives.** A dependency cell is never
   removed, so a published outcome stays rooted until the runtime and every
   task are gone; the reclamation test drops a cell table directly.

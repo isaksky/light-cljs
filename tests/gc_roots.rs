@@ -25,12 +25,13 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::exec::{EventKind, ExecutorConfig, OutcomeKind};
+use clj_quickjs::exec::{CollectionEvent, Event, EventKind, ExecutorConfig, OutcomeKind};
 use clj_quickjs::frontend::compile_function;
 use clj_quickjs::{
     Budget, CasOutcome, CellStatus, CollectionObserver, CollectionReport, Completion, DependencyId,
-    DependencyKey, Executable, Executor, HandleError, Host, HostCall, Primitive, Provenance,
-    ResultKind, Rooted, RunOutcome, Runtime, Task, ValueView, WeakHandle,
+    DependencyKey, Executable, Executor, HandleError, Host, HostCall, MutatorState, Placement,
+    Primitive, Provenance, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, ValueView,
+    WeakHandle, WorkerId,
 };
 
 /// Bound for every cross-thread wait.
@@ -827,10 +828,13 @@ const CHURN: &str = "function f(n) { let i = 0; let v = __rt.vector(); \
      while (i < n) { v = __rt.conj(v, __rt.vector(i)); \
      if (__rt.count(v) > 16) { v = __rt.vector(); } i = i + 1; } return i; }";
 
-/// Every holder at once, while two executor workers run allocating tasks,
-/// spinning tasks (running frames on workers) and collection jobs: each
-/// collection is requested by one worker while the other allocates. Every
-/// held object survives every collection, then is reclaimed once released.
+/// Every public holder at once, while two executor workers allocate and
+/// collect: worker 0 runs an allocating spinner without a budget (its frame
+/// is a running-frame holder), worker 1 runs allocating tasks, a budgeted
+/// spinner and every collection request, so each collection stops worker 0
+/// at a VM safepoint mid-run. Every held object survives every collection,
+/// then is reclaimed once released. The crate-internal holders get the same
+/// treatment in `src/heap/inventory.rs`.
 #[test]
 fn every_holder_retains_while_other_workers_allocate_and_collect() {
     const COLLECTIONS: usize = 12;
@@ -857,24 +861,43 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
     let mut published = dependency_ready(&rt, 1);
     published.extend(dependency_failed(&rt, 2));
 
+    // Worker 0 runs the allocating spinner without a budget for the whole
+    // collection phase; worker 1 runs everything else, including every
+    // collection request, so each collection must rendezvous with worker 0
+    // stopped at a VM safepoint in the middle of its allocating run.
+    let (allocator, collector) = (WorkerId::new(0), WorkerId::new(1));
     let spin = Spin::default();
+    let unbudgeted: Arc<Mutex<Vec<TaskId>>> = Arc::default();
     let exec: Executor = {
         let spin = spin.clone();
+        let unbudgeted = Arc::clone(&unbudgeted);
         ExecutorConfig::new()
             .workers(2)
             .budget(Budget::instructions(500))
             .host(move |_| Box::new(SpinHost::new(&spin)))
+            .driver(move |guard, cx| {
+                if unbudgeted.lock().unwrap().contains(&guard.task_id()) {
+                    guard.run_with(Budget::UNLIMITED, &mut *cx.host)
+                } else {
+                    guard.run_with(cx.budget, &mut *cx.host)
+                }
+            })
             .start(&rt)
             .unwrap()
     };
-    let spinners: Vec<(clj_quickjs::TaskId, WeakHandle)> = (0..2)
-        .map(|_| {
-            let (task, weak) = spawn_holding(&rt, SPINNER);
-            let id = task.id();
-            exec.submit(task).unwrap();
-            (id, weak)
-        })
-        .collect();
+    let mut spinners: Vec<(TaskId, WeakHandle)> = Vec::new();
+    let (task, weak) = spawn_holding(&rt, SPINNER);
+    spinners.push((task.id(), weak));
+    unbudgeted.lock().unwrap().push(task.id());
+    exec.submit_with(task, Placement::Worker(allocator))
+        .unwrap();
+    // The spinner has entered its run on worker 0 (only it runs there).
+    assert!(spin.entered.wait(), "the allocating spinner never started");
+    // A second, budgeted spinner yields and is requeued between collections.
+    let (task, weak) = spawn_holding(&rt, SPINNER);
+    spinners.push((task.id(), weak));
+    exec.submit_with(task, Placement::Worker(collector))
+        .unwrap();
 
     let mut all_weak: Vec<WeakHandle> = helds.iter().flat_map(|h| h.weak.clone()).collect();
     all_weak.extend(published.iter().cloned());
@@ -895,29 +918,49 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         let local_weak = s.downgrade(local);
         watch.weak.lock().unwrap().push(local_weak.clone());
         s.released(|| {
-            assert!(spin.entered.wait(), "no spinner started");
             let mut churners = Vec::new();
             for _ in 0..COLLECTIONS {
                 let n = rt.root(Primitive::Number(2000.0));
                 let task = rt.spawn(&churn, &[&n]).unwrap();
                 churners.push(task.id());
-                exec.submit(task).unwrap();
-                exec.schedule_collection(clj_quickjs::Placement::Any);
+                exec.submit_with(task, Placement::Worker(collector))
+                    .unwrap();
+                exec.schedule_collection(Placement::Worker(collector));
             }
             for id in churners {
                 let outcome = exec.take_outcome(id, TIMEOUT).expect("churn finished");
                 assert_eq!(complete(outcome).view(), ValueView::Number(2000.0));
             }
-            let by_workers = |events: &[clj_quickjs::exec::Event]| {
+            let by_collector = |events: &[Event]| -> Vec<CollectionEvent> {
                 events
                     .iter()
-                    .filter(|e| matches!(&e.kind, EventKind::Collected(c) if c.requester.is_some()))
-                    .count()
+                    .filter_map(|e| match &e.kind {
+                        EventKind::Collected(c) if c.requester == Some(collector) => {
+                            Some(c.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
             };
+            let mut collections = Vec::new();
             assert!(
-                exec.wait_for(TIMEOUT, |events| by_workers(events) >= COLLECTIONS),
-                "the workers' collections did not all run"
+                exec.wait_for(TIMEOUT, |events| {
+                    collections = by_collector(events);
+                    collections.len() >= COLLECTIONS
+                }),
+                "worker 1's collections did not all run"
             );
+            // The first request had to wait for the running worker; a later
+            // one may find it still parked from the previous collection.
+            assert!(collections[0].waited);
+            for c in &collections {
+                assert_eq!(
+                    c.state_of(allocator),
+                    Some(MutatorState::Safepoint),
+                    "collection {}: the allocating worker was not stopped mid-run",
+                    c.number
+                );
+            }
         });
         let again = s.upgrade(&local_weak).unwrap();
         assert!(s.same_object(local, again));
