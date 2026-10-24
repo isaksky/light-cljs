@@ -87,6 +87,23 @@ fn super_in_arrows_and_eval() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Sloppy direct eval carries
+/// dynamic variable environments alongside the lexical method context.
+#[test]
+fn super_in_sloppy_arrows_and_eval() {
+    for src in [
+        "const o = {__proto__: {f() { return this; }}, m() { eval('var k=1'); return () => eval('k===1 && super.f()===this'); }}; o.m()()",
+        r#"const o = {__proto__: {f() { return this; }}, m() { return eval('var k=1; () => eval("k===1 && super.f()===this")'); }}; const f = o.m(); f.call({})"#,
+    ] {
+        let code = compile_script_with("sloppy-super", src, ScriptOptions::SLOPPY).unwrap();
+        let rt = Runtime::new();
+        let RunOutcome::Complete(value) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("sloppy lexical super did not complete: {src}");
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+    }
+}
+
 #[test]
 fn super_in_constructor_eval() {
     for src in [
