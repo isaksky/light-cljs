@@ -8467,6 +8467,10 @@ detach/attach already traces and relocates those frames and NativeCatch indices.
 No heap kind, dependency wait, JS wrapper function or second disposal loop is
 introduced. Await during cancellation ends the cleanup and unwinds outer
 finally scopes under the existing cancellation policy.
+The native action returns through `Flow::Resume(Instr::Await)` before executing
+the ordinary await, and promise stepping bypasses the unrelated general native
+arms. This bounds dispatcher stack use on 64 KiB workers, including disposal
+getters, thenable callbacks, GC and migration.
 
 QuickJS references and provenance: `research/quickjs/quickjs.c`
 `check_await_using`, `js_op_using_check`, `js_sync_dispose_wrapper`,

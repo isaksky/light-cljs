@@ -2780,19 +2780,15 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             Ok(Flow::Need(dependency, kind))
         }
         Action::Await(value) => {
-            if state.activation_cancelling() {
-                return Ok(if state.unwind_cancel(heap) {
-                    Flow::FrameChanged
-                } else {
-                    Flow::CleanupEnded
-                });
-            }
             state.push_handler(super::exception::HandlerKind::NativeCatch {
                 native: state.natives.len() - 1,
             })?;
             set_awaiting(state, Awaiting::CallResult)?;
-            await_promise(state, super::promise::await_state(heap, value)?)?;
-            Ok(Flow::FrameChanged)
+            state.push(value);
+            // Execute the ordinary await only after dropping this large
+            // dispatch frame, as for resumable conversions. Keep the disposal
+            // frame and its catch handler inside the activation being saved.
+            Ok(Flow::Resume(Instr::Await))
         }
         Action::ReturnPair(first, second) => {
             state.natives.pop();
@@ -3057,8 +3053,9 @@ impl NativeState {
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
             NativeState::Dispose(dispose) => dispose.step(heap, task, input),
             NativeState::Disposal(disposal) => disposal.step(heap, task, input),
+            NativeState::Promise(promise) => promise.step(heap, task, jobs, input),
             NativeState::DurationFormat(format) => format.step(heap, task, input),
-            _ => self.step_other(heap, task, jobs, input, host),
+            _ => self.step_other(heap, task, input, host),
         }
     }
 
@@ -3066,7 +3063,6 @@ impl NativeState {
         &mut self,
         heap: &Heap,
         task: TaskId,
-        jobs: &std::sync::Weak<crate::job::JobInbox>,
         input: Input,
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
@@ -3148,7 +3144,7 @@ impl NativeState {
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
-            NativeState::Promise(p) => p.step(heap, task, jobs, input),
+            NativeState::Promise(_) => unreachable!("promise dispatched before other native arms"),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),

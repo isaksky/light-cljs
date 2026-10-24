@@ -23,6 +23,7 @@ fn await_using_declarations() {
         "let log = ''; function r(s, t) { return {async [Symbol.asyncDispose]() { log += s; await null; log += t; }}; } await (async () => { await using a = r('a', 'A'), b = r('b', 'B'), c = r('c', 'C'); })(); return log === 'cCbBaA';",
         "let log = ''; Promise.resolve().then(() => { log += 't'; }).then(() => { log += 'u'; }); await (async () => { { await using x = null; } log += 'b'; })(); return log === 'tbu';",
         "let log = ''; Promise.resolve().then(() => { log += 't'; }).then(() => { log += 'u'; }); await (async () => { { await using x = undefined; } log += 'b'; })(); return log === 'tbu';",
+        "let log = ''; Promise.resolve().then(() => { log += 't'; }).then(() => { log += 'u'; }); await (async () => { { await using x = {[Symbol.dispose]() {}}; } log += 'b'; })(); return log === 'tbu';",
         "let caught; try { await (async () => { await using a = {[Symbol.dispose]() { throw 1; }}, b = {[Symbol.asyncDispose]() { return Promise.reject(2); }}; throw 3; })(); } catch(e) { caught = e; } return caught instanceof SuppressedError && caught.error === 1 && caught.suppressed.error === 2 && caught.suppressed.suppressed === 3;",
         "let log = ''; let v = await (async () => { await using x = {async [Symbol.asyncDispose]() { await null; log += 'd'; }}; return 42; })(); return v === 42 && log === 'd';",
         "let returned = Promise.reject(99); returned.catch(() => {}); await (async () => { await using x = {[Symbol.dispose]() { return returned; }}; })(); return true;",
@@ -83,16 +84,21 @@ fn await_using_wait_collect_and_migrate() {
         })().then(x => __rt.effect(0, x));
     "#;
     let rt = Runtime::new();
+    // Realm setup runs on the host, as in other small-worker tests.
+    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
     let mut task = rt.spawn(&exe(source), &[]).unwrap();
     let mut host = Log::default();
     let mut waits = 0;
     for _ in 0..5000 {
-        let (next, next_host, out) = std::thread::spawn(move || {
-            let out = task.run_with(Budget::instructions(5), &mut host).unwrap();
-            (task, host, out)
-        })
-        .join()
-        .unwrap();
+        let (next, next_host, out) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let out = task.run_with(Budget::instructions(5), &mut host).unwrap();
+                (task, host, out)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
         task = next;
         host = next_host;
         rt.collect().unwrap();
