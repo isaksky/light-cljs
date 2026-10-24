@@ -1481,8 +1481,8 @@ mod tests {
         assert_eq!(complete(c.run().unwrap()), ValueView::Number(6.0));
     }
 
-    /// The opcodes added for the source compiler, on operands source code
-    /// cannot produce yet (objects), and `throw_error` without source text.
+    /// Early VM tests, hand-assembled bytecode: compiler conversion opcodes
+    /// on methodless objects and `throw_error` without source text.
     #[test]
     fn compiler_opcodes_reject_objects_and_throw_without_source() {
         use Opcode::*;
@@ -1494,21 +1494,27 @@ mod tests {
             let exe = asm.finish("ops", 0, 1).unwrap();
             rt.spawn(&exe, &[]).unwrap().run().unwrap()
         };
-        let unsupported: [&dyn Fn(&mut Assembler); 5] = [
+        let methodless: [&dyn Fn(&mut Assembler); 3] = [
             &|a| {
                 a.op(NewObject).op(ToNumber);
-            },
-            &|a| {
-                a.op(NewObject).op(Neg);
             },
             &|a| {
                 a.constant(num(1.0)).op(NewObject).op(ToNumberPair).op(Pop);
             },
             &|a| {
-                a.op(NewObject).constant(num(2.0)).op(Div);
+                a.op(NewObject).constant(Primitive::Bool(true)).op(LooseEq);
+            },
+        ];
+        for build in methodless {
+            assert_eq!(failed(run(build)).kind(), VmErrorKind::TypeError);
+        }
+        // Numeric-only opcodes still require explicit ToNumber first.
+        let unsupported: [&dyn Fn(&mut Assembler); 2] = [
+            &|a| {
+                a.op(NewObject).op(Neg);
             },
             &|a| {
-                a.op(NewObject).constant(Primitive::Bool(true)).op(LooseEq);
+                a.op(NewObject).constant(num(2.0)).op(Div);
             },
         ];
         for build in unsupported {
