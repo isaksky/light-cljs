@@ -1401,3 +1401,34 @@ fn deep_cyclic_reexports_resolve_without_stack_overflow() {
     assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
     assert_eq!(effects, vec![Primitive::Number(7.0)]);
 }
+
+#[test]
+fn cyclic_dependency_calls_ancestor_function_before_body() {
+    let sources = [
+        (
+            "a.js",
+            "import './b.js'; export function g(x) { return x + 1; }",
+        ),
+        ("b.js", "import {g} from './a.js'; __rt.effect(0, g(1));"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Number(2.0)]);
+    }
+}
+
+#[test]
+fn cyclic_star_export_skips_back_edge_and_uses_later_origin() {
+    let sources = [
+        ("entry.js", "import {n} from './a.js'; __rt.effect(0, n);"),
+        ("a.js", "export * from './b.js'; export * from './leaf.js';"),
+        ("b.js", "export * from './a.js';"),
+        ("leaf.js", "export let n = 7;"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Number(7.0)]);
+    }
+}
