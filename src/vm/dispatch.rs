@@ -48,6 +48,10 @@
 //! frame alive. A caught exception is a poll point (after unwinding, when
 //! every value is in task-owned state). Other failures, and exceptions no
 //! handler catches, end the run with [`Exit::Fail`] (`crate::vm::exception`).
+//! While a cancelled task runs its finally blocks, the loop leaves with
+//! [`Exit::CleanupEnded`] when the last one finishes or when an exception or
+//! `return` would override the cancellation (`crate::task`, "Cancellation
+//! and finally blocks").
 //!
 //! **Dependency waits.** `Need` decodes its operands and leaves the loop with
 //! [`Exit::Need`] (the instruction position already past it, the remaining
@@ -74,7 +78,9 @@ use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::Value;
-use crate::vm::exception::{Completion, ErrorObject, Exception, HandlerKind, describe_thrown};
+use crate::vm::exception::{
+    Completion, ErrorObject, Exception, HandlerKind, describe_thrown, error_object,
+};
 use crate::vm::executable::Code;
 use crate::vm::frames::{Raised, Returned, VmState};
 use crate::vm::function::{BindingCell, FunctionObject};
@@ -99,6 +105,11 @@ pub(crate) enum Exit {
         pc: usize,
         budget: Option<u64>,
     },
+    /// Cleanup for the task's consumer cancellation is over: its last
+    /// finally block finished, or an exception or `return` would have
+    /// overridden the cancellation (`crate::task`, "Cancellation and finally
+    /// blocks").
+    CleanupEnded,
 }
 
 /// A failure before diagnostic context is attached.
@@ -141,6 +152,8 @@ pub(crate) enum Flow {
     Complete(Value),
     /// A `Need` popped its operands: the run guard reads the dependency.
     Need(DependencyId, ResultKind),
+    /// The cancellation cleanup is over ([`Exit::CleanupEnded`]).
+    CleanupEnded,
 }
 
 /// Allocate a function object for `code` with its captured values. Known
@@ -312,6 +325,7 @@ fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
     Ok(match state.return_value(v)? {
         Returned::Complete(result) => Flow::Complete(result),
         Returned::Left | Returned::Finally => Flow::FrameChanged,
+        Returned::Cancelled => Flow::CleanupEnded,
     })
 }
 
@@ -352,7 +366,11 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
 /// exceptions (`crate::vm::exception`). Exhaustive, so a new kind must decide.
 fn catchable(kind: VmErrorKind) -> bool {
     match kind {
-        VmErrorKind::ReferenceError | VmErrorKind::TypeError | VmErrorKind::StackOverflow => true,
+        VmErrorKind::ReferenceError
+        | VmErrorKind::TypeError
+        | VmErrorKind::StackOverflow
+        | VmErrorKind::DependencyFailed(_)
+        | VmErrorKind::DependencyCancelled(_) => true,
         VmErrorKind::UnsupportedOperand
         | VmErrorKind::Internal
         | VmErrorKind::HostEffect
@@ -361,8 +379,6 @@ fn catchable(kind: VmErrorKind) -> bool {
         | VmErrorKind::Builder(_)
         | VmErrorKind::ForeignBinding { .. }
         | VmErrorKind::Atom(_)
-        | VmErrorKind::DependencyFailed(_)
-        | VmErrorKind::DependencyCancelled(_)
         | VmErrorKind::Thrown => false,
     }
 }
@@ -370,22 +386,72 @@ fn catchable(kind: VmErrorKind) -> bool {
 /// The error an exception with value `v`, raised by `Throw` at `pc`, reports
 /// if nothing catches it: an error object's own error, otherwise `Thrown`.
 fn thrown_error(state: &VmState, heap: &Heap, v: Value, pc: usize) -> VmError {
-    let original = match v {
-        Value::Object(id) => heap
-            .read(id, |object| match object {
-                HeapObject::Native(payload) => {
-                    let any: &dyn std::any::Any = &**payload;
-                    any.downcast_ref::<ErrorObject>().map(|e| e.error.clone())
-                }
-                _ => None,
-            })
-            .flatten(),
-        _ => None,
+    match error_object(heap, v) {
+        Some((original, _)) => original,
+        None => {
+            let message = format!("uncaught exception: {}", describe_thrown(v));
+            state.failure(VmErrorKind::Thrown, message, pc)
+        }
+    }
+}
+
+/// Raise `exception` in task-owned state (`VmState::raise`): `None` when a
+/// handler took it and execution continues at the handler's target;
+/// otherwise how the run ends: failing with the exception's error, or
+/// ending a cancellation cleanup the exception would override.
+pub(crate) fn raise(state: &mut VmState, exception: Exception) -> Option<Exit> {
+    match state.raise(exception) {
+        Raised::Caught => None,
+        Raised::Uncaught(exception) => Some(Exit::Fail(*exception.error)),
+        Raised::Cancelled => Some(Exit::CleanupEnded),
+        Raised::Broken(message) => {
+            let at = state.top().pc;
+            let error = state.failure(VmErrorKind::Internal, message.to_string(), at);
+            Some(Exit::Fail(error))
+        }
+    }
+}
+
+/// Raise the run-time failure `error` of the running frame as a JavaScript
+/// exception if it is catchable and some handler could see it: its value is
+/// a fresh error object with `cause` (`crate::vm::exception`). Otherwise, or
+/// if the heap is exhausted, the run fails with the error; see [`raise`].
+///
+/// `cause` must stay alive without this call rooting it (a published
+/// dependency result is held by its cell); the caller is a registered
+/// mutator with no safepoint between here and the object being stored in
+/// task-owned state.
+pub(crate) fn raise_failure(
+    state: &mut VmState,
+    heap: &Heap,
+    error: VmError,
+    cause: Value,
+) -> Option<Exit> {
+    if !catchable(error.kind) || !state.has_handlers() {
+        return Some(Exit::Fail(error));
+    }
+    let pc = error.diagnostic.instruction;
+    // The error object is stored by `raise` (pushed for a catch block or
+    // kept in a pending completion) before any poll.
+    let object = HeapObject::Native(Box::new(ErrorObject {
+        error: error.clone(),
+        cause,
+    }));
+    let Some(id) = heap.alloc(object) else {
+        let message = "heap object table exhausted".to_string();
+        return Some(Exit::Fail(state.failure(
+            VmErrorKind::OutOfMemory,
+            message,
+            pc,
+        )));
     };
-    original.unwrap_or_else(|| {
-        let message = format!("uncaught exception: {}", describe_thrown(v));
-        state.failure(VmErrorKind::Thrown, message, pc)
-    })
+    raise(
+        state,
+        Exception {
+            value: Value::Object(id),
+            error: Box::new(error),
+        },
+    )
 }
 
 /// Execute one instruction of `code`, the running frame's code.
@@ -513,6 +579,9 @@ fn step(
             Completion::Normal => {}
             Completion::Return(v) => return return_flow(state, v),
             Completion::Throw(exception) => return Err(Fault::Rethrow(exception)),
+            // Cancellation unwinding goes on to the next finally block.
+            Completion::Cancel if state.unwind_cancel() => return Ok(Flow::FrameChanged),
+            Completion::Cancel => return Ok(Flow::CleanupEnded),
         },
         Instr::NewObject => {
             // The new object is pushed in the same instruction; no collection
@@ -786,13 +855,14 @@ pub(crate) fn execute(
                 (pc, result)
             }
         };
-        let exception = match result {
+        let raised = match result {
             Ok(Flow::Next) => continue,
             Ok(Flow::FrameChanged) => {
                 code = Arc::clone(&state.top().code);
                 continue;
             }
             Ok(Flow::Complete(value)) => return Exit::Return(value),
+            Ok(Flow::CleanupEnded) => return Exit::CleanupEnded,
             Ok(Flow::Need(dependency, kind)) => {
                 return Exit::Need {
                     dependency,
@@ -801,48 +871,28 @@ pub(crate) fn execute(
                     budget,
                 };
             }
-            Err(Fault::Thrown(v)) => Exception {
-                value: v,
-                error: Box::new(thrown_error(state, heap, v, pc)),
-            },
-            Err(Fault::Rethrow(exception)) => exception,
+            Err(Fault::Thrown(v)) => {
+                let error = Box::new(thrown_error(state, heap, v, pc));
+                raise(state, Exception { value: v, error })
+            }
+            Err(Fault::Rethrow(exception)) => raise(state, exception),
             Err(fault) => {
                 // A failed instruction leaves the running frame as it was (a
                 // failing `Call` pushes no frame), so the failure names it
                 // and its callers.
                 let (kind, message) = fault_error(fault, &code, pc);
                 let error = state.failure(kind, message, pc);
-                if !catchable(kind) || !state.has_handlers() {
-                    return Exit::Fail(error);
-                }
-                // The error object is stored by `raise` (pushed for a catch
-                // block or kept in a pending completion) before any poll.
-                let object = HeapObject::Native(Box::new(ErrorObject {
-                    error: error.clone(),
-                }));
-                let Some(id) = heap.alloc(object) else {
-                    let message = "heap object table exhausted".to_string();
-                    return Exit::Fail(state.failure(VmErrorKind::OutOfMemory, message, pc));
-                };
-                Exception {
-                    value: Value::Object(id),
-                    error: Box::new(error),
-                }
+                raise_failure(state, heap, error, Value::Undefined)
             }
         };
-        match state.raise(exception) {
-            Raised::Caught => {
+        match raised {
+            None => {
                 code = Arc::clone(&state.top().code);
                 // Every value is back in task-owned state: a poll point, so
                 // a loop through handlers cannot starve a collection.
                 heap.safepoint(state);
             }
-            Raised::Uncaught(exception) => return Exit::Fail(*exception.error),
-            Raised::Broken(message) => {
-                let at = state.top().pc;
-                let message = message.to_string();
-                return Exit::Fail(state.failure(VmErrorKind::Internal, message, at));
-            }
+            Some(exit) => return exit,
         }
     }
 }

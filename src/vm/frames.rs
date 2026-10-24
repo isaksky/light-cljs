@@ -153,6 +153,9 @@ pub(crate) enum Returned {
     Left,
     /// A finally block of the frame runs first, with the return pending.
     Finally,
+    /// The return would discard the pending cancellation of a finally block
+    /// running for the task's cancellation: the cleanup ends instead.
+    Cancelled,
 }
 
 /// What [`VmState::raise`] did.
@@ -163,6 +166,9 @@ pub(crate) enum Raised {
     Uncaught(Exception),
     /// The handler stack contradicts the frames (hand-assembled code only).
     Broken(&'static str),
+    /// The exception would discard the pending cancellation of a finally
+    /// block running for the task's cancellation: the cleanup ends instead.
+    Cancelled,
 }
 
 /// The complete VM state of one task.
@@ -188,6 +194,9 @@ pub(crate) struct VmState {
     /// Pending resumable native operations, innermost last, each above the
     /// call frame that started it (`crate::vm::native`). Traced.
     pub(crate) natives: Vec<NativeFrame>,
+    /// Set once the task's consumer cancellation started running its
+    /// finally blocks (`crate::task`, "Cancellation and finally blocks").
+    pub(crate) cancelling: bool,
 }
 
 /// Bind `args` to a frame's locals: as in JavaScript, missing arguments are
@@ -228,6 +237,7 @@ impl VmState {
             pending_need: None,
             handlers: Vec::new(),
             natives: Vec::new(),
+            cancelling: false,
         }
     }
 
@@ -476,6 +486,9 @@ impl VmState {
     pub(crate) fn return_value(&mut self, value: Value) -> Result<Returned, Fault> {
         let frame = self.frame_index();
         while let Some(h) = self.handlers.last().filter(|h| h.frame == frame) {
+            if let HandlerKind::Pending(Completion::Cancel) = h.kind {
+                return Ok(Returned::Cancelled);
+            }
             if let HandlerKind::Finally { target } = h.kind {
                 let height = h.height;
                 if height < self.top().floor() || height > self.stack.len() {
@@ -508,6 +521,7 @@ impl VmState {
         while let Some(h) = self.handlers.pop() {
             let target = match h.kind {
                 HandlerKind::Catch { target } | HandlerKind::Finally { target } => target,
+                HandlerKind::Pending(Completion::Cancel) => return Raised::Cancelled,
                 HandlerKind::Pending(_) => continue,
             };
             // Unwinding through a pending native frame is deferred
@@ -541,6 +555,53 @@ impl VmState {
             return Raised::Caught;
         }
         Raised::Uncaught(exception)
+    }
+
+    /// True when some finally handler would run for a cancellation observed
+    /// now (some may still be refused by [`Self::unwind_cancel`]).
+    pub(crate) fn has_finally(&self) -> bool {
+        self.handlers
+            .iter()
+            .any(|h| matches!(h.kind, HandlerKind::Finally { .. }))
+    }
+
+    /// Unwind the task's consumer cancellation to the innermost finally
+    /// handler (`crate::task`, "Cancellation and finally blocks"): like
+    /// [`Self::raise`], but catch handlers are skipped, and the finally
+    /// handler becomes a pending [`Completion::Cancel`]. Pending completions
+    /// passed on the way are discarded (the cancellation overrides them).
+    /// Returns true if a finally block runs next; false when none is left,
+    /// or the next one could only be reached through a pending native frame
+    /// (deferred, clj-quickjs-28) or contradicts the frames: the cleanup is
+    /// over.
+    pub(crate) fn unwind_cancel(&mut self) -> bool {
+        while let Some(h) = self.handlers.pop() {
+            let HandlerKind::Finally { target } = h.kind else {
+                continue;
+            };
+            let above = match self.calls.get(h.frame) {
+                Some(callee) => callee.base,
+                None => self.stack.len(),
+            };
+            if native::unwinds_through(self, h.frame)
+                || h.frame > self.calls.len()
+                || above < h.height
+            {
+                return false;
+            }
+            self.calls.truncate(h.frame);
+            if h.height < self.top().floor() {
+                return false;
+            }
+            self.stack.truncate(h.height);
+            self.top_mut().pc = target as usize;
+            self.handlers.push(Handler {
+                kind: HandlerKind::Pending(Completion::Cancel),
+                ..h
+            });
+            return true;
+        }
+        false
     }
 
     /// A failure at instruction `pc` of the running frame, with the call

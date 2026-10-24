@@ -56,6 +56,7 @@ cargo run --example e2e           # end-to-end compiler-host scenario on two wor
 cargo test --test e2e             # the same scenario, asserted
 cargo test --test native_fold     # resumable natives: a fold whose callback waits, needAll, GC
 cargo test --lib vm::native::     # leaf versus resumable natives, step accounting
+cargo test --test exception_waits # waits inside handlers, catchable dependency failures, cancellation cleanup
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -568,9 +569,9 @@ Supported:
 Deferred:
 
 - Polling between VM instructions (a run with an unlimited budget and no
-  need observes a cancellation only if it would yield); cancellation as a
-  language-level unwind with `finally` cleanup (clj-quickjs-27) and through
-  native continuations (clj-quickjs-28); cancelling a producer
+  need observes a cancellation only if it would yield); cancellation
+  through native continuations (clj-quickjs-28; `finally` cleanup on
+  cancellation is clj-quickjs-27, below); cancelling a producer
   automatically when its last consumer is cancelled (not done by design:
   the embedder decides, with `Runtime::cancel_cell`).
 
@@ -717,9 +718,9 @@ Supported:
   restarted.
 - A producer request claimed by a VM need is kept for the embedder:
   `Task::take_producer_requests` after the run.
-- A failed or cancelled cell fails the run at the `need`
+- A failed or cancelled cell raises a catchable error at the `need`
   (`VmErrorKind::DependencyFailed` / `DependencyCancelled`, with its source
-  position); a cancelled consumer ends `Cancelled`.
+  position; clj-quickjs-27, below); a cancelled consumer ends `Cancelled`.
 - A producer task may publish a VM function compiled by this runtime as a
   cell result; consumers call it after the need completes
   (`tests/fixtures/js/need_producer.js`).
@@ -728,9 +729,6 @@ Supported:
 
 Deferred:
 
-- Raising a failed dependency as a catchable JavaScript exception
-  (clj-quickjs-27); it fails the run at the `need` for now, without
-  running catch or finally blocks.
 - Definition ids and result kinds are numbers (no string values yet).
 - `src/host/sim.rs` jobs still need through `RunGuard::need` in Rust and
   publish callables as host tokens.
@@ -832,10 +830,10 @@ Supported:
 Deferred:
 
 - Other failures (unsupported operands, collection, builder, atom and
-  binding contract violations, host errors, out of memory, failed or
-  cancelled dependencies) are not catchable and skip catch and finally
-  blocks. Catchable dependency failures, finally blocks on cancellation, and
-  waits inside handlers across migration: clj-quickjs-27.
+  binding contract violations, host errors, out of memory) are not
+  catchable and skip catch and finally blocks. Failed or cancelled
+  dependencies became catchable, and cancellation runs finally blocks, in
+  clj-quickjs-27 (below).
 - Error objects have no properties (`message`, `name`), no `Error`
   constructors or `instanceof`; strings cannot be thrown (no string values).
 - `break`/`continue` through finally blocks (no `break`/`continue` yet).
@@ -937,3 +935,43 @@ Deferred:
   native is terminal for the task for now; cancellation releases its frame.
 - Other resumable natives (map/filter, map traversal) and natives callable
   as JavaScript function values; callbacks receive `(acc, x)` only.
+
+### Exceptions across waits, dependency failures and cancellation cleanup (clj-quickjs-27)
+
+Supported:
+
+- A dependency wait is a suspension, not unwinding: a `__rt.need` that
+  parks inside a try, catch or finally block, or in a function called from
+  one, runs no handler. Handlers, pending completions (saved return values
+  and exceptions), frames and locals stay in the task across the wait,
+  collection and migration to another thread or worker; a finally block
+  that waits then completes its pending `return` or rethrow.
+- A failed or cancelled cell raises a catchable error object at the `need`
+  (ready at the need or delivered on resume): `VmErrorKind::DependencyFailed`
+  / `DependencyCancelled` with the key (world, definition, kind), the need's
+  source position and call chain, and the producer's published error value
+  as its cause. `Rooted::error()` and `Rooted::error_cause()` read a caught
+  error object from Rust. Uncaught (also after finally blocks or a rethrow)
+  the run fails with that error.
+- Consumer cancellation (`Task::cancel`) is not catchable and runs finally
+  blocks, like a generator's `return()`: the observing run leaves the cell,
+  unwinds to each pending finally block in turn (skipping catch blocks),
+  then ends `Cancelled`. Cleanup cannot be overridden or wait: a `return`
+  or exception escaping a finally block, a `need`, or a failure ends it at
+  once (still `Cancelled`); it runs under the budget and may yield. A task
+  without finally blocks is cancelled without running code, as before.
+- Contract: `src/vm/exception.rs` ("Dependency failures", "Waiting is not
+  unwinding") and `src/task.rs` ("Cancellation and finally blocks").
+  Tests: `cargo test --test exception_waits` (source snippets; manual host,
+  thread migration, collections while parked, the two-worker executor) and
+  `cargo test --lib task::need_tests` (cancellation inside the need and
+  park windows).
+
+Deferred:
+
+- Dependency failures and cancellation unwinding *through* a pending
+  resumable native (`__rt.reduce`/`__rt.needAll`) into a handler around it:
+  terminal for now (clj-quickjs-28).
+- Error objects still have no properties (`message`, `cause` are not
+  readable from JavaScript); a cancellation cleanup that ends early reports
+  only `Cancelled`, not why.

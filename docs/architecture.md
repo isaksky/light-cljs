@@ -527,10 +527,10 @@ contract is the `src/task.rs` module docs, "Dependency waits in the VM".
   `RunGuard::need` (record the edge, ready reads included).
 - **Ready.** The shared value (same identity for every reader) is pushed
   and execution continues in the same run and budget.
-- **Failed / cancelled cell.** The run fails at the `need`
+- **Failed / cancelled cell.** A catchable error is raised at the `need`
   (`VmErrorKind::DependencyFailed(key)` / `DependencyCancelled(key)`), with
-  its source position and call chain, so exception handling
-  (clj-quickjs-11) can later raise it there.
+  its source position and call chain (clj-quickjs-27, below); uncaught, the
+  run fails with it.
 - **Pending.** The guard stores the pending result destination
   (`PendingNeed`: key and instruction) in the VM state, keeps any producer
   request the need claimed for the embedder (`Task::take_producer_requests`),
@@ -716,8 +716,8 @@ Design: `design.md` §§8, 10, 15.
   lost). A cancellation and a wake of one parked execution CAS from the
   same word, so exactly one enqueues.
 - **Observation and cleanup.** Only the task's own run observes the
-  request (run start, `need`, `park`, budget boundary), so a later
-  exception/finally policy (clj-quickjs-27) can run cleanup code there; the
+  request (run start, `need`, `park`, budget boundary), so it can run the
+  task's finally blocks first (clj-quickjs-27, below); the
   canceller never runs anything. Terminal cleanup, under the execution
   claim: withdraw the waiter entry from the cell (log lock released before
   the cell lock), clear the unresolved wait, release builders and VM state
@@ -734,8 +734,9 @@ Design: `design.md` §§8, 10, 15.
   parking consumers, settlement and a canceller with barriers; its
   consumers run the synthetic source fixture
   `tests/fixtures/js/cancel_consumer.js`.
-- **Deferred.** Polling between VM instructions; language-level
-  cancellation semantics (clj-quickjs-27, -28).
+- **Deferred.** Polling between VM instructions; cancellation through
+  native frames (clj-quickjs-28). The language-level policy (finally
+  blocks run, not catchable) is clj-quickjs-27, below.
 
 ## Dependency graph and wait cycles (clj-quickjs-26)
 
@@ -927,8 +928,8 @@ docs.
   are raised as fresh immutable error objects (a native heap payload with
   no edges, shareable); other failures are uncatchable and end the run
   without running catch or finally blocks, as QuickJS's uncatchable
-  errors do. Failed dependencies and cancellation cleanup are
-  clj-quickjs-27.
+  errors do. Failed or cancelled dependencies became catchable, with the
+  error object's cause as its one edge, in clj-quickjs-27 (below).
 - **Diagnostics.** Each raised exception carries the `VmError` to report if
   uncaught, built where it was raised (position and call chain), and kept in
   a pending `Throw` across finally blocks. Rethrowing an error object
@@ -937,7 +938,8 @@ docs.
 - **Suspension.** Yields and waits leave the handler stack untouched, so a
   finally block never runs because a task suspends; pending return values
   and exceptions are traced with the frames. Waits inside handlers across
-  migration and collection are tested by clj-quickjs-27.
+  migration and collection are tested in `tests/exception_waits.rs`
+  (clj-quickjs-27).
 - **Tests.** `tests/exceptions.rs` (source: same-function and outer-function
   catch, return through finally, overriding, rethrow, scoping, completion
   values, catchable and uncatchable failures, diagnostics, one-instruction
@@ -1019,6 +1021,45 @@ may survive the run. The contract is the `src/vm/native.rs` module docs.
 - **Deferred.** Unwinding failures through native frames into JavaScript
   handlers, and the cancellation and migration policy for tasks inside a
   native, are clj-quickjs-28.
+
+## Exceptions across waits and cancellation cleanup (clj-quickjs-27)
+
+Contract: `src/vm/exception.rs` ("Dependency failures", "Waiting is not
+unwinding") and `src/task.rs` ("Cancellation and finally blocks"). Design:
+`design.md` §§7, 10.
+
+- **Waits are suspensions.** A pending `need` saves the destination and
+  parks; the handler stack is not touched, so no catch or finally block runs
+  because a task waits, in any block or callee. Pending completions and their
+  values are traced with the frames across waits, collections and migration.
+- **Dependency failures are language errors.** `RunGuard::vm_need` turns a
+  `Failed(e)`/`Cancelled` cell into `VmNeed::Raise`; the run guard calls
+  `dispatch::raise_failure`, the same path a catchable failing instruction
+  takes: if some handler could see it, a fresh `ErrorObject` (error plus
+  `cause` = `e`, its only heap edge, so it is shareable exactly when `e` is)
+  is raised at the need; otherwise the run fails with the error (key, world,
+  source position, call chain). `Rooted::error`/`error_cause` expose it to
+  the embedder.
+- **Consumer cancellation is a forced completion.** On observation the run
+  (`RunGuard::begin_cleanup`) withdraws the waiter entry, drops the pending
+  need, sets `VmState::cancelling` and calls `VmState::unwind_cancel`: catch
+  handlers and pending completions are discarded up to the innermost finally
+  handler, which becomes `Completion::Cancel`. `end_finally` of a `Cancel`
+  unwinds to the next one; with none left the loop exits
+  `Exit::CleanupEnded` and terminal cleanup ends the run `Cancelled`.
+  `raise` and `return_value` refuse to discard a `Cancel` entry (the cleanup
+  ends instead), and a `need` is refused (the task is cancelled), so cleanup
+  can neither revive the task nor wait. A cleanup yields at budget
+  boundaries like any code; the next run continues it. A cancellation that
+  lands in the park window, after the body was released, yields and the
+  next run starts the cleanup.
+- **Tests.** `tests/exception_waits.rs` (source snippets: waits in try,
+  catch, finally and callees; pending return and rethrow after a wait;
+  rooting of a pending return value; caught and uncaught failures; cell
+  cancellation; cancellation policy cases; budgeted cleanup; the two-worker
+  executor migrating and collecting around a parked task and cancelling
+  one) and `src/task/need_tests.rs` (hook-forced cancellation inside the
+  need and the park windows).
 
 ## QuickJS references and provenance
 

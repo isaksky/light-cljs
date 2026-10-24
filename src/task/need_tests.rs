@@ -125,6 +125,71 @@ fn cancellation_inside_the_park_window_keeps_the_producer_request() {
     }
 }
 
+/// A consumer whose need is inside a protected block with a finally block
+/// (`crate::task`, "Cancellation and finally blocks"); the finally block runs
+/// one host effect.
+fn finally_consumer(rt: &Runtime) -> Task {
+    let source = "try { __rt.need(3, 1); } finally { __rt.effect(1, 0); }";
+    rt.spawn(&compile_script("need", source).unwrap(), &[])
+        .unwrap()
+}
+
+/// The cancellation lands inside the need, after its pending read and
+/// before the subscription: the need still subscribes and claims, the run
+/// observes the cancellation before parking and runs the finally block in
+/// the same run, and the waiter entry is gone.
+#[test]
+fn cancellation_inside_the_need_runs_finally_in_the_same_run() {
+    let rt = Runtime::new();
+    let task = finally_consumer(&rt);
+    {
+        let task = task.clone();
+        hooks(&task.clone()).once(HookPoint::NeedAfterPendingRead, move || {
+            assert!(matches!(task.cancel(), Cancel::Requested));
+        });
+    }
+    let mut effects = Effects(0);
+    let outcome = task.run_with(Budget::UNLIMITED, &mut effects).unwrap();
+    assert!(matches!(outcome, RunOutcome::Cancelled), "{outcome:?}");
+    assert_eq!(effects.0, 1, "the finally block ran once");
+    assert_eq!(task.take_producer_requests().len(), 1);
+    assert_eq!(task.dependency_log().waiting(), None);
+    assert!(matches!(
+        rt.cell_status(key(&rt)),
+        CellStatus::Pending { ref waiters, .. } if waiters.is_empty()
+    ));
+}
+
+/// The cancellation lands inside the park's window (between its read and
+/// CAS), after the run released the task body: the park leaves the cell and
+/// yields instead of parking, and the next run starts the cleanup at run
+/// start, running the finally block once.
+#[test]
+fn cancellation_inside_the_park_window_defers_finally_to_the_next_run() {
+    let rt = Runtime::new();
+    let task = finally_consumer(&rt);
+    {
+        let task = task.clone();
+        hooks(&task.clone()).once(HookPoint::ParkBeforeCas, move || {
+            assert!(matches!(task.cancel(), Cancel::Requested));
+        });
+    }
+    let mut effects = Effects(0);
+    let outcome = task.run_with(Budget::UNLIMITED, &mut effects).unwrap();
+    assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+    assert_eq!(effects.0, 0);
+    assert_eq!(task.status(), TaskStatus::Ready);
+    assert_eq!(task.dependency_log().waiting(), None);
+    assert!(matches!(
+        rt.cell_status(key(&rt)),
+        CellStatus::Pending { ref waiters, .. } if waiters.is_empty()
+    ));
+    let outcome = task.run_with(Budget::UNLIMITED, &mut effects).unwrap();
+    assert!(matches!(outcome, RunOutcome::Cancelled), "{outcome:?}");
+    assert_eq!(effects.0, 1);
+    assert_eq!(task.status(), TaskStatus::Cancelled);
+}
+
 /// Counts leaf host effects.
 struct Effects(usize);
 

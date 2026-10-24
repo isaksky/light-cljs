@@ -268,11 +268,16 @@ try { f(); } catch (e) { throw e; } finally {}
 |--------|-----------------------|----------------------|
 | `throw v` (any value) | `v` itself, by identity | `VmErrorKind::Thrown`, "uncaught exception: v", at the last `throw` of it |
 | ReferenceError, TypeError, StackOverflow above | a fresh immutable error object (no properties yet) | the original error, at the failing instruction, also when the object is rethrown |
-| any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory, a failed or cancelled `__rt.need`) | not catchable: the task fails at once without running catch or finally blocks | that failure |
+| a failed or cancelled cell read by `__rt.need` (clj-quickjs-27) | a fresh immutable error object whose cause is the producer's published error value (`undefined` for a cancelled cell) | `DependencyFailed(key)` / `DependencyCancelled(key)` at the `need`, also when rethrown |
+| any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory) | not catchable: the task fails at once without running catch or finally blocks | that failure |
 
 A failure that leaves through finally blocks keeps the position and call
-chain where it was raised. Making failed dependencies catchable, and
-running finally blocks on cancellation, are clj-quickjs-27.
+chain where it was raised. A `__rt.need` that waits raises nothing and runs
+no handler. Cancelling the task (`Task::cancel`) is not catchable: it runs
+the pending finally blocks, skipping catch blocks, then the task ends
+cancelled; a `return`, exception or `__rt.need` that would escape such a
+finally block ends the cleanup there (`src/task.rs`, "Cancellation and
+finally blocks").
 
 Gaps specific to execution:
 

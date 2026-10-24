@@ -39,12 +39,42 @@
 //! `StackOverflow` (QuickJS's catchable "stack overflow" InternalError).
 //! Their exception value is a fresh, immutable **error object**
 //! ([`ErrorObject`], a native heap object, shareable) that carries the
-//! failure; it is allocated only when some handler could see it. Every
-//! other failure (`UnsupportedOperand`, `Internal`, host, collection,
-//! builder, atom and binding-cell contract violations, out of memory, failed
-//! or cancelled dependencies) is not a JavaScript exception: it ends the run
+//! failure; it is allocated only when some handler could see it. A `need`
+//! whose dependency failed or was cancelled raises one too (see
+//! "Dependency failures" below). Every other failure (`UnsupportedOperand`,
+//! `Internal`, host, collection, builder, atom and binding-cell contract
+//! violations, out of memory) is not a JavaScript exception: it ends the run
 //! at once without running catch or finally blocks, as QuickJS's uncatchable
-//! errors do. Making dependency failures catchable is clj-quickjs-27.
+//! errors do.
+//!
+//! **Dependency failures** (clj-quickjs-27, `docs/design.md` §§7, 10). A
+//! `need` that reads a cell whose outcome is `Failed(e)` or `Cancelled`
+//! raises, at that `need`, an error object for
+//! [`VmErrorKind::DependencyFailed`](crate::VmErrorKind::DependencyFailed)
+//! or [`DependencyCancelled`](crate::VmErrorKind::DependencyCancelled): its
+//! error names the key (world, definition, result kind), the `need`'s
+//! instruction and source position and the call chain at that moment, and
+//! its **cause** is the producer's published error value `e` itself (by
+//! identity; `undefined` for a cancelled cell). This happens whether the
+//! cell was already complete or completed while the task waited: a resumed
+//! `need` raises exactly where it suspended. It is an ordinary catchable
+//! exception from there on: catch blocks see the error object, finally
+//! blocks run, a rethrow keeps the original error, and if nothing catches it
+//! the run fails with that error. The published value stays in the cell; the
+//! embedder reads the failure and cause of a caught error object with
+//! [`Rooted::error`](crate::Rooted::error) and
+//! [`Rooted::error_cause`](crate::Rooted::error_cause).
+//!
+//! **Waiting is not unwinding.** A `need` that finds its cell pending
+//! suspends the task; it raises nothing, and no catch or finally block runs
+//! because of it. The handler stack, pending completions (with their saved
+//! return values and exceptions), frames, operands and locals stay in the
+//! task while it waits, may be collected around and resumed on any thread,
+//! and execution continues at the `need`, whether it was in a protected
+//! block, a catch block, a finally block (whose pending completion then
+//! resumes as usual) or a function called from any of them. Consumer
+//! cancellation is not an exception either: see `crate::task`, "Cancellation
+//! and finally blocks".
 //!
 //! **Diagnostics.** Each raised exception carries the [`VmError`] to report if
 //! nothing catches it, built where it was raised: the failing instruction,
@@ -60,20 +90,42 @@
 
 use crate::error::VmError;
 use crate::heap::gc::Trace;
-use crate::heap::{NativePayload, ObjectId};
+use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
 use crate::value::Value;
 use crate::value::share::Shareability;
 
 /// The payload of an error object: the exception value of a catchable
-/// run-time error. Immutable and without heap edges.
+/// run-time error. Immutable; its only heap edge is its cause, so it is
+/// shareable exactly when its cause is.
 #[derive(Debug)]
 pub(crate) struct ErrorObject {
     /// The failure, as reported if the exception is never caught.
     pub(crate) error: VmError,
+    /// What caused it: for a failed dependency, the error value its producer
+    /// published (the cell's own value, by identity); otherwise `undefined`.
+    pub(crate) cause: Value,
 }
 
 impl Trace for ErrorObject {
-    fn trace(&self, _visit: &mut dyn FnMut(ObjectId)) {}
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.cause.trace(visit);
+    }
+}
+
+/// The failure and cause of `value` if it is an error object.
+pub(crate) fn error_object(heap: &Heap, value: Value) -> Option<(VmError, Value)> {
+    let Value::Object(id) = value else {
+        return None;
+    };
+    heap.read(id, |object| match object {
+        HeapObject::Native(payload) => {
+            let any: &dyn std::any::Any = &**payload;
+            any.downcast_ref::<ErrorObject>()
+                .map(|e| (e.error.clone(), e.cause))
+        }
+        _ => None,
+    })
+    .flatten()
 }
 
 impl NativePayload for ErrorObject {
@@ -99,6 +151,11 @@ pub(crate) enum Completion {
     Return(Value),
     /// An exception, re-raised when the block finishes.
     Throw(Exception),
+    /// The task's consumer cancellation (`crate::task`, "Cancellation and
+    /// finally blocks"): when the block finishes, cancellation unwinding
+    /// continues to the next finally handler. Nothing may override it: an
+    /// exception or `return` that would discard it ends the cleanup.
+    Cancel,
 }
 
 /// What a handler-stack entry is. See the module docs.
@@ -123,7 +180,7 @@ impl Trace for Handler {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.kind {
             HandlerKind::Catch { .. } | HandlerKind::Finally { .. } => {}
-            HandlerKind::Pending(Completion::Normal) => {}
+            HandlerKind::Pending(Completion::Normal | Completion::Cancel) => {}
             HandlerKind::Pending(Completion::Return(v)) => v.trace(visit),
             HandlerKind::Pending(Completion::Throw(e)) => e.value.trace(visit),
         }

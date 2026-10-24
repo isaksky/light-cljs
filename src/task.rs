@@ -101,8 +101,8 @@
 //! [`NeedError::Cancelled`] and subscribes nothing, and a park cannot park.
 //!
 //! **Observation points.** The cancellation is observed by the task's own
-//! run, never inline by the canceller, so a later exception/finally policy
-//! (pellet clj-quickjs-27) can run language cleanup there. A run observes
+//! run, never inline by the canceller, so the run can execute the task's
+//! finally blocks first ("Cancellation and finally blocks" below). A run observes
 //! it at run start ([`RunGuard::run_with`], before executing anything), at
 //! [`RunGuard::need`] (the error above; the caller ends the run), at
 //! [`RunGuard::park`] (up to its CAS, ahead of a remembered wake), and at
@@ -161,11 +161,13 @@
 //! 2. **Ready**: push the shared value (the cell's object itself, never a
 //!    copy) onto the running frame's operands and keep executing in the same
 //!    run and budget.
-//! 3. **Failed** or a **cancelled cell**: the run fails at the `need`
-//!    ([`VmErrorKind::DependencyFailed`] / [`VmErrorKind::DependencyCancelled`]),
-//!    its diagnostic naming the instruction, its source position and the
-//!    call chain, so later exception handling (clj-quickjs-11) can raise it
-//!    there instead. The published error value stays in the cell.
+//! 3. **Failed** or a **cancelled cell**: a catchable error is raised at the
+//!    `need` ([`VmErrorKind::DependencyFailed`] /
+//!    [`VmErrorKind::DependencyCancelled`]), its error naming the key, the
+//!    instruction, its source position and the call chain, its cause the
+//!    published error value (`crate::vm::exception`, "Dependency failures").
+//!    If no handler catches it, the run fails with that error. The published
+//!    error value stays in the cell.
 //! 4. **Pending**: the task is subscribed and, if this need was the cell's
 //!    first, has claimed its single producer. The claimed
 //!    [`ProducerRequest`] is kept in the task for the embedder
@@ -186,11 +188,63 @@
 //!    again: no effect is replayed and no function is restarted.
 //!
 //! A consumer cancellation is observed as for [`RunGuard::need`]: a need
-//! refused because the task is cancelled ends the run
-//! [`RunOutcome::Cancelled`], and one that lands after the subscription is
-//! observed by the park (any producer request it claimed is still kept for
-//! the embedder). Injecting a result on resume is part of the suspended
-//! instruction, so it happens even with a zero [`Budget`].
+//! refused because the task is cancelled ends the run (or starts its
+//! cleanup, below), and one that lands after the subscription is observed
+//! before the park, or by the park (any producer request it claimed is still
+//! kept for the embedder). Injecting a result on resume is part of the
+//! suspended instruction, so it happens even with a zero [`Budget`].
+//!
+//! # Cancellation and finally blocks (clj-quickjs-27, `docs/design.md` §10)
+//!
+//! A dependency wait is a suspension, never unwinding: parking runs no catch
+//! or finally block, whichever block the `need` is in (`crate::vm::exception`,
+//! "Waiting is not unwinding"). A failed or cancelled *cell* is a catchable
+//! error raised at the `need` (step 3 above). Consumer cancellation
+//! ([`Task::cancel`]) is neither: the policy is
+//!
+//! * **Not catchable.** No catch block runs and no JavaScript code ever sees
+//!   a value for it: catch handlers are skipped.
+//! * **Finally blocks run**, as for a JavaScript generator's `return()`: when
+//!   a run observes the cancellation (run start, a `need`, before or at the
+//!   park, the budget boundary), the cancellation becomes an abrupt
+//!   completion at the point the task stopped (a wait, a yield, or the
+//!   start). The run first leaves the cell the task waits on (its waiter
+//!   entry is removed at once, so no completion has to skip it; any
+//!   producer request it claimed stays with the embedder) and drops a
+//!   pending `need`; then it unwinds to the innermost finally handler, in
+//!   any frame (the frames above it are popped, pending completions passed
+//!   are discarded), which becomes a pending *cancel* completion, and runs
+//!   that block. Its `end_finally` continues to the next finally handler.
+//!   When none is left, terminal cleanup (above) ends the run
+//!   [`RunOutcome::Cancelled`]. A task with no finally block is cancelled
+//!   exactly as before, without running any code. A wait inside a finally
+//!   block is an abrupt completion of that block: the rest of it does not
+//!   run, only enclosing finally blocks do.
+//! * **Nothing overrides or outlives it.** Cleanup code runs with the task
+//!   already cancelled, so it cannot be revived: every wake is stale, and
+//!   `RunGuard::need` refuses. An exception or `return` that would discard
+//!   the pending cancel completion (escape the finally block), a `need`, or
+//!   a failure ends the cleanup at once with terminal cleanup and
+//!   `Cancelled` (the remaining finally blocks do not run; the cleanup
+//!   cannot wait, so no waiter is left behind). A `try`/`catch` entirely
+//!   inside a finally block works as usual, and so do calls.
+//! * **Budgets.** Cleanup runs under the run's budget like any code: when it
+//!   is used up the run returns `Yielded` and the task stays runnable
+//!   ([`TaskStatus::Ready`] until the cleanup ends); the next run continues
+//!   the cleanup (run start does not observe the cancellation again). A
+//!   cancellation observed at the budget boundary unwinds and yields; its
+//!   finally blocks run from the next run. A cancellation that lands inside
+//!   [`RunGuard::park`] after the run released the task body (the park's
+//!   window) also yields, with the waiter entry removed, and the next run
+//!   starts the cleanup.
+//! * **Native frames.** Unwinding through a pending resumable native
+//!   (`crate::vm::native`) is deferred (clj-quickjs-28): a finally block that
+//!   could only be reached through one does not run, and the cleanup ends
+//!   there.
+//!
+//! The cleanup's finally blocks, pending completions and their values live
+//! in the task's VM state like any other, so they survive yields, collection
+//! and migration to another thread between the cleanup's runs.
 
 #[cfg(test)]
 mod cancel_tests;
@@ -214,7 +268,7 @@ use crate::host::{Host, NoHost};
 use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WakeHandle, WorldId};
 use crate::value::Value;
 use crate::vm::Executable;
-use crate::vm::dispatch::{Exit, execute};
+use crate::vm::dispatch::{Exit, execute, raise_failure};
 use crate::vm::frames::{PendingNeed, VmState};
 use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
 
@@ -443,6 +497,16 @@ fn cleanup_cancelled(task: &TaskInner, body: &mut TaskBody) {
         vm.builders.release_all(&task.heap, task.id);
     }
     *body = TaskBody::Finished;
+}
+
+/// True if an observed cancellation of a task with this body would run
+/// finally blocks (module docs, "Cancellation and finally blocks") that have
+/// not started yet.
+fn has_cleanup(body: &TaskBody) -> bool {
+    match body {
+        TaskBody::Ready(vm) => !vm.cancelling && vm.has_finally(),
+        TaskBody::Finished => false,
+    }
 }
 
 /// Deliver a drained wake handle to its task, if the task still exists.
@@ -869,7 +933,7 @@ impl RunGuard<'_> {
             Ok((key, Read::Terminal(terminal))) => (key, terminal),
         };
         vm.pending_need = None;
-        let (kind, message) = match terminal {
+        let (kind, message, cause) = match terminal {
             Terminal::Ready(value) => {
                 // Pushed raw: the cell keeps the value alive, and this guard
                 // (a registered mutator) excludes collection until the
@@ -880,13 +944,15 @@ impl RunGuard<'_> {
             Terminal::Failed(error) => (
                 VmErrorKind::DependencyFailed(key),
                 format!("dependency {key} failed with {}", describe(error)),
+                error,
             ),
             Terminal::Cancelled => (
                 VmErrorKind::DependencyCancelled(key),
                 format!("dependency {key} was cancelled"),
+                Value::Undefined,
             ),
         };
-        VmNeed::Fail(Box::new(vm.failure(kind, message, pc)))
+        VmNeed::Raise(Box::new(vm.failure(kind, message, pc)), cause)
     }
 
     /// Abandon this run's pending need without cancelling the task: clear the
@@ -922,9 +988,18 @@ impl RunGuard<'_> {
     /// Returns [`RunOutcome::Cancelled`] if the task's cancellation has been
     /// requested, at any point up to the park's CAS (an observation point;
     /// it takes precedence over a remembered wake): the run performs
-    /// terminal cleanup instead of parking or yielding.
-    pub fn park(self) -> RunOutcome {
+    /// terminal cleanup instead of parking or yielding. If the task has
+    /// finally blocks to run for it (module docs, "Cancellation and finally
+    /// blocks"), the park instead leaves the cell and returns
+    /// [`RunOutcome::Yielded`], with the task runnable: its next run starts
+    /// the cleanup.
+    pub fn park(mut self) -> RunOutcome {
         if self.task.exec.snapshot().cancelled {
+            if has_cleanup(&self.body) {
+                // Leave the cell now; the next run starts the cleanup.
+                self.abandon_wait();
+                return RunOutcome::Yielded;
+            }
             return self.end_cancelled();
         }
         let RunGuard {
@@ -948,6 +1023,14 @@ impl RunGuard<'_> {
                 // still ours, so nobody else can hold the body for long
                 // (only a diagnostic reader, for an instant).
                 let mut body = task.body.lock().unwrap_or_else(PoisonError::into_inner);
+                if has_cleanup(&body) {
+                    // Finally blocks to run: leave the cell now and yield;
+                    // the next run (run start) starts the cleanup.
+                    dep::withdraw(&task.deps, &task.log, task.id);
+                    drop(body);
+                    claim.end(End::Runnable);
+                    return RunOutcome::Yielded;
+                }
                 cleanup_cancelled(task, &mut body);
                 drop(body);
                 claim.end(End::Cancelled);
@@ -961,6 +1044,33 @@ impl RunGuard<'_> {
     /// terminal cleanup. A snapshot (module docs, "Consumer cancellation").
     pub fn cancel_requested(&self) -> bool {
         self.task.exec.snapshot().cancelled
+    }
+
+    /// True while the task's cancellation cleanup runs its finally blocks.
+    fn cleaning_up(&mut self) -> bool {
+        self.vm().is_some_and(|vm| vm.cancelling)
+    }
+
+    /// Start the language cleanup of an observed cancellation (module docs,
+    /// "Cancellation and finally blocks"): leave the cell the task waits on
+    /// (its waiter entry is removed now, so no completion has to skip it),
+    /// drop a pending need, and unwind to the innermost finally block.
+    /// True if a finally block runs next. False if the cleanup is over: no
+    /// finally block is left (or reachable), or the task is already cleaning
+    /// up (a second observation, a `need` inside a finally block, ends it);
+    /// the caller then ends the run with terminal cleanup.
+    fn begin_cleanup(&mut self) -> bool {
+        dep::withdraw(&self.task.deps, &self.task.log, self.task.id);
+        self.subscribed = None;
+        let Some(vm) = self.vm() else {
+            return false;
+        };
+        if vm.cancelling {
+            return false;
+        }
+        vm.cancelling = true;
+        vm.pending_need = None;
+        vm.unwind_cancel()
     }
 
     /// Observe the cancellation: terminal cleanup, then end the execution.
@@ -987,15 +1097,19 @@ impl RunGuard<'_> {
     /// Execute until the task returns or fails or `budget` is used up, then
     /// release the guard. See [`Task::run_with`].
     ///
-    /// Cancellation is observed at run start (nothing executes) and when the
-    /// budget runs out (instead of yielding); either way the run performs
-    /// terminal cleanup and returns [`RunOutcome::Cancelled`]. A run that
-    /// returns or fails first reports that outcome and the request is moot.
+    /// Cancellation is observed at run start, at a VM `need` and when the
+    /// budget runs out; the run then executes the task's pending finally
+    /// blocks, if any (module docs, "Cancellation and finally blocks"), and
+    /// performs terminal cleanup and returns [`RunOutcome::Cancelled`], or
+    /// yields if the budget runs out first. A run that returns or fails
+    /// first reports that outcome and the request is moot.
     /// The dispatch loop does not poll for cancellation between
     /// instructions; a bounded budget bounds how long a request waits.
     pub fn run_with(mut self, budget: Budget, host: &mut dyn Host) -> RunOutcome {
         let task = self.task;
-        if task.exec.snapshot().cancelled {
+        // Run start is an observation point; a run continuing a cleanup
+        // that yielded just goes on with it.
+        if task.exec.snapshot().cancelled && !self.cleaning_up() && !self.begin_cleanup() {
             return self.end_cancelled();
         }
         let Some(vm) = self.vm() else {
@@ -1055,23 +1169,59 @@ impl RunGuard<'_> {
                 match self.vm_need(dependency, kind, pc) {
                     VmNeed::Continue => {}
                     VmNeed::Fail(error) => break Exit::Fail(*error),
+                    // A failed or cancelled dependency is a catchable error
+                    // at the need (`crate::vm::exception`, "Dependency
+                    // failures"); a caught one continues in this run.
+                    VmNeed::Raise(error, cause) => {
+                        let Some(vm) = self.vm() else {
+                            break Exit::Fail(*error);
+                        };
+                        if let Some(exit) = raise_failure(vm, &task.heap, *error, cause) {
+                            break exit;
+                        }
+                    }
+                    // A cancellation requested after the need's own check is
+                    // observed here, before parking, so that finally blocks
+                    // can run in this run.
+                    VmNeed::Park if task.exec.snapshot().cancelled => {
+                        if !self.begin_cleanup() {
+                            return self.end_cancelled();
+                        }
+                    }
                     // The same suspension path as an embedder's need: park
                     // on the subscribed key (or yield, or observe a
                     // cancellation), keeping the VM state in the task.
                     VmNeed::Park => return self.park(),
-                    VmNeed::Cancelled => return self.end_cancelled(),
+                    // Observed at the need: run the finally blocks, or end.
+                    // A need inside the cleanup itself ends the cleanup.
+                    VmNeed::Cancelled => {
+                        if !self.begin_cleanup() {
+                            return self.end_cancelled();
+                        }
+                    }
                 }
             };
+            // A cleanup ends cancelled however its code ends, except for a
+            // yield at the budget boundary, which the next run continues.
+            if self.cleaning_up() && !matches!(exit, Exit::Yield) {
+                return self.end_cancelled();
+            }
             // The returned value is rooted while this guard (a registered
             // mutator) still exists, with no safepoint in between, so no
             // collection can run while the value is held only in a Rust local.
             match exit {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => RunOutcome::Failed(error),
-                // The budget boundary is an observation point.
-                Exit::Yield if task.exec.snapshot().cancelled => {
-                    return self.end_cancelled();
+                // The budget boundary is an observation point: the finally
+                // blocks run from the next run on (the budget is used up).
+                Exit::Yield if task.exec.snapshot().cancelled && !self.cleaning_up() => {
+                    if !self.begin_cleanup() {
+                        return self.end_cancelled();
+                    }
+                    return RunOutcome::Yielded;
                 }
+                // Only produced while cleaning up, handled above.
+                Exit::CleanupEnded => return self.end_cancelled(),
                 // The VM state stays in the task; dropping the guard releases
                 // the body and makes the task runnable.
                 Exit::Yield => return RunOutcome::Yielded,
@@ -1107,8 +1257,12 @@ impl RunGuard<'_> {
 enum VmNeed {
     /// The result was pushed; execution continues after the instruction.
     Continue,
-    /// The task fails at the instruction (a failed or cancelled result).
+    /// The task fails at the instruction (an internal error).
     Fail(Box<VmError>),
+    /// The dependency failed or was cancelled: raise this error at the
+    /// instruction, with this cause (the published error value, or
+    /// `undefined`).
+    Raise(Box<VmError>, Value),
     /// The cell is pending and the task subscribed: end the run parked.
     Park,
     /// The task's cancellation was observed: end the run cancelled.

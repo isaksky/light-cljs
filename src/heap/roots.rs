@@ -78,7 +78,9 @@ use std::sync::Arc;
 
 use super::gc::{Access, MutatorToken, Trace};
 use super::{Heap, HeapObject, ObjectId};
+use crate::error::VmError;
 use crate::value::{Primitive, Value, ValueView};
+use crate::vm::exception::error_object;
 
 /// Persistent root slots. Freed slots are reused; a slot holds the rooted
 /// value while its [`Rooted`] handle is alive.
@@ -234,6 +236,23 @@ impl Rooted {
     pub fn strict_equals(&self, other: &Rooted) -> Result<bool, HandleError> {
         let other = other.value_in(&self.heap)?;
         Ok(self.value.strict_equals(other))
+    }
+
+    /// The failure an error object stands for, if the value is one: the
+    /// exception value of a catchable run-time error or of a failed or
+    /// cancelled dependency raised at a `need` (`crate::vm::exception`).
+    /// `None` for any other value.
+    pub fn error(&self) -> Option<VmError> {
+        error_object(&self.heap, self.value).map(|(error, _)| error)
+    }
+
+    /// The cause of an error object, rooted: for a failed dependency, the
+    /// error value its producer published (the same object); otherwise
+    /// `undefined`. `None` if the value is not an error object.
+    pub fn error_cause(&self) -> Option<Rooted> {
+        // The cause is an edge of the error object, which `self` keeps
+        // alive, so it cannot be reclaimed before it is rooted.
+        error_object(&self.heap, self.value).map(|(_, cause)| Rooted::new(&self.heap, cause))
     }
 
     /// A non-rooting handle to the same value.
