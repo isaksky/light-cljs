@@ -255,6 +255,18 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Read => {
+                // SetNumberFormatDigitOptions rejects inconsistent significant
+                // bounds before observing roundingMode or useGrouping.
+                if self.option == 9
+                    && (self.min_significant.is_some() || self.max_significant.is_some())
+                {
+                    let min = self.min_significant.unwrap_or(1);
+                    let max = self.max_significant.unwrap_or(21);
+                    if min > max {
+                        return Err(Fault::RangeError("significant digit bounds".into()));
+                    }
+                    self.slots.as_mut().unwrap().significant = Some((min, max));
+                }
                 let end = if self.supported { 1 } else { OPTIONS.len() };
                 if self.option == end {
                     self.stage = Stage::Build;
@@ -308,14 +320,6 @@ impl State {
                 slots.max_fraction = self.max_fraction.unwrap_or(3.max(slots.min_fraction));
                 if slots.min_fraction > slots.max_fraction {
                     return Err(Fault::RangeError("fraction digit bounds".into()));
-                }
-                if self.min_significant.is_some() || self.max_significant.is_some() {
-                    let min = self.min_significant.unwrap_or(1);
-                    let max = self.max_significant.unwrap_or(21);
-                    if min > max {
-                        return Err(Fault::RangeError("significant digit bounds".into()));
-                    }
-                    slots.significant = Some((min, max));
                 }
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?

@@ -17606,3 +17606,93 @@ fn intl_number_format_numbering_systems() {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Invalid significant digit bounds
+/// fail before later getters can throw, wait, or otherwise become observable.
+#[test]
+fn intl_number_format_invalid_bounds_stop_later_getters() {
+    for later in ["roundingMode", "useGrouping"] {
+        let source = format!(
+            "let log=''; let caught=false; try {{ new Intl.NumberFormat('en',{{minimumSignificantDigits:4,maximumSignificantDigits:3,get {later}(){{log+='x'; throw 7;}}}}); }} catch(e){{caught=e instanceof RangeError;}} caught && log === ''"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        let source = format!(
+            "let caught=false; try {{ new Intl.NumberFormat('en',{{minimumSignificantDigits:4,maximumSignificantDigits:3,get {later}(){{__rt.need(900,1);return 'auto';}}}}); }} catch(e){{caught=e instanceof RangeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. All valid oversized exponents
+/// take the documented resource failure, independent of integer parse width.
+#[test]
+fn intl_number_format_decimal_resource_limits() {
+    for text in [
+        "1e10001",
+        "1e-10001",
+        "1e2147483648",
+        "1e-2147483649",
+        "1e999999999999999999999",
+        "1e-999999999999999999999",
+    ] {
+        let source = format!("new Intl.NumberFormat('en').format('{text}')");
+        assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+    for text in [
+        "1e",
+        "1e+",
+        "1e-",
+        "1ex",
+        "1e999999999999999999999x",
+        "1e-10001x",
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "new Intl.NumberFormat('en').format('{text}') === 'NaN'"
+            )),
+            ValueView::Bool(true),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        eval(
+            "let f=new Intl.NumberFormat('en',{useGrouping:false}).format; let s=f('1e10000'); s.length === 10001 && s[0] === '1' && s[10000] === '0' && f('1e-10000') === '0' && f('1e+00000000000000000000001') === '10'"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Resolve the complete requested
+/// list before consulting the host, then use en-US if its default is unsupported.
+#[test]
+fn intl_number_format_locale_resolution() {
+    struct LocaleHost(&'static str, usize);
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            self.1 += 1;
+            self.0.into()
+        }
+    }
+    for (locales, default, locale, expected, reads) in [
+        ("['xx','de']", "fr", "de", "1.234,5", 0),
+        ("['xx']", "fr", "fr", "1\u{202f}234,5", 1),
+        ("['xx']", "zz", "en-US", "1,234.5", 1),
+        ("['de','fr']", "en-US", "de", "1.234,5", 0),
+        ("['xx','en-US']", "fr", "en-US", "1,234.5", 0),
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let n=new Intl.NumberFormat({locales}); n.resolvedOptions().locale === '{locale}' && n.format(1234.5) === '{expected}'"
+        );
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = LocaleHost(default, 0);
+        assert!(
+            matches!(task.run_with(Budget::instructions(10000),&mut host).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+        assert_eq!(host.1, reads, "{source}");
+    }
+}

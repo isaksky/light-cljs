@@ -313,14 +313,27 @@ impl Decimal {
             }));
         }
         let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
-        let Ok(exponent) = exponent.parse::<i32>() else {
+        let negative_exponent = exponent.starts_with('-');
+        let magnitude = exponent.strip_prefix(['-', '+']).unwrap_or(exponent);
+        // Check the entire syntax before detecting the resource limit, so a
+        // malformed large exponent remains NaN. Saturate at the limit sentinel
+        // rather than overflowing a machine integer or rejecting leading zeros.
+        if magnitude.is_empty() || !magnitude.bytes().all(|c| c.is_ascii_digit()) {
             return Ok(None);
-        };
-        if exponent.unsigned_abs() > 10_000 || mantissa.len() > 100_000 {
+        }
+        let magnitude = magnitude
+            .bytes()
+            .fold(0u32, |n, c| (n * 10 + u32::from(c - b'0')).min(10_001));
+        if magnitude > 10_000 || mantissa.len() > 100_000 {
             return Err(Fault::RangeError(
                 "NumberFormat decimal input exceeds resource limit".into(),
             ));
         }
+        let exponent = if negative_exponent {
+            -(magnitude as i32)
+        } else {
+            magnitude as i32
+        };
         let mut point = mantissa.find('.').unwrap_or(mantissa.len()) as i32 + exponent;
         let mut dot = false;
         let mut digits = Vec::new();
