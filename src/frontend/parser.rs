@@ -2329,9 +2329,6 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Ellipsis) => {
                 Some(self.unsupported(span, "spread properties are"))
             }
-            TokenKind::Punct(Punct::LBracket) => {
-                Some(self.unsupported(span, "computed property names are"))
-            }
             TokenKind::Identifier(_)
                 if self
                     .peek_next()
@@ -2360,17 +2357,6 @@ impl<'a> Parser<'a> {
                     shorthand: false,
                 }));
             }
-            if self.is_punct(Punct::LBracket) {
-                let name = self.parse_pattern_key()?;
-                self.expect_punct(Punct::Colon)?;
-                let value = self.parse_assignment()?;
-                return Ok(Some(PropertyDef {
-                    name,
-                    name_span: span,
-                    value,
-                    shorthand: false,
-                }));
-            }
             self.check_pattern_shorthand()?;
             let value = self.parse_assignment()?;
             let ExprKind::Assign { target, .. } = &value.kind else {
@@ -2388,9 +2374,9 @@ impl<'a> Parser<'a> {
 
     /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
-    /// (reserved words included), a string literal or a numeric literal.
+    /// (reserved words included), a string/numeric literal, or `[expr]`.
     /// Concise methods and accessors are functions with a home object.
-    /// Computed names and spread are rejected explicitly.
+    /// Spread remains rejected explicitly.
     /// A `__proto__: value` (identifier or string name, not a
     /// shorthand) sets the prototype (clj-quickjs-121); a second one in the
     /// same literal (`proto_seen`) is an early error.
@@ -2416,6 +2402,7 @@ impl<'a> Parser<'a> {
                                 | TokenKind::Keyword(_)
                                 | TokenKind::String(_)
                                 | TokenKind::Number(_)
+                                | TokenKind::Punct(Punct::LBracket)
                         )
                     }) =>
             {
@@ -2466,14 +2453,7 @@ impl<'a> Parser<'a> {
                 shorthand: true,
             });
         }
-        let name = match &self.tok.kind {
-            TokenKind::Identifier(name) => PropertyName::Identifier(name.clone()),
-            TokenKind::Keyword(k) => PropertyName::Identifier(k.as_str().to_string()),
-            TokenKind::String(s) => PropertyName::String(s.clone()),
-            TokenKind::Number(n) => PropertyName::Number(*n),
-            _ => return Err(self.unexpected("a property name")),
-        };
-        self.advance()?;
+        let name = self.parse_pattern_key()?;
         if self.is_punct(Punct::LParen) {
             return self.parse_method_property(
                 name,
@@ -2506,7 +2486,7 @@ impl<'a> Parser<'a> {
         let value = self.parse_assignment()?;
         Ok(PropertyDef {
             name,
-            name_span: span,
+            name_span,
             value,
             shorthand: false,
         })
@@ -2634,9 +2614,6 @@ impl<'a> Parser<'a> {
         let span = self.tok.span;
         let next_is = |p: Punct| next.is_some_and(|t| t.kind == TokenKind::Punct(p));
         match &self.tok.kind {
-            TokenKind::Punct(Punct::LBracket) => {
-                Some(self.unsupported(span, "computed property names are"))
-            }
             TokenKind::Punct(Punct::Ellipsis) => {
                 Some(self.unsupported(span, "spread properties are"))
             }

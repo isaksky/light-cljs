@@ -930,7 +930,10 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | IsEnumerable
         | DefineElem
         | AsyncStart
-        | Await => false,
+        | Await
+        | DefineGetterElem
+        | DefineSetterElem
+        | SetComputedName(_) => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -2221,8 +2224,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             for v in operands {
                 state.push(v);
             }
-            let code = std::sync::Arc::clone(&state.top().code);
-            dispatch::step(state, &code, heap, host, instr)
+            Ok(Flow::Resume(instr))
         }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
@@ -2409,7 +2411,23 @@ impl NativeState {
     }
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
+    #[inline(never)]
     fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        jobs: &std::sync::Weak<crate::job::JobInbox>,
+        input: Input,
+        host: &mut dyn Host,
+    ) -> Result<Action, Fault> {
+        if matches!(self, NativeState::Convert { .. }) {
+            self.step_conversion(heap, task, input, host)
+        } else {
+            self.step_other(heap, task, jobs, input, host)
+        }
+    }
+
+    fn step_other(
         &mut self,
         heap: &Heap,
         task: TaskId,
@@ -2927,6 +2945,133 @@ impl NativeState {
                     kind: *kind,
                 })
             }
+            NativeState::Convert { .. } => self.step_conversion(heap, task, input, host),
+            NativeState::MathHypot {
+                operands,
+                next,
+                magnitude,
+                sum,
+                correction,
+            } => {
+                if magnitude.is_infinite() {
+                    return Ok(Action::Return(Value::Number(f64::INFINITY)));
+                }
+                if let Some(value) = operands.get(*next) {
+                    let number = dispatch::to_number(value)?;
+                    if number != 0.0 {
+                        let scaled = number / *magnitude;
+                        let term = scaled * scaled - *correction;
+                        let total = *sum + term;
+                        *correction = (total - *sum) - term;
+                        *sum = total;
+                    }
+                    *next += 1;
+                    Ok(Action::Continue)
+                } else {
+                    Ok(Action::Return(Value::Number(*magnitude * sum.sqrt())))
+                }
+            }
+            NativeState::StringSplit {
+                split,
+                out,
+                remaining,
+            } => {
+                use crate::value::string::SplitStep;
+                if *remaining == 0 {
+                    return Ok(Action::Return(out.clone()));
+                }
+                match split
+                    .advance()
+                    .ok_or(Fault::OutOfMemory("split string allocation failed"))?
+                {
+                    SplitStep::Continue => Ok(Action::Continue),
+                    SplitStep::Done => Ok(Action::Return(out.clone())),
+                    SplitStep::Part(part) => {
+                        property::append(heap, task, out, Some(Value::String(part)))?;
+                        *remaining -= 1;
+                        Ok(Action::Continue)
+                    }
+                }
+            }
+            NativeState::StringSearch(search) => Ok(match search.advance(256) {
+                Some(index) => Action::Return(Value::Number(index as f64)),
+                None => Action::Continue,
+            }),
+            NativeState::StringBuild(build) => Ok(match build.advance(256) {
+                Some(text) => Action::Return(Value::String(text)),
+                None => Action::Continue,
+            }),
+            NativeState::Json {
+                text,
+                reviver,
+                converted,
+                parser,
+            } => {
+                if !*converted {
+                    *converted = true;
+                    return Ok(Action::ToString(text.clone()));
+                }
+                if parser.is_none() {
+                    let Input::CallResult(Value::String(input)) = input else {
+                        return Err(Fault::Internal("JSON.parse expected ToString result"));
+                    };
+                    *text = Value::Undefined;
+                    *parser = Some(Box::new(super::json::Parser::new(input)?));
+                }
+                match parser.as_mut().unwrap().advance(heap, task)? {
+                    Some(value) => {
+                        if dispatch::callee(heap, reviver).is_ok() {
+                            return Err(Fault::TypeError(
+                                "JSON.parse callable reviver is not supported".to_string(),
+                            ));
+                        }
+                        Ok(Action::Return(value))
+                    }
+                    None => Ok(Action::Continue),
+                }
+            }
+            NativeState::NumberParse(parse) => Ok(match parse.advance(256) {
+                Some(number) => Action::Return(Value::Number(number)),
+                None => Action::Continue,
+            }),
+            NativeState::DateParse { parser, construct } => {
+                let Some(parsed) = parser.advance(256) else {
+                    return Ok(Action::Continue);
+                };
+                let time = parsed.map_or(f64::NAN, |fields| {
+                    let zone = if fields.is_local {
+                        super::date::zone(heap, host)
+                    } else {
+                        crate::host::TimeZone::UTC
+                    };
+                    fields.time(zone)
+                });
+                if *construct {
+                    super::date::construct(heap, task, time).map(Action::Return)
+                } else {
+                    Ok(Action::Return(Value::Number(time)))
+                }
+            }
+        }
+    }
+
+    /// Receive a failure an exception carries through this native and
+    /// answer it (module docs, "Errors"). Neither operation recovers: the
+    /// fold's accumulator and `needAll`'s results so far are abandoned with
+    /// the frame, and the exception goes on to the caller's handler, which
+    /// is what JavaScript's `Array.prototype.reduce` does with a throwing
+    /// callback. Allocates nothing and touches no heap object.
+    // Keep conversion callbacks off the large general-native dispatch frame.
+    // This path must execute on 64 KiB worker stacks in debug builds.
+    #[inline(never)]
+    fn step_conversion(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+        host: &mut dyn Host,
+    ) -> Result<Action, Fault> {
+        match self {
             NativeState::Convert {
                 formatter,
                 target,
@@ -3495,121 +3640,10 @@ impl NativeState {
                     }
                 }
             }
-            NativeState::MathHypot {
-                operands,
-                next,
-                magnitude,
-                sum,
-                correction,
-            } => {
-                if magnitude.is_infinite() {
-                    return Ok(Action::Return(Value::Number(f64::INFINITY)));
-                }
-                if let Some(value) = operands.get(*next) {
-                    let number = dispatch::to_number(value)?;
-                    if number != 0.0 {
-                        let scaled = number / *magnitude;
-                        let term = scaled * scaled - *correction;
-                        let total = *sum + term;
-                        *correction = (total - *sum) - term;
-                        *sum = total;
-                    }
-                    *next += 1;
-                    Ok(Action::Continue)
-                } else {
-                    Ok(Action::Return(Value::Number(*magnitude * sum.sqrt())))
-                }
-            }
-            NativeState::StringSplit {
-                split,
-                out,
-                remaining,
-            } => {
-                use crate::value::string::SplitStep;
-                if *remaining == 0 {
-                    return Ok(Action::Return(out.clone()));
-                }
-                match split
-                    .advance()
-                    .ok_or(Fault::OutOfMemory("split string allocation failed"))?
-                {
-                    SplitStep::Continue => Ok(Action::Continue),
-                    SplitStep::Done => Ok(Action::Return(out.clone())),
-                    SplitStep::Part(part) => {
-                        property::append(heap, task, out, Some(Value::String(part)))?;
-                        *remaining -= 1;
-                        Ok(Action::Continue)
-                    }
-                }
-            }
-            NativeState::StringSearch(search) => Ok(match search.advance(256) {
-                Some(index) => Action::Return(Value::Number(index as f64)),
-                None => Action::Continue,
-            }),
-            NativeState::StringBuild(build) => Ok(match build.advance(256) {
-                Some(text) => Action::Return(Value::String(text)),
-                None => Action::Continue,
-            }),
-            NativeState::Json {
-                text,
-                reviver,
-                converted,
-                parser,
-            } => {
-                if !*converted {
-                    *converted = true;
-                    return Ok(Action::ToString(text.clone()));
-                }
-                if parser.is_none() {
-                    let Input::CallResult(Value::String(input)) = input else {
-                        return Err(Fault::Internal("JSON.parse expected ToString result"));
-                    };
-                    *text = Value::Undefined;
-                    *parser = Some(Box::new(super::json::Parser::new(input)?));
-                }
-                match parser.as_mut().unwrap().advance(heap, task)? {
-                    Some(value) => {
-                        if dispatch::callee(heap, reviver).is_ok() {
-                            return Err(Fault::TypeError(
-                                "JSON.parse callable reviver is not supported".to_string(),
-                            ));
-                        }
-                        Ok(Action::Return(value))
-                    }
-                    None => Ok(Action::Continue),
-                }
-            }
-            NativeState::NumberParse(parse) => Ok(match parse.advance(256) {
-                Some(number) => Action::Return(Value::Number(number)),
-                None => Action::Continue,
-            }),
-            NativeState::DateParse { parser, construct } => {
-                let Some(parsed) = parser.advance(256) else {
-                    return Ok(Action::Continue);
-                };
-                let time = parsed.map_or(f64::NAN, |fields| {
-                    let zone = if fields.is_local {
-                        super::date::zone(heap, host)
-                    } else {
-                        crate::host::TimeZone::UTC
-                    };
-                    fields.time(zone)
-                });
-                if *construct {
-                    super::date::construct(heap, task, time).map(Action::Return)
-                } else {
-                    Ok(Action::Return(Value::Number(time)))
-                }
-            }
+            _ => Err(Fault::Internal("expected conversion state")),
         }
     }
 
-    /// Receive a failure an exception carries through this native and
-    /// answer it (module docs, "Errors"). Neither operation recovers: the
-    /// fold's accumulator and `needAll`'s results so far are abandoned with
-    /// the frame, and the exception goes on to the caller's handler, which
-    /// is what JavaScript's `Array.prototype.reduce` does with a throwing
-    /// callback. Allocates nothing and touches no heap object.
     fn fail(&mut self, failure: Failure) -> Action {
         match (self, failure) {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,

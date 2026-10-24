@@ -3482,6 +3482,10 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), SyntaxError> {
         self.out().op(Opcode::NewObjectLiteral, span);
         for property in properties {
+            if let PropertyName::Computed(key, _) = &property.name {
+                self.computed_property(property, key)?;
+                continue;
+            }
             if property.sets_prototype() {
                 self.expr(&property.value)?;
             } else {
@@ -3538,6 +3542,46 @@ impl<'s> Lowerer<'s> {
             };
             self.out().op_u16(opcode, index, property.name_span);
         }
+        Ok(())
+    }
+
+    /// Convert before evaluating the value. Stash the key while creating a
+    /// method so `Method` sees the literal as its home object on the stack.
+    #[inline(never)]
+    fn computed_property(&mut self, property: &PropertyDef, key: &Expr) -> Result<(), SyntaxError> {
+        let span = property.name_span;
+        self.expr(key)?;
+        self.out().op(Opcode::ToPropertyKey, span);
+        let saved = self.cur().next_slot;
+        let key_slot = self.temp(span)?;
+        let value_slot = self.temp(span)?;
+        self.out().op_u16(Opcode::SetLocal, key_slot, span);
+        self.expr(&property.value)?;
+        self.out().op_u16(Opcode::SetLocal, value_slot, span);
+        self.out().op_u16(Opcode::GetLocal, key_slot, span);
+        self.out().op_u16(Opcode::GetLocal, value_slot, span);
+        if let ExprKind::Function(f) = &property.value.kind
+            && f.name.is_none()
+        {
+            let prefix = match f.kind {
+                FunctionKind::Getter => "get ",
+                FunctionKind::Setter => "set ",
+                _ => "",
+            };
+            let prefix = self.name_index(prefix, span)?;
+            self.out().op_u16(Opcode::SetComputedName, prefix, span);
+        }
+        let opcode = match &property.value.kind {
+            ExprKind::Function(f) if f.kind == FunctionKind::Getter => Opcode::DefineGetterElem,
+            ExprKind::Function(f) if f.kind == FunctionKind::Setter => Opcode::DefineSetterElem,
+            _ => Opcode::DefineElem,
+        };
+        self.out().op(opcode, span);
+        for slot in [key_slot, value_slot] {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 

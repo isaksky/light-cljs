@@ -1855,7 +1855,7 @@ fn object_literals() {
     rejects_with("({1});", UnexpectedToken, 1, 3, "needs a value");
     rejects_with(r#"({"s"});"#, UnexpectedToken, 1, 3, "needs a value");
     rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
-    rejects_with("({[k]: 1});", Unsupported, 1, 3, "computed property names");
+    parse_script("({[k]: 1});").unwrap();
     rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
     for src in ["({async m() {}});", "({*g() {}});"] {
         parse_script(src).unwrap();
@@ -1892,6 +1892,52 @@ fn object_literals() {
     );
     rejects_with("({a: 1 b: 2});", UnexpectedToken, 1, 8, "");
     rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
+}
+
+#[test]
+fn computed_property_names() {
+    let script = parse_script(r#"({ [a]: 1, [b + "x"]() {}, ["s"]: 2 })"#).unwrap();
+    let StmtKind::Expr(expr) = &script.body[0].kind else {
+        panic!("expression")
+    };
+    let ExprKind::Object(properties) = &expr.kind else {
+        panic!("object")
+    };
+    assert_eq!(properties.len(), 3);
+    for (property, expected) in properties.iter().zip(["a", "(+ b \"x\")", "\"s\""]) {
+        let PropertyName::Computed(key, _) = &property.name else {
+            panic!("computed key")
+        };
+        assert_eq!(render_expr(key), expected);
+        assert!(!property.shorthand);
+        assert!(!property.sets_prototype());
+    }
+    assert!(
+        matches!(&properties[1].value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Method)
+    );
+    let script = parse_script("({ get [a]() {}, set [a](v) {} })").unwrap();
+    let StmtKind::Expr(expr) = &script.body[0].kind else {
+        panic!("expression")
+    };
+    let ExprKind::Object(properties) = &expr.kind else {
+        panic!("object")
+    };
+    for (property, kind) in properties
+        .iter()
+        .zip([FunctionKind::Getter, FunctionKind::Setter])
+    {
+        assert!(matches!(property.name, PropertyName::Computed(_, _)));
+        assert!(matches!(&property.value.kind, ExprKind::Function(f) if f.kind == kind));
+    }
+    for source in [
+        "({ [a] })",
+        "({ [a, b]: 1 })",
+        "({ get [a](v) {} })",
+        "({ set [a]() {} })",
+    ] {
+        assert!(parse_script(source).is_err(), "{source}");
+    }
+    parse_script("({ [(a, b)]: 1, *[a]() { yield 1; } })").unwrap();
 }
 
 #[test]

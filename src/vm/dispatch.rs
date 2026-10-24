@@ -188,6 +188,8 @@ pub(crate) enum Flow {
     Need(DependencyId, ResultKind),
     /// The cancellation cleanup is over ([`Exit::CleanupEnded`]).
     CleanupEnded,
+    /// Finish a native conversion after dropping its Rust dispatch frame.
+    Resume(Instr),
 }
 
 /// Allocate a function object for `code` with its captured values, created
@@ -862,14 +864,159 @@ fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
         .ok_or(Fault::Internal("operand stack underflow"))
 }
 
+/// Property operations can invoke descriptors and conversion callbacks.
+/// Keep their temporaries outside the general instruction frame.
+#[inline(never)]
+fn property_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    if native::start_conversion(state, instr)? {
+        return Ok(Flow::Next);
+    }
+    match instr {
+        Instr::GetField(i) => {
+            let name = name_constant(code, i)?;
+            let base = state.pop()?;
+            let read = property::read(
+                heap,
+                state.diag.task,
+                &base,
+                &property::Key::from_name(&name),
+            )?;
+            super::native::read_result(state, read, base)?;
+        }
+        Instr::PutField(i)
+        | Instr::DefineField(i)
+        | Instr::DefineGetter(i)
+        | Instr::DefineSetter(i) => {
+            // The value stays on the stack as the result (`o.x = v` is `v`;
+            // a literal keeps its object for the next property).
+            let name = name_constant(code, i)?;
+            let v = state.pop()?;
+            let object = state.pop()?;
+            let task = state.diag.task;
+            if let Instr::PutField(_) = instr {
+                if native::typed_array_write(
+                    heap,
+                    state,
+                    &object,
+                    &property::Key::from_name(&name),
+                    &v,
+                )? {
+                    return Ok(Flow::Next);
+                }
+                let setter = property::prepare_put(
+                    heap,
+                    task,
+                    &object,
+                    &property::Key::from_name(&name),
+                    v.clone(),
+                    code.strict,
+                )?;
+                super::native::write_result(state, setter, object, v)?;
+            } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
+                property::define_accessor(
+                    heap,
+                    task,
+                    &object,
+                    &name,
+                    v,
+                    matches!(instr, Instr::DefineGetter(_)),
+                )?;
+                state.push(object);
+            } else {
+                property::define_field(heap, task, &object, &name, v)?;
+                state.push(object);
+            }
+        }
+        Instr::GetElem => {
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let key = property::element_key(&base, &key, false)?;
+            let read = property::read(heap, state.diag.task, &base, &key)?;
+            super::native::read_result(state, read, base)?;
+        }
+        Instr::PutElem => {
+            // ToPropertyKey runs here, after the right-hand side; the value
+            // stays on the stack as the result (`o[k] = v` is `v`).
+            let v = state.pop()?;
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let key = property::element_key(&base, &key, true)?;
+            if native::typed_array_write(heap, state, &base, &key, &v)? {
+                return Ok(Flow::Next);
+            }
+            let setter =
+                property::prepare_put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
+            super::native::write_result(state, setter, base, v)?;
+        }
+        Instr::Dup2 => {
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(2)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let (a, b) = (ops[start].clone(), ops[start + 1].clone());
+            state.push(a);
+            state.push(b);
+        }
+        Instr::ToPropertyKey => {
+            // `o[k]` read and then written (`o[k]++`, clj-quickjs-76): the
+            // base check and the key conversion run once, before the read.
+            // The converted key re-converts to itself in `GetElem` and
+            // `PutElem` (an index as a number, any other name as a string),
+            // so the conversion stays the only observable one.
+            let key = state.pop()?;
+            let base = state.operands().last().cloned();
+            let base = base.ok_or(Fault::Internal("operand stack underflow"))?;
+            let key = match property::element_key(&base, &key, false)? {
+                property::Key::Index(index) => Value::Number(f64::from(index)),
+                property::Key::Name(name) => Value::String(name),
+                property::Key::Symbol(s) => Value::Symbol(s),
+            };
+            state.push(key);
+        }
+        _ => return Err(Fault::Internal("expected property instruction")),
+    }
+    Ok(Flow::Next)
+}
+
 type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> Result<Flow, Fault>;
+
+/// Select the leaf before entering its frame, including native-conversion
+/// resumes. Large descriptor/conversion paths must fit 64 KiB workers.
+fn instruction_step(instr: Instr) -> InstructionStep {
+    match instr {
+        Instr::RequireCoercible
+        | Instr::OwnKeys
+        | Instr::IsEnumerable
+        | Instr::DefineElem
+        | Instr::DefineGetterElem
+        | Instr::DefineSetterElem
+        | Instr::SetComputedName(_) => object_pattern_step,
+        Instr::GetField(_)
+        | Instr::PutField(_)
+        | Instr::DefineField(_)
+        | Instr::DefineGetter(_)
+        | Instr::DefineSetter(_)
+        | Instr::GetElem
+        | Instr::PutElem
+        | Instr::Dup2
+        | Instr::ToPropertyKey => property_step,
+        _ => step,
+    }
+}
 
 /// Keep object-pattern temporaries out of the general dispatch frame, which
 /// must also run unrelated calls on 64 KiB worker stacks.
 #[inline(never)]
 fn object_pattern_step(
     state: &mut VmState,
-    _code: &Code,
+    code: &Code,
     heap: &Heap,
     _host: &mut dyn Host,
     instr: Instr,
@@ -878,7 +1025,10 @@ fn object_pattern_step(
         Instr::RequireCoercible => require_coercible_step(state, heap),
         Instr::OwnKeys => own_keys_step(state, heap),
         Instr::IsEnumerable => is_enumerable_step(state, heap),
-        Instr::DefineElem => define_element_step(state, heap),
+        Instr::DefineElem | Instr::DefineGetterElem | Instr::DefineSetterElem => {
+            define_element_step(state, heap, instr)
+        }
+        Instr::SetComputedName(i) => computed_name_step(state, code, heap, i),
         _ => Err(Fault::Internal("invalid object pattern instruction")),
     }
 }
@@ -917,14 +1067,14 @@ fn is_enumerable_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
 }
 
 #[inline(never)]
-fn define_element_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+fn define_element_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
     let value = state.pop()?;
     let key = property::to_property_key(&state.pop()?)?;
     let object = state.pop()?;
     let Value::Object(id) = object else {
         return Err(Fault::Internal("define_elem needs an object"));
     };
-    // Compiler-private rest destination. Restrict this like DefineField:
+    // Compiler-private literal/rest destination. Restrict this like DefineField:
     // defining on a function could allocate a metadata property record.
     if !heap
         .read(id, |o| matches!(o, HeapObject::Plain(_)))
@@ -932,15 +1082,76 @@ fn define_element_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> 
     {
         return Err(Fault::Internal("define_elem needs an ordinary object"));
     }
-    let desc = crate::object::PropertyDescriptor {
-        value: Some(value),
-        writable: Some(true),
+    let mut desc = crate::object::PropertyDescriptor {
         enumerable: Some(true),
         configurable: Some(true),
         ..Default::default()
     };
+    match instr {
+        Instr::DefineGetterElem => desc.get = Some(value),
+        Instr::DefineSetterElem => desc.set = Some(value),
+        _ => {
+            desc.value = Some(value);
+            desc.writable = Some(true);
+        }
+    }
     property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
     state.push(object);
+    Ok(Flow::Next)
+}
+
+#[inline(never)]
+fn computed_name_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    index: u16,
+) -> Result<Flow, Fault> {
+    let [key, value] = top_operands(state, 2)? else {
+        return Err(Fault::Internal("operand stack underflow"));
+    };
+    let Value::Object(id) = value else {
+        return Err(Fault::Internal("computed function name needs a function"));
+    };
+    let name = match property::to_property_key(key)? {
+        property::Key::Name(name) => name,
+        property::Key::Index(index) => JsString::from(index.to_string().as_str()),
+        property::Key::Symbol(symbol) => match symbol.description() {
+            None => JsString::from(""),
+            Some(description) => JsString::concat(&JsString::from("["), description)
+                .and_then(|s| JsString::concat(&s, &JsString::from("]")))
+                .ok_or(Fault::OutOfMemory("computed function name too long"))?,
+        },
+    };
+    let name = JsString::concat(&name_constant(code, index)?, &name)
+        .ok_or(Fault::OutOfMemory("computed function name too long"))?;
+    let record = heap
+        .with_object_mut_known(*id, |object, shared| match object {
+            HeapObject::Function(f)
+                if !shared && f.owner == state.diag.task && f.computed_name.is_none() =>
+            {
+                f.computed_name = Some(name.clone());
+                Ok(f.properties)
+            }
+            _ => Err(Fault::Internal(
+                "computed function name needs a fresh owned function",
+            )),
+        })
+        .unwrap_or(Err(Fault::Internal("computed function was reclaimed")))?;
+    // Generator initialization has already materialized its metadata record.
+    // Update that existing name while preserving its standard attributes.
+    if let Some(record) = record {
+        property::define_own_property(
+            heap,
+            state.diag.task,
+            record,
+            &property::Key::Name("name".into()),
+            &crate::object::PropertyDescriptor {
+                value: Some(Value::String(name)),
+                ..Default::default()
+            },
+        )?;
+    }
     Ok(Flow::Next)
 }
 
@@ -1539,108 +1750,15 @@ fn step_instruction(
             let v = state.pop()?;
             state.push(Value::String(to_js_string(&v)?));
         }
-        Instr::GetField(i) => {
-            let name = name_constant(code, i)?;
-            let base = state.pop()?;
-            let read = property::read(
-                heap,
-                state.diag.task,
-                &base,
-                &property::Key::from_name(&name),
-            )?;
-            super::native::read_result(state, read, base)?;
-        }
-        Instr::PutField(i)
-        | Instr::DefineField(i)
-        | Instr::DefineGetter(i)
-        | Instr::DefineSetter(i) => {
-            // The value stays on the stack as the result (`o.x = v` is `v`;
-            // a literal keeps its object for the next property).
-            let name = name_constant(code, i)?;
-            let v = state.pop()?;
-            let object = state.pop()?;
-            let task = state.diag.task;
-            if let Instr::PutField(_) = instr {
-                if native::typed_array_write(
-                    heap,
-                    state,
-                    &object,
-                    &property::Key::from_name(&name),
-                    &v,
-                )? {
-                    return Ok(Flow::Next);
-                }
-                let setter = property::prepare_put(
-                    heap,
-                    task,
-                    &object,
-                    &property::Key::from_name(&name),
-                    v.clone(),
-                    code.strict,
-                )?;
-                super::native::write_result(state, setter, object, v)?;
-            } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
-                property::define_accessor(
-                    heap,
-                    task,
-                    &object,
-                    &name,
-                    v,
-                    matches!(instr, Instr::DefineGetter(_)),
-                )?;
-                state.push(object);
-            } else {
-                property::define_field(heap, task, &object, &name, v)?;
-                state.push(object);
-            }
-        }
-        Instr::GetElem => {
-            let key = state.pop()?;
-            let base = state.pop()?;
-            let key = property::element_key(&base, &key, false)?;
-            let read = property::read(heap, state.diag.task, &base, &key)?;
-            super::native::read_result(state, read, base)?;
-        }
-        Instr::PutElem => {
-            // ToPropertyKey runs here, after the right-hand side; the value
-            // stays on the stack as the result (`o[k] = v` is `v`).
-            let v = state.pop()?;
-            let key = state.pop()?;
-            let base = state.pop()?;
-            let key = property::element_key(&base, &key, true)?;
-            if native::typed_array_write(heap, state, &base, &key, &v)? {
-                return Ok(Flow::Next);
-            }
-            let setter =
-                property::prepare_put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
-            super::native::write_result(state, setter, base, v)?;
-        }
-        Instr::Dup2 => {
-            let ops = state.operands();
-            let start = ops
-                .len()
-                .checked_sub(2)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let (a, b) = (ops[start].clone(), ops[start + 1].clone());
-            state.push(a);
-            state.push(b);
-        }
-        Instr::ToPropertyKey => {
-            // `o[k]` read and then written (`o[k]++`, clj-quickjs-76): the
-            // base check and the key conversion run once, before the read.
-            // The converted key re-converts to itself in `GetElem` and
-            // `PutElem` (an index as a number, any other name as a string),
-            // so the conversion stays the only observable one.
-            let key = state.pop()?;
-            let base = state.operands().last().cloned();
-            let base = base.ok_or(Fault::Internal("operand stack underflow"))?;
-            let key = match property::element_key(&base, &key, false)? {
-                property::Key::Index(index) => Value::Number(f64::from(index)),
-                property::Key::Name(name) => Value::String(name),
-                property::Key::Symbol(s) => Value::Symbol(s),
-            };
-            state.push(key);
-        }
+        Instr::GetField(_)
+        | Instr::PutField(_)
+        | Instr::DefineField(_)
+        | Instr::DefineGetter(_)
+        | Instr::DefineSetter(_)
+        | Instr::GetElem
+        | Instr::PutElem
+        | Instr::Dup2
+        | Instr::ToPropertyKey => return property_step(state, code, heap, host, instr),
         Instr::RegExpLiteral(index) => {
             let compiled = state
                 .top()
@@ -1711,7 +1829,13 @@ fn step_instruction(
         Instr::RequireObject => {
             require_iterator_object(state)?;
         }
-        Instr::RequireCoercible | Instr::OwnKeys | Instr::IsEnumerable | Instr::DefineElem => {
+        Instr::RequireCoercible
+        | Instr::OwnKeys
+        | Instr::IsEnumerable
+        | Instr::DefineElem
+        | Instr::DefineGetterElem
+        | Instr::DefineSetterElem
+        | Instr::SetComputedName(_) => {
             // These leaves run directly from execute_budgeted and never
             // enter a conversion native which could resume through step.
             return Err(Fault::Internal(
@@ -2180,6 +2304,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::RequireCoercible
         | Instr::IsEnumerable
         | Instr::DefineElem
+        | Instr::DefineGetterElem
+        | Instr::DefineSetterElem
+        | Instr::SetComputedName(_)
         | Instr::DefineGetter(_)
         | Instr::DefineSetter(_)
         | Instr::AppendElement
@@ -2266,19 +2393,7 @@ pub(crate) fn execute_budgeted(
                 let result = match instr {
                     Some(instr) => {
                         state.top_mut().pc = pc + 1;
-                        // Route pattern leaves without the general dispatch frame
-                        // beneath enumeration and descriptor lookup.
-                        let execute: InstructionStep = if matches!(
-                            instr,
-                            Instr::RequireCoercible
-                                | Instr::OwnKeys
-                                | Instr::IsEnumerable
-                                | Instr::DefineElem
-                        ) {
-                            object_pattern_step
-                        } else {
-                            step
-                        };
+                        let execute = instruction_step(instr);
                         execute(state, &code, heap, host, instr)
                     }
                     None => Err(Fault::Internal("instruction position out of range")),
@@ -2286,7 +2401,12 @@ pub(crate) fn execute_budgeted(
                 (pc, result)
             }
         };
+        let mut result = result;
+        while let Ok(Flow::Resume(instr)) = result {
+            result = instruction_step(instr)(state, &code, heap, host, instr);
+        }
         let raised = match result {
+            Ok(Flow::Resume(_)) => unreachable!("resume was dispatched above"),
             Ok(Flow::Next) => continue,
             Ok(Flow::FrameChanged) => {
                 code = Arc::clone(&state.top().code);

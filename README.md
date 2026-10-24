@@ -2501,7 +2501,7 @@ Getters/setters, descriptor-field reads, conversion-method lookup,
 length/index operations run through traced native continuations and ordinary
 VM frames. They can yield, wait, migrate and unwind on cancellation; apply
 and push also support object-valued lengths through resumable ToPrimitive.
-Computed literal keys and super remain deferred. Async methods execute (clj-quickjs-248). Generator methods
+Computed literal keys execute (clj-quickjs-233); super remains deferred. Async methods execute (clj-quickjs-248). Generator methods
 execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
@@ -3474,8 +3474,7 @@ keys, nested array/object patterns and object rest. Rest copies own enumerable
 string and symbol properties in key order into a fresh ordinary object. Getters,
 setters and key conversions can wait, yield, collect and migrate. Null/undefined
 sources throw TypeError; other primitives use their property-read behavior.
-Object literal computed names, object spread, rest parameters and destructuring
-iteration heads remain deferred. Verify with
+Object spread, rest parameters and destructuring iteration heads remain deferred. Verify with
 `CARGO_BUILD_JOBS=3 cargo test --test js_source destructuring -- --test-threads=3`.
 
 ### Intl.DateTimeFormat date fields (clj-quickjs-215)
@@ -3512,3 +3511,18 @@ unsettled awaits. `Task::suspended_async_activations()` reports their function
 names after completion without retaining them. Detached states are task-owned,
 reachable through promise reactions, and collectable in unreachable cycles.
 Async generators and top-level await remain deferred.
+
+### Computed object property names (clj-quickjs-233)
+
+Object literals execute `{[key]: value}`, computed concise/generator methods,
+and computed getters/setters. Each key converts with ToPropertyKey before its
+value runs, in source order, including symbol identity and resumable object
+conversion. Own definitions bypass inherited setters; computed `__proto__`
+defines a property. Methods keep their home object, and anonymous function
+values/methods infer names from strings or bracketed symbol descriptions.
+Computed async methods execute through async function support (clj-quickjs-248).
+Computed shorthand, object spread and `super` remain rejected.
+
+Checks: `cargo test --lib frontend::tests::computed_property_names -- --exact`,
+`cargo test --test js_source computed_prop`,
+`cargo test --test need computed_property_names_wait_and_migrate -- --exact`.

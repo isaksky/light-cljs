@@ -534,6 +534,9 @@ impl Executable {
                 Opcode::Await => Instr::Await,
 
                 Opcode::DefineElem => Instr::DefineElem,
+                Opcode::DefineGetterElem => Instr::DefineGetterElem,
+                Opcode::DefineSetterElem => Instr::DefineSetterElem,
+                Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
                 Opcode::IsEnumerable => Instr::IsEnumerable,
                 Opcode::OwnKeys => Instr::OwnKeys,
                 Opcode::RequireCoercible => Instr::RequireCoercible,

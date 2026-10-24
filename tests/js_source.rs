@@ -15,6 +15,157 @@ use clj_quickjs::{
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn computed_property_names() {
+    for source in [
+        "let k = 'x'; ({[k]: 1}).x === 1",
+        "({[1 + 1]: 'two'})['2'] === 'two'",
+        "({['m']() { return this.v; }, v: 7}).m() === 7",
+        "let n = 0; function key() { throw 17; } try { ({[key()]: ++n}); } catch(e) { n += e; } n === 17",
+        "let s = Symbol('d'); let o = {[s]: 3}; o[s] === 3 && Object.keys(o).length === 0 && ({[s]() { return 1; }})[s]() === 1",
+        "let log = ''; let key = {toString() { log += 'k'; return 'x'; }}; function value() { log += 'v'; return 7; } let o = {[key]: value()}; log === 'kv' && o.x === 7",
+        "let n = 0; let key = {toString() { throw 23; }}; try { ({[key]: ++n}); } catch(e) { n += e; } n === 23",
+        "let s = Symbol('d'), t = Symbol(), u = Symbol(''); let o = {[s]() {}, [t]() {}, [u]() {}, [2]() {}}; o[s].name === '[d]' && o[2].name === '2' && o[t].name === '' && o[u].name === '[]'",
+        "let s = Symbol('d'); let o = {get [s]() { return this.v; }, set [s](v) { this.v = v; }}; o[s] = 7; let d = Object.getOwnPropertyDescriptor(o, s); o[s] === 7 && d.get.name === 'get [d]' && d.set.name === 'set [d]' && d.enumerable && d.configurable",
+        "let o = {get ['x']() { return 1; }, ['x']: 7}; let d = Object.getOwnPropertyDescriptor(o, 'x'); o.x === 7 && d.writable && d.enumerable && d.configurable && d.get === undefined",
+        "let o = {['x']: 7, get ['x']() { return 2; }}; o.x === 2 && Object.getOwnPropertyDescriptor(o, 'x').set === undefined",
+        "let p = {set x(v) { throw 1; }}; let o = {__proto__: p, ['x']: 7, ['__proto__']: 9}; o.x === 7 && o.__proto__ === 9 && Object.getPrototypeOf(o) === p",
+        "let o = {['f']: function() {}, ['g']: () => 1, ['h']: function named() {}}; o.f.name === 'f' && o.g.name === 'g' && o.h.name === 'named'",
+        "let f = function original() {}; let o = {['x']: f}; o.x.name === 'original'",
+        "let o = {['m']() {}}; let d = Object.getOwnPropertyDescriptor(o.m, 'name'); d.value === 'm' && !d.writable && !d.enumerable && d.configurable && !('prototype' in o.m)",
+        "let s = Symbol('x'); let key = {}; key.toString = function() { return s; }; let o = {[key]() { return this.v; }, v: 9}; o[s]() === 9 && o[s].name === '[x]'",
+        "let k = 'x'; function f() { let o = {[k]() { return k; }}; return o.x(); } f() === 'x'",
+        "let o = {*['g']() { yield this.v; }, v: 7}; o.g().next().value === 7 && o.g.name === 'g'",
+        "function make(k) { return {[k]: () => 1}; } let a = make('a'), b = make('b'); a.a.name === 'a' && b.b.name === 'b'",
+        "let log = ''; let k = {toString() { log += 's'; return {}; }, valueOf() { log += 'n'; return 'm'; }}; let o = {[k]() { return 7; }}; o.m() === 7 && o.m.name === 'm' && log === 'sn'",
+        "let o = {['b']: 1, a: 2, ['b']: 3, [2]: 4, [1]: 5}; Object.keys(o).join(',') === '1,2,b,a' && o.b === 3",
+        "let o = {['f']: function() {}}; o.f.extra = 7; let d = Object.getOwnPropertyDescriptor(o.f, 'name'); d.value === 'f' && !d.writable && !d.enumerable && d.configurable",
+        "function* make() { return {[yield 'key']: yield 7}; } let it = make(); it.next().value === 'key' && it.next('x').value === 7 && it.next(9).value.x === 9",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let (kind, _, line, column) =
+        failure_at("let k = {toString() { return {}; }, valueOf() { return {}; }};\n({ [k]: 1 });");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 4));
+
+    #[derive(Default)]
+    struct Effects(Vec<Primitive>);
+    impl Host for Effects {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg.clone());
+            Ok(call.arg)
+        }
+    }
+    let rt = Runtime::new();
+    let mut host = Effects::default();
+    let code =
+        exe("({[__rt.effect(0, 1)]: __rt.effect(0, 2), [__rt.effect(0, 3)]: __rt.effect(0, 4)})");
+    assert!(matches!(
+        rt.spawn(&code, &[])
+            .unwrap()
+            .run_with(Budget::UNLIMITED, &mut host),
+        Ok(RunOutcome::Complete(_))
+    ));
+    assert_eq!(
+        host.0,
+        (1..=4)
+            .map(|n| Primitive::Number(f64::from(n)))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Synthetic fixtures; computed async methods inherit the ordinary async
+/// execution path, including home objects, names and awaited key/value slots.
+#[test]
+fn computed_property_names_async() {
+    #[derive(Default)]
+    struct Effects(Vec<Primitive>);
+    impl Host for Effects {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for (source, expected) in [
+        (
+            "let s = Symbol('m'); let o = {v: 7, async [s]() { return this.v + await 2; }}; __rt.effect(0, o[s].name); o[s]().then(v => __rt.effect(0, v));",
+            vec![Primitive::String("[m]".into()), Primitive::Number(9.0)],
+        ),
+        (
+            "(async () => { let o = {[await 'x']: await 7}; return o.x; })().then(v => __rt.effect(0, v));",
+            vec![Primitive::Number(7.0)],
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut host = Effects::default();
+        assert!(matches!(
+            rt.spawn(&exe(source), &[])
+                .unwrap()
+                .run_with(Budget::UNLIMITED, &mut host)
+                .unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        assert_eq!(host.0, expected, "{source}");
+    }
+}
+
+/// Synthetic fixture: computed naming must not allocate a mutable function
+/// property record that would prevent an otherwise shareable closure publishing.
+#[test]
+fn computed_property_function_name_publication() {
+    let rt = Runtime::new();
+    let RunOutcome::Complete(function) = rt
+        .spawn(&exe("({['f']: () => 7}).f"), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!("complete")
+    };
+    rt.publish(&function).unwrap();
+    rt.collect().unwrap();
+    let read =
+        compile_function("function read(f) { return f.name === 'f' && f() === 7; }").unwrap();
+    let RunOutcome::Complete(value) = rt.spawn(&read, &[&function]).unwrap().run().unwrap() else {
+        panic!("complete")
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
+}
+
+/// Compile and initialize the realm outside the 64 KiB execution worker.
+#[test]
+fn computed_properties_on_small_worker_stack() {
+    for source in [
+        "return ({['x']: 7}).x === 7;",
+        "let o = {['m']() { return 7; }}; return o.m() === 7 && o.m.name === 'm';",
+        "let k = {toString() { return 'm'; }}; let o = {[k]: 7}; return o.m === 7;",
+        "let k = {toString() { return 'm'; }}; let o = {[k]() { return this.v; }, v: 7, get [s]() { return this.m(); }, set [s](v) { this.v = v; }}; o[s] = 9; return o[s] === 9 && o.m.name === 'm';",
+    ] {
+        let rt = Runtime::new();
+        // Built-in construction is outside this literal-execution regression.
+        let RunOutcome::Complete(symbol) =
+            rt.spawn(&exe("Symbol('s')"), &[]).unwrap().run().unwrap()
+        else {
+            panic!("symbol")
+        };
+        let code = compile_function(&format!("function check(s) {{ {source} }}")).unwrap();
+        let task = rt.spawn(&code, &[&symbol]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("complete")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Bool(true));
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn object_destructuring_function_rest_preserves_publication() {
     for source in [
         "function f() {} f;",

@@ -6628,7 +6628,7 @@ The shared Pattern AST includes ordered property-name/pattern pairs and optional
 rest. PropertyName adds a computed expression and opening-bracket span for
 conversion/read diagnostics. Object assignment cover grammar
 converts literals recursively through the same pattern conversion as arrays.
-Cover-only shorthand defaults, computed names and rest retain deferred syntax
+Cover-only shorthand defaults and rest retain deferred syntax
 errors until consumed as patterns; unconsumed forms still fail parsing. Rest
 uses a temporary Spread value inside the cover object with an unused empty
 property name. Binding-name collection traverses object values and rest, and
@@ -6650,8 +6650,7 @@ Rust stack. OwnKeys is an allocation poll point; the other new instructions
 allocate no heap objects. There are no new heap kinds or native continuations.
 The instruction loop routes these leaves before entering the main dispatch
 frame. Ordinary VM calls also keep native forwarding temporaries in a separate
-slow path, preserving execution on 64 KiB worker stacks. Computed object literal
-execution and object spread remain deferred.
+slow path, preserving execution on 64 KiB worker stacks. Computed object literal execution is described below; object spread remains deferred.
 
 ### Intl.DateTimeFormat date fields (clj-quickjs-215)
 
@@ -6732,3 +6731,42 @@ attached native boundary. `test_async_gc_suspended_activation` in `tests/gc.rs`
 checks retention and reclamation, including a host-observed weak object handle;
 `unreachable_async_cycle_can_be_collected_before_task_completion` verifies that
 diagnostic bookkeeping adds no hidden roots.
+
+
+## Computed literal properties (clj-quickjs-233)
+
+Object literals reuse `PropertyName::Computed` from object patterns, including
+its expression-height limit and opening-bracket diagnostic span. The parser
+accepts computed data, concise method, generator method and accessor names;
+computed shorthand remains a syntax error. Key expressions retain the outer
+function's suspension context, while method parameters/bodies use their own.
+
+Lowering evaluates each key and emits the existing resumable `ToPropertyKey`
+before evaluating its value. Two traced scratch locals preserve the converted
+key and value while `Method` sees the literal on the operand stack as its home
+object. The locals are cleared after defining the property. `DefineElem`
+creates own data properties without inherited setters; appended
+`DefineGetterElem` (0x85) and `DefineSetterElem` (0x86) merge accessor halves
+using ordinary descriptors. These instructions accept converted symbol keys
+without interning them as strings, and computed `__proto__` is an own property.
+
+`SetComputedName` (0x87, string-constant prefix operand) sets a fresh closure's
+per-instance name from the converted key, including bracketed symbol
+descriptions and accessor prefixes. Its immutable `JsString` metadata lives
+outside the traced heap and adds no GC edges or mutable property record;
+shared executable code remains unchanged. Initial function metadata and later
+property-record materialization use this per-instance name. Only anonymous
+function expressions/arrows and method definitions emit the naming instruction.
+The VM routes these leaf instructions outside its large general dispatch
+frame, retaining execution on 64 KiB worker stacks. Property operations and
+native conversion steps also use separate dispatch functions. A conversion's
+resume action returns its instruction to the loop after dropping the native
+Rust frame, rather than recursively entering instruction dispatch. Key callbacks remain
+ordinary detachable VM calls: budgets, dependency waits, collection and
+migration retain the in-progress literal in existing operand/local roots.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+`js_parse_property_name`, `js_parse_object_literal`, `OP_to_propkey`, and
+`OP_define_method_computed` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` for semantic comparison only.
+No upstream source or test text was copied; fixtures are synthetic.

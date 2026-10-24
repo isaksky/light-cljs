@@ -786,7 +786,7 @@ impl PropertyDef {
     }
 }
 
-/// A literal property name of an object literal.
+/// A property name of an object literal or pattern.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyName {
     /// An IdentifierName, reserved words included (`if`, `get`, ...).
@@ -795,7 +795,7 @@ pub enum PropertyName {
     String(crate::value::JsString),
     /// A numeric literal's value; the key is its ToString (`1.0` is `"1"`).
     Number(f64),
-    /// Computed key and opening-bracket span in an object pattern. Literal execution is deferred.
+    /// Computed key and opening-bracket span in an object literal or pattern.
     Computed(Box<Expr>, Span),
 }
 

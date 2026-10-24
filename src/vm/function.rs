@@ -179,6 +179,9 @@ pub(crate) struct FunctionObject {
     /// Literal that defined a concise method. Fixed before allocation;
     /// ordinary functions and arrows have no home object.
     pub(crate) home_object: Option<ObjectId>,
+    /// Set once by a computed literal definition before the closure escapes.
+    /// Per-closure metadata; executable code remains shared and immutable.
+    pub(crate) computed_name: Option<JsString>,
 }
 
 impl FunctionObject {
@@ -191,6 +194,7 @@ impl FunctionObject {
             owner,
             properties: None,
             home_object: None,
+            computed_name: None,
         }
     }
 }
@@ -341,6 +345,7 @@ struct Info {
     shared: bool,
     defaults: Option<ObjectId>,
     code: Option<Arc<Code>>,
+    computed_name: Option<JsString>,
 }
 
 fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
@@ -352,6 +357,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
             shared: known,
             defaults: None,
             code: Some(f.code.clone()),
+            computed_name: f.computed_name.clone(),
         }),
         HeapObject::BoundFunction(f) => Ok(Info {
             owner: f.owner,
@@ -360,6 +366,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
             shared: known,
             defaults: Some(f.metadata),
             code: None,
+            computed_name: None,
         }),
         _ => Err(Fault::Internal("not a function object")),
     })
@@ -428,10 +435,13 @@ fn initial_metadata(
             .code
             .as_ref()
             .map(|c| Value::Number(f64::from(c.function_length))),
-        Some("name") => info
-            .code
-            .as_ref()
-            .map(|c| Value::String(c.function_name.clone())),
+        Some("name") => info.code.as_ref().map(|c| {
+            Value::String(
+                info.computed_name
+                    .clone()
+                    .unwrap_or_else(|| c.function_name.clone()),
+            )
+        }),
         _ => return Ok(None),
     };
     let value = match (value, info.defaults) {
@@ -536,10 +546,19 @@ fn special(key: &Key) -> Option<&'static str> {
     let Key::Name(name) = key else {
         return None;
     };
-    ["prototype", "length", "name"]
-        .into_iter()
-        .chain(FUNCTION_PROTOTYPE_NAMES)
-        .find(|special| *name == **special)
+    // Avoid iterator-adapter frames on the metadata read path: name reads
+    // also run on 64 KiB execution workers in debug builds.
+    for special in &[
+        &["prototype", "length", "name"][..],
+        &FUNCTION_PROTOTYPE_NAMES[..],
+    ] {
+        for &special in *special {
+            if *name == special {
+                return Some(special);
+            }
+        }
+    }
+    None
 }
 
 /// The own property `name` of the record, owner-checked like any ordinary

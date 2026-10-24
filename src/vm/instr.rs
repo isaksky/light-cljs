@@ -122,6 +122,10 @@
 //! | `DefineElem` | 0x82 | – | object key value → object | define own writable/enumerable/configurable data property; key is already converted |
 //! | `AsyncStart` | 0x83 | – | – | establish async promise and completion boundary before defaults |
 //! | `Await` | 0x84 | – | value → resumed | detach activation and resume through an internal promise reaction |
+
+//! | `DefineGetterElem` | 0x85 | – | object key function → object | define own enumerable/configurable getter, merging an existing setter |
+//! | `DefineSetterElem` | 0x86 | – | object key function → object | define own enumerable/configurable setter, merging an existing getter |
+//! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -615,6 +619,10 @@ pub enum Opcode {
     DefineElem = 0x82,
     AsyncStart = 0x83,
     Await = 0x84,
+
+    DefineGetterElem = 0x85,
+    DefineSetterElem = 0x86,
+    SetComputedName = 0x87,
 }
 
 /// Operand encoding of an opcode.
@@ -777,6 +785,9 @@ impl Opcode {
             0x7E => GeneratorYieldStar,
 
             0x82 => DefineElem,
+            0x85 => DefineGetterElem,
+            0x86 => DefineSetterElem,
+            0x87 => SetComputedName,
             0x81 => IsEnumerable,
             0x80 => OwnKeys,
             0x7F => RequireCoercible,
@@ -918,6 +929,9 @@ impl Opcode {
             GeneratorYieldStar => "generator_yield_star",
 
             DefineElem => "define_elem",
+            DefineGetterElem => "define_getter_elem",
+            DefineSetterElem => "define_setter_elem",
+            SetComputedName => "set_computed_name",
             IsEnumerable => "is_enumerable",
             OwnKeys => "own_keys",
             RequireCoercible => "require_coercible",
@@ -970,7 +984,8 @@ impl Opcode {
             | PutField
             | DefineField
             | DefineGetter
-            | DefineSetter => OperandKind::Name,
+            | DefineSetter
+            | SetComputedName => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
@@ -996,6 +1011,8 @@ impl Opcode {
             | GeneratorYieldStar
             | AsyncStart
             | Await => OperandKind::None,
+
+            DefineGetterElem | DefineSetterElem => OperandKind::None,
         }
     }
 }
@@ -1181,6 +1198,10 @@ pub(crate) enum Instr {
     DefineElem,
     AsyncStart,
     Await,
+
+    DefineGetterElem,
+    DefineSetterElem,
+    SetComputedName(u16),
 }
 
 impl Instr {
@@ -1293,6 +1314,9 @@ impl Instr {
             Instr::GeneratorYieldStar => Opcode::GeneratorYieldStar,
 
             Instr::DefineElem => Opcode::DefineElem,
+            Instr::DefineGetterElem => Opcode::DefineGetterElem,
+            Instr::DefineSetterElem => Opcode::DefineSetterElem,
+            Instr::SetComputedName(_) => Opcode::SetComputedName,
             Instr::IsEnumerable => Opcode::IsEnumerable,
             Instr::OwnKeys => Opcode::OwnKeys,
             Instr::RequireCoercible => Opcode::RequireCoercible,
@@ -1350,7 +1374,8 @@ impl Instr {
             PendingThrow => (0, 1),
             RequireCoercible | OwnKeys => (1, 1),
             IsEnumerable => (2, 1),
-            DefineElem => (3, 1),
+            DefineElem | DefineGetterElem | DefineSetterElem => (3, 1),
+            SetComputedName(_) => (2, 2),
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
             CheckSpreadArguments => (1, 1),
@@ -1393,6 +1418,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 132);
+        assert_eq!(assigned, 135);
     }
 }

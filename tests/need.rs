@@ -30,6 +30,72 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+/// Synthetic fixtures, not light-cljs output. Park inside key conversion or
+/// value evaluation, collect every yield, then migrate to another worker.
+#[test]
+fn computed_property_names_wait_and_migrate() {
+    for body in [
+        "let o = {[k]: (__rt.effect(1, 2), 7)}; o.m + n",
+        "let o = {[k]() { return this.v; }, v: 7}; o.m() + n",
+        "let o = {get [k]() { return this.v; }, v: 7}; o.m + n",
+        "let o = {set [k](v) { this.v = v; }}; o.m = 7; o.v + n",
+        "let s = Symbol('s'); let o = {[s]: (__rt.need(5, 3), 7)}; o[s] + n",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let n = 0; let k = {{toString() {{ n++; __rt.effect(1, 1); __rt.need(5, 3); return 'm'; }} }}; {body}"
+        );
+        let task = rt
+            .spawn(&compile_script("computed-wait", &source).unwrap(), &[])
+            .unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut parked = false;
+        for _ in 0..2000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    parked = true;
+                    break;
+                }
+            }
+        }
+        assert!(parked, "bounded wait: {source}");
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 42.0));
+        let symbol_value = body.contains("Symbol");
+        let (result, host) = thread::spawn(move || {
+            for _ in 0..2000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (number(outcome), host),
+                }
+            }
+            panic!("bounded completion")
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, if symbol_value { 7.0 } else { 8.0 });
+        let expected_effects: &[f64] = if symbol_value {
+            &[]
+        } else if body.contains("effect(1, 2)") {
+            &[1.0, 2.0]
+        } else {
+            &[1.0]
+        };
+        assert_eq!(host.effects, expected_effects, "effects run once: {source}");
+    }
+}
+
 #[test]
 fn iterator_next_waits_on_dependency() {
     // Synthetic fixtures, not light-cljs output. Collect at every yield and
