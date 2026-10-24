@@ -362,6 +362,42 @@ fn two_workers_execute_vm_instructions_at_the_same_time() {
     exec.shutdown(TIMEOUT).unwrap();
 }
 
+/// Synthetic source, not light-cljs output: the bounded host rendezvous
+/// starts registry lookups on distinct workers; both results are published.
+#[test]
+fn symbol_registry_is_shared_across_tasks() {
+    let rt = Runtime::new();
+    let hosts = Hosts::default();
+    let source = "__rt.effect(2, 0); Symbol.for('k')";
+    let a = source_task(&rt, "registry-a", source);
+    let b = source_task(&rt, "registry-b", source);
+    let exec = ExecutorConfig::new()
+        .host(hosts.factory())
+        .start(&rt)
+        .unwrap();
+    assert_eq!(exec.workers(), 2);
+    exec.submit_with(a.clone(), Placement::Worker(w(0)))
+        .unwrap();
+    exec.submit_with(b.clone(), Placement::Worker(w(1)))
+        .unwrap();
+    let complete = |task: &Task| match exec.take_outcome(task.id(), TIMEOUT) {
+        Some(RunOutcome::Complete(value)) => {
+            assert_eq!(value.view(), ValueView::Symbol);
+            rt.publish(&value).unwrap();
+            value
+        }
+        other => panic!("expected registered symbol, got {other:?}"),
+    };
+    let (first, second) = (complete(&a), complete(&b));
+    assert!(first.strict_equals(&second).unwrap());
+    assert_ne!(
+        hosts.effects_of(a.id())[0].worker,
+        hosts.effects_of(b.id())[0].worker
+    );
+    assert_single_owner(&exec.events());
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
 /// Consumers park on a pending dependency (occupying no worker), an
 /// unrelated source task completes its work meanwhile, and only then is the
 /// result published. The placement hook sends each woken consumer to the

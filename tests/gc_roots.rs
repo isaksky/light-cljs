@@ -44,6 +44,44 @@ const SPIN: &str = "let i = 0; while (i < 1000000) { i = i + 1; }";
 /// fixture to reach its spin loop, far too few to leave it.
 const PROLOGUE: u64 = 64;
 
+/// Synthetic source, not light-cljs output. Symbols are immutable leaves
+/// outside the traced heap: retain only a hash of identity across collection,
+/// so neither a task nor a host symbol clone can keep the body alive here.
+#[test]
+fn symbol_registry_retains_unreferenced_symbols_across_collection() {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    struct Fingerprint(Option<u64>);
+    impl Host for Fingerprint {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            let Primitive::Symbol(symbol) = call.arg else {
+                return Err("expected symbol".into());
+            };
+            let mut hash = DefaultHasher::new();
+            symbol.hash(&mut hash);
+            self.0 = Some(hash.finish());
+            Ok(Primitive::Undefined)
+        }
+    }
+
+    let rt = Runtime::new();
+    let code =
+        compile_function("function register() { __rt.effect(128, Symbol.for('gc-registry')); }")
+            .unwrap();
+    let fingerprint = || {
+        let mut host = Fingerprint(None);
+        let task = rt.spawn(&code, &[]).unwrap();
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        host.0.unwrap()
+    };
+    let before = fingerprint();
+    rt.request_collection().unwrap();
+    assert_eq!(before, fingerprint());
+}
+
 /// Host for programs without effects.
 struct NoEffects;
 

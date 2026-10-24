@@ -418,7 +418,8 @@ Every form below is rejected where it starts. Error kinds:
 `UnexpectedToken`, `Unsupported` (valid JavaScript outside the subset),
 `ReservedWord`, `Invalid` (a JavaScript early error), `TooDeep`.
 
-`Symbol()` uses ordinary call syntax. `new Symbol()` is accepted syntax
+`Symbol()`, `Symbol.for(key)` and `Symbol.keyFor(sym)` use ordinary call syntax.
+`new Symbol()` is accepted syntax
 but fails at runtime with TypeError; symbol-valued computed literal keys
 are still covered by the computed-key rejection below.
 
@@ -2964,8 +2965,8 @@ with identical values in every task. String(symbol) returns
 ToString (including templates and concatenation) and ToNumber throw catchable
 TypeError. Source positions use the existing operator-token convention.
 
-Explicit gaps: Symbol.prototype, primitive property reads/wrappers, Symbol.for,
-Symbol.keyFor, additional well-known symbols and their protocol dispatch remain
+Explicit gaps: Symbol.prototype, primitive property reads/wrappers,
+additional well-known symbols and their protocol dispatch remain
 deferred. Exposing Symbol.toPrimitive and Symbol.hasInstance does not yet make
 coercion or instanceof consult them; iteration protocols remain separate work.
 Computed keys in object literals remain rejected (clj-quickjs-233).
@@ -3047,4 +3048,28 @@ JSON.stringify({b: 1, a: undefined, 1: 3}) === '{"1":3,"b":1}';
 JSON.stringify([undefined, , NaN]) === '[null,null,null]';
 JSON.stringify({toJSON(key) { return key; }}) === '""';
 JSON.stringify('\ud800') === '"\\ud800"';
+```
+
+### Symbol registry (clj-quickjs-128)
+
+Syntax: `Symbol.for(key)` and `Symbol.keyFor(sym)` use existing member calls;
+no new syntax is introduced. Execution: `for` applies resumable ToString,
+then returns one registered symbol per UTF-16 key string across all tasks,
+workers and worlds of a runtime. Missing arguments use the key "undefined".
+`keyFor` returns that runtime's registered key, or undefined for ordinary and
+well-known symbols; non-symbol arguments throw catchable TypeError without
+coercion. Both methods have length 1 and ignore their receiver. Constructing
+either method throws TypeError. Registry entries survive GC and live until
+the runtime heap is dropped. Separate runtimes own separate registries.
+
+Rejected forms and explicit gaps: the existing syntax rejections are unchanged;
+Symbol wrappers and well-known protocol dispatch remain deferred above.
+The shared realm's existing immutable-intrinsic policy applies to both methods.
+
+Synthetic fixture, not light-cljs output:
+
+```js accept
+let s = Symbol.for(1);
+s === Symbol.for('1') && Symbol.keyFor(s) === '1';
+Symbol.keyFor(Symbol('1')) === undefined;
 ```

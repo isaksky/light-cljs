@@ -256,6 +256,10 @@ pub(crate) enum Builtin {
     /// Symbol primitives (clj-quickjs-127); callable, never constructible.
     Symbol,
     JsonStringify,
+
+    /// Runtime-wide symbol registry (clj-quickjs-128).
+    SymbolFor,
+    SymbolKeyFor,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -301,6 +305,8 @@ impl Builtin {
             Builtin::ArrayIsArray => "isArray",
 
             Builtin::Symbol => "Symbol",
+            Builtin::SymbolFor => "for",
+            Builtin::SymbolKeyFor => "keyFor",
             Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
@@ -376,6 +382,7 @@ impl Builtin {
             Builtin::Object | Builtin::Array | Builtin::ArrayIsArray => 1,
 
             Builtin::Symbol => 0,
+            Builtin::SymbolFor | Builtin::SymbolKeyFor => 1,
             Builtin::ObjectIs => 2,
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
@@ -544,6 +551,18 @@ pub(crate) fn call(
         Builtin::Number | Builtin::String | Builtin::Symbol => {
             primitive_constructor(heap, task, which, args, false)
         }
+        Builtin::SymbolFor => {
+            let key = to_js_string(&arg(0))?;
+            Ok(Value::Symbol(heap.symbols.symbol_for(key)))
+        }
+        Builtin::SymbolKeyFor => match arg(0) {
+            Value::Symbol(symbol) => Ok(heap
+                .symbols
+                .key_for(&symbol)
+                .map(Value::String)
+                .unwrap_or(Value::Undefined)),
+            _ => Err(Fault::TypeError("Symbol.keyFor requires a symbol".into())),
+        },
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
             number_to_string(n, &arg(0))

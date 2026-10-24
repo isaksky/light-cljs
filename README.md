@@ -2692,7 +2692,7 @@ string. Description conversion can yield, wait, survive GC and migrate.
 Tests: `cargo test --test js_source symbol_`,
 `cargo test --test publication symbols_publish_with_identity`,
 `cargo test --lib vm::keys::tests::symbol_keys_follow_all_strings_in_creation_order`.
-Symbol.prototype, wrappers, registry operations, other well-known symbols and
+Symbol.prototype, wrappers, other well-known symbols and
 protocol dispatch remain deferred.
 
 ### Compact JSON.stringify (clj-quickjs-160)
@@ -2710,3 +2710,15 @@ Indentation/replacers and Boolean wrappers remain deferred or prerequisite
 gaps. See `docs/grammar.md` for precise limits and behavior.
 
 Tests: `cargo test --test js_source json_stringify`.
+
+### Symbol registry (clj-quickjs-128)
+
+`Symbol.for(key)` applies resumable ToString and returns the same symbol for
+that key across every task and worker of one runtime. `Symbol.keyFor(sym)`
+returns its registered key or undefined, and throws TypeError for non-symbols.
+Keys preserve UTF-16 contents, including lone surrogates. The synchronized
+registry owns its immutable symbol leaves until runtime heap drop, across GC.
+Tests: `cargo test --test js_source symbol_registry`,
+`cargo test --test executor symbol_registry_is_shared_across_tasks`, and
+`cargo test --test gc_roots symbol_registry_retains_unreferenced_symbols_across_collection`.
+Symbol wrappers and further well-known protocols remain deferred above.

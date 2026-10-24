@@ -12743,6 +12743,99 @@ fn symbol_values() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. The first row adapts
+/// QuickJS test_builtin.js::test_symbol at 7d1c13c5d8f8; its full MIT notice
+/// is retained at string_code_unit_access in this file.
+#[test]
+fn symbol_registry() {
+    for src in [
+        "let a = Symbol('abc'); let b = Symbol.for('abc'); let c = Symbol.for('abc'); b === c && b !== a && Symbol.keyFor(b) === 'abc' && Symbol.keyFor(a) === undefined",
+        "Symbol.for(1) === Symbol.for('1') && Symbol.for() === Symbol.for('undefined') && Symbol.for(null) === Symbol.for('null')",
+        "Symbol.for('a' + 'bc') === Symbol.for('abc') && Symbol.for('') !== Symbol.for('undefined') && Symbol.keyFor(Symbol.for('')) === ''",
+        "Symbol.keyFor(Symbol.iterator) === undefined && Symbol.keyFor(Symbol.toPrimitive) === undefined",
+        "Symbol.for('\\uD800') === Symbol.for(String.fromCharCode(55296)) && Symbol.for('\\uD800') !== Symbol.for('\\uFFFD') && Symbol.keyFor(Symbol.for('\\uD800')).charCodeAt(0) === 55296",
+        "let n = 0; Symbol.for({toString() { n++; return 'abc'; }}) === Symbol.for('abc') && n === 1",
+        "Symbol.for({toString() { return undefined; }}) === Symbol.for('undefined')",
+        "let log = ''; let s = Symbol.for({toString() { log += 's'; return {}; }, valueOf() { log += 'v'; return 12; }}); s === Symbol.for('12') && log === 'sv'",
+        "Symbol.for.call(null, 'abc') === Symbol.for('abc') && Symbol.keyFor.call(null, Symbol.for('abc')) === 'abc'",
+        "Symbol.for.length === 1 && Symbol.for.name === 'for' && Symbol.keyFor.length === 1 && Symbol.keyFor.name === 'keyFor'",
+        "let d = Object.getOwnPropertyDescriptor(Symbol, 'for'); d.value === Symbol.for && d.writable && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Symbol, 'keyFor'); d.value === Symbol.keyFor && d.writable && !d.enumerable && d.configurable",
+        "let caught = false; try { Symbol.keyFor(1); } catch (e) { caught = true; } caught",
+        "let caught = false; try { Symbol.for({toString() { throw 42; }}); } catch (e) { caught = e === 42; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "Symbol.keyFor(1)",
+        "Symbol.keyFor()",
+        "Symbol.keyFor('abc')",
+        "Symbol.keyFor({toString() { throw 42; }})",
+        "Symbol.for(Symbol())",
+        "Symbol.for({toString() { return Symbol(); }})",
+        "new Symbol.for('abc')",
+        "new Symbol.keyFor(Symbol.for('abc'))",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output: registry key conversion may
+/// wait, yield, collect and migrate before any registry lock is taken.
+#[test]
+fn symbol_registry_conversion_waits_and_migrates() {
+    let rt = Runtime::new();
+    let source = r"
+        let log = '';
+        let s = Symbol.for({get toString() {
+            log += 'g'; __rt.need(1281, 1);
+            return function() {
+                log += 's'; __rt.need(1282, 1);
+                return Symbol.keyFor(Symbol.for('nested'));
+            };
+        }});
+        s === Symbol.for('nested') && log === 'gs'
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Null);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("registry key conversion did not finish");
+}
+
 /// Synthetic fixtures, not light-cljs output: throwing preserves primitive
 /// identity and reports Symbols without performing implicit ToString.
 #[test]

@@ -802,6 +802,10 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(json, "parse", parse, PropertyFlags::METHOD)?;
 
     let symbol = b.function(Builtin::Symbol, &[])?;
+    let symbol_for = b.function(Builtin::SymbolFor, &[])?;
+    b.add(symbol, "for", symbol_for, PropertyFlags::METHOD)?;
+    let symbol_key_for = b.function(Builtin::SymbolKeyFor, &[])?;
+    b.add(symbol, "keyFor", symbol_key_for, PropertyFlags::METHOD)?;
     for name in ["iterator", "toPrimitive", "hasInstance"] {
         b.add_value(
             symbol,

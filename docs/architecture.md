@@ -4229,7 +4229,7 @@ String(symbol) alone uses the descriptive `Symbol(description)` string without
 losing UTF-16 code units; String(object) still uses ordinary ToString, even
 when that object's conversion returns a symbol.
 
-Symbol.prototype, wrappers, registry operations, further well-known symbols
+Symbol.prototype, wrappers, further well-known symbols
 and well-known protocol dispatch are deferred to their own pellets. This change
 exposes the three identities without changing iteration, instanceof or
 OrdinaryToPrimitive protocol lookup.
@@ -4287,3 +4287,42 @@ remain an absent prerequisite. Symbol primitives follow the omission rules;
 enumerated symbol keys are filtered before any value read. The bounded
 property preflight includes stored symbol keys, keeping the shared leaf
 enumeration bounded even when none of those keys contribute JSON members.
+
+## Runtime symbol registry (clj-quickjs-128)
+
+Each shared `Heap` owns one `SymbolRegistry`, shared by every task, executor
+worker and world of its runtime. It contains a UTF-16-content-keyed map to
+`JsSymbol` and a reverse map from private symbol identity to key. One Rust
+Mutex linearizes lookup/insertion and synchronizes publication of immutable
+symbol bodies (unlock/relock supplies release/acquire synchronization).
+The identity allocator still uses Relaxed ordering solely for uniqueness.
+Hashing and equality use immutable strings and private u64 IDs, never
+user-defined comparison. This leaf lock is never held with other heap locks,
+across a safepoint, or while executing JavaScript or host code. It serializes
+registry operations only, not VM execution. Poisoning fails closed rather than
+exposing partially inserted forward/reverse entries.
+
+The registry strongly owns every registered symbol body and its key until
+the heap drops, even after all tasks and returned handles release them. Keys
+and symbols are immutable Arc leaves with no heap edges, so entries are not
+traced GC roots and need no new root category; they survive every collection
+through Rust ownership. Dropping the registry releases its ownership; an
+independently held primitive can outlive it as before. Registries are local
+to runtimes; a foreign registered symbol passed as a host primitive has no
+entry in another runtime's reverse map. Well-known symbols remain process-wide.
+
+The alternatives were a process-global mutable registry (unbounded retention
+beyond runtime drop) and per-task tables (incorrect worker/task identity).
+The existing heap ownership supplies the runtime boundary without adding
+per-worker imports or a global interpreter lock. Entries are append-only and
+currently unbounded, following property-key table lifetime policy.
+
+`Symbol.for` and `Symbol.keyFor` append to the built-in registry and are realm
+methods with the existing METHOD flags. The leaf `for` path completes primitive
+ToString before locking. Object keys use a distinct native conversion target
+with string hint; getters and conversion methods are ordinary resumable VM
+frames, including through dependency waits, GC and migration. The completed
+primitive undergoes ToString before registry access, so returning a symbol
+throws TypeError and returning undefined names the string "undefined".
+`keyFor` validates its argument without coercion before looking up its identity.
+Symbol.prototype and well-known protocol integration remain separate work.

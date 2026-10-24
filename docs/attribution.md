@@ -289,3 +289,14 @@ fixtures, not light-cljs output. `js_json_check`, `js_json_to_str` and
 `JS_JSONStringify` in `research/quickjs/quickjs.c` at that revision were read
 as semantic references. The resumable Rust serializer was written afresh;
 no upstream C implementation was copied.
+
+## Symbol registry (clj-quickjs-128)
+
+`tests/js_source.rs::symbol_registry` adapts the registry identity and key
+lookup rows from `research/quickjs/tests/test_builtin.js::test_symbol`,
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`string_code_unit_access` in the same test file. Other cases are synthetic
+fixtures, not light-cljs output. `js_symbol_for` and `js_symbol_keyFor` in
+`research/quickjs/quickjs.c` at that revision were semantic references;
+the runtime-owned Rust registry and continuation were written afresh.

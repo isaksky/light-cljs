@@ -447,6 +447,9 @@ pub(crate) struct Heap {
     /// their identities are roots of category `Intrinsic`. Its build lock
     /// is a leaf taken only before the realm exists.
     realm: Realm,
+    /// Runtime-owned immutable symbol leaves; a leaf metadata lock,
+    /// independent of GC because neither keys nor symbols have heap edges.
+    pub(crate) symbols: crate::value::symbol::SymbolRegistry,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is

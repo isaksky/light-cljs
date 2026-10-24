@@ -313,6 +313,7 @@ enum Hint {
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
     SymbolDescription,
+    SymbolRegistryKey,
     StringSplit {
         separator_undefined: bool,
         limit_undefined: bool,
@@ -1017,6 +1018,16 @@ pub(crate) fn start_builtin(
             (
                 ConvertTarget::NumberParse { integer },
                 operands,
+                Hint::String,
+            )
+        }
+        Builtin::SymbolFor if !construct => {
+            let Some(value @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::SymbolRegistryKey,
+                vec![value.clone()],
                 Hint::String,
             )
         }
@@ -2133,6 +2144,10 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::SymbolRegistryKey => {
+                        let key = dispatch::to_js_string(&operands[0])?;
+                        Ok(Action::Return(Value::Symbol(heap.symbols.symbol_for(key))))
+                    }
                     ConvertTarget::SymbolDescription => Ok(Action::Return(Value::Symbol(
                         crate::value::JsSymbol::new(Some(dispatch::to_js_string(&operands[0])?)),
                     ))),
