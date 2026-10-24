@@ -364,6 +364,46 @@ fn a_producer_failure_is_caught_at_the_need() {
     assert_eq!(task.dependency_log().edges(), &[key(&rt, A)]);
 }
 
+/// The error object raised for a failed dependency is pending in a finally
+/// block that waits on another dependency: it is held only by the pending
+/// completion while the task is parked, collected around and migrated, and
+/// the catch block then gets the same error, with its key, source position,
+/// call chain and cause intact. Every effect runs once.
+#[test]
+fn a_dependency_error_survives_a_wait_in_finally() {
+    let src = "
+        function inner() {
+          try { return __rt.need(5, 3); }
+          finally { __rt.effect(1, 1); __rt.effect(1, __rt.need(6, 3)); }
+        }
+        let caught;
+        try { inner(); __rt.effect(1, 91); }
+        catch (e) { caught = e; __rt.effect(1, 3); }
+        caught";
+    let rt = Runtime::new();
+    let task = spawn(&rt, src);
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    let cause = complete(spawn(&rt, "__rt.vector(13)").run().unwrap());
+    let weak_cause = cause.downgrade();
+    let resumed = fail(&rt, &task, &cause);
+    drop(cause);
+    let (outcome, log) = run_elsewhere(resumed, log);
+    assert_eq!(waiting(outcome), key(&rt, B));
+    assert_eq!(log.0, [1.0]);
+    rt.collect().unwrap();
+    assert!(weak_cause.is_live());
+    let (outcome, log) = run_elsewhere(publish(&rt, &task, 2.0), log);
+    assert_eq!(log.0, [1.0, 2.0, 3.0]);
+    let caught = complete(outcome);
+    let error = caught.error().expect("the dependency error object");
+    assert_eq!(error.kind(), VmErrorKind::DependencyFailed(key(&rt, A)));
+    assert_eq!(line_column(&error), (3, 24), "{error}");
+    assert_eq!(error.diagnostic().call_chain.len(), 1, "{error}");
+    let cause = caught.error_cause().unwrap();
+    assert!(cause.same_object(&weak_cause.upgrade().unwrap()));
+}
+
 /// A cancelled cell is a catchable error at the need too, with an
 /// `undefined` cause; the consumer itself is not cancelled and carries on.
 #[test]
@@ -599,6 +639,44 @@ fn cleanup_code_cannot_override_the_cancellation_or_wait() {
         assert_eq!(task.dependency_log().edges(), &[key(&rt, A)], "{src}");
         assert!(matches!(rt.cell_status(key(&rt, B)), CellStatus::Absent));
     }
+}
+
+/// Cleanup code may call functions: a helper's own `return` (even through
+/// its own finally block) and an exception thrown by a helper and caught
+/// inside the cancelled finally block leave the cancellation pending, and
+/// the cleanup carries on to the enclosing finally block.
+#[test]
+fn cancellation_cleanup_allows_calls_and_local_catches() {
+    let src = "
+        function ok(x) { __rt.effect(1, x); return x; }
+        function guarded() { try { return 4; } finally { __rt.effect(1, 5); } }
+        function bad() { throw 7; }
+        try {
+          try { __rt.need(5, 3); }
+          finally {
+            ok(1);
+            try { bad(); } catch (e) { __rt.effect(1, e); }
+            __rt.effect(1, guarded());
+            ok(2);
+          }
+          __rt.effect(1, 91);
+        } catch (e) { __rt.effect(1, 92); } finally { __rt.effect(1, 3); }
+        __rt.effect(1, 93);";
+    let rt = Runtime::new();
+    let task = spawn(&rt, src);
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    let resumed = cancel_parked(&task);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(resumed, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [1.0, 7.0, 5.0, 4.0, 2.0, 3.0]);
+    assert_eq!(task.status(), TaskStatus::Cancelled);
+    assert_eq!(task.dependency_log().waiting(), None);
+    assert!(matches!(
+        rt.cell_status(key(&rt, A)),
+        CellStatus::Pending { ref waiters, .. } if waiters.is_empty()
+    ));
 }
 
 /// A task without finally blocks is cancelled without running any code (the
