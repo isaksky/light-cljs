@@ -2578,6 +2578,7 @@ impl<'a> Parser<'a> {
         let mut statement = false;
         let mut after_dot = false;
         let mut after_arrow = false;
+        let mut property_name = false;
         let mut control_head = false;
         // A function declaration ends a statement; a function expression
         // ends an operand. Carry that distinction through its parameters.
@@ -2593,6 +2594,16 @@ impl<'a> Parser<'a> {
         let mut conditionals = Vec::new();
         while open > 0 {
             let mut token = lexer.next_token().ok()?;
+            let keyword_position = !after_dot && !std::mem::take(&mut property_name);
+            // Only a function name or its opening parenthesis can follow
+            // a pending function keyword. In particular, a property colon
+            // must not carry it into an unrelated control head.
+            if !matches!(
+                token.kind,
+                TokenKind::Identifier(_) | TokenKind::Punct(Punct::LParen)
+            ) {
+                function_head = None;
+            }
             let previous_restricted = restricted.take();
             if previous_restricted.is_some() && token.newline_before {
                 operand = true;
@@ -2655,6 +2666,7 @@ impl<'a> Parser<'a> {
                         pending_body.is_some() || was_statement || !was_operand || after_arrow;
                     braces.push((ends_statement, body, open + 1));
                     statement = body;
+                    property_name = !body;
                 }
                 TokenKind::Punct(Punct::RBrace) => {
                     let (ends_statement, _, _) = braces.pop()?;
@@ -2663,6 +2675,11 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Punct(Punct::Semicolon) => {
                     statement = in_statement_body;
+                }
+                TokenKind::Punct(Punct::Comma) => {
+                    property_name = braces
+                        .last()
+                        .is_some_and(|&(_, body, depth)| !body && depth == open);
                 }
                 TokenKind::Punct(Punct::Question) => conditionals.push(open),
                 TokenKind::Punct(Punct::Colon) => {
@@ -2676,17 +2693,22 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Keyword(
                     Keyword::Else | Keyword::Do | Keyword::Try | Keyword::Finally | Keyword::Catch,
-                ) if !after_dot => {
+                ) if keyword_position => {
                     statement = true;
                 }
-                TokenKind::Keyword(Keyword::Function) if !after_dot => {
-                    function_head = Some(was_statement);
+                TokenKind::Keyword(Keyword::Function) if keyword_position => {
+                    function_head = Some(
+                        was_statement
+                            || (token.newline_before && !was_operand && in_statement_body),
+                    );
                 }
                 _ => {}
             }
             restricted = match token.kind {
-                TokenKind::Keyword(Keyword::Return) if !after_dot => Some(false),
-                TokenKind::Keyword(Keyword::Break | Keyword::Continue) if !after_dot => Some(true),
+                TokenKind::Keyword(Keyword::Return) if keyword_position => Some(false),
+                TokenKind::Keyword(Keyword::Break | Keyword::Continue) if keyword_position => {
+                    Some(true)
+                }
                 TokenKind::Identifier(_)
                     if previous_restricted == Some(true) && !token.newline_before =>
                 {
@@ -2694,7 +2716,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => None,
             };
-            control_head = !after_dot
+            control_head = keyword_position
                 && matches!(
                     token.kind,
                     TokenKind::Keyword(
