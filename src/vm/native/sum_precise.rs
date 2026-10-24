@@ -280,7 +280,7 @@ impl State {
             }
             Stage::Add => {
                 if self.count == MAX_COUNT {
-                    return Err(Fault::TypeError("sumPrecise has too many elements".into()));
+                    return Err(Fault::RangeError("sumPrecise has too many elements".into()));
                 }
                 self.count += 1;
                 let Value::Number(number) = self.result else {
@@ -329,7 +329,7 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::Sum;
+    use super::{Action, Fault, Heap, Input, MAX_COUNT, Stage, State, Sum, TaskId, Value};
 
     fn sum(values: &[f64]) -> f64 {
         let mut sum = Sum::new();
@@ -337,6 +337,32 @@ mod tests {
             sum.add(*value);
         }
         sum.finish()
+    }
+
+    #[test]
+    fn element_limit_raises_range_error_before_type_validation() {
+        // Fast-forward only the count: traversing 2^53 inputs is impractical.
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let mut state = State::new(Value::Undefined);
+        state.stage = Stage::Add;
+        state.count = MAX_COUNT - 1;
+        state.result = Value::Number(1.0);
+        assert!(matches!(
+            state.step(&heap, task, Input::Start),
+            Ok(Action::Continue)
+        ));
+        assert_eq!(state.sum.finish(), 1.0);
+        assert_eq!(state.count, MAX_COUNT);
+        for value in [Value::Number(1.0), Value::Undefined] {
+            state.stage = Stage::Add;
+            state.result = value;
+            assert!(state.catches_step());
+            assert!(matches!(
+                state.step(&heap, task, Input::Start),
+                Err(Fault::RangeError(_))
+            ));
+        }
     }
 
     #[test]

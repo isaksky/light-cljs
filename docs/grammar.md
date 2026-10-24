@@ -4837,6 +4837,7 @@ Non-Number elements throw TypeError without coercion and close the iterator;
 iteration continues after NaN/Infinity to validate the remaining elements.
 Getters, next and return may yield, wait, survive GC and migrate. Iterator step
 errors propagate without closing; a pending validation error wins over close
-errors. At 2^53 elements a TypeError closes the iterator.
+errors. At 2^53 elements a RangeError closes the iterator, per the
+[Math.sumPrecise specification](https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.sumprecise).
 Explicit gaps: async iterables are not accepted by this synchronous method.
 Other Math methods/constants retain their existing supported/deferred status.
