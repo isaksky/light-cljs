@@ -4388,8 +4388,10 @@ symbol compare arguments throw TypeError; foreign task objects are rejected.
 
 Explicit gaps: all test locales currently use root rules; usage is recorded
 without locale search tailoring. Primary weights are folded NFD scalar order,
-secondary weights preserve the snapshot's combining-mark order, and case ties
-use ASCII lowercase first (or explicit upper). Canonical combining-class
+secondary weights preserve the snapshot's combining-mark order, and case-only
+tertiary weights use the pinned Unicode Uppercase property, lowercase first
+(or explicit upper). Same-case variants remain equal at case sensitivity;
+only variant sensitivity uses the final NFD scalar fallback. Canonical combining-class
 ordering applies to the full snapshot's NFD data, including Hangul and non-BMP
 characters; lone surrogates remain distinct. Punctuation filtering follows the
 snapshot's ASCII alphanumeric / non-ASCII ID_Start rule. Numeric runs are ASCII
@@ -4397,4 +4399,5 @@ digits, compared by significant length and digits without integer conversion;
 leading zeroes do not break ties. These root rules do not supply full UCA/DUCET
 weights or locale tailorings. Unlike the snapshot's unused numeric flag and
 uncached getter, numeric comparison and function identity follow this pellet's
-explicit acceptance requirements.
+explicit acceptance requirements. Full folding is completed to an idempotent
+closure, including capital sharp S; collation-option rope validation is budgeted.

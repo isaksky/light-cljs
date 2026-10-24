@@ -19999,3 +19999,84 @@ fn intl_collator_ownership_and_host_default() {
         }
     }
 }
+
+/// Synthetic fixture, not light-cljs output. Complete folding is idempotent,
+/// including the snapshot decoder's capital-sharp-S to sharp-S mapping.
+#[test]
+fn intl_collator_full_folding() {
+    for sensitivity in ["base", "accent"] {
+        let source = format!(
+            "let c=new Intl.Collator('en',{{sensitivity:'{sensitivity}'}}); c.compare('ẞ','ß') === 0 && c.compare('ẞ','ss') === 0 && c.compare('ß','ss') === 0"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true));
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Case weights must precede the
+/// case-preserving variant fallback and align with full-fold expansions.
+#[test]
+fn intl_collator_case_sensitivity_ignores_variants() {
+    for source in [
+        "let c=new Intl.Collator('en',{sensitivity:'case'}); c.compare('ſ','s') === 0 && c.compare('ς','σ') === 0 && c.compare('a','A') < 0 && c.compare('á','a') === 0 && c.compare('ß','ss') === 0",
+        "let c=new Intl.Collator('en',{sensitivity:'case',caseFirst:'upper'}); c.compare('ſ','s') === 0 && c.compare('s','S') > 0 && c.compare('σ','Σ') > 0 && c.compare('ß','ẞ') > 0",
+        "let c=new Intl.Collator('en'); c.compare('ſ','s') !== 0 && c.compare('ς','σ') !== 0 && c.compare('ß','ss') !== 0",
+        "new Intl.Collator('en',{sensitivity:'case',numeric:true}).compare('0002','2') === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Numeric runs keep exact magnitude
+/// beyond machine precision and continue comparing later runs and suffixes.
+#[test]
+fn intl_collator_numeric_exact_runs() {
+    let small = "1".repeat(200) + "2";
+    let large = "1".repeat(200) + "3";
+    for source in [
+        "let c=new Intl.Collator('en',{numeric:true}); c.compare('item12','item13') < 0 && c.compare('item13','item12') > 0".to_owned(),
+        format!("let c=new Intl.Collator('en',{{numeric:true}}); c.compare('{small}','{large}') < 0 && c.compare('{large}','{small}') > 0 && c.compare('000{small}','{small}') === 0"),
+        "let c=new Intl.Collator('en',{numeric:true}); c.compare('a12b2x','a012b10x') < 0 && c.compare('a12b02x','a012b2y') < 0 && c.compare('a12b02x','a012b2x') === 0 && c.compare('a000b0','a0b000') === 0".to_owned(),
+    ] { assert_eq!(eval(&source), ValueView::Bool(true), "{source}"); }
+}
+
+/// Synthetic fixture, not light-cljs output. Host-provided ropes exclude input
+/// construction from the yield count; every validated subtag is well-formed.
+#[test]
+fn intl_collator_long_option_ropes_are_budgeted() {
+    let rt = Runtime::new();
+    let mut rope = clj_quickjs::JsString::from("abc");
+    for _ in 0..3000 {
+        rope = rope.concat(&clj_quickjs::JsString::from("-def")).unwrap();
+    }
+    let text = rt.root(Primitive::String(rope));
+    let code = compile_function("function f(text){return new Intl.Collator('en',{collation:text}).resolvedOptions().collation === 'default';}").unwrap();
+    let mut task = rt.spawn(&code, &[&text]).unwrap();
+    let mut yields = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(
+                    yields > 100,
+                    "option validation yielded only {yields} times"
+                );
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("collation option validation did not finish");
+}

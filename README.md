@@ -3388,12 +3388,13 @@ parameters and destructuring iteration heads remain deferred. Run:
 Supported: `Intl.Collator` with or without `new`, cached bound `compare`,
 `resolvedOptions`, `supportedLocalesOf`, and the Intl.Collator tag.
 All advertised test locales use the root rule set: canonical NFD equivalence,
-folded primary order, accents, then lowercase-first ASCII case; `sensitivity`,
+folded primary order, accents, then lowercase-first Unicode case weights and
+a variant fallback; `sensitivity`,
 `usage`, `ignorePunctuation`, `numeric` digit runs and `caseFirst` are supported.
 Option getters, object ToString and long rope comparisons yield, wait, collect
 and migrate through saved continuations. The host supplies the default locale.
-Deferred: locale tailorings (clj-quickjs-219), complete UCA/DUCET weights and
-non-ASCII case-first tailoring. The pinned snapshot rule set is documented in
+Deferred: locale tailorings (clj-quickjs-219) and complete UCA/DUCET weights.
+The pinned snapshot rule set is documented in
 [architecture](docs/architecture.md#intl-collator-root-order-clj-quickjs-218).
 The required array sort rows currently fail explicitly: Array.prototype.sort
 is the separate unlanded prerequisite clj-quickjs-208. Bound compare already

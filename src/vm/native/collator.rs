@@ -1,6 +1,7 @@
 //! Collator option getters and ToString calls use ordinary resumable frames.
 use super::intl_service::{self, OptionKind};
 use super::*;
+use crate::value::string::{CursorStep, UnitCursor};
 use crate::{
     heap::HeapObject,
     intl::{
@@ -34,6 +35,7 @@ enum Stage {
     Right,
     RightString,
     Compare,
+    Collation,
 }
 #[derive(Debug)]
 pub(super) struct State {
@@ -47,6 +49,8 @@ pub(super) struct State {
     option: usize,
     slots: Option<Collator>,
     comparison: Option<Comparison>,
+    validation: Option<UnitCursor>,
+    subtag_len: usize,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
@@ -100,6 +104,8 @@ impl State {
                 None
             },
             comparison: None,
+            validation: None,
+            subtag_len: 0,
         })
     }
     fn result(input: Input) -> Result<Value, Fault> {
@@ -154,6 +160,15 @@ impl State {
         }
     }
     fn apply(&mut self, value: Value) -> Result<Action, Fault> {
+        // Enumerated options have no valid spelling longer than eight UTF-16
+        // units. Reject by cached length before shared string conversion can
+        // flatten an arbitrarily long rope.
+        if matches!(self.option, 0 | 1 | 2 | 6)
+            && let Value::String(text) = &value
+            && text.len() > 8
+        {
+            return Err(Fault::RangeError("invalid Intl option".into()));
+        }
         if self.option == 0 {
             service::string_option(&value, &["lookup", "best fit"])?;
             self.option = 1;
@@ -170,13 +185,11 @@ impl State {
             }
             3 => slots.ignore_punctuation = value.truthy(),
             4 => {
-                let text = dispatch::to_js_string(&value)?.to_string_lossy();
-                if !text.split('-').all(|s| {
-                    (3..=8).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_alphanumeric())
-                }) {
-                    return Err(Fault::RangeError("invalid collation option".into()));
-                }
                 // Root only; well-formed unsupported collations use default.
+                self.validation = Some(UnitCursor::new(dispatch::to_js_string(&value)?));
+                self.subtag_len = 0;
+                self.stage = Stage::Collation;
+                return Ok(Action::Continue);
             }
             5 => {
                 if slots.numeric != value.truthy() {
@@ -265,6 +278,35 @@ impl State {
             }
             Stage::Value => self.option_value(Self::result(input)?),
             Stage::Converted => self.apply(Self::result(input)?),
+            Stage::Collation => {
+                for _ in 0..128 {
+                    match self.validation.as_mut().unwrap().step() {
+                        CursorStep::Continue => (),
+                        CursorStep::End => {
+                            if !(3..=8).contains(&self.subtag_len) {
+                                return Err(Fault::RangeError("invalid collation option".into()));
+                            }
+                            self.validation = None;
+                            self.option += 1;
+                            self.stage = Stage::Read;
+                            return Ok(Action::Continue);
+                        }
+                        CursorStep::Unit(c) => {
+                            if c == u16::from(b'-') && (3..=8).contains(&self.subtag_len) {
+                                self.subtag_len = 0;
+                            } else if c <= 127
+                                && (c as u8).is_ascii_alphanumeric()
+                                && self.subtag_len < 8
+                            {
+                                self.subtag_len += 1;
+                            } else {
+                                return Err(Fault::RangeError("invalid collation option".into()));
+                            }
+                        }
+                    }
+                }
+                Ok(Action::Continue)
+            }
             Stage::Build => {
                 if self.supported {
                     return service::supported_locales(heap, task, &self.locales)

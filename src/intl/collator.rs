@@ -84,7 +84,7 @@ struct Keys {
     insert: Option<usize>,
     nfd: Vec<u32>,
     at: usize,
-    keys: [Vec<u32>; 3],
+    keys: [Vec<u32>; 4],
     prepared: bool,
 }
 impl Keys {
@@ -109,7 +109,7 @@ impl Keys {
             insert: None,
             nfd,
             at: 0,
-            keys: [vec![], vec![], vec![]],
+            keys: [vec![], vec![], vec![], vec![]],
             prepared: false,
         })
     }
@@ -177,7 +177,7 @@ impl Keys {
                 .checked_mul(3)
                 .ok_or(Fault::OutOfMemory("collation key too large"))?;
             for (i, key) in self.keys.iter_mut().enumerate() {
-                key.try_reserve_exact(if i == 2 { self.nfd.len() } else { folded_len })
+                key.try_reserve_exact(if i == 3 { self.nfd.len() } else { folded_len })
                     .map_err(|_| Fault::OutOfMemory("collation key too large"))?;
             }
             self.prepared = true;
@@ -193,11 +193,21 @@ impl Keys {
         let folded = mapping(data::FOLD, cp).unwrap_or(std::slice::from_ref(&cp));
         if !mark(cp) {
             self.keys[0].extend_from_slice(folded);
+            // Align tertiary weights with primary fold expansions (ß -> ss).
+            // Digits retain their identity so numeric runs, including leading
+            // zeros, are skipped equivalently at every comparison level.
+            let upper = crate::regexp::property::lookup("Uppercase")
+                .unwrap()
+                .contains(cp, false, false);
+            let weight = u32::from(if options.case_first == "upper" {
+                !upper
+            } else {
+                upper
+            });
+            self.keys[2].extend(folded.iter().map(|&c| if digit(c) { c } else { weight }));
         }
         self.keys[1].extend_from_slice(folded);
-        if options.sensitivity != "case" || !mark(cp) {
-            self.keys[2].push(cp);
-        }
+        self.keys[3].push(cp);
         Ok(false)
     }
 }
@@ -241,7 +251,7 @@ impl Comparison {
                 }
                 continue;
             }
-            if self.level == 3 {
+            if self.level == 4 || (self.level == 3 && self.options.sensitivity == "case") {
                 return Ok(Some(Ordering::Equal));
             }
             if self.level == 1 && matches!(self.options.sensitivity, "base" | "case") {
@@ -303,23 +313,7 @@ impl Comparison {
                         });
                         continue;
                     }
-                    let order = if self.level == 2 {
-                        let upper_a = (0x41..=0x5a).contains(&a);
-                        let lower_a = (0x61..=0x7a).contains(&a);
-                        let upper_b = (0x41..=0x5a).contains(&b);
-                        let lower_b = (0x61..=0x7a).contains(&b);
-                        if (upper_a && lower_b) || (lower_a && upper_b) {
-                            if self.options.case_first == "upper" {
-                                upper_b.cmp(&upper_a)
-                            } else {
-                                upper_a.cmp(&upper_b)
-                            }
-                        } else {
-                            a.cmp(&b)
-                        }
-                    } else {
-                        a.cmp(&b)
-                    };
+                    let order = a.cmp(&b);
                     if !order.is_eq() {
                         return Ok(Some(order));
                     }
@@ -445,5 +439,40 @@ mod tests {
         options.sensitivity = "base";
         assert_eq!(compare(&options, "a", "á"), Ordering::Equal);
         assert_eq!(compare(&options, "Straße", "STRASSE"), Ordering::Equal);
+    }
+
+    #[test]
+    fn root_collation_full_folding() {
+        let mut options = Collator::new("en".into());
+        for sensitivity in ["base", "accent"] {
+            options.sensitivity = sensitivity;
+            assert_eq!(compare(&options, "ẞ", "ß"), Ordering::Equal);
+            assert_eq!(compare(&options, "ẞ", "ss"), Ordering::Equal);
+        }
+        for &(_, expansion) in data::FOLD {
+            assert!(
+                expansion
+                    .iter()
+                    .all(|&cp| mapping(data::FOLD, cp).is_none()),
+                "full fold must be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn root_collation_case_sensitivity_ignores_variants() {
+        let mut options = Collator::new("en".into());
+        options.sensitivity = "case";
+        for (a, b) in [("ſ", "s"), ("ς", "σ"), ("ß", "ss"), ("á", "a")] {
+            assert_eq!(compare(&options, a, b), Ordering::Equal);
+        }
+        assert_eq!(compare(&options, "σ", "Σ"), Ordering::Less);
+        assert_eq!(compare(&options, "ß", "ẞ"), Ordering::Less);
+        options.case_first = "upper";
+        assert_eq!(compare(&options, "ß", "ẞ"), Ordering::Greater);
+        options.sensitivity = "variant";
+        assert_ne!(compare(&options, "ſ", "s"), Ordering::Equal);
+        options.numeric = true;
+        assert_eq!(compare(&options, "00012", "12"), Ordering::Equal);
     }
 }

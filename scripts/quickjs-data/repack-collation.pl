@@ -73,12 +73,14 @@ system($ENV{CC} // 'cc', '-std=c11', '-O2', '-ffunction-sections', '-fdata-secti
     '-o', "$out/export") == 0 or die "compile reference\n";
 open my $pipe, '-|', "$out/export" or die $!;
 my %rows = (N => [], F => [], C => []);
+my (%raw_fold, %complete_fold, %visiting);
 my $reference = '';
 while (<$pipe>) {
     $reference .= $_;
     /^([NFC]) ([0-9A-F]+)((?: [0-9A-F]+)+)\n$/ or die "reference record\n";
     my ($kind, $cp, $rest) = ($1, hex($2), $3);
     my @values = map { hex($_) } split ' ', $rest;
+    $raw_fold{$cp} = [@values] if $kind eq 'F';
     die "invalid scalar\n" if grep { $_ > 0x10ffff } ($cp, @values);
     die "canonical expansion exceeds reserved bound\n" if $kind eq 'N' && @values > 4;
     die "full folding exceeds reserved bound\n" if $kind eq 'F' && @values > 3;
@@ -86,6 +88,22 @@ while (<$pipe>) {
     push @{$rows{$kind}}, sprintf("(0x%X,%s),\n", $cp, $value);
 }
 close $pipe or die "reference failed\n";
+sub complete_fold {
+    my ($cp) = @_;
+    return $complete_fold{$cp} if exists $complete_fold{$cp};
+    return [$cp] unless exists $raw_fold{$cp};
+    die "cyclic case fold\n" if $visiting{$cp}++;
+    my @values = map { @{complete_fold($_)} } @{$raw_fold{$cp}};
+    delete $visiting{$cp};
+    die "complete fold exceeds reserved bound\n" if @values > 3;
+    return $complete_fold{$cp} = [@values];
+}
+# The snapshot's single conversion can map capital sharp S to sharp S,
+# which itself expands to ss. Emit the closure, not an incomplete one-step map.
+$rows{F} = [map {
+    sprintf("(0x%X,&[%s]),\n", $_,
+        join(',', map { sprintf('0x%X', $_) } @{complete_fold($_)}))
+} sort { $a <=> $b } keys %raw_fold];
 write_file("$out/reference.txt", $reference);
 my $rust = "// Generated from QuickJS 7d1c13c5d8f8 Unicode snapshot. Do not edit.\n" .
     "// Copyright (c) 2017-2018 Fabrice Bellard. MIT: QUICKJS-LICENSE.\n" .
@@ -100,7 +118,36 @@ write_file("$out/collation.rs", $rust);
 # Independently read every emitted value and compare its logical stream with C.
 write_file("$out/verify.rs", <<'RUST');
 #[path = "collation.rs"] mod data;
+use std::collections::BTreeMap;
+fn fold(cp: u32, raw: &BTreeMap<u32, Vec<u32>>, path: &mut Vec<u32>, out: &mut Vec<u32>) {
+    if let Some(values) = raw.get(&cp) {
+        assert!(!path.contains(&cp), "cyclic fold");
+        path.push(cp);
+        for &v in values { fold(v, raw, path, out); }
+        path.pop();
+    } else { out.push(cp); }
+}
 fn main() {
+    let reference = std::fs::read_to_string(std::env::args().nth(1).unwrap()).unwrap();
+    let raw: BTreeMap<_, _> = reference.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "F" { return None; }
+        let cp = u32::from_str_radix(fields.next()?, 16).unwrap();
+        Some((cp, fields.map(|s| u32::from_str_radix(s, 16).unwrap()).collect()))
+    }).collect();
+    let mut expected = String::new();
+    for line in reference.lines() {
+        if let Some(rest) = line.strip_prefix("F ") {
+            let cp = u32::from_str_radix(rest.split_whitespace().next().unwrap(), 16).unwrap();
+            let mut values = Vec::new();
+            fold(cp, &raw, &mut Vec::new(), &mut values);
+            assert!(values.len() <= 3);
+            assert!(values.iter().all(|v| !raw.contains_key(v)), "fold must be idempotent");
+            expected += &format!("F {cp:X}");
+            for v in values { expected += &format!(" {v:X}"); }
+        } else { expected += line; }
+        expected.push('\n');
+    }
     let mut output = String::new();
     for cp in 0..=0x10ffff {
         for (kind, table) in [('N', data::NFD), ('F', data::FOLD)] {
@@ -114,11 +161,11 @@ fn main() {
             output += &format!("C {cp:X} {:X}\n", data::CCC[i].1);
         }
     }
-    assert_eq!(output, std::fs::read_to_string(std::env::args().nth(1).unwrap()).unwrap());
+    assert_eq!(output, expected);
 }
 RUST
 write_file("$out/provenance.txt", $provenance .
-    "Collation: NFD, full case folding and canonical combining classes; pinned offline libunicode decoder.\n" .
+    "Collation: NFD, idempotent closure of full case folding and canonical combining classes; pinned offline libunicode decoder.\n" .
     join('', map { "$pins{$_}  $_\n" } sort keys %pins) .
     sha256_hex(read_file($0)) . "  repack-collation.pl\n");
 print "PASS: expanded NFD, full folding and combining classes\n";

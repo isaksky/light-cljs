@@ -277,7 +277,10 @@ files as `repack-unicode.pl`, plus `cutils.c` needed for normalization, and
 expands NFD, full case folding and canonical combining classes by compiling the
 snapshot decoder solely as an offline tool. There is no DUCET input: the root
 rule set and its limits live in docs/architecture.md. Normal builds read only
-the checked-in Rust arrays.
+the checked-in Rust arrays. Folding expands the decoder's one-step outputs to
+their idempotent closure (capital sharp S initially maps to sharp S, then ss).
+The independent Rust verifier completes raw C folds separately, checks their
+idempotence and the maximum expansion bound, and compares the emitted tables.
 
 `verify.sh` now always repeats this expansion, compares every emitted value
 against its C reference stream over U+0000..U+10FFFF, and verifies that a

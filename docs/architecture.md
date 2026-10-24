@@ -6317,7 +6317,8 @@ by offline-expanding its compressed NFD, full folding and combining-class
 records through pinned `libunicode.c` / `cutils.c`. The generated immutable
 `intl/data/collation.rs` is self-contained, with no runtime C, generator,
 network or dependencies. `verify.sh` compares every emitted value to the pinned
-reference decoder across the Unicode domain, repeats the expansion byte for
+reference decoder across the Unicode domain, completes one-step fold mappings
+to an idempotent closure (including capital sharp S), repeats expansion byte for
 byte and detects a deliberately corrupted value. Consumer tests separately
 check cross-scalar canonical ordering, decomposed Hangul and supplementary
 characters. Unicode policy remains the existing QuickJS Unicode 17 snapshot;
@@ -6325,8 +6326,12 @@ no independent CLDR/DUCET release is inferred.
 
 The documented root rule set uses folded primary NFD scalars with the
 snapshot's five combining-mark blocks removed, then folded accent keys, then
-case-preserving keys (ASCII lowercase first, or explicit upper). Sensitivity
-selects these levels; variant retains the case-preserving NFD fallback.
+case-only weights derived from the shared pinned Unicode Uppercase property.
+Case weights align with fold expansions, so same-case variants such as long s
+and final sigma compare equally at case sensitivity. Lowercase precedes
+uppercase by default; explicit upper reverses their weights. Only variant
+sensitivity compares the final case-preserving NFD fallback. Numeric runs
+retain digit identities in every key so leading zeroes remain equivalent.
 All advertised locales currently share this root. Locale-specific mappings
 belong in a separate tailoring stage in clj-quickjs-219. Complete UCA weights
 remain deferred. Numeric digit-run ordering and stable getter identity follow
@@ -6343,3 +6348,6 @@ all comparison cursors live in native state across yields. Digit runs scan
 one scalar per operation, skip leading zeros, compare significant lengths and
 then digits, with no float/integer overflow. No Rust stack or heap borrow
 survives an option getter, coercion, wait, collection or worker migration.
+Collation-option validation uses the same saved rope cursor in 128-step chunks;
+fixed enumerated options reject overlong strings by cached length before the
+shared option helper can flatten them.
