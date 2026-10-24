@@ -360,7 +360,6 @@ pub(crate) enum Builtin {
     IntlPluralRulesResolvedOptions,
     IntlPluralRulesSupportedLocales,
 
-
     DateParse,
 }
 

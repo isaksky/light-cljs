@@ -1015,6 +1015,7 @@ fn realm_intrinsics_retain() {
         "Intl.NumberFormat.supportedLocalesOf",
         "Intl.NumberFormat.prototype.resolvedOptions",
         "Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype, 'format').get",
+        "Date.parse",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1075,7 +1076,8 @@ fn realm_intrinsics_retain() {
     // Iteration adds three prototypes and six built-ins (-237).
     // BigInt width wrapping adds two built-in methods (-204).
     // PluralRules adds one prototype and four built-ins (-212).
-    assert_eq!(rt.heap_usage().objects.builtin, 208);
+    // ISO date parsing adds one built-in function (-184).
+    assert_eq!(rt.heap_usage().objects.builtin, 209);
     assert_eq!(rt.heap_usage().objects.plain, 39);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
