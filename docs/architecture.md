@@ -7337,7 +7337,7 @@ the existing intrinsic rejection guard until parameter eval is supported.
 
 Strict eval declarations use a private variable environment; lexical
 declarations always remain private. Sloppy var/function declaration injection
-is supported by clj-quickjs-108 below; parameter-expression eval remains -109.
+is supported by clj-quickjs-108 below; parameter-expression eval by -109 below.
 `new.target` (-99) is transported with the receiver; `super` (-112) remains
 a frontend gap.
 
@@ -7390,6 +7390,34 @@ immutable function-name rows in
 `research/quickjs/tests/test_language.js::test_argument_scope/test_function_expr_name`
 at that revision and retain the nearby MIT copyright/license notice. Other
 fixtures are synthetic, not light-cljs output; the implementation is original.
+
+### Eval parameter environments (clj-quickjs-109)
+
+Analysis distinguishes direct eval in a function's parameter expressions from
+eval in its body and nested functions. An affected sloppy activation creates
+a parameter variable object and cell before initializing defaults, using the
+same traced, task-owned representation as body eval environments. The slot
+remains live after parameter scratch slots are reused. A separate body
+environment is allocated only if that body contains direct eval. Functions
+without eval retain their existing allocation and lookup bytecode.
+
+Resolution consults body declarations, the body eval environment, parameter
+bindings, the parameter eval environment, then the function name and outer
+scopes. Closures compiled in defaults capture only environments already in
+scope. Eval scope descriptors carry both environments, nearest first, using
+the existing validated sources and static-binding depth counts. No new VM
+opcode, heap kind, or retained native call frame is needed. Parameter names
+and implicit non-arrow `arguments` are declaration conflicts for sloppy eval;
+arrows introduce no implicit arguments binding. Existing receiver, function-name,
+and arguments transport also applies before body entry.
+
+QuickJS references and provenance: consulted
+`research/quickjs/quickjs.c::js_parse_function_decl2/add_eval_variables/add_arguments_arg`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` as semantic references.
+`tests/js_source.rs::eval_in_parameter_expressions` adapts the eval rows of
+`research/quickjs/tests/test_language.js::test_argument_scope` at that revision,
+under the MIT copyright/license notice reproduced nearby in that test file.
+Additional fixtures and the implementation are original.
 
 ## Base class construction (clj-quickjs-136)
 

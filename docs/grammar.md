@@ -536,7 +536,6 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
 | a second `__proto__: v` (or `"__proto__": v`) in one object literal (clj-quickjs-121; a shorthand `{__proto__}` does not count) | Invalid |
-| direct `eval(source)` in parameter expressions (compiler check; clj-quickjs-109) | Unsupported |
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding or assigning/updating `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
@@ -866,12 +865,11 @@ checks left to later stages:
   assignments that `[[Set]]` rejects (`o.k = v` of a read-only property or
   on a non-extensible object), which sloppy code ignores instead of
   throwing a `TypeError` (clj-quickjs-119), ignored stores to a function
-  expression's own name, and direct-eval declaration hoisting (clj-quickjs-108).
+  expression's own name, and direct-eval declaration hoisting, including
+  parameter environments (clj-quickjs-108/-109).
   Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
-  named for it: eval in parameter expressions (-109) remains
-  rejected during source compilation (see "Direct eval");
-  `with`
+  named for it: `with`
   (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
   explicitly unless its receiver is an object, see above) and the mapped
   `arguments` object (not filed). Strict reserved words (`let`, `static`, `yield`,
@@ -886,8 +884,8 @@ checks left to later stages:
   The object is ordinary,
   without a special arguments brand for `Object.prototype.toString`.
 - **Default parameter values lack what the subset lacks elsewhere**
-  (clj-quickjs-100): direct `eval` in parameter expressions is rejected
-  (-109); indirect eval works.
+  (clj-quickjs-100): direct and indirect `eval` work in parameter
+  expressions (clj-quickjs-109; see "Direct eval").
   An arrow's default sees its lexical
   `this` (clj-quickjs-98); a non-arrow function's default sees its own
   receiver (clj-quickjs-116). Anonymous function defaults infer their
@@ -5142,8 +5140,8 @@ declarations never become global properties or escape into that environment.
 Global lexical bindings cannot be deleted. Immutable const captures retain
 their publication behavior; script let captures share mutable binding cells.
 
-Explicit gaps: sloppy direct-eval declaration hoisting and
-parameter-environment eval remain -108/-109.
+Sloppy direct-eval declaration hoisting and parameter-environment eval are
+supported by clj-quickjs-108/-109 below.
 
 ```js accept
 const e = eval;
@@ -5328,10 +5326,7 @@ The native compiler continuation traces its captured environment; eval executes
 in a fresh task-owned frame and can yield, wait, collect, and migrate, including
 on 64 KiB worker stacks. Source preparation and limits match indirect eval.
 
-Rejected forms and explicit gaps: unshadowed direct eval in parameter
-expressions is rejected by the compiler with Unsupported (-109). A shadowed
-callee named `eval` remains an ordinary call there; passing intrinsic eval
-to that call is rejected at runtime before argument evaluation. Direct eval
+Rejected forms and explicit gaps: direct eval
 inherits the enclosing function's `new.target` binding (-99), also through arrows and
 nested eval; at script scope and in indirect eval it is an early SyntaxError.
 Direct eval inherits the method's super-property context and a derived
@@ -5364,8 +5359,48 @@ function conflict() {
 conflict();
 ```
 
-```js compile-reject Unsupported 1:16
-function f(x = eval('1')) {}
+### Eval in parameter expressions (clj-quickjs-109)
+
+EBNF is unchanged: parameter defaults use AssignmentExpression, including
+ordinary direct-eval calls and destructuring defaults.
+
+Execution: a sloppy direct eval in a default adds `var` and top-level function
+declarations to a parameter variable environment. Later defaults, their closures,
+and the body see those bindings. The body's `var`/function bindings and its own
+eval declarations use a separate environment and can shadow them; closures made
+in defaults continue to see the parameter environment. Each invocation has its
+own environments. Strict eval keeps its declarations private as usual.
+Eval sees parameter TDZs, the function name, `this`, `arguments`, and `new.target`
+through the ordinary caller descriptor. Arrows inherit receiver and arguments
+bindings. Shadowed `eval` callees follow the same runtime intrinsic check here
+as in a body, after evaluating all arguments.
+
+Rejected forms: a sloppy eval `var`/function declaration that repeats a parameter
+or a non-arrow function's implicit `arguments` binding throws a catchable
+SyntaxError before executing eval code. In strict eval, `arguments` declarations
+are early errors. An arrow has no implicit `arguments`, so it can introduce that
+name in its parameter environment.
+
+Explicit gaps: receiver substitution and other direct-eval limitations above
+also apply in defaults. Functions without direct eval keep their existing
+runtime allocation and lookup paths; parameter environments are allocated only
+for sloppy functions with direct eval in their own parameter expressions.
+
+```js accept
+function f(x = eval('1')) { return x; }
+f() === 1;
+```
+
+```js sloppy-accept
+function f(a = eval('var c = 1'), probe = () => c) {
+  var c = 2;
+  return c === 2 && probe() === 1;
+}
+f();
+function conflict(a = eval('var arguments')) {}
+let caught = false;
+try { conflict(); } catch (e) { caught = e instanceof SyntaxError; }
+caught;
 ```
 
 ## Base classes (clj-quickjs-136)

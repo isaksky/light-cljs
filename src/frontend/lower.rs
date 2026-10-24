@@ -397,6 +397,8 @@ type Scope = HashMap<String, Binding>;
 struct Facts {
     /// This activation contains a potentially sloppy direct eval.
     has_eval: bool,
+    /// A potentially sloppy direct eval runs in this activation's defaults.
+    has_parameter_eval: bool,
     /// Direct eval can read, assign and retain this binding dynamically.
     eval_visible: bool,
     /// A reference resolves to this binding (including through an arrow).
@@ -580,6 +582,8 @@ impl Emitter {
 struct FnCtx {
     dynamic_env: Option<(Place, usize)>,
     environment_key: usize,
+    parameter_env: Option<(Place, usize)>,
+    parameter_environment_key: usize,
     /// Internal module entry points have no JavaScript new.target binding.
     module: bool,
     eval_sites: Vec<EvalSite>,
@@ -883,9 +887,13 @@ impl<'s> Lowerer<'s> {
         self.next_self_key -= 1;
         let environment_key = self.next_self_key;
         self.next_self_key -= 1;
+        let parameter_environment_key = self.next_self_key;
+        self.next_self_key -= 1;
         self.fns.push(FnCtx {
             dynamic_env: None,
             environment_key,
+            parameter_env: None,
+            parameter_environment_key,
             module: false,
             eval_sites: Vec::new(),
             in_parameters: false,
@@ -1768,6 +1776,15 @@ impl<'s> Lowerer<'s> {
                 key: b.key,
             };
         }
+        let fallback = self.resolve_outside_parameters(level, name);
+        if let Some((env, key)) = self.fns[level].parameter_env {
+            self.dynamic_access(env, key, name, fallback)
+        } else {
+            fallback
+        }
+    }
+
+    fn resolve_outside_parameters(&mut self, level: usize, name: &str) -> Access {
         let ctx = &self.fns[level];
         if let Some((self_name, kind)) = &ctx.self_name
             && self_name == name
@@ -2376,28 +2393,22 @@ impl<'s> Lowerer<'s> {
     /// them; emission records how this call reaches each cell. Shadowed names
     /// are resolved once, from the innermost scope, and loop cells are read at
     /// the call so a descriptor always sees the current iteration.
-    fn in_parameter_expression(&self) -> bool {
-        // A field initializer is a fresh execution context even when its
-        // class expression is evaluated in an enclosing parameter default.
-        self.fns
-            .iter()
-            .rev()
-            .take_while(|f| !f.class_initializer || f.lexical_this)
-            .any(|f| f.in_parameters)
-    }
-
     fn eval_site(&mut self, span: Span) -> Result<EvalSite, SyntaxError> {
-        if self.in_parameter_expression() {
-            return Err(self.unsupported(span, "direct eval in parameter expressions"));
-        }
         if self.analyzing() && !self.cur().strict {
             let key = self.cur().self_key;
-            self.fact(key).has_eval = true;
+            if self.cur().in_parameters {
+                self.fact(key).has_parameter_eval = true;
+            } else {
+                self.fact(key).has_eval = true;
+            }
         }
         let level = self.fns.len() - 1;
         let mut environments = Vec::new();
         for owner in (0..=level).rev() {
-            if let Some((mut place, key)) = self.fns[owner].dynamic_env {
+            for (mut place, key) in [self.fns[owner].dynamic_env, self.fns[owner].parameter_env]
+                .into_iter()
+                .flatten()
+            {
                 for child in owner + 1..=level {
                     place = self.capture_place(child, place, key);
                 }
@@ -2410,16 +2421,17 @@ impl<'s> Lowerer<'s> {
             }
             environments.push(eval_source(place));
         }
-        let variable_environment =
-            self.cur()
-                .dynamic_env
-                .map(|(p, _)| eval_source(p))
-                .or_else(|| {
-                    (level == 0)
-                        .then_some(self.eval_variable_environment)
-                        .flatten()
-                        .map(eval_source)
-                });
+        let variable_environment = self
+            .cur()
+            .dynamic_env
+            .or(self.cur().parameter_env)
+            .map(|(p, _)| eval_source(p))
+            .or_else(|| {
+                (level == 0)
+                    .then_some(self.eval_variable_environment)
+                    .flatten()
+                    .map(eval_source)
+            });
         let mut lexical_conflicts = if self.cur().completion.is_some() {
             self.eval_lexical_conflicts.clone()
         } else {
@@ -2438,7 +2450,11 @@ impl<'s> Lowerer<'s> {
             .skip(self.cur().var_scope)
         {
             for (name, b) in scope {
-                if i == self.cur().var_scope
+                if self.cur().in_parameters {
+                    // Parameters and the ordinary function's implicit
+                    // arguments binding cannot be redeclared by sloppy eval.
+                    lexical_conflicts.push(name.clone());
+                } else if i == self.cur().var_scope
                     && matches!(
                         b.kind,
                         BindingKind::Var | BindingKind::Function | BindingKind::Param
@@ -2628,6 +2644,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         self.arguments_binding(f.span)?;
+        self.parameter_eval_environment(f.span)?;
         let parameter_slots = self.cur().next_slot;
         let mut sources = Vec::with_capacity(f.params.len());
         for p in &f.params {
@@ -2700,6 +2717,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         self.arguments_binding(f.span)?;
+        self.parameter_eval_environment(f.span)?;
         let parameter_slots = self.cur().next_slot;
         for (i, (p, default)) in f.params.iter().zip(&f.defaults).enumerate() {
             let src = i as u16;
@@ -2721,6 +2739,26 @@ impl<'s> Lowerer<'s> {
         // The scratch locals are free again: the body's bindings reuse them
         // (`init_body_var`).
         self.cur_mut().next_slot = parameter_slots;
+        Ok(())
+    }
+
+    /// Defaults share a variable environment outside the body's var scope.
+    /// Allocate it only for direct eval in these defaults; eval in a nested
+    /// function or in the body has its own variable environment instead.
+    fn parameter_eval_environment(&mut self, span: Span) -> Result<(), SyntaxError> {
+        if !self.cur().strict
+            && !self.analyzing()
+            && self.facts_of(self.cur().self_key).has_parameter_eval
+        {
+            let slot = self.temp(span)?;
+            let key = self.cur().parameter_environment_key;
+            self.cur_mut().parameter_env = Some((Place::Local(slot), key));
+            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::Dup, span);
+            self.out().op(Opcode::NewObject, span);
+            self.out().op(Opcode::CellInit, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
         Ok(())
     }
 
@@ -5404,19 +5442,6 @@ impl<'s> Lowerer<'s> {
         op_span: Span,
     ) -> Result<(), SyntaxError> {
         let direct = matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval");
-        let parameter_call = direct && self.in_parameter_expression();
-        if parameter_call
-            && !self.eval_bindings.contains_key("eval")
-            && !self.fns.iter().any(|ctx| {
-                ctx.scopes.iter().any(|scope| scope.contains_key("eval"))
-                    || ctx
-                        .self_name
-                        .as_ref()
-                        .is_some_and(|(name, _)| name == "eval")
-            })
-        {
-            return Err(self.unsupported(callee.span, "direct eval in parameter expressions"));
-        }
         let method = callee.is_method_callee();
         if let ExprKind::Member {
             object, property, ..
@@ -5429,17 +5454,8 @@ impl<'s> Lowerer<'s> {
             self.method_callee(callee)?;
         } else {
             self.expr(callee)?;
-            if parameter_call {
-                self.out().op(Opcode::CheckDirectEval, callee.span);
-            }
         }
-        self.call_arguments(
-            args,
-            method,
-            span,
-            op_span,
-            (direct && !parameter_call).then_some(callee.span),
-        )
+        self.call_arguments(args, method, span, op_span, direct.then_some(callee.span))
     }
 
     #[inline(never)]

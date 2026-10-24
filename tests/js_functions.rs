@@ -1837,7 +1837,8 @@ fn arrows_capture_this_by_value_for_publication() {
 /// `f = function f(a = f) { return a; }; f() === f` of
 /// `test_argument_scope` (line 453), as a `const` binding a differently
 /// named expression and as a declaration. Synthetic arguments cases are
-/// included below (clj-quickjs-97); its eval cases wait for clj-quickjs-109; see
+/// included below (clj-quickjs-97); eval cases live in
+/// `js_source::eval_in_parameter_expressions` (clj-quickjs-109); see
 /// `docs/architecture.md`, "QuickJS references and provenance".
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,

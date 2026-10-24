@@ -1487,52 +1487,58 @@ fn sloppy_eval_environment_lifetime_and_validation() {
     // Synthetic fixtures, not light-cljs output. The returned closure is the
     // only owner of the environment after f returns; collections occur even
     // between creation of an injected cell and insertion into that environment.
-    let source = r#"function f() { const g=()=>z; eval('var z={value:7}; __rt.need(108,1); z={value:9}'); return g; } const g=f(); __rt.need(108,2); g().value === 9"#;
-    let code = compile_script_with("sloppy-eval-lifetime", source, ScriptOptions::SLOPPY).unwrap();
-    let code = Executable::load(code.to_spec()).unwrap();
-    let rt = Runtime::new();
-    let mut task = rt.spawn(&code, &[]).unwrap();
-    let mut waits = 0;
-    let mut complete = false;
-    for _ in 0..2000 {
-        let (next, outcome) = std::thread::Builder::new()
-            .stack_size(64 * 1024)
-            .spawn(move || {
-                let outcome = task
-                    .run_with(Budget::instructions(1), &mut NoEffects)
-                    .unwrap();
-                (task, outcome)
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-        task = next;
-        rt.collect().unwrap();
-        match outcome {
-            RunOutcome::Yielded => {}
-            RunOutcome::Waiting(_) => {
-                waits += 1;
-                assert!(waits <= 2);
-                let request = task.take_producer_requests().pop().unwrap();
-                let value = rt.root(Primitive::Number(0.0));
-                task = rt
-                    .complete(request.key(), request.producer(), Completion::Ready(&value))
-                    .unwrap()
-                    .into_runnable()
-                    .pop()
-                    .unwrap();
+    for source in [
+        r#"function f() { const g=()=>z; eval('var z={value:7}; __rt.need(108,1); z={value:9}'); return g; } const g=f(); __rt.need(108,2); g().value === 9"#,
+        r#"function f(probe=()=>z, a=eval('var z={value:7}; __rt.need(108,1); z={value:9}')) { eval('var z={value:2}'); return probe; } const g=f(); __rt.need(108,2); g().value === 9"#,
+    ] {
+        let rt = Runtime::new();
+        let code =
+            compile_script_with("sloppy-eval-lifetime", source, ScriptOptions::SLOPPY).unwrap();
+        let code = Executable::load(code.to_spec()).unwrap();
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 2);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
             }
-            RunOutcome::Complete(value) => {
-                assert_eq!(value.view(), ValueView::Bool(true));
-                complete = true;
-                break;
-            }
-            other => panic!("{other:?}"),
         }
+        assert!(complete);
+        assert_eq!(waits, 2);
     }
-    assert!(complete);
-    assert_eq!(waits, 2);
 
+    let rt = Runtime::new();
     let code = compile_script_with(
         "sloppy-eval-capture",
         "function f() { const g=()=>injected; eval('var injected=2'); return g; } f()",
@@ -1690,6 +1696,71 @@ fn direct_eval_receiver_semantics() {
 }
 
 #[test]
+fn eval_in_parameter_expressions() {
+    // Synthetic fixtures, not light-cljs output. Adapted from QuickJS
+    // tests/test_language.js::test_argument_scope; the MIT notice above
+    // sloppy_eval_declares_vars_in_the_caller applies to these rows too.
+    for source in [
+        r#"(function() { 'use strict'; let f=function(a=eval('var arguments')) {}; try { f(); } catch(e) { return e instanceof SyntaxError; } return false; })()"#,
+        r#"let f=function(a=eval('1'), b=arguments[0]) { return b; }; f(12) === 12"#,
+        r#"let f=function(a=eval('1'), b=()=>arguments) { return b; }; f(12)()[0] === 12"#,
+        r#"(function() { 'use strict'; let f=function f(a=eval('f')) { return a; }; return f() === f; })()"#,
+        r#"let f=(a=eval('var c=1'), probe=()=>c)=>{ var c=2; return c===2 && probe()===1; }; f()"#,
+        r#"let f=(a=eval('var arguments=1'), probe=()=>arguments)=>{ var arguments=2; return arguments===2 && probe()===1; }; f()"#,
+        r#"var c='global'; let f=function f(a=eval('var c=1'), b=c, probe=()=>c) { return b===1 && c===1 && probe()===1; }; f() && c==='global'"#,
+        r#"let f=function f(a=eval('var c=1'), probe=(d=eval('c'))=>d) { return probe()===1; }; f()"#,
+        r#"function f(a=eval('this'), b=eval('arguments.length')) { return a===this && b===0; } let o={f}; o.f()"#,
+        r#"function f(a=eval('var arguments=1')) {} let caught=false; try { f(); } catch(e) { caught=e instanceof SyntaxError; } caught"#,
+        r#"function f(a=eval('var b=1'), b=2) {} let caught=false; try { f(); } catch(e) { caught=e instanceof SyntaxError; } caught"#,
+        r#"function f(a=eval('var c=1'), b=eval('c+=1'), probe=()=>c) { eval('var c=3'); return c===3 && probe()===2; } f()"#,
+        r#"function f(a=eval('var c=1'), probe=()=>c) { var c; return c===undefined && probe()===1; } f()"#,
+        r#"function f(a=eval('var c=1'), probe=()=>c) { function c() { return 2; } return c()===2 && probe()===1; } f()"#,
+        r#"let f=(a=eval('var c=1'), probe=()=>c)=>probe; let g=f(); f(); g()===1"#,
+        r#"function f({a=eval('var c=1')}={}, b=c, probe=()=>c) { var c=2; return a===undefined && b===1 && probe()===1 && c===2; } f()"#,
+        r#"function f(a=eval('"use strict"; var c=1'), b=typeof c) { return b==='undefined'; } f()"#,
+        r#"function f(a=eval('eval("var c=1")'), b=c) { return b===1; } f()"#,
+        r#"function f(a=eval('var f=1')) { return f===1; } f()"#,
+        r#"function f(a=1, b=eval('a=2')) { var a; return a===2; } f()"#,
+        r#"function f(a=eval('b'), b=2) {} let caught=false; try { f(); } catch(e) { caught=e instanceof ReferenceError; } caught"#,
+        r#"function f(a=eval('b=3'), b=2) {} let caught=false; try { f(); } catch(e) { caught=e instanceof ReferenceError; } caught"#,
+        r#"function f(a=eval('var c=1'), probe=()=>eval('c')) { eval('var c=2'); return probe()===1 && c===2; } f()"#,
+        r#"function f(a=eval('function c() { return 1; }'), probe=()=>c) { var c=2; return c===2 && probe()()===1; } f()"#,
+        r#"let c=0; function f(a=()=>eval('var c=1; c')) { return a()===1 && c===0; } f()"#,
+        r#"function F(a=eval('new.target')) { this.ok=a===F; } new F().ok"#,
+        r#"function f(a=eval(...['var c=1']), b=c) { return b===1; } f()"#,
+        r#"function f(a=eval('var c=1'), b=eval('delete c')) { return b && typeof c==='undefined'; } f()"#,
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+
+    for source in [
+        "function f(a=1) { return a; } f()",
+        "function f({a}={a:1}) { return a; } f()",
+    ] {
+        let code = compile_script_with("no-parameter-eval", source, ScriptOptions::SLOPPY).unwrap();
+        assert!(!opcodes(&code.to_spec().functions[0]).contains(&Opcode::NewCell));
+    }
+    for source in [
+        "function f(a=eval('var c=1')) { return ()=>c; } f()",
+        "function f(a=eval('var c=1')) { return eval('()=>c'); } f()",
+    ] {
+        let rt = Runtime::new();
+        let code =
+            compile_script_with("parameter-eval-capture", source, ScriptOptions::SLOPPY).unwrap();
+        let RunOutcome::Complete(value) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("{source}")
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable {
+                found: "binding cell",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn shadowed_eval_in_parameter_defaults() {
     for source in [
         "function f(eval, x=eval(1,2)) { return x; } f((a,b)=>a+b)",
@@ -1697,12 +1768,10 @@ fn shadowed_eval_in_parameter_defaults() {
     ] {
         assert_eq!(sloppy_eval(source), ValueView::Number(3.0), "{source}");
     }
-    let source = "function f(eval, x=eval('1')) { return x; } f(globalThis.eval)";
-    let code = compile_script_with("parameter.js", source, ScriptOptions::SLOPPY).unwrap();
-    let RunOutcome::Failed(error) = run(&code, &[]) else {
-        panic!("{source}")
-    };
-    assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand);
+    assert_eq!(
+        sloppy_eval("function f(eval, x=eval('1')) { return x; } f(globalThis.eval)"),
+        ValueView::Number(1.0)
+    );
 }
 
 /// Synthetic fixtures: publication policy and serialized scope descriptors.
