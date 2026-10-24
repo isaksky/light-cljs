@@ -203,7 +203,6 @@ pub(crate) enum Global {
     Float16Array = 32,
     Float32Array = 33,
     Float64Array = 34,
-
     RegExp = 35,
 }
 
@@ -245,7 +244,6 @@ impl Global {
         Global::Float16Array,
         Global::Float32Array,
         Global::Float64Array,
-
         Global::RegExp,
     ];
 
@@ -292,7 +290,6 @@ impl Global {
             Global::Float16Array => "Float16Array",
             Global::Float32Array => "Float32Array",
             Global::Float64Array => "Float64Array",
-
             Global::RegExp => "RegExp",
         }
     }
