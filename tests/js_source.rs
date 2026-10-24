@@ -12709,6 +12709,7 @@ fn symbol_values() {
         "let s = Symbol('k'); let t = Symbol('k'); let m = __rt.map(s, 3, t, 4); __rt.get(m, s) === 3 && __rt.get(m, t) === 4 && __rt.getOr(m, 'k', undefined) === undefined",
         "let a = Symbol('abc'); let b = Symbol('abc'); let obj = {}; obj[a] = 2; obj[a] === 2 && obj['abc'] === undefined && a == a && a === a && a != b && a !== b && typeof a === 'symbol'",
         "Symbol() !== Symbol() && Symbol('x') !== Symbol('x') && !!Symbol()",
+        "let s = Symbol('x'); function tag(parts, value) { return value === s; } tag`${s}`",
         "Symbol.iterator === Symbol.iterator && Symbol.toPrimitive !== Symbol.hasInstance && typeof Symbol.iterator === 'symbol'",
         "let s = Symbol('x'); let o = {x: 1}; o[s] = 2; Object.keys(o).join() === 'x' && Object.getOwnPropertyNames(o).join() === 'x'",
         "let s = Symbol('x'); let o = {}; o[s] = 2; let names = ''; for (let k in o) { names += k; } names === '' && s in o && !('x' in o)",
@@ -12732,6 +12733,8 @@ fn symbol_values() {
         "`${Symbol()}`",
         "String({toString() { return Symbol(); }})",
         "new String(Symbol())",
+        "String.raw`x${Symbol()}y`",
+        "String.raw({raw: [Symbol()]})",
     ] {
         assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
         let caught =

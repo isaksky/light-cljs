@@ -2841,7 +2841,6 @@ ignored. Null/undefined callSite or raw throw TypeError. Primitive property
 reads follow the existing wrapper model (Boolean wrappers remain unsupported).
 Output uses budgeted 256-unit copying and throws RangeError above 2^30 - 1 units.
 
-
 ### Symbol primitive values (clj-quickjs-127)
 
 Syntax uses existing calls and computed property access: `Symbol()` and

@@ -253,7 +253,6 @@ pub(crate) enum Builtin {
     JsonParse,
     StringRaw,
 
-
     /// Symbol primitives (clj-quickjs-127); callable, never constructible.
     Symbol,
 }
