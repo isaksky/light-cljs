@@ -124,3 +124,5 @@ pub use vm::{
 };
 
 pub mod intl;
+
+mod number;

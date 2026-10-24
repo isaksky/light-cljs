@@ -6378,3 +6378,26 @@ survives an option getter, coercion, wait, collection or worker migration.
 Collation-option validation uses the same saved rope cursor in 128-step chunks;
 fixed enumerated options reject overlong strings by cached length before the
 shared option helper can flatten them.
+## Exact fixed decimal formatting (clj-quickjs-150)
+
+`src/number.rs` owns the shared `Decimal` coefficient/point representation,
+decimal rounding modes and point layout formerly in `intl::number_format`.
+NumberFormat and PluralRules retain their decimal-input semantics.
+`Decimal::from_number` generates exact binary64 digits for Number formatting,
+so `toExponential`/`toPrecision` can reuse the generator and rounding methods.
+It extracts the unsigned significand and exponent, cancels denominator powers
+of two, and uses the existing `JsBigInt` limbs: `m / 2^k` becomes
+`(m * 5^k) / 10^k`, while nonnegative binary exponents shift the coefficient.
+This adds no dependency or separate big-integer representation. Binary64
+bounds the leaf computation to exponent magnitude 1074, coefficient size
+2547 bits and 767 decimal digits; digit rounding scans at most that buffer.
+
+`number::to_fixed` rounds those exact digits with `halfExpand` and pads up to
+100 places. It records negativity with `x < 0` before taking the magnitude,
+preserving a negative rounded zero while canonicalizing an input negative
+zero. Nonfinite values and magnitudes at least 1e21 use the shared ToString.
+The builtin validates `thisNumberValue` before converting its digit count,
+then performs ToIntegerOrInfinity and the 0..100 check before formatting.
+Object counts run through `native::ConvertTarget::NumberToFixed`; the saved
+f64 and traced conversion operands survive yields, dependency waits, GC and
+migration. The realm method has length 1 and ordinary method flags.

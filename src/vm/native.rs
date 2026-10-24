@@ -368,6 +368,9 @@ enum ConvertTarget {
     NumberToString {
         number: f64,
     },
+    NumberToFixed {
+        number: f64,
+    },
     NumberParse {
         integer: bool,
     },
@@ -1513,6 +1516,17 @@ pub(crate) fn start_builtin(
             (
                 ConvertTarget::BigIntToString,
                 vec![radix, this.clone()],
+                Hint::Number,
+            )
+        }
+        Builtin::NumberPrototypeToFixed if !construct => {
+            let number = builtin::this_number_value(heap, state.diag.task, this, "toFixed")?;
+            let Some(digits @ Value::Object(_)) = args.first() else {
+                return Ok(false);
+            };
+            (
+                ConvertTarget::NumberToFixed { number },
+                vec![digits.clone()],
                 Hint::Number,
             )
         }
@@ -3310,6 +3324,9 @@ impl NativeState {
                         // NaN; only an originally undefined radix means 10.
                         let radix = Value::Number(dispatch::to_number(&operands[0])?);
                         builtin::number_to_string(number, &radix).map(Action::Return)
+                    }
+                    ConvertTarget::NumberToFixed { number } => {
+                        builtin::number_to_fixed(number, &operands[0]).map(Action::Return)
                     }
                     ConvertTarget::BigIntAsN { signed } => {
                         let bits = dispatch::to_index(&operands[0])?;

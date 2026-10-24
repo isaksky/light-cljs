@@ -372,6 +372,8 @@ pub(crate) enum Builtin {
     IntlCollatorBound,
     IntlCollatorResolvedOptions,
     IntlCollatorSupportedLocales,
+
+    NumberPrototypeToFixed,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -414,6 +416,7 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::NumberPrototypeToFixed => "toFixed",
             Builtin::ArrayFrom => "from",
             Builtin::ArrayPrototypeSort => "sort",
             Builtin::ArrayValues | Builtin::TypedArrayValues => "values",
@@ -675,7 +678,10 @@ impl Builtin {
             | Builtin::ObjectFreeze
             | Builtin::ObjectIsFrozen => 1,
             Builtin::ObjectKeys | Builtin::ObjectGetOwnPropertyNames => 1,
-            Builtin::Number | Builtin::String | Builtin::NumberPrototypeToString => 1,
+            Builtin::Number
+            | Builtin::String
+            | Builtin::NumberPrototypeToString
+            | Builtin::NumberPrototypeToFixed => 1,
             Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeToString
             | Builtin::StringPrototypeValueOf => 0,
@@ -1011,6 +1017,10 @@ pub(crate) fn call(
             let n = this_number_value(heap, task, this, "toString")?;
             number_to_string(n, &arg(0))
         }
+        Builtin::NumberPrototypeToFixed => {
+            let n = this_number_value(heap, task, this, "toFixed")?;
+            number_to_fixed(n, &arg(0))
+        }
         Builtin::NumberPrototypeValueOf => {
             this_number_value(heap, task, this, "valueOf").map(Value::Number)
         }
@@ -1340,6 +1350,18 @@ pub(crate) fn to_radix(radix: &Value) -> Result<u32, Fault> {
         ));
     }
     Ok(radix as u32)
+}
+
+pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Fault> {
+    let digits = to_number(digits)?;
+    // ToIntegerOrInfinity maps NaN to zero and truncates finite fractions.
+    let digits = if digits.is_nan() { 0.0 } else { digits.trunc() };
+    if !(0.0..=100.0).contains(&digits) {
+        return Err(Fault::RangeError("invalid number of digits".into()));
+    }
+    Ok(Value::String(JsString::from(
+        crate::number::to_fixed(number, digits as usize).as_str(),
+    )))
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a

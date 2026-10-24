@@ -847,3 +847,17 @@ retain snapshot provenance in `src/intl/data/collation_provenance.txt`.
 QuickJS copyright and MIT permission: `src/intl/data/QUICKJS-LICENSE`;
 Unicode data notice: `docs/UNICODE-LICENSE`. These tables are a normalization
 and folding snapshot, not a complete DUCET database or a verified CLDR release.
+
+## Number fixed decimal formatting (clj-quickjs-150)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_number_toFixed`) and
+`research/quickjs/dtoa.c` (`JS_DTOA_FORMAT_FRAC`, exact half-away rounding),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (2026-06-04).
+The Rust implementation reuses in-tree BigInt arithmetic and decimal rounding;
+no C implementation is copied. The six rounding cases from
+`research/quickjs/tests/test_builtin.js::test_number` are adapted in
+`src/number.rs::tests::fixed_formatter_exact_rounding` and
+`tests/js_source.rs::number_to_fixed`. The QuickJS copyright and MIT notice
+is retained in `src/intl/data/QUICKJS-LICENSE` and the existing
+`string_code_unit_access` notice in the source tests. Other fixtures are
+synthetic, not light-cljs output.

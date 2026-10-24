@@ -779,6 +779,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             Builtin::NumberPrototypeValueOf,
         ],
     )?;
+    let to_fixed = b.function(Builtin::NumberPrototypeToFixed, &[])?;
+    b.add(number_prototype, "toFixed", to_fixed, PropertyFlags::METHOD)?;
     let (string_prototype, string) = primitive_prototype(
         &mut b,
         object_prototype,

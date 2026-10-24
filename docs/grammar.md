@@ -487,6 +487,9 @@ are still covered by the computed-key rejection below.
 
 ## Explicit gaps
 
+Number `toExponential` and `toPrecision` remain deferred (clj-quickjs-151).
+`Number.prototype.toFixed` is supported (clj-quickjs-150).
+
 Generator `return(value)`, `throw(error)` and delegated `yield*` are deferred.
 `return` and `throw` methods are absent from the generator prototype. Async
 functions and `await` remain unsupported. Suspended generators cannot publish
@@ -915,6 +918,17 @@ delete a[o];
 ```
 
 ## Execution
+
+`Number.prototype.toFixed(fractionDigits)` (clj-quickjs-150) accepts Number
+primitives and wrappers, including `Number.prototype`. It converts the digit
+count with ToIntegerOrInfinity (missing/undefined/NaN becomes zero), checks
+0..100 before handling nonfinite numbers, and throws catchable RangeError
+outside that range. Other receivers throw TypeError before digit coercion.
+Object digit counts use resumable ToNumber, including getters and callbacks.
+Finite magnitudes below 1e21 round the exact binary64 value to the requested
+decimal places, choosing the larger magnitude on ties and padding zeros.
+Negative values rounded to zero keep `-`; negative zero itself prints without
+`-`. Magnitudes at least 1e21 and nonfinite numbers use Number ToString.
 
 `Intl` is a global ordinary object with `Object.prototype` and a non-writable,
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).

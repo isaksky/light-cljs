@@ -3436,6 +3436,128 @@ fn number_to_string_with_radix() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output. The upstream rounding rows adapt
+/// QuickJS tests/test_builtin.js::test_number, revision 7d1c13c5d8f8;
+/// the copyright and MIT notice is retained on string_code_unit_access below.
+#[test]
+fn number_to_fixed() {
+    for src in [
+        "(1000000000000000128).toFixed(0) === '1000000000000000128'",
+        "(1.125).toFixed(2) === '1.13' && (-1.125).toFixed(2) === '-1.13'",
+        "(0.5).toFixed(0) === '1'",
+        "(-0.5).toFixed(0) === '-1'",
+        "(-1e-10).toFixed(0) === '-0'",
+        "(0).toFixed(2) === '0.00' && (-0).toFixed(1) === '0.0'",
+        "(1.005).toFixed(2) === '1.00' && (1.25).toFixed(1) === '1.3' && (-1.25).toFixed(1) === '-1.3'",
+        "(2.5).toFixed(0) === '3' && (123.456).toFixed() === '123'",
+        "(1e21).toFixed(2) === '1e+21' && (-1e21).toFixed(100) === '-1e+21'",
+        "(0.000001).toFixed(7) === '0.0000010' && (2**69).toFixed(0) === '590295810358705651712'",
+        "(0.1).toFixed(100) === '0.1000000000000000055511151231257827021181583404541015625000000000000000000000000000000000000000000000'",
+        "NaN.toFixed(2) === 'NaN' && Infinity.toFixed(2) === 'Infinity' && (-Infinity).toFixed() === '-Infinity'",
+        "(new Number(1.125)).toFixed(2) === '1.13' && Number.prototype.toFixed(2) === '0.00'",
+        "(12.5).toFixed(undefined) === '13' && (12.5).toFixed(NaN) === '13' && (12.5).toFixed(null) === '13'",
+        "(1.25).toFixed('1') === '1.3' && (1.25).toFixed(1.9) === '1.3' && (1.25).toFixed(-0.9) === '1'",
+        "Number.prototype.toFixed.name === 'toFixed' && Number.prototype.toFixed.length === 1",
+        "let d = Object.getOwnPropertyDescriptor(Number.prototype, 'toFixed'); d.writable && !d.enumerable && d.configurable",
+        "let log = ''; let digits = {valueOf() {log += 'v'; return {};}, toString() {log += 's'; return '2';}}; (1.125).toFixed(digits) === '1.13' && log === 'vs'",
+        "let touched = false; let caught = false; try {Number.prototype.toFixed.call({}, {valueOf() {touched = true; return 2;}});} catch(e) {caught = e instanceof TypeError;} caught && !touched",
+        "let caught = false; try {Number.prototype.toFixed.call({});} catch(e) {caught = e instanceof TypeError;} caught",
+        "let caught = false; try {(1).toFixed({valueOf() {throw 42;}});} catch(e) {caught = e === 42;} caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        eval(&format!(
+            "(5e-324).toFixed(100) === '0.{}'",
+            "0".repeat(100)
+        )),
+        ValueView::Bool(true)
+    );
+    for digits in [
+        "101",
+        "-1",
+        "Infinity",
+        "-Infinity",
+        "{valueOf() {return 101;}}",
+    ] {
+        for receiver in ["1", "NaN", "Infinity"] {
+            let src = format!(
+                "let caught = false; try {{({receiver}).toFixed({digits});}} catch(e) {{caught = e instanceof RangeError;}} caught"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for src in [
+        "Number.prototype.toFixed.call({})",
+        "Number.prototype.toFixed.call('1')",
+        "Number.prototype.toFixed.call(1n)",
+        "(1).toFixed(1n)",
+        "(1).toFixed(Symbol())",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Decimal-digit coercion survives
+/// waits, collection, one-instruction budgets and migration without replay.
+#[test]
+fn number_fixed_coercion_waits_yields_collects_and_migrates() {
+    for expression in [
+        "n.toFixed(d) === '1.13'",
+        "Number.prototype.toFixed.call(n, d) === '1.13'",
+        "Number.prototype.toFixed.apply(n, [d]) === '1.13'",
+        "Number.prototype.toFixed.bind(n)(d) === '1.13'",
+        "Reflect.apply(Number.prototype.toFixed, n, [d]) === '1.13'",
+        "n.toFixed({get valueOf() {count++; __rt.need(150, 1); return () => 2;}}) === '1.13'",
+        "n.toFixed({valueOf() {return {};}, get toString() {count++; __rt.need(150, 1); return () => '2';}}) === '1.13'",
+        "n.toFixed({valueOf() {count++; __rt.need(150, 1); return undefined;}}) === '1'",
+        "(() => {try {n.toFixed({valueOf() {count++; __rt.need(150, 1); throw 42;}});} catch(e) {return e === 42;} return false;})()",
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let count = 0; let n = new Number(1.125); let d = {{valueOf() {{count++; __rt.need(150, 1); return 2;}}}}; ({expression}) && count === 1"
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Bool(true), "{src}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{src}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {src}");
+        assert_eq!(waits, 1);
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. Object radix coercion runs once
 /// across a dependency wait, GC, one-instruction yields and worker migration.
 #[test]
