@@ -105,7 +105,7 @@
 //! **Reserved intrinsic binding.** `__rt` resolves to the outermost scope;
 //! see [`super::intrinsics`] for the contract and the table.
 //!
-//! **Numbers.** `+ - * / %`, `< > <= >=`, the bitwise and shift operators
+//! **Numbers.** `- * / %`, the bitwise and shift operators
 //! `& | ^ << >> >>>`, `**` and unary `-`, `+`, `~` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
 //! before the number-only arithmetic instruction (which applies ToInt32 /
@@ -116,9 +116,10 @@
 //! primitives, which concatenates two strings at run time and applies no
 //! ToNumber first. The relational operators (clj-quickjs-68) lower to
 //! `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` unless both operands
-//! are statically Numbers: those preserve primitive types (including a
-//! BigInt's explicit deferred-operator error), compare strings by UTF-16
-//! code units, and convert other supported primitives with ToNumber.
+//! are statically Numbers: those compare BigInt/BigInt and BigInt/Number
+//! exactly (clj-quickjs-197), compare strings by UTF-16 code units, and
+//! convert other supported primitives with ToNumber. BigInt/String pairs
+//! fail explicitly pending StringToBigInt.
 //!
 //! **Strings.** A string literal (UTF-16 code units, possibly with lone
 //! surrogates, decoded by the lexer) is a constant, deduplicated by
