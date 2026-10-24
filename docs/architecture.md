@@ -6979,7 +6979,9 @@ only after synchronous post-pause collection observers return. Other batch
 members wait outside heap access, so cleared-weak-slot observers have queued
 their jobs before any requesting task's next statement. The batch metadata
 has no heap edges, and its short locks never span collection or notification
-processing. Observer panic releases batch waiters with failure. Reentry into
+processing. Successors take and drop predecessor links after waiting, so
+completed batches do not retain a historical chain. Observer panic releases
+batch waiters with failure. Reentry into
 a collection point from the collecting thread's own observer is refused.
 The public `Runtime::request_collection` contract remains unchanged:
 independent explicit calls each collect. Every collection registers a delivery

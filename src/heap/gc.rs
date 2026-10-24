@@ -748,7 +748,7 @@ struct Stopped<'h> {
 #[derive(Debug)]
 pub(crate) struct PointBatch {
     accepting: std::sync::atomic::AtomicBool,
-    previous: Option<Arc<PointBatch>>,
+    previous: Mutex<Option<Arc<PointBatch>>>,
     result: Mutex<Option<Result<CollectStats, CollectError>>>,
     changed: std::sync::Condvar,
 }
@@ -892,7 +892,7 @@ impl Heap {
         }
         let batch = Arc::new(PointBatch {
             accepting: std::sync::atomic::AtomicBool::new(true),
-            previous: current.upgrade(),
+            previous: Mutex::new(current.upgrade()),
             result: Mutex::new(None),
             changed: std::sync::Condvar::new(),
         });
@@ -922,7 +922,8 @@ impl Heap {
                 batch: ticket.batch,
                 result: Err(CollectError::MutatorActive),
             };
-            if let Some(previous) = &finish.batch.previous {
+            let previous = lock(&finish.batch.previous).take();
+            if let Some(previous) = previous {
                 // Late requests need a fresh pause, but must not overtake
                 // earlier weak-slot notification delivery.
                 previous.wait()?;
@@ -1465,7 +1466,7 @@ mod tests {
         let second = heap.collection_point_ticket().unwrap();
         assert!(second.leader);
         assert!(Arc::ptr_eq(
-            second.batch.previous.as_ref().unwrap(),
+            lock(&second.batch.previous).as_ref().unwrap(),
             &first.batch
         ));
         drop(access);
@@ -1478,6 +1479,88 @@ mod tests {
         drop(access);
         let stats = heap.serve_collection_point(second).unwrap();
         assert_eq!(heap.serve_collection_point(third).unwrap(), stats);
+        assert_eq!(lock(&heap.gc).collections, 2);
+    }
+
+    #[test]
+    fn completed_point_batches_release_predecessors() {
+        let heap = Heap::default();
+        let access = heap.enter_mutator(Access::Run);
+        let first = heap.collection_point_ticket().unwrap();
+        let first_weak = Arc::downgrade(&first.batch);
+        first.batch.accepting.store(false, Ordering::Release);
+        let second = heap.collection_point_ticket().unwrap();
+        let second_weak = Arc::downgrade(&second.batch);
+        second.batch.accepting.store(false, Ordering::Release);
+        let third = heap.collection_point_ticket().unwrap();
+        let third_live = third.batch.clone();
+        drop(access);
+        heap.serve_collection_point(first).unwrap();
+        assert!(
+            first_weak.upgrade().is_some(),
+            "successor has not awaited it yet"
+        );
+        heap.serve_collection_point(second).unwrap();
+        assert!(
+            first_weak.upgrade().is_none(),
+            "completed ancestor must be released while later requests remain alive"
+        );
+        assert!(second_weak.upgrade().is_some());
+        heap.serve_collection_point(third).unwrap();
+        assert!(second_weak.upgrade().is_none());
+        assert!(lock(&third_live.previous).is_none());
+    }
+
+    #[test]
+    fn collection_point_observer_panic_releases_waiters() {
+        use std::sync::{atomic::AtomicBool, mpsc};
+        use std::time::Duration;
+        const TIMEOUT: Duration = Duration::from_secs(10);
+        struct PanicOnce(AtomicBool);
+        impl CollectionObserver for PanicOnce {
+            fn collected(&self, _: &CollectionReport) {
+                assert!(
+                    !self.0.swap(false, Ordering::SeqCst),
+                    "one intentional observer panic"
+                );
+            }
+        }
+        let heap = Arc::new(Heap::default());
+        let observer = Arc::new(PanicOnce(AtomicBool::new(true)));
+        heap.observe_collections(Arc::downgrade(&observer) as _);
+        let access = heap.enter_mutator(Access::Run);
+        let leader = heap.collection_point_ticket().unwrap();
+        drop(access);
+        let (joined_tx, joined_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let follower = {
+            let heap = heap.clone();
+            thread::spawn(move || {
+                let access = heap.enter_mutator(Access::Run);
+                let ticket = heap.collection_point_ticket().unwrap();
+                assert!(!ticket.leader);
+                drop(access);
+                joined_tx.send(()).unwrap();
+                done_tx.send(heap.serve_collection_point(ticket)).unwrap();
+            })
+        };
+        joined_rx.recv_timeout(TIMEOUT).unwrap();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            heap.serve_collection_point(leader)
+        }));
+        assert!(panic.is_err());
+        assert_eq!(
+            done_rx.recv_timeout(TIMEOUT).unwrap(),
+            Err(CollectError::MutatorActive)
+        );
+        follower.join().unwrap();
+        // The leader's admission and notification/request TLS markers must
+        // all have unwound, so the same thread can collect again.
+        let access = heap.enter_mutator(Access::Run);
+        let next = heap.collection_point_ticket().unwrap();
+        assert!(next.leader);
+        drop(access);
+        heap.serve_collection_point(next).unwrap();
         assert_eq!(lock(&heap.gc).collections, 2);
     }
 
