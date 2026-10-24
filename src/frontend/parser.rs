@@ -1769,7 +1769,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// UnaryExpression: (`!` | `-` | `+` | `~` | `typeof`) UnaryExpression
+    /// UnaryExpression: (`!` | `-` | `+` | `~` | `typeof` | `void`) UnaryExpression
     ///   | (`++` | `--`) UnaryExpression | PostfixExpression
     ///
     /// A prefix-operator expression followed by `**` is rejected here, at
@@ -1785,6 +1785,7 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Plus) => Prefix::Unary(UnaryOp::Plus),
             TokenKind::Punct(Punct::Tilde) => Prefix::Unary(UnaryOp::BitNot),
             TokenKind::Keyword(Keyword::Typeof) => Prefix::Unary(UnaryOp::Typeof),
+            TokenKind::Keyword(Keyword::Void) => Prefix::Unary(UnaryOp::Void),
             TokenKind::Punct(Punct::PlusPlus) => Prefix::Update(UpdateOp::Inc),
             TokenKind::Punct(Punct::MinusMinus) => Prefix::Update(UpdateOp::Dec),
             _ => {
@@ -1822,7 +1823,7 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_prefix(&self) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
-            TokenKind::Keyword(k @ (Keyword::Void | Keyword::Delete)) => {
+            TokenKind::Keyword(k @ Keyword::Delete) => {
                 Err(self.unsupported(span, &format!("the `{}` operator is", k.as_str())))
             }
             TokenKind::Keyword(Keyword::Await) => {

@@ -2897,6 +2897,56 @@ fn typeof_operator() {
 }
 
 #[test]
+fn void_operator() {
+    // The pellet's acceptance cases (clj-quickjs-133); `void 0` is the
+    // `assert(x, void 0)` of `test_destructuring` in QuickJS's
+    // `tests/test_language.js`.
+    assert_eq!(eval("void 0"), ValueView::Undefined);
+    assert_eq!(eval("void 0 === undefined"), ValueView::Bool(true));
+    assert_eq!(eval("void void 1"), ValueView::Undefined);
+    // The operand is evaluated exactly once, for its effects.
+    let calls = "let n = 0; function f() { n = n + 1; return 7; } let r = void f();";
+    assert_eq!(eval(&format!("{calls} r")), ValueView::Undefined);
+    assert_eq!(num(&format!("{calls} n")), 1.0);
+    assert_eq!(num("let i = 0; void i++; void (i = i + 10); i"), 11.0);
+    // A throwing operand's exception reaches `catch`, and the `void`
+    // expression produces no value.
+    assert_eq!(
+        string(
+            "let t = 'none'; try { t = void (() => { throw 'boom'; })(); } catch (e) { t = e; } t"
+        ),
+        "boom"
+    );
+    assert_eq!(
+        string("let t = 'none'; try { void nope; } catch (e) { t = typeof e; } t"),
+        "object"
+    );
+    // Unlike `typeof`, an unresolvable name is read and fails.
+    let (kind, message, line, column) = failure_at("void nope");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "nope is not defined");
+    assert_eq!((line, column), (1, 6));
+    // Precedence of the other prefix operators; any value is discarded.
+    assert_eq!(string("typeof void 0"), "undefined");
+    assert!(num("void 1 + 1").is_nan());
+    assert_eq!(eval("!void 0"), ValueView::Bool(true));
+    assert_eq!(eval("void 'a' === void {}"), ValueView::Bool(true));
+    assert_eq!(eval("1; void 2"), ValueView::Undefined);
+    assert_eq!(eval("let g = () => void 3; g()"), ValueView::Undefined);
+    // The `docs/grammar.md` example line, true.
+    assert_eq!(
+        eval(
+            "void 0 === undefined && void void 1 === undefined && typeof void 0 === \"undefined\""
+        ),
+        ValueView::Bool(true)
+    );
+    // Lowered with existing opcodes: the operand, `pop`, `undefined`.
+    let ops = opcodes(&exe("let n = 1; void n"));
+    let at = ops.iter().position(|&op| op == Opcode::Pop).expect("pop");
+    assert_eq!(ops[at + 1], Opcode::Undefined, "{ops:?}");
+}
+
+#[test]
 fn corrupted_compiled_bytecode_is_rejected_by_the_validator() {
     let exe = exe("let i = 0;\nwhile (i < 3) { i = i + 1; }\ni");
     let spec = exe.to_spec();
@@ -3018,6 +3068,8 @@ fn deep_expressions_compile_within_a_small_stack() {
     let objects = format!("x = {}1{};", "{a: 1, b: ".repeat(60), "}".repeat(60));
     let members = format!("o{};", ".b".repeat(240));
     let assigns = format!("{}1;", "o.b = ".repeat(120));
+    // `void` (clj-quickjs-133): 240 nested prefix operators.
+    let voids = format!("{}1;", "void ".repeat(240));
     let handle = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
@@ -3028,10 +3080,11 @@ fn deep_expressions_compile_within_a_small_stack() {
             let e = compile_script("objects", &objects).map(|_| ());
             let f = compile_script("members", &members).map(|_| ());
             let g = compile_script("assigns", &assigns).map(|_| ());
-            (a, b, c, d, e, f, g)
+            let h = compile_script("voids", &voids).map(|_| ());
+            (a, b, c, d, e, f, g, h)
         })
         .unwrap();
-    let (a, b, c, d, e, f, g) = handle.join().unwrap();
+    let (a, b, c, d, e, f, g, h) = handle.join().unwrap();
     a.unwrap();
     b.unwrap();
     c.unwrap();
@@ -3039,6 +3092,7 @@ fn deep_expressions_compile_within_a_small_stack() {
     e.unwrap();
     f.unwrap();
     g.unwrap();
+    h.unwrap();
     assert_eq!(num(&vec!["1"; 241].join(" ** ")), 1.0);
     assert_eq!(num(&vec!["1"; 241].join(" + ")), 241.0);
     assert_eq!(

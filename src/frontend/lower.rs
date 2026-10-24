@@ -2243,6 +2243,7 @@ impl<'s> Lowerer<'s> {
                 self.expr(operand)?;
                 match op {
                     UnaryOp::Typeof => self.out().op(Opcode::Typeof, span),
+                    UnaryOp::Void => self.void_result(span),
                     UnaryOp::Not => self.out().op(Opcode::Not, span),
                     UnaryOp::Neg | UnaryOp::Plus => {
                         if !is_number(operand) {
@@ -2591,6 +2592,16 @@ impl<'s> Lowerer<'s> {
         }
         self.out().op(Opcode::Typeof, span);
         Ok(())
+    }
+
+    /// `void operand`: the operand's value (on the stack) is discarded and
+    /// the expression gives `undefined` (QuickJS `js_parse_unary`,
+    /// `TOK_VOID`: `drop` then `undefined`). Out of line, so the recursive
+    /// [`Self::expr`] frame stays small.
+    #[inline(never)]
+    fn void_result(&mut self, span: Span) {
+        self.out().op(Opcode::Pop, span);
+        self.out().op(Opcode::Undefined, span);
     }
 
     /// Emit a binary operator; both operands are on the stack.

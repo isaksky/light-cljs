@@ -37,6 +37,7 @@ parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 `>>>=`) on identifier bindings (clj-quickjs-84) parses and executes; the
 logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
 (clj-quickjs-69) parses and executes, including on a name with no binding.
+The `void` operator (clj-quickjs-133) parses and executes.
 `var` statements (clj-quickjs-94) parse and execute, with function-level
 hoisting; top-level function declarations of a script or function body
 are var-scoped. `"use strict"` directive prologues are interpreted and
@@ -141,7 +142,7 @@ Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
 Exponentiation        = Unary | Update "**" Exponentiation
-Unary                 = ( "!" | "-" | "+" | "~" | "typeof" ) Unary | Update
+Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
 Call                  = Primary { Arguments | "." IdentifierName }
@@ -321,7 +322,7 @@ Every form below is rejected where it starts. Error kinds:
 | array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` (also in an object literal) | Unsupported |
 | in object literals: computed keys `{[k]: v}`, methods `{m() {}}`, getters and setters, `async` and generator methods, `__proto__: v` (it sets the prototype) | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
-| `void`, `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
+| `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
 | compound assignment to a property (`a.b += 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
@@ -629,6 +630,7 @@ Executed, with JavaScript semantics:
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
 | `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
+| `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
@@ -693,6 +695,13 @@ typeof (() => 1) === "function" && typeof __rt.vector() === "object" && typeof "
 
 ```js reject Invalid 1:10
 typeof a ** 2;
+```
+
+`void` evaluates its operand and gives `undefined` (clj-quickjs-133); the
+line below evaluates to `true`:
+
+```js accept
+void 0 === undefined && void void 1 === undefined && typeof void 0 === "undefined";
 ```
 
 Default parameter values run only for `undefined` arguments, left to
@@ -1461,6 +1470,10 @@ read with `OP_get_var_undef`, so an unresolvable name is not an error),
 `test_language.js` are adapted in `tests/js_source.rs` `typeof_operator`
 (notice on `identifiers_are_not_normalized`, which also runs the
 `typeof õ` case of `test_unicode_ident`).
+For `void` (clj-quickjs-133): the `TOK_VOID` case of `js_parse_unary`
+(`OP_drop` then `OP_undefined`); the `assert(x, void 0)` of
+`test_destructuring` in `test_language.js` is the `void 0` case of
+`tests/js_source.rs` `void_operator` (written fresh, no upstream text).
 For `var` (clj-quickjs-94): `js_parse_var` (declarators; an initializer
 lowered as an assignment to the resolved name), `define_var` (a `var`
 reuses the function's one variable of that name and is an error inside a

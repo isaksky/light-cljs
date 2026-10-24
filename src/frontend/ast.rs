@@ -540,6 +540,9 @@ pub enum UnaryOp {
     /// is a reference: a name with no binding gives `"undefined"` rather
     /// than a ReferenceError.
     Typeof,
+    /// `void`: evaluates its operand for its effects, then gives
+    /// `undefined`.
+    Void,
 }
 
 /// The operator of an [`ExprKind::Update`].

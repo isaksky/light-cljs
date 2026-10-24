@@ -38,6 +38,7 @@ fn render_expr(e: &Expr) -> String {
                 UnaryOp::Plus => "pos",
                 UnaryOp::BitNot => "~",
                 UnaryOp::Typeof => "typeof",
+                UnaryOp::Void => "void",
             };
             format!("({op} {})", render_expr(operand))
         }
@@ -967,6 +968,12 @@ fn unary_binds_tighter_than_binary_and_looser_than_calls() {
     assert_eq!(ast("typeof -x + 1;"), "(+ (typeof (neg x)) 1)");
     assert_eq!(ast("typeof (x);"), "(typeof x)");
     assert_eq!(ast("!typeof x;"), "(! (typeof x))");
+    // So does `void` (clj-quickjs-133).
+    assert_eq!(ast("void 0 === x;"), "(=== (void 0) x)");
+    assert_eq!(ast("void void f(x).y;"), "(void (void (. (call f x) y)))");
+    assert_eq!(ast("void -x + 1;"), "(+ (void (neg x)) 1)");
+    assert_eq!(ast("typeof void x;"), "(typeof (void x))");
+    assert_eq!(ast("void a++;"), "(void (post++ a))");
 }
 
 /// Bitwise and shift operators and `~` (clj-quickjs-62), at ECMAScript
@@ -1030,6 +1037,9 @@ fn exponent_operator_syntax() {
     // `typeof` is a prefix operator like the others (clj-quickjs-69).
     rejects_with("typeof a ** b;", Invalid, 1, 10, "parenthesize");
     assert_eq!(ast("typeof (a ** b);"), "(typeof (** a b))");
+    // So is `void` (clj-quickjs-133).
+    rejects_with("void a ** b;", Invalid, 1, 8, "parenthesize");
+    assert_eq!(ast("void (a ** b);"), "(void (** a b))");
     // `**=` is a compound assignment (clj-quickjs-84).
     assert_eq!(ast("a **= b ** 2;"), "(**= a (** b 2))");
 }
@@ -2691,7 +2701,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = new F();", 1, 5, "new"),
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
-        ("void 0;", 1, 1, "void"),
         ("delete x.y;", 1, 1, "delete"),
         ("++x.y;", 1, 3, "increment and decrement of properties"),
         ("x = [1];", 1, 5, "array literals"),
@@ -2849,6 +2858,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))
         }),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
+        ("void", |n| format!("x = {}f();", "void ".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
         ("exponent", |n| format!("x = 1{};", " ** 1".repeat(n))),
         ("exponent of unary", |n| {

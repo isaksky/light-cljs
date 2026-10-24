@@ -1595,6 +1595,16 @@ Deferred:
   object exists (clj-quickjs-104), an unbound name must be looked up at run
   time rather than decided by the compiler.
 
+### `void` (clj-quickjs-133)
+
+Supported (`cargo test --test js_source void_operator`,
+`cargo test --lib frontend::tests::unary_binds_tighter_than_binary_and_looser_than_calls`):
+
+- `void x`, a prefix operator with the precedence of `!`, evaluates its
+  operand once (its effects and exceptions happen; `void nope` is a
+  ReferenceError), discards the value and gives `undefined`. No new
+  opcode: the operand, `pop`, `undefined`.
+
 ### `var` declarations and var-scoped function declarations (clj-quickjs-94)
 
 Supported (`cargo test --lib frontend::tests::var_statements`,

@@ -423,6 +423,10 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `throw_error`; once a global object exists that name must be looked up
   at run time. A binding in its temporal dead zone is read as usual, so it
   still throws.
+  `void x` (clj-quickjs-133) needs no opcode of its own: the operand's
+  code, then `pop` and `undefined` (QuickJS emits `OP_drop`,
+  `OP_undefined`). Its operand is an ordinary expression, so an unbound
+  name throws as in a plain read.
   An untagged template literal (clj-quickjs-57) is its first text part as
   a string constant, then per substitution the substitution's code, the
   opcode `to_string` (`0x55`, ToString: ToPrimitive with hint string once
