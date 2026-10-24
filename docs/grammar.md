@@ -882,8 +882,8 @@ retains the pinned QuickJS limits of fewer than 512 bytes and 64 subtags.
 Locale prototype `toString`, `baseName`, `language`, `script`, `region`, `variants`,
 `calendar`, `collation`, `hourCycle`, `caseFirst`, `numeric` and `numberingSystem`
 check internal-slot branding, independently of the current prototype. The tag
-descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent fields (including
-numeric) return `undefined`, matching the pinned snapshot. `variants` and
+descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent string fields return
+`undefined`; absent numeric returns `false`, matching the pinned snapshot. `variants` and
 `firstDayOfWeek` options and general `@@toStringTag` consumption remain deferred.
 
 String `+`, `+=`, template interpolation and `String.prototype.concat` use

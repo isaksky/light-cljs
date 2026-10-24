@@ -2824,7 +2824,7 @@ Deferred: `maximize`/`minimize`, Locale information methods, `variants` and
 `firstDayOfWeek` constructor options, service locale resolution and
 `supportedLocalesOf`. Alias rules follow the selected pinned QuickJS cases,
 with `co-phonebook` accepted and normalized to `co-phonebk` as required by this
-pellet. Locale's absent `numeric` getter returns `undefined` as in that snapshot.
+pellet. Locale's absent `numeric` getter returns `false` as in that snapshot.
 General `Object.prototype.toString` consumption of Locale's tag shares the
 existing deferred `@@toStringTag` behavior.
 

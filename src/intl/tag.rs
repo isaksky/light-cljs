@@ -53,6 +53,18 @@ pub fn keyword_alias<'a>(key: &str, value: &'a str) -> &'a str {
         ("ca", "ethiopic-amete-alem") => "ethioaa",
         ("ks", "primary") => "level1",
         ("ks", "tertiary") => "level3",
+        ("kb" | "kc" | "kh" | "kk" | "kn", "yes") => "",
+        ("ms", "imperial") => "uksystem",
+        ("tz", "cnckg") => "cnsha",
+        ("tz", "eire") => "iedub",
+        ("tz", "est") => "papty",
+        ("tz", "gmt0") => "gmt",
+        ("tz", "uct" | "zulu") => "utc",
+        ("rg" | "sd", "no23") => "no50",
+        ("rg" | "sd", "cn11") => "cnbj",
+        ("rg" | "sd", "cz10a") => "cz110",
+        ("rg" | "sd", "fra" | "frg") => "frges",
+        ("rg" | "sd", "lud") => "lucl",
         (_, "true") => "",
         _ => value,
     }
@@ -281,7 +293,13 @@ fn canonical_transform(parts: &[&str]) -> Result<String, InvalidLanguageTag> {
         if i == start {
             return Err(InvalidLanguageTag);
         }
-        fields.entry(k).or_insert_with(|| parts[start..i].join("-"));
+        fields.entry(k).or_insert_with(|| {
+            parts[start..i]
+                .iter()
+                .map(|&v| if v == "names" { "prprname" } else { v })
+                .collect::<Vec<_>>()
+                .join("-")
+        });
     }
     for (k, v) in fields {
         if !out.is_empty() {
@@ -334,6 +352,11 @@ mod tests {
             ("in-ID", "id-ID"),
             ("en-554", "en-NZ"),
             ("en-u-kn-true", "en-u-kn"),
+            (
+                "en-u-kn-yes-ms-imperial-tz-cnckg",
+                "en-u-kn-ms-uksystem-tz-cnsha",
+            ),
+            ("en-t-a0-names", "en-t-a0-prprname"),
             ("en-u-zzz-aaa-ca-islamicc", "en-u-aaa-zzz-ca-islamic-civil"),
             ("en-b-foo-a-bar-x-Z-A", "en-a-bar-b-foo-x-z-a"),
             ("ja-Latn-hepburn-heploc", "ja-Latn-alalc97"),

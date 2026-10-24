@@ -4915,5 +4915,5 @@ realm, including `Symbol.toStringTag = 'Intl.Locale'`. The existing restriction
 on intrinsic mutation still applies. General Object.prototype.toString tag
 consumption remains deferred. Likely-subtag operations, information methods,
 `variants`/`firstDayOfWeek` options and formatting service resolution belong to
-later pellets. Numeric absent from the tag/options yields `undefined`, matching
+later pellets. Numeric absent from the tag/options yields `false`, matching
 the pinned QuickJS getter rather than assuming another engine's output.

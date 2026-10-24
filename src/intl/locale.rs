@@ -109,7 +109,7 @@ pub(crate) fn inspect(
                 .keywords
                 .get("kn")
                 .map(|v| Value::Bool(v.is_empty() || v == "true"))
-                .unwrap_or(Value::Undefined));
+                .unwrap_or(Value::Bool(false)));
         }
         Some(field) => {
             let key = match field {
@@ -120,13 +120,7 @@ pub(crate) fn inspect(
                 Field::NumberingSystem => "nu",
                 _ => unreachable!(),
             };
-            tag.keywords.get(key).map(|v| {
-                if v.is_empty() {
-                    "true".into()
-                } else {
-                    v.clone()
-                }
-            })
+            tag.keywords.get(key).cloned()
         }
     };
     Ok(text
