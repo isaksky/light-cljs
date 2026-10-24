@@ -830,6 +830,36 @@ fn function_own_properties_follow_publication_rule() {
     rt.publish(&h).unwrap();
 }
 
+/// Synthetic source fixtures, not light-cljs output. A concise method has
+/// a home object even when its body never uses this or super.
+#[test]
+fn method_home_object_prevents_publication() {
+    let rt = Runtime::new();
+    for src in [
+        "({m() { return 42; }}).m",
+        "let o = {m() {}}; let m = o.m; delete o.m; m",
+        "let o = {m() {}}; Object.freeze(o); o.m",
+    ] {
+        let exe = compile_script("method-publication", src).unwrap();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        let method = complete(task.run().unwrap());
+        let owner = task.id();
+        drop(task);
+        for _ in 0..2 {
+            let err = rt.publish(&method).unwrap_err();
+            assert!(err.to_string().contains("value.home_object"), "{err}");
+            assert_eq!(
+                not_shareable(err),
+                (vec![PathStep::HomeObject], "object", Some(owner))
+            );
+        }
+    }
+    // A colon property does not turn an ordinary function into a method.
+    let exe = compile_script("ordinary-property", "({m: function () {}}).m").unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    rt.publish(&complete(task.run().unwrap())).unwrap();
+}
+
 /// `'prototype' in f` (clj-quickjs-74) reports a constructor's lazy
 /// `prototype` without creating it, as QuickJS `JS_HasProperty` leaves
 /// autoinit properties alone: the function stays publishable, and a

@@ -825,21 +825,29 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// the property it wrote from the same object. Each effect ran once.
 #[test]
 fn a_method_resumes_with_the_same_this_after_a_wait_and_migration() {
+    for concise in [false, true] {
+        method_resumes_with_this(concise);
+    }
+}
+
+fn method_resumes_with_this(concise: bool) {
     let rt = Runtime::new();
     let effects = WorkerEffects::default();
     let exec = migrating_executor(&rt, &effects);
-    let exe = compile_script(
-        "this_need",
-        "function make() {
+    let source = "function make() {
            return {x: 5, m: function (a) {
              this.y = __rt.effect(1, a);
              let v = __rt.need(5, 3);
              return this.x * 1000 + this.y * 10 + v + __rt.effect(1, 2);
            }};
          }
-         make().m(1)",
-    )
-    .unwrap();
+         make().m(1)";
+    let source = if concise {
+        source.replace("m: function (a)", "m(a)")
+    } else {
+        source.to_string()
+    };
+    let exe = compile_script("this_need", &source).unwrap();
     let task = rt.spawn(&exe, &[]).unwrap();
     exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
         .unwrap();

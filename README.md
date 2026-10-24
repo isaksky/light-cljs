@@ -1700,7 +1700,7 @@ Supported (`cargo test --lib frontend::tests::object_literals`,
 Deferred:
 
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
-  Getters/setters, methods, computed keys in literals (clj-quickjs-233;
+  Getters/setters and computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below; `delete` is clj-quickjs-124, below),
   `__proto__` (property `++`/`--` and compound assignment: clj-quickjs-76,
   -260, above); properties of error objects and
@@ -2448,3 +2448,20 @@ reference retain neither the object nor extra arguments.
 Deferred: sloppy parameter aliasing, `callee`'s restricted accessor, the
 arguments brand for `Object.prototype.toString`, and `Symbol.iterator`
 (symbols are clj-quickjs-127). Verify with `cargo test --test js_functions arguments_`.
+
+### Concise object-literal methods (clj-quickjs-126)
+
+Supported: `{m(a) { return a; }}`, string/numeric keys, reserved-word keys
+(`if() {}`), and contextual names (`get()`, `set()`, `async()`, `static()`).
+Methods define writable, enumerable, configurable data properties, infer their
+name from the key, and own `this` and unmapped `arguments`. They are strict in
+this subset, have no own `prototype`, and `new o.m()` throws TypeError.
+An immutable home-object reference retains the defining literal and prevents
+publication of the method through its task-owned home object. GC traces and
+reclaims method/literal cycles. Computed keys, accessors, async/generator
+methods and `super` remain deferred.
+
+Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
+`cargo test --test js_source object_literal_methods -- --exact`,
+`cargo test --test publication method_home_object_prevents_publication -- --exact`,
+and `cargo test --test gc_roots method_home_object`.

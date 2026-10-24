@@ -76,11 +76,13 @@ enum Holder {
     FunctionProperties,
     /// A bound callable's target, receiver, arguments and metadata.
     BoundFunction,
+    /// A concise method's immutable home-object reference.
+    MethodHomeObject,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 24] = [
+const HOLDERS: [Holder; 25] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -105,6 +107,7 @@ const HOLDERS: [Holder; 24] = [
     Holder::ArrayElement,
     Holder::FunctionProperties,
     Holder::BoundFunction,
+    Holder::MethodHomeObject,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -150,6 +153,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             NativePayloadEdges,
             FunctionProperties,
             BoundFunction,
+            MethodHomeObject,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -181,7 +185,12 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             &[PersistentCollectionEdges, DependencyOutcome]
         }
         ObjectKind::Builder => &[TransientBuilder],
-        ObjectKind::Function => &[ClosureEnvironment, BindingCell, FunctionProperties],
+        ObjectKind::Function => &[
+            ClosureEnvironment,
+            BindingCell,
+            FunctionProperties,
+            MethodHomeObject,
+        ],
         ObjectKind::Cell => &[BindingCell],
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
@@ -269,6 +278,9 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::ArrayElement => public("array_element_retains", "array_element_reclaims"),
         Holder::FunctionProperties => {
             public("function_properties_retain", "function_properties_reclaim")
+        }
+        Holder::MethodHomeObject => {
+            public("method_home_object_retains", "method_home_object_reclaims")
         }
     }
 }

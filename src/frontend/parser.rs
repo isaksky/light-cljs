@@ -1216,7 +1216,8 @@ impl<'a> Parser<'a> {
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
         let simple = defaults.iter().all(Option::is_none);
-        let (body, strict) = self.parse_function_body(name.as_ref(), &params, simple)?;
+        let (body, strict) =
+            self.parse_function_body(name.as_ref(), &params, simple, self.strict)?;
         self.in_function = outer;
         self.this_allowed = outer_this;
         self.in_loop = outer_loop;
@@ -1249,9 +1250,9 @@ impl<'a> Parser<'a> {
         name: Option<&Ident>,
         params: &[Ident],
         simple: bool,
+        outer_strict: bool,
     ) -> PResult<(Vec<Stmt>, bool)> {
         let saved = self.depth;
-        let outer_strict = self.strict;
         self.deeper(cost::BLOCK)?;
         self.expect_punct(Punct::LBrace)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
@@ -1383,7 +1384,7 @@ impl<'a> Parser<'a> {
             let outer_switch = std::mem::replace(&mut self.in_switch, false);
             let outer_labels = std::mem::take(&mut self.labels);
             let simple = defaults.iter().all(Option::is_none);
-            let (body, strict) = self.parse_function_body(None, &params, simple)?;
+            let (body, strict) = self.parse_function_body(None, &params, simple, self.strict)?;
             self.in_function = outer;
             self.in_loop = outer_loop;
             self.in_switch = outer_switch;
@@ -1754,7 +1755,8 @@ impl<'a> Parser<'a> {
     /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
     /// (reserved words included), a string literal or a numeric literal.
-    /// Computed names, spread, methods and getters/setters are rejected
+    /// Concise methods are functions with a home object. Computed names,
+    /// spread and getters/setters are rejected
     /// explicitly. A `__proto__: value` (identifier or string name, not a
     /// shorthand) sets the prototype (clj-quickjs-121); a second one in the
     /// same literal (`proto_seen`) is an early error.
@@ -1802,7 +1804,17 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         if self.is_punct(Punct::LParen) {
-            return Err(self.unsupported(span, "methods in object literals are"));
+            let function = self.parse_object_method(span.start)?;
+            let value = self.expr(
+                ExprKind::Function(Box::new(function)),
+                self.span_from(span.start),
+            )?;
+            return Ok(PropertyDef {
+                name,
+                name_span: span,
+                value,
+                shorthand: false,
+            });
         }
         if !self.is_punct(Punct::Colon) {
             return Err(self.unexpected("`:` after the property name"));
@@ -1825,6 +1837,41 @@ impl<'a> Parser<'a> {
             value,
             shorthand: false,
         })
+    }
+
+    /// A concise method after its literal key. Keep function parsing out of
+    /// the object-literal dispatcher to bound native stack use.
+    #[inline(never)]
+    fn parse_object_method(&mut self, start: usize) -> PResult<Function> {
+        let saved = self.depth;
+        self.deeper(cost::FUNCTION)?;
+        let outer_strict = self.strict;
+        self.set_strict(true);
+        let outer_this = std::mem::replace(&mut self.this_allowed, true);
+        let (params, defaults) = self.parse_formal_parameters()?;
+        let outer_function = std::mem::replace(&mut self.in_function, true);
+        let outer_loop = std::mem::replace(&mut self.in_loop, false);
+        let outer_switch = std::mem::replace(&mut self.in_switch, false);
+        let outer_labels = std::mem::take(&mut self.labels);
+        let simple = defaults.iter().all(Option::is_none);
+        let (body, strict) = self.parse_function_body(None, &params, simple, outer_strict)?;
+        self.in_function = outer_function;
+        self.this_allowed = outer_this;
+        self.in_loop = outer_loop;
+        self.in_switch = outer_switch;
+        self.labels = outer_labels;
+        self.depth = saved;
+        let function = Function::new(
+            FunctionKind::Method,
+            None,
+            params,
+            defaults,
+            body,
+            self.span_from(start),
+            strict,
+        );
+        self.check_height(function.height)?;
+        Ok(function)
     }
 
     /// The error of a property definition that starts at the current token

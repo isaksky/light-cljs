@@ -219,6 +219,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         };
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
+        lower.cur_mut().constructor = true;
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -451,11 +452,13 @@ struct FnCtx {
     /// sloppy code consults `self.cur().strict`: the mode of the innermost
     /// function, an arrow's own (inherited unless its body has a directive).
     strict: bool,
-    /// A `function` declaration or expression (not an arrow or a script):
+    /// An ordinary function or concise method (not an arrow or a script):
     /// in JavaScript it has its own `arguments` object, which a reference
     /// to `arguments` denotes unless the function binds that name itself
     /// ([`Lowerer::arguments_binding`]).
     own_arguments: bool,
+    /// Only ordinary functions can be constructed; methods own arguments too.
+    constructor: bool,
     /// Arrows inherit their nearest ordinary function's receiver.
     lexical_this: bool,
     /// Capture index for that receiver, shared by all its uses and any
@@ -620,6 +623,7 @@ impl<'s> Lowerer<'s> {
             completion: script.then_some(0),
             strict,
             own_arguments: false,
+            constructor: false,
             lexical_this: false,
             this_capture: None,
 
@@ -665,7 +669,7 @@ impl<'s> Lowerer<'s> {
             max_slots,
             captures,
             strict,
-            own_arguments,
+            constructor,
             children,
             ..
         } = ctx;
@@ -692,7 +696,7 @@ impl<'s> Lowerer<'s> {
             locals: max_slots as u16,
             captures: captures.len() as u16,
             strict,
-            constructor: own_arguments,
+            constructor,
             code: out.code,
             spans: out.spans,
             constants: out.constants,
@@ -1630,8 +1634,11 @@ impl<'s> Lowerer<'s> {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
         self.enter_function(self_name, false, f.strict);
-        self.cur_mut().own_arguments = f.kind == FunctionKind::Ordinary;
-        self.cur_mut().lexical_this = f.kind != FunctionKind::Ordinary;
+        self.cur_mut().constructor = f.kind == FunctionKind::Ordinary;
+        self.cur_mut().own_arguments =
+            matches!(f.kind, FunctionKind::Ordinary | FunctionKind::Method);
+        self.cur_mut().lexical_this =
+            matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
         self.function_body(f)?;
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
@@ -1677,7 +1684,12 @@ impl<'s> Lowerer<'s> {
                 "more than 65,536 functions in one function body",
             ));
         }
-        self.out().op_u16(Opcode::Function, index as u16, f.span);
+        let opcode = if f.kind == FunctionKind::Method {
+            Opcode::Method
+        } else {
+            Opcode::Function
+        };
+        self.out().op_u16(opcode, index as u16, f.span);
         Ok(())
     }
 

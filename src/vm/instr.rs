@@ -90,6 +90,13 @@
 //! | `GetThis`       | 0x56 | –                  | → this                 | push the running frame's `this` value (the receiver it was called with) |
 //! | `Construct`     | 0x5E | u16 argument count | f a1 … an → obj        | `new f(a1, …, an)`: construct with the ordinary function `f` (clj-quickjs-71) |
 //! | `NewArguments`  | 0x65 | –                  | → obj                  | consume retained actual arguments into an unmapped ordinary object |
+//! | `Method`        | 0x66 | u16 function index | obj c1 … cn → obj f    | allocate a non-constructor closure with immutable home object `obj` |
+//!
+//! `Method` (clj-quickjs-126) takes its capture count from child code,
+//! like `Function`. Validation also requires the home-object operand below
+//! the captures. It is an allocation poll point. The object is rooted on
+//! the operand stack until the new method traces it. `DefineField` then
+//! installs the method as an ordinary data property of the literal.
 //!
 //! `NewArguments` (clj-quickjs-97) is emitted at function entry before
 //! defaults. Loading code containing it retains all original actual values
@@ -533,6 +540,7 @@ pub enum Opcode {
     ForInStart = 0x63,
     ForInNext = 0x64,
     NewArguments = 0x65,
+    Method = 0x66,
 }
 
 /// Operand encoding of an opcode.
@@ -689,6 +697,7 @@ impl Opcode {
             0x63 => ForInStart,
             0x64 => ForInNext,
             0x65 => NewArguments,
+            0x66 => Method,
             _ => return None,
         })
     }
@@ -798,6 +807,7 @@ impl Opcode {
             ForInStart => "for_in_start",
             ForInNext => "for_in_next",
             NewArguments => "new_arguments",
+            Method => "method",
         }
     }
 
@@ -810,7 +820,7 @@ impl Opcode {
             HostEffect => OperandKind::HostOp,
             NewVector | NewMap => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
-            Function => OperandKind::Function,
+            Function | Method => OperandKind::Function,
             Call | CallMethod | Construct => OperandKind::ArgCount,
             GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
@@ -976,6 +986,9 @@ pub(crate) enum Instr {
     ForInStart,
     ForInNext,
     NewArguments,
+    /// Allocate a non-constructor closure with the object below its captures
+    /// as its immutable home object; keep that object on the stack.
+    Method(u16, u16),
 }
 
 impl Instr {
@@ -1082,6 +1095,7 @@ impl Instr {
             Instr::ForInStart => Opcode::ForInStart,
             Instr::ForInNext => Opcode::ForInNext,
             Instr::NewArguments => Opcode::NewArguments,
+            Instr::Method(..) => Opcode::Method,
         }
     }
 
@@ -1120,6 +1134,7 @@ impl Instr {
             Construct(n) => (usize::from(n) + 1, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),
             Function(_, captures) => (usize::from(captures), 1),
+            Method(_, captures) => (usize::from(captures) + 1, 2),
         }
     }
 }

@@ -443,6 +443,10 @@ impl Executable {
                     let index = operand as u16;
                     Instr::Function(index, functions[usize::from(index)].0.captures)
                 }
+                Opcode::Method => {
+                    let index = operand as u16;
+                    Instr::Method(index, functions[usize::from(index)].0.captures)
+                }
                 Opcode::Call => Instr::Call(operand as u16),
                 Opcode::CurrentFunction => Instr::CurrentFunction,
                 Opcode::GetCapture => Instr::GetCapture(operand as u16),
@@ -610,6 +614,7 @@ impl Executable {
                 | Instr::NewVector(v)
                 | Instr::NewMap(v)
                 | Instr::Function(v, _)
+                | Instr::Method(v, _)
                 | Instr::Call(v)
                 | Instr::CallMethod(v)
                 | Instr::Construct(v)

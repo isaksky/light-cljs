@@ -105,7 +105,8 @@
 //!   first access). The value is a new ordinary object owned by the same
 //!   task, inheriting from `Object.prototype`, with a non-enumerable
 //!   `constructor` that is the function; it is stored in the record, so
-//!   later reads give the same object. Arrow functions have no `prototype`.
+//!   later reads give the same object. Arrows and concise methods have no
+//!   `prototype`.
 //! * **`length` and `name`** (clj-quickjs-101). Before a record exists,
 //!   immutable code metadata supplies these non-writable, non-enumerable,
 //!   configurable own properties. Reads, descriptors and key enumeration
@@ -129,7 +130,7 @@
 //!   is owner-checked on reads like any ordinary object.
 //! * **Publication** (`crate::value::share`). The function object stays
 //!   `Persistent`: its code and captures never change, and its one other
-//!   edge, the record, is written at most once. A function with a record is
+//!   mutable edge, the record, is written at most once. A function with a record is
 //!   rejected at it (`.properties` in the path; the record is a task-owned
 //!   `object`); one without publishes as before. A function that a
 //!   publication check has proved shareable (its known-shareable bit is
@@ -141,6 +142,14 @@
 //!   ([`Heap::mark_shareable_unless`]), so no known-shareable function ever
 //!   has a record; for the same reason a function is never known shareable
 //!   at allocation, only after a check.
+//!
+//! # Concise methods (clj-quickjs-126)
+//!
+//! `Method` allocates a non-constructor closure whose immutable
+//! `home_object` is the defining literal. `Trace` visits it separately from
+//! captures and the property record. The persistent publication walk follows
+//! it with `.home_object`: because literals are task-owned, even detached
+//! methods with no captures cannot publish. No `super` execution is added.
 
 use std::sync::Arc;
 
@@ -167,6 +176,9 @@ pub(crate) struct FunctionObject {
     /// The own-property record, once created: an ordinary object owned by
     /// `owner`. Set at most once, and never on a known-shareable function.
     pub(crate) properties: Option<ObjectId>,
+    /// Literal that defined a concise method. Fixed before allocation;
+    /// ordinary functions and arrows have no home object.
+    pub(crate) home_object: Option<ObjectId>,
 }
 
 impl FunctionObject {
@@ -178,6 +190,7 @@ impl FunctionObject {
             captures,
             owner,
             properties: None,
+            home_object: None,
         }
     }
 }
@@ -186,6 +199,9 @@ impl Trace for FunctionObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.code.trace(visit);
         self.captures.trace(visit);
+        if let Some(home) = self.home_object {
+            visit(home);
+        }
         if let Some(record) = self.properties {
             visit(record);
         }

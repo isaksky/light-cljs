@@ -215,6 +215,7 @@ public API cannot reach.
 | array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
 | function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
 | bound function target, bound receiver, bound arguments and immutable metadata (clj-quickjs-103) | `PersistentHandle` (`BoundFunction` → target closure / receiver / arguments / metadata) | `bound_function_retains` | `bound_function_reclaims` |
+| concise method home object (clj-quickjs-126), including literal → method cycles | `PersistentHandle` (`Function` → `PlainObject` → argument) | `method_home_object_retains` | `method_home_object_reclaims` |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -3475,3 +3476,43 @@ and cancellation protocol. The source coercion tests force one-instruction
 yields, GC between slices and during waits, thread migration, callback
 errors, forwarding and nested natives. Strings remain independently owned,
 immutable leaf buffers outside the heap.
+
+## Concise object-literal methods (clj-quickjs-126)
+
+`FunctionKind::Method` distinguishes `{m() {}}` from `{m: function () {}}`.
+The parser accepts identifier names (reserved words included), strings and
+numbers as keys; `get()`, `set()`, `async()` and `static()` are method names.
+Methods are strict in this subset, own their receiver and unmapped arguments,
+and support ordinary parameters, defaults and closures. Arrows nested inside
+methods capture the method's receiver. Methods have no lexical self-name;
+NamedEvaluation supplies the property's string key as function metadata.
+Constructor capability is separate from owning arguments: methods have neither
+a lazy own `prototype` nor constructor capability.
+
+Lowering keeps `Lowerer::expr` a dispatcher and uses the object-literal and
+closure helpers. The append-only `method` opcode (`0x66`, u16 child-code index)
+allocates the closure with the literal below its captured values as its
+`FunctionObject::home_object`, preserving the literal on the operand stack for
+`define_field`. That field defines the usual writable, enumerable, configurable
+data property. A `__proto__() {}` method is a data property, including beside
+a `__proto__: value` prototype setter. Computed keys, accessors, async/generator
+methods and `super` remain deferred.
+
+The home-object reference is immutable from allocation, separate from captures
+and the optional property record chosen by clj-quickjs-125. Function objects
+remain `Persistent` in `src/value/share.rs::classify`: publication follows the
+new edge with `.home_object` in its diagnostic path, so every concise method
+currently fails publication at its task-owned literal, even if detached or
+unused by its body. Reading metadata or the absent `prototype` creates no
+property record. `Trace` follows the home object, and the precise collector
+retains and reclaims literal/method cycles; the root inventory names the
+retention and reclamation tests. No new heap kind or root category is needed.
+
+Semantic references inspected, without porting implementation code:
+`research/quickjs/quickjs.c`, `js_parse_object_literal`,
+`js_method_set_home_object`, and `OP_define_method`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The receiver row in
+`tests/js_source.rs::object_literal_methods` adapts `test_optional_chaining`
+in `research/quickjs/tests/test_language.js` at that revision, under the
+copyright/license notice on `object_literals_and_named_properties` in the same
+file. All other new fixtures are synthetic, not light-cljs output.

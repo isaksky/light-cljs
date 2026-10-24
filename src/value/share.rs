@@ -39,6 +39,12 @@
 //! publishes its code: code is immutable `Arc` storage outside the heap,
 //! shared by every task whether or not any closure over it is published.
 //!
+//! A concise method (clj-quickjs-126) also has an immutable home-object edge,
+//! fixed before allocation. Its category stays `Persistent`, and the walk
+//! follows that edge with `.home_object` ([`PathStep::HomeObject`]). Literal
+//! objects are task-owned, so methods cannot publish, even with no captures
+//! or own-property record and even if detached from the literal.
+//!
 //! ## Functions with own properties (clj-quickjs-125)
 //!
 //! A function's JavaScript own properties (`f.x = 1`, its lazy `prototype`)
@@ -273,6 +279,8 @@ pub enum PathStep {
     /// is rejected (or continues with `.property(name)` steps). Displayed
     /// `.properties`.
     FunctionProperties,
+    /// A concise method's immutable home object. Displayed `.home_object`.
+    HomeObject,
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -301,6 +309,7 @@ impl fmt::Display for ValuePath {
                 PathStep::Property(name) => write!(f, ".property({name})")?,
                 PathStep::Element(i) => write!(f, "[{i}]")?,
                 PathStep::FunctionProperties => f.write_str(".properties")?,
+                PathStep::HomeObject => f.write_str(".home_object")?,
             }
         }
         Ok(())
@@ -355,6 +364,7 @@ enum Step {
     NativeEdge(usize),
     Capture(usize),
     FunctionProperties,
+    HomeObject,
 }
 
 /// What one object contributes to the walk.
@@ -382,6 +392,7 @@ enum Children {
     Function {
         captures: Box<[Value]>,
         properties: Option<ObjectId>,
+        home_object: Option<ObjectId>,
     },
 }
 
@@ -408,12 +419,16 @@ impl Children {
             Children::Function {
                 captures,
                 properties,
+                home_object,
             } => {
                 for (n, v) in captures.iter().enumerate() {
                     f(Step::Capture(n), v);
                 }
                 if let Some(record) = properties {
                     f(Step::FunctionProperties, &Value::Object(*record));
+                }
+                if let Some(home) = home_object {
+                    f(Step::HomeObject, &Value::Object(*home));
                 }
             }
         }
@@ -439,6 +454,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Function(func) => Children::Function {
                 captures: func.captures.clone(),
                 properties: func.properties,
+                home_object: func.home_object,
             },
             HeapObject::BoundFunction(func) => Children::Function {
                 captures: std::iter::once(func.target.clone())
@@ -447,6 +463,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
                     .chain(std::iter::once(Value::Object(func.metadata)))
                     .collect(),
                 properties: func.properties,
+                home_object: None,
             },
             other => {
                 let mut edges = Vec::new();
@@ -634,6 +651,7 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::NativeEdge(n) => PathStep::NativeEdge(n),
         Step::Capture(n) => PathStep::Capture(n),
         Step::FunctionProperties => PathStep::FunctionProperties,
+        Step::HomeObject => PathStep::HomeObject,
     }
 }
 

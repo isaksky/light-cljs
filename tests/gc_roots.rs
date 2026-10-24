@@ -376,6 +376,30 @@ fn function_properties(rt: &Runtime) -> Held {
     Held::new(weak, move || drop(function))
 }
 
+/// The method captures nothing: only its immutable home-object edge retains
+/// the literal and the argument stored in it. The literal also points back
+/// to the method, exercising collection of the unreachable cycle.
+fn method_home_object(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(rt, "function f(o) { return ({m() {}, value: o}).m; }");
+    let method = run_to_end(&task);
+    drop(task);
+    Held::new(vec![weak, method.downgrade()], move || drop(method))
+}
+
+#[test]
+fn method_home_object_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &method_home_object(&rt));
+}
+
+#[test]
+fn method_home_object_reclaims() {
+    let rt = Runtime::new();
+    let held = method_home_object(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
 /// Each bound operand is the only path to an object: target closure,
 /// bound receiver, bound argument, and own-property record. The immutable
 /// metadata is traced too.
@@ -1238,6 +1262,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         object_property(&rt),
         array_element(&rt),
         function_properties(&rt),
+        method_home_object(&rt),
         bound_function(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),

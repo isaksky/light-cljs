@@ -193,8 +193,11 @@ fn new_function(
     code: Arc<Code>,
     captures: Box<[Value]>,
     owner: TaskId,
+    home_object: Option<ObjectId>,
 ) -> Result<Value, Fault> {
-    let object = HeapObject::Function(FunctionObject::new(code, captures, owner));
+    let mut function = FunctionObject::new(code, captures, owner);
+    function.home_object = home_object;
+    let object = HeapObject::Function(function);
     heap.alloc(object)
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
@@ -1287,7 +1290,7 @@ pub(crate) fn step(
         | Instr::AtomNew
         | Instr::AtomLoad
         | Instr::AtomCas => intrinsics::step(state, heap, instr)?,
-        Instr::Function(i, n) => {
+        Instr::Function(i, n) | Instr::Method(i, n) => {
             let child = code
                 .functions
                 .get(usize::from(i))
@@ -1300,8 +1303,17 @@ pub(crate) fn step(
             // the closure holding them replaces them, in the same instruction
             // and under this run's mutator guard.
             let n = usize::from(n);
+            let home = if matches!(instr, Instr::Method(..)) {
+                let operands = top_operands(state, n + 1)?;
+                let Value::Object(home) = operands[0] else {
+                    return Err(Fault::Internal("method home object is not an object"));
+                };
+                Some(home)
+            } else {
+                None
+            };
             let captures: Box<[Value]> = top_operands(state, n)?.into();
-            let f = new_function(heap, child, captures, state.diag.task)?;
+            let f = new_function(heap, child, captures, state.diag.task, home)?;
             state.replace(n, f)?;
         }
         Instr::GetCapture(i) => {
@@ -1367,6 +1379,7 @@ pub(crate) fn step(
                         Arc::clone(&state.top().code),
                         Box::new([]),
                         state.diag.task,
+                        None,
                     )?;
                     if let Value::Object(id) = f {
                         state.top_mut().callee = Some(id);
@@ -1446,6 +1459,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::BuilderAssoc
         | Instr::Freeze
         | Instr::Function(..)
+        | Instr::Method(..)
         | Instr::CurrentFunction
         | Instr::NewCell
         | Instr::AtomNew

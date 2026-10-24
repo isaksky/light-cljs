@@ -319,6 +319,7 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::NewMap
             | Opcode::ThrowError
             | Opcode::Function
+            | Opcode::Method
             | Opcode::Call
             | Opcode::GetCapture
             | Opcode::GetField
@@ -5375,6 +5376,91 @@ fn object_literals_and_named_properties() {
         )),
         122.0
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. The nested receiver row follows
+/// QuickJS test_language.js test_optional_chaining; the copyright/license
+/// notice on object_literals_and_named_properties covers this adapted row.
+#[test]
+fn object_literal_methods() {
+    assert_eq!(num("({b() { return this._b; }, _b: {c: 42}}).b().c"), 42.0);
+    assert_eq!(num("({get() { return 1; }}).get()"), 1.0);
+    assert_eq!(num("({static() { return 42; }}).static()"), 42.0);
+    assert_eq!(eval("({m() {}}).m.prototype"), ValueView::Undefined);
+    assert_eq!(
+        eval("let o = {m() { return this; }}; o.m() === o"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(string("({m() {}}).m.name"), "m");
+    assert_eq!(string("({1.5() {}})[1.5].name"), "1.5");
+    assert_eq!(string(r#"({"s"() {}}).s.name"#), "s");
+    assert_eq!(num("({if() { return 42; }}).if()"), 42.0);
+    assert_eq!(num("({async() { return 42; }}).async()"), 42.0);
+    assert_eq!(
+        num("({set(a = 42) { return arguments.length + a; }}).set()"),
+        42.0
+    );
+    assert_eq!(
+        eval("let o = {m() { return () => this; }}; o.m()() === o"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("let f = ({m() { return this; }}).m; f()"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        eval(
+            "let o = {m() {}}; let d = Object.getOwnPropertyDescriptor(o, 'm'); d.writable && d.enumerable && d.configurable"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        failure("let o = {m() {}}; new o.m()").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        num("({__proto__: null, __proto__() { return 42; }}).__proto__()"),
+        42.0
+    );
+    assert_eq!(
+        num("const a = 20, b = 22; ({m() { return a + b; }}).m()"),
+        42.0
+    );
+    assert_eq!(num("let m = 42; ({m() { return m; }}).m()"), 42.0);
+    assert_eq!(
+        num("let o = {x: 1, m() { return this.x; }}; o.m.call({x: 42})"),
+        42.0
+    );
+    assert_eq!(
+        num("let i = 0; let o = {m() { i = i + 1; return i; }}; o.m() + o.m()"),
+        3.0
+    );
+    assert_eq!(num("({m(a, b = 1, c) {}}).m.length"), 1.0);
+    assert_eq!(
+        eval("Object.getOwnPropertyDescriptor(({m() {}}).m, 'prototype') === undefined"),
+        ValueView::Bool(true)
+    );
+}
+
+/// Corrupted bytecode must account for a method's extra home-object operand.
+#[test]
+fn method_bytecode_requires_a_home_object() {
+    let mut spec = exe("(() => {})").to_spec();
+    let at = decode(&spec.code)
+        .into_iter()
+        .find(|(_, op)| *op == Opcode::Function)
+        .unwrap()
+        .0;
+    spec.code[at] = Opcode::Method as u8;
+    assert_eq!(
+        Executable::load(spec).unwrap_err().kind,
+        ValidationErrorKind::StackUnderflow {
+            opcode: Opcode::Method,
+            depth: 0
+        }
+    );
+    let spec = exe("let x = 1; ({m() { return x; }}).m()").to_spec();
+    assert_eq!(Executable::load(spec.clone()).unwrap().to_spec(), spec);
 }
 
 /// A call whose callee is a property reference passes its base as `this`

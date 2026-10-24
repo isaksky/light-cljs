@@ -343,9 +343,8 @@ impl Function {
     }
 }
 
-/// Which syntax produced a [`Function`]. The subset has no `this`,
-/// `arguments`, `new.target` or `super`, so an arrow function behaves as an
-/// anonymous function expression with the same parameters and body.
+/// Which syntax produced a [`Function`]. Ordinary functions and methods own
+/// their `this` and arguments; arrows inherit both from the enclosing function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionKind {
     /// A `function` declaration or expression.
@@ -355,6 +354,9 @@ pub enum FunctionKind {
     /// `params => expression`: `body` is exactly one `return expression`
     /// statement whose span is the expression's.
     ConciseArrow,
+    /// A concise object-literal method, with its own `this` and arguments,
+    /// no constructor capability, and an immutable home object.
+    Method,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -652,7 +654,12 @@ impl PropertyDef {
     /// sets the literal's prototype instead of defining a property
     /// (clj-quickjs-121; ECMAScript PropertyDefinitionEvaluation).
     pub fn sets_prototype(&self) -> bool {
-        !self.shorthand && self.name.is_proto()
+        !self.shorthand && self.name.is_proto() && !self.is_method()
+    }
+
+    /// A concise method definition rather than a function-valued property.
+    pub fn is_method(&self) -> bool {
+        matches!(&self.value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Method)
     }
 }
 

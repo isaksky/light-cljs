@@ -243,6 +243,7 @@ fn render_function(f: &Function) -> String {
             params.join(" ")
         ),
         FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
+        FunctionKind::Method => format!("(method ({})", params.join(" ")),
         FunctionKind::ConciseArrow => {
             let [
                 Stmt {
@@ -1612,7 +1613,6 @@ fn object_literals() {
     rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
     rejects_with("({[k]: 1});", Unsupported, 1, 3, "computed property names");
     rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
-    rejects_with("({m() {}});", Unsupported, 1, 3, "methods");
     rejects_with("({get x() {}});", Unsupported, 1, 3, "getters and setters");
     rejects_with("({set x(v) {}});", Unsupported, 1, 3, "getters and setters");
     rejects_with("({async m() {}});", Unsupported, 1, 3, "async methods");
@@ -1642,6 +1642,77 @@ fn object_literals() {
     );
     rejects_with("({a: 1 b: 2});", UnexpectedToken, 1, 8, "");
     rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
+}
+
+#[test]
+fn object_literal_methods() {
+    let script = parse_script(
+        r#"({m() {}, "s"(a) {}, 1() {}, get() {}, set() {}, async() {}, static() {}, if() {}})"#,
+    )
+    .unwrap();
+    let StmtKind::Expr(expr) = &script.body[0].kind else {
+        panic!("expression")
+    };
+    let ExprKind::Object(properties) = &expr.kind else {
+        panic!("object")
+    };
+    assert_eq!(properties.len(), 8);
+    for (index, property) in properties.iter().enumerate() {
+        let ExprKind::Function(f) = &property.value.kind else {
+            panic!("method")
+        };
+        assert_eq!(f.kind, FunctionKind::Method);
+        assert!(f.strict);
+        assert!(f.name.is_none());
+        assert_eq!(f.params.len(), usize::from(index == 1));
+        assert!(!property.sets_prototype());
+    }
+    assert_eq!(properties[0].name, PropertyName::Identifier("m".into()));
+    assert_eq!(properties[1].name, PropertyName::String("s".into()));
+    assert_eq!(properties[2].name, PropertyName::Number(1.0));
+
+    for src in [
+        "({m(a, a) {}})",
+        "({m(eval) {}})",
+        "({m(a = 1) { 'use strict'; }})",
+        "while (true) { ({m() { break; }}); }",
+    ] {
+        assert!(parse_script(src).is_err(), "{src}");
+    }
+    // Method strictness must not leak to the surrounding sloppy script,
+    // including the token lexed immediately after the method's closing brace.
+    let sloppy = parse_script_with("({m() {}})\n010", ScriptOptions::SLOPPY).unwrap();
+    assert!(!sloppy.strict);
+    assert!(parse_script_with("({m() { return 010; }})", ScriptOptions::SLOPPY).is_err());
+    parse_script("({m(a = this) { return a; }, n() {}})").unwrap();
+}
+
+#[test]
+fn object_literal_methods_nesting_fits_a_2_mib_stack() {
+    // Each level combines an object and a function, so both nesting costs
+    // apply. Exercise every accepted depth in parsing and lowering.
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            for (prefix, suffix) in [("{m() { return ", "}}"), ("{m(a = ", ") {}}")] {
+                let mut deepest = 0;
+                for n in 1..=MAX_NESTING {
+                    let src = format!("let x = {}1{};", prefix.repeat(n), suffix.repeat(n));
+                    match compile_script("method-nesting", &src) {
+                        Ok(_) => deepest = n,
+                        Err(e) if e.kind == SyntaxErrorKind::TooDeep => break,
+                        Err(e) => panic!("method nesting at {n}: {e}"),
+                    }
+                }
+                assert!(
+                    deepest >= 20,
+                    "only {deepest} combined object/function levels"
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 /// `o.name = v` (clj-quickjs-114), compound assignment (clj-quickjs-260)
