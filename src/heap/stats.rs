@@ -66,6 +66,8 @@ pub struct ObjectCounts {
     /// Task-owned JavaScript WeakMaps.
     pub weak_map: usize,
     pub async_state: usize,
+    /// Task-owned JavaScript WeakRefs.
+    pub weak_ref: usize,
 }
 
 impl ObjectCounts {
@@ -92,6 +94,7 @@ impl ObjectCounts {
             + self.generator
             + self.weak_map
             + self.async_state
+            + self.weak_ref
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -110,6 +113,7 @@ impl ObjectCounts {
             HeapObject::Array(_) => &mut self.array,
             HeapObject::JsMap(_) => &mut self.js_map,
             HeapObject::WeakMap(_) => &mut self.weak_map,
+            HeapObject::WeakRef(_) => &mut self.weak_ref,
 
             HeapObject::ArrayBuffer(_) => &mut self.array_buffer,
             HeapObject::TypedArray(_) => &mut self.typed_array,

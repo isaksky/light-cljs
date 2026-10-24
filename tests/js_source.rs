@@ -22847,3 +22847,109 @@ fn intl_date_time_format_time_options() {
         );
     }
 }
+/// Adapted from QuickJS tests/test_builtin.js test_weak_ref, revision
+/// 7d1c13c5d8f8; MIT notice in docs/attribution.md, "JavaScript WeakRef tests".
+/// Synthetic fixture, not light-cljs output. Same-job expectations use
+/// ECMA-262 kept objects instead of QuickJS's immediate reference counting.
+#[test]
+fn weak_ref_deref_within_job() {
+    let rt = Runtime::new();
+    let code = compile_script(
+        "weak-ref",
+        r#"
+        for (let i = 0; i < 2; i++) {
+            let o = i === 0 ? {} : Symbol('x');
+            let w1 = new WeakRef(o); let w2 = new WeakRef(o);
+            if (w1.deref() !== o || w2.deref() !== o) throw 'identity';
+            o = null;
+            __rt.need(176 + i, 1);
+            if (typeof w1.deref() !== (i === 0 ? 'object' : 'symbol') ||
+                w1.deref() !== w2.deref()) throw 'lost kept target';
+        }
+        let errors = 0;
+        for (let bad of [1, Symbol.for('r')]) {
+            try { new WeakRef(bad); } catch(e) { if (e instanceof TypeError) errors++; }
+        }
+        errors === 2
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Undefined);
+        let wakes = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap();
+        assert_eq!(wakes.task_ids(), [task.id()]);
+    }
+    let RunOutcome::Complete(result) = task.run().unwrap() else {
+        panic!("expected complete")
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn weak_ref_brand_properties_and_errors() {
+    for source in [
+        "let w = new WeakRef({}); w instanceof WeakRef && w.constructor === WeakRef && WeakRef.name === 'WeakRef' && WeakRef.length === 1 && w[Symbol.toStringTag] === 'WeakRef' && Object.getPrototypeOf(w) === WeakRef.prototype",
+        "let d = Object.getOwnPropertyDescriptor(WeakRef.prototype, 'deref'); d.writable && !d.enumerable && d.configurable && d.value.name === 'deref' && d.value.length === 0",
+        "let d = Object.getOwnPropertyDescriptor(WeakRef.prototype, Symbol.toStringTag); d.value === 'WeakRef' && !d.writable && !d.enumerable && d.configurable",
+        "let o = {}; let w = new WeakRef(o); let d = w.deref; d.call(w) === o && Reflect.apply(d, w, []) === o && d.bind(w)() === o && __rt.reduce(d.bind(w), 0, __rt.vector(1)) === o",
+        "let o = {}; let w = new WeakRef(o); w.x = o; Object.freeze(w); w.deref() === o && w.x === o && Object.isFrozen(w) && Object.keys(w).length === 1",
+        "let w = new WeakRef({}); Object.defineProperty(w, 'x', {value: 7, configurable: true}); w.x === 7 && delete w.x && !('x' in w)",
+        "new WeakRef(Symbol.iterator).deref() === Symbol.iterator",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "WeakRef({})",
+        "new WeakRef()",
+        "new WeakRef(null)",
+        "new WeakRef('x')",
+        "new WeakRef(true)",
+        "new WeakRef(1n)",
+        "WeakRef.prototype.deref()",
+        "WeakRef.prototype.deref.call({})",
+        "WeakRef.prototype.deref.call(null)",
+        "new WeakRef.prototype.deref()",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. An embedder may pass raw
+/// handles between tasks, but WeakRef operations still enforce ownership.
+#[test]
+fn weak_refs_reject_access_from_another_task() {
+    let rt = Runtime::new();
+    let owner = rt.spawn(&exe("new WeakRef({})"), &[]).unwrap();
+    let RunOutcome::Complete(weak) = owner.run().unwrap() else {
+        panic!("WeakRef expected")
+    };
+    for body in [
+        "w.deref()",
+        "WeakRef.prototype.deref.call(w)",
+        "Reflect.apply(WeakRef.prototype.deref, w, [])",
+        "Object.defineProperty(w, 'x', {value: 1})",
+        "Object.getOwnPropertyDescriptor(w, 'x')",
+        "delete w.x",
+        "w.x = 1",
+        "Object.keys(w)",
+        "Object.getPrototypeOf(w)",
+        "Object.setPrototypeOf(w, {})",
+        "Object.isFrozen(w)",
+        "Object.freeze(w)",
+    ] {
+        let code = compile_function(&format!("function read(w) {{ return {body}; }}")).unwrap();
+        let task = rt.spawn(&code, &[&weak]).unwrap();
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+            "{body}"
+        );
+    }
+}
+

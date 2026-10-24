@@ -102,11 +102,13 @@ enum Holder {
     SuspendedAsync,
     UnhandledRejection,
     TaskGlobalLexicals,
+    WeakRefProperties,
+    KeptObjects,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 42] = [
+const HOLDERS: [Holder; 44] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -149,6 +151,8 @@ const HOLDERS: [Holder; 42] = [
     Holder::SuspendedAsync,
     Holder::UnhandledRejection,
     Holder::TaskGlobalLexicals,
+    Holder::WeakRefProperties,
+    Holder::KeptObjects,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -165,7 +169,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 21] = [
+const KINDS: [ObjectKind; 22] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -187,6 +191,7 @@ const KINDS: [ObjectKind; 21] = [
     ObjectKind::Generator,
     ObjectKind::WeakMap,
     ObjectKind::AsyncState,
+    ObjectKind::WeakRef,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -214,6 +219,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             TypedArrayEdges,
             EphemeronValue,
             WeakMapEntries,
+            WeakRefProperties,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -233,6 +239,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             TaskGlobalObject,
             ArrayBufferProperty,
             TaskGlobalLexicals,
+            KeptObjects,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -276,6 +283,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::BoundFunction => &[BoundFunction],
         ObjectKind::JsMap => &[JsMapEntries],
         ObjectKind::WeakMap => &[WeakMapEntries],
+        ObjectKind::WeakRef => &[WeakRefProperties],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -317,6 +325,14 @@ fn coverage(holder: Holder) -> Coverage {
                 Promises,
                 "unhandled_rejection_roots_are_retained_and_reclaimed",
             ),
+        },
+        Holder::WeakRefProperties => Coverage {
+            retains: (Gc, "weak_ref_properties_and_prototype_are_traced"),
+            reclaims: (Gc, "weak_ref_properties_and_prototype_are_traced"),
+        },
+        Holder::KeptObjects => Coverage {
+            retains: (Gc, "kept_objects_survive_need_wait"),
+            reclaims: (Gc, "weak_ref_cleared_after_job_and_collection"),
         },
         Holder::WeakNotification => Coverage {
             retains: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
@@ -898,7 +914,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 276); // Includes DateTimeFormat, global eval and Math.sumPrecise.
+    assert_eq!(ids.len(), 279); // Includes WeakRef prototype and two builtins.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

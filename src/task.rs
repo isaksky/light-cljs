@@ -1352,6 +1352,9 @@ impl RunGuard<'_> {
                     if vm.script_result.is_none() {
                         vm.script_result = Some(value);
                     }
+                    // ClearKeptObjects on the owning task, after the script
+                    // body and each job, before selecting the next activation.
+                    vm.kept_objects.clear();
                     task.jobs.boundary();
                     let timers_pending = self
                         .vm()

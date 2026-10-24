@@ -396,6 +396,8 @@ pub(crate) enum Builtin {
     SimGc,
     SimSetTimeout,
     SimClearTimeout,
+    WeakRef,
+    WeakRefDeref,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -597,6 +599,8 @@ impl Builtin {
             Builtin::WeakMapGet => "get",
             Builtin::WeakMapHas => "has",
             Builtin::WeakMapDelete => "delete",
+            Builtin::WeakRef => "WeakRef",
+            Builtin::WeakRefDeref => "deref",
             Builtin::MapSet => "set",
             Builtin::MapGet => "get",
             Builtin::MapHas => "has",
@@ -768,6 +772,8 @@ impl Builtin {
             | Builtin::MapDelete
             | Builtin::MapForEach => 1,
             Builtin::MapSet | Builtin::WeakMapSet => 2,
+            Builtin::WeakRef => 1,
+            Builtin::WeakRefDeref => 0,
             Builtin::WeakMap
             | Builtin::WeakMapGet
             | Builtin::WeakMapHas
@@ -978,6 +984,8 @@ pub(crate) fn call(
         Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
         Builtin::Map => Err(Fault::TypeError("Map requires new".to_string())),
         Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
+        Builtin::WeakRef => Err(Fault::TypeError("WeakRef requires new".into())),
+        Builtin::WeakRefDeref => Err(Fault::Internal("WeakRef.deref requires task kept objects")),
         Builtin::WeakMapSet
         | Builtin::WeakMapGet
         | Builtin::WeakMapHas
@@ -1907,9 +1915,10 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                     Ok("Function")
                 }
                 HeapObject::Array(_) => Ok("Array"),
-                HeapObject::Native(_) | HeapObject::JsMap(_) | HeapObject::WeakMap(_) => {
-                    Ok("Object")
-                }
+                HeapObject::Native(_)
+                | HeapObject::JsMap(_)
+                | HeapObject::WeakMap(_)
+                | HeapObject::WeakRef(_) => Ok("Object"),
                 HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
@@ -1955,6 +1964,69 @@ pub(crate) fn weak_map_constructor(
     )))
     .map(Value::Object)
     .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+/// State-dependent leaf call. Every dynamically resolved builtin call uses
+/// this entry, including forwarding and callbacks from resumable natives.
+/// The running mutator cannot collect between reading a slot and keeping it.
+pub(crate) fn call_in_state(
+    heap: &Heap,
+    state: &mut super::frames::VmState,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    if which != Builtin::WeakRefDeref {
+        return call(heap, state.diag.task, which, this, args);
+    }
+    let invalid = || Fault::TypeError("WeakRef.prototype.deref requires a WeakRef receiver".into());
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    let value = heap
+        .read(*id, |object| {
+            let HeapObject::WeakRef(weak) = object else {
+                return Err(invalid());
+            };
+            if weak.object().owner() != Some(state.diag.task) {
+                return Err(Fault::ForeignObject {
+                    owner: weak.object().owner(),
+                    caller: state.diag.task,
+                });
+            }
+            Ok(weak.deref())
+        })
+        .unwrap_or(Err(Fault::Internal("WeakRef receiver was reclaimed")))?;
+    if let Some(edge) = crate::object::weak_map::weak_key(&value) {
+        state
+            .kept_objects
+            .entry(edge)
+            .or_insert_with(|| value.clone());
+    }
+    Ok(value)
+}
+
+pub(crate) fn weak_ref_constructor(
+    heap: &Heap,
+    state: &mut super::frames::VmState,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let target = args.first().unwrap_or(&Value::Undefined);
+    let edge = crate::object::weak_map::weak_key(target)
+        .ok_or_else(|| Fault::TypeError("invalid WeakRef target".into()))?;
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .weak_ref_prototype;
+    let id = heap
+        .alloc(HeapObject::WeakRef(Box::new(
+            crate::object::weak_ref::WeakRefObject::new(state.diag.task, prototype, target, edge),
+        )))
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    state
+        .kept_objects
+        .entry(edge)
+        .or_insert_with(|| target.clone());
+    Ok(Value::Object(id))
 }
 
 fn weak_map_operation(

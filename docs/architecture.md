@@ -316,6 +316,8 @@ public API cannot reach.
 | typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
 | built-in iterator source internal slot | `PersistentHandle` (`PlainObject` cursor → source array) | `builtin_iterator_source_retains_and_reclaims` *(lib)* | `builtin_iterator_source_retains_and_reclaims` *(lib)* |
 | bounded unhandled Promise/reason queue | `TaskFrame` (task inbox, including after completion) | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* |
+| WeakRef ordinary properties and prototype | `PersistentHandle` (`WeakRef`) | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* | `weak_ref_properties_and_prototype_are_traced` *(tests/gc.rs)* |
+| task kept objects for the active job | `TaskFrame`, running or suspended task state | `kept_objects_survive_need_wait` *(tests/gc.rs)* | `weak_ref_cleared_after_job_and_collection` *(tests/gc.rs)* |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -7056,3 +7058,38 @@ completion with bounded deadlines. Semantic references are `js_std_gc`,
 `research/quickjs/tests/test_builtin.js`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. No upstream source/test text was
 adapted.
+## WeakRef targets and task kept objects (clj-quickjs-176)
+
+The append-only `WeakRef` heap kind contains an ordinary task-owned property
+record and one collector `WeakSlot`. Slots now identify either objects or
+symbols via `TraceEdge`, using the same private identities and mark set as
+WeakMap. The symbol's immutable body is retained as untraced metadata so deref
+can reconstruct its value; Arc ownership does not establish symbol liveness.
+Only the collector clears slots. The notifying-slot interface remains available
+for FinalizationRegistry; no callback or payload destruction runs in the pause.
+WeakRef ordinary properties and its prototype are strong edges independently
+of the weak target.
+
+Each task's `VmState.kept_objects` is a deduplicated identity-to-value set.
+Construction and every successful deref insert a strong value before the next
+safepoint. All dynamic builtin call paths, including forwarded calls and native
+callbacks, use the state-aware leaf dispatcher. The existing task-frame trace
+reports the set for both suspended tasks and running safepoints. A generator
+activation does not own or move this set. A budget yield, migration, or waiting
+on `__rt.need` stays inside the same job, retaining these targets. The owner
+clears the set after its script body and after every completed queued job,
+before another activation starts. Terminal failure/cancellation drops VM state
+and releases the set through the existing task teardown.
+
+WeakRef instances classify as TaskOwned, even with a shareable target or after
+freezing; transitive publication and atom/dependency publication reject them.
+Receiver and ordinary property/prototype/integrity operations reject foreign
+tasks, matching WeakMap. Cross-task publication is explicitly deferred: there
+is no foreign task allowed to add to another task's kept set.
+
+Tests cover constructor keep-alives over waits, successful deref keep-alives,
+clearing after script/job completion, strong-target variants, symbol targets,
+forwarded/native calls, properties/prototypes and publication. Collection uses
+embedding-driven need waits and Promise jobs while the host collection-point
+and timer facilities of -175 are absent. The timer-specific acceptance case
+remains pending that prerequisite; WeakRef itself adds no substitute globals.

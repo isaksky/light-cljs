@@ -882,7 +882,7 @@ fn object_property_reclaims() {
     // `String.prototype` (clj-quickjs-73), `Reflect` (clj-quickjs-102)
     // `Math` (clj-quickjs-152), `Error.prototype` (clj-quickjs-228) and the
     // seven NativeError prototypes (clj-quickjs-229), JSON (clj-quickjs-159),
-    // Map.prototype (clj-quickjs-169), WeakMap.prototype (clj-quickjs-173),
+    // Map.prototype (clj-quickjs-169), WeakMap.prototype (clj-quickjs-173), WeakRef.prototype (clj-quickjs-176),
     // ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
     // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188),
@@ -901,7 +901,7 @@ fn object_property_reclaims() {
     assert_eq!(rt.heap_usage().objects.plain, 3 + 43);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 43);
+    assert_eq!(rt.heap_usage().objects.plain, 44);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1102,8 +1102,9 @@ fn realm_intrinsics_retain() {
     // DateTimeFormat adds one prototype and five built-ins (-215).
     // Indirect eval adds one built-in function (-106).
     // Math.sumPrecise adds one built-in function (-158).
-    assert_eq!(rt.heap_usage().objects.builtin, 233);
-    assert_eq!(rt.heap_usage().objects.plain, 43);
+        // WeakRef adds one prototype and two built-in functions (-176).
+    assert_eq!(rt.heap_usage().objects.builtin, 235);
+    assert_eq!(rt.heap_usage().objects.plain, 44);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1323,7 +1324,7 @@ fn array_element_reclaims() {
     assert_retained(&rt, &held);
     // The argument and the three arrays go together; the realm's
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
-    // NativeErrors, `Map`, `WeakMap`, `ArrayBuffer`, `Intl.Locale`, `Intl.NumberFormat`,
+    // NativeErrors, `Map`, `WeakMap`, `WeakRef`, `ArrayBuffer`, `Intl.Locale`, `Intl.NumberFormat`,
     // `Date`, `RegExp`, `BigInt`, `Generator`, the three iterator prototypes and the eleven
     // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
     let Held {
@@ -1993,7 +1994,7 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 43);
+        assert_eq!(rt.heap_usage().objects.plain, 44);
     }
 }
 
@@ -2018,7 +2019,7 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 43);
+        assert_eq!(rt.heap_usage().objects.plain, 44);
     }
 }
 
@@ -2097,6 +2098,6 @@ fn intl_date_time_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 43);
+        assert_eq!(rt.heap_usage().objects.plain, 44);
     }
 }

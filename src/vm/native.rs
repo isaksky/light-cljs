@@ -2298,7 +2298,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         Action::Builtin { which, args } => {
             state.natives.pop();
             if !start_builtin(heap, state, which, &Value::Undefined, &args, false, 0)? {
-                let result = builtin::call(heap, state.diag.task, which, &Value::Undefined, &args)?;
+                let result = builtin::call_in_state(heap, state, which, &Value::Undefined, &args)?;
                 state.push(result);
             }
             Ok(Flow::Next)
@@ -2329,7 +2329,8 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                     // Runs to completion (`crate::vm::builtin`); no safepoint
                     // falls between here and the push that roots its result.
                     // The next step receives it like a callback's return.
-                    let result = builtin::call(heap, task, which, &call.this, &call.args)?;
+                    let result =
+                        builtin::call_in_state(heap, state, which, &call.this, &call.args)?;
                     state.push(result);
                     return Ok(Flow::Next);
                 }

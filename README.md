@@ -3627,3 +3627,26 @@ automatic collection and coupling to the simulated Date clock. Collection points
 require no enclosing heap scope/native operation or second run guard.
 Verify with `CARGO_BUILD_JOBS=3 cargo test --lib task::sim_tests:: -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --test sim_facilities -- --test-threads=3`.
+### JavaScript WeakRef (clj-quickjs-176)
+
+Supported: `new WeakRef(target)` for objects and non-registered symbols,
+`WeakRef.prototype.deref()`, receiver checks, constructor metadata and
+`Symbol.toStringTag`. Other targets and calls without `new` throw TypeError.
+Constructor targets and successful dereferences stay strongly reachable until
+that task completes its current script body or job. Budget yields, worker
+migration, generator suspension and `__rt.need` waits stay inside that job.
+Collection after the boundary clears targets with no remaining strong path;
+subsequent dereferences return `undefined`.
+
+WeakRefs are task-owned, including frozen instances: publication rejects them
+transitively, and another task cannot use their properties or dereference them.
+Cross-task WeakRef publication is deferred, as for WeakMap. Host timers and
+source collection points (-175) remain unavailable; current tests collect at
+need waits in Promise jobs. Timer-specific acceptance remains pending -175.
+FinalizationRegistry (-177) continues to use the reusable collector notification
+interface; WeakRefs do not request notifications.
+
+Checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_ref -- --test-threads=3`,
+`CARGO_BUILD_JOBS=3 cargo test --test gc weak_ref -- --test-threads=3`,
+`CARGO_BUILD_JOBS=3 cargo test --test gc kept_objects -- --test-threads=3`, and
+`CARGO_BUILD_JOBS=3 cargo test --test publication weak_refs -- --test-threads=3`.

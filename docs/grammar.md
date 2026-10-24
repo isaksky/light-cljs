@@ -523,6 +523,11 @@ Number `toFixed`, `toExponential` and `toPrecision` are supported
 remain an explicit RangeError resource limit; budgeted generic numeric
 conversion remains deferred (clj-quickjs-265).
 
+WeakRef instances cannot be published across tasks (clj-quickjs-176). Host
+timers and the source-level collection point remain in clj-quickjs-175;
+WeakRef collection tests currently use dependency waits and Promise jobs.
+
+
 Generator `return(value)` and `throw(error)` are deferred.
 `return` and `throw` methods are absent from the generator prototype, so yield*
 does not yet forward abrupt resumes to its delegate (clj-quickjs-245). Async
@@ -3591,12 +3596,12 @@ after all jobs drain; an uncaught job exception fails the task and discards
 the tail. Jobs share the run's instruction budget and can yield, migrate or
 wait on `__rt.need`; a wait suspends the whole task, including queued jobs.
 Consumer cancellation discards pending jobs and uses the active activation's
-existing finally cleanup. An internal boundary hook runs after the body and
-after jobs for future WeakRef kept-object clearing.
+existing finally cleanup. ClearKeptObjects runs on the owning task after
+the body and after each completed job (clj-quickjs-176).
 
 Explicit gaps: enqueue is crate-internal, with no new syntax or global API.
-Promise reactions and async resumes use this queue. FinalizationRegistry cleanup
-producers, WeakRef kept-object clearing and host timers remain deferred.
+Promise reactions, async resumes and host timers use this queue.
+FinalizationRegistry cleanup producers remain deferred.
 Cross-task delivery transfers shareable arguments to an owner-registered
 callable without running JavaScript during publication. Future rejection
 reporting waits for quiescence after jobs and timers, not individual jobs.
@@ -4924,3 +4929,21 @@ arguments, automatic collection and Date-clock coupling remain deferred.
 Collection points inside an enclosing heap scope/native operation/additional
 run guard, or reentered from the same collection's observer, fail explicitly.
 WeakRef/FinalizationRegistry semantics remain owned by their separate pellets.
+### Execution: WeakRef (clj-quickjs-176)
+
+`new WeakRef(target)` accepts objects and symbols other than `Symbol.for`
+symbols. Other primitives, a missing argument, and calling `WeakRef` without
+`new` throw TypeError. `WeakRef.prototype.deref()` has length 0, checks the
+receiver's internal brand and owning task, and returns the live target or
+`undefined` after the collector clears its slot. The prototype has a
+non-writable, non-enumerable, configurable `Symbol.toStringTag` of `"WeakRef"`.
+Construction and successful deref keep the target alive until the end of the
+owning task's current script body or job. A yield, worker migration or wait on
+`__rt.need` does not end that job. Strong targets remain available across jobs;
+collection can clear targets after their last strong reference and kept-object
+entry disappear. WeakRef instances and ordinary properties remain task-owned.
+
+Explicit gaps: publishing WeakRefs across tasks is deferred, including frozen
+instances. Host timer/collection-point integration awaits -175; Promise-job and
+embedding collection tests cover the available job boundaries. This adds no
+FinalizationRegistry API (-177) or automatic collection trigger.

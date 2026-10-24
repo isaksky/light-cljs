@@ -160,7 +160,7 @@ impl JobInbox {
         }
     }
 
-    /// Extension point for ClearKeptObjects: after the script and after
+    /// Called by the owner after ClearKeptObjects: after the script and
     /// each completed job, before the next job or reporting an outcome.
     pub(crate) fn boundary(&self) {
         #[cfg(test)]

@@ -235,6 +235,10 @@ pub(crate) struct VmState {
     pub(crate) script_result: Option<Value>,
     // Diagnostic identities only: deliberately not traced.
     pub(crate) suspended_async: Vec<(ObjectId, String)>,
+    /// AddToKeptObjects: deduplicated strong targets for this task's current
+    /// job. Yields, native callbacks, generators and dependency waits are not
+    /// job boundaries. Both parked and running VM tracing includes this set.
+    pub(crate) kept_objects: std::collections::HashMap<crate::heap::gc::TraceEdge, Value>,
     /// Mutable global state belongs to the task, independently of workers.
     pub(crate) global_object: Option<ObjectId>,
     /// Script lexical bindings, including TDZ cells. Eval-local lexicals
@@ -395,6 +399,7 @@ impl VmState {
             jobs: std::sync::Weak::new(),
             script_result: None,
             suspended_async: Vec::new(),
+            kept_objects: std::collections::HashMap::new(),
             global_object: None,
             global_lexicals: std::collections::HashMap::new(),
             entry: Frame {
@@ -483,6 +488,7 @@ impl VmState {
         next.global_lexicals = std::mem::take(&mut self.global_lexicals);
         next.script_result = self.script_result.take();
         next.suspended_async = std::mem::take(&mut self.suspended_async);
+        next.kept_objects = std::mem::take(&mut self.kept_objects);
         next.builders = std::mem::take(&mut self.builders);
         *self = next;
     }
@@ -1123,6 +1129,7 @@ impl Trace for VmState {
         if let Some(host) = &self.sim_host {
             host.trace(visit);
         }
+        self.kept_objects.values().for_each(|v| v.trace(visit));
         if let Some(value) = &self.script_result {
             value.trace(visit);
         }

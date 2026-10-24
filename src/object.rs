@@ -70,6 +70,7 @@
 pub(crate) mod array;
 pub(crate) mod map;
 pub(crate) mod weak_map;
+pub(crate) mod weak_ref;
 
 pub(crate) mod array_buffer;
 pub(crate) mod typed_array;

@@ -24,6 +24,195 @@ fn complete(outcome: RunOutcome) -> Rooted {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Promise reactions exercise
+/// the same job boundary as future host timers (-175). Until that facility
+/// lands, a need wait is the embedding-driven collection point.
+#[test]
+fn weak_ref_cleared_after_job_and_collection() {
+    use clj_quickjs::frontend::compile_script;
+    #[derive(Default)]
+    struct Record(Vec<bool>);
+    impl Host for Record {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            let Primitive::Bool(value) = call.arg else {
+                panic!("bool expected")
+            };
+            self.0.push(value);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for target in ["{}", "Symbol('target')"] {
+        for strong in [false, true] {
+            let rt = Runtime::new();
+            let source = format!(
+                "let target = {target}; const w = new WeakRef(target); if (!{strong}) target = null; Promise.resolve().then(() => {{ __rt.need(176, 1); __rt.effect(0, w.deref() === undefined); if ({strong} && w.deref() !== target) throw 'lost strong target'; }}); 42"
+            );
+            let task = rt
+                .spawn(&compile_script("weak-ref-next-job", &source).unwrap(), &[])
+                .unwrap();
+            let mut host = Record::default();
+            assert!(matches!(
+                task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                RunOutcome::Waiting(_)
+            ));
+            rt.collect().unwrap();
+            let request = task.take_producer_requests().pop().unwrap();
+            let ready = rt.root(Primitive::Undefined);
+            let wakes = rt
+                .complete(
+                    request.key(),
+                    request.producer(),
+                    clj_quickjs::Completion::Ready(&ready),
+                )
+                .unwrap();
+            assert_eq!(wakes.task_ids(), [task.id()]);
+            assert_eq!(
+                complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()).view(),
+                ValueView::Number(42.0)
+            );
+            assert_eq!(host.0, [!strong], "{target}, strong={strong}");
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Only the task's kept set
+/// retains the constructor target while the owning task is Waiting.
+#[test]
+fn kept_objects_survive_need_wait() {
+    use clj_quickjs::frontend::compile_script;
+    for (target, kind) in [("{}", "object"), ("Symbol('target')", "symbol")] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let w = new WeakRef({target}); __rt.need(176, 1); typeof w.deref() === '{kind}'"
+        );
+        let task = rt
+            .spawn(&compile_script("weak-ref-kept", &source).unwrap(), &[])
+            .unwrap();
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Undefined);
+        let wakes = rt
+            .complete(
+                request.key(),
+                request.producer(),
+                clj_quickjs::Completion::Ready(&ready),
+            )
+            .unwrap();
+        assert_eq!(wakes.task_ids(), [task.id()]);
+        // Migration does not clear the set either.
+        let result = thread::scope(|s| s.spawn(|| complete(task.run().unwrap())).join().unwrap());
+        assert_eq!(result.view(), ValueView::Bool(true), "{target}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Constructor, successful
+/// forwarded/native deref, and every subsequent job have separate lifetimes.
+#[test]
+fn weak_ref_deref_keeps_target_until_its_job_ends() {
+    use clj_quickjs::frontend::compile_script;
+    for deref in [
+        "w.deref()",
+        "Reflect.apply(WeakRef.prototype.deref, w, [])",
+        "__rt.reduce(w.deref.bind(w), 0, __rt.vector(1))",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            r#"
+            let target = {{}}; let w = new WeakRef(target);
+            Promise.resolve().then(() => {{
+                {deref}; target = null; __rt.need(176, 1);
+                if (typeof w.deref() !== 'object') throw 'lost deref target';
+            }});
+            Promise.resolve().then(() => {{
+                __rt.need(177, 1);
+                if (w.deref() !== undefined) throw 'kept beyond job';
+            }});
+            true
+        "#
+        );
+        let task = rt
+            .spawn(&compile_script("weak-ref-deref-job", &source).unwrap(), &[])
+            .unwrap();
+        for _ in 0..2 {
+            let outcome = task.run().unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::Waiting(_)),
+                "{deref}: {outcome:?}"
+            );
+            rt.collect().unwrap();
+            let request = task.take_producer_requests().pop().unwrap();
+            let ready = rt.root(Primitive::Undefined);
+            let wakes = rt
+                .complete(
+                    request.key(),
+                    request.producer(),
+                    clj_quickjs::Completion::Ready(&ready),
+                )
+                .unwrap();
+            assert_eq!(wakes.task_ids(), [task.id()]);
+        }
+        assert_eq!(
+            complete(task.run().unwrap()).view(),
+            ValueView::Bool(true),
+            "{deref}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Weak targets do not weaken
+/// ordinary property/prototype edges, and those edges die with their owner.
+#[test]
+fn weak_ref_properties_and_prototype_are_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let code = compile_function("function make() { let p = {}; let v = {}; let w = new WeakRef({}); w.own = v; Object.setPrototypeOf(w, p); return __rt.vector(w, p, v); }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    let (weak_ref, edges) = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        (
+            s.persist(s.nth(r, 0).unwrap()),
+            [
+                s.downgrade(s.nth(r, 1).unwrap()),
+                s.downgrade(s.nth(r, 2).unwrap()),
+            ],
+        )
+    });
+    drop((task, result));
+    rt.collect().unwrap();
+    assert!(edges.iter().all(|edge| edge.is_live()));
+    drop(weak_ref);
+    rt.collect().unwrap();
+    assert!(edges.iter().all(|edge| !edge.is_live()));
+    assert_eq!(rt.heap_usage().objects.weak_ref, 0);
+}
+
+/// Synthetic fixture, not light-cljs output. Neither a VM budget yield nor
+/// a detached generator activation ends the enclosing task's current job.
+#[test]
+fn weak_ref_kept_objects_survive_yields_and_generator_suspend() {
+    use clj_quickjs::frontend::compile_script;
+    let rt = Runtime::new();
+    let code = compile_script("weak-ref-generator", "function* make() { let w = new WeakRef({}); yield 0; return typeof w.deref() === 'object'; } let g = make(); g.next(); g.next().value").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    // A fixed instruction bound fails instead of hanging on a broken resume.
+    for _ in 0..1000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                return;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    panic!("generator did not finish");
+}
+
 #[test]
 fn suspended_generator_operands_and_completions_are_traced() {
     // Synthetic fixtures, not light-cljs output. Only a saved operand or

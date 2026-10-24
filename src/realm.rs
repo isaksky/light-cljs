@@ -212,11 +212,12 @@ pub(crate) enum Global {
     Promise = 37,
     WeakMap = 38,
     Eval = 39,
+    WeakRef = 40,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 40] = [
+    const ALL: [Global; 41] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -257,6 +258,7 @@ impl Global {
         Global::Promise,
         Global::WeakMap,
         Global::Eval,
+        Global::WeakRef,
     ];
 
     /// The JavaScript name.
@@ -290,6 +292,7 @@ impl Global {
             Global::Symbol => "Symbol",
             Global::Map => "Map",
             Global::WeakMap => "WeakMap",
+            Global::WeakRef => "WeakRef",
 
             Global::ArrayBuffer => "ArrayBuffer",
 
@@ -381,6 +384,8 @@ pub(crate) struct Intrinsics {
     map: ObjectId,
     pub(crate) weak_map_prototype: ObjectId,
     weak_map: ObjectId,
+    pub(crate) weak_ref_prototype: ObjectId,
+    weak_ref: ObjectId,
 
     pub(crate) array_buffer_prototype: ObjectId,
     array_buffer: ObjectId,
@@ -493,6 +498,7 @@ impl Intrinsics {
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
             Global::WeakMap => Value::Object(self.weak_map),
+            Global::WeakRef => Value::Object(self.weak_ref),
             Global::Date => Value::Object(self.date),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
@@ -1025,6 +1031,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
     let (weak_map_prototype, weak_map) = weak_map_intrinsics(&mut b, object_prototype)?;
+    let (weak_ref_prototype, weak_ref) = weak_ref_intrinsics(&mut b, object_prototype)?;
 
     let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
 
@@ -1239,6 +1246,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         map,
         weak_map_prototype,
         weak_map,
+        weak_ref_prototype,
+        weak_ref,
         intl,
         intl_locale_prototype,
 
@@ -2115,6 +2124,41 @@ fn intl_date_time_format_intrinsics(
     Some((prototype, bound))
 }
 
+/// WeakRef's ordinary prototype is not itself a branded WeakRef.
+fn weak_ref_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::WeakRef,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    let deref = b.function(Builtin::WeakRefDeref, &[])?;
+    b.add(prototype, "deref", deref, PropertyFlags::METHOD)?;
+    let tag_key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    b.heap
+        .with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("WeakRef")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
+    Some((prototype, constructor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2232,7 +2276,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 276); // Includes DateTimeFormat, global eval and Math.sumPrecise.
+        assert_eq!(first.all.len(), 279); // Includes WeakRef prototype and two builtins.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2298,7 +2342,9 @@ mod tests {
         assert_eq!(Global::from_u16(38), Some(Global::WeakMap));
         assert_eq!(Global::from_name("eval"), Some(Global::Eval));
         assert_eq!(Global::from_u16(39), Some(Global::Eval));
-        assert_eq!(Global::from_u16(40), None);
+        assert_eq!(Global::from_u16(40), Some(Global::WeakRef));
+        assert_eq!(Global::from_name("WeakRef"), Some(Global::WeakRef));
+        assert_eq!(Global::from_u16(41), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

@@ -1026,3 +1026,18 @@ notice above the date-field test covers these rows. Native Rust interprets the
 existing generated date/time/combined pools, preserving their Unicode/QuickJS
 notices and provenance. No table bytes, importer or generated representation
 changed, and no C engine is linked.
+## JavaScript WeakRef tests (clj-quickjs-176)
+
+`tests/js_source.rs::weak_ref_deref_within_job` adapts the two object/symbol
+iterations, two WeakRefs and dereference checks from
+`research/quickjs/tests/test_builtin.js::test_weak_ref`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The upstream MIT copyright and permission notice is retained immediately above
+under "JavaScript WeakMap tests" and applies to this adapted fixture as well.
+The post-drop/post-collection expected values intentionally follow ECMA-262:
+targets remain available in the same job, unlike QuickJS's reference-counting
+immediacy. A dependency wait lets the embedding collect before resumption;
+host collection-point/timer integration remains in -175. Other new fixtures
+are synthetic, not light-cljs output. `js_weakref_constructor`,
+`js_weakref_deref`, `js_weakref_is_target` and `js_weakref_proto_funcs` in
+`research/quickjs/quickjs.c` were semantic references only; no C code was ported.

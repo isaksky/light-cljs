@@ -50,7 +50,8 @@
 //! no JavaScript or user callbacks run during marking or clearing. The
 //! embedder's [`WeakHandle`](super::WeakHandle) remains generation-checked
 //! and lazy, separate from heap-internal slots. JavaScript WeakMap uses this
-//! storage (`crate::object::weak_map`); WeakRef job keep-alives and
+//! storage (`crate::object::weak_map`); WeakRef uses weak slots and task
+//! job keep-alives (`crate::object::weak_ref`), and
 //! FinalizationRegistry scheduling are later layers.
 //!
 //! # Mutators
@@ -234,30 +235,30 @@ pub(crate) trait ConditionalVisitor {
 /// target before leaving that access. Not an embedder `WeakHandle`.
 #[derive(Debug)]
 pub(crate) struct WeakSlot {
-    target: Option<ObjectId>,
+    target: Option<TraceEdge>,
     notification: Option<u64>,
 }
 
 // Constructors/accessors are consumed by the later weak-object pellets.
 #[allow(dead_code)]
 impl WeakSlot {
-    pub(crate) fn new(target: ObjectId) -> Self {
+    pub(crate) fn new(target: impl Into<TraceEdge>) -> Self {
         Self {
-            target: Some(target),
+            target: Some(target.into()),
             notification: None,
         }
     }
 
     /// `token` identifies this registration within its owner. Clearing
     /// reports the owner and token, never the reclaimed target identity.
-    pub(crate) fn notifying(target: ObjectId, token: u64) -> Self {
+    pub(crate) fn notifying(target: impl Into<TraceEdge>, token: u64) -> Self {
         Self {
-            target: Some(target),
+            target: Some(target.into()),
             notification: Some(token),
         }
     }
 
-    pub(crate) fn get(&self) -> Option<ObjectId> {
+    pub(crate) fn get(&self) -> Option<TraceEdge> {
         self.target
     }
 }
@@ -371,10 +372,7 @@ struct ClearConditional<'a> {
 
 impl ConditionalVisitor for ClearConditional<'_> {
     fn weak_slot(&mut self, slot: &mut WeakSlot) {
-        if slot
-            .target
-            .is_some_and(|id| !self.marked.contains(&id.into()))
-        {
+        if slot.target.is_some_and(|id| !self.marked.contains(&id)) {
             slot.target = None;
             if let Some(token) = slot.notification {
                 self.cleared.push((self.owner, token));
@@ -1636,7 +1634,7 @@ mod tests {
             heap.collect().unwrap();
             assert_eq!(
                 conditional_read(&heap, owner, |p| p.weak[0].get()),
-                Some(target)
+                Some(target.into())
             );
         }
         drop(target_root);
@@ -1815,7 +1813,7 @@ mod tests {
         assert!(heap.is_live(second) && heap.is_live(target));
         assert_eq!(
             conditional_read(&heap, owner, |p| p.weak[0].get()),
-            Some(target)
+            Some(target.into())
         );
     }
 
@@ -1916,6 +1914,7 @@ mod tests {
             | HeapObject::BoundFunction(_)
             | HeapObject::JsMap(_)
             | HeapObject::WeakMap(_)
+            | HeapObject::WeakRef(_)
             | HeapObject::ArrayBuffer(_)
             | HeapObject::TypedArray(_)
             | HeapObject::Promise(_)

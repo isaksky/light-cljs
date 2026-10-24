@@ -8,7 +8,7 @@
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps and WeakMaps, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, WeakMaps and WeakRefs, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), Promises and resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings, symbols and BigInts included: a string
@@ -227,9 +227,10 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         // A realm intrinsic: immutable once built (`crate::vm::builtin`).
         HeapObject::Builtin(_) => Shareability::Persistent,
         HeapObject::Array(a) if a.object().is_intrinsic() => Shareability::Persistent,
-        HeapObject::Array(_) | HeapObject::JsMap(_) | HeapObject::WeakMap(_) => {
-            Shareability::TaskOwned
-        }
+        HeapObject::Array(_)
+        | HeapObject::JsMap(_)
+        | HeapObject::WeakMap(_)
+        | HeapObject::WeakRef(_) => Shareability::TaskOwned,
         HeapObject::ArrayBuffer(_) => Shareability::TaskOwned,
         HeapObject::TypedArray(_) => Shareability::TaskOwned,
     }
@@ -246,6 +247,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         HeapObject::Array(a) => a.object().owner(),
         HeapObject::JsMap(m) => m.object().owner(),
         HeapObject::WeakMap(m) => m.object().owner(),
+        HeapObject::WeakRef(m) => m.object().owner(),
 
         HeapObject::ArrayBuffer(b) => b.object.owner(),
         HeapObject::TypedArray(a) => a.object.owner(),
