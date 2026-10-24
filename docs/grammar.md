@@ -2454,8 +2454,8 @@ Math.imul(-1, 8) === -8 && Math.fround(0.1) === 0.10000000149011612;
 Math.hypot(3, 4) === 5 && Math.hypot(NaN, Infinity) === Infinity;
 ```
 
-The pellet's negative-zero expectation for `floor(-0.5)` is inconsistent
-with IEEE floor: the implemented result is -1; `floor(-0)` preserves -0.
+The user-approved acceptance correction of 2026-10-24 specifies
+`floor(-0.5) === -1`; `floor(-0)` preserves -0.
 Explicit gaps: Math constants and other Math methods remain deferred to
 their pellets. Global-object integration remains clj-quickjs-104; lexical
 bindings shadow `Math`. Like every realm intrinsic, Math is shared and

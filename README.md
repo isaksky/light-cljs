@@ -2498,3 +2498,13 @@ Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
 `cargo test --test js_source accessor`, `cargo test --test need getter_waits_on_dependency_and_resumes -- --exact`,
 `cargo test --test need accessor_cancellation_and_dependency_failure_unwind -- --exact`,
 `cargo test --test gc_roots accessor`, `cargo test --test publication accessor`.
+
+### Math numeric functions (clj-quickjs-152)
+
+Supported: the ordinary `Math` namespace with `floor`, `ceil`, `abs`, `imul`,
+`fround` and `hypot`. Numeric conversions, including conversion getters,
+can yield, wait, survive collection and migrate. `hypot` converts every
+argument before handling Infinity/NaN and uses budgeted scaled compensated
+summation for extreme magnitudes. `Math.floor(-0.5)` is -1;
+`Math.ceil(-0.5)` preserves negative zero. Math constants and other methods
+remain deferred. Run `cargo test --test js_source math_`.

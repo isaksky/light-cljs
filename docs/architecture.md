@@ -3754,8 +3754,8 @@ unwinding protocol preserve state through waits, GC, yields and migration.
 `imul` reuses the VM's ToInt32 bit conversion and wrapping multiplication
 (the low 32 bits are identical for ToUint32). `fround` casts to binary32
 and back to binary64; floor, ceil and abs use the IEEE Rust operations.
-In particular floor(-0.5) is -1, correcting the pellet's contradictory -0
-example; ceil(-0.5) and floor(-0) preserve negative zero.
+In particular floor(-0.5) is -1, following the user-approved acceptance
+correction of 2026-10-24; ceil(-0.5) and floor(-0) preserve negative zero.
 
 `hypot` always enters the conversion continuation, even for primitives,
 and converts one argument per native step while finding the largest
@@ -3770,6 +3770,7 @@ bounded by the VM value-stack limit, as for existing built-ins.
 
 Source tests cover the upstream numeric examples, descriptors, binary32
 ties, signed zeros, missing/unused arguments, throws and coercion order,
-including callbacks that wait with collection and migration at every yield.
+including conversion getters, fallback methods and throws that wait with
+collection and migration at every yield.
 GC inventory tests include the namespace and all six functions. Math
 constants and other methods are outside this pellet.

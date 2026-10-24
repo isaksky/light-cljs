@@ -26,7 +26,7 @@ fn math_basic_functions() {
         "Math.fround(0.1) === 0.10000000149011612",
         "Math.hypot() === 0 && Math.hypot(-2) === 2 && Math.hypot(3, 4) === 5",
         "Math.abs(Math.hypot(3, 4, 5) - 7.0710678118654755) <= 1e-15",
-        // The pellet's floor(-0.5) == -0 row is a typo: IEEE floor is -1.
+        // User-approved spec correction (2026-10-24): floor(-0.5) is -1.
         "Math.floor(-0.5) === -1 && 1 / Math.floor(-0) === -Infinity && 1 / Math.ceil(-0.5) === -Infinity",
         "Math.abs(-2) === 2 && 1 / Math.abs(-0) === Infinity && Math.floor('2.5') === 2",
         "Math.imul(-1, 8) === -8 && Math.imul(3) === 0 && Math.imul(4294967297.9, '3') === 3",
@@ -86,6 +86,9 @@ fn math_coercion() {
         "let o = {valueOf() { throw 42; }}; Math.floor(2, o) === 2 && Math.imul(2, 3, o) === 6",
         "Math.hypot({valueOf: Math.abs.bind(null, -3)}, new Number(4)) === 5",
         "__rt.reduce(Math.imul, 2, __rt.vector(3, 4)) === 24 && __rt.reduce(Math.hypot, 3, __rt.vector(4)) === 5",
+        "let log = ''; let o = {get valueOf() { log += 'g'; return function() { log += 'v'; return this.n; }; }, n: -2.5}; Math.floor(o) === -3 && log === 'gv'",
+        "let log = ''; let o = {get valueOf() { log += 'v'; return 0; }, get toString() { log += 's'; return () => '4'; }}; Math.hypot(3, o) === 5 && log === 'vs'",
+        "let caught = false; try { Math.hypot(Infinity, {get valueOf() { throw 42; }}); } catch (e) { caught = e === 42; } caught",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
@@ -153,6 +156,18 @@ fn math_coercion_waits_yields_collects_and_migrates() {
         ("Math.imul(v(-2, 152), v(4, 153)) === -8", "152,153,"),
         ("Math.hypot(v(3, 152), v(4, 153)) === 5", "152,153,"),
         ("Math.hypot(NaN, Infinity, v(4, 152)) === Infinity", "152,"),
+        (
+            "Math.floor({n: -2.5, get valueOf() { order += '152,'; __rt.need(152, 1); return function() { return this.n; }; }}) === -3",
+            "152,",
+        ),
+        (
+            "Math.hypot(3, {get valueOf() { order += '152,'; __rt.need(152, 1); return () => ({}); }, get toString() { order += '153,'; __rt.need(153, 1); return () => '4'; }}) === 5",
+            "152,153,",
+        ),
+        (
+            "(() => { let caught = false; try { Math.hypot(Infinity, {get valueOf() { order += '152,'; __rt.need(152, 1); throw 42; }}); } catch (e) { caught = e === 42; } return caught && Math.floor(v(2.5, 153)) === 2; })()",
+            "152,153,",
+        ),
         (
             "Math.hypot({valueOf: Math.abs.bind(null, v(-3, 152))}, v(4, 153)) === 5",
             "152,153,",
