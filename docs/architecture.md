@@ -2500,7 +2500,7 @@ an unchanged live-object count), the same functions on every task
 built by the first primitive read, so `GetField`/`GetElem` stay poll points.
 The prototypes are ordinary intrinsics inheriting from `Object.prototype`
 rather than exotic Number/String objects; the two methods treat them as
-holding `+0` and `""`, and clj-quickjs-72 adds `[[NumberData]]` /
+holding `+0` and `""` (`String.prototype` has its own `length` 0), and clj-quickjs-72 adds `[[NumberData]]` /
 `[[StringData]]` for wrapper objects. `Number` and `String` are built-in
 globals now (operands 1 and 2 of `get_builtin_global`) whose calls fail
 explicitly until clj-quickjs-72, so `Number.prototype` is reachable by name.

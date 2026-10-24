@@ -36,7 +36,7 @@
 //! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
 //! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
 //! | `Array` (only as `Array.prototype.constructor`; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
-//! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf` |
+//! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
 //!
@@ -432,18 +432,31 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 /// `toString` and `valueOf`. ECMAScript makes `Number.prototype` a Number
 /// object holding `+0` and `String.prototype` a String object holding `""`;
 /// the methods treat these two receivers so (`crate::vm::builtin`), and
-/// `String.prototype`'s own `length` (0) belongs with the string own
-/// properties of clj-quickjs-142. The constructor is a built-in function
-/// with `prototype` that fails when called until clj-quickjs-72.
+/// `String.prototype` has the own `length` 0 of the String object for `""`
+/// (not writable, enumerable or configurable). The constructor is a
+/// built-in function with `prototype` that fails when called until
+/// clj-quickjs-72.
 fn primitive_prototype(
     heap: &Heap,
     all: &mut Vec<ObjectId>,
     object_prototype: ObjectId,
     [constructor, to_string, value_of]: [Builtin; 3],
 ) -> Option<(ObjectId, ObjectId)> {
-    let to_string = builtin(heap, all, to_string, &[])?;
+    let to_string_id = builtin(heap, all, to_string, &[])?;
     let value_of = builtin(heap, all, value_of, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    if to_string == Builtin::StringPrototypeToString {
+        let length = heap.keys().intern(&JsString::from("length"))?;
+        let flags = PropertyFlags {
+            writable: false,
+            enumerable: false,
+            configurable: false,
+        };
+        prototype
+            .define_with(length, Value::Number(0.0), flags)
+            .then_some(())?;
+    }
+    let to_string = to_string_id;
     define(
         heap,
         &mut prototype,

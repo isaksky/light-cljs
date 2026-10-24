@@ -8255,6 +8255,12 @@ fn methods_on_primitive_bases() {
         // Absent names read undefined, also a string index past the end.
         "(1).x === undefined && 'abc'.x === undefined && 'abc'[3] === undefined",
         "'abc'[-1] === undefined && 'abc'['1.5'] === undefined",
+        // `String.prototype` is the String object for "": its own `length`
+        // is 0, read-only, not enumerable, not configurable.
+        "String.prototype.length === 0 && 'length' in String.prototype && !('length' in Number.prototype)",
+        "let d = Object.getOwnPropertyDescriptor(String.prototype, 'length'); \
+         d.value === 0 && !d.writable && !d.enumerable && !d.configurable",
+        "let r = false; try { String.prototype.length = 1; } catch (e) { r = true; } r",
         // The same function on every read.
         "let f = (1).toString; f === (2).toString && f === Number.prototype.toString",
     ] {
