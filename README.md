@@ -1904,6 +1904,10 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
   `a["1"]`, `a[-0]` is `a["0"]`) on objects and arrays (clj-quickjs-115, above).
 - `Array.prototype` (a realm intrinsic inheriting from `Object.prototype`)
   as every array's prototype; `a[k](...)` as a method call.
+- `Array` and `new Array` (clj-quickjs-153): empty arrays, numeric lengths
+  with holes, or argument elements; catchable RangeError for invalid lengths.
+  `Array.isArray` recognizes arrays and `Array.prototype`, and constructor
+  links expose `Array.prototype.constructor === Array`.
 - `join` and `toString` (clj-quickjs-156): generic array-like joining,
   resumable getters/coercion and bounded string building; array conversion in
   addition, templates and property keys. Cycles throw catchable StackOverflow
@@ -1911,10 +1915,8 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
 
 Deferred:
 
-- Array methods other than `push`, `join` and `toString`, calling the `Array`
-  constructor, and `Array.isArray` (clj-quickjs-39, -153).
-  The `Array` global exposes `Array.prototype`; its
-  constructor still fails when called. Boolean receivers of the generic array
+- Array methods other than `push`, `join`, `toString` and `Array.isArray`.
+  Boolean receivers of the generic array
   string methods require the deferred Boolean wrappers. Assigning `length` supports
   ArraySetLength (clj-quickjs-154). Spread elements and array destructuring
   (`Unsupported`); object keys convert since clj-quickjs-70.
