@@ -250,6 +250,7 @@ pub(crate) enum Builtin {
     /// Unary IEEE Math methods (clj-quickjs-205).
     MathSqrt,
     MathLog2,
+    JsonParse,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -356,6 +357,7 @@ impl Builtin {
             Builtin::Error => "Error",
             Builtin::ErrorPrototypeToString => "toString",
             Builtin::NativeError(kind) => kind.name(),
+            Builtin::JsonParse => "parse",
         }
     }
 
@@ -417,6 +419,7 @@ impl Builtin {
             Builtin::Error => 1,
             Builtin::ErrorPrototypeToString => 0,
             Builtin::NativeError(_) => 1,
+            Builtin::JsonParse => 2,
         }
     }
 }
@@ -446,7 +449,10 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
-        Builtin::Error | Builtin::ErrorPrototypeToString | Builtin::NativeError(_) => {
+        Builtin::Error
+        | Builtin::ErrorPrototypeToString
+        | Builtin::NativeError(_)
+        | Builtin::JsonParse => {
             Err(Fault::Internal("Error built-ins require a resumable frame"))
         }
         Builtin::Object => match arg(0) {

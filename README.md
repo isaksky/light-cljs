@@ -2645,3 +2645,17 @@ log2 precision depends on the platform and Rust version; source tests pin
 `Math.log2(10) === 3.321928094887362` and the pi digit-sizing expression
 `Math.ceil(2000 * Math.log2(10)) === 6644`.
 Run `cargo test --test js_source math_`.
+
+### JSON.parse (clj-quickjs-159)
+
+`JSON.parse(text)` supports JSON objects, arrays, UTF-16 strings (including
+lone surrogates), correctly rounded decimals, booleans and null. Input
+ToString may wait and migrate; long scans and decoding yield and preserve
+partial results across GC. Duplicate keys retain their first position;
+`__proto__` is an ordinary own property. Malformed input uses the catchable
+engine SyntaxError path, with input line/UTF-16 column/offset in its message.
+The explicit parser stack permits 512 open containers and throws on deeper
+input. Callable revivers explicitly throw TypeError; reviver traversal and
+JSON.stringify remain deferred. See `docs/grammar.md` for details.
+
+Tests: `cargo test --test js_source json_parse`.

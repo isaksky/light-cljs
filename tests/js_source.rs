@@ -1414,6 +1414,213 @@ fn string_extract_combine_long_results_yield_collect_and_migrate() {
 /// A host for budgeted runs of code that performs no host effects.
 struct NoEffects;
 
+/// Synthetic fixtures, not light-cljs output. The first object adapts
+/// QuickJS tests/test_builtin.js test_json (7d1c13c5d8f8); the copyright
+/// and MIT notice retained at string_code_unit_access applies here too.
+#[test]
+fn json_parse() {
+    for src in [
+        r#"let a = JSON.parse('{"x":1,"y":true,"z":null,"a":[1,2,3],"s":"str"}'); a.x === 1 && a.y === true && a.z === null && a.a[2] === 3 && a.a.length === 3 && a.s === 'str'"#,
+        r#"JSON.parse('1') === 1 && Object.is(JSON.parse(' -0 '), -0) && JSON.parse('1e400') === Infinity"#,
+        r#"JSON.parse('[1, [2, {}]]')[1][0] === 2 && JSON.parse('"\\u20ac\\n"') === '€\n' && JSON.parse('"\\ud800"').length === 1"#,
+        r#"JSON.parse('"\\ud800"').charCodeAt(0) === 0xd800 && JSON.parse('"\\udc00"').charCodeAt(0) === 0xdc00 && JSON.parse('"\\ud83d\\ude00"') === '😀'"#,
+        r#"JSON.parse('"\\\"\\\\\\/\\b\\f\\n\\r\\t"') === '\"\\/\b\f\n\r\t'"#,
+        r#"let a = JSON.parse('{"a":1,"b":3,"a":2}'); a.a === 2 && Object.keys(a).join(',') === 'a,b'"#,
+        r#"Object.keys(JSON.parse('{"b":1,"a":2,"1":3}')).join(',') === '1,b,a'"#,
+        r#"let a = JSON.parse('{"__proto__":1}'); Object.getPrototypeOf(a) === Object.prototype && a.__proto__ === 1 && Object.getOwnPropertyDescriptor(a, '__proto__').enumerable"#,
+        r#"JSON.parse(null) === null && JSON.parse(true) === true && JSON.parse(42) === 42 && JSON.parse({toString() { return '[4]'; }})[0] === 4"#,
+        r#"typeof JSON === 'object' && Object.getPrototypeOf(JSON) === Object.prototype && JSON.parse.length === 2 && JSON.parse.name === 'parse' && Object.keys(JSON).length === 0"#,
+        r#"let d = Object.getOwnPropertyDescriptor(JSON, 'parse'); d.writable && !d.enumerable && d.configurable"#,
+        r#"JSON.parse(' \t\r\nfalse\r\n') === false && JSON.parse('[]').length === 0 && Object.keys(JSON.parse('{}')).length === 0"#,
+        r#"JSON.parse('9007199254740993') === 9007199254740992 && JSON.parse('2.4703282292062327e-324') === 0 && JSON.parse('2.4703282292062328e-324') === Number.MIN_VALUE"#,
+        r#"JSON.parse('1', {}) === 1 && JSON.parse('1', null) === 1"#,
+        r#"JSON.parse.call(null, '[3]')[0] === 3 && JSON.parse.apply(null, ['4']) === 4 && JSON.parse.bind(null, '5')() === 5"#,
+        r#"let log = ''; let a = JSON.parse({toString() { log += 's'; return {}; }, valueOf() { log += 'v'; return '6'; }}); a === 6 && log === 'sv'"#,
+        r#"let caught = false; try { JSON.parse({toString() { throw 42; }}); } catch (e) { caught = e === 42; } caught"#,
+        r#"JSON.parse('"\ud800"').charCodeAt(0) === 0xd800"#,
+        r#"let JSON = 7; JSON === 7"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for text in [
+        "",
+        "{'a':1}",
+        "[1,]",
+        "01",
+        "+1",
+        ".5",
+        "5.",
+        "NaN",
+        "Infinity",
+        "0x1",
+        "-01",
+        "1e",
+        "1e+",
+        "--1",
+        "[",
+        "{",
+        "[1",
+        "{\"a\":",
+        "\"\\x41\"",
+        "\"a\u{0001}\"",
+        "1 2",
+        "{\"a\" 1}",
+        "\n\"  \\x\"",
+        "\n{ \"a\": x }",
+        "\u{a0}1",
+        "[true false]",
+        "{\"a\":1,}",
+        "\"\\u123\"",
+        "\"\\uZZZZ\"",
+        "\"unterminated",
+        "truex",
+        "[,,]",
+    ] {
+        let code = compile_function("function parse(text) { try { JSON.parse(text); } catch (e) { return true; } return false; }").unwrap();
+        match run(&code, &[Primitive::String(text.into())]) {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true), "{text:?}"),
+            other => panic!("{text:?}: {other:?}"),
+        }
+        let uncaught =
+            compile_function("function parse(text) { return JSON.parse(text); }").unwrap();
+        match run(&uncaught, &[Primitive::String(text.into())]) {
+            RunOutcome::Failed(e) => assert_eq!(e.kind(), VmErrorKind::SyntaxError, "{text:?}"),
+            other => panic!("{text:?}: {other:?}"),
+        }
+    }
+    assert_eq!(
+        failure("JSON.parse('1', function() {})").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        failure("new JSON.parse('1')").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(failure("JSON()").kind(), VmErrorKind::TypeError);
+    assert_eq!(failure("new JSON()").kind(), VmErrorKind::TypeError);
+    assert_eq!(failure("JSON.parse()").kind(), VmErrorKind::SyntaxError);
+    let code = compile_function("function parse(text) { try { JSON.parse(text); } catch (e) { return true; } return false; }").unwrap();
+    assert!(
+        matches!(run(&code, &[Primitive::String("[".repeat(100_000).as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Both method lookup and the
+/// ToString call suspend; parsing then retains its own container roots.
+#[test]
+fn json_parse_coercion_waits_collects_and_migrates() {
+    let rt = Runtime::new();
+    let src = r#"
+        let log = '';
+        let result = JSON.parse({get toString() {
+            log += 'g'; __rt.need(1, 1);
+            return function() { log += 's'; __rt.need(2, 1); return '{"a":[{"n":7}]}'; };
+        }});
+        log === 'gs' && result.a[0].n === 7
+    "#;
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("JSON.parse did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output. Budget and collect throughout
+/// whitespace, escape decoding, long numeric conversion and object creation.
+#[test]
+fn json_parse_large_input_yields_and_traces_partial_results() {
+    let rt = Runtime::new();
+    let text = format!(
+        "{}[{{\"keep\":[{{\"n\":7}}]}},\"{}\",1{}e-12000,[{}]]{}",
+        " ".repeat(16384),
+        "\\ud800".repeat(4096),
+        "0".repeat(12000),
+        std::iter::repeat_n("{\"v\":8}", 512)
+            .collect::<Vec<_>>()
+            .join(","),
+        "\t".repeat(16384)
+    );
+    let code = compile_function("function parse(text) { let a = JSON.parse(text); return a[0].keep[0].n === 7 && a[1].length === 4096 && a[1].charCodeAt(4000) === 0xd800 && a[2] === 1 && a[3].length === 512 && a[3][511].v === 8; }").unwrap();
+    let root = rt.root(Primitive::String(text.as_str().into()));
+    let task = rt.spawn(&code, &[&root]).unwrap();
+    drop(root);
+    let mut yields = 0;
+    for _ in 0..10000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yields > 500, "large input must consume budget");
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("JSON.parse did not finish");
+}
+
+#[test]
+fn json_parse_depth_and_error_positions() {
+    let code = compile_function("function parse(text) { let a = JSON.parse(text); for (let i = 0; i < 512; i++) { a = a[0]; } return a === 7; }").unwrap();
+    let text = format!("{}7{}", "[".repeat(512), "]".repeat(512));
+    assert!(
+        matches!(run(&code, &[Primitive::String(text.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    let code = compile_function("function parse(text) { return JSON.parse(text); }").unwrap();
+    for (text, position) in [
+        ("\r\n{\"a\":x}", "line 2 column 6 (UTF-16 offset 7)"),
+        ("[\"😀\",x]", "line 1 column 7 (UTF-16 offset 6)"),
+        ("\n\"  \\x\"", "line 2 column 5 (UTF-16 offset 5)"),
+    ] {
+        match run(&code, &[Primitive::String(text.into())]) {
+            RunOutcome::Failed(e) => {
+                assert_eq!(e.kind(), VmErrorKind::SyntaxError);
+                assert!(e.message().contains(position), "{}", e.message());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 impl Host for NoEffects {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
         Err(format!("unexpected host effect {}", call.op))

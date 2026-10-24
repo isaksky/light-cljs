@@ -4095,3 +4095,34 @@ tests pin log2(10) to 3.321928094887362 and ceil(2000 * log2(10)) to 6644.
 Source tests check every representable power of two, edge cases, descriptors,
 conversion failures, and coercion across waits/GC/worker migration. The realm
 and GC inventory expectations increase by exactly two intrinsic functions.
+
+### Budgeted JSON parsing (clj-quickjs-159)
+
+The append-only realm global registry includes the shared immutable `JSON`
+ordinary object and its `parse` built-in. A task can shadow or replace its
+own global JSON binding. The parser introduces no heap kind: produced
+objects/arrays use the existing task-owned stores, prototypes, creation-order
+keys and publication policy. CreateDataProperty APIs bypass inherited
+setters, including Object.prototype's `__proto__` accessor.
+
+`src/vm/json.rs` is an iterative grammar machine held by a native frame.
+Its explicit stack holds at most 512 open containers; the native tracer
+reports every container and the completed root while trailing whitespace is
+scanned. ToString runs through an ordinary conversion continuation, so
+getters and conversion methods may wait, yield, collect and migrate. Parsing
+then calls no JavaScript. Cancellation and errors discard the continuation
+under the usual native-frame protocol.
+
+One parser step performs at most 256 grammar/scan/decode operations (each
+escape reads at most six code units) and at most 256 decimal-accumulator
+units. Strings are validated first, then decoded in bounded chunks into a
+buffer reserved once from the token's raw length. The final Vec transfers
+into immutable JsString storage without shrinking or copying. Numbers use
+clj-quickjs-148's correctly rounded NumberParse over a delimited range of the
+original immutable input, with no token copy and at most 1100 retained
+significant digits plus sticky rounding. Allocations and ordinary property
+insertion remain leaf operations: property interning hashes/compares a
+complete key and object/array storage may grow, as in source literals.
+SyntaxError messages retain JSON input line/UTF-16 column/offset independently
+of the VM call diagnostic. The engine's existing catchable error path is
+used; NativeError constructors and engine-error prototypes are separate work.

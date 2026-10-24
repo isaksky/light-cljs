@@ -73,6 +73,12 @@ struct Body {
 }
 
 impl JsString {
+    /// Transfer a preallocated, incrementally filled UTF-16 buffer without
+    /// shrinking or copying its contents at a native step boundary.
+    pub(crate) fn from_owned_code_units(units: Vec<u16>) -> Option<JsString> {
+        (units.len() <= MAX_STRING_LEN).then(|| JsString(Arc::new(Body { units })))
+    }
+
     /// A string from arbitrary code units, including lone surrogates.
     /// `None` when longer than [`MAX_STRING_LEN`].
     pub fn from_code_units(units: impl Into<Box<[u16]>>) -> Option<JsString> {
@@ -914,6 +920,7 @@ impl DecimalPrefix {
 pub(crate) struct NumberParse {
     text: JsString,
     next: usize,
+    end: usize,
     started: bool,
     negative: bool,
     radix: Option<u32>,
@@ -931,10 +938,18 @@ pub(crate) struct NumberParse {
 impl NumberParse {
     /// `None` selects parseFloat; `Some(0)` detects hex for parseInt.
     pub(crate) fn new(text: JsString, radix: Option<u32>) -> Self {
+        let end = text.len();
+        Self::range(text, radix, 0, end)
+    }
+
+    /// Scan an already delimited token without copying its input body.
+    pub(crate) fn range(text: JsString, radix: Option<u32>, start: usize, end: usize) -> Self {
+        debug_assert!(start <= end && end <= text.len());
         Self {
             text,
             radix,
-            next: 0,
+            next: start,
+            end,
             started: false,
             negative: false,
             integer: [0; 32],
@@ -951,7 +966,7 @@ impl NumberParse {
 
     pub(crate) fn advance(&mut self, budget: usize) -> Option<f64> {
         for _ in 0..budget {
-            let Some(&c) = self.text.code_units().get(self.next) else {
+            let Some(&c) = self.text.code_units()[..self.end].get(self.next) else {
                 return Some(self.finish());
             };
             if !self.started {
@@ -964,7 +979,7 @@ impl NumberParse {
                 if !matches!(c, 43 | 45) {
                     self.next -= 1;
                 }
-                let rest = &self.text.code_units()[self.next..];
+                let rest = &self.text.code_units()[self.next..self.end];
                 if let Some(radix) = &mut self.radix {
                     if matches!(*radix, 0 | 16)
                         && rest.first() == Some(&48)

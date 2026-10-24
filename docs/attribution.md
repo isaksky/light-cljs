@@ -239,3 +239,15 @@ Consulted `js_math_funcs` in `research/quickjs/quickjs.c`,
 references for unary Math methods and pi digit sizing. No implementation or
 test body was copied; the new source fixtures are synthetic, not light-cljs
 output. Numeric work uses Rust binary64 operations and exponent inspection.
+
+## JSON.parse (clj-quickjs-159)
+
+`tests/js_source.rs::json_parse` adapts the basic object row from
+`research/quickjs/tests/test_builtin.js::test_json`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice from
+`research/quickjs/LICENSE` is retained at `string_code_unit_access` in the
+same test file. Other cases are synthetic fixtures, not light-cljs output.
+`json_parse_value` and `json_next_token` in `research/quickjs/quickjs.c` at
+that revision were consulted as semantic references. The iterative Rust
+parser and continuation were written afresh; no C implementation was copied.

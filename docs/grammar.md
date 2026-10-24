@@ -432,6 +432,10 @@ checks left to later stages:
   Pattern early errors are clj-quickjs-56. RegExp objects and matching are
   deferred (clj-quickjs-186–194), so compilation rejects literals explicitly
   with `Unsupported` naming RegExp objects.
+- **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
+  resumable ToString and budgeted parsing. Open-container depth is capped
+  at 512 with a catchable SyntaxError; callable revivers fail explicitly
+  with TypeError. Stringify and reviver traversal remain deferred.
 - **Error instances** (clj-quickjs-228/-229): `Error` and all seven NativeError
   constructors are callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
@@ -816,6 +820,9 @@ limit. Null/undefined receivers throw TypeError before coercing arguments.
 Object conversion callbacks can yield, wait, collect and migrate. Each scan
 or copying step does at most 256 units/comparisons; appending emits one
 ordinary own array element per step. RegExp/`Symbol.split` dispatch is deferred.
+Global `JSON.parse` recognizes JSON into task-owned objects and arrays,
+with budgeted parsing and resumable ToString (clj-quickjs-159); see
+"JSON.parse" below for grammar, errors and resource limits.
 
 Global `parseInt(string, radix)` and `parseFloat(string)` parse the longest
 valid prefix after leading StrWhiteSpace and ToString. `Number.parseInt`
@@ -2666,6 +2673,44 @@ function make() { return Error(); } make().stack.indexOf('    at make (') === 0;
 let stack; try { null(); } catch (e) { stack = e.stack; } typeof stack === 'string';
 let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.writable && d.configurable && !d.enumerable;
 let has = false; try { missing; } catch (e) { has = 'stack' in e; } has;
+### JSON.parse (clj-quickjs-159)
+
+Execution: global `JSON` is an ordinary, non-callable realm namespace with
+`parse` (length 2, name `"parse"`). `JSON.parse(text)` applies resumable
+ToString with string hint, then recognizes JSON whitespace (SP, TAB, LF,
+CR), literals, the JSON decimal grammar, strings, arrays and objects.
+Strings preserve UTF-16 units, including escaped or raw lone surrogates;
+only JSON escapes are allowed and raw control characters are rejected.
+Decimal conversion is correctly rounded, preserves -0 and allows overflow
+to Infinity. Arrays and ordinary objects belong to the parsing task.
+Duplicate keys replace values without changing the first key's position;
+`__proto__` creates an ordinary own data property. Results have the normal
+Array/Object prototypes and property attributes. Trailing garbage fails.
+
+Malformed input throws through the existing catchable `Fault::SyntaxError`
+engine-error path. Messages name the problem and record 1-based input line
+and UTF-16 column, plus the zero-based code-unit offset; CRLF counts as one
+line break. These positions describe JSON input separately from the source
+location of the JavaScript call. NativeError constructor/prototype integration
+for engine-raised errors remains the exceptions workstream's responsibility.
+
+The parser runs in budgeted native steps, roots all partial containers and
+results, and uses an explicit stack with a limit of 512 open containers.
+Exceeding the limit throws a catchable SyntaxError, including 100,000 `[`;
+no input nesting uses the Rust call stack. Whitespace, string scanning and
+decoding, and numeric scanning/conversion yield during long inputs.
+
+Explicit gaps: a callable reviver throws a catchable TypeError after parsing;
+a non-callable second argument is ignored. Reviver traversal, stringify,
+JSON extensions and richer error-position properties are deferred.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let parsed = JSON.parse('{"x":1,"a":[true,null]}');
+parsed.x === 1 && parsed.a[0] && parsed.a[1] === null;
+Object.is(JSON.parse(' -0 '), -0);
+JSON.parse('"\\ud800"').length === 1;
 ```
 
 ## Array construction (clj-quickjs-153)

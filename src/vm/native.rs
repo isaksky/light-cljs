@@ -438,6 +438,12 @@ enum NativeState {
         this: Value,
         stage: u8,
     },
+    Json {
+        text: Value,
+        reviver: Value,
+        converted: bool,
+        parser: Option<Box<super::json::Parser>>,
+    },
 }
 
 #[derive(Debug)]
@@ -603,6 +609,18 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::StringSplit { out, .. } => out.trace(visit),
+            NativeState::Json {
+                text,
+                reviver,
+                parser,
+                ..
+            } => {
+                text.trace(visit);
+                reviver.trace(visit);
+                if let Some(parser) = parser {
+                    parser.trace(visit);
+                }
+            }
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -836,6 +854,12 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::JsonParse => Some(NativeState::Json {
+                text: arg(0),
+                reviver: arg(1),
+                converted: false,
+                parser: None,
+            }),
             Builtin::ArrayPrototypeJoin => Some(NativeState::Join(Box::new(ArrayJoin {
                 this: builtin::array_string_receiver(heap, state.diag.task, this)?,
                 separator: arg(0),
@@ -2204,6 +2228,35 @@ impl NativeState {
                 Some(text) => Action::Return(Value::String(text)),
                 None => Action::Continue,
             }),
+            NativeState::Json {
+                text,
+                reviver,
+                converted,
+                parser,
+            } => {
+                if !*converted {
+                    *converted = true;
+                    return Ok(Action::ToString(text.clone()));
+                }
+                if parser.is_none() {
+                    let Input::CallResult(Value::String(input)) = input else {
+                        return Err(Fault::Internal("JSON.parse expected ToString result"));
+                    };
+                    *text = Value::Undefined;
+                    *parser = Some(Box::new(super::json::Parser::new(input)));
+                }
+                match parser.as_mut().unwrap().advance(heap, task)? {
+                    Some(value) => {
+                        if dispatch::callee(heap, reviver).is_ok() {
+                            return Err(Fault::TypeError(
+                                "JSON.parse callable reviver is not supported".to_string(),
+                            ));
+                        }
+                        Ok(Action::Return(value))
+                    }
+                    None => Ok(Action::Continue),
+                }
+            }
             NativeState::NumberParse(parse) => Ok(match parse.advance(256) {
                 Some(number) => Action::Return(Value::Number(number)),
                 None => Action::Continue,
@@ -2236,7 +2289,8 @@ impl NativeState {
                 | NativeState::StringSearch(_)
                 | NativeState::StringSplit { .. }
                 | NativeState::StringBuild(_)
-                | NativeState::NumberParse(_),
+                | NativeState::NumberParse(_)
+                | NativeState::Json { .. },
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }

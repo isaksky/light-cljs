@@ -38,6 +38,7 @@ pub(crate) mod function;
 pub mod instr;
 pub(crate) mod integrity;
 pub mod intrinsics;
+pub(crate) mod json;
 pub(crate) mod keys;
 pub(crate) mod native;
 pub(crate) mod property;

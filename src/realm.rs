@@ -56,6 +56,7 @@
 //! | `Math` additions (clj-quickjs-205) | same namespace | `sqrt`, `log2` (length 1), each with `name` |
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
+//! | `JSON` (clj-quickjs-159) | ordinary object, prototype `Object.prototype` | `parse` (length 2), resumable input conversion and budgeted grammar parsing |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -166,11 +167,12 @@ pub(crate) enum Global {
     EvalError = 16,
     URIError = 17,
     InternalError = 18,
+    Json = 19,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 19] = [
+    const ALL: [Global; 20] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -190,6 +192,7 @@ impl Global {
         Global::EvalError,
         Global::URIError,
         Global::InternalError,
+        Global::Json,
     ];
 
     /// The JavaScript name.
@@ -215,6 +218,7 @@ impl Global {
             Global::EvalError => "EvalError",
             Global::URIError => "URIError",
             Global::InternalError => "InternalError",
+            Global::Json => "JSON",
         }
     }
 
@@ -277,6 +281,7 @@ pub(crate) struct Intrinsics {
     error: ObjectId,
     /// (constructor, prototype) pairs in NativeErrorKind order; rooted in `all`.
     native_errors: [(ObjectId, ObjectId); 7],
+    json: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -373,6 +378,7 @@ impl Intrinsics {
             Global::InternalError => {
                 Value::Object(self.native_errors[NativeErrorKind::Internal as usize].0)
             }
+            Global::Json => Value::Object(self.json),
         }
     }
 }
@@ -754,6 +760,12 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         native_errors.push((constructor, prototype));
     }
     let native_errors = native_errors.try_into().ok()?;
+    let json = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(json);
+    let parse = b.function(Builtin::JsonParse, &[])?;
+    b.add(json, "parse", parse, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -799,6 +811,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         error_prototype,
         error,
         native_errors,
+        json,
     })
 }
 
@@ -1139,7 +1152,8 @@ mod tests {
                 Global::from_name(kind.name())
             );
         }
-        assert_eq!(Global::from_u16(19), None);
+        assert_eq!(Global::from_u16(19), Some(Global::Json));
+        assert_eq!(Global::from_u16(20), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose
