@@ -1347,9 +1347,9 @@ pub(crate) fn call(
         Builtin::StringPrototypeCharAt
         | Builtin::StringPrototypeCharCodeAt
         | Builtin::StringPrototypeCodePointAt => string_access(which, this, &arg(0)),
-        Builtin::StringFromCharCode | Builtin::StringFromCodePoint => {
-            string_from_codes(which, args)
-        }
+        Builtin::StringFromCharCode | Builtin::StringFromCodePoint => Err(Fault::Internal(
+            "string code construction requires a resumable native frame",
+        )),
         Builtin::StringPrototypeIndexOf
         | Builtin::StringPrototypeLastIndexOf
         | Builtin::StringPrototypeSubstring
@@ -1475,14 +1475,15 @@ fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fau
     })
 }
 
-/// Leaf construction: O(args + total primitive-string conversion work),
-/// at most two output units per argument. The stack limit bounds args but
-/// does not bound aggregate string scans; resumable coercion is clj-quickjs-265.
-/// No JavaScript conversion is attempted on this Rust stack.
-fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
+/// Leaf encoding after native::Convert has completed budgeted ToNumber and
+/// validation in argument order. O(args), at most two output units per
+/// argument; the configured stack limit bounds this final allocation/copy.
+pub(super) fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
     let mut units = Vec::new();
     for arg in args {
-        let n = crate::vm::dispatch::to_number(arg)?;
+        let Value::Number(n) = *arg else {
+            return Err(Fault::Internal("string code argument was not converted"));
+        };
         if which != Builtin::StringFromCharCode {
             validate_code_point(n)?;
         }

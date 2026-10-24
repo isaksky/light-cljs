@@ -701,9 +701,9 @@ checks left to later stages:
   receivers, resumable object coercion and budgeted result copying. Ropes and
   yielding during bulk primitive coercion remain deferred (-146, -265).
 - **String methods remain partial** (clj-quickjs-143). Code-unit access
-  and construction execute, including resumable object coercion. Other
-  string methods remain deferred. Bulk primitive-string conversion can
-  delay yielding and collection (clj-quickjs-265). See "String code-unit access" below.
+  and construction execute, including resumable object coercion and budgeted
+  primitive-string conversion in the static constructors (clj-quickjs-265).
+  Other string methods remain deferred. See "String code-unit access" below.
 - **Substring search** (clj-quickjs-144): `indexOf` and `lastIndexOf` now
   execute with UTF-16 indices, position clamping and resumable object
   coercion; long scans are budgeted. See "String substring search" below.
@@ -3305,10 +3305,13 @@ String and Number wrappers use their observable conversion methods too.
 The thrown values are ordinary TypeError and RangeError instances
 (clj-quickjs-230).
 
-Bulk primitive-string coercion in the static constructors currently runs
-inside a leaf call. Repeated large string arguments can delay yielding and
-collection even within the value-stack limit; clj-quickjs-265 tracks bounded,
-resumable conversion for this case.
+Static constructors also retain a continuation for primitive-only calls
+(clj-quickjs-265). Conversion finishes one argument per native step, with
+long primitive strings scanned in 256-unit/rope-boundary slices, including
+strings returned by object conversion. Budget yields allow collection and
+migration between slices. Total work is O(arguments plus total string units
+scanned); final encoding costs O(arguments), emits at most two units per
+argument and remains bounded by the configured VM stack limit.
 
 ### String substring search (clj-quickjs-144)
 
@@ -3334,7 +3337,7 @@ new String('abc').indexOf({toString: () => 'b'}, {valueOf: () => 1}) === 1;
 ```
 
 Explicit gaps: other string search methods remain deferred. Bulk primitive
-coercion may delay yielding (clj-quickjs-265); substring scanning itself is
+coercion of search operands may delay yielding; substring scanning itself is
 budgeted. Engine errors use ordinary Error instances (clj-quickjs-230).
 
 ### String extraction and combination (clj-quickjs-145)

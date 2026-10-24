@@ -580,6 +580,8 @@ enum NativeState {
     /// returns a primitive; completed operands are never converted again.
     Convert {
         formatter: Option<Box<crate::value::bigint::BigIntToString>>,
+        // Immutable string/cursor storage only; operands retain all heap edges.
+        number_scan: Option<Box<crate::value::string::StringToNumber>>,
         target: ConvertTarget,
         operands: Vec<Value>,
         next: usize,
@@ -1119,6 +1121,7 @@ fn typed_array_write_result(
         state,
         NativeState::Convert {
             formatter: None,
+            number_scan: None,
             target: ConvertTarget::TypedArrayWrite,
             operands: vec![
                 base.clone(),
@@ -1261,6 +1264,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
             formatter: None,
+            number_scan: None,
             target: ConvertTarget::Instruction(instr),
             operands,
             next: first,
@@ -1447,6 +1451,14 @@ pub(crate) fn start_builtin(
         push_native(state, NativeState::DynamicFunction(Box::new(native)))?;
         return Ok(true);
     }
+    if !construct
+        && matches!(
+            which,
+            Builtin::StringFromCharCode | Builtin::StringFromCodePoint
+        )
+    {
+        return start_string_codes(state, which, args, popped);
+    }
     if which == Builtin::Eval && !construct {
         let value = args.first().cloned().unwrap_or(Value::Undefined);
         let native = if let Value::String(text) = value {
@@ -1540,6 +1552,36 @@ fn start_stack_method(
     Ok(true)
 }
 
+/// Both primitive and object arguments need budgeted conversion, without
+/// reserving the general built-in dispatcher's temporaries on small stacks.
+#[inline(never)]
+fn start_string_codes(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = NativeState::Convert {
+        formatter: None,
+        number_scan: None,
+        target: ConvertTarget::StringBuiltin {
+            which,
+            access: false,
+            concat_len: 0,
+        },
+        operands: args.to_vec(),
+        next: 0,
+        end: args.len(),
+        hint: Hint::Number,
+        method: 0,
+        method_get: false,
+        symbol_method: SymbolMethod::Pending,
+    };
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, native)?;
+    Ok(true)
+}
+
 /// Keep field constructors returning typed arrays off the large general
 /// built-in dispatch frame so they also execute on 64 KiB worker stacks.
 #[inline(never)]
@@ -1574,6 +1616,7 @@ fn start_typed_array_constructor(
         state,
         NativeState::Convert {
             formatter: None,
+            number_scan: None,
             target: ConvertTarget::TypedArray { kind, from_buffer },
             operands,
             next: usize::from(from_buffer),
@@ -2324,20 +2367,6 @@ fn start_builtin_slow(
                 Hint::String,
             )
         }
-        Builtin::StringFromCharCode | Builtin::StringFromCodePoint if !construct => {
-            if !args.iter().any(|v| matches!(v, Value::Object(_))) {
-                return Ok(false);
-            }
-            (
-                ConvertTarget::StringBuiltin {
-                    which,
-                    access: false,
-                    concat_len: 0,
-                },
-                args.to_vec(),
-                Hint::Number,
-            )
-        }
         _ if !construct && builtin::is_string_build(which) => {
             if matches!(this, Value::Null | Value::Undefined) {
                 return Err(Fault::TypeError(format!(
@@ -2444,6 +2473,7 @@ fn start_builtin_slow(
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
             formatter: None,
+            number_scan: None,
             target,
             operands,
             next: first,
@@ -2813,6 +2843,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 state,
                 NativeState::Convert {
                     formatter: None,
+                    number_scan: None,
                     target,
                     operands: vec![value],
                     next: 0,
@@ -3061,6 +3092,23 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
         StringBuiltin { which, .. } => builtin::string_operand_is_text(which, index),
         _ => false,
     }
+}
+
+// Keep the scanner's large construction temporaries off the conversion
+// trampoline's Rust frame, which also serves calls on 64 KiB worker stacks.
+#[inline(never)]
+fn string_code_number_scan(
+    operand: &mut Value,
+) -> Result<Box<crate::value::string::StringToNumber>, Fault> {
+    // Transfer ownership so flattening releases a unique rope in slices,
+    // rather than retaining it until the entire scan has finished.
+    let Value::String(text) = std::mem::replace(operand, Value::Undefined) else {
+        unreachable!("string operand checked by caller")
+    };
+    Ok(Box::new(
+        crate::value::string::StringToNumber::new(text)
+            .ok_or(Fault::OutOfMemory("string code numeric input"))?,
+    ))
 }
 
 /// Parse a string only after both operands have passed through ToPrimitive.
@@ -3605,6 +3653,7 @@ impl NativeState {
                     } => {
                         *self = NativeState::Convert {
                             formatter: None,
+                            number_scan: None,
                             target: ConvertTarget::TypedArrayWrite,
                             operands: vec![target, result, Value::Number(index), value],
                             next: 3,
@@ -3821,6 +3870,7 @@ impl NativeState {
         match self {
             NativeState::Convert {
                 formatter,
+                number_scan,
                 target,
                 operands,
                 next,
@@ -3830,6 +3880,13 @@ impl NativeState {
                 method_get,
                 symbol_method,
             } => {
+                if let Some(scan) = number_scan {
+                    let Some(number) = scan.advance(256) else {
+                        return Ok(Action::Continue);
+                    };
+                    operands[*next] = Value::Number(number);
+                    *number_scan = None;
+                }
                 if let Some(pending) = formatter {
                     let Some(text) = pending.advance() else {
                         return Ok(Action::Continue);
@@ -3984,8 +4041,25 @@ impl NativeState {
                         } = target
                         {
                             let which = *which;
+                            let codes = matches!(
+                                which,
+                                builtin::Builtin::StringFromCharCode
+                                    | builtin::Builtin::StringFromCodePoint
+                            );
+                            if codes && matches!(receiver, Value::String(_)) {
+                                // Reuse the strict scanner's budgeted rope
+                                // flattening, trimming, validation and parsing.
+                                *number_scan = Some(string_code_number_scan(&mut operands[*next])?);
+                                return Ok(Action::Continue);
+                            }
                             operands[*next] =
                                 builtin::string_builtin_operand(which, *next, receiver)?;
+                            if codes {
+                                // Validate this point before later callbacks,
+                                // and bound even primitive-only argument loops.
+                                *next += 1;
+                                return Ok(Action::Continue);
+                            }
                             if which == builtin::Builtin::StringPrototypeConcat {
                                 let text = dispatch::to_js_string(&operands[*next])?;
                                 *concat_len = concat_len
@@ -4405,44 +4479,60 @@ impl NativeState {
                         ));
                         Ok(Action::Continue)
                     }
-                    ConvertTarget::StringBuiltin { which, access, .. } => {
-                        if builtin::is_string_build(which) {
-                            *self = NativeState::StringBuild(builtin::string_build(
-                                which,
-                                &operands[..*end],
-                            )?);
-                            return Ok(Action::Continue);
-                        }
-                        if matches!(
-                            which,
-                            builtin::Builtin::StringPrototypeIndexOf
-                                | builtin::Builtin::StringPrototypeLastIndexOf
-                        ) {
-                            let text = dispatch::to_js_string(&operands[0])?;
-                            let search = dispatch::to_js_string(&operands[1])?;
-                            let last = which == builtin::Builtin::StringPrototypeLastIndexOf;
-                            let mut position = dispatch::to_number(&operands[2])?;
-                            if position.is_nan() {
-                                position = if last { f64::INFINITY } else { 0.0 };
-                            }
-                            let position = position.trunc().clamp(0.0, text.len() as f64) as usize;
-                            *self =
-                                NativeState::StringSearch(crate::value::string::StringSearch::new(
-                                    text, search, position, last,
-                                ));
-                            return Ok(Action::Continue);
-                        }
-                        let (this, args) = if access {
-                            (&operands[0], &operands[1..])
-                        } else {
-                            (&Value::Undefined, &operands[..])
-                        };
-                        builtin::call(heap, task, which, this, args).map(Action::Return)
-                    }
+                    ConvertTarget::StringBuiltin { .. } => self.finish_string_builtin(heap, task),
                 }
             }
             _ => Err(Fault::Internal("expected conversion state")),
         }
+    }
+
+    // Keep string completion temporaries off every other conversion's Rust
+    // frame, including class-field conversions on 64 KiB worker stacks.
+    #[inline(never)]
+    fn finish_string_builtin(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
+        let NativeState::Convert {
+            target: ConvertTarget::StringBuiltin { which, access, .. },
+            operands,
+            end,
+            ..
+        } = self
+        else {
+            return Err(Fault::Internal("expected string conversion state"));
+        };
+        let (which, access) = (*which, *access);
+        if matches!(
+            which,
+            builtin::Builtin::StringFromCharCode | builtin::Builtin::StringFromCodePoint
+        ) {
+            return builtin::string_from_codes(which, operands).map(Action::Return);
+        }
+        if builtin::is_string_build(which) {
+            *self = NativeState::StringBuild(builtin::string_build(which, &operands[..*end])?);
+            return Ok(Action::Continue);
+        }
+        if matches!(
+            which,
+            builtin::Builtin::StringPrototypeIndexOf | builtin::Builtin::StringPrototypeLastIndexOf
+        ) {
+            let text = dispatch::to_js_string(&operands[0])?;
+            let search = dispatch::to_js_string(&operands[1])?;
+            let last = which == builtin::Builtin::StringPrototypeLastIndexOf;
+            let mut position = dispatch::to_number(&operands[2])?;
+            if position.is_nan() {
+                position = if last { f64::INFINITY } else { 0.0 };
+            }
+            let position = position.trunc().clamp(0.0, text.len() as f64) as usize;
+            *self = NativeState::StringSearch(crate::value::string::StringSearch::new(
+                text, search, position, last,
+            ));
+            return Ok(Action::Continue);
+        }
+        let (this, args) = if access {
+            (&operands[0], &operands[1..])
+        } else {
+            (&Value::Undefined, &operands[..])
+        };
+        builtin::call(heap, task, which, this, args).map(Action::Return)
     }
 
     fn fail(&mut self, failure: Failure) -> Action {
@@ -4623,6 +4713,78 @@ mod tests {
     use crate::vm::{Assembler, Executable, Opcode};
 
     #[test]
+    fn string_code_unit_coercion_releases_rope_nodes_incrementally() {
+        use crate::value::string::cursor_release_counts;
+        use crate::vm::builtin::Builtin;
+
+        for which in [Builtin::StringFromCharCode, Builtin::StringFromCodePoint] {
+            for prepend in [false, true] {
+                let heap = Heap::default();
+                let task = TaskId::from_raw(265);
+                let mut text = JsString::from("                                ");
+                for _ in 0..4096 {
+                    let unit = JsString::from(" ");
+                    text = if prepend {
+                        unit.concat(&text)
+                    } else {
+                        text.concat(&unit)
+                    }
+                    .unwrap();
+                }
+                // The continuation owns the only reference to the input.
+                // Public source tests cannot inspect these release counters.
+                let mut native = NativeState::Convert {
+                    formatter: None,
+                    number_scan: None,
+                    target: ConvertTarget::StringBuiltin {
+                        which,
+                        access: false,
+                        concat_len: 0,
+                    },
+                    operands: vec![Value::String(text)],
+                    next: 0,
+                    end: 1,
+                    hint: Hint::Number,
+                    method: 0,
+                    method_get: false,
+                    symbol_method: SymbolMethod::Pending,
+                };
+                let initial = cursor_release_counts();
+                let mut returned = None;
+                for _ in 0..1000 {
+                    let before = cursor_release_counts();
+                    let action = native.step_conversion(&heap, task, Input::Start, &mut NoHost);
+                    let after = cursor_release_counts();
+                    assert!(after.0 - before.0 <= 256, "cursor disposal exceeded budget");
+                    assert!(after.1 - before.1 <= 260, "rope disposal exceeded budget");
+                    match action {
+                        Ok(Action::Continue) => {}
+                        Ok(Action::Return(Value::String(text))) => {
+                            assert_eq!(text.code_units(), &[0]);
+                            returned = Some(text);
+                            break;
+                        }
+                        _ => panic!("unexpected constructor action"),
+                    }
+                }
+                assert!(returned.is_some(), "constructor exceeded step bound");
+                assert!(cursor_release_counts().1 - initial.1 >= 8192);
+                let before = cursor_release_counts();
+                drop(native);
+                let after = cursor_release_counts();
+                assert!(
+                    after.0 - before.0 <= 2,
+                    "native cursor disposal exceeded budget"
+                );
+                assert!(
+                    after.1 - before.1 <= 4,
+                    "native rope disposal exceeded budget"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn join_overflow_is_checked_before_the_next_getter() {
         // Model a near-limit prefix without allocating a gigabyte. The
         // separator overflows before index 1 can be read or converted.
@@ -4664,6 +4826,7 @@ mod tests {
         );
         let pending = |concat_len| NativeState::Convert {
             formatter: None,
+            number_scan: None,
             method_get: false,
             symbol_method: SymbolMethod::Pending,
             target: ConvertTarget::StringBuiltin {

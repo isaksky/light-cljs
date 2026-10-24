@@ -3877,22 +3877,28 @@ Static constructors build arbitrary UTF-16 units, including lone
 surrogates. `fromCharCode` truncates and reduces finite numbers modulo
 65536; `fromCodePoint` validates finite integral numbers before encoding a
 point, using the existing catchable `Fault::RangeError` path for invalid
-points. The leaf loop costs O(argument count plus total primitive-string
+points. Total work is O(argument count plus total primitive-string
 conversion work), with at most two output units per argument and
-`MAX_STRING_LEN` enforced. The configured VM value-stack limit (default
-2^20 values, with `apply` checking stack room) bounds the argument count,
-but repeated large primitive strings can make the aggregate conversion
-work large within one call. Bounded resumable coercion is clj-quickjs-265;
-until then this can delay yielding and collection.
-Primitive-only calls run no JavaScript and retain no continuation across a
-wait. Object operands select `native::start_builtin_conversion` after
-call/apply/bind resolution, including native callbacks that are built-ins.
+`MAX_STRING_LEN` enforced. Both static constructors always select the
+existing `NativeState::Convert` continuation through `native::start_builtin`
+after call/apply/bind resolution, including native callbacks that are built-ins
+(clj-quickjs-265). Conversion finishes at most one argument per native step;
+primitive strings, including those returned by object callbacks, use the
+existing `StringToNumber` scanner in 256-unit/rope-boundary slices for
+flattening, trimming, validation and numeric accumulation. Repeated references
+to a long string therefore consume budget and permit GC between slices.
+Each string operand moves into the scanner so uniquely owned rope nodes also
+release during traversal, rather than all at once at conversion completion.
+Only the final O(argument count) encoding/allocation remains a leaf, bounded
+by the configured VM value-stack limit (default 2^20 values, with `apply`
+checking stack room). Primitive-only access methods retain their leaf path;
+object operands select conversion after forwarding resolution.
 `NativeState::Convert` retains and traces all relevant operands. Access
 converts the receiver with string hint, finishes primitive ToString, then
 converts the position with number hint. Static arguments convert with
 number hint and validate each code point before any later callback runs.
 Completed operands are stored as strings or numbers and never replayed.
-The final primitive-only helper then accesses or constructs the string.
+The final helper then accesses the string or encodes already converted numbers.
 Nested built-in conversions share the existing native-depth bound, unwind
 and cancellation protocol. The source coercion tests force one-instruction
 yields, GC between slices and during waits, thread migration, callback

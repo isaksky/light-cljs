@@ -6878,6 +6878,126 @@ fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Count only the constructor's
+/// interval; argument expansion alone cannot satisfy the string-scan bound.
+#[test]
+fn string_code_unit_construction_yields_during_coercion() {
+    struct Phase(u16);
+    impl Host for Phase {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            assert_eq!(call.op, self.0 + 1);
+            self.0 = call.op;
+            Ok(call.arg)
+        }
+    }
+    let rt = Runtime::new();
+    // Repeated references to a rope exercise aggregate coercion work. A
+    // single 1M-unit whitespace input must also yield within that argument.
+    let rope = clj_quickjs::JsString::from(" ".repeat(8192).as_str())
+        .concat(&clj_quickjs::JsString::from("65"))
+        .unwrap();
+    for (input, count, expected, minimum_yields, reject) in [
+        (rope, 16, "AAAAAAAAAAAAAAAA", 16 * 8192 / 256, false),
+        (
+            clj_quickjs::JsString::from(" ".repeat(1_048_576).as_str()),
+            1,
+            "\\0",
+            1_048_576 / 256,
+            false,
+        ),
+        (
+            clj_quickjs::JsString::from(format!("{}1.5", " ".repeat(65536)).as_str()),
+            1,
+            "",
+            65536 / 256,
+            true,
+        ),
+    ] {
+        let text = rt.root(Primitive::String(input));
+        let arguments = if reject {
+            "text, later".to_string()
+        } else {
+            vec!["text"; count].join(",")
+        };
+        let object_arguments = if reject {
+            "code(), later".to_string()
+        } else {
+            vec!["code()"; count].join(",")
+        };
+        for constructor in ["fromCharCode", "fromCodePoint"] {
+            if reject && constructor == "fromCharCode" {
+                continue;
+            }
+            for expression in [
+                format!("String.{constructor}({arguments})"),
+                format!("String.{constructor}.apply(null, [{arguments}])"),
+                format!("String.{constructor}(...[{arguments}])"),
+                format!("String.{constructor}({object_arguments})"),
+            ] {
+                let source = format!(
+                    "function f(text) {{
+                    let calls = 0;
+                    function code() {{ return {{valueOf() {{ calls++; return text; }} }}; }}
+                    let later = {{valueOf() {{calls += 1000; return 65;}}}};
+                    __rt.effect(1, 0);
+                    let result, caught = false;
+                    try {{result = {expression};}} catch(e) {{caught = e instanceof RangeError;}}
+                    __rt.effect(2, 0);
+                    return ({reject} ? caught : !caught && result === '{expected}') && calls === {};
+                }}",
+                    if expression.contains("code()") {
+                        count
+                    } else {
+                        0
+                    }
+                );
+                let task = rt
+                    .spawn(&compile_function(&source).unwrap(), &[&text])
+                    .unwrap();
+                let runtime = rt.clone();
+                // Direct construction must also fit a small worker stack.
+                // Apply's separate argument-list machinery uses the default.
+                let worker = std::thread::Builder::new();
+                let worker = if expression.contains(".apply(") {
+                    worker
+                } else {
+                    worker.stack_size(64 * 1024)
+                };
+                worker
+                    .spawn(move || {
+                        let mut phase = Phase(0);
+                        let mut yields = 0;
+                        let mut complete = false;
+                        for _ in 0..10000 {
+                            match task.run_with(Budget::instructions(1), &mut phase).unwrap() {
+                                RunOutcome::Yielded => {
+                                    if phase.0 == 1 {
+                                        yields += 1;
+                                        if yields % 32 == 0 {
+                                            runtime.collect().unwrap();
+                                        }
+                                    }
+                                }
+                                RunOutcome::Complete(value) => {
+                                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                                    complete = true;
+                                    break;
+                                }
+                                other => panic!("{expression}: {other:?}"),
+                            }
+                        }
+                        assert!(complete, "{expression} exceeded instruction bound");
+                        assert_eq!(phase.0, 2);
+                        assert!(yields >= minimum_yields, "{expression}: {yields} yields");
+                    })
+                    .unwrap()
+                    .join()
+                    .unwrap();
+            }
+        }
+    }
+}
+
 #[test]
 fn string_code_unit_native_recursion_obeys_depth_limit() {
     let rt = Runtime::with_limits(clj_quickjs::VmLimits {
