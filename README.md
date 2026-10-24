@@ -626,7 +626,10 @@ and `examples/`):
 - Assigning a named function expression's inner name in sloppy code evaluates
   the right-hand side and returns its value while leaving the name bound to
   the function, including from sloppy arrows (clj-quickjs-96). Strict stores
-  throw `TypeError`; `const` assignment throws in either mode.
+  throw `TypeError`; `const` assignment throws in either mode. Strict stores
+  through nested arrows, function expressions and block-level function
+  declarations are catchable and preserve the function's identity
+  (clj-quickjs-93).
 - The compiler-reserved intrinsic binding `__rt` with a specified contract
   (no shadowing, reassignment, computed access or aliasing; explicit
   `ReservedWord`/`Invalid` diagnostics): `__rt.vector`, `map`, `count`,

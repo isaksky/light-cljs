@@ -1315,6 +1315,77 @@ fn hoisted_declarations_and_self_references() {
     assert_eq!(num("const g = function h(h) { return h * 2; }; g(4)"), 8.0);
 }
 
+/// The nested-arrow case adapts the strict `test_function_expr_name` case in
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+/// Remaining cases are synthetic fixtures, not light-cljs output.
+///
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn named_function_expression_name_is_immutable_in_nested_closures() {
+    // `compile_script` uses strict mode, including in each nested function.
+    for (body, column) in [
+        ("(() => { myfunc = 1; })();", 40),
+        ("(function () { myfunc = 1; })();", 46),
+        ("{ function g() { myfunc = 1; } g(); }", 48),
+    ] {
+        let src = format!("const f = function myfunc() {{ {body} }}; f()");
+        let (kind, message, line, actual_column) = failure_at(&src);
+        assert_eq!(
+            (kind, message.as_str(), line, actual_column),
+            (
+                VmErrorKind::TypeError,
+                "assignment to constant variable 'myfunc'",
+                1,
+                column,
+            ),
+            "{src}"
+        );
+    }
+
+    assert_eq!(
+        num(
+            "const f = function m() { let r = 0; try { (() => { m = 1; })(); } catch (e) { r = 1; } return r; }; f()"
+        ),
+        1.0
+    );
+    assert_eq!(
+        eval(
+            "const f = function m() { try { (() => { m = 1; })(); } catch (e) {} return m; }; f() === f"
+        ),
+        ValueView::Bool(true)
+    );
+    // Every closure form exposes a JavaScript TypeError and preserves identity.
+    for body in [
+        "(() => { m = 1; })();",
+        "(function () { m = 1; })();",
+        "{ function g() { m = 1; } g(); }",
+    ] {
+        let src = format!(
+            "const f = function m() {{ let caught = false; try {{ {body} }} catch (e) {{ caught = e instanceof TypeError; }} return caught && m === f; }}; f()"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// The first two cases adapt `test_function_expr_name` from
 /// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
 /// Remaining cases are synthetic fixtures, not light-cljs output.

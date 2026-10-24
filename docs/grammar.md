@@ -6591,3 +6591,33 @@ Strict assignment is also accepted syntax; its TypeError is catchable:
 const f = function m() { "use strict"; m = 5; };
 let caught = false; try { f(); } catch (e) { caught = e instanceof TypeError; } caught;
 ```
+
+## Strict function-name stores in nested closures (clj-quickjs-93)
+
+Syntax: existing `FunctionExpression`, arrow, block function declaration and
+`AssignmentExpression` EBNF productions cover these cases without changes.
+
+Execution: assigning a named function expression's inner name from a strict
+nested arrow, function expression or block-level function declaration throws
+a catchable `TypeError`. After the failed store, the name still refers to the
+same function object. The error message is `assignment to constant variable
+'myfunc'`; in `const f = function myfunc() { (() => { myfunc = 1; })(); }; f()`
+the position is 1:40, at the assigned identifier under the existing binding
+diagnostic convention. `compile_script` defaults to strict mode; functions
+also inherit strictness from an enclosing `"use strict"` directive.
+
+Rejected forms: no syntax rejection changes; the error occurs only when the
+strict store executes. Explicit gaps: none added; sloppy stores and direct
+eval retain their separately documented behavior.
+
+Synthetic fixture, not light-cljs output; this evaluates to true:
+
+```js accept
+const f = function m() {
+  "use strict";
+  let caught = false;
+  try { (() => { m = 1; })(); } catch (e) { caught = e instanceof TypeError; }
+  return caught && m === f;
+};
+f();
+```
