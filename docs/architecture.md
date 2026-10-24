@@ -6091,3 +6091,10 @@ clj-quickjs-237, including its identity `[Symbol.iterator]`. The realm builder
 returns that shared prototype with its array/string iterator prototypes; no
 second iterator identity or iterator prototype is allocated. Generator objects
 therefore work with the existing resumable GetIterator/for-of protocol.
+
+Root inventory: `suspended_generator_is_traced_and_reclaimed` in `tests/gc.rs`
+retains an ordinary object solely through a detached generator's saved local,
+collects while the generator is retained by a waiting task's local, verifies the
+value after resume, then releases the generator and checks both reclamation and
+live-generator counts. The append-only SuspendedGenerator inventory holder maps
+this coverage to the task-frame root category and the Generator heap kind.
