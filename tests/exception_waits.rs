@@ -515,6 +515,70 @@ fn waits_in_try_catch_and_finally_run_no_handler_while_parked() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. A pending object completion
+/// survives detached and attached collections, then a dependency wait in
+/// the resumed finally block. Effects must run once across both migrations.
+#[test]
+fn generator_finally_waits_after_resume() {
+    for (completion, checks) in [
+        (
+            "return {n: 17};",
+            "let last = first(g); if (!last.done) throw 'not done'; result = last.value;",
+        ),
+        (
+            "throw {n: 17};",
+            "try { first(g); } catch(e) { result = e; }",
+        ),
+    ] {
+        for (first, second) in [("one", "three"), ("three", "one")] {
+            let rt = Runtime::new();
+            let source = format!(
+                "function keep(padding, value) {{ return value; }}
+                 function one(g) {{ return g.next(); }}
+                 function three(g) {{ let pad = 11; return keep(pad, two(g)); }}
+                 function two(g) {{ return keep(12, one(g)); }}
+                 let first = {first}, second = {second};
+                 function* f() {{
+                   try {{ yield 1; {completion} }}
+                   finally {{
+                     __rt.effect(1, 10);
+                     yield 2;
+                     __rt.effect(1, 20);
+                     __rt.effect(1, __rt.need(5, 3));
+                     __rt.effect(1, 30);
+                   }}
+                 }}
+                 let g = f();
+                 let a = first(g), b = second(g);
+                 if (a.value !== 1 || a.done || b.value !== 2 || b.done) throw 'yield rows';
+                 __rt.need(6, 3);
+                 let result;
+                 try {{ {checks} }} finally {{ __rt.effect(1, 40); }}
+                 let end = second(g);
+                 if (!end.done || end.value !== undefined) throw 'completed next';
+                 result.n"
+            );
+            let task = spawn(&rt, &source);
+            let mut log = Log::default();
+            run_to_wait(&rt, &task, &mut log, B);
+            assert_eq!(log.0, [10.0]);
+            // The generator is detached with its pending completion as the
+            // only holder of {n:17}. No finally tail has run yet.
+            rt.collect().unwrap();
+            assert_eq!(rt.heap_usage().objects.generator, 1);
+            let (outcome, log) = run_elsewhere(publish(&rt, &task, 0.0), log);
+            assert_eq!(waiting(outcome), key(&rt, A));
+            assert_eq!(log.0, [10.0, 20.0]);
+            // Now attached above a different caller base, with the pending
+            // return/throw still rooted while need parks the whole task.
+            rt.collect().unwrap();
+            let (outcome, log) = run_elsewhere(publish(&rt, &task, 7.0), log);
+            assert_eq!(number(outcome), 17.0, "{completion}: {first}");
+            assert_eq!(log.0, [10.0, 20.0, 7.0, 30.0, 40.0]);
+        }
+    }
+}
+
 /// A wait inside a function called from a protected block, with a finally
 /// block in the callee and one in the caller: both run once, innermost
 /// first, after the resumed callee code, and only then does the caller

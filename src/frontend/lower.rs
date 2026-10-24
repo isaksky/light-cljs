@@ -3178,6 +3178,9 @@ impl<'s> Lowerer<'s> {
                 value,
                 delegate: false,
             } => {
+                // Leave enclosing expression operands in place. Suspension
+                // saves the entire activation stack above its base, and
+                // resume pushes next(value) as this expression's result.
                 if let Some(value) = value {
                     self.expr(value)?;
                 } else {

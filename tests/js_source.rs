@@ -244,6 +244,84 @@ fn generator_preserves_operands_and_handlers_across_callers() {
 }
 
 #[test]
+fn generator_yield_keeps_operands_and_handlers() {
+    // Synthetic fixtures, not light-cljs output. The f3 row adapts
+    // QuickJS tests/test_builtin.js::test_generator at 7d1c13c5d8f8,
+    // using let instead of var (clj-quickjs-94) and explicit result checks.
+    // Copyright (c) 2017-2021 Fabrice Bellard
+    // Copyright (c) 2017-2021 Charlie Gordon
+    // Permission is hereby granted, free of charge, to any person obtaining a copy
+    // of this software and associated documentation files (the "Software"), to deal
+    // in the Software without restriction, including without limitation the rights
+    // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    // copies of the Software, and to permit persons to whom the Software is
+    // furnished to do so, subject to the following conditions:
+    // The above copyright notice and this permission notice shall be included in
+    // all copies or substantial portions of the Software.
+    // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    // THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+    // THE SOFTWARE.
+    let cases = [
+        (
+            "f3",
+            "let ret; try { ret = 2 + (yield 1); } catch(e) {} finally { ret++; cleaned++; } return ret;",
+            "let a = first(g); if (cleaned !== 0) throw 'early finally'; let b = second(g, 3); a.value === 1 && a.done === false && b.value === 6 && b.done === true && cleaned === 1",
+        ),
+        (
+            "several operands",
+            "let a = 2, b = 3, c = 4; return a + b * (yield c);",
+            "let a = first(g); let b = second(g, 10); a.value === 4 && !a.done && b.value === 32 && b.done",
+        ),
+        (
+            "catch body",
+            "try { throw {n: 7}; } catch(e) { return e.n + (yield e.n + 1); } finally { cleaned++; }",
+            "let a = first(g); if (cleaned !== 0) throw 'early finally'; let b = second(g, 10); a.value === 8 && !a.done && b.value === 17 && b.done && cleaned === 1",
+        ),
+        (
+            "pending return",
+            "try { return 1; } finally { cleaned++; yield 2; cleaned++; }",
+            "let a = first(g); if (cleaned !== 1) throw 'early finally tail'; let b = second(g); a.value === 2 && !a.done && b.value === 1 && b.done && cleaned === 2",
+        ),
+        (
+            "throw after resume",
+            "try { throw (yield 1); } catch(e) { let n = yield e.n; return n + e.n; } finally { cleaned++; }",
+            "let a = first(g); let b = second(g, {n: 7}); if (cleaned !== 0) throw 'early finally'; let c = first(g, 10); a.value === 1 && !a.done && b.value === 7 && !b.done && c.value === 17 && c.done && cleaned === 1",
+        ),
+        (
+            "pending throw",
+            "try { try { throw {n: 7}; } finally { yield 2; cleaned++; } } catch(e) { return e.n; }",
+            "let a = first(g); let b = second(g); a.value === 2 && !a.done && b.value === 7 && b.done && cleaned === 1",
+        ),
+        (
+            "pending jump and normal completion",
+            "let n = 0; while (n < 1) { try { n++; break; } finally { yield 2; cleaned++; } } try { n++; } finally { yield 3; cleaned++; } return n;",
+            "let a = first(g); let b = second(g); let c = first(g); a.value === 2 && !a.done && b.value === 3 && !b.done && c.value === 2 && c.done && cleaned === 2",
+        ),
+    ];
+    for (name, body, checks) in cases {
+        for (first, second) in [("one", "three"), ("three", "one")] {
+            // Exactly one or three JS helper frames surround next. The
+            // deeper path also retains callees, arguments and extra locals
+            // below the activation, so its new stack base must be rebased.
+            let source = format!(
+                "function keep(padding, value) {{ return value; }}
+                 function one(g, value) {{ return g.next(value); }}
+                 function three(g, value) {{ let x = 11, y = 12; return keep(x + y, two(g, value)); }}
+                 function two(g, value) {{ return keep(13, one(g, value)); }}
+                 let first = {first}, second = {second}, cleaned = 0;
+                 function* f() {{ {body} }} let g = f();
+                 {checks}"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{name}: {first}");
+        }
+    }
+}
+
+#[test]
 fn generator_call_protocols_and_prototypes() {
     // Synthetic fixtures, not light-cljs output.
     for source in [

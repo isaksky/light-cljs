@@ -133,6 +133,9 @@ pub(crate) struct Frame {
 
 /// A movable activation. All indices are relative to its frame/stack origin;
 /// it owns no worker state or Rust stack. Also suitable for async resumes.
+/// The stack includes live expression operands above the locals, and handlers
+/// include pending finally completions (normal, return, throw or jump). Their
+/// values are traced here while detached, then by VmState after attachment.
 #[derive(Debug)]
 pub(crate) struct DetachedActivation {
     frame: Frame,
@@ -284,11 +287,15 @@ impl VmState {
             )
         };
         let base = frame.base;
+        // Save operands as well as locals: e.g. both a and b are live at
+        // suspension in a + b * (yield c). No compiler spill is needed.
         let stack = self.stack.split_off(base);
         let first = self.handlers.partition_point(|h| h.frame < index);
         let mut handlers = self.handlers.split_off(first);
         let native_origin = self.natives.partition_point(|n| n.depth() < index + 1);
         for h in &mut handlers {
+            // Handler and pending-completion heights use the same origin
+            // as the saved values, independent of the next caller's depth.
             h.frame -= index;
             h.height -= base;
             if let HandlerKind::NativeCatch { native } = &mut h.kind {

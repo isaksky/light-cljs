@@ -315,6 +315,12 @@ Notes on the grammar:
   until `yield` or completion; its argument supplies the previous yield's result
   and is ignored at the start. Each result has ordinary `value` and `done`
   properties. Completed generators always return `{value: undefined, done: true}`.
+  Parenthesized yield expressions can be binary operands, such as
+  `a + b * (yield c)`. Yields in try/catch/finally preserve live operands,
+  handlers and pending finally completions across suspension (clj-quickjs-244),
+  even when subsequent next calls come from different depths. A pending
+  return or throw continues after a yielding finally block finishes; a wait
+  in its resumed body parks the whole task without unwinding.
   Uncaught exceptions complete the generator and propagate to the next caller;
   executing generators reject re-entrant next with TypeError.
   Generator functions create their own prototype/property record eagerly, so
@@ -436,6 +442,10 @@ Every form below is rejected where it starts. Error kinds:
 `UnexpectedToken`, `Unsupported` (valid JavaScript outside the subset),
 `ReservedWord`, `Invalid` (a JavaScript early error), `TooDeep`.
 
+Non-delegated yield expressions inside generator bodies are executable,
+including binary operands and try/catch/finally bodies (clj-quickjs-244).
+The delegated `yield*` and async forms listed below remain rejected.
+
 `Symbol()`, `Symbol.for(key)` and `Symbol.keyFor(sym)` use ordinary call syntax.
 `new Symbol()` is accepted syntax
 but fails at runtime with TypeError; symbol-valued computed literal keys
@@ -473,6 +483,8 @@ functions and `await` remain unsupported. Suspended generators cannot publish
 or cross tasks, including through immutable collections or shared references.
 Generator functions also cannot publish because their own property record is
 task-owned, as for an ordinary function whose prototype has been materialized.
+Yield expressions with live operands and yields inside try/catch/finally are
+executable; they do not require any of those deferred methods (clj-quickjs-244).
 
 `Intl` provides locale identifiers and likely-subtag maximize/minimize
 (clj-quickjs-209/-210/-211), plus decimal/percent/currency `NumberFormat` with bound `format`,
@@ -1018,6 +1030,7 @@ Executed, with JavaScript semantics:
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
 | String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content. A string is a sequence of UTF-16 code units, lone surrogates included (clj-quickjs-141): `"\u{10ffff}" === "\u{dbff}\u{dfff}"` and `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"` are true, a lone surrogate equals only itself (not U+FFFD), and equality, map keys and `<` compare code units. The embedder reads the exact code units (`JsString::code_units`, or `Debug`, which writes a lone surrogate as `\u{d800}`; `cargo run` prints a string result that way) or lossy text (`Display`, `to_string_lossy`: U+FFFD) |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
+| `a + b * (yield c)` and yields in try/catch/finally (clj-quickjs-244) | pending operands stay on the saved activation's value stack without compiler spills. Handlers and normal/return/throw/jump completions are saved relative to the activation and rebased on next, preserving their values across GC and calls from different depths. Finally runs once when resumed control leaves the protected block; a yielding finally continues its pending completion after its last yield or dependency wait. |
 | `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant next and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods, delegated yield and async/await remain deferred. |
 | `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
 | OrdinaryToPrimitive on object operands (clj-quickjs-70) | arithmetic, bitwise, unary and update operators use hint number; `+` and object/primitive `==` use hint default; templates and computed property keys use hint string. Number/default tries `valueOf`, then `toString`; string reverses that order. Non-callable methods are skipped; each method is called at most once with the original object as `this` and no arguments. The first primitive result wins; otherwise a catchable TypeError "cannot convert object to primitive value". Method exceptions propagate. Left conversion finishes before right conversion begins, after both expressions are evaluated. Equality between two objects uses identity; nullish equality never converts. Object.prototype.valueOf returns the object and Object.prototype.toString returns "[object Object]" for plain objects. A task-owned native continuation retains operands and progress across budget yields, dependency waits, GC and migration; cancellation drops it through the usual finally unwinding. No Rust interpreter recursion |
@@ -4289,3 +4302,28 @@ chunks, beyond the general synchronous rope limitation above.
 
 Explicit gaps: typed-array `sort` and `toSorted` remain deferred. Generic sort
 on Boolean/Symbol/BigInt primitives explicitly rejects unavailable wrappers.
+
+## Generator suspension examples (clj-quickjs-244)
+
+These synthetic fixtures, not light-cljs output, use the saved operand stack
+and handlers. Both syntax examples parse through `grammar_doc_examples`; the
+source integration tests execute them and check the iterator result rows.
+
+```js accept
+function* operands(a, b, c) { return a + b * (yield c); }
+let g = operands(2, 3, 4);
+let first = g.next();
+let last = g.next(10);
+first.value === 4 && !first.done && last.value === 32 && last.done
+```
+
+```js accept
+function* cleanup() {
+  try { return 1; }
+  finally { yield 2; }
+}
+let g = cleanup();
+let first = g.next();
+let last = g.next();
+first.value === 2 && !first.done && last.value === 1 && last.done
+```

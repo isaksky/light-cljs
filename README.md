@@ -3360,3 +3360,13 @@ setters may wait, yield and migrate. Snapshot collection, merging, string
 flattening/comparison, writes and deletion are budgeted native steps.
 Deferred: typed-array `sort`, `toSorted`, and Boolean/Symbol/BigInt receiver
 wrappers (explicit UnsupportedOperand, as for generic array string methods).
+
+### Generator operands and exception handlers (clj-quickjs-244)
+
+Yield expressions preserve pending operands, including `a + b * (yield c)`.
+Yields in try, catch and finally blocks retain their handlers and pending
+completions across calls from different depths. For example,
+`try { return 1; } finally { yield 2; }` yields 2, then completes with 1.
+A resumed finally block may wait on `__rt.need`, survive collection and migrate
+to another worker before finishing its pending return or throw. Generator
+`return()`/`throw()` methods, delegated `yield*` and async/await remain deferred.

@@ -6225,3 +6225,41 @@ Delete for trailing holes. The built-in and realm allocation are append-only;
 there are no new heap kinds or publication categories. QuickJS's
 `js_array_sort`/`js_array_cmp_generic` in `research/quickjs/quickjs.c` at
 7d1c13c5d8f8 were consulted as semantic references; no C code was adapted.
+
+## Generator operands and handler rebasing (clj-quickjs-244)
+
+The generic activation transfer introduced by clj-quickjs-243 already moves the
+whole value-stack suffix starting at the frame's base, including operands above
+its locals. Lowering leaves the left operands of `a + b * (yield c)` on that
+stack; no spill locals are required. Yield removes only its outgoing value, and
+next pushes the incoming value before continuing the expression.
+
+Detachment moves all handler entries of the frame, subtracting the frame index
+and stack base from their frame and height fields. Attachment adds the new
+caller's frame count and stack height. Catch/finally targets and pending jump
+resume PCs stay code-relative. Normal, return, throw and jump completions move
+with their handlers; saved return values and exceptions are traced by
+`DetachedActivation` when suspended and by `VmState` when attached. Native-frame
+indices use the same transfer boundary. This representation remains independent
+of the generator protocol for reuse by async activations.
+
+`generator_yield_keeps_operands_and_handlers` in `tests/js_source.rs` locks down
+these existing transfer rules, alternating one and three helper frames in both
+directions and keeping extra caller operands below the generator. It covers
+multiple pending operands, caught exceptions, throws after resume and yields
+with normal, return, throw and jump completions in finally blocks.
+`generator_finally_waits_after_resume` in `tests/exception_waits.rs` collects
+while an object is held solely by a detached pending return/throw, then resumes
+into a finally block that waits on `__rt.need`. A second collection and thread
+migration preserve the attached completion; effect logs assert no cleanup replay
+and the final iterator result or caught exception retains the object's value.
+No dispatch stack-size or generator return/throw-method change is needed.
+
+QuickJS references and provenance: `research/quickjs/tests/test_builtin.js`
+`test_generator`'s f3 case, and `research/quickjs/quickjs.c` `OP_yield`,
+`done_generator`, `async_func_resume` and `js_parse_assign_expr2`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The f3 test uses `let` in place of
+upstream `var` as requested by the audit (clj-quickjs-94); its expected rows
+remain `{1, false}` and `{6, true}`. The QuickJS copyright and MIT permission
+notice accompany that adaptation in `tests/js_source.rs`. Other cases are
+synthetic fixtures, not light-cljs output. No QuickJS implementation is copied.
