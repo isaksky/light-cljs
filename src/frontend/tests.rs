@@ -191,20 +191,12 @@ fn module_records_of_quickjs_cases() {
 fn module_syntax_rejections() {
     use super::SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
     let cases = [
-        ("export * from 's';", Unsupported, 1, 8, "export *"),
         (
             "export * as ns from 's';",
             Unsupported,
             1,
             8,
             "export * as ns",
-        ),
-        (
-            "export {x} from 's';",
-            Unsupported,
-            1,
-            12,
-            "export {x} from",
         ),
         (
             "import {'x' as x} from 's';",
@@ -5600,4 +5592,33 @@ fn operator_tokens_are_recorded() {
     let mut out = Vec::new();
     tokens(e, src, &mut out);
     assert_eq!(out, ["?.", ".", "(", "?.", ".", "[", "?."]);
+}
+
+#[test]
+fn module_star_and_from_exports_are_static_requests() {
+    let record = super::parse_module(
+        "export * from './a'; export {x as y, default as z} from './b'; export * from './a';",
+    )
+    .unwrap();
+    assert_eq!(record.requested_modules(), &["./a", "./b"]);
+    assert_eq!(record.star_export_entries(), &["./a", "./a"]);
+    assert!(record.local_export_entries().is_empty());
+    assert!(record.import_entries().is_empty());
+    let entries = record.indirect_export_entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        (&*entries[0].import_name, &*entries[0].export_name),
+        ("x", "y")
+    );
+    assert_eq!(
+        (&*entries[1].import_name, &*entries[1].export_name),
+        ("default", "z")
+    );
+    for source in [
+        "export {x} from 'a'; export {y as x} from 'b';",
+        "export const x = 1; export {y as x} from 'b';",
+        "export * from 'a' with {};",
+    ] {
+        assert!(super::parse_module(source).is_err(), "{source}");
+    }
 }

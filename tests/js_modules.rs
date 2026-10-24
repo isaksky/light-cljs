@@ -1,4 +1,4 @@
-//! Static loading only: upstream fixtures retain their own MIT notices.
+//! Static loading and acyclic execution; upstream fixtures retain MIT notices.
 //! Inline JavaScript is synthetic fixture text, not light-cljs output.
 
 use std::collections::HashMap;
@@ -626,4 +626,248 @@ fn rejects_cycles_namespaces_and_json_before_effects() {
         );
         assert!(effects.is_empty());
     }
+}
+
+#[test]
+fn star_and_explicit_reexports_preserve_identity_and_liveness() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n, inc, renamed} from './barrel.js'; inc(); __rt.effect(0, n === 1 && renamed === inc);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js'; export {inc as renamed} from './origin.js';",
+            ),
+            ("a.js", "export * from './origin.js';"),
+            ("b.js", "export * from './origin.js';"),
+            (
+                "origin.js",
+                "export let n = 0; export function inc() { n++; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn ambiguous_star_import_fails_before_any_body() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import {n} from './barrel.js';"),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js';",
+            ),
+            ("a.js", "export let n = 1; __rt.effect(0, 'a');"),
+            ("b.js", "export let n = 2; __rt.effect(0, 'b');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("ambiguous") && e.message().contains("n")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn explicit_export_overrides_star_ambiguity_and_default_is_excluded() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n} from './barrel.js'; __rt.effect(0, n);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js'; export {n} from './a.js';",
+            ),
+            ("a.js", "export let n = 1; export {n as default};"),
+            ("b.js", "export let n = 2;"),
+        ],
+        vec![Primitive::Number(1.0)],
+    );
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import n from './barrel.js';"),
+            ("barrel.js", "export * from './a.js';"),
+            (
+                "a.js",
+                "let n = 1; export {n as default}; __rt.effect(0, n);",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("default")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_need_waits_collects_and_migrates_without_replaying() {
+    use clj_quickjs::Completion;
+    let runtime = Runtime::new();
+    let world = runtime.new_world();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import {n} from './dep.js'; __rt.effect(0, n);");
+    host.add(
+        "dep.js",
+        "export let n = 5; __rt.effect(0, n); n += __rt.need(71, 0); __rt.effect(0, n);",
+    );
+    let graph = ModuleLoader::new()
+        .load(world, &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut task = runtime.spawn_module(&graph);
+    assert_eq!(task.world(), world);
+    let mut waits = 0;
+    let mut yields = 0;
+    let mut done = false;
+    for _ in 0..2000 {
+        let (next_task, next_host, outcome) = std::thread::spawn(move || {
+            let outcome = task.run_with(Budget::instructions(3), &mut host).unwrap();
+            (task, host, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next_task;
+        host = next_host;
+        runtime.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+            }
+            RunOutcome::Waiting(key) => {
+                waits += 1;
+                assert_eq!(waits, 1);
+                assert_eq!(key.world(), world);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = runtime.root(Primitive::Number(7.0));
+                task = runtime
+                    .complete(key, request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Undefined);
+                done = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(done && yields > 0);
+    assert_eq!(waits, 1);
+    assert_eq!(task.dependency_log().edges().len(), 1);
+    assert_eq!(
+        host.effects,
+        vec![
+            Primitive::Number(5.0),
+            Primitive::Number(12.0),
+            Primitive::Number(12.0)
+        ]
+    );
+    assert_eq!(host.fetches().len(), 2);
+}
+
+#[test]
+fn separate_tasks_get_fresh_instances_and_failed_tasks_cannot_replay() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "entry.js",
+        "import {n, inc} from './dep.js'; inc(); __rt.effect(0, n); throw 42;",
+    );
+    host.add("dep.js", "export let n = 0; export function inc() { n++; }");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let first = runtime.spawn_module(&graph);
+    let second = runtime.spawn_module(&graph);
+    let mut errors = Vec::new();
+    for task in [first, second] {
+        let RunOutcome::Failed(error) = task.run_with(Budget::UNLIMITED, &mut host).unwrap() else {
+            panic!("expected failure")
+        };
+        errors.push(error.message().to_string());
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host),
+            Err(clj_quickjs::RunError::Finished)
+        ));
+        assert!(task.dependency_log().edges().is_empty());
+    }
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(
+        host.effects,
+        vec![Primitive::Number(1.0), Primitive::Number(1.0)]
+    );
+}
+
+#[test]
+fn unused_missing_indirect_export_fails_at_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './dep.js'; __rt.effect(0, 'entry');"),
+            ("dep.js", "export {missing} from './leaf.js';"),
+            ("leaf.js", "__rt.effect(0, 'leaf');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("missing")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_functions_read_reassigned_cells_and_module_eval_rejects_new_target() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {f, replace} from './dep.js'; const old = f; replace(); __rt.effect(0, old());",
+            ),
+            (
+                "dep.js",
+                "export function f() { return f === replacement; } function replacement() { return 7; } export function replace() { f = replacement; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+    assert_effects(
+        &[(
+            "entry.js",
+            "try { eval('new.target'); } catch(e) { __rt.effect(0, e instanceof SyntaxError); }",
+        )],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn deep_acyclic_graph_evaluates_without_nested_module_calls() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for index in 0..1500 {
+        let text = if index == 1499 {
+            "__rt.effect(0, 1499);".to_string()
+        } else {
+            format!("import './{}.js';", index + 1)
+        };
+        host.add(&format!("{index}.js"), &text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.effects, vec![Primitive::Number(1499.0)]);
 }

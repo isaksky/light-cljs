@@ -3,7 +3,7 @@
 //! The embedder calls [`ModuleLoader::load`] before spawning the entry task.
 //! Loading only resolves, fetches and parses: it runs no JavaScript, accesses
 //! no heap, takes no runtime locks and creates no dependency cells or edges.
-//! Linking/evaluation (including JSON default exports) is a separate phase.
+//! Linking/evaluation runs separately in a spawned entry task.
 
 mod link;
 
@@ -135,7 +135,7 @@ impl ModuleNode {
 }
 
 /// A complete static graph, including cycles. It contains no module instances;
-/// future linking must allocate mutable environments independently per task.
+/// linking allocates mutable environments independently per task.
 #[derive(Debug)]
 pub struct ModuleGraph {
     world: WorldId,

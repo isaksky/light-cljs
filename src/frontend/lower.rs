@@ -572,6 +572,8 @@ impl Emitter {
 struct FnCtx {
     dynamic_env: Option<(Place, usize)>,
     environment_key: usize,
+    /// Internal module entry points have no JavaScript new.target binding.
+    module: bool,
     eval_sites: Vec<EvalSite>,
     in_parameters: bool,
     /// Only the original script registers lexicals; eval and functions use
@@ -842,6 +844,7 @@ impl<'s> Lowerer<'s> {
         self.fns.push(FnCtx {
             dynamic_env: None,
             environment_key,
+            module: false,
             eval_sites: Vec::new(),
             in_parameters: false,
             script_lexicals: false,
@@ -1873,6 +1876,9 @@ impl<'s> Lowerer<'s> {
     /// enclosing arrow. Eval imports it alongside its receiver, and ordinary
     /// functions always start a fresh binding (even when created by eval).
     fn resolve_new_target(&mut self, level: usize) -> Option<Place> {
+        if self.fns[level].module {
+            return None;
+        }
         if self.fns[level].completion.is_some() {
             return self.eval_new_target.map(Place::Capture);
         }

@@ -18,6 +18,8 @@ struct Tables {
     imports: Vec<ImportEntry>,
     exports: Vec<(Ident, Ident)>, // (local name, exported name)
     exported_names: BTreeSet<String>,
+    indirect: Vec<IndirectExportEntry>,
+    stars: Vec<JsString>,
 }
 
 impl Tables {
@@ -99,7 +101,7 @@ impl Tables {
             .map(|i| (i.local_name.as_str(), i))
             .collect();
         let mut local_exports = Vec::new();
-        let mut indirect_exports = Vec::new();
+        let mut indirect_exports = self.indirect;
         for (local, exported) in self.exports {
             if local.name != "*default*" && !bound.contains_key(local.name.as_str()) {
                 return Err(p.error(
@@ -128,6 +130,7 @@ impl Tables {
                 span: exported.span,
             });
         }
+        indirect_exports.sort_by_key(|entry| entry.span.start);
         Ok(ModuleRecord::new(
             body,
             Span::new(0, p.src.len()),
@@ -135,6 +138,7 @@ impl Tables {
             self.imports,
             local_exports,
             indirect_exports,
+            self.stars,
         ))
     }
 }
@@ -327,9 +331,22 @@ impl Parser<'_> {
             return self.parse_default_export(tables).map(Some);
         }
         if self.is_punct(Punct::Star) {
-            return Err(self.unsupported(self.tok.span, "`export *` / `export * as ns from` are"));
+            let span = self.advance()?.span;
+            if self.is_module_word("as") {
+                return Err(self.unsupported(span, "`export * as ns from` is"));
+            }
+            if !self.is_module_word("from") {
+                return Err(self.unexpected("from"));
+            }
+            self.advance()?;
+            let specifier = self.parse_module_specifier()?;
+            tables.request(&specifier);
+            tables.stars.push(specifier);
+            self.expect_semi()?;
+            return Ok(None);
         }
         if self.is_punct(Punct::LBrace) {
+            let export_start = tables.exports.len();
             self.lexer.expect_property_name();
             self.advance()?;
             while !self.is_punct(Punct::RBrace) {
@@ -350,7 +367,17 @@ impl Parser<'_> {
             }
             self.expect_punct(Punct::RBrace)?;
             if self.is_module_word("from") {
-                return Err(self.unsupported(self.tok.span, "`export {x} from` is"));
+                self.advance()?;
+                let specifier = self.parse_module_specifier()?;
+                tables.request(&specifier);
+                for (imported, exported) in tables.exports.split_off(export_start) {
+                    tables.indirect.push(IndirectExportEntry {
+                        specifier: specifier.clone(),
+                        import_name: imported.name,
+                        export_name: exported.name,
+                        span: exported.span,
+                    });
+                }
             }
             self.expect_semi()?;
             return Ok(None);

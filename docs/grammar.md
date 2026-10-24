@@ -497,7 +497,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | class fields, static initialization blocks, super property access, `import`/`export` in scripts, dynamic `import` | Unsupported |
-| module `export *`, `export * as ns from`, `export {x} from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
+| module `export * as ns from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
@@ -520,7 +520,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 Static module requests can be resolved and loaded through `module::ModuleLoader`
-(clj-quickjs-252); this adds no executable module syntax or CLI module mode.
+(clj-quickjs-252), then evaluated with `Runtime::spawn_module`
+(clj-quickjs-253). The CLI remains script-only.
 
 ## Explicit gaps
 
@@ -533,9 +534,10 @@ The QuickJS Date/RegExp fixture cases execute without source adaptations
 sloppy declaration hoisting into the caller's variable environment (clj-quickjs-108).
 
 Module source parses into static records (see "Modules"). The embedding API
-loads complete static graphs, including cycles, before task execution. Linking,
-evaluation, namespaces, cyclic binding initialization and JSON module instances
-remain deferred; the CLI and `compile_script` still take scripts only.
+loads complete static graphs, including cycles, before task execution. Acyclic
+graphs link and evaluate with live imports and re-exports (clj-quickjs-253).
+Namespaces, cyclic binding initialization, default-export declarations and JSON
+module instances remain deferred; the CLI and `compile_script` take scripts only.
 
 Super properties and class fields remain deferred (clj-quickjs-138/139).
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
@@ -997,7 +999,9 @@ delete a[o];
 ## Execution
 
 `parse_module` only parses and checks module static semantics. It produces no
-executable and performs no host work; module evaluation is deferred.
+executable and performs no host work. After loading, `Runtime::spawn_module`
+links and evaluates an acyclic graph with strict module environments and
+undefined completion (see "Acyclic module execution").
 `module::ModuleLoader` separately resolves and fetches a static graph through
 an embedder-supplied `ModuleHost`, parsing JavaScript and carrying `.json`
 sources without evaluation. It creates no task or dependency edge. See
@@ -5398,8 +5402,8 @@ are allowed only at the module top level. Scripts continue to reject them.
 
 The record exposes the body and span, requested specifiers in first-occurrence
 source order (deduplicated by cooked UTF-16 value), import entries with local
-binding spans, local exports, and indirect exports. Export lists may precede
-bindings. Exporting a named/default import becomes an indirect export using
+binding spans, local exports, indirect exports, and star-export specifiers.
+Export lists may precede bindings. Exporting a named/default import becomes an indirect export using
 its original imported name; exporting a namespace import remains local.
 Imports are static requests, not recorded runtime dependency edges.
 
@@ -5517,7 +5521,7 @@ The remaining module syntax fails explicitly with `Unsupported` naming the
 form. Import attributes apply equally to side-effect and binding imports.
 Loading, resolution, linking and execution remain outside this parse API.
 
-```js module-reject Unsupported 1:8
+```js module-accept
 export * from 's';
 ```
 
@@ -5525,7 +5529,7 @@ export * from 's';
 export * as ns from 's';
 ```
 
-```js module-reject Unsupported 1:12
+```js module-accept
 export {x} from 's';
 ```
 
@@ -5637,8 +5641,11 @@ complete CLDR coverage. NumberFormat style unit still throws RangeError.
 
 After pre-run loading, `Runtime::spawn_module(&graph)` links and evaluates an
 acyclic JavaScript graph in the graph's world. Named imports, side-effect
-imports, exported declarations and export lists execute. Imported names are
-immutable live aliases of the origin's binding cell, including exports of
+imports, exported declarations, export lists, `export {x} from` and `export *`
+execute. Star exports exclude default, explicit exports take precedence, and
+distinct origins for one star-exported name produce an ambiguity SyntaxError
+when that name is imported. Multiple paths to the same origin stay unambiguous.
+Imported names are immutable live aliases of the origin's binding cell, including exports of
 imports. Missing exports are SyntaxError failures before any body effect.
 Module functions are instantiated before evaluation, let/const remain in TDZ
 until initialized, and var starts as undefined. Bodies run once each in

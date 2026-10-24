@@ -1,5 +1,5 @@
 /*
-Parse-only copy of research/quickjs/examples/fib_module.js at 7d1c13c5d8f8.
+Licensed copy of research/quickjs/examples/fib_module.js at 7d1c13c5d8f8.
 QuickJS Javascript Engine
 
 Copyright (c) 2017-2021 Fabrice Bellard

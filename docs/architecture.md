@@ -7678,13 +7678,13 @@ unchanged; no new runtime behavior or representation is introduced.
    parsed `ModuleRecord`), without heap handles, environments or task state.
    Graphs from repeated loads share these records; even unchanged sources are
    fetched and parsed anew in a new world, preventing stale-world reuse.
-   Mutable module instances will be allocated separately per task by linking;
+   Mutable module instances are allocated separately per task by linking;
    loading neither creates nor shares instances. Successfully parsed records
    remain cached after a graph failure; failed fetches/parses and partial
    graphs are not cached, so a retry resolves requests again.
 4. **Dependencies:** imports are static graph requests, never recorded cell
    dependency edges or waits. `__rt.need` in a module body retains the ordinary
-   task/world/result-kind semantics once module execution is implemented; the
+   task/world/result-kind semantics during module execution; the
    loader only parses it and never performs the need. Loading does not alter
    dependency identity or the script VM's dependency log.
 5. **Source kinds:** host fetch returns `ModuleSource::JavaScript { name, text }`
@@ -7692,8 +7692,8 @@ unchanged; no new runtime behavior or representation is introduced.
    `.json` suffix as JSON (`ModuleSource::from_name` implements this rule).
    Import attributes remain unsupported. JSON source text is carried verbatim
    without JavaScript or JSON parsing; synthetic default exports and JSON
-   validation belong to clj-quickjs-256. There is currently no linker accepting
-   either kind, so a graph is not an executable.
+   validation belong to clj-quickjs-256. JavaScript graphs can be executed with
+   `Runtime::spawn_module`; graphs reaching JSON fail explicitly before bodies.
 6. **Binary:** `cargo run -- <file>` remains script-only. Embedders supply
    resolution and acquisition; the VM gains no filesystem access or CLI mode.
 
@@ -7703,13 +7703,15 @@ to the existing entry key rather than fetching a second record. Resolved keys
 are retained in each node in the record's request order, including distinct
 specifier spellings that alias one key. Each key is fetched/parsed once per
 world in a loader, including across entry graphs. Host resolution may repeat
-on cache hits. Graph iteration preserves discovery order. Linking, evaluation,
-namespace objects and cyclic binding initialization remain deferred.
+on cache hits. Graph iteration preserves discovery order. Acyclic JavaScript
+linking and evaluation are described below; namespace objects and cyclic
+binding initialization remain deferred.
 
 Verification: `tests/js_modules.rs` uses the existing licensed parse fixtures
 for the three-module cyclic graph and the hello-module JavaScript imports,
-plus synthetic JSON text and failure/cache/deep-graph cases. These tests load
-the sources without evaluating their bodies. QuickJS references and provenance:
+plus synthetic JSON text and failure/cache/deep-graph cases. Loading tests
+run no bodies; execution tests are described below. QuickJS references and
+provenance:
 `research/quickjs/quickjs.c` functions `js_default_module_normalize_name`,
 `js_host_resolve_imported_module`, `js_new_module_def`, `JS_LoadModule`, and
 `research/quickjs/quickjs-libc.c::js_module_loader`, revision
@@ -7840,8 +7842,12 @@ default-locale leaf remain the shared Intl policy.
 `Runtime::spawn_module(&graph)` starts one module instance per graph record in
 an entry task, in the graph's world. Static linking computes a source-order
 DFS post-order, resolves named imports through local/indirect export entries,
-and checks every link before any body can run. Missing exports fail the task
-with SyntaxError naming the export and module. Cycles, namespace imports,
+and checks every link before any body can run. Star exports are resolved
+bottom-up over the DAG, excluding default. Explicit exports override stars;
+two star paths resolving to distinct origin bindings are ambiguous, while
+two paths to one binding stay unambiguous. Explicit indirect exports are
+validated even when unused. Missing exports fail the task with SyntaxError
+naming the export and module. Cycles, namespace imports,
 JSON instances and default-export declarations fail explicitly for now.
 
 The compiled entry driver allocates ordinary task-owned binding cells for all

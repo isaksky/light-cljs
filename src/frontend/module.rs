@@ -56,6 +56,7 @@ struct ModuleData {
     import_entries: Vec<ImportEntry>,
     local_export_entries: Vec<LocalExportEntry>,
     indirect_export_entries: Vec<IndirectExportEntry>,
+    star_export_entries: Vec<JsString>,
 }
 
 impl ModuleRecord {
@@ -66,6 +67,7 @@ impl ModuleRecord {
         import_entries: Vec<ImportEntry>,
         local_export_entries: Vec<LocalExportEntry>,
         indirect_export_entries: Vec<IndirectExportEntry>,
+        star_export_entries: Vec<JsString>,
     ) -> Self {
         Self(Arc::new(ModuleData {
             body,
@@ -74,6 +76,7 @@ impl ModuleRecord {
             import_entries,
             local_export_entries,
             indirect_export_entries,
+            star_export_entries,
         }))
     }
 
@@ -107,5 +110,10 @@ impl ModuleRecord {
 
     pub fn indirect_export_entries(&self) -> &[IndirectExportEntry] {
         &self.0.indirect_export_entries
+    }
+
+    /// Source specifiers of export-star entries, in source order.
+    pub fn star_export_entries(&self) -> &[JsString] {
+        &self.0.star_export_entries
     }
 }

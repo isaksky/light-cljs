@@ -91,6 +91,10 @@ pub(crate) fn module_bindings(
             "too many module bindings",
         ));
     }
+    let lower = Lowerer::new(source, None);
+    for binding in &bindings {
+        lower.check_not_reserved(&binding.name)?;
+    }
     Ok(bindings)
 }
 
@@ -106,6 +110,7 @@ pub(crate) fn lower_module(
         // No script completion/global declarations, implicit arguments or
         // constructor semantics. A plain strict call supplies undefined this.
         lower.enter_function(None, false, true);
+        lower.cur_mut().module = true;
         lower.cur_mut().scopes.push(Scope::new());
         for (slot, b) in bindings.iter().enumerate() {
             lower.cur_mut().scopes[0].insert(
@@ -133,7 +138,7 @@ pub(crate) fn lower_module(
                     let b = lower.local(name)?;
                     lower.out().op_u16(Opcode::GetLocal, b.slot, f.span);
                     // Always capture the mutable module cell, even for self
-                    // recursion: an importer may replace the function binding.
+                    // recursion: the exporter may replace the function binding.
                     lower.closure(f, None, None)?;
                     lower.out().op(Opcode::CellInit, f.span);
                 }

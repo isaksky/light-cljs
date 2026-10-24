@@ -59,41 +59,78 @@ fn post_order(graph: &ModuleGraph) -> Result<Vec<ModuleKey>, SyntaxError> {
     Ok(order)
 }
 
+type Origin = (ModuleKey, String);
+// None is an ambiguous star export; absence is a missing export.
+type Exports = HashMap<ModuleKey, HashMap<String, Option<Origin>>>;
+
 fn resolve_export(
     graph: &ModuleGraph,
-    mut key: ModuleKey,
-    mut name: String,
-) -> Result<(ModuleKey, String), SyntaxError> {
-    // Acyclic graphs guarantee termination. Follow indirect exports without
-    // recursion, including exports of imported bindings classified by parsing.
-    loop {
-        let node = &graph.nodes[&key];
-        let record = node.module.record().expect("JavaScript checked first");
-        if let Some(export) = record
-            .local_export_entries()
-            .iter()
-            .find(|e| e.export_name == name)
-        {
-            return Ok((key, export.local_name.clone()));
-        }
-        if let Some(export) = record
-            .indirect_export_entries()
-            .iter()
-            .find(|e| e.export_name == name)
-        {
-            key = requested(node, &export.specifier);
-            name = export.import_name.clone();
-            continue;
-        }
-        return Err(error(
+    exports: &Exports,
+    key: ModuleKey,
+    name: &str,
+) -> Result<Origin, SyntaxError> {
+    let node = &graph.nodes[&key];
+    match exports[&key].get(name) {
+        Some(Some(origin)) => Ok(origin.clone()),
+        resolution => Err(error(
             node,
             Span::new(0, 0),
-            format!(
-                "Could not find export '{name}' in module '{}'",
-                node.module.source.name()
-            ),
-        ));
+            match resolution {
+                Some(None) => format!(
+                    "Export '{name}' is ambiguous in module '{}'",
+                    node.module.source.name()
+                ),
+                _ => format!(
+                    "Could not find export '{name}' in module '{}'",
+                    node.module.source.name()
+                ),
+            },
+        )),
     }
+}
+
+fn export_tables(graph: &ModuleGraph, order: &[ModuleKey]) -> Result<Exports, SyntaxError> {
+    let mut exports = Exports::new();
+    // Bottom-up ResolveExport for a DAG. Identity is (private key, binding
+    // name), so two paths to the same cell are never spuriously ambiguous.
+    for key in order {
+        let node = &graph.nodes[key];
+        let record = node.module.record().unwrap();
+        let mut table = HashMap::new();
+        for specifier in record.star_export_entries() {
+            for (name, origin) in &exports[&requested(node, specifier)] {
+                if name == "default" {
+                    continue;
+                }
+                table
+                    .entry(name.clone())
+                    .and_modify(|prior| {
+                        if prior != origin {
+                            *prior = None;
+                        }
+                    })
+                    .or_insert_with(|| origin.clone());
+            }
+        }
+        for entry in record.local_export_entries() {
+            table.insert(
+                entry.export_name.clone(),
+                Some((*key, entry.local_name.clone())),
+            );
+        }
+        // Validate indirect exports even when nobody imports them.
+        for entry in record.indirect_export_entries() {
+            let origin = resolve_export(
+                graph,
+                &exports,
+                requested(node, &entry.specifier),
+                &entry.import_name,
+            )?;
+            table.insert(entry.export_name.clone(), Some(origin));
+        }
+        exports.insert(*key, table);
+    }
+    Ok(exports)
 }
 
 pub(super) fn compile_graph(graph: &ModuleGraph) -> Result<Executable, SyntaxError> {
@@ -133,6 +170,7 @@ pub(super) fn compile_graph(graph: &ModuleGraph) -> Result<Executable, SyntaxErr
         }
         bindings.insert(*key, module_bindings);
     }
+    let exports = export_tables(graph, &order)?;
     // All links are checked before constructing runnable body code.
     for key in &order {
         let node = &graph.nodes[key];
@@ -140,7 +178,7 @@ pub(super) fn compile_graph(graph: &ModuleGraph) -> Result<Executable, SyntaxErr
             let crate::frontend::ImportName::Name(name) = &import.import_name else {
                 unreachable!()
             };
-            let origin = resolve_export(graph, requested(node, &import.specifier), name.clone())?;
+            let origin = resolve_export(graph, &exports, requested(node, &import.specifier), name)?;
             let slot = slots[&origin];
             slots.insert((*key, import.local_name.clone()), slot);
         }
