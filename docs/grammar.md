@@ -3651,6 +3651,7 @@ folding and the other deferred RegExp flags remain separate work.
 'ab'.replaceAll('', '-') === '-a-b-';
 'abc'.replace(/(?<x>b)/, '<$<x>>') === 'a<b>c';
 'ab'.replaceAll('', (match, offset) => offset) === '0a1b2';
+```
 
 ## Promise core (clj-quickjs-246)
 
