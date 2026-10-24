@@ -219,7 +219,9 @@ mod intl;
 pub(crate) mod iterator;
 pub(crate) mod regexp;
 
+mod intl_service;
 mod number_format;
+mod plural_rules;
 mod string_raw;
 mod string_replace;
 mod typed_array;
@@ -511,6 +513,7 @@ enum NativeState {
     StringRaw(Box<string_raw::StringRaw>),
     Intl(Box<intl::Intl>),
     NumberFormat(Box<number_format::State>),
+    PluralRules(Box<plural_rules::State>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -707,6 +710,7 @@ impl Trace for NativeFrame {
             NativeState::StringRaw(raw) => raw.trace(visit),
             NativeState::Intl(intl) => intl.trace(visit),
             NativeState::NumberFormat(format) => format.trace(visit),
+            NativeState::PluralRules(rules) => rules.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -1017,6 +1021,17 @@ pub(crate) fn start_builtin(
         let native = string_replace::State::new(heap, state.diag.task, which, this, args)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::StringReplace(Box::new(native)))?;
+        return Ok(true);
+    }
+    if (which == Builtin::IntlPluralRules && construct)
+        || (matches!(
+            which,
+            Builtin::IntlPluralRulesSelect | Builtin::IntlPluralRulesSupportedLocales
+        ) && !construct)
+    {
+        let native = plural_rules::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::PluralRules(Box::new(native)))?;
         return Ok(true);
     }
     if matches!(
@@ -2200,6 +2215,7 @@ impl NativeState {
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
+            NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -3291,6 +3307,7 @@ impl NativeState {
                 | NativeState::Join(_)
                 | NativeState::StringRaw(_)
                 | NativeState::Intl(_)
+                | NativeState::PluralRules(_)
                 | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }

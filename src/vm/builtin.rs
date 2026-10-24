@@ -354,6 +354,11 @@ pub(crate) enum Builtin {
 
     BigIntAsIntN,
     BigIntAsUintN,
+
+    IntlPluralRules,
+    IntlPluralRulesSelect,
+    IntlPluralRulesResolvedOptions,
+    IntlPluralRulesSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -410,6 +415,10 @@ impl Builtin {
             Builtin::BigIntPrototypeToString => "toString",
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
+            Builtin::IntlPluralRules => "PluralRules",
+            Builtin::IntlPluralRulesSelect => "select",
+            Builtin::IntlPluralRulesResolvedOptions => "resolvedOptions",
+            Builtin::IntlPluralRulesSupportedLocales => "supportedLocalesOf",
             Builtin::IntlNumberFormat => "NumberFormat",
             Builtin::IntlNumberFormatGetFormat => "get format",
             Builtin::IntlNumberFormatBound => "",
@@ -578,6 +587,10 @@ impl Builtin {
 
             Builtin::BigIntPrototypeToString | Builtin::BigIntPrototypeValueOf => 0,
 
+            Builtin::IntlPluralRules
+            | Builtin::IntlPluralRulesSelect
+            | Builtin::IntlPluralRulesSupportedLocales => 1,
+            Builtin::IntlPluralRulesResolvedOptions => 0,
             Builtin::IntlNumberFormat
             | Builtin::IntlNumberFormatBound
             | Builtin::IntlNumberFormatSupportedLocales => 1,
@@ -739,6 +752,13 @@ pub(crate) fn call(
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),
+        Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
+        Builtin::IntlPluralRulesSelect | Builtin::IntlPluralRulesSupportedLocales => {
+            Err(Fault::Internal("PluralRules requires native frame"))
+        }
+        Builtin::IntlPluralRulesResolvedOptions => {
+            crate::intl::plural_rules::record(heap, task, this)?.resolved(heap, task)
+        }
         Builtin::IntlNumberFormat
         | Builtin::IntlNumberFormatBound
         | Builtin::IntlNumberFormatSupportedLocales => {

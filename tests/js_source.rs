@@ -18396,3 +18396,199 @@ fn bigint_as_int_n_and_as_uint_n() {
         }
     }
 }
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_plural_rules_select() {
+    for source in [
+        "new Intl.PluralRules('en').select(1) === 'one'",
+        "new Intl.PluralRules('en').select(2) === 'other'",
+        "new Intl.PluralRules('ja').select(1) === 'other'",
+        "new Intl.PluralRules('ru').select(1) === 'one'",
+        "new Intl.PluralRules('ru').select(2) === 'few'",
+        "new Intl.PluralRules('ru').select(5) === 'many'",
+        "new Intl.PluralRules('en', {type:'ordinal'}).select(2) === 'two'",
+        "new Intl.PluralRules('en-GB').resolvedOptions().locale === 'en-GB'",
+        "Intl.PluralRules.supportedLocalesOf(['en','xx']).join() === 'en'",
+        "let caught=false; try {new Intl.PluralRules('en',{type:'bogus'});} catch(e){caught=e instanceof RangeError;} caught",
+        "let caught=false; try {new Intl.PluralRules('en',5);} catch(e){caught=e instanceof TypeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_plural_rules_options_and_brands() {
+    for source in [
+        "let r=new Intl.PluralRules('ru'); r.select(1.5) === 'other' && r.select(21) === 'one' && r.select(-2) === 'few' && r.select(Infinity) === 'other' && r.select(NaN) === 'other'",
+        "new Intl.PluralRules('en',{minimumFractionDigits:1}).select(1) === 'other'",
+        "new Intl.PluralRules('ru',{maximumFractionDigits:0}).select(1.49) === 'one'",
+        "new Intl.PluralRules('en',{maximumSignificantDigits:1}).select(1.1) === 'one'",
+        "new Intl.PluralRules('en',{minimumSignificantDigits:2}).select(1) === 'other'",
+        "let p=new Intl.PluralRules('en',{type:'ordinal'}); p.select(1) === 'one' && p.select(2) === 'two' && p.select(3) === 'few' && p.select(11) === 'other' && p.select(12) === 'other' && p.select(23) === 'few' && p.select(1.2) === 'other'",
+        "let p=new Intl.PluralRules('ar'); p.select(0) === 'zero' && p.select(2) === 'two' && p.select(5) === 'few' && p.select(15) === 'many' && p.select(100) === 'other' && p.select(3.5) === 'other'",
+        "new Intl.PluralRules('fr').select(1.5) === 'one' && new Intl.PluralRules('fr').select(1000000) === 'many' && new Intl.PluralRules('fr',{type:'ordinal'}).select(1) === 'one'",
+        "new Intl.PluralRules('es').select(1) === 'one' && new Intl.PluralRules('es').select(1000000) === 'many' && new Intl.PluralRules('es',{type:'ordinal'}).select(1) === 'other'",
+        "new Intl.PluralRules('pt-BR').select(0) === 'one' && new Intl.PluralRules('tr').select(1) === 'one' && new Intl.PluralRules('de').select(1) === 'one' && new Intl.PluralRules('zh-Hant').select(1) === 'other'",
+        "new Intl.PluralRules('en-US-u-nu-arab').resolvedOptions().locale === 'en-US' && new Intl.PluralRules(['xx','de-DE']).resolvedOptions().locale === 'de'",
+        "Intl.PluralRules.supportedLocalesOf(['EN-us-u-nu-arab','de-DE','xx']).join() === 'en-US-u-nu-arab,de-DE'",
+        "let p=new Intl.PluralRules('ru'); let a=p.resolvedOptions(); a.pluralCategories.join() === 'one,few,many,other' && a.minimumIntegerDigits === 1 && a.minimumFractionDigits === 0 && a.maximumFractionDigits === 3 && a.type === 'cardinal' && Object.keys(a).join() === 'locale,type,minimumIntegerDigits,minimumFractionDigits,maximumFractionDigits,pluralCategories,roundingMode'",
+        "let p=new Intl.PluralRules('en'); p instanceof Intl.PluralRules && p[Symbol.toStringTag] === 'Intl.PluralRules' && Intl.PluralRules.name === 'PluralRules' && Intl.PluralRules.length === 1 && p.select.length === 1 && p.resolvedOptions.length === 0 && Intl.PluralRules.supportedLocalesOf.length === 1",
+        "let p=new Intl.PluralRules('en'); let a=p.resolvedOptions(); a.pluralCategories.push('bogus'); p.resolvedOptions().pluralCategories.join() === 'one,other'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for call in [
+        "Intl.PluralRules()",
+        "new Intl.PluralRules('en',null)",
+        "Intl.PluralRules.prototype.select.call({},1)",
+        "Intl.PluralRules.prototype.resolvedOptions.call({})",
+        "new Intl.PluralRules('en').select(1n)",
+        "new Intl.PluralRules('en').select(Symbol())",
+        "new Intl.PluralRules.supportedLocalesOf('en')",
+        "Intl.PluralRules.supportedLocalesOf('en',5)",
+    ] {
+        let source = format!(
+            "let caught=false; try {{{call};}} catch(e) {{caught=e instanceof TypeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for options in [
+        "{minimumIntegerDigits:0}",
+        "{minimumFractionDigits:101}",
+        "{maximumFractionDigits:NaN}",
+        "{minimumFractionDigits:3,maximumFractionDigits:2}",
+        "{minimumSignificantDigits:4,maximumSignificantDigits:3}",
+        "{localeMatcher:'bogus'}",
+    ] {
+        let source = format!(
+            "let caught=false; try {{new Intl.PluralRules('en',{options});}} catch(e) {{caught=e instanceof RangeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_plural_rules_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let n=new Intl.PluralRules({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'RU';}},
+            {get maximumFractionDigits(){log+='f';__rt.need(3,1);return {valueOf(){log+='v';__rt.need(4,1);return 1;}};}});
+        let f=n.select.bind(n); n=null;
+        let text=f({valueOf(){log+='n';__rt.need(6,1);return 2.25;}});
+        let big=f({valueOf(){log+='b';__rt.need(7,1);return 21;}});
+        text === 'other' && big === 'one' && log === 'ltfvnb'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 6);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("PluralRules continuation did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_plural_rules_ownership_and_abrupt_options() {
+    for source in [
+        "let log=''; let caught=false; try {new Intl.PluralRules('en',{get type(){log+='t';throw 9;},get minimumIntegerDigits(){log+='i';return 1;}});} catch(e){caught=e === 9;} caught && log === 't'",
+        "let caught=false; let later=false; try {new Intl.PluralRules('en',{minimumSignificantDigits:4,maximumSignificantDigits:3,get roundingMode(){later=true;throw 9;}});} catch(e){caught=e instanceof RangeError;} caught && !later",
+        "let caught=false; try {new Intl.PluralRules('en',{maximumFractionDigits:1n});} catch(e){caught=e instanceof TypeError;} caught",
+        "let log=''; let caught=false; try {Intl.PluralRules.prototype.select.call({}, {valueOf(){log+='n';return 1;}});} catch(e){caught=e instanceof TypeError;} caught && log === ''",
+        "let caught=false; let log=''; try {new Intl.PluralRules('en').select({valueOf(){log+='n';throw 9;}});} catch(e){caught=e === 9;} caught && log === 'n'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let rt = Runtime::new();
+    for source in [
+        "new Intl.PluralRules('en')",
+        "Object.freeze(new Intl.PluralRules('en'))",
+    ] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("expected PluralRules");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "Intl.PluralRules.prototype.select.call(value,1)",
+            "Intl.PluralRules.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            let caller = rt.spawn(&code, &[&value]).unwrap();
+            assert!(
+                matches!(caller.run().unwrap(),RunOutcome::Failed(error) if matches!(error.kind(),VmErrorKind::ForeignObject{..}))
+            );
+        }
+    }
+    rt.collect().unwrap();
+}
+
+/// Synthetic fixture, not light-cljs output. The six operands distinguish
+/// directed rounding, sign-sensitive ties and halfEven's even neighbors.
+#[test]
+fn intl_plural_rules_rounding_modes() {
+    for (mode, expected) in [
+        ("ceil", ["other", "one", "one", "other", "other", "one"]),
+        ("floor", ["one", "other", "other", "one", "one", "other"]),
+        ("expand", ["other", "other", "one", "one", "other", "other"]),
+        ("trunc", ["one", "one", "other", "other", "one", "one"]),
+        ("halfCeil", ["one", "one", "one", "other", "other", "one"]),
+        ("halfFloor", ["one", "one", "other", "one", "one", "other"]),
+        ("halfExpand", ["one", "one", "one", "one", "other", "other"]),
+        ("halfTrunc", ["one", "one", "other", "other", "one", "one"]),
+        (
+            "halfEven",
+            ["one", "one", "other", "other", "other", "other"],
+        ),
+    ] {
+        let expected = expected.join(",");
+        let source = format!(
+            "let p=new Intl.PluralRules('en',{{maximumFractionDigits:0,roundingMode:'{mode}'}}); [p.select(1.1),p.select(-1.1),p.select(0.5),p.select(-0.5),p.select(1.5),p.select(-1.5)].join() === '{expected}' && p.resolvedOptions().roundingMode === '{mode}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(
+        eval(
+            "let caught=false; try {new Intl.PluralRules('en',{roundingMode:'bogus'});} catch(e){caught=e instanceof RangeError;} caught"
+        ),
+        ValueView::Bool(true)
+    );
+}

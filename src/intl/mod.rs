@@ -258,3 +258,6 @@ pub mod likely;
 pub(crate) mod locale;
 pub(crate) mod number_format;
 pub mod tag;
+
+pub(crate) mod plural_rules;
+pub(crate) mod service;

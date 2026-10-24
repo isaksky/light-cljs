@@ -877,7 +877,8 @@ delete a[o];
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
 and `new Intl()` throw catchable TypeErrors. The namespace follows shared
-intrinsic mutation restrictions. Decimal `Intl.NumberFormat` is installed;
+intrinsic mutation restrictions. Decimal `Intl.NumberFormat` and
+`Intl.PluralRules` are installed;
 other formatting service constructors remain deferred.
 
 `Intl.getCanonicalLocales(locales)` canonicalizes a string, Locale, or array-like
@@ -3979,3 +3980,40 @@ before allocation. At exactly the cap it succeeds. This follows QuickJS's
 checked-allocation behavior with this runtime's documented size limit.
 
 Explicit gaps: BigInt wrappers and typed-array storage remain deferred.
+
+### Intl.PluralRules (clj-quickjs-212)
+
+Execution: `new Intl.PluralRules(locales, options)` creates an ordinary task-owned
+object with immutable internal slots, inheriting `Intl.PluralRules.prototype`.
+Calling without `new` throws TypeError. `select(value)` uses resumable ToNumber,
+rounds the absolute decimal value with the configured fraction/significant digit
+bounds, then evaluates cardinal or ordinal rules. NaN and infinities produce
+`other`; BigInt and Symbol throw TypeError. Omitted/undefined values become NaN.
+`localeMatcher` accepts `lookup` and `best fit` (both use lookup); `type` accepts
+`cardinal` and `ordinal`. Minimum integer digits are 1..21, fraction bounds 0..100,
+and significant bounds 1..21. Inconsistent bounds throw RangeError before the
+rounding-mode getter runs. Default fraction bounds are 0..3; a larger minimum
+increases the default maximum. Significant bounds default to 1..21 when either
+is supplied. `roundingMode` defaults to `halfExpand` and accepts the same nine
+values as NumberFormat. Every getter and object conversion is a saved native
+continuation. Options must be undefined or an object, otherwise TypeError.
+
+`resolvedOptions()` returns fresh ordinary fields in order: locale, type,
+minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, optional
+minimumSignificantDigits/maximumSignificantDigits, pluralCategories, roundingMode.
+Categories use the canonical zero/one/two/few/many/other order and a fresh array.
+`supportedLocalesOf` canonicalizes the requested list and accepts localeMatcher.
+Both services share canonical-list processing, lookup/truncation/default fallback,
+relevant extension filtering, option getter/coercion helpers, numeric validation,
+supported-locale selection and ordered resolved-object construction. PluralRules
+has no relevant Unicode extension keys; NumberFormat retains only supported nu.
+
+Explicit gaps: `selectRange`, notation, compact display, rounding increment and
+priority, trailingZeroDisplay and additional locale coverage remain deferred.
+Unconsumed option properties have no effect. The explicit operand/ordinal
+requirements of this pellet take precedence over the pinned QuickJS
+`pluralrules.c` shortcuts (which ignore rounding, classify Russian fractions as
+integers, and do not implement English ordinal selection). Category names and
+the six upstream integer rows retain the QuickJS strings. No existing
+NumberFormat output changes. Inherited toStringTag consumption by
+Object.prototype.toString remains unsupported as for NumberFormat and Locale.

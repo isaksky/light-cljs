@@ -701,3 +701,21 @@ light-cljs output. `js_bigint_asUintN` and `js_bigint_funcs` in
 `research/quickjs/quickjs.c` at that revision were semantic references.
 The Rust wrapping implementation was written independently using our existing
 canonical sign/magnitude and two's-complement helpers.
+
+### Intl.PluralRules and shared service helpers (clj-quickjs-212)
+
+Semantic references: `research/quickjs/intl/pluralrules.c`, `intl/intl.c` and
+`tests/test_intl.js` at QuickJS revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The implementation and source tests are independently written Rust/synthetic
+fixtures. The six integer selection examples agree with `test_pluralRules`.
+The pinned selector's rounding and ordinal omissions are superseded by the
+pellet's explicit requirements; no generated snapshot tables were changed.
+
+The finite CLDR predicate families in `src/intl/plural_rules.rs` were checked
+against Unicode CLDR release-48
+[cardinal rules](https://raw.githubusercontent.com/unicode-org/cldr/release-48/common/supplemental/plurals.xml)
+and [ordinal rules](https://raw.githubusercontent.com/unicode-org/cldr/release-48/common/supplemental/ordinals.xml).
+Copyright © 1991-2025 Unicode, Inc.; SPDX-License-Identifier: Unicode-3.0;
+the applicable notice is reproduced in [UNICODE-LICENSE](UNICODE-LICENSE).
+This separately identified rule reference does not assert a CLDR release for
+the QuickJS locale snapshot. No C/C++ code or external runtime is linked.

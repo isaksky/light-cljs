@@ -885,7 +885,8 @@ fn object_property_reclaims() {
     // Map.prototype (clj-quickjs-169), ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
     // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188),
-    // Intl.NumberFormat.prototype (clj-quickjs-213), the three iterator
+    // Intl.NumberFormat.prototype (clj-quickjs-213),
+    // Intl.PluralRules.prototype (clj-quickjs-212), the three iterator
     // prototypes (clj-quickjs-237), and
     // the typed-array prototypes (clj-quickjs-166, clj-quickjs-167),
     // which the realm keeps for the
@@ -895,10 +896,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 38);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 39);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 38);
+    assert_eq!(rt.heap_usage().objects.plain, 39);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1004,6 +1005,11 @@ fn realm_intrinsics_retain() {
         "Object.getOwnPropertyDescriptor(RegExp.prototype, 'sticky').get",
         "BigInt.prototype.toString",
         "BigInt.prototype.valueOf",
+        "Intl.PluralRules",
+        "Intl.PluralRules.prototype",
+        "Intl.PluralRules.supportedLocalesOf",
+        "Intl.PluralRules.prototype.select",
+        "Intl.PluralRules.prototype.resolvedOptions",
         "Intl.NumberFormat",
         "Intl.NumberFormat.prototype",
         "Intl.NumberFormat.supportedLocalesOf",
@@ -1068,8 +1074,9 @@ fn realm_intrinsics_retain() {
     // Date non-locale formatting adds four built-ins (-183).
     // Iteration adds three prototypes and six built-ins (-237).
     // BigInt width wrapping adds two built-in methods (-204).
-    assert_eq!(rt.heap_usage().objects.builtin, 204);
-    assert_eq!(rt.heap_usage().objects.plain, 38);
+    // PluralRules adds one prototype and four built-ins (-212).
+    assert_eq!(rt.heap_usage().objects.builtin, 208);
+    assert_eq!(rt.heap_usage().objects.plain, 39);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1268,18 +1275,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's thirty-eight ordinary objects stay.
+    // go with the function; the realm's thirty-nine ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 38, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 39, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (38, 0));
+    assert_eq!((usage.plain, usage.function), (39, 0));
 }
 
 #[test]
@@ -1298,11 +1305,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 38, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 39, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (38, 0));
+    assert_eq!((usage.plain, usage.array), (39, 0));
 }
 
 #[test]
@@ -1959,6 +1966,6 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 38);
+        assert_eq!(rt.heap_usage().objects.plain, 39);
     }
 }

@@ -2805,8 +2805,9 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Decimal `Intl.NumberFormat` and its `supportedLocalesOf` use the test locales
-above (clj-quickjs-213).
+Decimal `Intl.NumberFormat` and `Intl.PluralRules`, including their
+`supportedLocalesOf` methods, use the test locales above
+(clj-quickjs-213, clj-quickjs-212).
 Deferred: other Intl formatting service constructors, general resumable
 `@@toStringTag` reads, and full UCA/UAX #29 data.
 
@@ -3183,3 +3184,24 @@ Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
 Property escapes, v sets, d indices and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
+
+### Intl.PluralRules (clj-quickjs-212)
+
+Supported: `new Intl.PluralRules(locales, options)`, `select`, `resolvedOptions`
+and `supportedLocalesOf` for the Intl test locale coverage. Cardinal rules use
+rounded decimal operands; English and French ordinal rules are included, and
+the other covered ordinal locales select `other`. Fraction and significant
+bounds, minimum integer digits and the nine `roundingMode` values are read with
+resumable getters/coercions. Options must be undefined or an object. Lookup
+preserves supported tags such as `en-GB`, truncates children such as `de-DE` to
+`de`, drops irrelevant Unicode extension keys, and falls back to the embedding
+host's default locale (`en-US` without a host). `supportedLocalesOf` returns
+canonical requested tags, including their extensions.
+
+Deferred: `selectRange`, nonstandard notation, rounding increments/priorities,
+trailing-zero display options and locales outside the policy's test coverage.
+These additional option properties are not consumed. Generic
+`Object.prototype.toString` consumption of inherited `Symbol.toStringTag` remains
+an existing explicit gap; instances expose `Symbol.toStringTag` directly.
+Check: `cargo test --test js_source intl_plural_rules -- --test-threads=3`;
+`cargo test --test sim_host intl_default_locale_resolution -- --test-threads=3`.

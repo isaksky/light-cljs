@@ -746,7 +746,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 242); // Includes iterator intrinsics (-237) and BigInt wrapping (-204).
+    assert_eq!(ids.len(), 247); // Includes iterators, BigInt wrapping and PluralRules.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

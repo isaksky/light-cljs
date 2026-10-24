@@ -5801,3 +5801,40 @@ frames; no Rust stack is retained and no new heap kind or edges are added.
 Tests cover every pinned upstream width assertion, 65-bit cases, independent
 small-integer modulo checks, canonical forms, reflection, conversion ordering,
 cap boundaries, and callback/parser continuations under collection/migration.
+
+### Intl service construction and PluralRules (clj-quickjs-212)
+
+`intl::service` owns locale lookup over the policy coverage, relevant Unicode
+extension filtering, shared SupportedLocales, GetOptionsObject, enumerated
+string/numeric validation, and resolved-object field insertion in caller-supplied
+spec order. CanonicalizeLocaleList remains the reusable saved `native::intl`
+continuation. `native::intl_service` reads an option or returns its getter call,
+and returns ToString/ToNumber conversion actions; each caller saves the option
+index and result stage before entering JavaScript. NumberFormat now uses these
+helpers without output changes and keeps its pre-existing primitive options
+boxing; PluralRules uses the pellet's strict undefined-or-object options policy.
+Default locale lookup returns `Action::DefaultLocale`, preserving the existing
+leaf host effect boundary, with `en-US` as the final fallback. PluralRules
+finishes the localeMatcher getter and ToString before requesting the default,
+so host changes across either callback wait are observed.
+
+PluralRules stores a cloned immutable Rust record in an ordinary object's
+internal slot, reusing NumberFormat's exact decimal rounding engine. The record
+contains strings, primitive options and static locale-data references; it has no
+GC edges. The object retains the ordinary `Plain` TaskOwned publication category
+in `value::share::classify`, including after Object.freeze. Saved native states
+trace locale arrays, input/options objects, receivers, arguments and nested
+canonicalization state. No heap kind was added. Realm/builtin entries are
+appended. Collection, waits, one-instruction budgets and migration are exercised
+by source tests.
+
+The standard-notation operand reader preserves exact integer/fraction strings,
+visible digit counts v/w, n/i/f/t and exponent e=0. CLDR rule families for the
+recorded coverage are evaluated as safe Rust predicates; no external locale
+library, C wrapper, runtime generation or OS locale lookup is involved. The
+pinned QuickJS snapshot does not carry CLDR plural rule tables and its shortcut
+selector cannot meet this pellet's fraction/ordinal acceptance. The finite
+predicates were checked against Unicode CLDR release-48 supplemental plural and
+ordinal rules, separately from the snapshot's unverified CLDR provenance; see
+attribution. Standard notation and default halfExpand rounding are explicit;
+compact/scientific exponents and additional rounding controls are deferred.

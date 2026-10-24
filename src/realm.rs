@@ -394,6 +394,8 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_number_format_bound: ObjectId,
     pub(crate) array_iterator_prototype: ObjectId,
     pub(crate) string_iterator_prototype: ObjectId,
+
+    pub(crate) intl_plural_rules_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1049,6 +1051,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(method, &[])?;
         b.add(bigint, method.name(), function, PropertyFlags::METHOD)?;
     }
+
+    let intl_plural_rules_prototype = intl_plural_rules_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1121,6 +1125,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
         intl_number_format_prototype,
         intl_number_format_bound,
+        intl_plural_rules_prototype,
     })
 }
 
@@ -1770,6 +1775,51 @@ fn regexp_intrinsics(
     Some((prototype, constructor))
 }
 
+fn intl_plural_rules_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlPluralRules,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "PluralRules", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlPluralRulesSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which) in [
+        ("select", Builtin::IntlPluralRulesSelect),
+        ("resolvedOptions", Builtin::IntlPluralRulesResolvedOptions),
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, name, method, PropertyFlags::METHOD)?;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.PluralRules")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(prototype)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1887,7 +1937,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 242); // Includes iterator intrinsics (-237) and BigInt wrapping (-204).
+        assert_eq!(first.all.len(), 247); // Includes iterators, BigInt wrapping and PluralRules.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

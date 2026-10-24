@@ -2,6 +2,7 @@
 use super::*;
 use crate::heap::HeapObject;
 use crate::intl::number_format::{self, NumberFormat};
+use crate::intl::service;
 use crate::object::OrdinaryObject;
 
 const OPTIONS: &[&str] = &[
@@ -107,26 +108,33 @@ impl State {
         }
         let name = OPTIONS[self.option];
         if name == "useGrouping" && (matches!(value, Value::Bool(true)) || !value.truthy()) {
-            self.slots.as_mut().unwrap().grouping = if value.truthy() { "always" } else { "false" };
+            let Ok(Value::Bool(grouping)) =
+                super::intl_service::convert(value, super::intl_service::OptionKind::Boolean)?
+            else {
+                unreachable!()
+            };
+            self.slots.as_mut().unwrap().grouping = if grouping { "always" } else { "false" };
             self.option += 1;
             self.stage = Stage::Read;
             return Ok(Action::Continue);
         }
         self.stage = Stage::Converted;
-        if matches!(value, Value::Object(_) | Value::BigInt(_)) {
-            return Ok(if (4..=8).contains(&self.option) {
-                Action::ToNumber(value)
+        match super::intl_service::convert(
+            value,
+            if (4..=8).contains(&self.option) {
+                super::intl_service::OptionKind::Number
             } else {
-                Action::ToString(value)
-            });
+                super::intl_service::OptionKind::String
+            },
+        )? {
+            Ok(value) => self.apply(value),
+            Err(action) => Ok(action),
         }
-        self.apply(value)
     }
     fn apply(&mut self, value: Value) -> Result<Action, Fault> {
         let name = OPTIONS[self.option];
         let invalid = || Fault::RangeError(format!("unsupported or invalid NumberFormat {name}"));
         if (4..=8).contains(&self.option) {
-            let n = dispatch::to_number(&value)?;
             let (min, max) = if self.option == 4 {
                 (1.0, 21.0)
             } else if self.option <= 6 {
@@ -134,10 +142,7 @@ impl State {
             } else {
                 (1.0, 21.0)
             };
-            if n.is_nan() || n < min || n > max {
-                return Err(invalid());
-            }
-            let n = n.floor() as usize;
+            let n = service::number_option(&value, min as usize, max as usize)?;
             match self.option {
                 4 => self.slots.as_mut().unwrap().min_integer = n,
                 5 => self.min_fraction = Some(n),
@@ -218,22 +223,7 @@ impl State {
                         "NumberFormat options cannot be null".into(),
                     ));
                 }
-                let len =
-                    property::get_field(heap, task, &self.locales, &JsString::from("length"))?;
-                let len = to_length(&len)?;
-                let mut selected = None;
-                for i in 0..len {
-                    let Value::String(tag) =
-                        property::get(heap, task, &self.locales, &index_key(i))?
-                    else {
-                        return Err(Fault::Internal("canonical locale list"));
-                    };
-                    let tag = tag.to_string_lossy();
-                    if let Some(found) = supported_locale(&tag) {
-                        selected = Some(found);
-                        break;
-                    }
-                }
+                let selected = service::resolve_locale(heap, task, &self.locales, &["nu"])?;
                 if selected.is_none() && !self.supported {
                     self.stage = Stage::DefaultLocale;
                     return Ok(Action::DefaultLocale);
@@ -248,7 +238,7 @@ impl State {
                 let Value::String(default) = Self::result(input)? else {
                     return Err(Fault::Internal("default locale"));
                 };
-                let (tag, data) = supported_locale(&default.to_string_lossy())
+                let (tag, data) = service::supported_locale(&default.to_string_lossy(), &["nu"])
                     .unwrap_or_else(|| ("en-US".into(), crate::intl::lookup("en-US").unwrap()));
                 self.slots = Some(NumberFormat::new(tag, data));
                 self.stage = Stage::Read;
@@ -279,41 +269,17 @@ impl State {
                     return Ok(Action::Continue);
                 }
                 self.stage = Stage::Value;
-                match property::read(
-                    heap,
-                    task,
-                    &self.options,
-                    &property::Key::Name(JsString::from(OPTIONS[self.option])),
-                )? {
-                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                        callee,
-                        this: self.options.clone(),
-                        args: vec![],
-                    }),
-                    Some(property::Read::Value(value)) => self.option_value(value),
-                    None => self.option_value(Value::Undefined),
+                match super::intl_service::read(heap, task, &self.options, OPTIONS[self.option])? {
+                    Ok(value) => self.option_value(value),
+                    Err(action) => Ok(action),
                 }
             }
             Stage::Value => self.option_value(Self::result(input)?),
             Stage::Converted => self.apply(Self::result(input)?),
             Stage::Build => {
                 if self.supported {
-                    let result = property::new_array(heap, task)?;
-                    let len = to_length(&property::get_field(
-                        heap,
-                        task,
-                        &self.locales,
-                        &JsString::from("length"),
-                    )?)?;
-                    for i in 0..len {
-                        let value = property::get(heap, task, &self.locales, &index_key(i))?;
-                        if let Value::String(tag) = &value
-                            && supported_locale(&tag.to_string_lossy()).is_some()
-                        {
-                            property::append(heap, task, &result, Some(value))?;
-                        }
-                    }
-                    return Ok(Action::Return(result));
+                    return service::supported_locales(heap, task, &self.locales)
+                        .map(Action::Return);
                 }
                 let slots = self.slots.as_mut().unwrap();
                 slots.min_fraction = self.min_fraction.unwrap_or(0);
@@ -350,28 +316,5 @@ impl State {
                 Ok(Action::Continue)
             }
         }
-    }
-}
-
-/// Lookup is limited to the policy's test locales, including their children.
-/// Unsupported numbering systems fall back to Latin. Only the relevant nu
-/// extension participates in NumberFormat locale resolution.
-fn supported_locale(tag: &str) -> Option<(String, &'static crate::intl::LocaleData)> {
-    let parsed = crate::intl::tag::LanguageTag::parse(tag).ok()?;
-    let mut base = parsed.base_name();
-    loop {
-        if crate::intl::LOCALES.contains(&base.as_str()) {
-            let data = crate::intl::lookup(&base)?;
-            if let Some(system) = parsed
-                .keywords
-                .get("nu")
-                .and_then(|nu| number_format::numbering_system(nu))
-            {
-                base.push_str("-u-nu-");
-                base.push_str(system);
-            }
-            return Some((base, data));
-        }
-        base = base.rsplit_once('-')?.0.to_owned();
     }
 }

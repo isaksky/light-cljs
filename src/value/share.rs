@@ -209,8 +209,8 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
-        // engine Error, Intl.Locale, Intl.NumberFormat and RegExp instances
-        // have task-owned ordinary properties.
+        // engine Error, Intl.Locale, Intl.NumberFormat, Intl.PluralRules and
+        // RegExp instances have task-owned ordinary properties.
         HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,
         HeapObject::Native(payload) => payload.shareability(),

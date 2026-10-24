@@ -1031,3 +1031,89 @@ fn a_call_demand_that_closes_a_cycle_fails_its_produced_cell() {
     assert_eq!(activations(&host), 0);
     assert_eq!((host.parked(), host.graph().active_waits()), (0, 0));
 }
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_default_locale_resolution() {
+    use clj_quickjs::{Budget, RunOutcome};
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    host.set_default_locale("de");
+    for source in [
+        "new Intl.PluralRules().resolvedOptions().locale === 'de'",
+        "new Intl.PluralRules('xx').resolvedOptions().locale === 'de'",
+    ] {
+        let code = clj_quickjs::frontend::compile_script("plural-default", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        match task
+            .run_with(Budget::instructions(10000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{source}: {other:?}"),
+        }
+        assert!(task.dependency_log().edges().is_empty());
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Locale resolution follows both
+/// the matcher getter and its string coercion, even across dependency waits.
+#[test]
+fn intl_default_locale_resolution_after_matcher_wait() {
+    use clj_quickjs::{Budget, RunOutcome};
+    for locales in ["undefined", "'xx'"] {
+        let rt = Runtime::new();
+        let mut host = SimHost::new(&rt);
+        host.set_default_locale("en-US");
+        let source = format!(
+            "let p=new Intl.PluralRules({locales},{{get localeMatcher(){{__rt.need(2121,1);return {{toString(){{__rt.need(2122,1);return 'lookup';}}}};}}}}); p.resolvedOptions().locale === 'de'"
+        );
+        let code =
+            clj_quickjs::frontend::compile_script("plural-default-after-matcher", &source).unwrap();
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        for locale in ["fr", "de"] {
+            assert!(matches!(
+                task.run_with(Budget::instructions(10000), &mut host)
+                    .unwrap(),
+                RunOutcome::Waiting(_)
+            ));
+            host.set_default_locale(locale);
+            rt.collect().unwrap();
+            let request = task.take_producer_requests().pop().unwrap();
+            let zero = rt.root(Primitive::Number(0.0));
+            task = rt
+                .complete(request.key(), request.producer(), Completion::Ready(&zero))
+                .unwrap()
+                .into_runnable()
+                .pop()
+                .unwrap();
+        }
+        match task
+            .run_with(Budget::instructions(10000), &mut host)
+            .unwrap()
+        {
+            RunOutcome::Complete(value) => assert_eq!(value.view(), ValueView::Bool(true)),
+            other => panic!("{other:?}"),
+        }
+    }
+    struct NoLocale;
+    impl clj_quickjs::Host for NoLocale {
+        fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            panic!("an abrupt matcher must not consult the host")
+        }
+    }
+    for matcher in ["throw 9;", "return 'bogus';"] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let caught=false; try {{new Intl.PluralRules(undefined,{{get localeMatcher(){{{matcher}}}}});}} catch(e){{caught=e === 9 || e instanceof RangeError;}} caught"
+        );
+        let code = clj_quickjs::frontend::compile_script("plural-abrupt-matcher", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        assert!(
+            matches!(task.run_with(Budget::instructions(10000), &mut NoLocale).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true))
+        );
+    }
+}

@@ -5,10 +5,7 @@ use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::value::{JsString, Value};
-use crate::vm::{
-    dispatch::{self, Fault},
-    property,
-};
+use crate::vm::dispatch::{self, Fault};
 
 #[derive(Clone, Debug)]
 pub(crate) struct NumberFormat {
@@ -155,15 +152,6 @@ impl NumberFormat {
         Ok(Value::String(JsString::from(result.as_str())))
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
-        let proto = crate::realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("realm exhausted"))?
-            .object_prototype;
-        let value = heap
-            .alloc(HeapObject::Plain(OrdinaryObject::with_prototype(
-                task, proto,
-            )))
-            .map(Value::Object)
-            .ok_or(Fault::OutOfMemory("heap exhausted"))?;
         let mut fields = vec![
             (
                 "locale",
@@ -213,10 +201,7 @@ impl NumberFormat {
             ("roundingPriority", Value::String(JsString::from("auto"))),
             ("trailingZeroDisplay", Value::String(JsString::from("auto"))),
         ]);
-        for (name, field) in fields {
-            property::define_field(heap, task, &value, &JsString::from(name), field)?;
-        }
-        Ok(value)
+        super::service::resolved_options(heap, task, fields)
     }
 }
 
@@ -301,12 +286,27 @@ pub(crate) fn get_format(heap: &Heap, task: TaskId, this: &Value) -> Result<Valu
 
 /// Positive ASCII coefficient and decimal point position. Rounding never
 /// multiplies binary floats: carry and all nine rounding modes act on digits.
-struct Decimal {
+pub(super) struct Decimal {
     digits: Vec<u8>,
     point: i32,
 }
 impl Decimal {
-    fn parse(text: &str) -> Result<Option<Self>, Fault> {
+    pub(super) fn rounding_places(
+        &self,
+        min: usize,
+        max: usize,
+        significant: Option<(usize, usize)>,
+    ) -> (i32, usize) {
+        if let Some((min, max)) = significant {
+            (
+                max as i32 - self.point,
+                (min as i32 - self.point).max(0) as usize,
+            )
+        } else {
+            (max as i32, min)
+        }
+    }
+    pub(super) fn parse(text: &str) -> Result<Option<Self>, Fault> {
         if text.is_empty() {
             return Ok(Some(Self {
                 digits: vec![b'0'],
@@ -367,7 +367,7 @@ impl Decimal {
         point -= leading as i32;
         Ok(Some(Self { digits, point }))
     }
-    fn round(&mut self, places: i32, mode: &str, negative: bool) {
+    pub(super) fn round(&mut self, places: i32, mode: &str, negative: bool) {
         let keep = self.point + places;
         if keep >= self.digits.len() as i32 {
             return;
@@ -419,7 +419,7 @@ impl Decimal {
             self.point = 1;
         }
     }
-    fn parts(&self) -> (String, String) {
+    pub(super) fn parts(&self) -> (String, String) {
         let digits = std::str::from_utf8(&self.digits).unwrap();
         if self.point <= 0 {
             ("0".into(), "0".repeat((-self.point) as usize) + digits)

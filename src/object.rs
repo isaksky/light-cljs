@@ -294,6 +294,8 @@ pub(crate) struct OrdinaryObject {
     number_format_bound: Option<Value>,
     /// Task-owned cursor of a built-in iterator. Never exposed as properties.
     iterator: Option<Box<crate::vm::native::iterator::Data>>,
+
+    plural_rules: Option<Box<crate::intl::plural_rules::PluralRules>>,
 }
 
 impl OrdinaryObject {
@@ -327,6 +329,8 @@ impl OrdinaryObject {
             number_format: None,
             number_format_bound: None,
             iterator: None,
+
+            plural_rules: None,
         }
     }
 
@@ -393,6 +397,16 @@ impl OrdinaryObject {
         self.regexp.as_ref()
     }
 
+    pub(crate) fn with_plural_rules(
+        mut self,
+        data: crate::intl::plural_rules::PluralRules,
+    ) -> Self {
+        self.plural_rules = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn plural_rules(&self) -> Option<&crate::intl::plural_rules::PluralRules> {
+        self.plural_rules.as_deref()
+    }
     pub(crate) fn with_number_format(
         mut self,
         data: crate::intl::number_format::NumberFormat,
