@@ -54,7 +54,7 @@ pub enum TokenKind {
     Eof,
     /// A regular expression literal, rescanned at the parser's request.
     RegExp {
-        pattern: String,
+        pattern: JsString,
         flags: String,
     },
 }
@@ -92,7 +92,7 @@ pub struct TemplatePart {
     pub cooked: Result<JsString, SyntaxError>,
     /// The template raw value (TRV): the text between the delimiters as
     /// written, escapes included, with CR and CRLF read as LF.
-    pub raw: String,
+    pub raw: JsString,
     /// It starts at a backtick rather than at the `}` closing a
     /// substitution.
     pub head: bool,
@@ -299,6 +299,9 @@ pub(crate) fn is_ident_part(c: char) -> bool {
 #[derive(Clone, Debug)]
 pub struct Lexer<'a> {
     src: &'a str,
+    /// Sorted byte positions of runtime source's lone UTF-16 units. U+FFFD
+    /// carries them lexically, but only these positions decode to surrogates.
+    surrogates: &'a [(usize, u16)],
     pos: usize,
     /// The next token is in an IdentifierName position (a property name:
     /// after `.`, or where the parser asked for one with
@@ -323,6 +326,10 @@ impl<'a> Lexer<'a> {
     /// including, the first line terminator, which still counts for ASI and
     /// line numbers. `#` anywhere else is not a token.
     pub fn new(src: &'a str) -> Lexer<'a> {
+        Self::with_surrogates(src, &[])
+    }
+
+    pub(crate) fn with_surrogates(src: &'a str, surrogates: &'a [(usize, u16)]) -> Lexer<'a> {
         let pos = if src.starts_with("#!") {
             src.find(is_line_terminator).unwrap_or(src.len())
         } else {
@@ -330,6 +337,7 @@ impl<'a> Lexer<'a> {
         };
         Lexer {
             src,
+            surrogates,
             pos,
             after_dot: false,
             strict: true,
@@ -371,6 +379,37 @@ impl<'a> Lexer<'a> {
         let c = self.peek_char()?;
         self.pos += c.len_utf8();
         Some(c)
+    }
+
+    /// Append source contents, preserving runtime-only lone code units.
+    /// Token recognition always uses the carrier, which cannot form an
+    /// identifier, whitespace, delimiter, escape or line terminator.
+    fn push_source_char(&self, out: &mut Vec<u16>, at: usize, c: char) {
+        if c == '\u{fffd}'
+            && let Ok(index) = self.surrogates.binary_search_by_key(&at, |&(pos, _)| pos)
+        {
+            out.push(self.surrogates[index].1);
+        } else {
+            push_char(out, c);
+        }
+    }
+
+    fn source_units(&self, start: usize, end: usize) -> Result<JsString, SyntaxError> {
+        let mut out = Vec::new();
+        for (offset, c) in self.src[start..end].char_indices() {
+            self.push_source_char(&mut out, start + offset, c);
+        }
+        self.literal_units(out, Span::new(start, end))
+    }
+
+    fn literal_units(&self, out: Vec<u16>, span: Span) -> Result<JsString, SyntaxError> {
+        JsString::from_code_units(out).ok_or_else(|| {
+            self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "a literal longer than 2^30 - 1 code units",
+            )
+        })
     }
 
     fn error(&self, kind: SyntaxErrorKind, span: Span, message: impl Into<String>) -> SyntaxError {
@@ -466,11 +505,16 @@ impl<'a> Lexer<'a> {
                     TokenKind::Punct(p)
                 }
                 None => {
-                    return Err(self.error_at(
-                        start,
-                        SyntaxErrorKind::UnknownToken,
-                        format!("unexpected character {c:?}"),
-                    ));
+                    let message = match self
+                        .surrogates
+                        .binary_search_by_key(&start, |&(pos, _)| pos)
+                    {
+                        Ok(index) => {
+                            format!("unexpected surrogate \\u{{{:x}}}", self.surrogates[index].1)
+                        }
+                        Err(_) => format!("unexpected character {c:?}"),
+                    };
+                    return Err(self.error_at(start, SyntaxErrorKind::UnknownToken, message));
                 }
             },
         };
@@ -577,7 +621,7 @@ impl<'a> Lexer<'a> {
         }
         Ok(Token {
             kind: TokenKind::RegExp {
-                pattern: self.src[body_start..body_end].to_string(),
+                pattern: self.source_units(body_start, body_end)?,
                 flags: flags.to_string(),
             },
             span: Span::new(start, self.pos),
@@ -860,7 +904,7 @@ impl<'a> Lexer<'a> {
                     ));
                 }
                 '\\' => self.lex_escape(char_pos, &mut out, false)?,
-                c => push_char(&mut out, c),
+                c => self.push_source_char(&mut out, char_pos, c),
             }
         }
         // Only a source text of over 2^30 - 1 code units can hold such a
@@ -893,6 +937,7 @@ impl<'a> Lexer<'a> {
         out: &mut Vec<u16>,
         template: bool,
     ) -> Result<(), SyntaxError> {
+        let char_pos = self.pos;
         let Some(c) = self.bump() else {
             return Err(self.error(
                 SyntaxErrorKind::UnexpectedEnd,
@@ -968,7 +1013,7 @@ impl<'a> Lexer<'a> {
                 })?;
                 push_code_point(out, value);
             }
-            other => push_char(out, other),
+            other => self.push_source_char(out, char_pos, other),
         }
         Ok(())
     }
@@ -1000,7 +1045,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.bump();
         let body_start = self.pos;
-        let mut raw = String::new();
+        let mut raw = Vec::new();
         let unterminated = |lexer: &Self| {
             lexer.error(
                 SyntaxErrorKind::UnexpectedEnd,
@@ -1009,7 +1054,7 @@ impl<'a> Lexer<'a> {
             )
         };
         let (tail, body_end) = loop {
-            let at = self.pos;
+            let mut at = self.pos;
             let Some(mut c) = self.bump() else {
                 return Err(unterminated(self));
             };
@@ -1021,7 +1066,8 @@ impl<'a> Lexer<'a> {
                 }
                 // An escaped character never ends the part.
                 '\\' => {
-                    raw.push(c);
+                    push_char(&mut raw, c);
+                    at = self.pos;
                     c = self.bump().ok_or_else(|| unterminated(self))?;
                 }
                 _ => {}
@@ -1032,7 +1078,7 @@ impl<'a> Lexer<'a> {
                 }
                 c = '\n';
             }
-            raw.push(c);
+            self.push_source_char(&mut raw, at, c);
         };
         let cooked = self.template_value(Span::new(body_start, body_end))?;
         if !tail {
@@ -1040,7 +1086,7 @@ impl<'a> Lexer<'a> {
         }
         Ok(TokenKind::Template(Box::new(TemplatePart {
             cooked,
-            raw,
+            raw: self.literal_units(raw, Span::new(body_start, body_end))?,
             head,
             tail,
         })))
@@ -1055,6 +1101,7 @@ impl<'a> Lexer<'a> {
         // read past it.
         let mut lexer = Lexer {
             src: &self.src[..body.end],
+            surrogates: self.surrogates,
             pos: body.start,
             after_dot: false,
             strict: true,
@@ -1076,7 +1123,7 @@ impl<'a> Lexer<'a> {
                     }
                     out.push(0x0A);
                 }
-                Some(c) => push_char(&mut out, c),
+                Some(c) => lexer.push_source_char(&mut out, at, c),
             }
         }
         JsString::from_code_units(out).map(Ok).ok_or_else(|| {
@@ -1177,6 +1224,7 @@ pub(crate) fn legacy_escape_in_strict_code(src: &str, string: Span) -> Option<Sy
     }
     let mut lexer = Lexer {
         src,
+        surrogates: &[],
         pos: string.start,
         after_dot: false,
         strict: true,

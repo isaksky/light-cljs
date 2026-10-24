@@ -3609,8 +3609,9 @@ can execute eval on 64 KiB stacks. Indirect eval reads and writes script
 lexical bindings with const/TDZ checks; declaration conflicts are checked
 before creating global properties (clj-quickjs-278). Immutable const captures
 remain publishable under the existing rules unless exposed to direct eval.
-Raw unpaired
-surrogates in source require Unicode escapes. See `docs/grammar.md`, "Indirect
+Raw unpaired surrogates are preserved in source strings, templates (including
+tagged raw values), regexp literals and comments for eval and Function
+(clj-quickjs-279); identifier positions reject them. See `docs/grammar.md`, "Indirect
 eval", for limits. Verification: `cargo test --test js_source indirect_eval`.
 
 ### Exact iterable summation (clj-quickjs-158)

@@ -153,7 +153,15 @@ struct SuspensionContext {
 impl<'a> Parser<'a> {
     /// A parser of `src` whose top level is strict-mode code if `strict`.
     pub(super) fn new(src: &'a str, strict: bool) -> Parser<'a> {
-        let mut lexer = Lexer::new(src);
+        Self::with_surrogates(src, strict, &[])
+    }
+
+    pub(super) fn with_surrogates(
+        src: &'a str,
+        strict: bool,
+        surrogates: &'a [(usize, u16)],
+    ) -> Parser<'a> {
+        let mut lexer = Lexer::with_surrogates(src, surrogates);
         lexer.set_strict(strict);
         Parser {
             src,
@@ -3878,14 +3886,13 @@ impl<'a> Parser<'a> {
         let TokenKind::RegExp { pattern, flags } = &self.tok.kind else {
             unreachable!("regexp literal token")
         };
-        crate::regexp::parse::validate_syntax(&pattern.as_str().into(), &flags.as_str().into())
-            .map_err(|e| {
-                self.error(
-                    SyntaxErrorKind::Invalid,
-                    span,
-                    format!("invalid regular expression pattern: {}", e.message),
-                )
-            })?;
+        crate::regexp::parse::validate_syntax(pattern, &flags.as_str().into()).map_err(|e| {
+            self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                format!("invalid regular expression pattern: {}", e.message),
+            )
+        })?;
         let kind = ExprKind::RegExp {
             pattern: pattern.clone(),
             flags: flags.clone(),

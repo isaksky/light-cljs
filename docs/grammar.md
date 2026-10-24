@@ -5328,9 +5328,14 @@ The native continuation prepares UTF-16 source and flattens ropes in budgeted
 steps. The synchronous frontend runs on a temporary 2 MiB compiler thread
 with no heap or waiter lock, so VM workers can use 64 KiB stacks;
 eval input is limited to 16,384 UTF-16 code units (catchable `RangeError` above
-that limit), bounding that final compilation step. Raw unpaired surrogates in
-source currently throw `SyntaxError`; Unicode escapes within source literals
-remain supported. Compiled code crosses the existing immutable `Arc` boundary
+that limit), bounding that final compilation step. Eval and Function preserve
+raw unpaired surrogates in string literals, cooked and tagged raw templates,
+regexp literals and comments (clj-quickjs-279). Identifier positions still
+reject them. A sparse byte-position provenance map carries lone units through
+the UTF-8 frontend without rewriting them as escapes; literal values use
+UTF-16, and source columns retain the frontend's scalar-count convention
+(each lone unit counts once). Genuine U+FFFD remains distinct from a lone
+surrogate. Compiled code crosses the existing immutable `Arc` boundary
 and runs in a fresh task-owned VM frame, so instruction yields, dependency
 waits, collection and worker migration follow the ordinary VM protocol.
 

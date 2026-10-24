@@ -278,8 +278,12 @@ pub fn compile_script_with(
 }
 
 /// Compile an indirect eval script in the global environment.
-pub(crate) fn compile_eval(name: &str, source: &str) -> Result<Executable, SyntaxError> {
-    let script = parse_script_with(source, ScriptOptions::SLOPPY)?;
+pub(crate) fn compile_eval(
+    name: &str,
+    source: &str,
+    surrogates: &[(usize, u16)],
+) -> Result<Executable, SyntaxError> {
+    let script = parser::Parser::with_surrogates(source, false, surrogates).parse_script()?;
     lower::lower_eval(name, source, &script)
 }
 
@@ -287,6 +291,7 @@ pub(crate) fn compile_eval(name: &str, source: &str) -> Result<Executable, Synta
 /// lexical self binding for the display name `anonymous`.
 pub(crate) fn compile_dynamic_function(
     source: &str,
+    surrogates: &[(usize, u16)],
     parameter_units: usize,
 ) -> Result<Executable, SyntaxError> {
     let mut units = 0;
@@ -308,16 +313,18 @@ pub(crate) fn compile_dynamic_function(
                 "missing dynamic function boundary",
             )
         })?;
-    let function = parser::Parser::new(source, false).parse_dynamic_function(parameter_end)?;
+    let function = parser::Parser::with_surrogates(source, false, surrogates)
+        .parse_dynamic_function(parameter_end)?;
     lower::lower_dynamic_function(source, &function)
 }
 
 pub(crate) fn compile_direct_eval(
     name: &str,
     source: &str,
+    surrogates: &[(usize, u16)],
     site: &crate::vm::executable::EvalSite,
 ) -> Result<Executable, SyntaxError> {
-    let mut parser = parser::Parser::new(source, site.strict);
+    let mut parser = parser::Parser::with_surrogates(source, site.strict, surrogates);
     parser.allow_new_target(site.new_target.is_some());
     parser.class_initializer_eval(site.class_initializer);
     parser.allow_super(site.super_home.is_some(), site.super_fields.is_some());

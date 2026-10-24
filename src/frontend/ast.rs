@@ -833,7 +833,7 @@ pub enum ExprKind {
     /// A regular expression literal's source text, excluding delimiters.
     /// Escapes are preserved; RegExp objects compile in lowering/code loading.
     RegExp {
-        pattern: String,
+        pattern: JsString,
         flags: String,
     },
     /// The first `?.` through the end of this unparenthesized chain.
@@ -875,7 +875,7 @@ pub struct TemplateElement {
     pub cooked: Option<JsString>,
     /// The raw text as written, CR and CRLF read as LF (for tagged
     /// templates, clj-quickjs-58).
-    pub raw: String,
+    pub raw: JsString,
     /// The part's token, delimiters included.
     pub span: Span,
 }

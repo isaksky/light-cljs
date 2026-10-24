@@ -22,6 +22,7 @@ pub(crate) struct State {
     text: Option<JsString>,
     next: usize,
     source: String,
+    surrogates: Vec<(usize, u16)>,
     pub(super) caller: Option<Caller>,
     dynamic_parameters: Option<usize>,
 }
@@ -39,6 +40,7 @@ impl State {
             text: None,
             next: 0,
             source: String::new(),
+            surrogates: Vec::new(),
             caller: None,
             dynamic_parameters: None,
         })
@@ -68,16 +70,14 @@ impl State {
                 } else {
                     u32::from(unit)
                 };
-                let ch = char::from_u32(scalar).ok_or_else(|| {
-                    let name = if self.dynamic_parameters.is_some() {
-                        "<Function>"
-                    } else {
-                        "<eval>"
-                    };
-                    Fault::SyntaxError(format!(
-                        "{name}: unpaired surrogate in source text; use a Unicode escape"
-                    ))
-                })?;
+                // One non-token scalar carries each lone unit through the
+                // UTF-8 frontend. Its byte provenance restores the exact unit
+                // only in literal contents; genuine U+FFFD stays distinct.
+                // Both occupy one column and one UTF-16 unit, unlike escapes.
+                let ch = char::from_u32(scalar).unwrap_or_else(|| {
+                    self.surrogates.push((self.source.len(), unit));
+                    '\u{fffd}'
+                });
                 self.source.push(ch);
             }
             return Ok(Action::Continue);
@@ -87,6 +87,7 @@ impl State {
         // compilation (including AST teardown on errors) on a bounded helper
         // stack; no JavaScript or task continuation runs on this thread.
         let source = std::mem::take(&mut self.source);
+        let surrogates = std::mem::take(&mut self.surrogates);
         let scope = self.caller.as_ref().map(|c| c.site.clone());
         let dynamic_parameters = self.dynamic_parameters;
         let name = if dynamic_parameters.is_some() {
@@ -98,9 +99,13 @@ impl State {
             .name("eval-compiler".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || match (dynamic_parameters, scope) {
-                (Some(end), _) => crate::frontend::compile_dynamic_function(&source, end),
-                (_, Some(site)) => crate::frontend::compile_direct_eval(name, &source, &site),
-                _ => crate::frontend::compile_eval(name, &source),
+                (Some(end), _) => {
+                    crate::frontend::compile_dynamic_function(&source, &surrogates, end)
+                }
+                (_, Some(site)) => {
+                    crate::frontend::compile_direct_eval(name, &source, &surrogates, &site)
+                }
+                _ => crate::frontend::compile_eval(name, &source, &surrogates),
             })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
             .join()

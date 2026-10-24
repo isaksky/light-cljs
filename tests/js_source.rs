@@ -2091,7 +2091,7 @@ fn indirect_eval() {
         r#"let caught = false; try { (0, eval)('1 +'); } catch(e) { caught = e.message.indexOf('<eval>:1:') === 0; } caught"#,
         r#"(0, eval)('"\\ud800"').charCodeAt(0) === 55296"#,
         r#"let caught = false; try { (0, eval)(' '.padEnd(16385, ' ')); } catch(e) { caught = e instanceof RangeError; } caught"#,
-        r#"let caught = false; try { (0, eval)('"' + '\ud800' + '"'); } catch(e) { caught = e instanceof SyntaxError; } caught"#,
+        r#"(0, eval)('"' + '\ud800' + '"') === '\ud800'"#,
         r#"(0, eval)('function f(eval) { return eval(2); } f(x => x + 1)') === 3"#,
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
@@ -2213,6 +2213,26 @@ fn indirect_eval_declaration_error_precedence() {
 #[test]
 fn indirect_eval_utf16_source() {
     for source in [
+        r#"let hi = String.fromCharCode(0xd800), lo = String.fromCharCode(0xdc00); (0, eval)('"' + hi + '"') === hi && eval('"' + lo + '"') === lo"#,
+        r#"let s = String.fromCharCode(0xd800, 0xdc00, 0xd800, 0xfffd, 0xdc00); eval('"' + s + '"') === s && (0, eval)('"' + s + '"') === s"#,
+        r#"let s = String.fromCharCode(0xd800, 0xdc00, 0xdc00, 0xd800); eval('/*' + s + '*/ 1 // ' + s + '\r\n + 2') === 3"#,
+        r#"let s = String.fromCharCode(0xd800, 0x41, 0xdc00); eval('`' + s + '`') === s && eval('`' + s + '${2}' + s + '`') === s + '2' + s"#,
+        r#"let s = String.fromCharCode(0xd800, 0xfffd, 0xdc00); function tag(t, x) { return t.raw[0] === s + '\\n' && t[0] === s + '\n' && t.raw[1] === s && t[1] === s && x === 7; } eval('tag`' + s + '\\n${7}' + s + '`')"#,
+        r#"let s = String.fromCharCode(0xd800, 0xfffd, 0xdc00); function tag(t) { return t[0] === undefined && t.raw[0] === s + '\\xZ'; } eval('tag`' + s + '\\xZ`')"#,
+        r#"let s = String.fromCharCode(0xdc00); function tag(t) { return t[0] === s && t.raw[0] === '\\' + s; } eval('tag`\\' + s + '`')"#,
+        r#"let s = String.fromCharCode(0xd800); function tag(t) { return t[0] === s + '\n' + s && t.raw[0] === s + '\n' + s; } eval('tag`' + s + '\r\n' + s + '`')"#,
+        r#"let s = String.fromCharCode(0xd800, 0xdc00, 0xdc00, 0xd800); let r = eval('/' + s + '/'); r.source === s && r.test(s) && !r.test('����') && eval('/[' + s + ']/').test(s[2])"#,
+        r#"let hi = String.fromCharCode(0xd800), lo = String.fromCharCode(0xdc00); eval('/' + hi + '/').test(hi) && eval('/' + lo + '/').test(lo) && eval('/' + hi + '/u').source === hi && eval('/\\' + hi + '/').test(hi)"#,
+        r#"let s = String.fromCharCode(0xd800); let caught = 0; try { eval('/[' + s + '/'); } catch(e) { if (e instanceof SyntaxError) caught++; } try { eval('if (false) /' + s + '(/'); } catch(e) { if (e instanceof SyntaxError) caught++; } caught === 2"#,
+        r#"let s = String.fromCharCode(0xd800); let caught = 0; try { eval('var ' + s + ' = 1'); } catch(e) { if (e instanceof SyntaxError && e.message.indexOf('<eval>:1:5:') === 0) caught++; } try { eval('var a' + s + ' = 1'); } catch(e) { if (e instanceof SyntaxError) caught++; } try { eval(String.fromCharCode(0xdc00)); } catch(e) { if (e instanceof SyntaxError) caught++; } caught === 3"#,
+        r#"let s = String.fromCharCode(0xd800, 0xdc00, 0xdc00); let caught = false; try { eval('"' + s + '";\r\n  @'); } catch(e) { caught = e instanceof SyntaxError && e.message.indexOf('<eval>:2:3:') === 0; } caught"#,
+        r#"let s = String.fromCharCode(0xd800); let caught = false; try { eval('"' + s + '"; @'); } catch(e) { caught = e instanceof SyntaxError && e.message.indexOf('<eval>:1:6:') === 0; } caught"#,
+        r#"let s = String.fromCharCode(0xd800, 0xdc00, 0xdc00); let caught = false; try { eval('"' + s + '"; @'); } catch(e) { caught = e instanceof SyntaxError && e.message.indexOf('<eval>:1:7:') === 0; } caught"#,
+        r#"let s = String.fromCharCode(0xd800, 0x41, 0xdc00); eval('"\\' + s + '"') === s && eval('`\\' + s + '`') === s"#,
+        r#"let s = String.fromCharCode(0xd800, 0xfffd, 0xdc00); new Function('return "' + s + '"')() === s && new Function('/*' + s + '*/ a', 'return a')(7) === 7 && Function('return /' + s + '/.source')() === s && Function('return `' + s + '`')() === s"#,
+        r#"let s = String.fromCharCode(0xd800); function tag(t) { return t.raw[0]; } Function('tag', 'return tag`' + s + '`')(tag) === s"#,
+        r#"let s = String.fromCharCode(0xd800, 0xfffd, 0xdc00); Function('a = "' + s + '"', 'return a')() === s"#,
+        r#"let s = ' '.padEnd(255, ' ') + '"' + String.fromCharCode(0xd800); s += String.fromCharCode(0xfffd, 0xdc00) + '"'; eval(s) === String.fromCharCode(0xd800, 0xfffd, 0xdc00)"#,
         r#"(0, eval)('\"π😀\"') === 'π😀'"#,
         r#"(0, eval)('var 𐐀 = 7; 𐐀') === 7"#,
         r#"let source = ' '.padEnd(254, ' ') + '\"' + String.fromCharCode(0xd83d); source += String.fromCharCode(0xde00) + '\"'; let result = (0, eval)(source); result.length === 2 && result.charCodeAt(0) === 0xd83d && result.charCodeAt(1) === 0xde00"#,
@@ -2241,6 +2261,10 @@ fn indirect_eval_utf16_source() {
         }
         assert!(complete && yields > 1, "{source}");
     }
+    let error = failure(r#"eval('/*' + String.fromCharCode(0xd800) + '*/ missing')"#);
+    assert_eq!(&*error.diagnostic().executable, "<eval>");
+    assert_eq!(error.diagnostic().source.unwrap().line, 1);
+    assert_eq!(error.diagnostic().source.unwrap().column, 7);
 }
 
 /// Synthetic fixtures, not light-cljs output. Compile callers and initialize

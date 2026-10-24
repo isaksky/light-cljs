@@ -866,11 +866,7 @@ fn render_expr(e: &Expr) -> String {
                         .as_ref()
                         .map_or_else(|| " undefined".to_string(), |s| format!(" {s:?}")),
                 );
-                if part
-                    .cooked
-                    .as_ref()
-                    .is_none_or(|s| part.raw != s.to_string())
-                {
+                if part.cooked.as_ref().is_none_or(|s| part.raw != *s) {
                     out.push_str(&format!(" raw {:?}", part.raw));
                 }
                 if let Some(e) = exprs.get(i) {

@@ -4512,11 +4512,15 @@ impl<'s> Lowerer<'s> {
     #[inline(never)]
     fn regexp_literal(
         &mut self,
-        pattern: &str,
+        pattern: &JsString,
         flags: &str,
         span: Span,
     ) -> Result<(), SyntaxError> {
-        let encoded = JsString::from(format!("{flags}\0{pattern}").as_str());
+        let encoded = JsString::from(format!("{flags}\0").as_str())
+            .concat(pattern)
+            .ok_or_else(|| {
+                self.error(SyntaxErrorKind::TooLarge, span, "regexp literal too long")
+            })?;
         let index = self.string_index(encoded, span)?;
         self.out().op_u16(Opcode::RegExpLiteral, index, span);
         Ok(())
@@ -6143,10 +6147,7 @@ impl<'s> Lowerer<'s> {
                 Some(s) => self.constant(Primitive::String(s.clone()), part.span)?,
                 None => self.out().op(Opcode::Undefined, part.span),
             }
-            self.constant(
-                Primitive::String(JsString::from(part.raw.as_str())),
-                part.span,
-            )?;
+            self.constant(Primitive::String(part.raw.clone()), part.span)?;
         }
         let op_span = quasis[0].span;
         self.out()
