@@ -20458,6 +20458,12 @@ fn intl_collator_tailorings() {
         "new Intl.Collator('tr').compare('ı','i') < 0",
         "new Intl.Collator('tr').compare('I','İ') < 0",
         "new Intl.Collator('de').compare('ä','ad') < 0 && new Intl.Collator('de-u-co-phonebk').compare('ä','ad') > 0",
+        // German default sort inserts the snapshot's primary U+0001 weight;
+        // these rows fail if its table is bypassed in favor of root folding.
+        "let c=new Intl.Collator('de',{sensitivity:'base'}); c.compare('a','ä') < 0 && c.compare('ä','aa') < 0 && c.compare('Ä','ä') === 0",
+        "let c=new Intl.Collator('de',{sensitivity:'base'}); c.compare('o','ö') < 0 && c.compare('ö','oa') < 0 && c.compare('Ö','ö') === 0",
+        "let c=new Intl.Collator('de',{sensitivity:'base'}); c.compare('u','ü') < 0 && c.compare('ü','ua') < 0 && c.compare('Ü','ü') === 0",
+        "let c=new Intl.Collator('en',{sensitivity:'base'}); c.compare('ä','a') === 0 && c.compare('ö','o') === 0 && c.compare('ü','u') === 0",
         "let r=new Intl.Collator('de-u-co-phonebk').resolvedOptions(); r.collation === 'phonebk' && r.locale === 'de-u-co-phonebk'",
         "new Intl.Collator('de-u-co-phonebk',{collation:'phonebk'}).resolvedOptions().locale === 'de-u-co-phonebk'",
         "let r=new Intl.Collator('en-u-co-phonebk').resolvedOptions(); r.collation === 'default' && r.locale === 'en'",
