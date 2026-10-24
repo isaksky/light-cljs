@@ -4397,8 +4397,10 @@ property and custom-prototype edges with only the Map result rooted.
 The realm appends an immutable ordinary `Map.prototype`, constructor,
 methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
 with a non-nullish argument explicitly throws TypeError until resumable
-iterable construction exists. Iteration/forEach and BigInt keys belong to
-later pellets. The prototype also owns the non-writable, non-enumerable,
+iterable construction exists. Iteration/forEach and dedicated BigInt-key
+coverage belong to later pellets. Once BigInt primitives exist, generic key
+storage uses their shared equality/hashing without another representation.
+The prototype also owns the non-writable, non-enumerable,
 configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
 is exposed on `Symbol`.
 
