@@ -7941,15 +7941,9 @@ fn instanceof_operator() {
         failure_at("function F() {} F.prototype = 1; new Object() instanceof F").0,
         VmErrorKind::TypeError
     );
-    // An error object on the chain needs Error.prototype
-    // (clj-quickjs-230): an explicit UnsupportedOperand, as for
-    // Object.getPrototypeOf.
+    // Engine errors inherit through their NativeError and Error prototypes.
     let src = "let e; try { nope; } catch (x) { e = x; } e instanceof Object";
-    assert_eq!(
-        failure(src).kind(),
-        VmErrorKind::UnsupportedOperand,
-        "{src}"
-    );
+    assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     // `instanceof` compiles to the `instanceof` opcode.
     assert!(opcodes(&exe(&format!("{f} new F() instanceof F"))).contains(&Opcode::Instanceof));
     // The `docs/grammar.md` example lines, each true.
@@ -8083,19 +8077,15 @@ fn in_operator() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
     assert_eq!(eval("({}) in {}"), ValueView::Bool(false));
-    // Not supported yet: a name Function.prototype does not have yet
-    // (clj-quickjs-103 and later); an error object's properties
-    // (clj-quickjs-230).
-    for src in [
-        "function f() {} 'toString' in f",
-        "let e; try { nope; } catch (x) { e = x; } 'message' in e",
-    ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
-    }
+    // A Function.prototype name that does not exist yet remains unsupported.
+    assert_eq!(
+        failure("function f() {} 'toString' in f").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+    assert_eq!(
+        eval("let e; try { nope; } catch (x) { e = x; } 'message' in e"),
+        ValueView::Bool(true)
+    );
     // `in` compiles to the `in` opcode.
     assert!(opcodes(&exe("'x' in {}")).contains(&Opcode::In));
     // The `docs/grammar.md` example lines, each true.
@@ -8254,18 +8244,19 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
             2
         )
     );
-    for (src, needle) in [
-        ("let b = true;\nb.x;", "of a boolean"),
-        (
-            "let e; try { null.x; } catch (c) { e = c; }\ne.message;",
-            "of an error object",
-        ),
-    ] {
+    {
+        let (src, needle) = ("let b = true;\nb.x;", "of a boolean");
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains(needle), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
     }
+    assert_eq!(
+        eval(
+            "let e; try { null.x; } catch (c) { e = c; } e.message === \"cannot read property 'x' of null\""
+        ),
+        ValueView::Bool(true)
+    );
     // An unsupported operand is not catchable: no JavaScript sees a wrong
     // answer.
     let (kind, ..) = failure_at("let r; try { true.x; } catch (e) { r = 1; } r");
@@ -9672,10 +9663,8 @@ fn prototype_reflection() {
         VmErrorKind::UnsupportedOperand,
         "wrapper",
     );
-    fails(
-        "let e = null; try { null.x; } catch (x) { e = x; } Object.getPrototypeOf(e)",
-        VmErrorKind::UnsupportedOperand,
-        "Error.prototype",
+    truth(
+        "let e; try { null.x; } catch (x) { e = x; } Object.getPrototypeOf(e) === TypeError.prototype && Object.setPrototypeOf(e, null) === e && Object.getPrototypeOf(e) === null",
     );
 
     // create.
@@ -10238,11 +10227,8 @@ fn object_extensibility() {
     truth(
         "let b = __rt.vectorBuilder(); !Object.isExtensible(b) && Object.isFrozen(Object.freeze(b))",
     );
-    // An error object's properties are clj-quickjs-230.
-    fails(
-        "let e = 0; try { null.x; } catch (caught) { e = caught; } Object.isFrozen(e);",
-        VmErrorKind::UnsupportedOperand,
-        "error object",
+    truth(
+        "let e; try { null.x; } catch (caught) { e = caught; } !Object.isFrozen(e) && Object.isExtensible(e) && Object.freeze(e) === e && Object.isFrozen(e)",
     );
 
     // The `docs/grammar.md` example lines, each true.
@@ -10458,11 +10444,7 @@ fn own_property_key_order() {
         assert_eq!(listed("", &format!("{call}(1)")), "0:", "{call}");
         assert_eq!(listed("", &format!("{call}(true)")), "0:", "{call}");
     }
-    fails(
-        "let k; try { null.x; } catch (e) { k = Object.keys(e); } k",
-        VmErrorKind::UnsupportedOperand,
-        "error object",
-    );
+    truth("let k; try { null.x; } catch (e) { k = Object.keys(e); } k.length === 0");
 
     // Deleting and re-adding a key moves it to the end (clj-quickjs-124).
     assert_eq!(
@@ -10752,11 +10734,7 @@ fn delete_property_references() {
     );
     // Values without JavaScript properties have nothing to delete.
     truth("delete __rt.vector(1, 2)[0]");
-    fails(
-        "let r; try { null.x; } catch (e) { r = delete e.message; } r",
-        VmErrorKind::UnsupportedOperand,
-        "error object",
-    );
+    truth("let r; try { null.x; } catch (e) { r = delete e.message && e.message === ''; } r");
 
     // `delete x` is a compile-time SyntaxError in strict code.
     for src in ["function f() { delete x; }", "let x = 1; delete x;"] {

@@ -840,7 +840,7 @@ Supported:
   catch target starts one value deeper). `return` consults the handler
   stack.
 - ReferenceError, TypeError and StackOverflow failures are catchable: the
-  caught value is a fresh immutable engine-raised error object; rethrowing it reports the
+  caught value is a fresh task-owned Error instance; rethrowing it reports the
   original error. An uncaught `throw` of any other value fails the task with
   `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
   source position and call chain, also after leaving through finally
@@ -859,10 +859,12 @@ Deferred:
   catchable and skip catch and finally blocks. Failed or cancelled
   dependencies became catchable, and cancellation runs finally blocks, in
   clj-quickjs-27 (below).
-- Engine-raised errors expose `stack`; their other JavaScript properties and
-  `instanceof` support remain deferred (clj-quickjs-230). JavaScript-created
-  Error instances are supported
-  (clj-quickjs-228, below), including NativeError constructors (clj-quickjs-229).
+Engine-raised errors are task-owned instances of their realm Error constructors
+(clj-quickjs-230), with ordinary `name`, `message`, `stack`, stringification
+and `instanceof` support. Failed dependencies expose the published value as
+`cause`; cancelled dependencies have no own cause. The internal diagnostic
+and original cause survive property changes and rethrow. Like constructed
+Errors, engine errors cannot be published, including through closure captures.
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
@@ -945,9 +947,9 @@ Deferred:
 
 - An uncaught dependency failure, and a cancellation or failure while
   parked inside the native fold, are not part of the example (covered by
-  `tests/exception_waits.rs` and `tests/native_unwind.rs`); engine-raised error objects
-  still have no JavaScript-readable properties, so the consumer returns the
-  caught error for Rust to inspect.
+  `tests/exception_waits.rs` and `tests/native_unwind.rs`). Consumers return
+  caught errors for Rust to inspect; JavaScript can also read their
+  ordinary Error properties (clj-quickjs-230).
 
 ### Resumable native operations (clj-quickjs-12)
 
@@ -2051,8 +2053,7 @@ Supported (`cargo test --test js_source prototype_reflection`, `cargo test --lib
 
 Deferred:
 
-- `Object.getPrototypeOf` on primitives and engine-raised error objects
-  (clj-quickjs-230), changing a function's prototype, and
+- `Object.getPrototypeOf` on primitives, changing a function's prototype, and
   `Object.create`'s second argument (`Object.defineProperties`). Extensibility (clj-quickjs-122) and
   `Object.getOwnPropertyNames` (clj-quickjs-123) have their own sections below.
 
@@ -2080,8 +2081,8 @@ Deferred:
 - Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
   and freezing a function makes it unpublishable (it gets a property record).
 - `Object.seal`,
-  `Object.isSealed` and `Reflect`'s extensibility functions are not provided; engine-raised error objects fail with `UnsupportedOperand`
-  (clj-quickjs-230).
+  `Object.isSealed` and `Reflect`'s extensibility functions are not provided.
+  Error instances follow the ordinary object rules.
 
 ### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
 
@@ -2100,8 +2101,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 
 Deferred:
 
-- Engine-raised error objects (clj-quickjs-230) fail with `UnsupportedOperand`.
-  `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
+- `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
   `Object.entries`/`values`.
 
 ### `instanceof` (clj-quickjs-75)
@@ -2117,9 +2117,8 @@ Supported (`cargo test --test js_source instanceof_operator`,
 
 Deferred:
 
-- An engine-raised error as `v` fails with `UnsupportedOperand` until
-  clj-quickjs-230. JavaScript-created errors support `instanceof Error`.
-  `Symbol.hasInstance` remains deferred.
+- `Symbol.hasInstance` remains deferred. Engine and constructed errors
+  support `instanceof` through their NativeError and Error prototypes.
 
 ### The `delete` operator (clj-quickjs-124)
 
@@ -2139,9 +2138,8 @@ Supported (`cargo test --test js_source delete_property_references`,
 
 Deferred:
 
-- `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
-  properties of engine-raised error objects
-  (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
+- `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms.
+  Error instances have ordinary configurable properties. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
 
 ### `in` (clj-quickjs-74)
@@ -2162,7 +2160,7 @@ Supported (`cargo test --test js_source in_operator`,
 Deferred:
 
 - Names `Function.prototype` does not have yet
-  (`toString`; `call`/`apply`/`bind` are supported) and engine-raised error objects' properties (clj-quickjs-230) fail
+  (`toString`; `call`/`apply`/`bind` are supported) fail
   with `UnsupportedOperand`. Symbol keys use identity (clj-quickjs-127).
 
 ### `for`-`in` over own properties (clj-quickjs-85)
@@ -2218,8 +2216,8 @@ in `src/vm/keys.rs`, "Prototype chain"):
   unlinked during the loop survives waits, collections and migration until
   the walk leaves it.
 
-Deferred: an engine-raised error object on the chain fails with `UnsupportedOperand` (its
-own keys are clj-quickjs-230); Proxy traps (clj-quickjs-91) as above.
+Deferred: Proxy traps (clj-quickjs-91) as above. Error instances use ordinary
+own keys and prototype traversal.
 
 ### `for`-`in` over arrays (clj-quickjs-88)
 
@@ -2601,7 +2599,8 @@ as a dependency failure, is rejected as task-owned mutation.
 
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
-Engine-raised errors as instances, subclasses and `Reflect.construct` remain deferred.
+Engine-raised errors also use these instances (clj-quickjs-230); subclasses
+and `Reflect.construct` remain deferred.
 
 ### String splitting (clj-quickjs-157)
 

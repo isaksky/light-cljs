@@ -1112,12 +1112,12 @@ docs.
   height at run time (`Internal` on a mismatch, hand-assembled code only);
   the resume point is the validated fall-through edge. A `drop_completion`
   of a pending cancellation ends the cleanup, like a `return`.
-- **Catchability.** ReferenceError, TypeError and StackOverflow failures
-  are raised as fresh immutable error objects (a native heap payload with
-  no edges, shareable); other failures are uncatchable and end the run
-  without running catch or finally blocks, as QuickJS's uncatchable
-  errors do. Failed or cancelled dependencies became catchable, with the
-  error object's cause as its one edge, in clj-quickjs-27 (below).
+- **Catchability.** ReferenceError, TypeError, RangeError, SyntaxError and
+  StackOverflow failures are raised as ordinary task-owned Error instances
+  (clj-quickjs-230); other failures are uncatchable and end the run without
+  catch or finally blocks, as QuickJS's uncatchable errors do. Failed or
+  cancelled dependencies are catchable too (clj-quickjs-27), with the
+  published cause traced by the engine slot independently of properties.
 - **Diagnostics.** Each raised exception carries the `VmError` to report if
   uncaught, built where it was raised (position and call chain), and kept in
   a pending `Throw` across finally blocks. Rethrowing an error object
@@ -1505,10 +1505,9 @@ builders, atoms, binding cells, non-error natives) have no JavaScript
 properties: a read gives `undefined`, a write is a catchable `TypeError`,
 as for a non-extensible object without properties in strict mode. Function
 objects expose code metadata and their property record (clj-quickjs-101/-125).
-Caught error objects have JavaScript properties (`name`, `message`, ...)
-whose access fails with `UnsupportedOperand` until clj-quickjs-230;
-so did numbers and strings until clj-quickjs-73 ("Primitive bases"), and
-so do booleans (clj-quickjs-39). `undefined` and
+Caught engine errors use ordinary Error instance properties (clj-quickjs-230).
+Numbers and strings read through their prototypes (clj-quickjs-73,
+"Primitive bases"); booleans remain deferred (clj-quickjs-39). `undefined` and
 `null` bases throw catchable `TypeError`s (`cannot read property 'x' of
 undefined`, `cannot set property 'x' of null`) at the member expression;
 for a write the right-hand side is evaluated first (PutValue).
@@ -2137,9 +2136,8 @@ so they run inside their call instruction.
   function's cannot change (an intrinsic: `TypeError`) and neither can a
   function's yet (`UnsupportedOperand`: its property record would have to
   take the new prototype, and the cycle walk would have to follow
-  functions). Error objects would report `Error.prototype`, which does
-  not exist (clj-quickjs-230): both directions fail with
-  `UnsupportedOperand` rather than answer `null`. A function used as a prototype
+  functions). Engine errors follow ordinary object prototype rules,
+  initially inheriting from the matching Error prototype (clj-quickjs-230). A function used as a prototype
   (`Object.create(function () {})`) lends its own properties, read and
   write-checked through its record (`function::read`, `own_store`),
   with their attributes; the names `Function.prototype` lacks fail
@@ -2242,8 +2240,7 @@ so they run inside their call instruction.
   builders, atoms, cells, non-error natives) already behave as objects
   with no properties and no extensibility (`crate::vm::property`), so they
   report non-extensible and frozen, and the two changes return them.
-  Error objects fail with `UnsupportedOperand` until their properties
-  exist (clj-quickjs-230).
+  Error instances follow ordinary object integrity rules (clj-quickjs-230).
 - **Freezing does not change ownership.** A frozen object or array is
   still `Shareability::TaskOwned`: other tasks get `ForeignObject` and the
   publication check rejects it, however deeply it is frozen. The pellet
@@ -2324,8 +2321,8 @@ result, a fresh array owned by the running task, last.
 - `Object.getOwnPropertyNames` of a function includes metadata and its
   constructor's lazy `prototype` (clj-quickjs-101); of `Object.prototype`,
   its stored `__proto__` accessor (clj-quickjs-261). `Object.keys` of either
-  lists no non-enumerable properties. Error objects fail until their
-  properties exist (clj-quickjs-230).
+  lists no non-enumerable properties. Error instances use ordinary own
+  property storage (clj-quickjs-230).
 - The `delete` operator (clj-quickjs-124) only has to remove the entry
   (and fix up the key index): a re-added key is pushed at the end, so it
   then enumerates last (done).
@@ -2350,8 +2347,7 @@ so it is `undefined`) and must be an object, and the chain is walked
 with `[[GetPrototypeOf]]` (`prototype::get_prototype_of`), so its owner
 rules apply, a function's chain runs through `Function.prototype`
 (clj-quickjs-102: `f instanceof Function`, `f instanceof Object`), and an
-error object fails with `UnsupportedOperand` until clj-quickjs-230 gives
-it a prototype. The walk only reads; chains are acyclic,
+Error instance follows its ordinary prototype chain (clj-quickjs-230). The walk only reads; chains are acyclic,
 so it ends. Reading `prototype` may create a function's lazy prototype
 object (and build the realm), so the opcode is a poll point and keeps
 both operands on the operand stack, traced, until it has the answer. It
@@ -3233,7 +3229,7 @@ The resulting writable flag is applied even on partial truncation failure.
 `[[Set]]` maps rejection through the executing code's strict flag (strict
 TypeError, sloppy no-op); `defineProperty` always throws. Invalid length
 values use the new catchable `VmErrorKind::RangeError` through the existing
-immutable `ErrorObject` allocation/unwinding path. No new heap kind or
+ordinary Error instance allocation/unwinding path (clj-quickjs-230). No new heap kind or
 constructor is introduced. `tests/js_source.rs` covers both entry paths,
 and `array_length_truncation_reclaims_elements` in `tests/gc_roots.rs`
 verifies collection of dense and sparse element values while a suspended
@@ -3981,7 +3977,8 @@ receiver and converted name across ordinary VM callback frames. ToString
 uses the existing conversion continuation with string hint; cause uses
 HasProperty followed by a resumable property read. Uncaught diagnostics
 inspect data properties without invoking getters or object conversions.
-Native engine error payloads remain separate until clj-quickjs-230.
+Engine errors use the same ordinary storage with an additional internal
+diagnostic slot (clj-quickjs-230, below).
 
 QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_error_constructor`,
@@ -4032,10 +4029,9 @@ The snapshot is an ordinary immutable `JsString` leaf buffer with no heap
 edges, using the existing coarse immutable Arc boundary for strings. It
 retains no frame, function object, source text or task; creation cost is
 bounded by 64 frames and the names written. Constructed Errors store it as
-an ordinary non-enumerable property; native engine errors keep it in their
-payload and expose a fixed virtual own property through property reads,
-HasProperty and descriptor queries. Their cause remains their only traced
-heap edge. No worker-local state or system-stack walk is involved, so
+an ordinary non-enumerable property, as do engine errors (clj-quickjs-230).
+Engine error slots retain and trace their original cause even if the own
+`cause` property changes or is deleted. No worker-local state or system-stack walk is involved, so
 waiting, migration and collection need no additional roots or protocol.
 
 ## Array construction and brand (clj-quickjs-153)
@@ -4069,7 +4065,39 @@ allocated instance uses the same ordinary-object error marker, tracing and
 task ownership. Each constructor inherits from Error and each prototype
 from Error.prototype, sharing its resumable toString implementation.
 No new heap kind, publication category or callback mechanism is introduced.
-Engine-raised error objects remain separate (clj-quickjs-230).
+Engine-raised errors use these prototypes too (clj-quickjs-230).
+
+## Engine Error instances (clj-quickjs-230)
+
+`raise_failure` allocates an ordinary object only when a handler could see
+a catchable error. Its prototype is the realm's ReferenceError, TypeError,
+RangeError or SyntaxError prototype, or InternalError for stack overflow;
+dependency failures and cancellations inherit from Error.prototype.
+Own message and stack properties use writable, configurable, non-enumerable
+attributes. Stack overflow exposes `"stack overflow"` to JavaScript while
+the embedder retains its detailed VM limit diagnostic. Failed dependencies
+also get an own cause holding the published value by identity.
+
+An optional boxed engine slot in `OrdinaryObject` holds the original
+`VmError` and cause. The collector traces that cause independently of the
+ordinary properties, so replacing or deleting cause cannot change
+`Rooted::error_cause`. Rethrow reads this slot and preserves kind, position
+and call chain without reading properties or invoking JavaScript. Explicitly
+constructed Error instances have no such slot (`Rooted::error` returns None).
+All instances are task-owned: publication rejects them directly, as failure
+values or through closure captures, even after freezing. This intentionally
+replaces the previous persistent native engine-error category; existing
+dependency and end-to-end tests return host roots without publishing them.
+
+Allocation and property-key exhaustion produce terminal OutOfMemory. The
+new value reaches the catch operand or pending completion before any poll;
+native-frame and cancellation cleanup unwinding use the existing path.
+Getters, conversions and inherited toString use ordinary resumable frames.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `JS_ThrowError2` and
+`JS_ThrowStackOverflow` were read for semantics. Implementation and synthetic
+tests were written fresh; no upstream source or test text was copied.
 
 QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_error_constructor` and

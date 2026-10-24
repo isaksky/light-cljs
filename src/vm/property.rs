@@ -19,9 +19,9 @@
 //! | ordinary object or array owned by another task | `ForeignObject` failure | `ForeignObject` failure |
 //! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
-//! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
+//! | persistent vector, map, occurrence; builder, atom, binding cell; native payload | `undefined` (no JavaScript properties) | catchable `TypeError` |
 //! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
-//! | error object (a caught run-time error) | immutable `stack` string; other properties `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `stack`: catchable `TypeError`; other properties `UnsupportedOperand` |
+//! | Error instance, including a caught engine error | ordinary object properties and prototype chain | ordinary object ownership and attributes |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"), after a string's own `length` and indices below it (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
 //! | boolean | `UnsupportedOperand` (`Boolean.prototype`, clj-quickjs-39) | as a number |
@@ -33,10 +33,8 @@
 //! the strict-mode TypeError of an object that cannot take the property.
 //! In particular a persistent vector (`__rt.vector(...)`) is not a
 //! JavaScript array: `v[0]` and `v.length` read `undefined`.
-//! Function objects and error objects do have JavaScript properties
-//! (`length`, `name`, `message`, ...); until those exist, touching them is
-//! rejected explicitly instead of answering `undefined`. Engine errors expose
-//! their immutable `stack` as a virtual own property (clj-quickjs-59).
+//! Error instances use ordinary property storage (clj-quickjs-230).
+//! Function metadata and own properties use their property records.
 //!
 //! **Writes and the prototype chain** (clj-quickjs-117, OrdinarySet). A
 //! write to a property the receiver has itself updates it (a read-only one
@@ -160,7 +158,6 @@ use crate::realm;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, JsSymbol, Value};
 use crate::vm::dispatch::Fault;
-use crate::vm::exception::ErrorObject;
 use crate::vm::function::{self, FunctionRead};
 
 /// A property key after ToPropertyKey: an array index, or any other name.
@@ -353,50 +350,8 @@ fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId,
         .ok_or(Fault::Internal("a number or string without a prototype"))
 }
 
-/// Engine errors retain their immutable native representation until
-/// clj-quickjs-230; stack is a virtual, non-enumerable own data property.
-fn error_stack_property(object: &HeapObject, key: &Key) -> Option<Property> {
-    let HeapObject::Native(payload) = object else {
-        return None;
-    };
-    let error = (&**payload as &dyn std::any::Any).downcast_ref::<ErrorObject>()?;
-    if !matches!(key, Key::Name(name) if name == "stack") {
-        return None;
-    }
-    Some(Property {
-        value: Value::String(error.stack.clone()),
-        flags: PropertyFlags::FIXED,
-        accessor: None,
-    })
-}
-
 /// The failure of an access to a heap object without an ordinary store.
 fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
-    if error_stack_property(object, key).is_some() {
-        return match access {
-            Access::Read => None,
-            Access::Write | Access::Delete => Some(read_only(key)),
-        };
-    }
-    let verb = access.verb();
-    let unsupported = |what: &str| {
-        Some(Fault::Unsupported(format!(
-            "cannot {verb} property '{key}' of {what}: its properties are not supported"
-        )))
-    };
-    match object {
-        HeapObject::Native(payload) => {
-            let any: &dyn std::any::Any = &**payload;
-            if any.is::<ErrorObject>() {
-                return unsupported("an error object");
-            }
-            no_properties(object, key, access)
-        }
-        _ => no_properties(object, key, access),
-    }
-}
-
-fn no_properties(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
     match access {
         // Nothing to find, so nothing to delete.
         Access::Read | Access::Delete => None,
@@ -606,7 +561,7 @@ pub(crate) fn has_property(
 /// ToPropertyKey(`key`) ([`to_property_key`], after resumable
 /// object conversion in the VM) and [`has_property`]. Heap
 /// kinds without JavaScript properties (module docs) have none, so the
-/// answer is false; an error object is `UnsupportedOperand`.
+/// answer is false. Error instances use ordinary property storage.
 pub(crate) fn in_operator(
     heap: &Heap,
     task: TaskId,
@@ -703,15 +658,10 @@ fn lookup(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
                 }
-                Visit::Other(other) => {
-                    if let Some(property) = error_stack_property(other, key) {
-                        return Ok(Lookup::Found(Read::Value(property.value)));
-                    }
-                    match not_ordinary(other, key, Access::Read) {
-                        Some(fault) => Err(fault),
-                        None => Ok(Lookup::Next(None)),
-                    }
-                }
+                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                    Some(fault) => Err(fault),
+                    None => Ok(Lookup::Next(None)),
+                },
             })
             // The frame keeps the base alive and every object keeps its
             // prototype alive; a stale id is reported, not trusted.
@@ -1124,17 +1074,11 @@ fn check_inherited(
                     Ok(Walk::Function)
                 }
                 // Another kind as a prototype: one without JavaScript
-                // properties ends the walk; an error object, whose
-                // properties are not supported yet, fails as for a read.
-                Visit::Other(other) => {
-                    if error_stack_property(other, key).is_some() {
-                        return Err(read_only(key));
-                    }
-                    match not_ordinary(other, key, Access::Read) {
-                        Some(fault) => Err(fault),
-                        None => Ok(Walk::Next(None)),
-                    }
-                }
+                // properties ends the walk.
+                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                    Some(fault) => Err(fault),
+                    None => Ok(Walk::Next(None)),
+                },
             })
             .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
         match next {
@@ -1231,8 +1175,8 @@ pub(crate) fn define_field(
 /// clj-quickjs-154); a realm intrinsic
 /// is a TypeError (immutable); another task's object is `ForeignObject`; a
 /// function's property goes to its property record
-/// (`crate::vm::function::define_target`, clj-quickjs-125); an error object
-/// is `UnsupportedOperand`; the other heap kinds have no properties and are
+/// (`crate::vm::function::define_target`, clj-quickjs-125); the other heap
+/// kinds have no properties and are
 /// not extensible (TypeError).
 pub(crate) fn define_own_property(
     heap: &Heap,
@@ -1285,9 +1229,6 @@ pub(crate) fn define_own_property(
             }
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => unsupported("a function"),
-        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
-            unsupported("an error object")
-        }
         other => Err(Fault::TypeError(format!(
             "cannot define property '{key}' of a {}: it has no JavaScript properties",
             object_name(other)
@@ -1361,7 +1302,7 @@ fn defined(outcome: DefineOutcome, key: &Key) -> Result<(), Fault> {
 /// intrinsics included), arrays and built-in functions report their own
 /// properties; another task's object is `ForeignObject`; a function reports
 /// those in its property record (`crate::vm::function::own_store`,
-/// clj-quickjs-125); an error object is `UnsupportedOperand`; the other heap
+/// clj-quickjs-125); the other heap
 /// kinds have none.
 pub(crate) fn get_own_property(
     heap: &Heap,
@@ -1390,15 +1331,10 @@ pub(crate) fn get_own_property(
             _ if key.is_length() => Some(a.length_property()),
             Key::Name(_) | Key::Symbol(_) => named(a.object()),
         }),
-        Visit::Other(other) => {
-            if let Some(property) = error_stack_property(other, key) {
-                return Ok(Some(property));
-            }
-            match not_ordinary(other, key, Access::Read) {
-                Some(fault) => Err(fault),
-                None => Ok(None),
-            }
-        }
+        Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+            Some(fault) => Err(fault),
+            None => Ok(None),
+        },
     })
     .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
 }
@@ -1456,8 +1392,8 @@ pub(crate) fn delete(
 /// ([`function::delete_target`]); a realm intrinsic or built-in function
 /// that has it is a TypeError in either mode (shared and immutable), one
 /// that lacks it has nothing to delete; another task's or an
-/// embedder-created object is `ForeignObject`; an error object is
-/// `UnsupportedOperand`; the other heap kinds have no properties.
+/// embedder-created object is `ForeignObject`; the other heap kinds have
+/// no properties.
 fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<DeleteOutcome, Fault> {
     let id = match is_function(heap, id) {
         true => match function::delete_target(heap, task, id, key)? {
@@ -1581,8 +1517,7 @@ mod tests {
     use crate::heap::gc::Trace;
     use crate::value::share::Shareability;
 
-    /// A native payload that is not an error object (error objects are
-    /// covered from source in `tests/js_source.rs`).
+    /// A native payload without JavaScript properties.
     #[derive(Debug)]
     struct Opaque;
 

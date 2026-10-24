@@ -282,7 +282,7 @@
 //! objects, a function object and a built-in function (clj-quickjs-117; the
 //! callable kinds, `Call` accepts nothing else) are `"function"`; every
 //! other kind is `"object"`: plain
-//! objects, arrays, native payload objects (error objects among them), persistent
+//! objects (including Error instances), arrays, native payload objects, persistent
 //! vectors, maps and syntax occurrences, transient builders, atoms and
 //! binding cells (which JavaScript code never holds as values). It never
 //! fails on a live value and calls no JavaScript. The string lives outside

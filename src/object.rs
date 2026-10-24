@@ -276,6 +276,8 @@ pub(crate) struct OrdinaryObject {
     primitive_data: Option<PrimitiveData>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
+    /// Engine-only diagnostic and original cause, independent of properties.
+    engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
 }
 
 impl OrdinaryObject {
@@ -291,6 +293,7 @@ impl OrdinaryObject {
             index: None,
             primitive_data: None,
             error_data: false,
+            engine_error: None,
         }
     }
 
@@ -343,6 +346,16 @@ impl OrdinaryObject {
 
     pub(crate) fn is_error(&self) -> bool {
         self.error_data
+    }
+
+    pub(crate) fn with_engine_error(mut self, error: crate::vm::exception::ErrorObject) -> Self {
+        self.error_data = true;
+        self.engine_error = Some(Box::new(error));
+        self
+    }
+
+    pub(crate) fn engine_error(&self) -> Option<&crate::vm::exception::ErrorObject> {
+        self.engine_error.as_deref()
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.
@@ -708,6 +721,9 @@ pub(crate) enum DeleteOutcome {
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         // PrimitiveData contains only f64 / JsString, with no heap edges.
+        if let Some(error) = &self.engine_error {
+            error.trace(visit);
+        }
         for (_, property) in &self.entries {
             property.value.trace(visit);
             if let Some((get, set)) = &property.accessor {

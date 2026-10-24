@@ -14,7 +14,7 @@
 //! | ordinary object, array | its `[[Prototype]]` (another task's object: `ForeignObject`) |
 //! | realm intrinsic (`Object.prototype`, `Array.prototype`, `Function.prototype`, built-in functions, `Reflect`) | its fixed prototype (`null`; `Object.prototype`; `Function.prototype` for a built-in function) |
 //! | function object | `Function.prototype` (clj-quickjs-102), fixed |
-//! | error object | `UnsupportedOperand`: it is `Error.prototype` (clj-quickjs-230) |
+//! | Error instance | ordinary object prototype (initially the matching realm Error prototype) |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; other native payloads | `null` (they behave as objects without properties, `crate::vm::property`) |
 //!
 //! # `[[SetPrototypeOf]]` (OrdinarySetPrototypeOf)
@@ -24,7 +24,7 @@
 //! owned by the running task changes: a realm intrinsic or built-in function
 //! is a `TypeError` (shared and immutable, as for its properties), another
 //! task's or the embedder's object is `ForeignObject`, a function (whose
-//! prototype cannot be changed yet) or an error object (above) is
+//! prototype cannot be changed yet) is
 //! `UnsupportedOperand`, and the other kinds are not extensible
 //! (`TypeError`). A non-extensible object (clj-quickjs-122) is a
 //! `TypeError`. A new prototype whose chain leads back to the object is a
@@ -70,7 +70,6 @@ use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
 use crate::value::Value;
 use crate::vm::dispatch::{self, Fault};
-use crate::vm::exception::ErrorObject;
 use crate::vm::function;
 
 /// The failure of reading another task's object.
@@ -86,13 +85,6 @@ fn readable(o: &OrdinaryObject, task: TaskId) -> Result<(), Fault> {
     }
 }
 
-fn is_error_object(object: &HeapObject) -> bool {
-    match object {
-        HeapObject::Native(payload) => (&**payload as &dyn std::any::Any).is::<ErrorObject>(),
-        _ => false,
-    }
-}
-
 /// `[[GetPrototypeOf]]` of the object `id` for the running task `task`
 /// (module docs, table).
 pub(crate) fn get_prototype_of(
@@ -100,11 +92,6 @@ pub(crate) fn get_prototype_of(
     task: TaskId,
     id: ObjectId,
 ) -> Result<Option<ObjectId>, Fault> {
-    let unsupported = |what: &str, prototype: &str| {
-        Err(Fault::Unsupported(format!(
-            "the prototype of {what} is {prototype}, which is not supported"
-        )))
-    };
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(view.prototype);
     }
@@ -118,7 +105,6 @@ pub(crate) fn get_prototype_of(
             // outside the object lock, since it may build the realm.
             HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(None),
             HeapObject::Builtin(f) => Ok(Some(f.properties.prototype())),
-            other if is_error_object(other) => unsupported("an error object", "Error.prototype"),
             _ => Ok(Some(None)),
         })
         .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
@@ -385,9 +371,8 @@ pub(crate) fn set_literal_proto(
 /// to their targets, including when their own `prototype` is assigned.
 ///
 /// The walk only reads: each step is `[[GetPrototypeOf]]`
-/// ([`get_prototype_of`]), so its owner rules and its unsupported kinds
-/// (an error object on the chain needs `Error.prototype`; a function
-/// continues at `Function.prototype`) apply. Chains are acyclic
+/// ([`get_prototype_of`]), so its owner rules apply; functions continue at
+/// `Function.prototype`. Chains are acyclic
 /// ([`set_prototype_of`] checks), so it ends. Reading `prototype` may allocate a function's lazy
 /// prototype object; the caller keeps `v` and `target` reachable.
 /// Validate and unwrap the callable before reading its prototype. A

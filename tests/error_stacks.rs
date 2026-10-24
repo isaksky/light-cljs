@@ -158,8 +158,8 @@ fn stack_property_attributes_follow_error_ownership() {
         "let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.value === e.stack && d.writable && d.configurable && !d.enumerable && Object.keys(e).length === 0;",
         "let e = Error(); e.stack = 'changed'; e.stack === 'changed' && delete e.stack && e.stack === undefined;",
         "let keys = Object.getOwnPropertyNames(Error('message', {cause: 0})); keys.length === 3 && keys[0] === 'message' && keys[1] === 'cause' && keys[2] === 'stack';",
-        "let e; try { missing; } catch (x) { e = x; } let d = Object.getOwnPropertyDescriptor(e, 'stack'); 'stack' in e && d.value === e.stack && !d.writable && !d.configurable && !d.enumerable;",
-        "let e; try { missing; } catch (x) { e = x; } let before = e.stack; try { e.stack = 'changed'; } catch (x) {} e.stack === before;",
+        "let e; try { missing; } catch (x) { e = x; } let d = Object.getOwnPropertyDescriptor(e, 'stack'); 'stack' in e && d.value === e.stack && d.writable && d.configurable && !d.enumerable;",
+        "let e; try { missing; } catch (x) { e = x; } e.stack = 'changed'; e.stack === 'changed' && delete e.stack && e.stack === undefined;",
     ] {
         let rt = Runtime::new();
         let exe = compile_script("stack-test.js", source).unwrap();

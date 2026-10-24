@@ -566,6 +566,115 @@ fn a_dependency_error_survives_a_wait_in_finally() {
 /// A cancelled cell is a catchable error at the need too, with an
 /// `undefined` cause; the consumer itself is not cancelled and carries on.
 #[test]
+fn dependency_errors_are_error_instances() {
+    // Test both ready failures and failures delivered after suspension, and
+    // both direct needs and needs inside native frames. Synthetic fixtures.
+    for already_failed in [false, true] {
+        for need in ["__rt.need(5, 3)", "__rt.needAll(__rt.vector(5), 3)"] {
+            let rt = Runtime::new();
+            let cause = complete(spawn(&rt, "__rt.vector(13)").run().unwrap());
+            if already_failed {
+                let request = rt.claim(key(&rt, A)).unwrap();
+                let _ = rt
+                    .complete(
+                        request.key(),
+                        request.producer(),
+                        Completion::Failed(&cause),
+                    )
+                    .unwrap();
+            }
+            let task = spawn(
+                &rt,
+                &format!(
+                    "let saved; try {{ {need}; }} catch (e) {{ saved = e; }}
+                 let same = false;
+                 try {{ __rt.need(5, 3); }} catch (e) {{ same = saved.cause === e.cause; }}
+                 let d = Object.getOwnPropertyDescriptor(saved, 'cause');
+                 if (!(same && saved instanceof Error && saved.name === 'Error' &&
+                    saved.message.length > 0 && d.value === saved.cause &&
+                    d.writable && d.configurable && !d.enumerable)) throw 99;
+                 saved.cause = null; delete saved.cause; saved.message = 'changed';
+                 saved;"
+                ),
+            );
+            let mut log = Log::default();
+            let task = if already_failed {
+                task
+            } else {
+                run_to_wait(&rt, &task, &mut log, A);
+                fail(&rt, &task, &cause)
+            };
+            rt.collect().unwrap();
+            let (outcome, _) = run_elsewhere(task, log);
+            let caught = complete(outcome);
+            assert_eq!(
+                caught.error().unwrap().kind(),
+                VmErrorKind::DependencyFailed(key(&rt, A))
+            );
+            assert!(caught.error_cause().unwrap().same_object(&cause));
+        }
+    }
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "let saved; try { __rt.need(5, 3); } catch (e) { saved = e; } if (!(saved instanceof Error && saved.cause === undefined && !('cause' in saved))) throw 99; saved",
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    let task = only_runnable(rt.cancel_cell(key(&rt, A)).unwrap());
+    let caught = complete(run(&task, &mut log));
+    assert_eq!(
+        caught.error().unwrap().kind(),
+        VmErrorKind::DependencyCancelled(key(&rt, A))
+    );
+    assert_eq!(caught.error_cause().unwrap().view(), ValueView::Undefined);
+}
+
+#[test]
+fn engine_error_properties_resume_callbacks_and_cleanup() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "let saved; try { nope; } catch (e) { saved = e; } Object.defineProperty(saved, 'name', {get() { __rt.need(5, 3); return 'N'; }}); Object.defineProperty(saved, 'message', {get() { __rt.need(6, 3); return 'M'; }}); saved.toString() === 'N: M'",
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 1.0);
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, B));
+    rt.collect().unwrap();
+    let (outcome, _) = run_elsewhere(publish(&rt, &task, 2.0), log);
+    assert_eq!(complete(outcome).view(), ValueView::Bool(true));
+
+    for body in [
+        "try { nope; } catch (e) { if (e instanceof ReferenceError) __rt.effect(1, 1); } __rt.effect(1, 2);",
+        "try { Number({valueOf() { return null(); }}); } catch (e) { if (e instanceof TypeError) __rt.effect(1, 1); } __rt.effect(1, 2);",
+        "null(); __rt.effect(1, 99);",
+    ] {
+        let rt = Runtime::new();
+        let task = spawn(
+            &rt,
+            &format!("try {{ __rt.need(5, 3); }} finally {{ {body} }}"),
+        );
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, A);
+        let task = cancel_parked(&task);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(task, log);
+        cancelled(outcome);
+        assert_eq!(
+            log.0,
+            if body.starts_with("try") {
+                vec![1.0, 2.0]
+            } else {
+                vec![]
+            }
+        );
+    }
+}
+
+#[test]
 fn a_cancelled_cell_is_caught_at_the_need() {
     let rt = Runtime::new();
     let task = spawn(

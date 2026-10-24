@@ -19,8 +19,8 @@
 //! | unpublished function of the running task | its property record's flag (`true` without a record) | the record's level (`false` without one) | on the property record, created if needed (a constructor's `prototype` is created first), so the function can no longer be published |
 //! | published function | `false` | `true` | returns it: already frozen |
 //! | another task's unpublished function | `true` without a record, else `ForeignObject` | likewise (`false`) | `ForeignObject` |
-//! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `false` | `true` | returns it: already frozen |
-//! | error object | `UnsupportedOperand` (its properties are clj-quickjs-230) | `UnsupportedOperand` | `UnsupportedOperand` |
+//! | persistent vector, map, occurrence; builder, atom, binding cell; native payload | `false` | `true` | returns it: already frozen |
+//! Error instances, including engine errors, follow the ordinary object row.
 //!
 //! The runtime's own heap values behave as objects with no own properties
 //! and no extensibility (`crate::vm::property`, "Which values have
@@ -50,7 +50,6 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::value::Value;
 use crate::vm::dispatch::Fault;
-use crate::vm::exception::ErrorObject;
 use crate::vm::function::{self, IntegrityStore};
 
 /// Which integrity operation runs.
@@ -86,13 +85,6 @@ fn foreign(owner: Option<TaskId>, caller: TaskId) -> Fault {
     Fault::ForeignObject { owner, caller }
 }
 
-fn error_object() -> Fault {
-    Fault::Unsupported(
-        "the extensibility of an error object is not supported: its properties are not supported"
-            .to_string(),
-    )
-}
-
 /// True if `object` has `level`: not extensible, or (`Frozen`) frozen.
 fn has_level(object: &crate::object::OrdinaryObject, level: Level) -> bool {
     match level {
@@ -124,9 +116,6 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
             Level::Frozen => a.is_frozen(),
         }),
         HeapObject::Builtin(f) => Ok(has_level(&f.properties, level)),
-        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
-            Err(error_object())
-        }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity read"))
         }
@@ -185,9 +174,6 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
                 Level::Frozen => a.freeze(),
             }
             Ok(())
-        }
-        HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
-            Err(error_object())
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity change"))

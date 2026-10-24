@@ -407,6 +407,106 @@ fn script_completion_values_follow_try_statements() {
 }
 
 #[test]
+fn engine_errors_are_error_instances() {
+    // Synthetic fixtures, not light-cljs output.
+    for (body, name, message) in [
+        ("nope;", "ReferenceError", "nope is not defined"),
+        ("null();", "TypeError", "null is not a function"),
+        (
+            "const c = 1; c = 2;",
+            "TypeError",
+            "assignment to constant variable 'c'",
+        ),
+        (
+            "x; let x;",
+            "ReferenceError",
+            "cannot access 'x' before initialization",
+        ),
+        (
+            "let a = []; a.length = -1;",
+            "RangeError",
+            "invalid array length",
+        ),
+        (
+            "function f() { return f(); } f();",
+            "InternalError",
+            "stack overflow",
+        ),
+    ] {
+        let src = format!(
+            "let ok = false; try {{ {body} }} catch (e) {{
+               let d = Object.getOwnPropertyDescriptor(e, 'message');
+               ok = e.name === '{name}' && e.message === \"{message}\" &&
+                 e.toString() === \"{name}: {message}\" &&
+                 e instanceof {name} && e instanceof Error &&
+                 Object.getPrototypeOf(e) === {name}.prototype &&
+                 !(e instanceof EvalError) &&
+                 d.writable && d.configurable && !d.enumerable &&
+                 Object.keys(e).length === 0 &&
+                 Object.prototype.toString.call(e) === '[object Error]';
+               if (e instanceof InternalError) ok = ok && !(e instanceof RangeError);
+             }} ok"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    let (error, _) = failure(
+        "try {\n  nope;\n} catch (e) { e.message = 'x'; e.name = 'Custom'; e.stack = 'changed'; throw e; }",
+    );
+    assert_eq!(
+        failure_at(&error),
+        (
+            VmErrorKind::ReferenceError,
+            "nope is not defined".into(),
+            2,
+            3
+        )
+    );
+    for name in ["Error", "TypeError"] {
+        let (outcome, _) = run(&format!("new {name}('user')"));
+        let RunOutcome::Complete(value) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert!(value.error().is_none());
+        assert!(value.error_cause().is_none());
+    }
+}
+
+#[test]
+fn engine_error_publication_follows_ordinary_object_ownership() {
+    use clj_quickjs::{CompleteError, Completion, PublishError};
+    for expression in ["e", "Object.freeze(e)", "(() => e)"] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(
+                &exe(&format!(
+                    "let result; try {{ nope; }} catch (e) {{ result = {expression}; }} result"
+                )),
+                &[],
+            )
+            .unwrap();
+        let RunOutcome::Complete(value) = task.run().unwrap() else {
+            panic!("expected caught value")
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(PublishError::NotShareable { .. })
+        ));
+        let consumer = rt.spawn(&exe("__rt.need(230, 1)"), &[]).unwrap();
+        assert!(matches!(consumer.run().unwrap(), RunOutcome::Waiting(_)));
+        let request = consumer.take_producer_requests().pop().unwrap();
+        assert!(matches!(
+            rt.complete(
+                request.key(),
+                request.producer(),
+                Completion::Failed(&value)
+            ),
+            Err(CompleteError::NotShareable(_))
+        ));
+        let _ = consumer.cancel();
+    }
+}
+
+#[test]
 fn javascript_run_time_errors_are_catchable_error_objects() {
     for src in [
         "undeclared;",

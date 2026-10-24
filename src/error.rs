@@ -94,9 +94,8 @@ pub enum VmErrorKind {
         /// The task that tried to use it.
         caller: TaskId,
     },
-    /// An invalid array length (clj-quickjs-154). Catchable through the
-    /// existing immutable VM error objects; a RangeError constructor is
-    /// still deferred to the error built-ins.
+    /// An invalid array length or another out-of-range built-in argument.
+    /// Catchable as an instance of the realm's RangeError constructor.
     RangeError,
     /// A global declaration clashes with a restricted global property.
     SyntaxError,

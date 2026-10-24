@@ -37,7 +37,7 @@
 //! | built-in function | its own `length`, `name`, `prototype` and methods |
 //! | function object (clj-quickjs-125) | enumerable keys: the enumerable properties of its property record (none without one); all keys: initial `length`, `name`, and a constructor's `prototype` without allocation, or the complete property record |
 //! | object or array of another task | `ForeignObject` |
-//! | error object | `UnsupportedOperand` (its properties are clj-quickjs-230) |
+//! | Error instance | ordinary object keys |
 //! | persistent vector, map, occurrence, builder, atom, binding cell, other native payload | none (no JavaScript properties) |
 //!
 //! The built-ins apply ToObject first: `undefined` and `null` throw a
@@ -104,9 +104,7 @@
 //! - after a function or built-in function: its prototype is
 //!   `Function.prototype` (clj-quickjs-102), an immutable intrinsic with no
 //!   enumerable property on its chain, so nothing above could be visited.
-//!   The same holds for an error object and `Error.prototype`, but an error
-//!   object on the chain fails as an operand does (`UnsupportedOperand`:
-//!   its own keys are clj-quickjs-230).
+//!   Error instances use the ordinary object walk, including their keys.
 //!
 //! Prototype links never lead to another task's object
 //! (`crate::vm::prototype`, "Ownership of prototype links"), and chains are
@@ -134,7 +132,6 @@ use crate::realm;
 use crate::value::share::Shareability;
 use crate::value::{JsString, Value};
 use crate::vm::dispatch::Fault;
-use crate::vm::exception::ErrorObject;
 use crate::vm::function;
 use crate::vm::property::{self, Key};
 use crate::vm::prototype;
@@ -285,15 +282,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                 named: named(a.object()),
             })
         }
-        HeapObject::Native(payload) => {
-            let any: &dyn std::any::Any = &**payload;
-            if any.is::<ErrorObject>() {
-                return Err(Fault::Unsupported(
-                    "the own keys of an error object are not supported".to_string(),
-                ));
-            }
-            Ok(Raw::default())
-        }
+        HeapObject::Native(_) => Ok(Raw::default()),
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Internal(
             "a function's keys are read from its property record",
         )),
@@ -575,18 +564,19 @@ fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKe
 
 /// The next object of the walk after `id` (module docs, "Prototype
 /// chain"): its `[[GetPrototypeOf]]`, except that the walk ends at a
-/// function or error object, whose prototype (`Function.prototype`,
-/// `Error.prototype`) is an immutable intrinsic with no enumerable
+/// function, whose prototype (`Function.prototype`) is an immutable
+/// intrinsic with no enumerable
 /// property on its chain.
 fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(if view.builtin { None } else { view.prototype });
     }
     let fixed = heap
-        .read(id, |object| match object {
-            HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => true,
-            HeapObject::Native(payload) => (&**payload as &dyn std::any::Any).is::<ErrorObject>(),
-            _ => false,
+        .read(id, |object| {
+            matches!(
+                object,
+                HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_)
+            )
         })
         .ok_or(Fault::Internal("prototype was reclaimed"))?;
     if fixed {

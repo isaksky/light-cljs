@@ -59,9 +59,11 @@
 //! `TypeError` (assignment to a constant, calling a non-function),
 //! `RangeError` (invalid array length, clj-quickjs-154) and
 //! `StackOverflow` (QuickJS's catchable "stack overflow" InternalError).
-//! Their exception value is a fresh, immutable **error object**
-//! ([`ErrorObject`], a native heap object, shareable) that carries the
-//! failure; it is allocated only when some handler could see it. A `need`
+//! `SyntaxError` is catchable too. Their exception value is a fresh,
+//! task-owned ordinary instance of the realm's matching Error constructor.
+//! It has writable, configurable, non-enumerable `message` and `stack`
+//! properties and an immutable internal diagnostic slot ([`ErrorObject`]);
+//! it is allocated only when some handler could see it. A `need`
 //! whose dependency failed or was cancelled raises one too (see
 //! "Dependency failures" below). Every other failure (`UnsupportedOperand`,
 //! `Internal`, host, collection, builder, atom and binding-cell contract
@@ -86,6 +88,10 @@
 //! embedder reads the failure and cause of a caught error object with
 //! [`Rooted::error`](crate::Rooted::error) and
 //! [`Rooted::error_cause`](crate::Rooted::error_cause).
+//! JavaScript sees an own `cause` only for a failed dependency. Changes to
+//! properties or prototype leave the internal diagnostic and cause intact.
+//! Like explicitly constructed Error instances, engine errors cannot be
+//! published, directly or through a closure capture, even after freezing.
 //!
 //! **Waiting is not unwinding.** A `need` that finds its cell pending
 //! suspends the task; it raises nothing, and no catch or finally block runs
@@ -112,17 +118,13 @@
 
 use crate::error::VmError;
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
-use crate::value::share::Shareability;
-use crate::value::{JsString, Value};
+use crate::heap::{Heap, HeapObject, ObjectId};
+use crate::value::Value;
 
-/// The payload of an error object: the exception value of a catchable
-/// run-time error. Immutable; its only heap edge is its cause, so it is
-/// shareable exactly when its cause is.
+/// Engine-only slot of an ordinary Error instance. Immutable even when
+/// JavaScript changes or deletes the instance's properties or prototype.
 #[derive(Debug)]
 pub(crate) struct ErrorObject {
-    /// Bounded immutable snapshot captured before exception unwinding.
-    pub(crate) stack: JsString,
     /// The failure, as reported if the exception is never caught.
     pub(crate) error: VmError,
     /// What caused it: for a failed dependency, the error value its producer
@@ -142,20 +144,12 @@ pub(crate) fn error_object(heap: &Heap, value: &Value) -> Option<(VmError, Value
         return None;
     };
     heap.read(id, |object| match object {
-        HeapObject::Native(payload) => {
-            let any: &dyn std::any::Any = &**payload;
-            any.downcast_ref::<ErrorObject>()
-                .map(|e| (e.error.clone(), e.cause.clone()))
-        }
+        HeapObject::Plain(object) => object
+            .engine_error()
+            .map(|e| (e.error.clone(), e.cause.clone())),
         _ => None,
     })
     .flatten()
-}
-
-impl NativePayload for ErrorObject {
-    fn shareability(&self) -> Shareability {
-        Shareability::Persistent
-    }
 }
 
 /// A raised exception: the JavaScript value and the error reported if no

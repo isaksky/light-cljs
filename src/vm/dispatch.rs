@@ -856,8 +856,9 @@ pub(crate) fn raise(state: &mut VmState, exception: Exception) -> Option<Exit> {
 
 /// Raise the run-time failure `error` of the running frame as a JavaScript
 /// exception if it is catchable and some handler could see it: its value is
-/// a fresh error object with `cause` (`crate::vm::exception`). Otherwise, or
-/// if the heap is exhausted, the run fails with the error; see [`raise`].
+/// a fresh Error instance with an internal diagnostic (`crate::vm::exception`).
+/// Otherwise the run fails with the original error. Allocation
+/// failure is uncatchable OutOfMemory; see [`raise`].
 ///
 /// `cause` must stay alive without this call rooting it (a published
 /// dependency result is held by its cell); the caller is a registered
@@ -873,20 +874,57 @@ pub(crate) fn raise_failure(
         return Some(Exit::Fail(error));
     }
     let pc = error.diagnostic.instruction;
-    // The error object is stored by `raise` (pushed for a catch block or
-    // kept in a pending completion) before any poll.
-    let object = HeapObject::Native(Box::new(ErrorObject {
-        stack: state.error_stack(pc),
-        error: error.clone(),
-        cause,
-    }));
-    let Some(id) = heap.alloc(object) else {
-        let message = "heap object table exhausted".to_string();
-        return Some(Exit::Fail(state.failure(
-            VmErrorKind::OutOfMemory,
-            message,
-            pc,
-        )));
+    // No poll or user callback until `raise` stores the new value in the
+    // catch operand or pending completion. Allocation failure is terminal.
+    let object = (|| {
+        use super::builtin::NativeErrorKind;
+        let intrinsics = realm::intrinsics(heap).ok_or("heap object table exhausted")?;
+        let kind = match error.kind {
+            VmErrorKind::ReferenceError => Some(NativeErrorKind::Reference),
+            VmErrorKind::TypeError => Some(NativeErrorKind::Type),
+            VmErrorKind::RangeError => Some(NativeErrorKind::Range),
+            VmErrorKind::SyntaxError => Some(NativeErrorKind::Syntax),
+            VmErrorKind::StackOverflow => Some(NativeErrorKind::Internal),
+            _ => None,
+        };
+        let prototype = kind.map_or(intrinsics.error_prototype, |k| {
+            intrinsics.native_error_prototype(k)
+        });
+        let mut object = OrdinaryObject::with_prototype(state.diag.task, prototype)
+            .with_engine_error(ErrorObject {
+                error: error.clone(),
+                cause: cause.clone(),
+            });
+        let mut define = |name: &str, value: Value| {
+            let key = heap
+                .keys()
+                .intern(&JsString::from(name))
+                .ok_or("property key table exhausted")?;
+            object.define_with(key, value, PropertyFlags::METHOD);
+            Ok::<_, &str>(())
+        };
+        let message = if error.kind == VmErrorKind::StackOverflow {
+            "stack overflow"
+        } else {
+            &error.message
+        };
+        define("message", Value::String(JsString::from(message)))?;
+        if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
+            define("cause", cause)?;
+        }
+        define("stack", Value::String(state.error_stack(pc)))?;
+        heap.alloc(HeapObject::Plain(object))
+            .ok_or("heap object table exhausted")
+    })();
+    let id = match object {
+        Ok(id) => id,
+        Err(message) => {
+            return Some(Exit::Fail(state.failure(
+                VmErrorKind::OutOfMemory,
+                message.to_string(),
+                pc,
+            )));
+        }
     };
     raise(
         state,
@@ -2177,7 +2215,7 @@ mod tests {
             ("atom", |asm| {
                 asm.op(Opcode::Undefined).op(Opcode::AtomNew);
             }),
-            // A caught VM error is a native error object.
+            // A caught VM error is an ordinary Error instance.
             ("error object", |asm| {
                 let catch = asm.label();
                 asm.push_catch(catch);

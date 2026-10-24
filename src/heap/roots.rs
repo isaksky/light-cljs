@@ -251,14 +251,18 @@ impl Rooted {
     /// The failure an error object stands for, if the value is one: the
     /// exception value of a catchable run-time error or of a failed or
     /// cancelled dependency raised at a `need` (`crate::vm::exception`).
-    /// `None` for any other value.
+    /// The internal diagnostic is unchanged by JavaScript property writes.
+    /// `None` for any other value, including `new Error(...)` and
+    /// `new TypeError(...)` created explicitly by JavaScript.
     pub fn error(&self) -> Option<VmError> {
         error_object(&self.heap, &self.value).map(|(error, _)| error)
     }
 
     /// The cause of an error object, rooted: for a failed dependency, the
     /// error value its producer published (the same object); otherwise
-    /// `undefined`. `None` if the value is not an error object.
+    /// `undefined`. This is the original cause even if JavaScript changes
+    /// or deletes `cause`. `None` for values without an engine diagnostic,
+    /// including explicitly constructed JavaScript Error instances.
     pub fn error_cause(&self) -> Option<Rooted> {
         // The cause is an edge of the error object, which `self` keeps
         // alive, so it cannot be reclaimed before it is rooted.
