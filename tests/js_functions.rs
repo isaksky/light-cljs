@@ -65,6 +65,8 @@ fn arguments_object_holds_every_argument() {
         "function f(a,b=arguments[0]) { return b===a && arguments.length===1; } f(8)",
         "function f(a,b=()=>arguments) { return b; } const a=f(8)(); a[0]===8 && a.length===1",
         "function f(a=7) { return arguments.length===0 && arguments[0]===undefined; } f()",
+        "function f() { return ()=>this.x+arguments[0]; } const g=f.call({x:2},3); g.call({x:100})===5",
+        "function f(a=()=>()=>arguments[1]+this.x) { return a; } f.call({x:2},undefined,9)()()===11",
         "function f() { return arguments[1]; } f.call(undefined,1,3)===3 && f.apply(undefined,[1,4])===4 && Reflect.apply(f,undefined,[1,5])===5 && f.bind(undefined,1)(6)===6",
         "function F() { return arguments; } const a=new F(1,2); a[1]===2 && a.length===2",
         "__rt.reduce(function(a,x) { return a+x+arguments.length; },0,__rt.vector(1,2))===7",
@@ -239,6 +241,7 @@ fn arguments_survive_wait_collection_and_migration() {
     for src in [
         "function f(a) { const g=()=>arguments; __rt.need(5,3); return g()[0].x+g()[1].x+g().length; } f({x:10},{x:20})",
         "function f(a,b=__rt.need(5,3)) { return arguments[0].x+arguments[2].x+arguments.length; } f({x:10},undefined,{x:19})",
+        "function f() { const g=()=>this.x+arguments[0].x; __rt.need(5,3); return g(); } f.call({x:12},{x:20})",
     ] {
         let rt = Runtime::new();
         let task = rt.spawn(&exe(src), &[]).unwrap();
@@ -1404,7 +1407,7 @@ fn intrinsic_arguments_evaluate_left_to_right() {
 }
 
 /// Arrow functions (clj-quickjs-53) are closures with lexical arguments
-/// (clj-quickjs-97); lexical this remains deferred. The first three scripts are the
+/// (clj-quickjs-97) and lexical this (clj-quickjs-98). The first three scripts are the
 /// `test_parse_arrow_function` cases of
 /// `research/quickjs/tests/test_language.js` (QuickJS, revision
 /// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution), checked
