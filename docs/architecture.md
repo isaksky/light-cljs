@@ -8553,3 +8553,8 @@ groups, receiver/disposed validation, intrinsic move, fallback, tags, reentry,
 thenables and await-using composition.
 Stack methods bypass the large general builtin-start dispatcher; the wait and
 migration test runs both phases on 64 KiB worker stacks.
+`async_disposable_stack_detached_disposal_survives_collection` additionally
+collects between budget slices, suspends the disposal activation at an await,
+then waits inside a resumed callback with an earlier anonymous error and a
+remaining adopted resource held by the detached continuation. It migrates on
+64 KiB workers and verifies the complete suppression chain and single settlement.

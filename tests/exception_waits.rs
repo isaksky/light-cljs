@@ -180,6 +180,79 @@ fn async_disposable_stack_callback_waits_and_resumes() {
     assert!(task.suspended_async_activations().is_empty());
 }
 
+/// Synthetic fixture, not light-cljs output. An earlier anonymous error and
+/// remaining resource are held only by the detached disposal continuation.
+#[test]
+fn async_disposable_stack_detached_disposal_survives_collection() {
+    let rt = Runtime::new();
+    spawn(&rt, "Object").run().unwrap();
+    let mut task = spawn(
+        &rt,
+        r#"
+        let s = new AsyncDisposableStack(), settled = 0;
+        s.adopt({tag: 'remaining'}, async v => {
+            await null; __rt.effect(1, v.tag === 'remaining' ? 1 : 99);
+            throw {tag: 'last'};
+        });
+        s.defer(async () => {
+            await null; __rt.effect(1, 2); __rt.need(5, 3);
+            await null; __rt.effect(1, 3); throw {tag: 'middle'};
+        });
+        s.defer(() => { throw {tag: 'first'}; });
+        s.disposeAsync().then(() => __rt.effect(1, 99), e => {
+            settled++;
+            let ok = e instanceof SuppressedError && e.error.tag === 'last' &&
+                e.suppressed instanceof SuppressedError &&
+                e.suppressed.error.tag === 'middle' &&
+                e.suppressed.suppressed.tag === 'first';
+            __rt.effect(1, ok && settled === 1 ? 4 : 99);
+        });
+        s = null;
+        __rt.effect(1, 0);
+        42;
+    "#,
+    );
+    let mut log = Log::default();
+    let mut waited = false;
+    for _ in 0..5000 {
+        let (next_task, next_log, outcome) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task.run_with(Budget::instructions(5), &mut log).unwrap();
+                (task, log, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next_task;
+        log = next_log;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(dependency) => {
+                assert!(!waited, "disposal callback was replayed");
+                assert_eq!(dependency, key(&rt, A));
+                // The entry's effect precedes the callback job: disposeAsync
+                // returned at its first await. The disposal continuation is
+                // now detached again, awaiting this callback's pending promise.
+                assert_eq!(log.0, [0.0, 2.0]);
+                waited = true;
+                task = publish(&rt, &task, 0.0);
+                rt.collect().unwrap();
+            }
+            outcome @ RunOutcome::Complete(_) => {
+                assert!(waited);
+                assert_eq!(number(outcome), 42.0);
+                assert_eq!(log.0, [0.0, 2.0, 3.0, 1.0, 4.0]);
+                assert!(task.suspended_async_activations().is_empty());
+                return;
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+    panic!("async disposal did not finish within the instruction bound");
+}
+
 /// Synthetic fixture, not light-cljs output. The pending return is an object
 /// rooted only by the finally completion while a disposer waits.
 #[test]
