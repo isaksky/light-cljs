@@ -3578,8 +3578,8 @@ collection and thread migration during coercion and long result construction.
 
 The shared realm appends `isNaN` and `isFinite` to `Global` (operands 6 and
 7). Their task-owned global bindings resolve with `get_global`, like other
-built-in globals (clj-quickjs-104). It also installs four Number predicate functions and eight
-primitive Number constants before copying the intrinsic views and publishing
+built-in globals (clj-quickjs-104). It also installs four Number predicate
+functions and eight primitive Number constants before copying the intrinsic views and publishing
 the realm. Constants use `PropertyFlags::FIXED`; `MIN_VALUE` is binary64
 bit pattern 1, the smallest subnormal (Rust's `MIN_POSITIVE` is normal).
 All function objects use the existing intrinsic roots and shareability rules.
@@ -3802,7 +3802,8 @@ property without changing its descriptor or value. A function declaration
 checks restricted properties before any closure is created, then installs
 its closure. The compiler rejects conflicts with that script's lexical
 bindings. A function declaration against a non-configurable property that
-is an accessor or is not writable and enumerable raises a catchable run-time `SyntaxError`.
+is an accessor or is not writable and enumerable raises a catchable run-time
+`SyntaxError`.
 Script `let` and `const` retain the existing lexical frame/cell machinery
 and never become global object properties.
 
@@ -3815,7 +3816,8 @@ property implementation. Getter/setter calls receive the global object,
 including for inherited accessors, through the traced `PropertyCall`
 continuation and ordinary VM frames from clj-quickjs-120. `typeof` also
 invokes getters. Setter return values are ignored; assignment returns its
-right operand. No Rust frame survives a callback wait. Missing reads and writes raise `ReferenceError`;
+right operand. No Rust frame survives a callback wait. Missing reads and
+writes raise `ReferenceError`;
 sloppy implicit creation and identifier deletion remain clj-quickjs-105.
 `get_builtin_global` remains available to hand-assembled code, but source
 identifiers no longer use it.

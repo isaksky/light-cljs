@@ -1633,11 +1633,8 @@ Supported (`cargo test --test js_source typeof_operator`,
   Other operands (`typeof (0, nope)`, `typeof nope()`) are evaluated as
   usual.
 
-Deferred:
-
-- `typeof Object` is `"function"` since clj-quickjs-117. Once a global
-  object exists (clj-quickjs-104), an unbound name must be looked up at run
-  time rather than decided by the compiler.
+`typeof Object` initially returns `"function"`. Global names are looked up
+at run time (clj-quickjs-104), observing descriptor changes and invoking getters.
 
 ### `void` (clj-quickjs-133)
 
