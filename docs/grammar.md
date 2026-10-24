@@ -3436,7 +3436,7 @@ the parsing gap below, without scanning their contents.
 
 Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
 construction fail with UnsupportedOperand pending host clock/local time work
-(clj-quickjs-182). String construction/parsing, formatting, UTC calendar
+(clj-quickjs-182). String construction/parsing, non-ISO formatting, UTC calendar
 getters/setters and Date's Symbol.toPrimitive/default conversion remain
 separate Date/protocol work. A value lookup reaching Date.prototype for its
 deferred toString/toJSON fails explicitly rather than using Object.prototype's
@@ -3446,6 +3446,23 @@ toJSON override (including a getter or non-callable value) remains observable.
 Host clock/zone integration is documented at `src/vm/date.rs`:
 unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
 no host supplies a zone. No host input is consumed by this UTC-only core.
+
+### Execution: Date ISO formatting (clj-quickjs-180)
+
+`Date.prototype.toISOString` (name `toISOString`, length 0, ordinary method
+flags) reads its receiver's own Date slot, ignoring arguments and conversion
+hooks. Valid values format as `YYYY-MM-DDTHH:mm:ss.sssZ` in UTC; years outside
+0..9999 use a sign and six digits, including `-000001` and `+010000`.
+Negative milliseconds use the preceding calendar day, so -1 formats as
+`1969-12-31T23:59:59.999Z`. The exact TimeClip endpoints format as
+`-271821-04-20T00:00:00.000Z` and `+275760-09-13T00:00:00.000Z`.
+NaN throws a catchable RangeError with message `Invalid time value`;
+unbranded receivers throw TypeError. Foreign task receivers retain the
+existing ownership failure. The method is non-constructible.
+
+Explicit gaps: UTC calendar getters/setters belong to clj-quickjs-181;
+`toJSON`, other Date formats, parsing and local-time/host behavior remain
+deferred as above. ISO formatting consumes no clock or zone input.
 
 ## Floating-point typed arrays (clj-quickjs-167)
 

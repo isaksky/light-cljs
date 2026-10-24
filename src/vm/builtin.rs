@@ -297,6 +297,7 @@ pub(crate) enum Builtin {
     DateGetTime,
     DateValueOf,
     DateSetTime,
+    DateToISOString,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -432,6 +433,7 @@ impl Builtin {
             Builtin::DateGetTime => "getTime",
             Builtin::DateValueOf => "valueOf",
             Builtin::DateSetTime => "setTime",
+            Builtin::DateToISOString => "toISOString",
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -523,6 +525,7 @@ impl Builtin {
             Builtin::DateUtc => 2,
             Builtin::DateGetTime | Builtin::DateValueOf => 0,
             Builtin::DateSetTime => 1,
+            Builtin::DateToISOString => 0,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -606,6 +609,7 @@ pub(crate) fn call(
         Builtin::DateGetTime | Builtin::DateValueOf => {
             super::date::this_time_value(heap, task, this).map(Value::Number)
         }
+        Builtin::DateToISOString => super::date::to_iso_string(heap, task, this),
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)

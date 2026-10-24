@@ -504,6 +504,17 @@ is retained with both tests. All fixtures are synthetic, not light-cljs output.
 `js_date_getTime` and `js_date_setTime` were semantic references at that
 revision; the Rust implementation and remaining tests were written afresh.
 
+## Date UTC ISO formatting (clj-quickjs-180)
+
+`tests/js_source.rs::date_to_iso_string` adapts the 2017 timestamp/ISO row
+from `research/quickjs/tests/test_builtin.js::test_date` (line 661), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS copyright and MIT permission notice from `research/quickjs/LICENSE`
+is retained on that test. Other fixtures are synthetic, not light-cljs output.
+`research/quickjs/quickjs.c::get_date_fields` and `get_date_string` were
+semantic references at that revision; the integer decomposition, formatter
+and remaining tests were written afresh in Rust.
+
 ## Floating-point typed arrays (clj-quickjs-167)
 
 `tests/js_source.rs::float_typed_array_byte_layout` adapts the shared-buffer

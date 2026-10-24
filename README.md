@@ -2933,7 +2933,7 @@ create task-owned ordinary objects with a clipped `[[DateValue]]` slot.
 and signed-zero clipping, ordered resumable argument coercion, two-digit
 UTC years, overflowing components and the specified floating-point order.
 Deferred: `Date()`, no-argument/current-time and multiple-argument/local-time
-construction, string parsing, default Date-to-primitive conversion, formatting,
+construction, string parsing, default Date-to-primitive conversion, non-ISO formatting,
 calendar getters/setters and host zones. These constructor/conversion forms
 fail explicitly, as does JSON serialization requiring Date's deferred toJSON;
 an own toJSON override works. Numeric strings for UTC/setTime are capped at 4096 UTF-16
@@ -2942,6 +2942,15 @@ The host clock/zone extension point is documented in
 `src/vm/date.rs`; this core reads neither the clock nor the OS zone.
 Tests: `cargo test --lib vm::date::tests::date_time_arithmetic` and
 `cargo test --test js_source date_`.
+
+Date ISO formatting (clj-quickjs-180): `Date.prototype.toISOString()` formats
+valid dates in UTC as `YYYY-MM-DDTHH:mm:ss.sssZ`, using signed six-digit years
+outside 0..9999. It throws a catchable RangeError (`Invalid time value`) for
+invalid dates and TypeError for receivers without an own Date slot. Pure
+integer calendar decomposition covers the entire ±8.64e15 ms range without
+host input. UTC calendar getters/setters, other formats and `toJSON` remain
+deferred. Tests: `cargo test --lib vm::date::tests::date_utc` and
+`cargo test --test js_source date_to_iso_string`.
 
 ### Floating-point typed arrays (clj-quickjs-167)
 

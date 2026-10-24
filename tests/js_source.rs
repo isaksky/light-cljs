@@ -1246,6 +1246,91 @@ fn date_utc_huge_year_cancellation() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: UTC ISO formatting and expanded
+/// years. The 2017 row is adapted from QuickJS tests/test_builtin.js::test_date,
+/// revision 7d1c13c5d8f8. Copyright (c) 2017-2021 Fabrice Bellard
+/// and Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn date_to_iso_string() {
+    for (time, expected) in [
+        ("1506098258091", "2017-09-22T16:37:38.091Z"),
+        ("0", "1970-01-01T00:00:00.000Z"),
+        ("-1", "1969-12-31T23:59:59.999Z"),
+        ("8.64e15", "+275760-09-13T00:00:00.000Z"),
+        ("-8.64e15", "-271821-04-20T00:00:00.000Z"),
+        ("-62198755200000", "-000001-01-01T00:00:00.000Z"),
+        ("253402300800000", "+010000-01-01T00:00:00.000Z"),
+        ("-62167219200000", "0000-01-01T00:00:00.000Z"),
+        ("-62135596800000", "0001-01-01T00:00:00.000Z"),
+        ("253402300799999", "9999-12-31T23:59:59.999Z"),
+        (
+            "Date.UTC(2000, 1, 29, 12, 34, 56, 7)",
+            "2000-02-29T12:34:56.007Z",
+        ),
+        ("Date.UTC(1900, 2, 1)", "1900-03-01T00:00:00.000Z"),
+        ("-0.9", "1970-01-01T00:00:00.000Z"),
+    ] {
+        let src = format!("new Date({time}).toISOString() === '{expected}'");
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    for time in [
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "8.64e15 + 1",
+        "-8.64e15 - 1",
+    ] {
+        let src = format!(
+            "let caught = false; try {{ new Date({time}).toISOString(); }} catch(e) {{ caught = e instanceof RangeError && e.message === 'Invalid time value'; }} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: brand checks and method metadata.
+#[test]
+fn date_to_iso_string_receiver_and_descriptor() {
+    for src in [
+        "Date.prototype.toISOString.name === 'toISOString' && Date.prototype.toISOString.length === 0",
+        "let d = Object.getOwnPropertyDescriptor(Date.prototype, 'toISOString'); d.value === Date.prototype.toISOString && d.writable && !d.enumerable && d.configurable",
+        "let d = new Date(0); d.valueOf = function() {throw 1;}; d.toString = function() {throw 2;}; d.toISOString({valueOf() {throw 3;}}) === '1970-01-01T00:00:00.000Z'",
+        "let d = new Date(-1); Object.setPrototypeOf(d, null); Date.prototype.toISOString.call(d) === '1969-12-31T23:59:59.999Z'",
+        "let d = new Date(NaN); d.setTime(0); Object.freeze(d); d.toISOString() === '1970-01-01T00:00:00.000Z'",
+        "let caught = false; try { new Date.prototype.toISOString(); } catch(e) { caught = e instanceof TypeError; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for receiver in [
+        "{}",
+        "null",
+        "undefined",
+        "1",
+        "'0'",
+        "Date.prototype",
+        "Object.create(new Date(0))",
+    ] {
+        let src = format!(
+            "let caught = false; try {{ Date.prototype.toISOString.call({receiver}); }} catch(e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output: slots, descriptors, coercion
 /// ordering, clipping and the intentionally deferred constructor forms.
 #[test]
@@ -1446,6 +1531,7 @@ fn date_objects_are_task_owned() {
         for source in [
             "function f(d) {return Date.prototype.getTime.call(d);}",
             "function f(d) {return Date.prototype.setTime.call(d, 1);}",
+            "function f(d) {return Date.prototype.toISOString.call(d);}",
             "function f(d) {return new Date(d);}",
         ] {
             let reader = rt

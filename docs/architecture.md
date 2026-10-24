@@ -5101,6 +5101,28 @@ tag/numeric value or serializing a Date as an ordinary JSON object. Presence
 checks report the deferred methods without reading them, while own toJSON
 overrides still participate in resumable JSON serialization.
 
+## Date UTC decomposition and ISO formatting (clj-quickjs-180)
+
+`vm/date.rs::utc_fields` decomposes clipped time values into year, zero-based
+month, date, hours, minutes, seconds, milliseconds and weekday (Sunday = 0).
+All arithmetic after the exact i64 millisecond conversion is integer:
+Euclidean day/remainder division handles negative timestamps, a binary search
+over Gregorian year starts takes at most 20 iterations, and month selection
+takes at most 11. These bounds hold over the entire ±100,000,000-day TimeClip
+range, including negative years and Gregorian century/leap boundaries.
+The shared field structure is available for the UTC getter/setter pellet.
+
+The append-only `DateToISOString` built-in is a bounded leaf: it reads the
+existing branded, task-owned slot, rejects invalid dates with the standard
+RangeError (`Invalid time value`), and creates a 24- or 27-unit UTC string.
+Years 0..9999 have four digits; other years have a sign plus six digits.
+It calls no user code, so requires no native continuation. The method is
+appended to the intrinsic root list after existing Date methods and preserves
+normal method metadata/flags. Tests cover required decompositions, month
+boundaries across two Gregorian cycles, expanded year transitions, invalid
+dates, receiver branding, descriptors and foreign-task access. Other Date
+formats and `toJSON` remain explicit gaps.
+
 ## Floating-point typed-array storage (clj-quickjs-167)
 
 `ElementType` appends Float16, Float32 and Float64; all use the existing traced,

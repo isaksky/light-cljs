@@ -7,7 +7,8 @@
 //! obtain the clock as an unrecorded leaf effect through the embedding host,
 //! and keep one generated rule-table zone per runtime (UTC without a host).
 //! Snapshot transition coverage is limited: reject uncovered zones explicitly.
-//! Never read the OS clock or zone here. Parsing/formatting are separate pellets.
+//! Never read the OS clock or zone here. UTC decomposition and ISO formatting
+//! are implemented below; parsing and other formats remain separate pellets.
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
@@ -15,6 +16,93 @@ use crate::value::Value;
 use crate::vm::dispatch::{Fault, to_number};
 
 pub(crate) const MS_PER_DAY: f64 = 86_400_000.0;
+
+/// UTC calendar fields, shared with future UTC getters/setters. Month is
+/// zero-based and weekday counts from Sunday (zero), as in ECMA-262.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UtcFields {
+    pub(crate) year: i32,
+    pub(crate) month: u8,
+    pub(crate) date: u8,
+    pub(crate) hours: u8,
+    pub(crate) minutes: u8,
+    pub(crate) seconds: u8,
+    pub(crate) milliseconds: u16,
+    pub(crate) weekday: u8,
+}
+
+/// Decompose a TimeClipped value without host inputs or floating calendar
+/// arithmetic. Invalid dates have no fields. All valid milliseconds fit i64
+/// exactly; Euclidean division keeps negative days and sub-day fields correct.
+pub(crate) fn utc_fields(time: f64) -> Option<UtcFields> {
+    if !time.is_finite() || time.abs() > 8.64e15 {
+        return None;
+    }
+    debug_assert_eq!(time, time.trunc(), "Date values must be TimeClipped");
+    let time = time as i64;
+    let days = time.div_euclid(86_400_000);
+    let within_day = time.rem_euclid(86_400_000);
+    let start_of_year = |year: i64| {
+        365 * (year - 1970) + (year - 1969).div_euclid(4) - (year - 1901).div_euclid(100)
+            + (year - 1601).div_euclid(400)
+    };
+    // The ±100,000,000-day clip range lies strictly within these year bounds.
+    // Binary search takes at most 20 steps, then at most 11 month steps, so
+    // decomposition/formatting is a bounded leaf operation with no callbacks.
+    let (mut year, mut upper) = (-300_000_i64, 300_000_i64);
+    while upper - year > 1 {
+        let middle = year + (upper - year) / 2;
+        if start_of_year(middle) <= days {
+            year = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mut day_of_year = days - start_of_year(year);
+    let mut month = 0;
+    for length in [31, 28 + i64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30] {
+        if day_of_year < length {
+            break;
+        }
+        day_of_year -= length;
+        month += 1;
+    }
+    Some(UtcFields {
+        year: year as i32,
+        month,
+        date: (day_of_year + 1) as u8,
+        hours: (within_day / 3_600_000) as u8,
+        minutes: (within_day / 60_000 % 60) as u8,
+        seconds: (within_day / 1_000 % 60) as u8,
+        milliseconds: (within_day % 1_000) as u16,
+        weekday: (days + 4).rem_euclid(7) as u8,
+    })
+}
+
+pub(crate) fn to_iso_string(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {
+    let fields = utc_fields(this_time_value(heap, task, this)?)
+        .ok_or_else(|| Fault::RangeError("Invalid time value".into()))?;
+    let year = if (0..=9999).contains(&fields.year) {
+        format!("{:04}", fields.year)
+    } else {
+        // Sign plus six digits (width includes the sign), including year -1.
+        format!("{:+07}", fields.year)
+    };
+    Ok(Value::String(
+        format!(
+            "{year}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            fields.month + 1,
+            fields.date,
+            fields.hours,
+            fields.minutes,
+            fields.seconds,
+            fields.milliseconds,
+        )
+        .as_str()
+        .into(),
+    ))
+}
 
 /// Bound the shared leaf StringToNumber scan (including rope flattening).
 /// Generic budgeted numeric parsing remains clj-quickjs-265. Observable
@@ -188,6 +276,81 @@ pub(crate) fn set_time(heap: &Heap, task: TaskId, this: &Value, time: f64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_utc_decomposition() {
+        // Synthetic field expectations; months are zero-based, Sunday is zero.
+        for (time, fields) in [
+            (0.0, (1970, 0, 1, 0, 0, 0, 0, 4)),
+            (-1.0, (1969, 11, 31, 23, 59, 59, 999, 3)),
+            (1506098258091.0, (2017, 8, 22, 16, 37, 38, 91, 5)),
+            (8.64e15, (275760, 8, 13, 0, 0, 0, 0, 6)),
+            (-8.64e15, (-271821, 3, 20, 0, 0, 0, 0, 2)),
+            (-62198755200000.0, (-1, 0, 1, 0, 0, 0, 0, 5)),
+            (253402300800000.0, (10000, 0, 1, 0, 0, 0, 0, 6)),
+        ] {
+            let actual = utc_fields(time).unwrap();
+            assert_eq!(
+                (
+                    actual.year,
+                    actual.month,
+                    actual.date,
+                    actual.hours,
+                    actual.minutes,
+                    actual.seconds,
+                    actual.milliseconds,
+                    actual.weekday,
+                ),
+                fields,
+                "{time}"
+            );
+        }
+        for time in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            8.64e15 + 1.0,
+            -8.64e15 - 1.0,
+        ] {
+            assert!(utc_fields(time).is_none(), "{time}");
+        }
+    }
+
+    #[test]
+    fn date_utc_calendar_boundaries() {
+        // Synthetic calendar checks around every month boundary over two full
+        // Gregorian cycles (including year zero), and near the clip limits.
+        for year in (-400..400).chain([-271821, -10000, 9999, 10000, 275760]) {
+            for month in 0..12 {
+                let start = make_date(make_day(f64::from(year), f64::from(month), 1.0), 0.0);
+                for time in [start - 1.0, start, start + 1.0] {
+                    if time.abs() > 8.64e15 {
+                        continue;
+                    }
+                    let f = utc_fields(time).unwrap();
+                    assert_eq!(
+                        make_date(
+                            make_day(f64::from(f.year), f64::from(f.month), f64::from(f.date)),
+                            make_time(
+                                f64::from(f.hours),
+                                f64::from(f.minutes),
+                                f64::from(f.seconds),
+                                f64::from(f.milliseconds)
+                            ),
+                        ),
+                        time,
+                    );
+                    if time == start {
+                        assert_eq!((f.year, i32::from(f.month), f.date), (year, month, 1));
+                    }
+                    let next_week = utc_fields(time + 7.0 * MS_PER_DAY);
+                    if let Some(next) = next_week {
+                        assert_eq!(f.weekday, next.weekday);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn make_day_huge_months() {

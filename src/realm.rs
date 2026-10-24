@@ -63,6 +63,7 @@
 
 //! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
 //! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; unbranded ordinary prototype | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
+//! | `Date.prototype.toISOString` (clj-quickjs-180) | leaf built-in | length 0; method flags |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -1271,6 +1272,8 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     }
     let utc = b.function(Builtin::DateUtc, &[])?;
     b.add(constructor, "UTC", utc, PropertyFlags::METHOD)?;
+    let iso = b.function(Builtin::DateToISOString, &[])?;
+    b.add(prototype, "toISOString", iso, PropertyFlags::METHOD)?;
     Some((prototype, constructor))
 }
 
@@ -1545,7 +1548,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 158); // Includes Locale methods, Number typed arrays and Date.
+        assert_eq!(first.all.len(), 159); // Includes Number typed arrays and Date.toISOString.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
