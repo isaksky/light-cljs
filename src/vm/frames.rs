@@ -36,8 +36,9 @@
 //!
 //! **Tracing.** A task's root source traces the whole value stack (every
 //! frame's locals and operands) and each frame's function object, which
-//! reports its code's constants; the entry frame's constants are the task's
-//! executable constants (`Trace for VmState`).
+//! reports its code's constants and its captured values (the closure
+//! environment, including binding cells shared with other closures); the
+//! entry frame's constants are the task's executable constants (`Trace for VmState`).
 //!
 //! **Dynamic context.** The task and world in [`DiagnosticContext`] belong to
 //! the task, so every frame runs in the world its task was spawned in; a call
@@ -91,8 +92,9 @@ pub(crate) struct Frame {
     /// The shared code this frame runs (never copied per task or call).
     pub(crate) code: Arc<Code>,
     /// The function object this frame was called through, for
-    /// `CurrentFunction`. `None` for the entry frame until `CurrentFunction`
-    /// first allocates one.
+    /// `CurrentFunction` and for `GetCapture` (its captured values are the
+    /// frame's closure environment). `None` for the entry frame until
+    /// `CurrentFunction` first allocates one.
     pub(crate) callee: Option<ObjectId>,
     /// Index of the next instruction to execute in `code`.
     pub(crate) pc: usize,

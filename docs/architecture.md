@@ -245,12 +245,14 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   before handing a value from one task to another. Nothing is copied, so
   the receiving task sees the same identities. `Runtime::spawn` does not
   check its arguments: the embedder decides what each task receives, and
-  builders stay protected by their owner check regardless. Later runtime
-  handoffs (dependency results, atom contents, closure captures) call
-  `share::check` themselves.
+  builders and binding cells stay protected by their owner checks
+  regardless. Later runtime handoffs (dependency results, atom contents)
+  call `share::check` themselves; closure captures are function-object
+  edges, which the walk follows (`.capture(i)` in a path).
 - **What later kinds declare.** A category. If `Persistent`: edges that
-  never change after allocation (closures qualify only with an immutable
-  captured environment) and allocation through `alloc_persistent`. If
+  never change after allocation (a closure's captured values never do; its
+  mutable bindings are separate task-owned cells) and allocation through
+  `alloc_persistent`. If
   `ConcurrentReference`: a `share::check` of every value it installs.
 - **Deferred.** No VM intrinsic exposes the check (the instruction set is
   unchanged), and `spawn` arguments are not checked.
@@ -280,8 +282,8 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   QuickJS's `throw_error`) at that point: the task fails with
   `VmErrorKind::ReferenceError` or `TypeError` only if that code runs. With no
   closures, `break` or `continue` in the subset, initialization is decided
-  statically by source position; closures (clj-quickjs-20/21) will need a
-  run-time check.
+  statically by source position; with closures (clj-quickjs-21) the compiler
+  must switch to the VM's run-time check, binding cells (clj-quickjs-20).
 - **Operators.** New number-only opcodes (`div`, `rem`, `neg`, `gt`, `le`,
   `ge`) follow the existing `add`/`sub`/`mul`/`lt` rule. The compiler applies
   JavaScript ToNumber explicitly (`to_number`, `to_number_pair`) to operands
@@ -344,17 +346,59 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   independent of JavaScript call depth (tested on a 64 KiB worker stack).
 - **Tracing.** The task root source traces the whole value stack and each
   frame's function object; a function object's `Trace` reports its code's
-  constants, and the entry frame's constants are the task's executable
+  constants and captured values, and the entry frame's constants are the task's executable
   constants. A callee that is no longer on any operand stack stays alive
   through its frame.
 - **Context and diagnostics.** Task identity and world are task-wide, so a
   call never changes world. A failure reports the failing frame's executable,
   instruction and source location plus `Diagnostic::call_chain`: each
   caller's `call` site, innermost first.
-- **Publication.** A function object has no properties or captures yet, so
-  it is `Persistent` and passes `Runtime::publish`; another task calling it
-  runs the same code in its own frames. Closures (clj-quickjs-20) add
-  environments and their own publication rule.
+- **Publication.** A function object has no properties, so it is
+  `Persistent` and passes `Runtime::publish` unless it captured something
+  task-owned (below); another task calling it runs the same code in its own
+  frames.
+
+## Lexical closures (clj-quickjs-20)
+
+Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
+`tests/closures.rs` (early VM tests, hand-assembled bytecode).
+
+- **Environment.** A closure is a function object plus the values it
+  captured, fixed at creation: `ExecutableSpec::captures` declares the count,
+  `function i` pops that many, `get_capture i` reads one (bounds checked at
+  load). Nested closures re-capture with `get_capture`, as QuickJS's
+  `js_closure2` copies a parent's `var_refs`
+  (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8).
+- **Value or cell.** A binding initialized before capture and never assigned
+  is captured by value. Any other captured binding lives in a binding cell
+  (`HeapObject::Cell`) from its declaration on: the frame's local holds the
+  cell and every closure capturing the binding holds the same cell, which is
+  how closures share a binding and how it outlives the frame. QuickJS's
+  `JSVarRef` instead points into the live frame until `close_var_refs` copies
+  the value out when the frame exits; here frames hold no references from
+  the heap, so the value stack may reallocate and frames can be yielded,
+  resumed elsewhere and collected with nothing to close. Each `new_cell`
+  execution is a fresh binding, so per-activation and per-iteration
+  bindings come from where the compiler emits it.
+- **TDZ.** Cells start uninitialized; `cell_get`/`cell_set` before
+  `cell_init` raise `ReferenceError`. This is the run-time check the
+  compiler needs once a closure can run before a declaration.
+- **Ownership and publication.** Code stays immutable `Arc` storage shared
+  by all tasks; closure environments are heap objects under the publication
+  rules. Function objects are `Persistent` (code and captures never change),
+  cells are `TaskOwned` with an owner `TaskId`. A closure over immutable
+  shareable values is known shareable at allocation and publishable; one
+  that reaches a cell is rejected at it. Cell instructions from another task
+  fail with `VmErrorKind::ForeignBinding`, so an unchecked `spawn` argument
+  cannot reach another task's mutable bindings either.
+- **Tracing.** A function object reports its captured values, a cell its
+  value. A closure stored in a binding it captures is an ordinary cycle:
+  kept while a frame or root reaches it, reclaimed by the next collection
+  after it becomes unreachable.
+- **Deferred.** Compiling closures (clj-quickjs-21); an initialize-once
+  immutable cell (a `const` read by a closure before its initialization must
+  use a cell, making the closure task-owned); spawning closure code directly
+  as a task entry fails at its first `get_capture` (`Internal`).
 
 ## Task/dependency continuation shape (planned)
 
@@ -575,3 +619,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
   is `current_function`; `myfunc2`'s capture of `myfunc1` is passed as an
   argument (closures are clj-quickjs-20); `assert()` calls are Rust
   assertions. The file carries the full notice.
+- `tests/closures.rs` (clj-quickjs-20): `f` ('closure1') and `test_closure1`
+  ('closure2') in `research/quickjs/tests/test_closure.js`, revision
+  7d1c13c5d8f8, as hand-assembled bytecode (early VM tests). Modified: `log`
+  string concatenation is a host effect per logged variable; `var x` is
+  `const x` (captured by value); the `{ set, get }` object is a vector;
+  `assert()` calls are Rust assertions. The file carries the full notice.

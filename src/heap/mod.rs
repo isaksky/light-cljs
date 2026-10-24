@@ -61,7 +61,7 @@ use roots::{RootTable, ScopeTable};
 use crate::collections::{Builder, Occurrence, PMap, PVector};
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
-use crate::vm::function::FunctionObject;
+use crate::vm::function::{BindingCell, FunctionObject};
 
 /// Stable identity of a heap object: slot index plus the slot's generation
 /// at allocation time. Crate-private: see the module docs.
@@ -112,6 +112,9 @@ pub(crate) enum ObjectKind {
     Builder,
     /// A function object (`crate::vm::function`): callable by `Call`.
     Function,
+    /// A binding cell (`crate::vm::function`): the task-owned storage of a
+    /// mutable binding captured by closures.
+    Cell,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -154,8 +157,12 @@ pub(crate) enum HeapObject {
     /// its owning task's run mutates it, in place under the object lock; an
     /// open builder's `Trace` reports its draft's contents.
     Builder(Builder),
-    /// A function object over shared immutable code (`crate::vm::function`).
+    /// A function object over shared immutable code and its captured values
+    /// (`crate::vm::function`).
     Function(FunctionObject),
+    /// A binding cell: mutable, task-owned; only its owning task's run
+    /// changes it, in place under the object lock (`crate::vm::function`).
+    Cell(BindingCell),
 }
 
 impl HeapObject {
@@ -169,6 +176,7 @@ impl HeapObject {
             HeapObject::Occurrence(_) => ObjectKind::Occurrence,
             HeapObject::Builder(_) => ObjectKind::Builder,
             HeapObject::Function(_) => ObjectKind::Function,
+            HeapObject::Cell(_) => ObjectKind::Cell,
         }
     }
 }
@@ -183,6 +191,7 @@ impl Trace for HeapObject {
             HeapObject::Occurrence(o) => o.trace(visit),
             HeapObject::Builder(b) => b.trace(visit),
             HeapObject::Function(f) => f.trace(visit),
+            HeapObject::Cell(c) => c.trace(visit),
         }
     }
 }
@@ -441,8 +450,9 @@ impl Heap {
 
     /// Run `f` on a live object under the object lock; `None` if `id` is
     /// stale. `f` must not touch the heap (it would deadlock). Only mutable
-    /// kinds may be changed: transient builders (by their owning task's run)
-    /// and, in tests, native payloads. Persistent kinds never change.
+    /// kinds may be changed: transient builders and binding cells (each by
+    /// its owning task's run) and, in tests, native payloads. Persistent
+    /// kinds never change.
     pub(crate) fn with_object_mut<R>(
         &self,
         id: ObjectId,

@@ -6,9 +6,9 @@ Requirements: [`docs/design.md`](docs/design.md). Backlog: Pellets (`pl list`).
 This is an architectural slice in progress, not a finished JavaScript engine.
 A small documented JavaScript subset ([`docs/grammar.md`](docs/grammar.md))
 compiles to VM bytecode and runs: straight-line code, conditionals, loops and
-locals. The VM executes nested calls and recursion in task-owned frames, but
-functions and calls cannot be compiled from source yet, and strings and
-closures are not executable.
+locals. The VM executes nested calls, recursion and lexical closures in
+task-owned frames, but functions, calls and closures cannot be compiled from
+source yet, and strings are not executable.
 
 ## Build and test
 
@@ -244,9 +244,10 @@ Deferred:
 
 - `Runtime::spawn` does not check its arguments; embedders call `publish`
   when a value moves between tasks.
-- No VM intrinsic for the check; dependency results (clj-quickjs-6), atom
-  contents (clj-quickjs-10) and closure captures (clj-quickjs-20) will call
-  it at their handoffs.
+- No VM intrinsic for the check; dependency results (clj-quickjs-6) and atom
+  contents (clj-quickjs-10) call it at their handoffs. Closure captures
+  (clj-quickjs-20) need no handoff of their own: they are a function
+  object's edges, which the walk follows.
 
 ### Dependency cells (clj-quickjs-6)
 
@@ -421,16 +422,54 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
   plus `Diagnostic::call_chain`, the callers' call sites (innermost first).
   All frames run in their task's world.
 - Function objects compare by identity, are traced through the frames and
-  operands that hold them, and (having no properties or captures yet) pass
-  the publication check, so a function returned by one task can be called by
-  another.
+  operands that hold them, and (having no properties) pass the publication
+  check when they capture nothing task-owned, so a function returned by one
+  task can be called by another.
 
 Deferred:
 
-- Compiling functions and calls from source (clj-quickjs-21); closures and
-  captured bindings (clj-quickjs-20), so mutual recursion between functions
-  that name each other needs closures; until then functions reach each other
-  through arguments.
+- Compiling functions and calls from source (clj-quickjs-21). Closures and
+  captured bindings are VM-level since clj-quickjs-20 (below).
 - `this`, `arguments`, `new`, rest/default parameters, function properties
   (`length`, `name`), native or host-function callees, and catching a
   `StackOverflow` or `TypeError` (clj-quickjs-11).
+
+### Lexical closures and captured bindings (clj-quickjs-20)
+
+Supported (VM level; early VM tests use hand-assembled bytecode,
+`cargo test --test closures`):
+
+- Closures: `ExecutableSpec::captures` declares how many captured values a
+  closure over that code carries; `function i` (`0x2B`) pops them and stores
+  them in the new function object (its lexical environment), and
+  `get_capture i` (`0x2E`, checked against the declaration at load time)
+  reads one in the running closure. A capture is either an immutable value
+  (captured by value) or a binding cell.
+- Binding cells: `new_cell` (`0x2F`), `cell_init` (`0x30`), `cell_get`
+  (`0x31`), `cell_set` (`0x32`). A mutable captured binding lives in one cell
+  shared by the creating frame and every closure that captures it, so
+  closures observe each other's writes and the binding outlives its frame;
+  each executed `new_cell` is a fresh binding (per activation, per loop
+  iteration). Reading or assigning an uninitialized cell is a
+  `ReferenceError` (the run-time temporal-dead-zone check).
+- Escaping closures, closures sharing one binding, closures created inside
+  recursion, and closure/environment cycles survive yields and collections
+  while reachable and are reclaimed once they are not.
+- Publication: a function object is persistent and shareable exactly when
+  its captured values are, so a closure over immutable values can be
+  published and called by another task, while one capturing a binding cell
+  is rejected (`value[0].capture(0) is a task-owned binding cell (owned by
+  task#1)`). Cells are task-owned: using another task's cell fails with
+  `VmErrorKind::ForeignBinding`, even if the closure was passed without the
+  check.
+
+Deferred:
+
+- Compiling closures from source, including the choice between value and
+  cell capture and replacing the compiler's static TDZ decision with cells
+  (clj-quickjs-21).
+- A captured `const` that a closure may read before its initialization must
+  live in a cell, which makes the closure task-owned; there is no
+  initialize-once immutable cell.
+- Spawning a task directly on closure code (no environment) fails at its
+  first `get_capture` with `VmErrorKind::Internal`.

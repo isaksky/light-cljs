@@ -7,8 +7,8 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence, function (no captures yet); natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, natives that declare it | never |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure); natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | none yet: reserved for atoms (clj-quickjs-10) and any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable. Plain objects are the ordinary mutable
@@ -22,6 +22,15 @@
 //! completion) run this check on every value they install; the walk
 //! therefore stops at it instead of reading contents that may change.
 //!
+//! A function object is persistent: its code and captured values never change
+//! after allocation. A closure is therefore shareable exactly when its
+//! captured values are: one that captured only immutable shareable values
+//! may be published, and one that captured a binding cell (the task-owned
+//! storage of a mutable binding, `crate::vm::function`) is rejected at that
+//! cell, with a path ending in `.capture(i)`. Publishing a closure never
+//! publishes its code: code is immutable `Arc` storage outside the heap,
+//! shared by every task whether or not any closure over it is published.
+//!
 //! The classification is the exhaustive match in [`classify`]: adding a
 //! heap object kind does not compile until it declares a category.
 //!
@@ -32,9 +41,8 @@
 //! * If `Persistent`: its edges must never change after allocation (every
 //!   direct reference reported by its `Trace` is part of its value), and it
 //!   should be allocated with [`Heap::alloc_persistent`] so the cache below
-//!   stays effective. Closures (clj-quickjs-20) are `Persistent` only when
-//!   their captured environment is immutable; a closure over mutable
-//!   bindings is `TaskOwned`.
+//!   stays effective. (Closures are `Persistent` objects whose mutable
+//!   bindings live in separate `TaskOwned` binding cells; see above.)
 //! * If `ConcurrentReference`: every operation that installs a value in it
 //!   calls [`check`] on that value first and rejects it on failure.
 //! * Otherwise `TaskOwned`.
@@ -122,8 +130,9 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
             Shareability::Persistent
         }
         HeapObject::Builder(_) => Shareability::TaskOwned,
-        // No properties or captures in this slice: immutable (`crate::vm::function`).
+        // Code and captured values are fixed at creation (`crate::vm::function`).
         HeapObject::Function(_) => Shareability::Persistent,
+        HeapObject::Cell(_) => Shareability::TaskOwned,
     }
 }
 
@@ -131,6 +140,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
 fn owner(object: &HeapObject) -> Option<TaskId> {
     match object {
         HeapObject::Builder(b) => Some(b.owner()),
+        HeapObject::Cell(c) => Some(c.owner),
         HeapObject::Plain
         | HeapObject::Native(_)
         | HeapObject::Vector(_)
@@ -177,6 +187,8 @@ pub enum PathStep {
     OccurrenceValue,
     /// The n-th edge a native payload reports. Displayed `.edge(n)`.
     NativeEdge(usize),
+    /// The n-th captured value of a closure. Displayed `.capture(n)`.
+    Capture(usize),
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -201,6 +213,7 @@ impl fmt::Display for ValuePath {
                 PathStep::MapKey(k) => write!(f, "{{{k}}}.key")?,
                 PathStep::OccurrenceValue => f.write_str(".value")?,
                 PathStep::NativeEdge(n) => write!(f, ".edge({n})")?,
+                PathStep::Capture(n) => write!(f, ".capture({n})")?,
             }
         }
         Ok(())
@@ -250,6 +263,7 @@ enum Step {
     MapKey(Value),
     OccurrenceValue,
     NativeEdge(usize),
+    Capture(usize),
 }
 
 /// What one object contributes to the walk.
@@ -271,6 +285,9 @@ enum Children {
     Map(PMap),
     Occurrence(Value),
     Native(Vec<ObjectId>),
+    /// A closure's captured values. Its code's constants are primitives by
+    /// construction (`ExecutableSpec::constants`), so they add no edges.
+    Captures(Box<[Value]>),
 }
 
 impl Children {
@@ -293,6 +310,11 @@ impl Children {
                     f(Step::NativeEdge(n), Value::Object(id));
                 }
             }
+            Children::Captures(values) => {
+                for (n, &v) in values.iter().enumerate() {
+                    f(Step::Capture(n), v);
+                }
+            }
         }
     }
 }
@@ -313,6 +335,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
             HeapObject::Occurrence(occ) => Children::Occurrence(occ.value),
+            HeapObject::Function(func) => Children::Captures(func.captures.clone()),
             other => {
                 let mut edges = Vec::new();
                 crate::heap::gc::Trace::trace(other, &mut |id| edges.push(id));
@@ -404,6 +427,7 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::MapKey(k) => PathStep::MapKey(key(k)),
         Step::OccurrenceValue => PathStep::OccurrenceValue,
         Step::NativeEdge(n) => PathStep::NativeEdge(n),
+        Step::Capture(n) => PathStep::Capture(n),
     }
 }
 

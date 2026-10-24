@@ -21,8 +21,10 @@
 //! to undeclared names lower to `ThrowError`, so they fail the task with a
 //! ReferenceError or TypeError exactly when JavaScript would throw: only if
 //! that code runs, after evaluating what JavaScript evaluates first (the
-//! right-hand side of an assignment). Closures (clj-quickjs-20/21) make this
-//! dynamic and will need a run-time check.
+//! right-hand side of an assignment). Closures (clj-quickjs-21) make this
+//! dynamic: a captured binding must then use the VM's run-time check, a
+//! binding cell (`NewCell`/`CellInit`/`CellGet`/`CellSet`, clj-quickjs-20),
+//! which raises the ReferenceError when used before `CellInit`.
 //!
 //! **Numbers.** `+ - * / %` and `< > <= >=` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
@@ -255,6 +257,7 @@ impl<'s> Lowerer<'s> {
             code: out.code,
             constants: out.constants,
             functions: Vec::new(),
+            captures: 0,
         };
         Executable::load_compiled(spec, Arc::from(source), locations).map_err(|e| {
             let span = Span::new(0, source.len());

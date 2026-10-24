@@ -110,6 +110,7 @@ fn invalid_bytecode_is_rejected_at_load_time() {
         code,
         constants: vec![Primitive::Null],
         functions: vec![],
+        captures: 0,
     };
     let cases = [
         (
@@ -276,6 +277,7 @@ fn constant_pool_index_limit_is_enforced() {
             .map(|i| Primitive::Number(f64::from(i)))
             .collect(),
         functions: vec![],
+        captures: 0,
     })
     .unwrap();
     let result = complete(rt.spawn(&exe, &[]).unwrap().run().unwrap());

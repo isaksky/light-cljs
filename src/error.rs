@@ -49,6 +49,16 @@ pub enum VmErrorKind {
     /// "stack overflow" (`JS_ThrowStackOverflow`); it is not catchable until
     /// exceptions exist (clj-quickjs-11).
     StackOverflow,
+    /// A binding-cell instruction (`CellInit`, `CellGet`, `CellSet`) ran in a
+    /// task other than the one that created the cell: the mutable bindings a
+    /// closure captures are task-owned (`crate::vm::function`), so a closure
+    /// over them can be called only by its own task.
+    ForeignBinding {
+        /// The task that created the cell.
+        owner: TaskId,
+        /// The task that tried to use it.
+        caller: TaskId,
+    },
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

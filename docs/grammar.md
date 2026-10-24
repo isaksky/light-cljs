@@ -223,8 +223,10 @@ Gaps specific to execution:
   JavaScript would call ToPrimitive.
 - **No functions or closures yet.** Because the subset has no closures,
   `break`, `continue` or labels, whether a binding is initialized is known
-  from source order alone; the compiler decides it statically. Closures
-  will need a run-time check.
+  from source order alone; the compiler decides it statically. Compiling
+  closures (clj-quickjs-21) will need the run-time check the VM provides for
+  captured bindings: binding cells, which raise `ReferenceError` when used
+  before initialization (clj-quickjs-20).
 
 ## Examples
 

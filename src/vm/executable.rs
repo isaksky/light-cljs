@@ -22,8 +22,10 @@
 //! `Arc`, so a function tree is loaded bottom-up, each child exactly once,
 //! and is acyclic; `Function` operands are checked against the table.
 //! Recursion therefore goes through function *values* (`CurrentFunction`, or
-//! a function passed as an argument; captured bindings are clj-quickjs-20),
-//! never through a code cycle.
+//! a function passed as an argument or captured by a closure), never through
+//! a code cycle. A child also declares how many values a closure over it
+//! captures ([`ExecutableSpec::captures`]); `Function` operands are decoded
+//! with that count and `GetCapture` operands are checked against it.
 
 use std::fmt;
 use std::sync::Arc;
@@ -52,6 +54,11 @@ pub struct ExecutableSpec {
     /// the same `Arc`s, so every function object and every task running a
     /// child runs the one loaded copy.
     pub functions: Vec<Executable>,
+    /// Number of captured values a closure over this code carries (its
+    /// lexical environment, `crate::vm::function`): the parent's `Function`
+    /// instruction pops this many, and `GetCapture` operands are checked
+    /// against it. 0 for code that captures nothing, such as a task entry.
+    pub captures: u16,
 }
 
 /// Validated code shared by every task that runs it.
@@ -63,6 +70,8 @@ pub(crate) struct Code {
     pub(crate) constants: Box<[Value]>,
     /// Child function code, shared with the [`Executable`]s it was loaded from.
     pub(crate) functions: Box<[Arc<Code>]>,
+    /// Number of captured values a closure over this code carries.
+    pub(crate) captures: u16,
     pub(crate) instrs: Box<[Instr]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
@@ -185,6 +194,11 @@ pub enum ValidationErrorKind {
     FunctionTableTooLarge {
         count: usize,
     },
+    /// A `GetCapture` operand at or past the code's declared captures.
+    CaptureOutOfRange {
+        index: u16,
+        count: u16,
+    },
     /// Compiled code whose source map does not have one location per
     /// instruction (a compiler bug; never produced by [`Executable::load`]).
     SourceMapMismatch {
@@ -245,6 +259,7 @@ impl Executable {
             code,
             constants,
             functions,
+            captures,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -296,6 +311,11 @@ impl Executable {
                 OperandKind::ThrowKind if ThrowKind::from_u16(operand as u16).is_none() => {
                     let code = operand as u16;
                     return Err(err(offset, UnknownThrowKind { code }));
+                }
+                OperandKind::Capture if operand >= u32::from(captures) => {
+                    let index = operand as u16;
+                    let count = captures;
+                    return Err(err(offset, CaptureOutOfRange { index, count }));
                 }
                 OperandKind::Local if operand >= u32::from(locals) => {
                     let index = operand as u16;
@@ -367,9 +387,18 @@ impl Executable {
                 Opcode::Le => Instr::Le,
                 Opcode::Ge => Instr::Ge,
                 Opcode::LooseEq => Instr::LooseEq,
-                Opcode::Function => Instr::Function(operand as u16),
+                // Pass 1 checked the index; the capture count comes from the child.
+                Opcode::Function => {
+                    let index = operand as u16;
+                    Instr::Function(index, functions[usize::from(index)].0.captures)
+                }
                 Opcode::Call => Instr::Call(operand as u16),
                 Opcode::CurrentFunction => Instr::CurrentFunction,
+                Opcode::GetCapture => Instr::GetCapture(operand as u16),
+                Opcode::NewCell => Instr::NewCell,
+                Opcode::CellInit => Instr::CellInit,
+                Opcode::CellGet => Instr::CellGet,
+                Opcode::CellSet => Instr::CellSet,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.
@@ -408,6 +437,7 @@ impl Executable {
             locals,
             constants: constants.into_iter().map(Value::from).collect(),
             functions: functions.into_iter().map(|f| f.0).collect(),
+            captures,
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
@@ -465,8 +495,9 @@ impl Executable {
                 | Instr::HostEffect(v)
                 | Instr::NewVector(v)
                 | Instr::NewMap(v)
-                | Instr::Function(v)
-                | Instr::Call(v) => u32::from(v),
+                | Instr::Function(v, _)
+                | Instr::Call(v)
+                | Instr::GetCapture(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t) | Instr::JumpIfFalse(t) => code.offsets[t as usize],
@@ -486,6 +517,7 @@ impl Executable {
                 .filter_map(|v| v.to_primitive())
                 .collect(),
             functions: code.functions.iter().cloned().map(Executable).collect(),
+            captures: code.captures,
         }
     }
 }
@@ -568,6 +600,7 @@ mod tests {
             code,
             constants,
             functions: Vec::new(),
+            captures: 0,
         })
     }
 
@@ -616,6 +649,7 @@ mod tests {
             code: vec![UNDEF, RET],
             constants: vec![],
             functions: vec![],
+            captures: 0,
         });
         assert_eq!(
             kind(e),
@@ -696,6 +730,7 @@ mod tests {
             code: vec![UNDEF, RET],
             constants: vec![],
             functions: vec![],
+            captures: 0,
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
@@ -745,6 +780,7 @@ mod tests {
             code,
             constants: vec![],
             functions,
+            captures: 0,
         }
     }
 

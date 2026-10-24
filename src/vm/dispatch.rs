@@ -36,10 +36,11 @@ use crate::collections::{BuilderError, CollectionError, object_name};
 use crate::error::{VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
+use crate::ids::TaskId;
 use crate::value::Value;
 use crate::vm::executable::Code;
 use crate::vm::frames::VmState;
-use crate::vm::function::FunctionObject;
+use crate::vm::function::{BindingCell, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
 
@@ -70,6 +71,11 @@ pub(crate) enum Fault {
     NotCallable(&'static str),
     /// A `Call` would exceed the task's `VmLimits`.
     StackOverflow(String),
+    /// A binding-cell instruction on another task's cell.
+    ForeignBinding {
+        owner: TaskId,
+        caller: TaskId,
+    },
 }
 
 /// What the loop does after an instruction.
@@ -81,10 +87,12 @@ enum Flow {
     Complete(Value),
 }
 
-/// Allocate a function object for `code`. Known shareable when its code
-/// constants are (always, in this slice): see `crate::vm::function`.
-fn new_function(heap: &Heap, code: Arc<Code>) -> Result<Value, Fault> {
-    heap.alloc_persistent(HeapObject::Function(FunctionObject { code }), None)
+/// Allocate a function object for `code` with its captured values. Known
+/// shareable at allocation when every captured value is (its code constants
+/// are primitives): see `crate::vm::function`.
+fn new_function(heap: &Heap, code: Arc<Code>, captures: Box<[Value]>) -> Result<Value, Fault> {
+    let object = HeapObject::Function(FunctionObject { code, captures });
+    heap.alloc_persistent(object, None)
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
@@ -165,6 +173,41 @@ fn callee_code(heap: &Heap, callee: Value) -> Result<Arc<Code>, Fault> {
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
     .unwrap_or(Err(Fault::Internal("callee was reclaimed")))
+}
+
+/// The top `n` operands of the running frame, oldest first.
+fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
+    let operands = state.operands();
+    operands
+        .len()
+        .checked_sub(n)
+        .map(|at| &operands[at..])
+        .ok_or(Fault::Internal("operand stack underflow"))
+}
+
+/// Run `f` on the binding of `cell` for the running task: fails if `cell` is
+/// not a binding cell, or belongs to another task.
+fn with_cell<R>(
+    heap: &Heap,
+    cell: Value,
+    task: TaskId,
+    f: impl FnOnce(&mut Option<Value>) -> Result<R, Fault>,
+) -> Result<R, Fault> {
+    let not_cell =
+        |found: &str| Fault::Unsupported(format!("expected a binding cell, got {found}"));
+    let Value::Object(id) = cell else {
+        return Err(not_cell(cell.type_name()));
+    };
+    heap.with_object_mut(id, |object| match object {
+        HeapObject::Cell(c) if c.owner == task => f(&mut c.value),
+        HeapObject::Cell(c) => Err(Fault::ForeignBinding {
+            owner: c.owner,
+            caller: task,
+        }),
+        other => Err(not_cell(object_name(other))),
+    })
+    // A frame keeps its operands alive; a stale id is reported, not trusted.
+    .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
 }
 
 /// Execute one instruction of `code`, the running frame's code.
@@ -319,15 +362,72 @@ fn step(
         | Instr::BuilderConj
         | Instr::BuilderAssoc
         | Instr::Freeze => intrinsics::step(state, heap, instr)?,
-        Instr::Function(i) => {
+        Instr::Function(i, n) => {
             let child = code
                 .functions
                 .get(usize::from(i))
                 .cloned()
                 .ok_or(Fault::Internal("function index out of range"))?;
+            if child.captures != n {
+                return Err(Fault::Internal("capture count differs from the child code"));
+            }
+            // The captured values stay on the operand stack (rooted) until
+            // the closure holding them replaces them, in the same instruction
+            // and under this run's mutator guard.
+            let n = usize::from(n);
+            let captures: Box<[Value]> = top_operands(state, n)?.into();
+            let f = new_function(heap, child, captures)?;
+            state.replace(n, f)?;
+        }
+        Instr::GetCapture(i) => {
+            let captured = state.top().callee.and_then(|id| {
+                heap.read(id, |object| match object {
+                    HeapObject::Function(f) => f.captures.get(usize::from(i)).copied(),
+                    _ => None,
+                })
+                .flatten()
+            });
+            // Validation bounds `i` by the code's declared captures, which
+            // every closure over the code carries; only code with captures
+            // run directly as a task entry (no closure) gets here.
+            let v = captured.ok_or(Fault::Internal(
+                "captured value read in a frame that is not a closure over this code",
+            ))?;
+            state.push(v);
+        }
+        Instr::NewCell => {
+            let cell = BindingCell {
+                owner: state.diag.task,
+                value: None,
+            };
             // Pushed in the same instruction, under this run's mutator guard.
-            let f = new_function(heap, child)?;
-            state.push(f);
+            let id = heap
+                .alloc(HeapObject::Cell(cell))
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            state.push(Value::Object(id));
+        }
+        Instr::CellInit | Instr::CellSet => {
+            let &[cell, v] = top_operands(state, 2)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            with_cell(heap, cell, state.diag.task, |binding| {
+                if instr == Instr::CellSet && binding.is_none() {
+                    return Err(Fault::Throw(ThrowKind::Uninitialized));
+                }
+                *binding = Some(v);
+                Ok(())
+            })?;
+            state.pop()?;
+            state.pop()?;
+        }
+        Instr::CellGet => {
+            let &[cell] = top_operands(state, 1)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            let v = with_cell(heap, cell, state.diag.task, |binding| {
+                binding.ok_or(Fault::Throw(ThrowKind::Uninitialized))
+            })?;
+            state.replace(1, v)?;
         }
         Instr::CurrentFunction => {
             let f = match state.top().callee {
@@ -335,7 +435,7 @@ fn step(
                 None => {
                     // The entry frame has no function object until asked for
                     // one; it is kept in the frame (a root) from now on.
-                    let f = new_function(heap, Arc::clone(&state.top().code))?;
+                    let f = new_function(heap, Arc::clone(&state.top().code), Box::new([]))?;
                     if let Value::Object(id) = f {
                         state.top_mut().callee = Some(id);
                     }
@@ -405,6 +505,12 @@ pub(crate) fn execute(
                 (VmErrorKind::TypeError, format!("{what} is not a function"))
             }
             Err(Fault::StackOverflow(m)) => (VmErrorKind::StackOverflow, m),
+            Err(Fault::ForeignBinding { owner, caller }) => (
+                VmErrorKind::ForeignBinding { owner, caller },
+                format!(
+                    "binding is owned by {owner}, not {caller}: a closure over mutable bindings is task-owned"
+                ),
+            ),
             Err(Fault::Throw(kind)) => {
                 let error_kind = match kind {
                     ThrowKind::Unresolvable | ThrowKind::Uninitialized => {
@@ -487,9 +593,9 @@ mod tests {
         // index past the table, and a call with fewer operands than its count.
         let programs: [(Vec<Instr>, Vec<Arc<Code>>); 3] = [
             (vec![Instr::Call(0)], vec![]),
-            (vec![Instr::Function(0)], vec![]),
+            (vec![Instr::Function(0, 0)], vec![]),
             (
-                vec![Instr::Function(0), Instr::Call(2)],
+                vec![Instr::Function(0, 0), Instr::Call(2)],
                 vec![Arc::clone(&child.0)],
             ),
         ];
@@ -501,6 +607,7 @@ mod tests {
                 locals: 0,
                 constants: Box::new([]),
                 functions: functions.into(),
+                captures: 0,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

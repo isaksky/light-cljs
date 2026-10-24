@@ -6,7 +6,7 @@
 //! clj-quickjs-21). The JavaScript in each doc comment is what the bytecode
 //! does; functions without closures reach themselves through
 //! `CurrentFunction` (a named function expression's self-binding) and reach
-//! each other through arguments, since captured bindings are clj-quickjs-20.
+//! each other through arguments (captured bindings: `tests/closures.rs`).
 //!
 //! `fib` and `myfunc1`/`myfunc2` adapt `test_closure3` and `test_closure2`
 //! from `research/quickjs/tests/test_closure.js` (QuickJS, revision

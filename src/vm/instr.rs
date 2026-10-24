@@ -47,9 +47,14 @@
 //! | `Ge`            | 0x28 | –                  | a b → a>=b             | number greater-than-or-equal |
 //! | `LooseEq`       | 0x29 | –                  | a b → a==b             | JavaScript `==` |
 //! | `ThrowError`    | 0x2A | u16 [`ThrowKind`]  | → (never returns)      | fail with a static JavaScript error |
-//! | `Function`      | 0x2B | u16 function index | → f                    | new function object for child code `i` |
+//! | `Function`      | 0x2B | u16 function index | c1 … cn → f            | new function object (closure) for child code `i` |
 //! | `Call`          | 0x2C | u16 argument count n | f a1 … an → r        | call `f` in a new task-owned frame |
 //! | `CurrentFunction` | 0x2D | –                | → f                    | the function object of the running frame |
+//! | `GetCapture`    | 0x2E | u16 capture index  | → v                    | captured value `i` of the running closure |
+//! | `NewCell`       | 0x2F | –                  | → cell                 | new uninitialized binding cell |
+//! | `CellInit`      | 0x30 | –                  | cell v →               | initialize (or re-initialize) a cell |
+//! | `CellGet`       | 0x31 | –                  | cell → v               | read a cell; ReferenceError if uninitialized |
+//! | `CellSet`       | 0x32 | –                  | cell v →               | assign a cell; ReferenceError if uninitialized |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -89,6 +94,24 @@
 //! self-reference of a named function expression, like QuickJS's
 //! `special_object` with `OP_SPECIAL_OBJECT_THIS_FUNC`. Frames are described in
 //! `crate::vm::frames`.
+//!
+//! Opcodes `0x2E`–`0x32` are lexical closures (clj-quickjs-20); their contract
+//! is in `crate::vm::function`. A child function declares how many captured
+//! values a closure over it carries
+//! ([`ExecutableSpec::captures`](crate::ExecutableSpec::captures), `n`
+//! above); `Function i` pops exactly that many (pushed first capture first)
+//! and stores them, in order, in the new function object, which is the
+//! closure's environment. `GetCapture i` pushes captured value `i` of the
+//! running frame's function object; operands are checked against the
+//! declaration at load time. A captured value is either an immutable value
+//! (captured by value) or a *binding cell*, the shared, task-owned storage of
+//! a mutable binding: `NewCell` creates one uninitialized, `CellInit` stores
+//! its initial value, `CellGet` and `CellSet` read and assign it and fail
+//! with `ReferenceError` (as `ThrowError Uninitialized` does) while it is
+//! uninitialized, which is the run-time temporal-dead-zone check of a
+//! captured `let`/`const`. Cell operations on another task's cell fail with
+//! [`VmErrorKind::ForeignBinding`](crate::VmErrorKind::ForeignBinding); on a
+//! value that is not a cell, with `UnsupportedOperand`.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -160,6 +183,11 @@ pub enum Opcode {
     Function = 0x2B,
     Call = 0x2C,
     CurrentFunction = 0x2D,
+    GetCapture = 0x2E,
+    NewCell = 0x2F,
+    CellInit = 0x30,
+    CellGet = 0x31,
+    CellSet = 0x32,
 }
 
 /// Operand encoding of an opcode.
@@ -182,6 +210,8 @@ pub(crate) enum OperandKind {
     Function,
     /// u16 number of call arguments.
     ArgCount,
+    /// u16 index into the running closure's captured values.
+    Capture,
 }
 
 impl OperandKind {
@@ -194,7 +224,8 @@ impl OperandKind {
             | OperandKind::Count
             | OperandKind::ThrowKind
             | OperandKind::Function
-            | OperandKind::ArgCount => 2,
+            | OperandKind::ArgCount
+            | OperandKind::Capture => 2,
             OperandKind::Target => 4,
         }
     }
@@ -250,6 +281,11 @@ impl Opcode {
             0x2B => Function,
             0x2C => Call,
             0x2D => CurrentFunction,
+            0x2E => GetCapture,
+            0x2F => NewCell,
+            0x30 => CellInit,
+            0x31 => CellGet,
+            0x32 => CellSet,
             _ => return None,
         })
     }
@@ -303,6 +339,11 @@ impl Opcode {
             Function => "function",
             Call => "call",
             CurrentFunction => "current_function",
+            GetCapture => "get_capture",
+            NewCell => "new_cell",
+            CellInit => "cell_init",
+            CellGet => "cell_get",
+            CellSet => "cell_set",
         }
     }
 
@@ -317,10 +358,12 @@ impl Opcode {
             ThrowError => OperandKind::ThrowKind,
             Function => OperandKind::Function,
             Call => OperandKind::ArgCount,
+            GetCapture => OperandKind::Capture,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
-            | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction => OperandKind::None,
+            | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
+            | CellGet | CellSet => OperandKind::None,
         }
     }
 }
@@ -400,11 +443,19 @@ pub(crate) enum Instr {
     Ge,
     LooseEq,
     ThrowError(ThrowKind),
-    /// Index into the child function table.
-    Function(u16),
+    /// Index into the child function table, and the number of captured
+    /// values the child declares (copied from it at load time, so the stack
+    /// effect is known without the table).
+    Function(u16, u16),
     /// Argument count.
     Call(u16),
     CurrentFunction,
+    /// Index into the running closure's captured values.
+    GetCapture(u16),
+    NewCell,
+    CellInit,
+    CellGet,
+    CellSet,
 }
 
 impl Instr {
@@ -452,9 +503,14 @@ impl Instr {
             Instr::Ge => Opcode::Ge,
             Instr::LooseEq => Opcode::LooseEq,
             Instr::ThrowError(_) => Opcode::ThrowError,
-            Instr::Function(_) => Opcode::Function,
+            Instr::Function(..) => Opcode::Function,
             Instr::Call(_) => Opcode::Call,
             Instr::CurrentFunction => Opcode::CurrentFunction,
+            Instr::GetCapture(_) => Opcode::GetCapture,
+            Instr::NewCell => Opcode::NewCell,
+            Instr::CellInit => Opcode::CellInit,
+            Instr::CellGet => Opcode::CellGet,
+            Instr::CellSet => Opcode::CellSet,
         }
     }
 
@@ -464,18 +520,20 @@ impl Instr {
         use Instr::*;
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
-            | ThrowError(_) | Function(_) | CurrentFunction => (0, 1),
+            | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return => (1, 0),
+            CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq => (2, 1),
             ToNumberPair => (2, 2),
             GetOr | Assoc | BuilderAssoc => (3, 1),
-            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber => (1, 1),
+            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet => (1, 1),
             Jump(_) => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
+            Function(_, captures) => (usize::from(captures), 1),
         }
     }
 }
@@ -494,6 +552,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 45);
+        assert_eq!(assigned, 50);
     }
 }

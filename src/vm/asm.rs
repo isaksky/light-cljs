@@ -41,6 +41,8 @@ pub struct Assembler {
     code: Vec<u8>,
     constants: Vec<Primitive>,
     functions: Vec<Executable>,
+    /// Declared captured values ([`ExecutableSpec::captures`]).
+    captures: u16,
     labels: Vec<Option<u32>>,
     /// (byte position of a u32 target operand, label)
     fixups: Vec<(usize, Label)>,
@@ -54,6 +56,7 @@ impl Default for Assembler {
             code: Vec::new(),
             constants: Vec::new(),
             functions: Vec::new(),
+            captures: 0,
             labels: Vec::new(),
             fixups: Vec::new(),
         }
@@ -116,13 +119,26 @@ impl Assembler {
     }
 
     /// Add `code` to the child function table (sharing it, not copying it)
-    /// and emit `Function` for it: at run time this pushes a new function
-    /// object for `code`. Tables larger than the u16 index range are rejected
+    /// and emit `Function` for it: at run time this pops the captured values
+    /// `code` declares and pushes a new function object (closure) for `code`. Tables larger than the u16 index range are rejected
     /// by validation.
     pub fn function(&mut self, code: &Executable) -> &mut Self {
         let index = u16::try_from(self.functions.len()).unwrap_or(u16::MAX);
         self.functions.push(code.clone());
         self.op(Opcode::Function).u16(index)
+    }
+
+    /// Declare that this code is a closure body carrying `count` captured
+    /// values ([`ExecutableSpec::captures`]); a parent's `Function` for it
+    /// pops that many. Reset, like everything else, by [`Assembler::finish`].
+    pub fn captures(&mut self, count: u16) -> &mut Self {
+        self.captures = count;
+        self
+    }
+
+    /// Emit `GetCapture`: push captured value `index` of the running closure.
+    pub fn get_capture(&mut self, index: u16) -> &mut Self {
+        self.op(Opcode::GetCapture).u16(index)
     }
 
     /// Emit `Call` with `argc` arguments: pops the callee and the arguments
@@ -187,6 +203,7 @@ impl Assembler {
             code: self.code,
             constants: self.constants,
             functions: self.functions,
+            captures: self.captures,
         }
     }
 
