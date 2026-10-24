@@ -11152,11 +11152,16 @@ fn global_object_descriptors() {
         "isFinite",
         "parseInt",
         "parseFloat",
+        "Math",
     ] {
-        let value_check = if name == "Reflect" {
-            "typeof d.value === 'object' && typeof d.value.apply === 'function'".to_string()
-        } else {
-            format!("typeof d.value === 'function' && d.value.name === '{name}'")
+        let value_check = match name {
+            "Reflect" => {
+                "typeof d.value === 'object' && typeof d.value.apply === 'function'".to_string()
+            }
+            "Math" => {
+                "typeof d.value === 'object' && typeof d.value.floor === 'function'".to_string()
+            }
+            _ => format!("typeof d.value === 'function' && d.value.name === '{name}'"),
         };
         truth(&format!(
             "let d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
