@@ -1711,7 +1711,7 @@ Deferred:
 
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
   Getters/setters, methods, computed keys in literals (clj-quickjs-233;
-  `o[k]` is clj-quickjs-115, below), `delete`,
+  `o[k]` is clj-quickjs-115, below; `delete` is clj-quickjs-124, below),
   `__proto__` (property `++`/`--` and compound assignment: clj-quickjs-76,
   -260, above); properties of error objects and
   primitives fail with `UnsupportedOperand` (function properties:
@@ -2074,7 +2074,7 @@ Deferred:
 
 - Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
   and freezing a function makes it unpublishable (it gets a property record).
-- `delete` on a non-extensible object (clj-quickjs-124) is not yet available; `Object.seal`,
+- `Object.seal`,
   `Object.isSealed` and `Reflect` are not provided; error objects fail with `UnsupportedOperand`
   (clj-quickjs-230); accessor properties are clj-quickjs-120.
 
@@ -2098,7 +2098,7 @@ Deferred:
   `getOwnPropertyNames` of a function (own `length`/`name`, clj-quickjs-101) or of
   `Object.prototype` (unstored `__proto__`, clj-quickjs-261) fail with `UnsupportedOperand`.
   Symbol keys (clj-quickjs-127), `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
-  `Object.entries`/`values`. Deleting and re-adding a key needs `delete` (clj-quickjs-124).
+  `Object.entries`/`values`.
 
 ### `instanceof` (clj-quickjs-75)
 
@@ -2118,3 +2118,27 @@ Deferred:
   (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet
   (clj-quickjs-72, the upstream corpus pellets). `Symbol.hasInstance` (symbols) and bound
   functions (clj-quickjs-103) are not consulted.
+
+### The `delete` operator (clj-quickjs-124)
+
+Supported (`cargo test --test js_source delete_property_references`,
+`cargo test --lib frontend::tests::delete_of_identifiers_is_rejected`; decision record in
+`docs/architecture.md`, "The `delete` operator"):
+
+- `delete o.p` and `delete o[k]`, lowered to the appended `delete` opcode (`0x61`): an
+  `undefined`/`null` base is a catchable `TypeError`; an own configurable property is removed
+  (the rest keep their creation order; an array element becomes a hole and `length` stays) and
+  the result is `true`, as for an absent property; a non-configurable one (frozen objects, an
+  array's `length`, a constructor's `prototype`, `defineProperty` without `configurable`) stays
+  and is a `TypeError` in strict code, `false` in sloppy code. String bases act as their wrapper
+  (`delete "abc"[0]` is a `TypeError`, `delete "abc"[100]` is `true`). `delete` of any other
+  non-reference expression evaluates it and gives `true`.
+- `delete x` of an identifier is an early `SyntaxError` (`Invalid`) in strict code.
+
+Deferred:
+
+- `delete x` in sloppy code (implicit globals, clj-quickjs-105) is `Unsupported`;
+  `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
+  `delete f.length`/`f.name` of a function (clj-quickjs-101) and properties of error objects
+  (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
+  property they have is a `TypeError` in both modes.

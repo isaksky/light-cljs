@@ -978,6 +978,12 @@ fn step(
             let result = prototype::instance_of(heap, state.diag.task, v, f)?;
             state.replace(2, Value::Bool(result))?;
         }
+        Instr::Delete => {
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let deleted = property::delete(heap, state.diag.task, &base, &key, code.strict)?;
+            state.push(Value::Bool(deleted));
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1308,6 +1314,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Dup2
         | Instr::ToPropertyKey
         | Instr::SetProto
+        // Removes a property: allocates nothing (clj-quickjs-124).
+        | Instr::Delete
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

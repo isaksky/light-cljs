@@ -301,6 +301,16 @@
 //! functions do not exist yet. Reading `f.prototype` may create a
 //! function's lazy prototype object and build the realm, so it is a poll
 //! point; it runs no JavaScript.
+//! Opcode `0x61`, `Delete` (clj-quickjs-124; QuickJS `OP_delete`):
+//! `o k → b`, the `delete o[k]` / `delete o.k` operator. An `undefined` or
+//! `null` o is a TypeError; then ToPropertyKey(k) and `[[Delete]]` of the
+//! own property (`crate::vm::property::delete`): b is true when o has no
+//! own property k afterwards (an array element becomes a hole), and a
+//! non-configurable own property stays and is a TypeError in strict code,
+//! false in sloppy code (the running code's `Code::strict`). A primitive o
+//! is treated as its wrapper object (a string's indices below its length
+//! and its `length` are non-configurable). It allocates nothing and runs
+//! no JavaScript, so it is not a poll point.
 //!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
@@ -480,6 +490,7 @@ pub enum Opcode {
     Construct = 0x5E,
     SetProto = 0x5F,
     Instanceof = 0x60,
+    Delete = 0x61,
 }
 
 /// Operand encoding of an opcode.
@@ -631,6 +642,7 @@ impl Opcode {
             0x5E => Construct,
             0x5F => SetProto,
             0x60 => Instanceof,
+            0x61 => Delete,
             _ => return None,
         })
     }
@@ -735,6 +747,7 @@ impl Opcode {
             Construct => "construct",
             SetProto => "set_proto",
             Instanceof => "instanceof",
+            Delete => "delete",
         }
     }
 
@@ -761,7 +774,7 @@ impl Opcode {
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
-            | Instanceof => OperandKind::None,
+            | Instanceof | Delete => OperandKind::None,
         }
     }
 }
@@ -908,6 +921,7 @@ pub(crate) enum Instr {
     Construct(u16),
     SetProto,
     Instanceof,
+    Delete,
 }
 
 impl Instr {
@@ -1009,6 +1023,7 @@ impl Instr {
             Instr::Construct(_) => Opcode::Construct,
             Instr::SetProto => Opcode::SetProto,
             Instr::Instanceof => Opcode::Instanceof,
+            Instr::Delete => Opcode::Delete,
         }
     }
 
@@ -1033,7 +1048,7 @@ impl Instr {
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
             | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
-            PutField(_) | DefineField(_) | AppendElement | GetElem | SetProto => (2, 1),
+            PutField(_) | DefineField(_) | AppendElement | GetElem | SetProto | Delete => (2, 1),
             PutElem => (3, 1),
             Dup2 => (2, 4),
             ToPropertyKey => (2, 2),
@@ -1063,6 +1078,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 96);
+        assert_eq!(assigned, 97);
     }
 }

@@ -47,7 +47,9 @@ parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
 (clj-quickjs-69) parses and executes, including on a name with no binding.
 The `void` operator (clj-quickjs-133) parses and executes. The `instanceof`
-operator (clj-quickjs-75) parses and executes.
+operator (clj-quickjs-75) parses and executes. The `delete` operator on
+property references `o.p` and `o[k]` (clj-quickjs-124) parses and executes;
+`delete` of an identifier is an early error in strict code.
 `var` statements (clj-quickjs-94) parse and execute, with function-level
 hoisting; top-level function declarations of a script or function body
 are var-scoped. `"use strict"` directive prologues are interpreted and
@@ -153,7 +155,7 @@ Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
 Exponentiation        = Unary | Update "**" Exponentiation
-Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" ) Unary | Update
+Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" | "delete" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
 Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" }
@@ -357,14 +359,16 @@ Every form below is rejected where it starts. Error kinds:
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233), methods `{m() {}}`, getters and setters, `async` and generator methods | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
-| `delete`, `??`, `in`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
+| `??`, `in`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
+| `delete` of an identifier reference, possibly parenthesized, including `undefined`/`NaN`/`Infinity` (`delete x`, `delete (x)`), in sloppy code (clj-quickjs-105); `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
+| `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
 | a second `__proto__: v` (or `"__proto__": v`) in one object literal (clj-quickjs-121; a shorthand `{__proto__}` does not count) | Invalid |
 | references to `eval` or `arguments` in strict code (in sloppy code they parse, and the compiler rejects those that do not denote a binding the program declares) | Unsupported |
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
-| computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
+| computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
 | `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
@@ -414,10 +418,10 @@ checks left to later stages:
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
   passes can rely on that bound.
 - **Objects have only data properties** (clj-quickjs-114). Getters,
-  setters, methods and computed keys in literals,
-  and `delete` are rejected explicitly (their pellets: -233, -120,
-  -124, -126); `++`/`--` (clj-quickjs-76) and compound
-  assignment (clj-quickjs-260) on properties execute.
+  setters, methods and computed keys in literals are rejected explicitly
+  (their pellets: -233, -120, -126); `++`/`--` (clj-quickjs-76), compound
+  assignment (clj-quickjs-260) and `delete` (clj-quickjs-124) on
+  properties execute.
   An object literal inherits from `Object.prototype` (clj-quickjs-117)
   unless it has a `__proto__: v` (clj-quickjs-121);
   an embedder-made object (`Scope::new_object`) has a null prototype.
@@ -760,6 +764,7 @@ Executed, with JavaScript semantics:
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
 | `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
+| `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey: an object key is `UnsupportedOperand`, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (`length`/`name` are `UnsupportedOperand` until clj-quickjs-101); an error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
 | `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, whose own properties are read since neither `Function.prototype` nor `Object.prototype` has a `prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function or error object on the left (`F instanceof Object`, a caught error) fails with `UnsupportedOperand` until `Function.prototype` (clj-quickjs-102) and `Error.prototype` (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) and bound functions (clj-quickjs-103) are not consulted. Runs no JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
@@ -850,6 +855,27 @@ line below evaluates to `true`:
 
 ```js accept
 void 0 === undefined && void void 1 === undefined && typeof void 0 === "undefined";
+```
+
+`delete` removes own configurable properties (clj-quickjs-124); each line
+below evaluates to `true`:
+
+```js accept
+let a = {x: 1, y: 1}; delete a.x && a.x === undefined && delete a.missing && delete a["y"];
+let arr = [1, 2]; delete arr[0] && arr.length === 2 && arr[0] === undefined;
+let r = false; try { delete null.a; } catch (e) { r = true; } r;
+let o = {}; Object.defineProperty(o, "k", {value: 1}); let r = false; try { delete o.k; } catch (e) { r = o.k === 1; } r;
+```
+
+`delete` of an identifier is an early error in strict code, and waits for
+clj-quickjs-105 in sloppy code:
+
+```js reject Invalid 1:16
+function f() { delete x; }
+```
+
+```js sloppy-reject Unsupported 1:1
+delete x;
 ```
 
 Default parameter values run only for `undefined` arguments, left to
@@ -1783,6 +1809,14 @@ object") and `OP_instanceof`; the `a instanceof Object` case of `test_op2`
 in `test_language.js` is adapted in `tests/js_source.rs`
 `instanceof_operator` (notice on
 `loose_equality_with_a_boolean_left_operand`).
+For `delete` (clj-quickjs-124): `js_parse_delete` (an identifier operand is
+"cannot delete a direct reference in strict mode"; any other non-reference
+operand is dropped and gives `true`), `CASE(OP_delete)`,
+`JS_DeleteProperty` and `delete_property`; the `a = {x: 1, y: 1}`,
+`"abc"[100]` and `null.a` rows of `test_delete` (line 222) in
+`test_language.js` are adapted in `tests/js_source.rs`
+`delete_property_references` (notice on
+`object_literals_and_named_properties`).
 For `var` (clj-quickjs-94): `js_parse_var` (declarators; an initializer
 lowered as an assignment to the resolved name), `define_var` (a `var`
 reuses the function's one variable of that name and is an error inside a

@@ -106,6 +106,11 @@ pub(super) struct Parser<'a> {
     /// statement may turn out to be the directive, which makes the token
     /// after it strict code (see [`Self::directive_lex_error`]).
     use_strict_candidate: Option<Span>,
+    /// The token of the last reserved constant (`undefined`, `NaN`,
+    /// `Infinity`) parsed as an identifier reference: these parse as
+    /// literals, and `delete` must still tell them from a literal
+    /// (clj-quickjs-124, [`Self::check_delete_operand`]).
+    reserved_constant: Option<Span>,
 }
 
 /// A label of an enclosing labelled statement (clj-quickjs-82).
@@ -138,6 +143,7 @@ impl<'a> Parser<'a> {
             in_switch: false,
             labels: Vec::new(),
             use_strict_candidate: None,
+            reserved_constant: None,
         }
     }
 
@@ -1898,7 +1904,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// UnaryExpression: (`!` | `-` | `+` | `~` | `typeof` | `void`) UnaryExpression
+    /// UnaryExpression: (`!` | `-` | `+` | `~` | `typeof` | `void` | `delete`) UnaryExpression
     ///   | (`++` | `--`) UnaryExpression | PostfixExpression
     ///
     /// A prefix-operator expression followed by `**` is rejected here, at
@@ -1915,6 +1921,7 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Tilde) => Prefix::Unary(UnaryOp::BitNot),
             TokenKind::Keyword(Keyword::Typeof) => Prefix::Unary(UnaryOp::Typeof),
             TokenKind::Keyword(Keyword::Void) => Prefix::Unary(UnaryOp::Void),
+            TokenKind::Keyword(Keyword::Delete) => Prefix::Delete,
             TokenKind::Punct(Punct::PlusPlus) => Prefix::Update(UpdateOp::Inc),
             TokenKind::Punct(Punct::MinusMinus) => Prefix::Update(UpdateOp::Dec),
             _ => {
@@ -1928,9 +1935,13 @@ impl<'a> Parser<'a> {
         let operand = self.parse_unary()?;
         self.depth = saved;
         let op = match op {
-            Prefix::Unary(op) => op,
+            Prefix::Unary(op) => Some(op),
+            Prefix::Delete => None,
             Prefix::Update(op) => return self.update(op, true, operand, op_span),
         };
+        if op.is_none() {
+            self.check_delete_operand(&operand, op_span)?;
+        }
         if self.is_punct(Punct::StarStar) {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
@@ -1939,22 +1950,61 @@ impl<'a> Parser<'a> {
             ));
         }
         let span = op_span.to(operand.span);
-        self.expr(
-            ExprKind::Unary {
-                op,
-                operand: Box::new(operand),
-            },
-            span,
-        )
+        let operand = Box::new(operand);
+        let kind = match op {
+            Some(op) => ExprKind::Unary { op, operand },
+            None => ExprKind::Delete { operand, op_span },
+        };
+        self.expr(kind, span)
+    }
+
+    /// The early errors of `delete operand` (clj-quickjs-124), reported at
+    /// the `delete` token: an identifier reference (possibly parenthesized,
+    /// including the reserved constants `undefined`, `NaN` and `Infinity`)
+    /// is an early `Invalid` SyntaxError in strict code (ECMAScript 13.5.1.1)
+    /// and, in sloppy code, `Unsupported` until clj-quickjs-105 deletes
+    /// global bindings; a property of the reserved intrinsic binding cannot
+    /// be deleted.
+    #[inline(never)]
+    fn check_delete_operand(&self, operand: &Expr, op_span: Span) -> PResult<()> {
+        let identifier = match &operand.kind {
+            ExprKind::Identifier(_) => true,
+            // A literal operand spans one primary token (inside any
+            // parentheses), so it is a reserved constant exactly when the
+            // last one parsed lies inside it: a comment or an escaped
+            // spelling does not matter.
+            ExprKind::Undefined | ExprKind::Number(_) => self
+                .reserved_constant
+                .is_some_and(|c| operand.span.start <= c.start && c.end <= operand.span.end),
+            ExprKind::Member { object, .. } if is_reserved_binding(object) => {
+                return Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    operand.span,
+                    format!(
+                        "intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be deleted"
+                    ),
+                ));
+            }
+            _ => false,
+        };
+        match (identifier, self.strict) {
+            (false, _) => Ok(()),
+            (true, true) => Err(self.error(
+                SyntaxErrorKind::Invalid,
+                op_span,
+                "`delete` of an identifier is not allowed in strict mode code",
+            )),
+            (true, false) => Err(self.unsupported(
+                op_span,
+                "`delete` of an identifier in sloppy code (clj-quickjs-105) is",
+            )),
+        }
     }
 
     #[inline(never)]
     fn reject_unsupported_prefix(&self) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
-            TokenKind::Keyword(k @ Keyword::Delete) => {
-                Err(self.unsupported(span, &format!("the `{}` operator is", k.as_str())))
-            }
             TokenKind::Keyword(Keyword::Await) => {
                 Err(self.unsupported(span, "`await` (async functions) is"))
             }
@@ -2216,6 +2266,9 @@ impl<'a> Parser<'a> {
         let TokenKind::Identifier(name) = &self.tok.kind else {
             return Err(self.unexpected("an identifier"));
         };
+        if RESERVED_CONSTANTS.contains(&name.as_str()) {
+            self.reserved_constant = Some(span);
+        }
         let kind = match name.as_str() {
             "undefined" => ExprKind::Undefined,
             "NaN" => ExprKind::Number(f64::NAN),
@@ -2338,6 +2391,8 @@ fn is_async_call(e: &Expr) -> bool {
 enum Prefix {
     Unary(UnaryOp),
     Update(UpdateOp),
+    /// `delete` (clj-quickjs-124), whose node keeps its token.
+    Delete,
 }
 
 /// What an identifier target is used for (it selects the diagnostics).

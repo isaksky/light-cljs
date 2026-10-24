@@ -6882,14 +6882,16 @@ fn object_extensibility() {
         &format!("{prevented} a.__proto__ = {{}};"),
         "not extensible",
     );
-    // `delete a.x` waits for the delete operator (clj-quickjs-124): it is
-    // rejected explicitly at compile time.
-    let e = compile_script(
-        "test",
-        "let a = {x: 1}; Object.preventExtensions(a); delete a.x;",
-    )
-    .unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+    // A non-extensible object still loses configurable properties
+    // (clj-quickjs-124), and cannot get them back.
+    truth(&format!(
+        "{prevented} delete a.x && a.x === undefined \
+         && Object.getOwnPropertyDescriptor(a, 'x') === undefined"
+    ));
+    type_error(
+        &format!("{prevented} delete a.x; a.x = 1;"),
+        "not extensible",
+    );
 
     // Primitives: not extensible, frozen, returned unchanged.
     truth(
@@ -7285,20 +7287,339 @@ fn own_property_key_order() {
         "error object",
     );
 
-    // Deleting and re-adding a key moves it to the end once `delete`
-    // executes (clj-quickjs-124); until then the program is rejected.
-    let e = compile_script(
-        "t",
-        "let o = {a: 1, b: 2}; delete o.a; o.a = 3; Object.keys(o);",
-    )
-    .unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+    // Deleting and re-adding a key moves it to the end (clj-quickjs-124).
+    assert_eq!(
+        listed(
+            "let o = {a: 1, b: 2}; delete o.a; o.a = 3;",
+            "Object.keys(o)"
+        ),
+        "2:b,a,"
+    );
 
     // The `docs/grammar.md` example lines, each true.
     for src in [
         "let k = Object.keys({b: 1, a: 2, 1: 3, 0: 4}); k.length === 4 && k[0] === \"0\" && k[1] === \"1\" && k[2] === \"b\" && k[3] === \"a\";",
         "let o = {a: 1}; Object.defineProperty(o, \"h\", {value: 2}); Object.keys(o).length === 1 && Object.getOwnPropertyNames(o)[1] === \"h\";",
         "let n = Object.getOwnPropertyNames([ , 1]); n.length === 2 && n[0] === \"1\" && n[1] === \"length\";",
+    ] {
+        truth(src);
+    }
+}
+
+/// `delete base()[key()]` whose key callback waits on a pending cell
+/// (clj-quickjs-124): the evaluated base stays on the task's operand stack
+/// across the wait and a collection, each callback runs once, in order,
+/// and the delete runs after resumption, removing only that property.
+#[test]
+fn delete_property_reference_resumes_after_need() {
+    let rt = Runtime::new();
+    let script = exe("let log = ''; let o = {a: 1, b: 2}; \
+         let base = function () { log = log + 'b'; return o; }; \
+         let key = function () { log = log + 'k'; return __rt.need(5, 3) === 7 ? 'a' : 'b'; }; \
+         let r = delete base()[key()]; \
+         log + ':' + r + ':' + Object.keys(o).length + ':' + o.a + ':' + o.b");
+    let task = rt.spawn(&script, &[]).unwrap();
+    let key = DependencyKey::new(rt.world(), DependencyId::new(5), ResultKind::new(3));
+    match task.run().unwrap() {
+        RunOutcome::Waiting(k) => assert_eq!(k, key),
+        other => panic!("expected Waiting, got {other:?}"),
+    }
+    let request = task.take_producer_requests().pop().unwrap();
+    rt.collect().unwrap();
+    let value = rt.root(Primitive::Number(7.0));
+    let wakeups = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&value))
+        .unwrap();
+    let mut runnable = wakeups.into_runnable();
+    assert_eq!(runnable.len(), 1);
+    match runnable.pop().unwrap().run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(
+            v.string().map(|s| s.to_string()).as_deref(),
+            Some("bk:true:1:undefined:2")
+        ),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+}
+
+/// The `delete` operator on property references (clj-quickjs-124;
+/// `src/vm/property.rs` `delete`). The `a = {x: 1, y: 1}`, `"abc"[100]` and
+/// `null.a` rows follow `test_delete` (line 222) of
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+/// (restated as Rust assertions; `"x" in a` as an absent own descriptor
+/// until `in` exists, clj-quickjs-74; the caught error checked as a
+/// `TypeError` failure instead of `instanceof TypeError`); the QuickJS MIT
+/// notice on `object_literals_and_named_properties` covers them. The rest
+/// are synthetic fixtures, not light-cljs output.
+#[test]
+fn delete_property_references() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    let sloppy_truth = |src: &str| assert_eq!(sloppy_eval(src), ValueView::Bool(true), "{src}");
+    let caught = |src: &str| {
+        assert_eq!(
+            string(&format!(
+                "let r = 'none'; try {{ {src} }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught",
+            "{src}"
+        );
+    };
+    let fails = |src: &str, kind: VmErrorKind, needle: &str| {
+        let (k, message, ..) = failure_at(src);
+        assert_eq!(k, kind, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+    };
+
+    // Upstream rows.
+    let a = "let a = {x: 1, y: 1};";
+    truth(&format!("{a} delete a.x === true"));
+    truth(&format!(
+        "{a} delete a.x; a.x === undefined && Object.getOwnPropertyDescriptor(a, 'x') === undefined \
+         && a.y === 1"
+    ));
+    truth("delete 'abc'[100] === true");
+    caught("delete null.a;");
+
+    // Absent properties, computed keys, parentheses, the result type.
+    truth(&format!("{a} delete a.missing"));
+    truth(&format!(
+        "{a} delete a['y'] && a.y === undefined && a.x === 1"
+    ));
+    truth(&format!(
+        "{a} delete (a.x) && delete ((a)['y']) && Object.keys(a).length === 0"
+    ));
+    truth(
+        "let o = {1: 'one', 2: 'two'}; delete o[1] && delete o['2'] && Object.keys(o).length === 0",
+    );
+    truth(
+        "let o = {true: 1, null: 2}; delete o[true] && delete o[null] && Object.keys(o).length === 0",
+    );
+    truth(&format!("{a} typeof delete a.x === 'boolean'"));
+    // Deleting twice: the second finds nothing.
+    truth(&format!("{a} delete a.x && delete a.x"));
+    // Re-adding goes last (own-key order, clj-quickjs-123).
+    truth(&format!(
+        "{a} delete a.x; a.x = 2; let k = Object.keys(a); k[0] === 'y' && k[1] === 'x'"
+    ));
+    // Only own properties: an inherited one stays visible.
+    truth("let p = {x: 1}; let o = Object.create(p); delete o.x && o.x === 1 && p.x === 1");
+    // Objects with more than 8 properties use a key index; positions stay
+    // right after a removal.
+    truth(
+        "let o = {a: 0, b: 1, c: 2, d: 3, e: 4, f: 5, g: 6, h: 7, i: 8, j: 9}; \
+         delete o.c && o.d === 3 && o.j === 9 && o.a === 0 && Object.keys(o).length === 9 \
+         && Object.keys(o)[2] === 'd' && (o.c = 10, Object.keys(o)[9] === 'c' && o.c === 10)",
+    );
+
+    // undefined/null bases: catchable TypeErrors at the `delete`, after the
+    // base and the key are evaluated and before the key is converted.
+    caught("let u; delete u[0];");
+    caught("delete null[{}];");
+    truth("let u; let n = 0; try { delete u[n++]; } catch (e) {} n === 1");
+    let (kind, message, line, column) = failure_at("let u;\nlet r = delete u[0];");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "cannot delete property '0' of undefined",
+            2,
+            9
+        )
+    );
+    fails(
+        "delete null.a;",
+        VmErrorKind::TypeError,
+        "cannot delete property 'a' of null",
+    );
+
+    // Non-configurable properties throw in strict code and stay; sloppy
+    // code gets false.
+    let fixed = "let o = {}; Object.defineProperty(o, 'k', {value: 1});";
+    fails(
+        &format!("{fixed} delete o.k;"),
+        VmErrorKind::TypeError,
+        "cannot delete non-configurable property 'k'",
+    );
+    truth(&format!(
+        "{fixed} let r = false; try {{ delete o.k; }} catch (e) {{ r = o.k === 1; }} r"
+    ));
+    sloppy_truth(&format!("{fixed} delete o.k === false && o.k === 1"));
+    truth(
+        "let o = {}; Object.defineProperty(o, 'k', {value: 1, configurable: true}); delete o.k && o.k === undefined",
+    );
+    // Frozen objects keep everything; absent properties are still true.
+    fails(
+        "let f = Object.freeze({x: 1}); delete f.x;",
+        VmErrorKind::TypeError,
+        "non-configurable",
+    );
+    truth("let f = Object.freeze({x: 1}); delete f.y");
+    sloppy_truth("let f = Object.freeze({x: 1}); delete f.x === false && f.x === 1");
+
+    // Arrays: an element becomes a hole and `length` stays.
+    let arr = "let arr = [1, 2];";
+    truth(&format!("{arr} delete arr[0]"));
+    truth(&format!(
+        "{arr} delete arr[0]; arr.length === 2 && arr[0] === undefined && arr[1] === 2 \
+         && Object.getOwnPropertyDescriptor(arr, '0') === undefined \
+         && Object.keys(arr).length === 1 && Object.keys(arr)[0] === '1'"
+    ));
+    truth(&format!(
+        "{arr} delete arr['1'] && arr.length === 2 && arr[1] === undefined"
+    ));
+    truth(&format!(
+        "{arr} delete arr[5] && delete arr[-1] && arr.length === 2"
+    ));
+    // A hole can be filled again; a sparse element can be deleted too.
+    truth(&format!(
+        "{arr} delete arr[0]; arr[0] = 3; arr[0] === 3 && arr.length === 2"
+    ));
+    truth(
+        "let s = []; s[4294967294] = 1; delete s[4294967294] && s[4294967294] === undefined && s.length === 4294967295",
+    );
+    // `length` is not configurable; named properties are ordinary.
+    fails(
+        &format!("{arr} delete arr.length;"),
+        VmErrorKind::TypeError,
+        "non-configurable property 'length'",
+    );
+    sloppy_truth(&format!(
+        "{arr} delete arr.length === false && arr.length === 2"
+    ));
+    truth(&format!(
+        "{arr} arr.name = 1; delete arr.name && arr.name === undefined"
+    ));
+    // Non-configurable and frozen elements stay.
+    fails(
+        &format!("{arr} Object.defineProperty(arr, 0, {{configurable: false}}); delete arr[0];"),
+        VmErrorKind::TypeError,
+        "non-configurable property '0'",
+    );
+    fails(
+        &format!("{arr} Object.freeze(arr); delete arr[1];"),
+        VmErrorKind::TypeError,
+        "non-configurable",
+    );
+    // An element whose attributes `defineProperty` changed loses them
+    // with it: added again by assignment, it is an ordinary element.
+    truth(&format!(
+        "{arr} Object.defineProperty(arr, 0, {{enumerable: false}}); delete arr[0]; arr[0] = 5; \
+         Object.getOwnPropertyDescriptor(arr, 0).enumerable"
+    ));
+    // A non-extensible array loses elements and cannot get them back.
+    truth(&format!(
+        "{arr} Object.preventExtensions(arr); delete arr[0] && arr.length === 2"
+    ));
+    fails(
+        &format!("{arr} Object.preventExtensions(arr); delete arr[0]; arr[0] = 1;"),
+        VmErrorKind::TypeError,
+        "not extensible",
+    );
+
+    // Primitive bases act as their wrapper objects.
+    fails(
+        "delete 'abc'[0];",
+        VmErrorKind::TypeError,
+        "non-configurable property '0'",
+    );
+    fails(
+        "delete 'abc'.length;",
+        VmErrorKind::TypeError,
+        "non-configurable property 'length'",
+    );
+    truth("delete 'abc'[3] && delete 'abc'.x && delete (1).x && delete true.x");
+    sloppy_truth("delete 'abc'[2] === false && delete 'abc'['length'] === false");
+
+    // Not a reference: evaluated for its effects, then true.
+    truth("delete 1");
+    truth("let n = 0; delete (n = n + 1, n) && n === 1");
+    truth("let n = 0; let f = function () { n = 7; return {x: 1}; }; delete f() && n === 7");
+    truth("let f = function () { return delete this; }; f()");
+
+    // Function objects (their property record, clj-quickjs-125).
+    truth("let f = function () {}; delete f.x");
+    truth("let f = function () {}; f.y = 1; delete f.y && f.y === undefined");
+    fails(
+        "let f = function () {}; delete f.prototype;",
+        VmErrorKind::TypeError,
+        "non-configurable property 'prototype'",
+    );
+    sloppy_truth(
+        "let f = function () {}; delete f.prototype === false && typeof f.prototype === 'object'",
+    );
+    truth("let g = () => 1; delete g.prototype");
+    fails(
+        "let f = function () {}; delete f.length;",
+        VmErrorKind::UnsupportedOperand,
+        "length",
+    );
+
+    // Built-in objects are shared and immutable: what they have cannot be
+    // deleted, in either mode.
+    fails(
+        "delete Object.prototype.toString;",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    fails("delete Object.keys;", VmErrorKind::TypeError, "built-in");
+    fails(
+        "delete Object.prototype.__proto__;",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    truth("delete Object.prototype.nothing && delete Object.nothing");
+    fails(
+        "let r = (function () { return delete Object.keys; })();",
+        VmErrorKind::TypeError,
+        "built-in",
+    );
+    // An own `__proto__` is not the accessor.
+    truth(
+        "let o = {}; Object.defineProperty(o, '__proto__', {value: 1, configurable: true}); delete o.__proto__ && Object.getPrototypeOf(o) === Object.prototype",
+    );
+    // Values without JavaScript properties have nothing to delete.
+    truth("delete __rt.vector(1, 2)[0]");
+    fails(
+        "let r; try { null.x; } catch (e) { r = delete e.message; } r",
+        VmErrorKind::UnsupportedOperand,
+        "error object",
+    );
+
+    // `delete x` is a compile-time SyntaxError in strict code.
+    for src in ["function f() { delete x; }", "let x = 1; delete x;"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Invalid, "{src}: {e}");
+    }
+    let e = compile_script_with("t", "delete x;", ScriptOptions::SLOPPY).unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
+
+    // Run-time failures are reported at the `delete`, also when the
+    // expression is parenthesized or spans lines.
+    for (src, line, column) in [
+        ("let r = (delete null.a);", 1, 10),
+        (
+            "let o = {x: 1};\nObject.freeze(o);\nlet r = (\n  delete\n  o[\n'x'] || delete o.y);",
+            4,
+            3,
+        ),
+        ("let r = ((delete (Object.keys)));", 1, 11),
+    ] {
+        let (kind, message, l, c) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::TypeError, "{src}: {message}");
+        assert_eq!((l, c), (line, column), "{src}: {message}");
+    }
+    let (_, message, l, c) =
+        failure_at("let o = {};\nObject.defineProperty(o, 'k', {value: 1});\n(delete o.k);");
+    assert_eq!(
+        (message.as_str(), l, c),
+        ("cannot delete non-configurable property 'k'", 3, 2)
+    );
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "let a = {x: 1, y: 1}; delete a.x && a.x === undefined && delete a.missing && delete a[\"y\"];",
+        "let arr = [1, 2]; delete arr[0] && arr.length === 2 && arr[0] === undefined;",
+        "let r = false; try { delete null.a; } catch (e) { r = true; } r;",
+        "let o = {}; Object.defineProperty(o, \"k\", {value: 1}); let r = false; try { delete o.k; } catch (e) { r = o.k === 1; } r;",
     ] {
         truth(src);
     }

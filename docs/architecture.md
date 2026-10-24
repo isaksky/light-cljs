@@ -1562,7 +1562,7 @@ for a write the right-hand side is evaluated first (PutValue).
   `extensible` is cleared by `Object.preventExtensions`/`freeze`
   (clj-quickjs-122; done, see "Extensibility and freezing"); creation order is kept for enumeration, where integer
   keys must sort first (clj-quickjs-123); `delete` removes an entry and
-  rebuilds the index (clj-quickjs-124); function objects, which are
+  shifts the index (clj-quickjs-124; done, see "The `delete` operator"); function objects, which are
   persistent today, need a separate task-owned property store for their
   own properties (clj-quickjs-125).
 - Since clj-quickjs-117 a literal's `[[Prototype]]` is `Object.prototype`
@@ -1822,7 +1822,7 @@ the element or property is added.
   ordinary object for every named key, so later object pellets (getters,
   `Object.keys`, `delete`, `defineProperty`) apply to the embedded object
   and must add the elements: enumeration lists indices first in ascending
-  order (clj-quickjs-123), `delete a[i]` makes a hole (clj-quickjs-124),
+  order (clj-quickjs-123), `delete a[i]` makes a hole (clj-quickjs-124, done),
   and a non-default element attribute (`defineProperty`, freezing) needs
   per-element flags or a move to a named property, which the sparse part
   can take (clj-quickjs-119 added a sorted map of the exceptions;
@@ -2237,7 +2237,7 @@ so they run inside their call instruction.
   skip `writable` for them.
 - clj-quickjs-124 (`delete`) must reject deleting the non-configurable
   properties a frozen object has; nothing else is needed for
-  non-extensible objects, whose properties stay deletable.
+  non-extensible objects, whose properties stay deletable (done).
 - clj-quickjs-101 (`length`/`name` of functions) must include them in a
   frozen function's record; until then a frozen function's `isFrozen`
   covers only its record's properties.
@@ -2293,8 +2293,8 @@ result, a fresh array owned by the running task, last.
   missing properties is enumerable. Error objects fail until their
   properties exist (clj-quickjs-230).
 - The `delete` operator (clj-quickjs-124) only has to remove the entry
-  (and rebuild the key index): a re-added key is pushed at the end, so it
-  then enumerates last.
+  (and fix up the key index): a re-added key is pushed at the end, so it
+  then enumerates last (done).
 - `Object.create`'s second argument and `Object.defineProperties`, `Object.assign`,
   `Object.entries`/`values` can use the same helper.
 
@@ -2326,6 +2326,68 @@ calls no JavaScript (no accessors yet), so nothing needs to be resumable
 inside it; once `@@hasInstance` or a `prototype` getter can run
 JavaScript, the instruction must become a call into a frame like
 `construct`.
+
+## The `delete` operator (clj-quickjs-124)
+
+Contract: `src/vm/property.rs` (`delete`, `delete_own`), `src/object.rs`
+(`OrdinaryObject::delete`, `DeleteOutcome`), `src/object/array.rs`
+(`ArrayObject::delete_element`), `src/vm/function.rs` (`delete_target`),
+`src/vm/instr.rs` (`delete`, `0x61`). Semantics: `docs/grammar.md`,
+"Execution".
+
+**Decision.** `delete` is a prefix operator with the precedence of `!`
+(`ExprKind::Delete`, which keeps the `delete` token so a parenthesized
+expression still reports there) whose operand the parser checks: an
+identifier, including the reserved constants `undefined`/`NaN`/`Infinity`
+that parse as literals (recognized by the token the parser last turned
+into one, not by spelling), is an early `Invalid` in strict code and
+`Unsupported` in sloppy code until clj-quickjs-105. The
+lowering pushes the base and the key (for `o.p` the name as a string
+constant) and emits one appended opcode, as QuickJS's `OP_delete`; the
+opcode does the `undefined`/`null` check, ToPropertyKey and `[[Delete]]`
+in that order, so it needs neither `to_property_key` (whose message names
+a read) nor a second, named form. `[[Delete]]` follows the module table
+of `crate::vm::property` by kind:
+
+- an ordinary object removes the entry from its creation-order vector
+  (`Vec::remove`) and shifts the key index's later positions down, so the
+  other properties keep their order and a re-added key comes last
+  (clj-quickjs-123 enumerates in that order). Extensibility does not
+  matter; a non-configurable property (frozen objects included) stays;
+- an array element becomes a hole (`None` in the dense part, no sparse
+  entry), dropping its attribute entry, so the dense/sparse invariant of
+  "Array objects" holds and `length` is unchanged; `length` is not
+  configurable;
+- a function's own properties are in its property record
+  ("Function own properties"): the delete creates nothing, a
+  constructor's `prototype` is non-configurable whether or not it exists
+  yet, so a function stays publishable after deleting an absent property;
+- a realm intrinsic or built-in function is shared and immutable, so a
+  property it has is a `TypeError` in both modes (the same sharing rule as
+  writes); a property it lacks is simply absent;
+- a primitive base is treated as its wrapper object without allocating
+  one: a string's indices below its length and its `length` are
+  non-configurable, nothing else is own.
+
+The opcode allocates nothing, interns no key (a name never interned is no
+object's property) and runs no JavaScript, so it is not a poll point.
+
+**Alternatives.** *`delete_field` and `delete_elem` opcodes* mirroring
+`get_field`/`get_elem`: two registry entries for a rare operator whose
+named form is one constant push. *Reusing `Lowerer::property_reference`*
+(clj-quickjs-76): it converts the key with `to_property_key`, whose
+`undefined`/`null` message is a read's. *A tombstone instead of
+`Vec::remove`*: constant-time removal, but every read, enumeration and
+`freeze` would skip tombstones, and objects are small; a deletion-heavy
+dictionary use would want shapes or a compacting map later.
+
+**Consequences.** Deleting is linear in the object's own-property count.
+Sloppy `delete` of a non-configurable property is `false` (the running
+code's `Code::strict`, as for writes). `delete super.x` (clj-quickjs-138)
+and `delete a?.b` (clj-quickjs-134) wait for those forms; `delete` of an
+identifier is clj-quickjs-105; `delete f.length`/`f.name` fail with
+`UnsupportedOperand` until clj-quickjs-101 gives functions those
+properties.
 
 ## QuickJS references and provenance
 
@@ -2828,3 +2890,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf` and `OP_instanceof` were
   consulted only, for semantics (the two TypeError messages are QuickJS's).
   No code was copied.
+- `tests/js_source.rs` `delete_property_references` (clj-quickjs-124):
+  the `a = {x: 1, y: 1}; delete a.x`, `delete "abc"[100]` and
+  `delete null.a` rows of `test_delete` (line 222) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: `let` declares `a`, the asserts are Rust assertions,
+  `("x" in a) === false` is an absent own descriptor until `in` exists
+  (clj-quickjs-74), and the caught error is checked as a `TypeError`
+  failure rather than with `instanceof TypeError`. The notice on
+  `object_literals_and_named_properties` covers it.
+  `research/quickjs/quickjs.c` `js_parse_delete`, `CASE(OP_delete)`,
+  `JS_DeleteProperty` and `delete_property` were consulted only, for
+  semantics. No code was copied.

@@ -339,7 +339,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
         | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
         | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
-        | ToPropertyKey | Construct(_) | SetProto | Instanceof => false,
+        | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete => false,
     }
 }
 

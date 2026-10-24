@@ -2504,6 +2504,7 @@ impl<'s> Lowerer<'s> {
             } => self.compound_assign_property(*op, target, value, *op_span),
             ExprKind::Function(f) => self.function_expr(f),
             ExprKind::Sequence { left, right } => self.sequence(left, right, span),
+            ExprKind::Delete { operand, op_span } => self.delete(operand, *op_span),
         }
     }
 
@@ -2534,6 +2535,39 @@ impl<'s> Lowerer<'s> {
         let at = self.name_span(name, span);
         let access = self.resolve_reference(name);
         self.load(access, at)
+    }
+
+    /// `delete operand` (clj-quickjs-124; QuickJS `js_parse_delete`): for
+    /// `o.p` the base and the name as a string constant, for `o[k]` the
+    /// base and the key, then `Delete`, which checks the base, converts the
+    /// key and removes the own property (reported at the `delete`). Any
+    /// other operand is evaluated for its effects and gives `true`; the
+    /// parser rejects an identifier operand.
+    #[inline(never)]
+    fn delete(&mut self, operand: &Expr, op_span: Span) -> Result<(), SyntaxError> {
+        match &operand.kind {
+            ExprKind::Member {
+                object, property, ..
+            } => {
+                self.expr(object)?;
+                let name = self.name_index(&property.name, property.span)?;
+                self.out().op_u16(Opcode::Const, name, property.span);
+            }
+            ExprKind::Index { object, index, .. } => {
+                self.expr(object)?;
+                self.expr(index)?;
+            }
+            ExprKind::Identifier(_) => {
+                return Err(self.internal(operand.span, "`delete` of an identifier"));
+            }
+            _ => {
+                self.expr(operand)?;
+                self.out().op(Opcode::Pop, op_span);
+                return self.constant(Primitive::Bool(true), op_span);
+            }
+        }
+        self.out().op(Opcode::Delete, op_span);
+        Ok(())
     }
 
     /// A prefix operator other than `typeof` of an identifier.

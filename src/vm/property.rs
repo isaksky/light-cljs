@@ -68,6 +68,23 @@
 //! read-only `length` rejects new elements at or beyond it; a define that
 //! would change `length` fails with `UnsupportedOperand` (clj-quickjs-39).
 //!
+//! # Deleting properties
+//!
+//! [`delete`] is the `Delete` instruction (clj-quickjs-124; QuickJS
+//! `OP_delete`, `JS_DeleteProperty`, `delete_property`): `[[Delete]]` of an
+//! own property, by the owner and kind rules of the table above (a delete
+//! changes the object, so it is owner-only like a write). A configurable
+//! own property is removed, keeping the creation order of the rest; an
+//! array element becomes a hole. An absent property is `true`, with
+//! nothing changed, also on a realm intrinsic, a published function or a
+//! kind without JavaScript properties. A non-configurable property (an
+//! array's `length`, a constructor's `prototype`) stays: a `TypeError` in
+//! strict code, `false` in sloppy code. A property a realm intrinsic or
+//! built-in function has is a `TypeError` in both modes (the sharing rule
+//! of writes). A primitive base acts as its wrapper object without
+//! allocating one. A delete creates nothing, not even a function's
+//! property record or a key, so it is not a poll point.
+//!
 //! # Property keys
 //!
 //! A computed key goes through ToPropertyKey ([`to_property_key`]) when the
@@ -97,7 +114,8 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::array::{ArrayObject, array_index, number_index};
 use crate::object::{
-    DefineOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyKey, SetOutcome,
+    DefineOutcome, DeleteOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyKey,
+    SetOutcome,
 };
 use crate::realm;
 use crate::value::string::number_to_string;
@@ -175,6 +193,11 @@ pub(crate) fn to_property_key(key: &Value) -> Result<Key, Fault> {
 /// key.
 pub(crate) fn element_key(base: &Value, key: &Value, write: bool) -> Result<Key, Fault> {
     let access = if write { Access::Write } else { Access::Read };
+    base_key(base, key, access)
+}
+
+/// [`element_key`] for `access`.
+fn base_key(base: &Value, key: &Value, access: Access) -> Result<Key, Fault> {
     match (base, to_property_key(key)) {
         (Value::Undefined | Value::Null, Ok(key)) => Err(primitive_base(base, &key, access)),
         (Value::Undefined | Value::Null, Err(_)) => Err(Fault::TypeError(format!(
@@ -191,6 +214,7 @@ pub(crate) fn element_key(base: &Value, key: &Value, write: bool) -> Result<Key,
 enum Access {
     Read,
     Write,
+    Delete,
 }
 
 impl Access {
@@ -198,6 +222,7 @@ impl Access {
         match self {
             Access::Read => "read",
             Access::Write => "set",
+            Access::Delete => "delete",
         }
     }
 }
@@ -241,7 +266,8 @@ fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault>
 
 fn no_properties(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
     match access {
-        Access::Read => None,
+        // Nothing to find, so nothing to delete.
+        Access::Read | Access::Delete => None,
         Access::Write => Some(Fault::TypeError(format!(
             "cannot set property '{key}' of a {}: it has no JavaScript properties",
             object_name(object)
@@ -970,6 +996,113 @@ pub(crate) fn get_own_property(
 fn is_function(heap: &Heap, id: ObjectId) -> bool {
     heap.read(id, |o| matches!(o, HeapObject::Function(_)))
         .unwrap_or(false)
+}
+
+/// `delete base[key]` for the running task `task` (`Delete`,
+/// clj-quickjs-124; ECMAScript's `delete` of a property reference: ToObject
+/// of the base, ToPropertyKey of the key, then `[[Delete]]`; QuickJS
+/// `OP_delete` and `JS_DeleteProperty`). An `undefined`/`null` base is a
+/// TypeError before the key is converted. True when the base has no own
+/// property `key` afterwards; a non-configurable own property stays, and
+/// is a TypeError in strict code and false in sloppy code. Module docs,
+/// "Deleting properties".
+pub(crate) fn delete(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Value,
+    strict: bool,
+) -> Result<bool, Fault> {
+    let key = base_key(base, key, Access::Delete)?;
+    let outcome = match base {
+        Value::Object(id) => delete_own(heap, task, *id, &key)?,
+        // The String wrapper ToObject would make: its indices below the
+        // length and its `length` are its only own properties, and none of
+        // them is configurable.
+        Value::String(s) => match &key {
+            Key::Index(index) if (*index as usize) < s.len() => DeleteOutcome::NonConfigurable,
+            _ if key.is_length() => DeleteOutcome::NonConfigurable,
+            _ => DeleteOutcome::Absent,
+        },
+        // Number and Boolean wrappers have no own properties.
+        _ => DeleteOutcome::Absent,
+    };
+    match outcome {
+        DeleteOutcome::Deleted | DeleteOutcome::Absent => Ok(true),
+        DeleteOutcome::NonConfigurable if strict => Err(Fault::TypeError(format!(
+            "cannot delete non-configurable property '{key}'"
+        ))),
+        DeleteOutcome::NonConfigurable => Ok(false),
+    }
+}
+
+/// `[[Delete]]` of the own property `key` of the object `id`, with the
+/// owner and kind rules of the module table: an owned ordinary object or
+/// array removes it (an element becomes a hole; `length` is not
+/// configurable); a function's goes to its property record
+/// ([`function::delete_target`]); a realm intrinsic or built-in function
+/// that has it is a TypeError in either mode (shared and immutable), one
+/// that lacks it has nothing to delete; another task's or an
+/// embedder-created object is `ForeignObject`; an error object is
+/// `UnsupportedOperand`; the other heap kinds have no properties.
+fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<DeleteOutcome, Fault> {
+    let id = match is_function(heap, id) {
+        true => match function::delete_target(heap, task, id, key)? {
+            function::FunctionDelete::Record(record) => record,
+            function::FunctionDelete::Absent => return Ok(DeleteOutcome::Absent),
+            function::FunctionDelete::NonConfigurable => {
+                return Ok(DeleteOutcome::NonConfigurable);
+            }
+        },
+        false => id,
+    };
+    // An array index of an array needs no name; every other key needs its
+    // interned key, looked up before the object lock is taken. A name that
+    // was never interned is no object's property.
+    let element = matches!(key, Key::Index(_))
+        && heap
+            .read(id, |o| matches!(o, HeapObject::Array(_)))
+            .unwrap_or(false);
+    let k = match element {
+        true => None,
+        false => heap.keys().lookup(&key.to_name()),
+    };
+    // `Object.prototype.__proto__` is an own property of the intrinsic even
+    // though it is not stored there yet (`crate::vm::prototype`).
+    let proto_accessor = match (heap.realm().get(), k) {
+        (Some(realm), Some(k)) => realm.is_proto_accessor(id, k),
+        _ => false,
+    };
+    let shared = |o: &OrdinaryObject| match proto_accessor
+        || k.is_some_and(|k| o.get_own(k).is_some())
+    {
+        true => Err(Fault::TypeError(format!(
+            "cannot delete property '{key}' of a built-in object: built-in objects are shared by all tasks and immutable"
+        ))),
+        false => Ok(DeleteOutcome::Absent),
+    };
+    let named = |o: &mut OrdinaryObject| k.map_or(DeleteOutcome::Absent, |k| o.delete(k));
+    heap.with_object_mut(id, |object| match object {
+        HeapObject::Plain(o) if o.is_intrinsic() => shared(o),
+        HeapObject::Builtin(f) => shared(&f.properties),
+        HeapObject::Plain(o) => {
+            check_write(o, task)?;
+            Ok(named(o))
+        }
+        HeapObject::Array(a) => {
+            check_write(a.object(), task)?;
+            Ok(match key {
+                Key::Index(index) => a.delete_element(*index),
+                _ if key.is_length() => DeleteOutcome::NonConfigurable,
+                Key::Name(_) => named(a.object_mut()),
+            })
+        }
+        other => match not_ordinary(other, key, Access::Delete) {
+            Some(fault) => Err(fault),
+            None => Ok(DeleteOutcome::Absent),
+        },
+    })
+    .unwrap_or(Err(Fault::Internal("property base was reclaimed")))
 }
 
 /// The failure of a define on a realm intrinsic (`crate::realm`).

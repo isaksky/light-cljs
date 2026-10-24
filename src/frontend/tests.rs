@@ -120,6 +120,7 @@ fn render_expr(e: &Expr) -> String {
             format!("(. {} {})", render_expr(object), property.name)
         }
         ExprKind::Function(f) => render_function(f),
+        ExprKind::Delete { operand, .. } => format!("(delete {})", render_expr(operand)),
         ExprKind::Sequence { left, right } => {
             format!("(, {} {})", render_expr(left), render_expr(right))
         }
@@ -1034,6 +1035,47 @@ fn unary_binds_tighter_than_binary_and_looser_than_calls() {
     assert_eq!(ast("void -x + 1;"), "(+ (void (neg x)) 1)");
     assert_eq!(ast("typeof void x;"), "(typeof (void x))");
     assert_eq!(ast("void a++;"), "(void (post++ a))");
+    // So does `delete` (clj-quickjs-124), whose operand may be any unary
+    // expression but an identifier.
+    assert_eq!(ast("delete a.b === true;"), "(=== (delete (. a b)) true)");
+    assert_eq!(ast("delete (a.b);"), "(delete (. a b))");
+    assert_eq!(ast("!delete f(x).y;"), "(! (delete (. (call f x) y)))");
+    assert_eq!(ast("delete 1;"), "(delete 1)");
+    assert_eq!(ast("delete void x;"), "(delete (void x))");
+    sloppy_script("delete a.b; delete a[0]; delete 1;");
+}
+
+/// `delete` of an identifier (clj-quickjs-124): an early error in strict
+/// code, at the `delete`; in sloppy code it waits for clj-quickjs-105.
+/// The reserved constants are identifiers too.
+#[test]
+fn delete_of_identifiers_is_rejected() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
+    rejects("delete x;", Invalid, 1, 1);
+    rejects("y = delete (x);", Invalid, 1, 5);
+    rejects("function f() { return delete x; }", Invalid, 1, 23);
+    rejects("delete undefined;", Invalid, 1, 1);
+    rejects("delete (NaN);", Invalid, 1, 1);
+    rejects("f(delete Infinity);", Invalid, 1, 3);
+    rejects(
+        "x = function () { 'use strict'; delete y; };",
+        Invalid,
+        1,
+        33,
+    );
+    sloppy_rejects("delete x;", Unsupported, 1, 1);
+    sloppy_rejects("y = delete (undefined);", Unsupported, 1, 5);
+    // Comments and escaped spellings do not hide an identifier.
+    rejects("delete (/* c */ undefined);", Invalid, 1, 1);
+    rejects("delete ( // c\n NaN );", Invalid, 1, 1);
+    rejects("delete \\u004eaN;", Invalid, 1, 1);
+    rejects("delete (\\u0078);", Invalid, 1, 1);
+    sloppy_rejects("delete (/* c */ Infinity);", Unsupported, 1, 1);
+    sloppy_rejects("delete \\u0075ndefined;", Unsupported, 1, 1);
+    // A literal is not an identifier, even right after a reserved constant.
+    parse_script("NaN; delete (/* NaN */ 1); delete (NaN, 1); delete undefined.x;").unwrap();
+    rejects_with("delete __rt.vector;", ReservedWord, 1, 8, "deleted");
+    rejects("delete a.x ** 2;", Invalid, 1, 12);
 }
 
 /// Bitwise and shift operators and `~` (clj-quickjs-62), at ECMAScript
@@ -3004,7 +3046,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = import('y');", 1, 5, "import"),
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
-        ("delete x.y;", 1, 1, "delete"),
         ("x.y &&= 1;", 1, 5, "&&="),
         ("x = [...a];", 1, 6, "spread elements"),
         ("[a] = b;", 1, 1, "destructuring assignment"),
@@ -3164,6 +3205,10 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("void", |n| format!("x = {}f();", "void ".repeat(n))),
+        ("delete", |n| format!("x = {}a.b;", "delete ".repeat(n))),
+        ("delete keys", |n| {
+            format!("x = {}0{};", "delete a[".repeat(n), "]".repeat(n))
+        }),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
         ("instanceof", |n| {
             format!("x = a{};", " instanceof b".repeat(n))

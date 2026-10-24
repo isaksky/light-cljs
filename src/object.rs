@@ -21,7 +21,9 @@
 //! * **Own properties**, in creation order: a vector of (key, property)
 //!   entries, plus a hash index from key to position once the object has
 //!   more than [`INDEX_THRESHOLD`] properties. A redefinition keeps the
-//!   position of the first definition. Each property is a data property
+//!   position of the first definition; `delete` (clj-quickjs-124,
+//!   [`OrdinaryObject::delete`]) removes the entry, so a property defined
+//!   again comes last. Each property is a data property
 //!   (a [`Value`] and its `writable` / `enumerable` / `configurable`
 //!   [`PropertyFlags`]); accessor properties (clj-quickjs-120) replace the
 //!   value with a getter/setter pair in the same entry. Assignment and
@@ -418,6 +420,30 @@ impl OrdinaryObject {
         true
     }
 
+    /// `[[Delete]]` (ECMAScript OrdinaryDelete, clj-quickjs-124; QuickJS
+    /// `delete_property`): remove the own property `key` if it is
+    /// configurable. The other properties keep their creation order, so a
+    /// property added again later comes last. Extensibility does not
+    /// matter: a non-extensible object still loses configurable properties.
+    pub(crate) fn delete(&mut self, key: PropertyKey) -> DeleteOutcome {
+        let Some(i) = self.position(key) else {
+            return DeleteOutcome::Absent;
+        };
+        if !self.entries[i].1.flags.configurable {
+            return DeleteOutcome::NonConfigurable;
+        }
+        self.entries.remove(i);
+        if let Some(index) = &mut self.index {
+            index.remove(&key);
+            for position in index.values_mut() {
+                if *position as usize > i {
+                    *position -= 1;
+                }
+            }
+        }
+        DeleteOutcome::Deleted
+    }
+
     /// `[[DefineOwnProperty]]` (ECMAScript OrdinaryDefineOwnProperty and
     /// ValidateAndApplyPropertyDescriptor, clj-quickjs-119; QuickJS
     /// `JS_DefineProperty`): create `key` from `desc` (absent fields default
@@ -557,6 +583,19 @@ pub(crate) enum DefineOutcome {
     Accessor,
 }
 
+/// What a `[[Delete]]` of an own property did ([`OrdinaryObject::delete`],
+/// `ArrayObject::delete_element`; clj-quickjs-124).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteOutcome {
+    /// The configurable property was removed.
+    Deleted,
+    /// There was no such own property (`delete` gives true).
+    Absent,
+    /// The property is not configurable and stays (`delete` gives false in
+    /// sloppy code and throws a TypeError in strict code).
+    NonConfigurable,
+}
+
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
@@ -617,6 +656,37 @@ mod tests {
         assert_eq!(o.get_own(names[3]).unwrap().value, Value::Number(-1.0));
         assert_eq!(o.get_own(names[15]).unwrap().value, Value::Number(-2.0));
         assert_eq!(o.get_own(names[3]).unwrap().flags, PropertyFlags::DATA);
+    }
+
+    /// `delete` keeps the creation order of the rest, below and above the
+    /// index threshold, and leaves non-configurable properties.
+    #[test]
+    fn delete_keeps_the_order_of_the_other_properties() {
+        let keys = PropertyKeys::default();
+        let names: Vec<PropertyKey> = (0..12)
+            .map(|i| keys.intern(&s(&format!("p{i}"))).unwrap())
+            .collect();
+        for count in [4, 12] {
+            let mut o = OrdinaryObject::new(None);
+            for (i, &k) in names[..count].iter().enumerate() {
+                assert!(o.define(k, Value::Number(i as f64)));
+            }
+            assert_eq!(o.delete(names[1]), DeleteOutcome::Deleted);
+            assert_eq!(o.delete(names[1]), DeleteOutcome::Absent);
+            let mut expected: Vec<PropertyKey> = names[..count].to_vec();
+            expected.remove(1);
+            let order: Vec<PropertyKey> = o.properties().map(|(k, _)| k).collect();
+            assert_eq!(order, expected);
+            for (i, &k) in names[..count].iter().enumerate().skip(2) {
+                assert_eq!(o.get_own(k).unwrap().value, Value::Number(i as f64));
+            }
+            // Added again, it comes last.
+            assert!(o.define(names[1], Value::Null));
+            assert_eq!(o.properties().last().map(|(k, _)| k), Some(names[1]));
+            o.freeze();
+            assert_eq!(o.delete(names[0]), DeleteOutcome::NonConfigurable);
+            assert!(o.get_own(names[0]).is_some());
+        }
     }
 
     #[test]

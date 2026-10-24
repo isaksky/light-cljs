@@ -346,7 +346,7 @@ impl Expr {
             | ExprKind::Undefined
             | ExprKind::Identifier(_)
             | ExprKind::Update { .. } => 0,
-            ExprKind::Unary { operand, .. } => operand.height,
+            ExprKind::Unary { operand, .. } | ExprKind::Delete { operand, .. } => operand.height,
             ExprKind::Binary { left, right, .. } | ExprKind::Logical { left, right, .. } => {
                 left.height.max(right.height)
             }
@@ -577,6 +577,17 @@ pub enum ExprKind {
         args: Vec<Expr>,
         /// The `new` token, where run-time failures of the construction
         /// are reported and where a caller frame of a failure is located.
+        op_span: Span,
+    },
+    /// `delete operand` (clj-quickjs-124), a prefix operator with the
+    /// precedence of `!`. The operand, when a (possibly parenthesized)
+    /// property reference `o.p` or `o[k]`, is a reference whose own
+    /// property is removed; any other operand except an identifier (which
+    /// the parser rejects) is evaluated and gives `true`.
+    Delete {
+        operand: Box<Expr>,
+        /// The `delete` token, where run-time failures are reported (also
+        /// when the expression is parenthesized).
         op_span: Span,
     },
 }

@@ -49,8 +49,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    DefineOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyFlags, SetOutcome,
-    validate_and_apply,
+    DefineOutcome, DeleteOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyFlags,
+    SetOutcome, validate_and_apply,
 };
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
@@ -301,6 +301,28 @@ impl ArrayObject {
             .map(|(index, _)| (index, self.element_flags(index).enumerable))
     }
 
+    /// `[[Delete]]` of the element `index` (OrdinaryDelete on an array
+    /// index, clj-quickjs-124): a configurable element becomes a hole (a
+    /// `None` slot in the dense part, or no sparse entry), so the storage
+    /// invariant of the module docs holds and `length` is unchanged. An
+    /// element that is not configurable stays.
+    pub(crate) fn delete_element(&mut self, index: u32) -> DeleteOutcome {
+        if self.get(index).is_none() {
+            return DeleteOutcome::Absent;
+        }
+        if !self.element_flags(index).configurable {
+            return DeleteOutcome::NonConfigurable;
+        }
+        match self.dense.get_mut(index as usize) {
+            Some(slot) => *slot = None,
+            None => {
+                self.sparse.remove(&index);
+            }
+        }
+        self.attributes.remove(&index);
+        DeleteOutcome::Deleted
+    }
+
     /// The `length` property: writable (unless made read-only), not
     /// enumerable, not configurable.
     pub(crate) fn length_property(&self) -> Property {
@@ -510,6 +532,37 @@ mod tests {
         };
         assert_eq!(a.define_element(0, &same), DefineOutcome::Done);
         assert_eq!(a.attributes.len(), 1);
+        assert_eq!(a.get(0), Some(&n(0.0)));
+    }
+
+    /// Deleting an element leaves a hole in either part, keeps `length`,
+    /// drops its attributes and keeps the storage invariant.
+    #[test]
+    fn deleted_elements_become_holes() {
+        let mut a = ArrayObject::new(None);
+        for i in 0..3 {
+            a.push(Some(n(f64::from(i))));
+        }
+        assert_eq!(a.set(MAX_INDEX, n(-1.0)), SetOutcome::Done);
+        let hidden = PropertyDescriptor {
+            enumerable: Some(false),
+            ..PropertyDescriptor::default()
+        };
+        assert_eq!(a.define_element(1, &hidden), DefineOutcome::Done);
+        assert_eq!(a.delete_element(1), DeleteOutcome::Deleted);
+        assert_eq!(a.delete_element(1), DeleteOutcome::Absent);
+        assert_eq!(a.delete_element(MAX_INDEX), DeleteOutcome::Deleted);
+        assert_eq!(a.delete_element(7), DeleteOutcome::Absent);
+        assert_eq!(a.length(), u32::MAX);
+        assert!(a.attributes.is_empty());
+        let order: Vec<u32> = a.elements().map(|(i, _)| i).collect();
+        assert_eq!(order, vec![0, 2]);
+        assert_eq!((a.dense.len(), a.sparse.len()), (3, 0));
+        // Refilled, the element has the default attributes.
+        assert_eq!(a.set(1, n(1.0)), SetOutcome::Done);
+        assert_eq!(a.element(1).unwrap().flags, PropertyFlags::DATA);
+        a.freeze();
+        assert_eq!(a.delete_element(0), DeleteOutcome::NonConfigurable);
         assert_eq!(a.get(0), Some(&n(0.0)));
     }
 

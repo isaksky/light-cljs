@@ -248,6 +248,59 @@ pub(crate) fn property_record(heap: &Heap, function: ObjectId) -> Result<Option<
     info(heap, function).map(|info| info.record)
 }
 
+/// Where a `delete` of a function's property applies
+/// ([`delete_target`], clj-quickjs-124).
+pub(crate) enum FunctionDelete {
+    /// The property record: the ordinary `[[Delete]]` runs on it.
+    Record(ObjectId),
+    /// The function has no such own property (no record, so no own
+    /// property besides a constructor's `prototype`).
+    Absent,
+    /// A constructor's `prototype`, which is not configurable, whether or
+    /// not it has been created yet.
+    NonConfigurable,
+}
+
+/// The function's part of `delete f[key]` for `task` (module docs, "Own
+/// properties"). Creates nothing: a lazy `prototype` that does not exist
+/// yet is still not configurable, and a function without a record has no
+/// other own property. Another task's function is `ForeignObject` unless
+/// it is published (then it has no record, and only its `prototype` is
+/// own). `length` and `name`, which every function will own
+/// (clj-quickjs-101), fail with `UnsupportedOperand` unless the record has
+/// them.
+pub(crate) fn delete_target(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    key: &Key,
+) -> Result<FunctionDelete, Fault> {
+    let info = info(heap, function)?;
+    if !info.shared && info.owner != task {
+        return Err(Fault::ForeignObject {
+            owner: Some(info.owner),
+            caller: task,
+        });
+    }
+    match special(key) {
+        Some("prototype") if info.constructor => return Ok(FunctionDelete::NonConfigurable),
+        Some(name @ ("length" | "name")) => {
+            let own = match info.record {
+                Some(record) => record_own(heap, task, record, name)?.is_some(),
+                None => false,
+            };
+            if !own {
+                return Err(unsupported_inherited(name, "delete"));
+            }
+        }
+        _ => {}
+    }
+    Ok(match info.record {
+        Some(record) => FunctionDelete::Record(record),
+        None => FunctionDelete::Absent,
+    })
+}
+
 fn exhausted() -> Fault {
     Fault::OutOfMemory("heap object table exhausted")
 }

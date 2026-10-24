@@ -532,7 +532,8 @@ fn publishing_an_array_is_rejected_with_index_path() {
     let read = compile_function("function f(a) { return a[0]; }").unwrap();
     let write = compile_function("function f(a) { a[0] = 2; return 0; }").unwrap();
     let length = compile_function("function f(a) { return a.length; }").unwrap();
-    for exe in [&read, &write, &length] {
+    let delete = compile_function("function f(a) { return delete a[0]; }").unwrap();
+    for exe in [&read, &write, &length, &delete] {
         let task = rt.spawn(exe, &[&alone]).unwrap();
         match task.run().unwrap() {
             RunOutcome::Failed(e) => assert_eq!(
@@ -565,11 +566,12 @@ fn objects_are_read_and_written_only_by_their_owner() {
         "function f(o) { try { o.x = 2; } catch (e) { return 'caught'; } return 0; }",
     )
     .unwrap();
+    let delete = compile_function("function f(o) { return delete o.x; }").unwrap();
     let outcome = |exe: &Executable, arg: &Rooted| {
         let task = rt.spawn(exe, &[arg]).unwrap();
         (task.run().unwrap(), task.id())
     };
-    for exe in [&read, &write] {
+    for exe in [&read, &write, &delete] {
         match outcome(exe, &object) {
             (RunOutcome::Failed(e), caller) => assert_eq!(
                 e.kind(),
@@ -591,15 +593,17 @@ fn objects_are_read_and_written_only_by_their_owner() {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Undefined),
         other => panic!("expected Complete, got {other:?}"),
     }
-    match outcome(&write, &host) {
-        (RunOutcome::Failed(e), caller) => assert_eq!(
-            e.kind(),
-            VmErrorKind::ForeignObject {
-                owner: None,
-                caller
-            }
-        ),
-        other => panic!("expected ForeignObject, got {other:?}"),
+    for exe in [&write, &delete] {
+        match outcome(exe, &host) {
+            (RunOutcome::Failed(e), caller) => assert_eq!(
+                e.kind(),
+                VmErrorKind::ForeignObject {
+                    owner: None,
+                    caller
+                }
+            ),
+            other => panic!("expected ForeignObject, got {other:?}"),
+        }
     }
 }
 
@@ -755,6 +759,20 @@ fn function_own_properties_follow_publication_rule() {
         }
         other => panic!("expected Failed, got {other:?}"),
     }
+    // `delete` from another task creates nothing (clj-quickjs-124): an
+    // absent property is true, the non-configurable `prototype` a
+    // catchable TypeError (strict code), and the function still publishes.
+    let delete = compile_function(
+        "function d(h) { let r = delete h.x ? 1 : 0; \
+         try { delete h.prototype; } catch (e) { r = r + 10; } return r; }",
+    )
+    .unwrap();
+    let task = rt.spawn(&delete, &[&h]).unwrap();
+    assert_eq!(
+        complete(task.run().unwrap()).view(),
+        ValueView::Number(11.0)
+    );
+    rt.publish(&h).unwrap();
     // Assigning `prototype` is a write like any other: a catchable
     // TypeError on a published function or arrow.
     let assign = compile_function(
@@ -781,10 +799,11 @@ fn function_own_properties_follow_publication_rule() {
     );
 
     // Not published but handed over unchecked (`spawn` does not check its
-    // arguments): only the creating task may write it or create its
+    // arguments): only the creating task may write it, delete from it or
+    // create its
     // prototype.
     let (h, producer) = run("function h() {} h");
-    for exe in [&probe, &prototype] {
+    for exe in [&probe, &prototype, &delete] {
         let task = rt.spawn(exe, &[&h]).unwrap();
         match task.run().unwrap() {
             RunOutcome::Failed(e) => assert_eq!(
