@@ -2112,51 +2112,22 @@ impl<'s> Lowerer<'s> {
         self.constant_index(ConstKey::String(s.clone()), Primitive::String(s), span)
     }
 
-    /// Member reads, object literals, property assignments and template
-    /// literals (clj-quickjs-57), out of line
-    /// so the recursive [`Self::expr`] frame stays small (its size bounds
-    /// how deep an expression compiles on a 2 MiB stack).
+    /// `object[index] = value`: the base, the key, the value, then
+    /// `PutElem` (which converts the key and leaves the value), reported at
+    /// the `[`.
     #[inline(never)]
-    fn property_expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
-        match &e.kind {
-            ExprKind::Member { .. } | ExprKind::Index { .. } => self.get_field(e),
-            ExprKind::Object(properties) => self.object_literal(properties, e.span),
-            ExprKind::AssignMember {
-                object,
-                property,
-                value,
-                op_span,
-            } => self.assign_member(object, property, value, *op_span),
-            ExprKind::Template { quasis, exprs } => self.template(quasis, exprs, e.span),
-            ExprKind::Array(elements) => self.array_literal(elements, e.span),
-            ExprKind::AssignIndex {
-                object,
-                index,
-                value,
-                op_span,
-            } => {
-                // Base, key, value, then `PutElem` (which converts the key
-                // and leaves the value), reported at the `[`.
-                self.expr(object)?;
-                self.expr(index)?;
-                self.expr(value)?;
-                self.out().op(Opcode::PutElem, *op_span);
-                Ok(())
-            }
-            ExprKind::UpdateProperty {
-                op,
-                prefix,
-                target,
-                op_span,
-            } => self.update_property(*op, *prefix, target, *op_span),
-            ExprKind::CompoundAssignProperty {
-                op,
-                target,
-                value,
-                op_span,
-            } => self.compound_assign_property(*op, target, value, *op_span),
-            _ => Err(self.internal(e.span, "not a property expression")),
-        }
+    fn assign_index(
+        &mut self,
+        object: &Expr,
+        index: &Expr,
+        value: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(object)?;
+        self.expr(index)?;
+        self.expr(value)?;
+        self.out().op(Opcode::PutElem, op_span);
+        Ok(())
     }
 
     /// `object.property` and `object[index]`: the base, then `GetField`, or
@@ -2447,212 +2418,341 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// An expression's code. Only a dispatcher (clj-quickjs-262): each
+    /// form's code is an out-of-line helper, called in tail position, so
+    /// this frame holds no `?` temporaries or locals of any form. A nested
+    /// expression recurses through this frame plus one helper's, which
+    /// bounds the Rust stack each nesting level costs in a debug build
+    /// (the parser's nesting budget, `parser::cost`, relies on it;
+    /// `frontend::tests::nesting_at_the_limit_fits_a_2_mib_stack` checks
+    /// it).
     fn expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
         let span = e.span;
         match &e.kind {
-            ExprKind::Number(n) => self.constant(Primitive::Number(*n), span)?,
-            ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span)?,
-            ExprKind::Null => self.constant(Primitive::Null, span)?,
-            ExprKind::This => self.out().op(Opcode::GetThis, span),
-            ExprKind::Undefined => self.out().op(Opcode::Undefined, span),
-            ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span)?,
-            ExprKind::Identifier(name) => {
-                let at = self.name_span(name, span);
-                let access = self.resolve_reference(name);
-                self.load(access, at)?;
-            }
+            ExprKind::Number(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::This
+            | ExprKind::Undefined
+            | ExprKind::String(_) => self.literal(e),
+            ExprKind::Identifier(name) => self.identifier(name, span),
             ExprKind::Unary {
                 op: UnaryOp::Typeof,
                 operand,
             } if matches!(operand.kind, ExprKind::Identifier(_)) => {
-                self.typeof_reference(operand, span)?;
+                self.typeof_reference(operand, span)
             }
-            ExprKind::Unary { op, operand } => {
-                self.expr(operand)?;
-                match op {
-                    UnaryOp::Typeof => self.out().op(Opcode::Typeof, span),
-                    UnaryOp::Void => self.void_result(span),
-                    UnaryOp::Not => self.out().op(Opcode::Not, span),
-                    UnaryOp::Neg | UnaryOp::Plus => {
-                        if !is_number(operand) {
-                            self.out().op(Opcode::ToNumber, span);
-                        }
-                        if *op == UnaryOp::Neg {
-                            self.out().op(Opcode::Neg, span);
-                        }
-                    }
-                    UnaryOp::BitNot => {
-                        if !is_number(operand) {
-                            self.out().op(Opcode::ToNumber, span);
-                        }
-                        self.out().op(Opcode::BitNot, span);
-                    }
-                }
-            }
+            ExprKind::Unary { op, operand } => self.unary(*op, operand, span),
             ExprKind::Binary {
                 op,
                 left,
                 right,
                 op_span,
-            } => {
-                self.expr(left)?;
-                self.expr(right)?;
-                self.binary(*op, is_number(left), is_number(right), *op_span);
-            }
-            ExprKind::Logical { op, left, right } => {
-                // The left value is the result unless it selects the right.
-                self.expr(left)?;
-                let end = self.out().label();
-                self.out().op(Opcode::Dup, span);
-                if *op == LogicalOp::Or {
-                    self.out().op(Opcode::Not, span);
-                }
-                self.out().branch(Opcode::JumpIfFalse, end, span);
-                self.out().op(Opcode::Pop, span);
-                self.expr(right)?;
-                self.out().bind(end);
-            }
+            } => self.binary_expr(*op, left, right, *op_span),
+            ExprKind::Logical { op, left, right } => self.logical(*op, left, right, span),
             ExprKind::Conditional {
                 test,
                 consequent,
                 alternate,
-            } => {
-                self.expr(test)?;
-                let otherwise = self.out().label();
-                let end = self.out().label();
-                self.out().branch(Opcode::JumpIfFalse, otherwise, test.span);
-                self.expr(consequent)?;
-                self.out().branch(Opcode::Jump, end, span);
-                self.out().bind(otherwise);
-                self.expr(alternate)?;
-                self.out().bind(end);
-            }
-            ExprKind::Assign { target, value } => {
-                self.expr(value)?;
-                let at = self.name_span(&target.name, target.span);
-                let access = self.resolve_reference(&target.name);
-                self.store(access, at)?;
-            }
+            } => self.conditional(test, consequent, alternate, span),
+            ExprKind::Assign { target, value } => self.assign(target, value),
             ExprKind::CompoundAssign {
                 op,
                 target,
                 value,
                 op_span,
-            } => {
-                // Read the binding (with the same checks as any read), then
-                // evaluate the right operand, apply the binary operator's
-                // own instructions, and store (with the same checks as `=`,
-                // so a `const` is a TypeError after the right operand).
-                let at = self.name_span(&target.name, target.span);
-                let access = self.resolve_reference(&target.name);
-                if matches!(access, Access::Intrinsic) {
-                    // The error of `__rt = x`, not of reading `__rt`.
-                    return self.store(access, at);
-                }
-                self.load(access, at)?;
-                self.expr(value)?;
-                self.binary(*op, false, is_number(value), *op_span);
-                self.store(access, at)?;
-            }
+            } => self.compound_assign(*op, target, value, *op_span),
             ExprKind::Update {
                 op,
                 prefix,
                 target,
                 op_span,
-            } => {
-                // Read the binding (with the same checks as any read),
-                // ToNumber, add or subtract 1, store (with the same checks
-                // as `=`). A postfix update keeps the converted old value
-                // under the new one and drops the stored value.
-                let at = self.name_span(&target.name, target.span);
-                let access = self.resolve_reference(&target.name);
-                self.load(access, at)?;
-                let op_span = *op_span;
-                self.out().op(Opcode::ToNumber, op_span);
-                if !*prefix {
-                    self.out().op(Opcode::Dup, op_span);
-                }
-                self.constant(Primitive::Number(1.0), op_span)?;
-                let arith = match op {
-                    UpdateOp::Inc => Opcode::Add,
-                    UpdateOp::Dec => Opcode::Sub,
-                };
-                self.out().op(arith, op_span);
-                self.store(access, at)?;
-                if !*prefix {
-                    self.out().op(Opcode::Pop, op_span);
-                }
-            }
+            } => self.update(*op, *prefix, target, *op_span),
             ExprKind::Call {
                 callee,
                 args,
                 op_span,
-            } => {
-                let mut method = false;
-                if let ExprKind::Member {
-                    object, property, ..
-                } = &callee.kind
-                {
-                    if self.is_intrinsic_binding(object) {
-                        return self.intrinsic(property, args, span, *op_span);
-                    }
-                    method = true;
-                }
-                if let ExprKind::Index { .. } = callee.kind {
-                    method = true;
-                }
-                if args.len() > MAX_COUNT {
-                    return Err(self.error(
-                        SyntaxErrorKind::TooLarge,
-                        span,
-                        "more than 65,535 call arguments",
-                    ));
-                }
-                if method {
-                    self.method_callee(callee)?;
-                } else {
-                    self.expr(callee)?;
-                }
-                for arg in args {
-                    self.expr(arg)?;
-                }
-                let call = if method {
-                    Opcode::CallMethod
-                } else {
-                    Opcode::Call
-                };
-                self.out().op_u16(call, args.len() as u16, *op_span);
+            } => self.call(callee, args, span, *op_span),
+            ExprKind::New { .. } => self.new_expr(e),
+            ExprKind::Member { .. } | ExprKind::Index { .. } => self.get_field(e),
+            ExprKind::Object(properties) => self.object_literal(properties, span),
+            ExprKind::AssignMember {
+                object,
+                property,
+                value,
+                op_span,
+            } => self.assign_member(object, property, value, *op_span),
+            ExprKind::Template { quasis, exprs } => self.template(quasis, exprs, span),
+            ExprKind::Array(elements) => self.array_literal(elements, span),
+            ExprKind::AssignIndex {
+                object,
+                index,
+                value,
+                op_span,
+            } => self.assign_index(object, index, value, *op_span),
+            ExprKind::UpdateProperty {
+                op,
+                prefix,
+                target,
+                op_span,
+            } => self.update_property(*op, *prefix, target, *op_span),
+            ExprKind::CompoundAssignProperty {
+                op,
+                target,
+                value,
+                op_span,
+            } => self.compound_assign_property(*op, target, value, *op_span),
+            ExprKind::Function(f) => self.function_expr(f),
+            ExprKind::Sequence { left, right } => self.sequence(left, right, span),
+        }
+    }
+
+    /// A literal, `this` or `undefined`.
+    #[inline(never)]
+    fn literal(&mut self, e: &Expr) -> Result<(), SyntaxError> {
+        let span = e.span;
+        match &e.kind {
+            ExprKind::Number(n) => self.constant(Primitive::Number(*n), span),
+            ExprKind::Bool(b) => self.constant(Primitive::Bool(*b), span),
+            ExprKind::Null => self.constant(Primitive::Null, span),
+            ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span),
+            ExprKind::This => {
+                self.out().op(Opcode::GetThis, span);
+                Ok(())
             }
-            ExprKind::New { .. } => return self.new_expr(e),
-            ExprKind::Member { .. }
-            | ExprKind::Object(_)
-            | ExprKind::AssignMember { .. }
-            | ExprKind::Template { .. }
-            | ExprKind::Array(_)
-            | ExprKind::Index { .. }
-            | ExprKind::AssignIndex { .. }
-            | ExprKind::UpdateProperty { .. }
-            | ExprKind::CompoundAssignProperty { .. } => {
-                self.property_expr(e)?;
+            ExprKind::Undefined => {
+                self.out().op(Opcode::Undefined, span);
+                Ok(())
             }
-            ExprKind::Function(f) => {
-                let self_name = match &f.name {
-                    Some(name) => {
-                        self.check_not_reserved(name)?;
-                        Some((name.name.clone(), SelfKind::Expression))
-                    }
-                    None => None,
-                };
-                self.closure(f, self_name)?;
+            _ => Err(self.internal(span, "not a literal")),
+        }
+    }
+
+    /// A reference to the binding `name`, read with the checks of any read.
+    #[inline(never)]
+    fn identifier(&mut self, name: &str, span: Span) -> Result<(), SyntaxError> {
+        let at = self.name_span(name, span);
+        let access = self.resolve_reference(name);
+        self.load(access, at)
+    }
+
+    /// A prefix operator other than `typeof` of an identifier.
+    #[inline(never)]
+    fn unary(&mut self, op: UnaryOp, operand: &Expr, span: Span) -> Result<(), SyntaxError> {
+        self.expr(operand)?;
+        match op {
+            UnaryOp::Typeof => self.out().op(Opcode::Typeof, span),
+            UnaryOp::Void => self.void_result(span),
+            UnaryOp::Not => self.out().op(Opcode::Not, span),
+            UnaryOp::Neg | UnaryOp::Plus => {
+                if !is_number(operand) {
+                    self.out().op(Opcode::ToNumber, span);
+                }
+                if op == UnaryOp::Neg {
+                    self.out().op(Opcode::Neg, span);
+                }
             }
-            ExprKind::Sequence { left, right } => {
-                // Left to right; only the last operand's value is kept.
-                self.expr(left)?;
-                self.out().op(Opcode::Pop, span);
-                self.expr(right)?;
+            UnaryOp::BitNot => {
+                if !is_number(operand) {
+                    self.out().op(Opcode::ToNumber, span);
+                }
+                self.out().op(Opcode::BitNot, span);
             }
         }
         Ok(())
+    }
+
+    /// `left op right`: both operands, then the operator's instructions.
+    #[inline(never)]
+    fn binary_expr(
+        &mut self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(left)?;
+        self.expr(right)?;
+        self.binary(op, is_number(left), is_number(right), op_span);
+        Ok(())
+    }
+
+    /// `left && right`, `left || right`: the left value is the result
+    /// unless it selects the right.
+    #[inline(never)]
+    fn logical(
+        &mut self,
+        op: LogicalOp,
+        left: &Expr,
+        right: &Expr,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(left)?;
+        let end = self.out().label();
+        self.out().op(Opcode::Dup, span);
+        if op == LogicalOp::Or {
+            self.out().op(Opcode::Not, span);
+        }
+        self.out().branch(Opcode::JumpIfFalse, end, span);
+        self.out().op(Opcode::Pop, span);
+        self.expr(right)?;
+        self.out().bind(end);
+        Ok(())
+    }
+
+    /// `test ? consequent : alternate`.
+    #[inline(never)]
+    fn conditional(
+        &mut self,
+        test: &Expr,
+        consequent: &Expr,
+        alternate: &Expr,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(test)?;
+        let otherwise = self.out().label();
+        let end = self.out().label();
+        self.out().branch(Opcode::JumpIfFalse, otherwise, test.span);
+        self.expr(consequent)?;
+        self.out().branch(Opcode::Jump, end, span);
+        self.out().bind(otherwise);
+        self.expr(alternate)?;
+        self.out().bind(end);
+        Ok(())
+    }
+
+    /// `target = value` for a binding: the value, then the store.
+    #[inline(never)]
+    fn assign(&mut self, target: &Ident, value: &Expr) -> Result<(), SyntaxError> {
+        self.expr(value)?;
+        let at = self.name_span(&target.name, target.span);
+        let access = self.resolve_reference(&target.name);
+        self.store(access, at)
+    }
+
+    /// `target op= value` for a binding: read the binding (with the same
+    /// checks as any read), then evaluate the right operand, apply the
+    /// binary operator's own instructions, and store (with the same checks
+    /// as `=`, so a `const` is a TypeError after the right operand).
+    #[inline(never)]
+    fn compound_assign(
+        &mut self,
+        op: BinaryOp,
+        target: &Ident,
+        value: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        let at = self.name_span(&target.name, target.span);
+        let access = self.resolve_reference(&target.name);
+        if matches!(access, Access::Intrinsic) {
+            // The error of `__rt = x`, not of reading `__rt`.
+            return self.store(access, at);
+        }
+        self.load(access, at)?;
+        self.expr(value)?;
+        self.binary(op, false, is_number(value), op_span);
+        self.store(access, at)
+    }
+
+    /// `++target`, `target--`, ... for a binding: read the binding (with
+    /// the same checks as any read), ToNumber, add or subtract 1, store
+    /// (with the same checks as `=`). A postfix update keeps the converted
+    /// old value under the new one and drops the stored value.
+    #[inline(never)]
+    fn update(
+        &mut self,
+        op: UpdateOp,
+        prefix: bool,
+        target: &Ident,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        let at = self.name_span(&target.name, target.span);
+        let access = self.resolve_reference(&target.name);
+        self.load(access, at)?;
+        self.out().op(Opcode::ToNumber, op_span);
+        if !prefix {
+            self.out().op(Opcode::Dup, op_span);
+        }
+        self.constant(Primitive::Number(1.0), op_span)?;
+        let arith = match op {
+            UpdateOp::Inc => Opcode::Add,
+            UpdateOp::Dec => Opcode::Sub,
+        };
+        self.out().op(arith, op_span);
+        self.store(access, at)?;
+        if !prefix {
+            self.out().op(Opcode::Pop, op_span);
+        }
+        Ok(())
+    }
+
+    /// `callee(args)`: an intrinsic call, a method call (member callee,
+    /// see [`Self::method_callee`]) or a plain call.
+    #[inline(never)]
+    fn call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        span: Span,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        let mut method = false;
+        if let ExprKind::Member {
+            object, property, ..
+        } = &callee.kind
+        {
+            if self.is_intrinsic_binding(object) {
+                return self.intrinsic(property, args, span, op_span);
+            }
+            method = true;
+        }
+        if let ExprKind::Index { .. } = callee.kind {
+            method = true;
+        }
+        if args.len() > MAX_COUNT {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "more than 65,535 call arguments",
+            ));
+        }
+        if method {
+            self.method_callee(callee)?;
+        } else {
+            self.expr(callee)?;
+        }
+        for arg in args {
+            self.expr(arg)?;
+        }
+        let call = if method {
+            Opcode::CallMethod
+        } else {
+            Opcode::Call
+        };
+        self.out().op_u16(call, args.len() as u16, op_span);
+        Ok(())
+    }
+
+    /// A function expression: a closure, bound to its own name inside if
+    /// it has one.
+    #[inline(never)]
+    fn function_expr(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        let self_name = match &f.name {
+            Some(name) => {
+                self.check_not_reserved(name)?;
+                Some((name.name.clone(), SelfKind::Expression))
+            }
+            None => None,
+        };
+        self.closure(f, self_name)
+    }
+
+    /// `left, right`: left to right; only the last operand's value is kept.
+    #[inline(never)]
+    fn sequence(&mut self, left: &Expr, right: &Expr, span: Span) -> Result<(), SyntaxError> {
+        self.expr(left)?;
+        self.out().op(Opcode::Pop, span);
+        self.expr(right)
     }
 
     /// `new callee(args)` (clj-quickjs-71; ECMAScript EvaluateNew, QuickJS

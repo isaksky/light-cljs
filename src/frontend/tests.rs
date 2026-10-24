@@ -17,8 +17,8 @@ use super::ast::{
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{
-    MAX_NESTING, ScriptOptions, SyntaxError, SyntaxErrorKind, line_column, parse_script,
-    parse_script_with,
+    MAX_NESTING, ScriptOptions, SyntaxError, SyntaxErrorKind, compile_script, line_column,
+    parse_script, parse_script_with,
 };
 
 // ----- S-expression rendering of the AST ------------------------------------
@@ -3113,9 +3113,12 @@ fn mixed_expression_depth_is_bounded() {
     assert_eq!(script.body[0].height, 5);
 }
 
-/// For each nesting construct, the deepest accepted input parses within a
-/// 2 MiB stack (Rust's default for spawned threads) in this build profile.
-/// A stack overflow here aborts the test binary, failing the run.
+/// For each nesting construct, every depth up to the first one rejected as
+/// [`SyntaxErrorKind::TooDeep`] parses and compiles (parse, then lowering)
+/// within a 2 MiB stack (Rust's default for spawned threads) in this build
+/// profile. A stack overflow here aborts the test binary, failing the run
+/// (clj-quickjs-262: assignment chains used to overflow the lowering before
+/// the parser's limit).
 #[test]
 fn nesting_at_the_limit_fits_a_2_mib_stack() {
     type Make = fn(usize) -> String;
@@ -3226,6 +3229,27 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             }
             format!("x = {s};")
         }),
+        // Right-associative assignment chains (clj-quickjs-262).
+        ("compound assignments", |n| {
+            format!("x = {}1;", "a += ".repeat(n))
+        }),
+        ("property compound assignments", |n| {
+            format!("x = {}1;", "o.b += ".repeat(n))
+        }),
+        ("index compound assignments", |n| {
+            format!("x = {}1;", "o[k] -= ".repeat(n))
+        }),
+        ("computed index assignments", |n| {
+            format!("x = {}1;", "o[k] = ".repeat(n))
+        }),
+        ("mixed assignments", |n| {
+            format!("x = {}1;", "a = o.b += o[0] = a -= ".repeat(n))
+        }),
+        // `new` (clj-quickjs-71).
+        ("new chains", |n| format!("x = {}F;", "new ".repeat(n))),
+        ("nested new arguments", |n| {
+            format!("x = {}1{};", "new F(".repeat(n), ")".repeat(n))
+        }),
     ];
     std::thread::Builder::new()
         .stack_size(2 << 20)
@@ -3233,7 +3257,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             for (name, make) in makers {
                 let mut deepest = 0;
                 for n in 1..=MAX_NESTING {
-                    match parse_script(&make(n)) {
+                    match compile_script(name, &make(n)) {
                         Ok(_) => deepest = n,
                         Err(e) if e.kind == SyntaxErrorKind::TooDeep => break,
                         Err(e) => panic!("{name} at depth {n}: {e}"),

@@ -3066,10 +3066,10 @@ fn deep_expressions_compile_within_a_small_stack() {
     let commas = vec!["1"; 241].join(", ");
     let powers = vec!["1"; 241].join(" ** ");
     // Objects (clj-quickjs-114): 60 nested literals, a chain of 240 member
-    // reads and 120 (right-associative) property assignments.
+    // reads and 250 (right-associative) property assignments.
     let objects = format!("x = {}1{};", "{a: 1, b: ".repeat(60), "}".repeat(60));
     let members = format!("o{};", ".b".repeat(240));
-    let assigns = format!("{}1;", "o.b = ".repeat(120));
+    let assigns = format!("{}1;", "o.b = ".repeat(250));
     // `void` (clj-quickjs-133): 240 nested prefix operators.
     let voids = format!("{}1;", "void ".repeat(240));
     let handle = std::thread::Builder::new()
@@ -3106,11 +3106,12 @@ fn deep_expressions_compile_within_a_small_stack() {
     );
 }
 
-/// Right-associative chains of 120 compound assignments on properties
+/// Right-associative chains of 240 compound assignments on properties
 /// (clj-quickjs-260), named and computed, compile on a 2 MiB thread stack
-/// (each level keeps the lowering's `compound_assign_property` frame while
-/// its right operand compiles; 120 as for the `=` chains of
-/// `deep_expressions_compile_within_a_small_stack`) and run.
+/// (each level keeps the lowering's `expr` and `compound_assign_property`
+/// frames while its right operand compiles; 240 is near the parser's
+/// nesting limit, which these chains used to overflow before reaching,
+/// clj-quickjs-262) and run.
 #[test]
 fn deep_property_compound_assignments_compile_within_a_small_stack() {
     let handle = std::thread::Builder::new()
@@ -3124,7 +3125,7 @@ fn deep_property_compound_assignments_compile_within_a_small_stack() {
             .map(|(target, init)| {
                 // Each level adds the old value 0 to the result of the
                 // level to its right, so the value is 1.
-                let src = format!("{init} {}1", format!("{target} += ").repeat(120));
+                let src = format!("{init} {}1", format!("{target} += ").repeat(240));
                 compile_script("deep", &src)
                     .map(|exe| (target, exe))
                     .map_err(|e| format!("{target}: {e}"))

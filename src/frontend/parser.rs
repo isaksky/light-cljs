@@ -28,8 +28,11 @@ type Params = (Vec<Ident>, Vec<Option<Expr>>);
 
 /// Nesting-budget cost of each construct, per nesting level. Weighted by the
 /// measured Rust stack each one uses, so that the whole [`MAX_NESTING`]
-/// budget fits a 2 MiB thread stack even in an unoptimized build (checked
-/// by `frontend::tests::nesting_at_the_limit_fits_a_2_mib_stack`).
+/// budget fits a 2 MiB thread stack even in an unoptimized build, when
+/// parsing and when lowering (checked for every accepted depth by
+/// `frontend::tests::nesting_at_the_limit_fits_a_2_mib_stack`; the
+/// lowering's per-level frames are kept below the parser's,
+/// clj-quickjs-262).
 mod cost {
     pub const STATEMENT: usize = 1;
     /// `{ ... }`, including function bodies (on top of `STATEMENT`).

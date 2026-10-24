@@ -400,7 +400,11 @@ checks left to later stages:
   link plus 3 for its key expression while it is parsed. So about 64 nested parentheses or calls, 128 nested
   blocks or `else if` links, 64 nested function declarations, 42 nested
   function expressions, or a chain of about 250 binary operators fit. The whole budget fits a 2 MiB thread stack
-  even in a debug build (tested). Separately, the syntax tree itself may be
+  even in a debug build, for parsing and for compiling (tested for every
+  nesting form at every accepted depth; clj-quickjs-262 made the
+  compiler's per-level expression frames small enough that right-nested
+  assignment chains such as `a = a = ... 1` no longer overflow it before
+  the limit). Separately, the syntax tree itself may be
   at most 256 nodes high (statements, functions and expressions on any
   root-to-leaf path, counted by each node's `height`), which also catches
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
