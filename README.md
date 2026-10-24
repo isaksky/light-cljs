@@ -3396,6 +3396,5 @@ and migrate through saved continuations. The host supplies the default locale.
 Deferred: locale tailorings (clj-quickjs-219) and complete UCA/DUCET weights.
 The pinned snapshot rule set is documented in
 [architecture](docs/architecture.md#intl-collator-root-order-clj-quickjs-218).
-The required array sort rows currently fail explicitly: Array.prototype.sort
-is the separate unlanded prerequisite clj-quickjs-208. Bound compare already
-has the comparator signature and can be passed directly when sort lands.
+The cached bound function can be passed directly to `Array.prototype.sort`;
+the en/de root rows sort `['z', 'a', 'Z', 'A']` to `a,A,z,Z`.

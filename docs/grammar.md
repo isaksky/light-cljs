@@ -4376,6 +4376,9 @@ inside object hooks. `resolvedOptions()` returns locale, usage, sensitivity,
 ignorePunctuation, collation (`default`), numeric and caseFirst, in that order.
 `Intl.Collator.supportedLocalesOf` shares the canonical locale-list and matcher
 helpers. Instances inherit `Symbol.toStringTag = 'Intl.Collator'`.
+The detached function is an `Array.prototype.sort` comparator: en/de root
+sorting of `['z','a','Z','A']` gives `a,A,z,Z`; equal collation keys retain
+their input order, including base-sensitive and canonically equivalent ties.
 
 Options: `localeMatcher` lookup/best fit, `usage` sort/search, `sensitivity`
 base/accent/case/variant, `ignorePunctuation` boolean, `numeric` boolean and

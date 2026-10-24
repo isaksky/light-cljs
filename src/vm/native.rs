@@ -528,7 +528,6 @@ enum NativeState {
     Intl(Box<intl::Intl>),
     NumberFormat(Box<number_format::State>),
     PluralRules(Box<plural_rules::State>),
-    Collator(Box<collator::State>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -542,6 +541,7 @@ enum NativeState {
     JsonStringify(Box<super::json::Stringifier>),
     TypedArray(Box<typed_array::TypedArray>),
     ArraySort(Box<array_sort::State>),
+    Collator(Box<collator::State>),
 }
 
 #[derive(Debug)]

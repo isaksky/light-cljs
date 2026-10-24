@@ -6311,6 +6311,9 @@ both the receiver and detached-callable cases of the cycle.
 The object remains task-owned even when frozen; all public entry points check
 ownership and internal-slot brand. Compare copies the edge-free options into
 its continuation, then requests two resumable ToString operations in order.
+When used by `Array.prototype.sort`, this bound native continuation nests
+inside the stable merge-sort continuation. Object coercions can wait while
+both continuations remain traced across collection and worker migration.
 
 `scripts/quickjs-data/repack-collation.pl` extends the verified snapshot pipeline
 by offline-expanding its compressed NFD, full folding and combining-class

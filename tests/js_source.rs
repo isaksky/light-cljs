@@ -19794,13 +19794,71 @@ fn intl_collator_root_order() {
         "let c=new Intl.Collator('en'); c.compare('a','A') < 0 && c.compare('A','á') < 0 && c.compare('á','b') < 0 && c.compare('é','é') === 0",
         "new Intl.Collator('en').resolvedOptions().collation === 'default'",
         "let caught=false; try {new Intl.Collator('en',{sensitivity:'bogus'});} catch(e){caught=e instanceof RangeError;} caught",
-        // Required upstream rows: intentionally fail while the separately
-        // assigned Array.prototype.sort prerequisite (-208) is absent.
+        // Required upstream rows, using the cached bound comparator directly.
         "['z','a','Z','A'].sort(new Intl.Collator('en').compare).join(',') === 'a,A,z,Z'",
         "['z','a','Z','A'].sort(new Intl.Collator('de').compare).join(',') === 'a,A,z,Z'",
+        "['item10','item2','item1'].sort(new Intl.Collator('en',{numeric:true}).compare).join() === 'item1,item2,item10'",
+        "['item10','item2','item1'].sort(new Intl.Collator('en').compare).join() === 'item1,item10,item2'",
+        "['z','a','Z','A'].sort(new Intl.Collator('en',{caseFirst:'upper'}).compare).join() === 'A,a,Z,z'",
+        "['á','A','a','b'].sort(new Intl.Collator('en',{sensitivity:'base'}).compare).join() === 'á,A,a,b'",
+        "['é','é','e'].sort(new Intl.Collator('en',{sensitivity:'accent'}).compare).join() === 'e,é,é'",
+        "['ab','a-b','aa'].sort(new Intl.Collator('en',{ignorePunctuation:true}).compare).join() === 'aa,ab,a-b'",
+        "let e={}, caught; let a=[{toString(){throw e;}},'a']; try {a.sort(new Intl.Collator('en').compare);} catch(x){caught=x;} caught === e && a[1] === 'a'",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
+}
+
+/// Synthetic fixture, not light-cljs output. The sort alone retains the cached
+/// comparator and receiver while its nested ToString frames wait and migrate.
+#[test]
+fn intl_collator_sort_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let a=[{id:'b',toString(){log+='b';__rt.need(1,1);return 'b';}},
+               {id:'a',toString(){log+='a';__rt.need(2,1);return 'a';}}];
+        let result=a.sort(new Intl.Collator('en').compare);
+        result === a && a[0].id === 'a' && a[1].id === 'b' && log === 'ba'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..2500 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("Collator sort continuation did not finish");
 }
 
 /// Synthetic fixtures, not light-cljs output.
