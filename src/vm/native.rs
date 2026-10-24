@@ -1199,7 +1199,7 @@ pub(crate) fn start_direct_eval(
     }
     captures.push(eval_source(heap, state, site.receiver)?);
     native.caller = Some(eval::Caller {
-        strict: state.top().code.strict,
+        strict: site.strict,
         bindings: site.bindings,
         captures,
         receiver_strict: site.receiver_strict,

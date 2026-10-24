@@ -91,6 +91,8 @@ pub struct EvalBinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalSite {
     pub offset: u32,
+    /// Call-site mode, including strict class keys in a sloppy activation.
+    pub strict: bool,
     pub bindings: Vec<EvalBinding>,
     pub receiver: EvalSource,
     /// Originating ordinary function's mode, independent of eval directives.

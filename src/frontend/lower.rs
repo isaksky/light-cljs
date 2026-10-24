@@ -1772,6 +1772,7 @@ impl<'s> Lowerer<'s> {
         let receiver = eval_source(self.resolve_this(self.fns.len() - 1, true));
         Ok(EvalSite {
             offset: self.cur().out.code.len() as u32,
+            strict: self.cur().strict,
             bindings,
             receiver,
             receiver_strict: self.cur().this_strict,

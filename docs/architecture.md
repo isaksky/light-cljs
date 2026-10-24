@@ -7250,6 +7250,9 @@ Computed keys execute inline in their enclosing activation, so `yield` and
 lowering temporarily applies class strictness; appended `PutGlobalStrict`,
 `PutFieldStrict`, `PutElemStrict` and `DeleteStrict` bytecodes enforce strict
 runtime writes/deletion there without changing the surrounding function's mode.
+Direct-eval descriptors also retain the call site's strictness, independently
+of the originating receiver's mode, so eval in these keys inherits class
+strictness while keeping the enclosing activation's `this` behavior.
 
 For an anonymous class used as a computed object-property value, lowering passes
 the converted key's local into class construction. It sets the constructor name

@@ -32,6 +32,9 @@ fn base_classes() {
         "let C = class {}; let D = class Named {}; C.name === 'C' && D.name === 'Named' && C.length === 0 && D.length === 0",
         "let C = class Inner { constructor(x = 3) { this.x = x; } m() { return Inner; } }; let D = C; C = 1; new D().m() === D && new D().x === 3 && D.length === 0",
         "class C { m() { return C; } } let D = C; C = 1; new D().m() === D",
+        "class C { m() { return eval('C'); } static s() { return eval('C'); } } let D = C; C = 1; new D().m() === D && D.s() === D",
+        "class C { m() { eval('C = 1'); } } let ok = false; try { new C().m(); } catch(e) { ok = e instanceof TypeError; } ok && typeof C === 'function'",
+        "let ok = false; try { let C = class C { [eval('C')]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok",
         "let ok = false; try { let C = class C { [C]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok",
         "let C = 9; let seen = 0; try { let D = class C { [(seen++, C)]() {} }; } catch(e) { seen += e instanceof ReferenceError ? 10 : 100; } C === 9 && seen === 11",
         "class C { static constructor() { return 7; } ['constructor']() { return 8; } ['__proto__']() { return 9; } } C.constructor() === 7 && new C().constructor() === 8 && new C().__proto__() === 9",
@@ -96,6 +99,8 @@ fn base_classes_bytecode_roundtrip() {
 #[test]
 fn base_classes_are_strict_in_sloppy_scripts() {
     for source in [
+        "let ok = false; try { let C = class { [eval('missing = 1')]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok && typeof missing === 'undefined'",
+        "function f() { let C = class { [eval('this') === this ? 'm' : 'bad']() { return 7; } }; return new C().m() === 7; } f.call({})",
         "let ok = false; try { let C = class { [missing = 1]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok && typeof missing === 'undefined'",
         "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [(o.x = 2)]() {} }; } catch(e) { ok = e instanceof TypeError; } ok && o.x === 1",
         "class C {} let ok = false; try { C.prototype = {}; } catch(e) { ok = true; } !ok && typeof C.prototype === 'object'",

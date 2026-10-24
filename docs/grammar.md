@@ -5086,6 +5086,8 @@ Execution: declarations have a mutable outer binding with a temporal dead zone.
 A named class also has an independent immutable inner name binding, captured by
 its constructor and methods. Computed keys execute in order while this inner
 binding remains uninitialized. The binding is initialized after all elements.
+Direct eval in computed keys inherits class strictness and sees the inner
+binding's temporal dead zone; eval in methods sees its immutable initialized value.
 Constructors require `new`, including through call/apply/bind and spread calls.
 Anonymous expressions infer their constructor name from a binding or object
 property key before member definitions, preserving later static `name` overrides.
