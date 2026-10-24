@@ -1715,7 +1715,7 @@ fn eval_in_parameter_expressions() {
         r#"function f(a=eval('var c=1'), b=eval('c+=1'), probe=()=>c) { eval('var c=3'); return c===3 && probe()===2; } f()"#,
         r#"function f(a=eval('var c=1'), probe=()=>c) { var c; return c===undefined && probe()===1; } f()"#,
         r#"function f(a=eval('var c=1'), probe=()=>c) { function c() { return 2; } return c()===2 && probe()===1; } f()"#,
-        r#"let f=(a=eval('var c=1'), probe=()=>c)=>probe; let g=f(); f(); g()===1"#,
+        r#"let f=(v, a=eval('var c=v'), probe=()=>c)=>probe; let g=f(1), h=f(2); g()===1 && h()===2"#,
         r#"function f({a=eval('var c=1')}={}, b=c, probe=()=>c) { var c=2; return a===undefined && b===1 && probe()===1 && c===2; } f()"#,
         r#"function f(a=eval('"use strict"; var c=1'), b=typeof c) { return b==='undefined'; } f()"#,
         r#"function f(a=eval('eval("var c=1")'), b=c) { return b===1; } f()"#,

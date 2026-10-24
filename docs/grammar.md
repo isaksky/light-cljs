@@ -6181,9 +6181,9 @@ Rejected forms: an ordinary nested function establishes a fresh context.
 Super properties in arrows outside a method context are early Invalid
 SyntaxErrors; direct eval outside that context and indirect eval throw catchable
 SyntaxError. `super()` requires a derived constructor context and remains
-forbidden in ordinary methods and field initializers. Explicit gaps: direct
-eval in parameter expressions remains Unsupported (-109); private names and
-static blocks remain rejected.
+forbidden in ordinary methods and field initializers. Direct eval in parameter
+expressions inherits the enclosing method context (clj-quickjs-109).
+Explicit gaps: private names and static blocks remain rejected.
 
 Synthetic fixtures, not light-cljs output:
 

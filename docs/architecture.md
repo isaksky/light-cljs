@@ -7332,14 +7332,13 @@ Receiver-only captures use `GetRawThis` (0x91) instead of evaluating
 `GetThis`. The descriptor retains the originating ordinary function's mode;
 an imported sloppy receiver is checked with `CheckSloppyThis` (0x92) only
 when eval source actually reads it. Ordinary receiver captures outside eval
-keep their existing path. Shadowed `eval` calls in parameter expressions use
-the existing intrinsic rejection guard until parameter eval is supported.
+keep their existing path. Calls named `eval` in parameter expressions use the
+same runtime intrinsic check as body calls (clj-quickjs-109).
 
 Strict eval declarations use a private variable environment; lexical
 declarations always remain private. Sloppy var/function declaration injection
 is supported by clj-quickjs-108 below; parameter-expression eval by -109 below.
-`new.target` (-99) is transported with the receiver; `super` (-112) remains
-a frontend gap.
+`new.target` (-99) and lexical `super` (-112) are transported with the receiver.
 
 QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `OP_eval`, `OP_apply_eval`, and `add_eval_variables` at revision
@@ -8319,11 +8318,11 @@ closure frame and a computed definition frame. The boundary-depth frontend test
 now covers nested instance and static field classes on the same 2 MiB compiler
 stack, with excessive input rejected as TooDeep.
 
-A field initializer is also the boundary for the existing eval-in-parameters
-restriction: a class expression evaluated in a parameter default may create
-instance/static initializers with direct eval. The initializer's fresh context
-ends the enclosing parameter restriction; parameter defaults inside its own
-nested arrows retain the existing explicit restriction.
+A field initializer establishes a fresh eval context even when its class
+expression is evaluated in an enclosing parameter default. Direct eval in
+such initializers and their arrows retains the initializer receiver, home
+object, and `arguments` early error, independently of the enclosing parameter
+scope. Nested arrow parameter defaults also support direct eval (clj-quickjs-109).
 
 The constructor records its resolved initializer access in `FnCtx` at closure
 entry; lexical arrows capture that exact access. A nested class's computed keys
