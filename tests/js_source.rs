@@ -163,6 +163,29 @@ fn generator_next_and_yield() {
 }
 
 #[test]
+fn generator_rejected_resume_preserves_suspension() {
+    // Synthetic fixture, not light-cljs output. The deepest caller fits,
+    // but attaching the generator above it exceeds the task's frame limit.
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 3,
+        ..clj_quickjs::VmLimits::default()
+    });
+    let script = exe(r#"
+        function* f() { yield 7; return 8; }
+        let g = f();
+        function nested() { return g.next(); }
+        function deep() { return nested(); }
+        let caught = false;
+        try { deep(); } catch(e) { caught = true; }
+        let a = g.next();
+        let b = g.next();
+        caught && a.value === 7 && !a.done && b.value === 8 && b.done
+    "#);
+    let result = rt.spawn(&script, &[]).unwrap().run().unwrap();
+    assert!(matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)));
+}
+
+#[test]
 fn generator_call_protocols_and_prototypes() {
     // Synthetic fixtures, not light-cljs output.
     for source in [

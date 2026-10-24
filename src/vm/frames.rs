@@ -832,6 +832,15 @@ impl VmState {
         })
     }
 
+    /// A suspension must not detach this frame's pending cancellation and
+    /// allow its caller to continue ordinary execution during cleanup.
+    pub(crate) fn activation_cancelling(&self) -> bool {
+        self.handlers.iter().any(|h| {
+            h.frame == self.frame_index()
+                && matches!(h.kind, HandlerKind::Pending(Completion::Cancel))
+        })
+    }
+
     /// Return `value` from the running frame. If the frame has a finally
     /// handler, the innermost one becomes a pending `Return` completion and
     /// its block runs first (entries above it are discarded: catch handlers,

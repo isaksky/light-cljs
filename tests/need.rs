@@ -204,6 +204,35 @@ fn generator_cancellation_runs_finally() {
 }
 
 #[test]
+fn generator_cancellation_cannot_detach_cleanup() {
+    // Synthetic fixture, not light-cljs output. A yield cannot move the
+    // pending cancellation into an inert generator and revive its caller.
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "generator-cancel-yield",
+        r#"
+        function* f() {
+            try { yield 1; __rt.need(5, 3); }
+            finally { __rt.effect(2, 8); yield 2; __rt.effect(2, 98); }
+        }
+        let g = f();
+        g.next();
+        try { g.next(); __rt.effect(2, 99); }
+        finally { __rt.effect(2, 9); }
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    assert_eq!(waiting(run(&task, &mut host)), key(&rt, NUMBER));
+    let Cancel::Runnable(cancelled) = task.cancel() else {
+        panic!("runnable cancellation")
+    };
+    assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+    assert_eq!(host.reports, [8.0, 9.0]);
+}
+
+#[test]
 fn getter_waits_on_dependency_and_resumes() {
     // Synthetic fixtures, not light-cljs output. Each row exercises a
     // different property continuation with the same wait/migration/GC path.

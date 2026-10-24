@@ -6067,6 +6067,10 @@ before completing the generator and rethrowing to the next caller. Cancellation
 runs attached finally blocks and completes abandoned generator boundaries.
 Detached generators are inert traced objects; attached frames retain ordinary
 `__rt.need`, budget, safepoint, migration and cancellation behavior.
+Yielding from a finally block holding the task's pending cancellation abandons
+that block and unwinds to enclosing finally blocks, like a dependency wait
+during cleanup; it cannot detach the cancellation and revive the next caller.
+A resume refused by VM limits preserves the suspended activation for retry.
 
 `Trace` follows saved arguments, locals, operands, handlers, native frames, code,
 callee, receiver and ordinary properties. Executing objects are retained by the

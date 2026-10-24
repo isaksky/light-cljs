@@ -1047,11 +1047,24 @@ pub(crate) fn start_builtin(
         let value = args.first().cloned().unwrap_or(Value::Undefined);
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::Generator { id, failed: None })?;
-        state.push_handler(super::exception::HandlerKind::NativeCatch {
-            native: state.natives.len() - 1,
-        })?;
         let boundary_index = state.natives.len() - 1;
-        if super::generator::resume(heap, state, id, value)? {
+        if let Err(error) = state.push_handler(super::exception::HandlerKind::NativeCatch {
+            native: boundary_index,
+        }) {
+            state.natives.pop();
+            return Err(error);
+        }
+        let resumed = match super::generator::resume(heap, state, id, value) {
+            Ok(resumed) => resumed,
+            Err(error) => {
+                // A rejected attachment has not entered the body. Remove
+                // its boundary so the failure cannot complete the generator.
+                state.pop_native_catch(boundary_index);
+                state.natives.pop();
+                return Err(error);
+            }
+        };
+        if resumed {
             let boundary = state
                 .natives
                 .get_mut(boundary_index)

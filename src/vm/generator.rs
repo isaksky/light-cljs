@@ -43,6 +43,14 @@ pub(crate) fn prototype(heap: &Heap) -> Result<ObjectId, Fault> {
 pub(crate) fn step(heap: &Heap, vm: &mut VmState, initial: bool) -> Result<Flow, Fault> {
     if initial {
         create(heap, vm)?;
+    } else if vm.activation_cancelling() {
+        // Like a dependency wait during cancellation, yielding abandons
+        // this cleanup block and continues with enclosing finally blocks.
+        return Ok(if vm.unwind_cancel(heap) {
+            Flow::FrameChanged
+        } else {
+            Flow::CleanupEnded
+        });
     } else {
         suspend(heap, vm)?;
     }
