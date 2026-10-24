@@ -9,10 +9,10 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, Declarator, Expr, ExprKind, ForInHead,
-    ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
-    PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
-    UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, Declarator, Expr,
+    ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind,
+    LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase,
+    TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{

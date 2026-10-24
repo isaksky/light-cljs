@@ -97,6 +97,7 @@ fn base_classes_are_strict_in_sloppy_scripts() {
         "class C { m() { return this; } } let m = C.prototype.m; m() === undefined",
         "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [(o['x'] = 2)]() {} }; } catch(e) { ok = e instanceof TypeError; } ok",
         "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [delete o.x]() {} }; } catch(e) { ok = e instanceof TypeError; } ok",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [delete o?.x]() {} }; } catch(e) { ok = e instanceof TypeError; } ok",
         "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let k = {toString() { return 'x'; }}; let n = 0; try { let C = class { [(o[k] = 2)]() {} }; } catch(e) { if (e instanceof TypeError) n++; } try { let C = class { [delete o[k]]() {} }; } catch(e) { if (e instanceof TypeError) n++; } n === 2",
     ] {
         let code = compile_script_with("classes.js", source, ScriptOptions::SLOPPY).unwrap();

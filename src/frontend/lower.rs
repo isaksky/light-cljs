@@ -3701,7 +3701,8 @@ impl<'s> Lowerer<'s> {
                         ChainLinkKind::Call(_) => unreachable!(),
                     }
                     if deleting {
-                        self.out().op(Opcode::Delete, delete.unwrap());
+                        let op = self.strict_op(Opcode::Delete);
+                        self.out().op(op, delete.unwrap());
                     }
                 }
             }

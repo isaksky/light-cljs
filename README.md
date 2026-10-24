@@ -2033,8 +2033,8 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 
 Deferred:
 
-- `new.target` (clj-quickjs-99, `Unsupported`), classes and `super`
-  (clj-quickjs-136..-139), built-in constructors such as `new Object()`,
+- `new.target` (clj-quickjs-99, `Unsupported`), derived classes, `super`
+  and fields (clj-quickjs-137..-139), built-in constructors such as `new Object()`,
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
 - `new` on a published function whose `prototype` was never created fails
@@ -3707,3 +3707,18 @@ Eval frames can yield, wait, collect, and migrate on 64 KiB stacks.
 Sloppy var/function hoisting (-108), parameter-expression eval (-109), and
 `new.target` (-99) remain explicit gaps. Verification:
 `cargo test --test js_source direct_eval -- --test-threads=3`.
+
+### Base classes (clj-quickjs-136)
+
+Supported: class declarations and expressions, optional inner names, explicit
+and default constructors, instance/static methods and accessors, and computed
+property names. Bodies are strict; declarations have a temporal dead zone and
+an independent immutable inner name binding. Methods are non-enumerable;
+constructors require `new` and have a non-writable `prototype`. Constructors and
+method callbacks can yield, wait, survive GC and migrate on ordinary VM frames.
+Class constructors, prototypes and detached methods retain task-owned state and
+cannot be published. Verify with `cargo test --test js_source base_classes` and
+`cargo test --lib frontend::tests::class_syntax`.
+
+Deferred: inheritance and `super()` (-137), super properties (-138), fields and
+static initialization blocks (-139); these forms fail explicitly.
