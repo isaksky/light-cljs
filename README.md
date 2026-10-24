@@ -2728,4 +2728,7 @@ Keys use SameValueZero, string content and object identity, with stable
 insertion positions; Maps are task-owned and rejected by atom publication.
 Own properties and prototype/integrity operations follow ordinary objects.
 Deferred: iterable construction (non-nullish arguments throw TypeError),
-iteration/forEach, BigInt keys and Symbol keys/toStringTag until Symbol lands.
+iteration/forEach and BigInt keys. Symbol keys compare by identity;
+`Map.prototype[Symbol.toStringTag]` is "Map". Generic Object.prototype.toString
+consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
+calling it on a Map explicitly fails with UnsupportedOperand.

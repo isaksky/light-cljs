@@ -927,7 +927,6 @@ fn realm_intrinsics_retain() {
         "JSON",
         "JSON.parse",
         "JSON.stringify",
-
         "Map",
         "Map.prototype",
         "Map.prototype.set",

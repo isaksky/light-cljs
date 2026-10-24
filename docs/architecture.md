@@ -4375,6 +4375,7 @@ hash; stored zero keys are normalized to positive zero. Strings compare by
 UTF-16 contents, objects by stable heap identity (generation included).
 Hash collisions always compare actual keys, with no user code, coercion or
 property access. The heap is nonmoving and live identities are never reused.
+Symbols compare by their stable primitive identity (clj-quickjs-127).
 Keys of future primitive kinds must extend those helpers consistently.
 
 Updating an existing key preserves its slot. Deletion empties the slot;
@@ -4392,4 +4393,6 @@ The realm appends an immutable ordinary `Map.prototype`, constructor,
 methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
 with a non-nullish argument explicitly throws TypeError until resumable
 iterable construction exists. Iteration/forEach and BigInt keys belong to
-later pellets; symbols use the shared key helpers once that value kind exists.
+later pellets. The prototype also owns the non-writable, non-enumerable,
+configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
+is exposed on `Symbol`.

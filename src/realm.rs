@@ -814,7 +814,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(symbol, "for", symbol_for, PropertyFlags::METHOD)?;
     let symbol_key_for = b.function(Builtin::SymbolKeyFor, &[])?;
     b.add(symbol, "keyFor", symbol_key_for, PropertyFlags::METHOD)?;
-    for name in ["iterator", "toPrimitive", "hasInstance"] {
+    for name in ["iterator", "toPrimitive", "hasInstance", "toStringTag"] {
         b.add_value(
             symbol,
             name,
@@ -1001,6 +1001,18 @@ fn map_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obje
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
     }
     let getter = b.function(Builtin::MapSize, &[])?;
+    let tag = crate::value::symbol::well_known("toStringTag");
+    let tag_key = b.heap.keys().intern_symbol(&tag)?;
+    b.heap
+        .with_object_mut(prototype, |object| match object {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("Map")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
     let key = b.heap.keys().intern(&JsString::from("size"))?;
     let desc = PropertyDescriptor {
         get: Some(Value::Object(getter)),

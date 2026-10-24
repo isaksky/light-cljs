@@ -1268,7 +1268,9 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
                 }
                 HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(_) => Ok("Object"),
-                HeapObject::JsMap(_) => Ok("Object"),
+                HeapObject::JsMap(_) => {
+                    unsupported("a Map: Symbol.toStringTag lookup is not supported")
+                }
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",

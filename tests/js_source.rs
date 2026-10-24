@@ -13449,3 +13449,23 @@ fn maps_reject_access_from_another_task() {
         );
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Symbols retain primitive
+/// identity and never coerce to strings while hashing or comparing keys.
+#[test]
+fn map_symbol_keys_and_tag() {
+    assert_eq!(
+        failure("Object.prototype.toString.call(new Map())").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+    for src in [
+        "let m = new Map(); let a = Symbol('key'); let b = Symbol('key'); m.set(a, 1); m.set(b, 2); m.set('Symbol(key)', 3); m.size === 3 && m.get(a) === 1 && m.get(b) === 2 && m.get('Symbol(key)') === 3 && !m.has(Symbol('key'))",
+        "let m = new Map(); let s = Symbol(); m.set(s, 1); m.set(s, 2); m.size === 1 && m.get(s) === 2 && m.delete(s) && !m.delete(s) && !m.has(s)",
+        "let m = new Map(); m.set(Symbol.iterator, 1); m.set(Symbol.toStringTag, 2); m.get(Symbol.iterator) === 1 && m.get(Symbol.toStringTag) === 2 && m.size === 2",
+        "typeof Symbol.toStringTag === 'symbol' && Symbol.toStringTag !== Symbol('Symbol.toStringTag') && Map.prototype[Symbol.toStringTag] === 'Map' && new Map()[Symbol.toStringTag] === 'Map'",
+        "let d = Object.getOwnPropertyDescriptor(Map.prototype, Symbol.toStringTag); d.value === 'Map' && !d.writable && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Symbol, 'toStringTag'); d.value === Symbol.toStringTag && !d.writable && !d.enumerable && !d.configurable",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}

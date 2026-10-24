@@ -3097,11 +3097,14 @@ throw TypeError otherwise. Own properties, prototype reflection, `in`,
 
 Keys use SameValueZero: NaN equals NaN, -0 equals +0 (stored as +0), strings
 compare by content and objects by identity. Undefined, null, booleans,
-numbers and strings are supported; equal-looking objects remain distinct.
+numbers, strings and symbols (by identity) are supported; equal-looking
+objects remain distinct. `Map.prototype[Symbol.toStringTag]` is "Map"
+(non-writable, non-enumerable, configurable).
 Updating a key preserves insertion position; deleting and reinserting
 moves it to the end. No user conversion or comparison code is invoked.
 
 Explicit gaps: non-nullish constructor arguments throw TypeError instead of
 consuming iterables. Map iteration and `forEach` (clj-quickjs-170), BigInt
-keys (clj-quickjs-171), and symbols/`Symbol.toStringTag` until the Symbol
-value kind lands (clj-quickjs-127) are deferred.
+keys (clj-quickjs-171) are deferred. Generic Object.prototype.toString
+consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
+calling it on a Map explicitly fails with UnsupportedOperand.

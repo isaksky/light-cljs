@@ -48,15 +48,17 @@ impl SymbolRegistry {
 }
 
 /// Well-known identities are process-wide; every realm and task shares
-/// them. These three immutable bodies live until process exit.
+/// them. These immutable bodies live until process exit.
 pub(crate) fn well_known(name: &str) -> JsSymbol {
     static ITERATOR: OnceLock<JsSymbol> = OnceLock::new();
     static TO_PRIMITIVE: OnceLock<JsSymbol> = OnceLock::new();
     static HAS_INSTANCE: OnceLock<JsSymbol> = OnceLock::new();
+    static TO_STRING_TAG: OnceLock<JsSymbol> = OnceLock::new();
     let slot = match name {
         "iterator" => &ITERATOR,
         "toPrimitive" => &TO_PRIMITIVE,
         "hasInstance" => &HAS_INSTANCE,
+        "toStringTag" => &TO_STRING_TAG,
         _ => unreachable!("unknown well-known symbol"),
     };
     slot.get_or_init(|| JsSymbol::new(Some(JsString::from(format!("Symbol.{name}").as_str()))))
