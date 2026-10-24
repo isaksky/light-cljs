@@ -1292,3 +1292,14 @@ was a semantic reference for direct Object argument rules and derived
 allocation. The Rust implementation is original; no C implementation was
 copied or wrapped. New constructor/lifetime tests are synthetic fixtures,
 not light-cljs output; the upstream operator fixture remains unmodified.
+
+## Public class fields (clj-quickjs-139)
+
+The S/P rows in `frontend::tests::class_fields` and
+`tests/js_source.rs::class_fields` adapt
+`research/quickjs/tests/test_language.js::test_class` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The existing QuickJS copyright and
+MIT license notices in both test modules apply. `research/quickjs/quickjs.c`
+`js_parse_class`, the field-initializer path, and `CASE(OP_define_field)` were
+read as semantic references. The Rust implementation is original; all other
+new fixtures are synthetic, not light-cljs output.

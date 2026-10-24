@@ -26264,3 +26264,123 @@ fn intl_duration_format_subsecond_precision() {
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. S and P adapt QuickJS
+/// tests/test_language.js::test_class; MIT notice retained in this file.
+#[test]
+fn class_fields() {
+    for source in [
+        "class S { static x = 42; static y = S.x; static z = this.x; } S.x === 42 && S.y === 42 && S.z === 42",
+        "class P { get = () => '123'; static() { return 42; } } new P().get() === '123' && new P().static() === 42",
+        "let n = 0; class C { a = ++n; b = ++n; static s = ++n; } let a = new C(); let b = new C(); C.s === 1 && a.a === 2 && a.b === 3 && b.a === 4 && b.b === 5",
+        "let n = 0; class B { set x(v) { n++; } } class C extends B { x = 7; } let c = new C(); c.x === 7 && n === 0 && Object.getOwnPropertyDescriptor(c,'x').enumerable",
+        "class B { constructor() { this.x = 7; } } class C extends B { y = this.x; constructor() { super(); this.z = this.y; } } let c = new C(); c.y === 7 && c.z === 7",
+        "class T { a; } let t = new T(); Object.getOwnPropertyNames(t).join(',') === 'a' && t.a === undefined",
+        "let n = 0; let key = {toString() { n++; return 'x'; }}; class C { [key] = ++n; static [++n] = 9; } let a = new C(); let b = new C(); n === 4 && a.x === 3 && b.x === 4 && C[2] === 9",
+        "class B { f() { return this.x; } static f() { return this.x; } } class C extends B { x = 7; y = super.f(); static x = 8; static y = super.f(); } new C().y === 7 && C.y === 8",
+        "class C { x = eval('this'); y = eval('new.target'); } let c = new C(); c.x === c && c.y === undefined",
+        "class C { x = eval('arguments'); } let ok = false; try { new C(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+        "class C { x = eval('eval(\"arguments\")'); } let ok = false; try { new C(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+        "class C { x = 1; constructor(x = this.x) { this.y = x; } } new C().y === 1",
+        "class C { static x = this.f(); static f() { return 7; } } C.x === 7",
+        "class C { get; set = 1; static; async\nx; } let c = new C(); c.get === undefined && c.set === 1 && c.static === undefined && c.async === undefined && c.x === undefined",
+        "class C { ['constructor'] = 1; static ['prototype2'] = 2; } new C().constructor === 1 && C.prototype2 === 2",
+        "class C { x = function() {}; y = () => this; } let c = new C(); c.x.name === 'x' && c.y() === c && c.y.name === 'y'",
+        "class B { f() { return this.x; } static f() { return this.x; } } class C extends B { x = 7; y = eval('super.f()'); z = () => super.f(); static x = 8; static y = eval('super.f()'); } let c = new C(); c.y === 7 && c.z() === 7 && C.y === 8",
+        "class B { f() { return this.x; } } class C extends B { x = 7; y = eval('eval(\"super.f()\")'); z = () => eval('super.f()'); } let c = new C(); c.y === 7 && c.z() === 7",
+        "function B() { return function() {}; } class C extends B { x = 1; } let c = new C(); c.x === 1 && typeof c === 'function'",
+        "let n = 0; class B { constructor() { return {}; } } class C extends B { x = ++n; constructor() { return {}; } } new C(); n === 0",
+        "class C { x = 1; constructor() { return {}; } } new C().x === undefined",
+        "let n = 0; class C { static x = new C().x; x = ++n; } C.x === 1 && n === 1",
+        "let n = 0; class C { x = eval('var n = 8; this'); y = n; } let c = new C(); c.x === c && c.y === 0 && n === 0",
+        "class C { x = (function(a) { return arguments[0]; })(7); y = {m() { return arguments.length; }}; } let c = new C(); c.x === 7 && c.y.m() === 0",
+        "let n = 0; class B { constructor() { Object.preventExtensions(this); } } class C extends B { x = ++n; } let ok = false; try { new C(); } catch(e) { ok = e instanceof TypeError; } ok && n === 1",
+        "let n = 0; class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { n++; return 7; }}; x = 8; } let c = new C(); c[0] === 7 && c.x === 8 && n === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Field/key callbacks suspend,
+/// collect and migrate without replaying effects or losing captured keys.
+#[test]
+fn class_fields_wait_collect_and_migrate() {
+    for source in [
+        "let n = 0; class B { constructor() { this.x = 3; } } class C extends B { [({toString() { return 'y'; }})] = (++n, __rt.need(139,1) + this.x); constructor() { (() => super())(); this.z = this.y; } } let c = new C(); c.y === 10 && c.z === 10 && n === 1",
+        "let n = 0; class B { static f() { return __rt.need(139,1); } } class C extends B { static x = (++n, eval('super.f()')); static y = this.x + 1; } C.x === 7 && C.y === 8 && n === 1",
+        "let n = 0; class C { [({toString() { n++; __rt.need(139,1); return 'x'; }})] = ++n; } let a = new C(); let b = new C(); a.x === 2 && b.x === 3 && n === 3",
+        "let n = 0; class B { get x() { n++; return __rt.need(139,1); } } class C extends B { y = super.x; z = this.y; } let c = new C(); c.y === 7 && c.z === 7 && n === 1",
+        "let n = 0; class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { n++; return __rt.need(139,1); }}; x = 8; } let c = new C(); c[0] === 7 && c.x === 8 && n === 1",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("fields.js", source).unwrap();
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(5), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(7.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}: {source}"),
+            }
+        }
+        assert!(complete && waits == 1, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Compilation stays on the host
+/// stack; executable round trips retain initializer and eval metadata.
+#[test]
+fn class_fields_on_small_worker_stack() {
+    for source in [
+        "let a = new Uint8Array(2); return a.length === 2;",
+        "class C { x = 7; static y = 8; } let c = new C(); return c.x === 7 && C.y === 8;",
+        "class B { x = 7; f() { return this.x; } } class C extends B { y = eval('super.f()'); z = () => super.f(); constructor() { (() => super())(); } } let c = new C(); return c.y === 7 && c.z() === 7;",
+        "class C { static x = eval('new.target'); x = eval('arguments'); } let ok = false; try { new C(); } catch(e) { ok = e instanceof SyntaxError; } return ok && C.x === undefined;",
+        "class B { constructor() { return new Uint8Array(2); } } class C extends B { 0 = {valueOf() { return 7; }}; x = 8; } let c = new C(); return c[0] === 7 && c.x === 8;",
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = compile_function(&format!("function check() {{ {source} }}")).unwrap();
+        let code = Executable::load(code.to_spec()).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("complete")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Bool(true), "{source}");
+    }
+}

@@ -8092,8 +8092,9 @@ already participates in precise tracing and transitive publication. Operand and
 native frames root receivers, lookup bases, keys, setters and assigned values;
 callbacks use ordinary resumable frames without retaining a Rust stack. Tests
 cover one-instruction budgets, collections around waits and yields, worker
-migration and 64 KiB worker stacks. Class fields and lexical super in arrows/eval
-remain explicit gaps. QuickJS is a semantic reference; this implementation uses
+migration and 64 KiB worker stacks. Public class fields execute below (-139);
+ordinary methods' lexical super in arrows/eval remains an explicit gap.
+QuickJS is a semantic reference; this implementation uses
 the existing Rust object model and VM continuations.
 
 Generator `next` and Promise entry use small dedicated native handlers before
@@ -8148,3 +8149,62 @@ QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 `js_module_ns_autoinit`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, were consulted as semantic
 references. No C code or upstream test text was adapted for these additions.
+
+## Public class fields (clj-quickjs-139)
+
+`ClassElement::is_field` distinguishes a public initializer expression from a
+method definition, including an omitted expression represented by `undefined`.
+The parser establishes an initializer context for strictness, super properties,
+new.target and the prohibition on arguments; ordinary nested functions/methods
+reset that context while arrows inherit it. Private names and static blocks
+retain their explicit rejection.
+
+Lowering evaluates every computed key once in class-definition order. Each
+field retains its converted key in an inaccessible class-scope binding cell.
+After installing methods and initializing the inner class-name cell, lowering
+creates an initializer method closure over the instance fields, with the instance
+prototype as its immutable home object. An inaccessible initializer cell in the
+class scope is captured by the constructor and its super-calling arrows. Base
+constructors call it before parameter initialization; super-call lowering calls
+it immediately after `BindThis`, preserving the super expression's receiver on
+the operand stack. A separate method closure over static fields has the class
+as home object and is called with the class receiver at definition time. This
+also permits a static initializer to construct the class after its instance
+initializer has been installed. All calls use existing `CallMethod` frames.
+
+Initializer closures use the existing computed-property lowering for anonymous
+value names and `DefineElem` to define own enumerable data properties in order.
+`DefineElem` now accepts constructor-provided objects and function property
+records as well as ordinary literal objects; define failures remain catchable.
+It never performs a setter-based assignment. Existing exotic descriptor
+conversion restrictions continue to fail explicitly.
+
+No heap kind or opcode is added: initializer cells, method home objects,
+converted keys and captured lexical bindings use existing precise tracing and
+publication categories. Temporary class roots are cleared only after static
+initialization. Field values/receivers remain in VM operands across suspension.
+`EvalSite` carries the initializer early-error flag and lexical home-function
+source; native eval captures that source alongside existing receiver/new.target
+and binding/environment captures. Validation bounds and checks the extra source;
+executable round trips retain it. Direct eval and initializer arrows use the
+captured method's home object rather than their own current function. This
+extension is confined to initializer contexts; ordinary methods' lexical super
+arrow/eval gap remains explicit.
+
+Tests cover definition order, computed-key reuse, descriptor attributes, setter
+shadowing, base/default-parameter and derived/super timing, function-valued
+receivers, direct/nested eval, lexical super, collection and migration during
+waits, executable round trips and execution on 64 KiB worker stacks.
+
+Integer-indexed fields on a constructor-returned typed array validate their data
+descriptor before running object-valued numeric conversion through the existing
+traced native write continuation; its result is the receiver, preserving
+`DefineElem`'s stack contract. Typed-array constructor entry and non-coercing
+metadata getters bypass the large general built-in dispatcher, keeping this
+field path within the 64 KiB stack budget as well.
+
+Field initializer expressions also charge four units in the existing weighted
+frontend nesting budget: their lowering retains a class frame, an initializer
+closure frame and a computed definition frame. The boundary-depth frontend test
+now covers nested instance and static field classes on the same 2 MiB compiler
+stack, with excessive input rejected as TooDeep.

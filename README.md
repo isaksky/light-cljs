@@ -2031,8 +2031,8 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 
 Deferred:
 
-- Derived classes, `super`
-  and fields (clj-quickjs-137..-139),
+- Private class names and static initialization blocks. Derived classes,
+  `super` and public fields execute (clj-quickjs-137..-139). Built-in constructors such as
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
 - `new` on a published function whose `prototype` was never created fails
@@ -4016,3 +4016,14 @@ Cyclic namespaces resolve before bodies execute, preserve hoisted function calls
 and throw catchable ReferenceErrors for lexical exports still in TDZ
 (clj-quickjs-255). JSON instances and default-export declarations remain
 deferred. The CLI remains script-only.
+
+### Public class fields (clj-quickjs-139)
+
+Public instance and static fields execute, including computed keys, contextual
+names, omitted initializers and field ASI. Instance fields define own data
+properties before base constructor parameters or immediately after derived
+`super()`; static fields run after method installation and inner-name binding.
+Initializers, super access, arrows and direct eval retain their receiver/home
+context across waits, collection and worker migration. Private names and static
+initialization blocks remain explicitly rejected. See `docs/grammar.md`,
+"Public class fields", for syntax, early errors and existing exotic-property gaps.

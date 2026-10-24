@@ -115,6 +115,10 @@ pub struct EvalSite {
     pub receiver: EvalSource,
     /// Originating ordinary function's mode, independent of eval directives.
     pub receiver_strict: bool,
+    /// Direct eval inherits the initializer's early error for `arguments`.
+    pub class_initializer: bool,
+    /// Lexical method context for direct eval inside a field initializer.
+    pub initializer_home: Option<EvalSource>,
     /// None at script scope; arrows and eval inherit the enclosing function's
     /// binding, whose value can itself be undefined on an ordinary call.
     pub new_target: Option<EvalSource>,
@@ -734,9 +738,16 @@ impl Executable {
             // after the named bindings; the complete capture count is u16.
             if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
                 || site.bindings.len() + site.environments.len()
-                    > usize::from(u16::MAX) - 1 - usize::from(site.new_target.is_some())
+                    > usize::from(u16::MAX)
+                        - 1
+                        - usize::from(site.new_target.is_some())
+                        - usize::from(site.initializer_home.is_some())
                 || !valid_source(site.receiver)
                 || site.new_target.is_some_and(|source| !valid_source(source))
+                || site
+                    .initializer_home
+                    .is_some_and(|source| !valid_source(source))
+                || site.initializer_home.is_some() != site.class_initializer
                 || site.environments.iter().any(|s| !valid_source(*s))
                 || site.variable_environment.is_some_and(|s| !valid_source(s))
                 || site
@@ -1072,12 +1083,25 @@ mod tests {
                     .collect(),
                 receiver: EvalSource::This,
                 receiver_strict: true,
+                class_initializer: false,
+                initializer_home: None,
                 new_target,
                 environments: vec![EvalSource::This; environments],
                 variable_environment: None,
                 variable_bindings: Vec::new(),
                 lexical_conflicts: Vec::new(),
             });
+            let mut initializer = spec.clone();
+            initializer.eval_sites[0].class_initializer = true;
+            initializer.eval_sites[0].initializer_home = Some(EvalSource::CurrentFunction);
+            let initializer_valid =
+                valid && count + environments + usize::from(new_target.is_some()) < 65_534;
+            assert_eq!(
+                Executable::load(initializer.clone()).is_ok(),
+                initializer_valid
+            );
+            initializer.eval_sites[0].initializer_home = Some(EvalSource::Local(spec.locals));
+            assert!(matches!(Executable::load(initializer), Err(e) if e.kind == InvalidEvalSite));
             let result = Executable::load(spec);
             if valid {
                 result.unwrap_or_else(|error| {

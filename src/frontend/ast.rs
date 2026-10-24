@@ -488,6 +488,9 @@ pub struct Class {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClassElement {
     pub is_static: bool,
+    /// A public field, whose value is an initializer expression, rather than
+    /// a method definition. An omitted initializer is `undefined`.
+    pub is_field: bool,
     pub property: PropertyDef,
 }
 

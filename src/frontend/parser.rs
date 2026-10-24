@@ -43,6 +43,9 @@ mod cost {
     /// `if` / `while` (on top of `STATEMENT`).
     pub const BODY: usize = 1;
     pub const FUNCTION: usize = 3;
+    /// Field values lower through a method closure and computed-property
+    /// definition while their class's temporaries remain on the host stack.
+    pub const FIELD: usize = 4;
     pub const ASSIGNMENT: usize = 1;
     /// `? :` (on top of the `ASSIGNMENT` of each branch).
     pub const CONDITIONAL: usize = 1;
@@ -100,6 +103,7 @@ pub(super) struct Parser<'a> {
     new_target_allowed: bool,
     super_call: bool,
     super_property: bool,
+    class_initializer: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -168,6 +172,7 @@ impl<'a> Parser<'a> {
             new_target_allowed: false,
             super_call: false,
             super_property: false,
+            class_initializer: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -577,9 +582,14 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let is_static = self.tok.span.text(self.src) == "static"
-                && self
-                    .peek_property_name()
-                    .is_some_and(|t| t.kind != TokenKind::Punct(Punct::LParen));
+                && self.peek_property_name().is_some_and(|t| {
+                    !matches!(
+                        t.kind,
+                        TokenKind::Punct(
+                            Punct::LParen | Punct::Assign | Punct::Semicolon | Punct::RBrace
+                        )
+                    )
+                });
             if is_static {
                 self.lexer.expect_property_name();
                 self.advance()?;
@@ -587,7 +597,18 @@ impl<'a> Parser<'a> {
                     return Err(self.unsupported(self.tok.span, "static initialization blocks are"));
                 }
             }
-            let property = self.parse_class_element(heritage.is_some() && !is_static)?;
+            let (property, is_field) =
+                self.parse_class_element(heritage.is_some() && !is_static)?;
+            if is_field
+                && (property.name.is_named("constructor")
+                    || is_static && property.name.is_named("prototype"))
+            {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    property.name_span,
+                    "invalid class field name",
+                ));
+            }
             let is_constructor = !is_static && property.name.is_named("constructor");
             if is_static && property.name.is_named("prototype") {
                 return Err(self.error(
@@ -620,6 +641,7 @@ impl<'a> Parser<'a> {
             } else {
                 elements.push(ClassElement {
                     is_static,
+                    is_field,
                     property,
                 });
             }
@@ -660,7 +682,7 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn parse_class_element(&mut self, derived: bool) -> PResult<PropertyDef> {
+    fn parse_class_element(&mut self, derived: bool) -> PResult<(PropertyDef, bool)> {
         let span = self.tok.span;
         let (generator, asynchronous) = self.parse_method_prefix()?;
         let accessor = match &self.tok.kind {
@@ -669,14 +691,15 @@ impl<'a> Parser<'a> {
                     && !generator
                     && !asynchronous
                     && self.peek_property_name().is_some_and(|t| {
-                        matches!(
-                            t.kind,
-                            TokenKind::Identifier(_)
-                                | TokenKind::Keyword(_)
-                                | TokenKind::String(_)
-                                | TokenKind::Number(_)
-                                | TokenKind::Punct(Punct::LBracket)
-                        )
+                        !t.newline_before
+                            && matches!(
+                                t.kind,
+                                TokenKind::Identifier(_)
+                                    | TokenKind::Keyword(_)
+                                    | TokenKind::String(_)
+                                    | TokenKind::Number(_)
+                                    | TokenKind::Punct(Punct::LBracket)
+                            )
                     }) =>
             {
                 Some(if n == "get" {
@@ -694,7 +717,10 @@ impl<'a> Parser<'a> {
         let name_span = self.tok.span;
         let name = self.parse_pattern_key()?;
         if !self.is_punct(Punct::LParen) {
-            return Err(self.unsupported(name_span, "class fields are"));
+            if generator || asynchronous || accessor.is_some() {
+                return Err(self.unexpected("a method parameter list"));
+            }
+            return self.parse_class_field(name, name_span).map(|p| (p, true));
         }
         let outer_super = std::mem::replace(
             &mut self.super_call,
@@ -713,7 +739,42 @@ impl<'a> Parser<'a> {
             true,
         );
         self.super_call = outer_super;
-        result
+        result.map(|p| (p, false))
+    }
+
+    #[inline(never)]
+    fn parse_class_field(&mut self, name: PropertyName, name_span: Span) -> PResult<PropertyDef> {
+        let saved = self.depth;
+        self.deeper(cost::FIELD)?;
+        let outer_initializer = std::mem::replace(&mut self.class_initializer, true);
+        let outer_super = std::mem::replace(&mut self.super_call, false);
+        let outer_property = std::mem::replace(&mut self.super_property, true);
+        let outer_target = std::mem::replace(&mut self.new_target_allowed, true);
+        let outer_suspension = std::mem::take(&mut self.suspension);
+        let value = if self.eat_punct(Punct::Assign)? {
+            self.parse_assignment()?
+        } else {
+            Expr::new(ExprKind::Undefined, name_span)
+        };
+        self.class_initializer = outer_initializer;
+        self.super_call = outer_super;
+        self.super_property = outer_property;
+        self.new_target_allowed = outer_target;
+        self.suspension = outer_suspension;
+        self.lexer.expect_property_name();
+        self.expect_semi()?;
+        self.depth = saved;
+        Ok(PropertyDef {
+            name,
+            name_span,
+            value,
+            shorthand: false,
+        })
+    }
+
+    pub(super) fn class_initializer_eval(&mut self, enabled: bool) {
+        self.class_initializer = enabled;
+        self.super_property = enabled;
     }
 
     #[inline(never)]
@@ -1815,6 +1876,7 @@ impl<'a> Parser<'a> {
     /// `function` Name? `(` Params `)` `{` FunctionBody `}`.
     #[inline(never)]
     fn parse_function(&mut self, declaration: bool) -> PResult<Function> {
+        let outer_initializer = std::mem::replace(&mut self.class_initializer, false);
         let outer_super = std::mem::replace(&mut self.super_call, false);
         let outer_property = std::mem::replace(&mut self.super_property, false);
         let saved = self.depth;
@@ -1851,6 +1913,7 @@ impl<'a> Parser<'a> {
         self.suspension = outer_suspension;
         self.super_call = outer_super;
         self.super_property = outer_property;
+        self.class_initializer = outer_initializer;
         let mut function = Function::new(
             FunctionKind::Ordinary,
             name,
@@ -1999,7 +2062,8 @@ impl<'a> Parser<'a> {
     /// holds, at the start of an AssignmentExpression.
     #[inline(never)]
     fn parse_arrow_function(&mut self) -> PResult<Expr> {
-        let outer_property = std::mem::replace(&mut self.super_property, false);
+        let property = self.super_property && self.class_initializer;
+        let outer_property = std::mem::replace(&mut self.super_property, property);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
@@ -2937,6 +3001,7 @@ impl<'a> Parser<'a> {
         asynchronous: bool,
         class: bool,
     ) -> PResult<Function> {
+        let outer_initializer = std::mem::replace(&mut self.class_initializer, false);
         let outer_property = std::mem::replace(&mut self.super_property, true);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
@@ -2978,6 +3043,7 @@ impl<'a> Parser<'a> {
         function.generator = generator;
         function.asynchronous = asynchronous;
         self.super_property = outer_property;
+        self.class_initializer = outer_initializer;
         self.check_height(function.height)?;
         Ok(function)
     }
@@ -3729,6 +3795,13 @@ impl<'a> Parser<'a> {
         let TokenKind::Identifier(name) = &self.tok.kind else {
             return Err(self.unexpected("an identifier"));
         };
+        if self.class_initializer && name == "arguments" {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "arguments is forbidden in a class field initializer",
+            ));
+        }
         if RESERVED_CONSTANTS.contains(&name.as_str()) {
             self.reserved_constant = Some(span);
         }

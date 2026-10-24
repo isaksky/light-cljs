@@ -290,6 +290,7 @@ pub(crate) fn compile_direct_eval(
 ) -> Result<Executable, SyntaxError> {
     let mut parser = parser::Parser::new(source, site.strict);
     parser.allow_new_target(site.new_target.is_some());
+    parser.class_initializer_eval(site.class_initializer);
     let script = parser.parse_script()?;
     lower::lower_direct_eval(name, source, &script, site)
 }

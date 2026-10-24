@@ -4684,13 +4684,10 @@ fn class_syntax() {
             "{source}"
         );
     }
-    for source in ["class C { x; }", "class C { static {} }"] {
-        assert_eq!(
-            parse_script(source).unwrap_err().kind,
-            SyntaxErrorKind::Unsupported,
-            "{source}"
-        );
-    }
+    assert_eq!(
+        parse_script("class C { static {} }").unwrap_err().kind,
+        SyntaxErrorKind::Unsupported,
+    );
     assert!(parse_script_with("class C { m(eval) {} }", ScriptOptions::SLOPPY).is_err());
     assert!(parse_script_with("class C {} let eval = 1;", ScriptOptions::SLOPPY).is_ok());
 }
@@ -4699,7 +4696,6 @@ fn class_syntax() {
 fn rejects_unsupported_syntax_with_positions() {
     use SyntaxErrorKind::Unsupported;
     let cases: &[(&str, u32, u32, &str)] = &[
-        ("x = class { field; };", 1, 13, "fields"),
         ("await x;", 1, 1, "await"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
@@ -5087,6 +5083,16 @@ fn mixed_expression_depth_is_bounded() {
 fn nesting_at_the_limit_fits_a_2_mib_stack() {
     type Make = fn(usize) -> String;
     let syntax_makers: &[(&str, Make)] = &[
+        ("nested class field initializers", |n| {
+            format!("let C = {}0{};", "class { x = ".repeat(n), "; }".repeat(n))
+        }),
+        ("nested static field initializers", |n| {
+            format!(
+                "let C = {}0{};",
+                "class { static x = ".repeat(n),
+                "; }".repeat(n)
+            )
+        }),
         ("derived class constructors", |n| {
             format!(
                 "{}{}",
@@ -5754,4 +5760,45 @@ fn module_namespace_reexport_entries() {
     ] {
         assert!(super::parse_module(source).is_err(), "{source}");
     }
+}
+
+/// Synthetic fixture, not light-cljs output. Upstream class-field rows use
+/// the QuickJS MIT notice retained above.
+#[test]
+fn class_fields() {
+    for (source, fields) in [
+        (
+            "class S { static x = 42; static y = S.x; static z = this.x; }",
+            3,
+        ),
+        ("class P { get = () => '123'; static() { return 42; } }", 1),
+        ("class Q { a; b = 1; static c; }", 3),
+        (
+            "class Q { get; set = 1; static; async\nx; 'str' = 2; 3 = 4; }",
+            7,
+        ),
+    ] {
+        let script = parse_script(source).unwrap();
+        let StmtKind::Lexical(d) = &script.body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Class(c) = &d.declarators[0].init.as_ref().unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(c.elements.iter().filter(|e| e.is_field).count(), fields);
+    }
+    for source in [
+        "class R { constructor = 1; }",
+        "class R { static constructor; }",
+        "class R { static prototype = 1; }",
+        "class R { x = arguments; }",
+        "class R { x = () => arguments; }",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+    parse_script("class R { x = function() { return arguments; }; }").unwrap();
 }

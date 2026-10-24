@@ -1567,14 +1567,14 @@ fn define_element_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result
     let Value::Object(id) = object else {
         return Err(Fault::Internal("define_elem needs an object"));
     };
-    // Compiler-private literal/rest destination. Restrict this like DefineField:
-    // defining on a function could allocate a metadata property record.
-    if !heap
-        .read(id, |o| matches!(o, HeapObject::Plain(_)))
-        .unwrap_or(false)
+    if matches!(instr, Instr::DefineElem)
+        && super::native::typed_array_define(heap, state, &object, &key, &value)?
     {
-        return Err(Fault::Internal("define_elem needs an ordinary object"));
+        return Ok(Flow::Next);
     }
+    // Field initializers may target any constructor-provided object, including
+    // a function. Metadata allocation is under the instruction mutator guard,
+    // as for class method definitions below.
     let mut desc = crate::object::PropertyDescriptor {
         enumerable: Some(true),
         configurable: Some(true),

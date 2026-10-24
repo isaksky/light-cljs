@@ -1044,6 +1044,45 @@ pub(crate) fn typed_array_write(
     key: &property::Key,
     value: &Value,
 ) -> Result<bool, Fault> {
+    typed_array_write_result(heap, state, base, key, value, value)
+}
+
+/// CreateDataProperty validates the integer-indexed descriptor before coercion
+/// and returns the receiver, rather than the assignment's original RHS.
+pub(crate) fn typed_array_define(
+    heap: &Heap,
+    state: &mut VmState,
+    base: &Value,
+    key: &property::Key,
+    value: &Value,
+) -> Result<bool, Fault> {
+    let Value::Object(id) = base else {
+        return Ok(false);
+    };
+    if !matches!(value, Value::Object(_)) {
+        return Ok(false);
+    }
+    let desc = crate::object::PropertyDescriptor {
+        value: Some(value.clone()),
+        writable: Some(true),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    if property::typed_array_descriptor(heap, state.diag.task, *id, key, &desc)?.is_none() {
+        return Ok(false);
+    }
+    typed_array_write_result(heap, state, base, key, value, base)
+}
+
+fn typed_array_write_result(
+    heap: &Heap,
+    state: &mut VmState,
+    base: &Value,
+    key: &property::Key,
+    value: &Value,
+    result: &Value,
+) -> Result<bool, Fault> {
     if !matches!(value, Value::Object(_)) {
         return Ok(false);
     }
@@ -1063,7 +1102,7 @@ pub(crate) fn typed_array_write(
             target: ConvertTarget::TypedArrayWrite,
             operands: vec![
                 base.clone(),
-                value.clone(),
+                result.clone(),
                 Value::Number(index),
                 value.clone(),
             ],
@@ -1242,6 +1281,9 @@ pub(crate) fn start_direct_eval(
     for source in &site.environments {
         captures.push(eval_source(heap, state, *source)?);
     }
+    if let Some(source) = site.initializer_home {
+        captures.push(eval_source(heap, state, source)?);
+    }
     native.caller = Some(eval::Caller { site, captures });
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Eval(Box::new(native)))?;
@@ -1316,7 +1358,13 @@ pub(crate) fn start_builtin(
     }
     if !construct {
         let iterator = match which {
-            Builtin::ArrayValues | Builtin::TypedArrayValues | Builtin::IteratorIdentity => {
+            Builtin::ArrayValues
+            | Builtin::TypedArrayValues
+            | Builtin::IteratorIdentity
+            | Builtin::TypedArrayBuffer
+            | Builtin::TypedArrayLength
+            | Builtin::TypedArrayByteLength
+            | Builtin::TypedArrayByteOffset => {
                 return Ok(false);
             }
             Builtin::IteratorNext(kind) => {
@@ -1358,7 +1406,59 @@ pub(crate) fn start_builtin(
     if which == Builtin::GeneratorNext {
         return start_generator_next(heap, state, this, args, popped);
     }
+    if let Builtin::IntegerTypedArray(kind) = which
+        && construct
+    {
+        return start_typed_array_constructor(heap, state, kind, args, popped);
+    }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+/// Keep field constructors returning typed arrays off the large general
+/// built-in dispatch frame so they also execute on 64 KiB worker stacks.
+#[inline(never)]
+fn start_typed_array_constructor(
+    heap: &Heap,
+    state: &mut VmState,
+    kind: crate::object::typed_array::ElementType,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let first = args.first().cloned().unwrap_or(Value::Undefined);
+    let from_buffer = crate::object::typed_array::is_buffer(heap, &first);
+    if matches!(first, Value::Object(_)) && !from_buffer {
+        let native = typed_array::TypedArray::constructor(kind, first);
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::TypedArray(Box::new(native)))?;
+        return Ok(true);
+    }
+    if from_buffer {
+        crate::object::array_buffer::receiver(heap, state.diag.task, &first)?;
+    }
+    let mut operands = vec![first];
+    if from_buffer {
+        operands.push(args.get(1).cloned().unwrap_or(Value::Undefined));
+        if let Some(length) = args.get(2).filter(|v| !matches!(v, Value::Undefined)) {
+            operands.push(length.clone());
+        }
+    }
+    let end = operands.len();
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(
+        state,
+        NativeState::Convert {
+            formatter: None,
+            target: ConvertTarget::TypedArray { kind, from_buffer },
+            operands,
+            next: usize::from(from_buffer),
+            end,
+            hint: Hint::Number,
+            method: 0,
+            method_get: false,
+            symbol_method: SymbolMethod::Pending,
+        },
+    )?;
+    Ok(true)
 }
 
 #[inline(never)]
@@ -1461,16 +1561,6 @@ fn start_builtin_slow(
         };
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, parser)?;
-        return Ok(true);
-    }
-    if let Builtin::IntegerTypedArray(kind) = which
-        && construct
-        && let Some(source @ Value::Object(_)) = args.first()
-        && !crate::object::typed_array::is_buffer(heap, source)
-    {
-        let native = typed_array::TypedArray::constructor(kind, source.clone());
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::TypedArray(Box::new(native)))?;
         return Ok(true);
     }
     if matches!(
@@ -1739,25 +1829,6 @@ fn start_builtin_slow(
         return Ok(true);
     }
     let (target, operands, hint) = match which {
-        Builtin::IntegerTypedArray(kind) if construct => {
-            let first = args.first().cloned().unwrap_or(Value::Undefined);
-            let from_buffer = crate::object::typed_array::is_buffer(heap, &first);
-            if from_buffer {
-                crate::object::array_buffer::receiver(heap, state.diag.task, &first)?;
-            }
-            let mut operands = vec![first];
-            if from_buffer {
-                operands.push(args.get(1).cloned().unwrap_or(Value::Undefined));
-                if let Some(length) = args.get(2).filter(|v| !matches!(v, Value::Undefined)) {
-                    operands.push(length.clone());
-                }
-            }
-            (
-                ConvertTarget::TypedArray { kind, from_buffer },
-                operands,
-                Hint::Number,
-            )
-        }
         Builtin::ArrayBuffer if construct => (
             ConvertTarget::ArrayBuffer(which),
             vec![

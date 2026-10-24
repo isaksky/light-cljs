@@ -264,8 +264,10 @@ fn lower_script_kind(
                     + 1
                     + usize::from(site.new_target.is_some())
                     + site.environments.len()
+                    + usize::from(site.initializer_home.is_some())
             ];
             lower.cur_mut().this_strict = site.receiver_strict;
+            lower.cur_mut().class_initializer = site.class_initializer;
         }
         lower.cur_mut().global_declarations =
             !eval || (!script.strict && lower.eval_variable_environment.is_none());
@@ -605,6 +607,7 @@ struct FnCtx {
     /// to `arguments` denotes unless the function binds that name itself
     /// ([`Lowerer::arguments_binding`]).
     own_arguments: bool,
+    class_initializer: bool,
     /// Ordinary functions and base classes can be constructed.
     constructor_kind: ConstructorKind,
     /// Arrows inherit their nearest ordinary function's receiver.
@@ -709,6 +712,7 @@ struct Lowerer<'s> {
     eval_bindings: HashMap<String, Access>,
     eval_this: Option<u16>,
     eval_new_target: Option<u16>,
+    eval_initializer_home: Option<u16>,
     /// Names indexed by `Access::Global`, keeping the recursive resolver's
     /// return type small and Copy. Constant indices belong to each emitter.
     global_names: Vec<String>,
@@ -737,6 +741,7 @@ impl<'s> Lowerer<'s> {
             eval_bindings: HashMap::new(),
             eval_this: None,
             eval_new_target: None,
+            eval_initializer_home: None,
             global_names: Vec::new(),
             source,
             shared_source: Arc::from(source),
@@ -756,6 +761,10 @@ impl<'s> Lowerer<'s> {
         self.eval_lexical_conflicts = site.lexical_conflicts.clone();
         let bindings = &site.bindings;
         self.eval_new_target = site.new_target.map(|_| (bindings.len() + 1) as u16);
+        self.eval_initializer_home = site.initializer_home.map(|_| {
+            (bindings.len() + 1 + usize::from(site.new_target.is_some()) + site.environments.len())
+                as u16
+        });
         for i in 0..site.environments.len() {
             let key = self.next_self_key;
             self.next_self_key -= 1;
@@ -861,6 +870,7 @@ impl<'s> Lowerer<'s> {
             strict,
             strict_expression: false,
             own_arguments: false,
+            class_initializer: false,
             constructor_kind: ConstructorKind::None,
             lexical_this: false,
             this_capture: None,
@@ -2030,6 +2040,11 @@ impl<'s> Lowerer<'s> {
     }
 
     fn resolve_super_constructor(&mut self, level: usize) -> Place {
+        if self.fns[level].completion.is_some()
+            && let Some(index) = self.eval_initializer_home
+        {
+            return Place::Capture(index);
+        }
         if !self.fns[level].lexical_this {
             return Place::Current;
         }
@@ -2047,7 +2062,12 @@ impl<'s> Lowerer<'s> {
         if method {
             self.out().op(Opcode::Dup, span);
         }
-        self.out().op(Opcode::CurrentFunction, span);
+        if self.cur().class_initializer {
+            let home = self.resolve_super_constructor(self.fns.len() - 1);
+            self.out().load(home, span);
+        } else {
+            self.out().op(Opcode::CurrentFunction, span);
+        }
         self.out().op(Opcode::GetSuperBase, span);
         Ok(())
     }
@@ -2081,6 +2101,12 @@ impl<'s> Lowerer<'s> {
                 .op_u16(Opcode::ConstructSuper, args.len() as u16, span);
         }
         self.out().op(Opcode::BindThis, span);
+        // Keep the super() expression's value while the method-like field
+        // initializer runs as an ordinary, resumable VM activation.
+        self.out().op(Opcode::Dup, span);
+        self.identifier("*instance-fields*", span)?;
+        self.out().op_u16(Opcode::CallMethod, 0, span);
+        self.out().op(Opcode::Pop, span);
         Ok(())
     }
 
@@ -2469,7 +2495,16 @@ impl<'s> Lowerer<'s> {
             }
         }
         let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
-        if bindings.len() + environments.len() > MAX_COUNT - 1 - usize::from(new_target.is_some()) {
+        let initializer_home = self
+            .cur()
+            .class_initializer
+            .then(|| eval_source(self.resolve_super_constructor(self.fns.len() - 1)));
+        if bindings.len() + environments.len()
+            > MAX_COUNT
+                - 1
+                - usize::from(new_target.is_some())
+                - usize::from(initializer_home.is_some())
+        {
             return Err(self.error(
                 SyntaxErrorKind::TooLarge,
                 span,
@@ -2483,6 +2518,8 @@ impl<'s> Lowerer<'s> {
             bindings,
             receiver,
             receiver_strict: self.cur().this_strict,
+            class_initializer: self.cur().class_initializer,
+            initializer_home,
             new_target,
             environments,
             variable_environment,
@@ -2720,10 +2757,22 @@ impl<'s> Lowerer<'s> {
         self_name: Option<(String, SelfKind)>,
         inferred_name: Option<JsString>,
     ) -> Result<(), SyntaxError> {
+        self.closure_with_fields(f, self_name, inferred_name, None)
+    }
+
+    #[inline(never)]
+    fn closure_with_fields(
+        &mut self,
+        f: &Function,
+        self_name: Option<(String, SelfKind)>,
+        inferred_name: Option<JsString>,
+        fields: Option<&[(&PropertyDef, Ident)]>,
+    ) -> Result<(), SyntaxError> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
         let parent_this_strict = self.cur().this_strict;
+        let parent_initializer = self.cur().class_initializer;
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor_kind = constructor_kind(f);
         self.cur_mut().own_arguments = matches!(
@@ -2738,10 +2787,33 @@ impl<'s> Lowerer<'s> {
         );
         self.cur_mut().lexical_this =
             matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
+        self.cur_mut().class_initializer =
+            fields.is_some() || self.cur().lexical_this && parent_initializer;
+        if fields.is_some() {
+            self.cur_mut().own_arguments = false;
+        }
         if self.cur().lexical_this {
             self.cur_mut().this_strict = parent_this_strict;
         }
-        self.function_body(f)?;
+        if f.kind == FunctionKind::ClassConstructor {
+            self.out().op(Opcode::GetThis, f.span);
+            self.identifier("*instance-fields*", f.span)?;
+            self.out().op_u16(Opcode::CallMethod, 0, f.span);
+            self.out().op(Opcode::Pop, f.span);
+        }
+        if let Some(fields) = fields {
+            for (property, key) in fields {
+                let at = property.name_span;
+                self.out().op(Opcode::GetThis, at);
+                self.computed_property(
+                    property,
+                    &Expr::new(ExprKind::Identifier(key.name.clone()), at),
+                )?;
+                self.out().op(Opcode::Pop, at);
+            }
+        } else {
+            self.function_body(f)?;
+        }
         if f.kind == FunctionKind::DefaultDerivedConstructor {
             self.super_call(&[], f.span, true)?;
             self.out().op(Opcode::Return, f.span);
@@ -5435,6 +5507,16 @@ impl<'s> Lowerer<'s> {
             self.out().op(Opcode::NewCell, span);
             self.out().op_u16(Opcode::SetLocal, b.slot, span);
         }
+        // This inaccessible cell ties the constructor to its initializer
+        // without exposing an own property or adding a new heap edge kind.
+        let initializer = Ident {
+            name: "*instance-fields*".into(),
+            span: Span::new(span.end - 1, span.end),
+        };
+        self.declare(&initializer, BindingKind::Const, false, true)?;
+        let binding = self.local(&initializer)?;
+        self.out().op(Opcode::NewCell, span);
+        self.out().op_u16(Opcode::SetLocal, binding.slot, span);
         let ctor = self.temp(span)?;
         let proto = self.temp(span)?;
         let key = self.temp(span)?;
@@ -5498,7 +5580,9 @@ impl<'s> Lowerer<'s> {
         let prototype = self.name_index("prototype", span)?;
         self.out().op_u16(Opcode::GetField, prototype, span);
         self.out().op_u16(Opcode::SetLocal, proto, span);
-        for element in &class.elements {
+        let mut instance_fields = Vec::new();
+        let mut static_fields = Vec::new();
+        for (index, element) in class.elements.iter().enumerate() {
             let p = &element.property;
             let at = p.name_span;
             self.out().op_u16(
@@ -5525,6 +5609,25 @@ impl<'s> Lowerer<'s> {
                 }
             }
             self.out().op_u16(Opcode::SetLocal, key, at);
+            if element.is_field {
+                let field_key = Ident {
+                    name: format!("*field-key-{index}*"),
+                    span: at,
+                };
+                self.declare(&field_key, BindingKind::Const, false, true)?;
+                let binding = self.local(&field_key)?;
+                self.out().op(Opcode::NewCell, at);
+                self.out().op_u16(Opcode::SetLocal, binding.slot, at);
+                self.out().op_u16(Opcode::GetLocal, key, at);
+                self.pattern_store(&Pattern::ident(field_key.clone()), true, false)?;
+                self.out().op(Opcode::Pop, at); // unused home object
+                if element.is_static {
+                    static_fields.push((p, field_key));
+                } else {
+                    instance_fields.push((p, field_key));
+                }
+                continue;
+            }
             self.expr(&p.value)?;
             self.out().op_u16(Opcode::SetLocal, value, at);
             self.out().op_u16(Opcode::GetLocal, key, at);
@@ -5546,6 +5649,25 @@ impl<'s> Lowerer<'s> {
         if let Some(name) = &inner {
             self.out().op(Opcode::Dup, span);
             self.pattern_store(&Pattern::ident(name.clone()), true, false)?;
+        }
+        let function = Function::new(
+            FunctionKind::Method,
+            None,
+            vec![],
+            vec![],
+            vec![],
+            span,
+            true,
+        );
+        self.out().op_u16(Opcode::GetLocal, proto, span);
+        self.closure_with_fields(&function, None, None, Some(&instance_fields))?;
+        self.pattern_store(&Pattern::ident(initializer), true, false)?;
+        self.out().op(Opcode::Pop, span); // initializer home object
+        if !static_fields.is_empty() {
+            self.out().op_u16(Opcode::GetLocal, ctor, span);
+            self.closure_with_fields(&function, None, None, Some(&static_fields))?;
+            self.out().op_u16(Opcode::CallMethod, 0, span);
+            self.out().op(Opcode::Pop, span);
         }
         // Clear scratch roots, including the inner cell (closures retain it).
         for slot in saved..self.cur().next_slot {

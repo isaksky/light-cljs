@@ -519,7 +519,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
 | classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
-| class fields, static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| private class names (`#x`) | UnknownToken |
 | module string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
@@ -529,7 +530,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
 | numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
-| `super.x` outside a method/accessor, bare `super`, `super?.x` | Invalid |
+| `super.x` outside a method/accessor or field initializer context, bare `super`, `super?.x` | Invalid |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
@@ -571,7 +572,8 @@ Namespace imports and re-exports execute, including cyclic TDZ checks
 (clj-quickjs-254). Default-export declarations and JSON module instances
 remain deferred; the CLI and `compile_script` take scripts only.
 
-Super properties and class fields remain deferred (clj-quickjs-138/139).
+Super properties and public class fields execute (clj-quickjs-138/139);
+private names and static blocks remain rejected.
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
 Source `new.target` in base and derived constructors, lexical arrows and direct
 eval uses the leaf construction target, including before `super()`.
@@ -697,7 +699,7 @@ checks left to later stages:
   `switch` (its case block counts as a block) (the
   expressions of a `for` head are charged as expressions); a function or
   arrow function 3 plus its body block (or, for a concise arrow body, its
-  assignment);
+  assignment); a class 3, plus 4 for each field initializer while parsing its value;
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
   or one link of a binary-operator, comma-operator or member chain 1; each call's
   argument list 3 plus each argument's assignment; parentheses 3 plus the
@@ -5383,9 +5385,10 @@ use resumable VM frames, including constructors and computed-key conversion.
 Rejected forms: duplicate constructors, accessor/async/generator constructors,
 and non-computed static methods/accessors named `prototype` are early `Invalid`
 SyntaxErrors. Declarations in single-statement positions are `Invalid`.
-Fields and static blocks are explicitly unsupported.
-Explicit gaps: lexical super properties in arrows/eval (-112), instance/static/private fields and
-static initialization blocks (-139). Derived constructors execute below (-137).
+Public fields execute as described below (-139). Private names and static
+blocks remain explicitly unsupported.
+Explicit gaps: lexical super properties in ordinary methods' arrows/eval (-112),
+private fields and static initialization blocks. Derived constructors execute below (-137).
 
 ```js accept
 class Point { constructor(x) { this.x = x; } get y() { return this.x; } static origin() { return new Point(0); } }
@@ -5411,8 +5414,9 @@ class B {} class C extends B {}
 new C() instanceof B;
 ```
 
-```js reject Unsupported 1:11
+```js accept
 class C { x; }
+let c = new C(); Object.getOwnPropertyNames(c).join(',') === 'x' && c.x === undefined;
 ```
 
 ## Derived classes (clj-quickjs-137)
@@ -5447,7 +5451,7 @@ Rejected forms: `super()` outside a derived constructor or its arrows, and
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
-Explicit gaps: lexical super properties in arrows/eval (-112), fields and static blocks (-139), and
+Explicit gaps: lexical super properties in ordinary methods' arrows/eval (-112), private fields/static blocks, and
 inherited super-call context in runtime eval source. Construction with the
 derived new target supports ordinary/class parents and `Object`; constructing
 other built-in subclasses is explicitly rejected with UnsupportedOperand.
@@ -5933,8 +5937,8 @@ a derived receiver's initialization error points to `super`.
 
 Rejected forms: super properties outside methods/accessors (including ordinary
 nested functions), bare `super`, and `super?.x` are early Invalid SyntaxErrors.
-Explicit gaps: lexical super properties in arrows and runtime direct eval
-(-112), and fields/static blocks (-139). These contexts still reject explicitly.
+Explicit gaps: lexical super properties in ordinary methods' arrows and runtime
+direct eval (-112), private names and static blocks. These contexts still reject explicitly.
 
 ```js accept
 class C { f() { return 1; } static F() { return -1; } } class D extends C { h() { return super.f(); } static H() { return super["F"](); } } let o = new D(); o.h() === 1 && D.H() === -1;
@@ -5983,3 +5987,70 @@ Publication also rejects closures capturing them. Each fresh task gets fresh
 instances and namespaces. Cyclic namespaces are built from resolved exports
 before any body runs. Functions are hoisted, and namespace reads of lexical
 exports still in TDZ throw catchable ReferenceErrors (clj-quickjs-255).
+
+## Public class fields (clj-quickjs-139)
+
+Syntax: class bodies accept `name = AssignmentExpression;` and `name;`, including
+string, numeric and computed names, and their `static` forms. Initializers use
+strict expression grammar, with automatic semicolon insertion at a line break
+or closing brace. `get`, `set`, `async` and `static` can be field names when
+followed by `=`, `;` or `}`; accessor and async modifiers obey their line-break
+rules. `static` followed by another property name remains a static modifier,
+including across a line break.
+
+Execution: all computed keys are evaluated and converted once, in definition
+order, while the inner class name is uninitialized. Methods are installed, then
+the inner class name is initialized, before any static initializer runs. Static
+fields run in source order with `this` equal to the class. Base instance fields
+run at constructor entry, before parameter defaults and the constructor body;
+derived instance fields run immediately after successful `super()` receiver
+binding, including calls through arrows and parameter defaults. A constructor
+returning a different object keeps the usual constructor-return semantics.
+Each field defines an own writable, enumerable, configurable data property;
+it shadows inherited setters without calling them. An absent initializer defines
+an own property with value `undefined`. Field values are evaluated and defined
+in order, and anonymous function/class values infer their names from the key.
+
+Initializers execute in separate method-like lexical scope outside constructor
+parameters and locals. They have their own `this` and `new.target` (undefined),
+and the instance prototype or class as home object for `super` properties.
+Arrows and direct eval inherit this initializer context, including nested eval
+and the early error for `arguments`. Ordinary nested functions and methods
+establish their own context. Every key coercion, initializer and super callback
+uses ordinary resumable VM frames and survives waits, collection and migration
+on 64 KiB worker stacks. Existing restrictions on exotic property descriptors
+(such as object-valued array lengths) still apply.
+
+Rejected forms: non-computed fields named `constructor`, static fields named
+`prototype`, and references to `arguments` in initializer code (including arrows
+and direct eval) are Invalid SyntaxErrors. `super()` is forbidden in initializers.
+Explicit gaps: private names and static blocks remain explicitly rejected.
+
+```js accept
+class S { static x = 42; static y = S.x; static z = this.x; }
+S.x === 42 && S.y === 42 && S.z === 42;
+class P { get = () => '123'; static() { return 42; } }
+new P().get() === '123' && new P().static() === 42;
+```
+
+```js accept
+class B { constructor() { this.x = 7; } f() { return this.x; } }
+class C extends B { y = super.f(); z = eval('super.f()'); }
+let c = new C(); c.y === 7 && c.z === 7;
+```
+
+```js reject Invalid 1:11
+class R { constructor = 1; }
+```
+
+```js reject Invalid 1:15
+class R { x = arguments; }
+```
+
+```js reject Unsupported 1:18
+class R { static {} }
+```
+
+```js reject UnknownToken 1:11
+class R { #x; }
+```
