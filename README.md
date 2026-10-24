@@ -3680,3 +3680,20 @@ Tests: `cargo test --test js_source symbol_`,
 `cargo test --test js_source primitive_wrappers_survive_wait_collection_and_migration`,
 `cargo test --test gc weak_map_symbol_keys_follow_traced_reachability`,
 `cargo test --test gc_roots realm_intrinsics_retain`.
+
+### Adapted QuickJS generator and async fixtures (clj-quickjs-250)
+
+Supported fixture coverage: `tests/quickjs_async.rs` runs upstream
+`test_generator`, `test_async_gc` and `test_async_promise_rejection` with their
+original assertion helpers and case bodies. The generator keeps its strict
+prologue. Async fixtures replace std/os module imports with the optional
+simulated host bindings and omit the shebang and optional external assertion
+loader; fixture headers list exact source lines. Jobs and virtual timers must
+finish without unhandled rejections. Negative copies verify that a wrong
+counter assertion is detected in both timers and Promise jobs. The GC case
+checks that its callback collects and its unreachable suspended activation
+leaves no objects above the warmed heap baseline after collection.
+
+Deferred: this coverage adds no module loader or generator `return()`/`throw()`
+support; the pinned generator case does not call those methods.
+Verify with `CARGO_BUILD_JOBS=3 cargo test --test quickjs_async -- --test-threads=3`.

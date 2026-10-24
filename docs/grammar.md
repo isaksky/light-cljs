@@ -4989,3 +4989,19 @@ boxed.valueOf() === sym && boxed.description === 'd';
 Object.getPrototypeOf(boxed) === Symbol.prototype;
 Symbol().description === undefined && typeof boxed === 'object';
 ```
+
+### Execution: adapted upstream async fixtures (clj-quickjs-250)
+
+`tests/quickjs_async.rs` executes the pinned QuickJS `test_generator`,
+`test_async_gc` and `test_async_promise_rejection` cases as source fixtures,
+with verbatim case bodies and assertion helpers. No syntax or representation
+changes are introduced. The generator fixture preserves `"use strict"`;
+the async fixtures use the embedder's opt-in std/os bindings instead of module
+imports. Completion drains jobs and virtual timers, and the harness checks
+unhandled rejections as well as direct failures. Fixture headers enumerate
+extraction ranges and every adaptation; provenance is in `docs/architecture.md`.
+
+Rejected forms and explicit gaps remain as documented above: these fixtures
+do not add module import support or generator `return()`/`throw()` methods.
+The pinned generator case exercises `next()`, delegation, and operand/handler
+preservation across `yield` without calling those methods.

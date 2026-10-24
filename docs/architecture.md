@@ -2726,6 +2726,25 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- `tests/fixtures/js/quickjs_test_generator.js`,
+  `quickjs_test_async_gc.js` and `quickjs_test_async_promise_rejection.js`
+  (clj-quickjs-250) extract `research/quickjs/tests/test_builtin.js`
+  lines 1, 3–50 and 1007–1064, and `research/quickjs/tests/test_std.js`
+  lines 5–20, 289–307 and 309–323, respectively, at revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. All extracted assertion helpers
+  and case functions are verbatim, with the full QuickJS license in each
+  fixture. Each gets its own invocation. The std fixtures omit line 1's
+  shebang, replace lines 2–3's module imports with the runner's
+  `Task::install_sim_host_bindings()`, and omit lines 22–23's optional external
+  assertion loader. The generator fixture retains the strict prologue and
+  `throw_error` support; it needs no `return()`/`throw()` generator methods.
+  `tests/quickjs_async.rs` runs each as one task through jobs and virtual
+  timers, requires completion without unhandled rejections, and checks both
+  `std.gc()` execution and reclamation of the unreachable async activation
+  while retaining the completed task. Negative copies change the timer
+  assertion's expected counter from 3 to 4 and run that failing assertion in
+  a Promise job too, exercising both task failure and rejection reporting.
+
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `VERSION` 2026-06-04), as design
 references only:
