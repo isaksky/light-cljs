@@ -426,6 +426,62 @@ fn indirect_eval_global_lexicals() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output. Every lexical conflict is
+/// checked before global function/var property admissibility.
+#[test]
+fn indirect_eval_declaration_error_precedence() {
+    for setup in [
+        "Object.defineProperty(globalThis, 'blocked', {value: 0});",
+        "Object.preventExtensions(globalThis);",
+    ] {
+        for declarations in [
+            "function blocked() {} var outer;",
+            "var blocked; var outer;",
+        ] {
+            let source = format!(
+                "let outer = 1; {setup} let caught = false; try {{ (0, eval)('{declarations}'); }} catch(e) {{ caught = e instanceof SyntaxError; }} caught && outer === 1 && Object.getOwnPropertyDescriptor(globalThis, 'outer') === undefined"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Actual UTF-16 units reach
+/// the runtime decoder, including a surrogate pair split across rope leaves
+/// and at the 256-unit source-preparation boundary.
+#[test]
+fn indirect_eval_utf16_source() {
+    for source in [
+        r#"(0, eval)('\"π😀\"') === 'π😀'"#,
+        r#"(0, eval)('var 𐐀 = 7; 𐐀') === 7"#,
+        r#"let source = ' '.padEnd(254, ' ') + '\"' + String.fromCharCode(0xd83d); source += String.fromCharCode(0xde00) + '\"'; let result = (0, eval)(source); result.length === 2 && result.charCodeAt(0) === 0xd83d && result.charCodeAt(1) === 0xde00"#,
+        r#"let source = ' '.padEnd(255, ' ') + '\"π' + String.fromCharCode(0xd83d); source += String.fromCharCode(0xde00) + '\"'; let result = (0, eval)(source); result.length === 3 && result.charCodeAt(0) === 0x3c0 && result.charCodeAt(1) === 0xd83d && result.charCodeAt(2) === 0xde00"#,
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut complete = false;
+        let mut yields = 0;
+        for _ in 0..2000 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete && yields > 1, "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Compile callers and initialize
 /// intrinsics on the host, then compile eval source on 64 KiB VM workers.
 #[test]
@@ -488,6 +544,29 @@ fn indirect_eval_on_small_worker_stacks() {
         }
         assert!(complete, "{source}");
     }
+
+    // The original script's lexical registration and eval's dynamic
+    // lookup/assignment must fit the same worker stack as compilation.
+    let rt = Runtime::new();
+    assert!(matches!(
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    let task = rt
+        .spawn(&exe("let outer = 1; (0, eval)('outer += 1'); outer"), &[])
+        .unwrap();
+    let result = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let RunOutcome::Complete(value) = task.run().unwrap() else {
+                panic!("expected completion");
+            };
+            value.view()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(result, ValueView::Number(2.0));
 }
 
 /// Synthetic fixtures, not light-cljs output. Eval runs in ordinary task
@@ -6024,6 +6103,7 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::CheckGlobalFunction
             | Opcode::DeleteGlobal
             | Opcode::DeclareGlobalConstValue
+            | Opcode::CheckGlobalLexicalConflict
             | Opcode::Construct => 2,
             _ => 0,
         };

@@ -913,6 +913,16 @@ impl<'s> Lowerer<'s> {
         } else {
             None
         };
+        // All lexical conflicts precede every property-admissibility check,
+        // so a later conflict is a SyntaxError even when an earlier name
+        // would otherwise fail to declare its property with TypeError.
+        for name in &declared {
+            if self.local(name)?.global {
+                let index = self.string_index(JsString::from(name.name.as_str()), name.span)?;
+                self.out()
+                    .op_u16(Opcode::CheckGlobalLexicalConflict, index, name.span);
+            }
+        }
         // Validate every object declaration before creating any properties
         // or initializing hoisted functions. Eval may collide with the
         // script's declarative environment or a restricted object property.

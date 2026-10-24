@@ -134,6 +134,7 @@
 //! | `CheckGlobalFunction` | 0x8D | u16 name | – | validate a global function before declaration effects |
 //! | `DeleteGlobal` | 0x8E | u16 name | – → boolean | false for lexical bindings, otherwise delete global property |
 //! | `DeclareGlobalConstValue` | 0x8F | u16 name | – | create the environment copy of a value-represented const |
+//! | `CheckGlobalLexicalConflict` | 0x90 | u16 name | – | reject a global var/function name conflicting with a lexical before property checks |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -639,6 +640,7 @@ pub enum Opcode {
     CheckGlobalFunction = 0x8D,
     DeleteGlobal = 0x8E,
     DeclareGlobalConstValue = 0x8F,
+    CheckGlobalLexicalConflict = 0x90,
 }
 
 /// Operand encoding of an opcode.
@@ -817,6 +819,7 @@ impl Opcode {
             0x8D => CheckGlobalFunction,
             0x8E => DeleteGlobal,
             0x8F => DeclareGlobalConstValue,
+            0x90 => CheckGlobalLexicalConflict,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -969,6 +972,7 @@ impl Opcode {
             CheckGlobalFunction => "check_global_function",
             DeleteGlobal => "delete_global",
             DeclareGlobalConstValue => "declare_global_const_value",
+            CheckGlobalLexicalConflict => "check_global_lexical_conflict",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -1019,6 +1023,7 @@ impl Opcode {
             | CheckGlobalFunction
             | DeleteGlobal
             | DeclareGlobalConstValue
+            | CheckGlobalLexicalConflict
             | GetField
             | PutField
             | DefineField
@@ -1250,6 +1255,7 @@ pub(crate) enum Instr {
     CheckGlobalFunction(u16),
     DeleteGlobal(u16),
     DeclareGlobalConstValue(u16),
+    CheckGlobalLexicalConflict(u16),
 }
 
 impl Instr {
@@ -1378,6 +1384,7 @@ impl Instr {
             Instr::CheckGlobalFunction(_) => Opcode::CheckGlobalFunction,
             Instr::DeleteGlobal(_) => Opcode::DeleteGlobal,
             Instr::DeclareGlobalConstValue(_) => Opcode::DeclareGlobalConstValue,
+            Instr::CheckGlobalLexicalConflict(_) => Opcode::CheckGlobalLexicalConflict,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1420,6 +1427,7 @@ impl Instr {
             | CheckGlobalVar(_)
             | CheckGlobalFunction(_)
             | DeclareGlobalConstValue(_)
+            | CheckGlobalLexicalConflict(_)
             | GeneratorStart
             | GeneratorInitialYield
             | AsyncStart => (0, 0),
@@ -1478,6 +1486,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 143);
+        assert_eq!(assigned, 144);
     }
 }

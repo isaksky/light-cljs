@@ -952,7 +952,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | CheckGlobalVar(_)
         | CheckGlobalFunction(_)
         | DeleteGlobal(_)
-        | DeclareGlobalConstValue(_) => false,
+        | DeclareGlobalConstValue(_)
+        | CheckGlobalLexicalConflict(_) => false,
     }
 }
 

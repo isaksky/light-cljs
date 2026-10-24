@@ -1032,7 +1032,7 @@ type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> R
 fn instruction_step(instr: Instr) -> InstructionStep {
     match instr {
         Instr::Call(_) | Instr::CallMethod(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => call_step,
-        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) => global_step,
+        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) | Instr::CheckGlobalLexicalConflict(_) => global_step,
         Instr::RequireCoercible
         | Instr::OwnKeys
         | Instr::IsEnumerable
@@ -2187,7 +2187,10 @@ fn step_instruction(
         | Instr::CheckGlobalVar(_)
         | Instr::CheckGlobalFunction(_)
         | Instr::DeleteGlobal(_)
-        | Instr::DeclareGlobalConstValue(_) => return global_step(state, code, heap, host, instr),
+        | Instr::DeclareGlobalConstValue(_)
+        | Instr::CheckGlobalLexicalConflict(_) => {
+            return global_step(state, code, heap, host, instr);
+        }
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
             // (a poll point); its objects are roots from then on.
@@ -2337,13 +2340,16 @@ fn global_step(
             })?;
             state.pop()?;
         }
-        Instr::CheckGlobalVar(i) | Instr::CheckGlobalFunction(i) => {
+        Instr::CheckGlobalLexicalConflict(i) => {
             let name = name_constant(code, i)?;
             if state.global_lexicals.contains_key(&name) {
                 return Err(Fault::SyntaxError(format!(
                     "global declaration conflicts with lexical '{name}'"
                 )));
             }
+        }
+        Instr::CheckGlobalVar(i) | Instr::CheckGlobalFunction(i) => {
+            let name = name_constant(code, i)?;
             let Value::Object(id) = global_object(state, heap)? else {
                 return Err(Fault::Internal("missing global object"));
             };
@@ -2392,7 +2398,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_)
-        | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) => true,
+        | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) | Instr::CheckGlobalLexicalConflict(_) => true,
         // On a function object these may allocate its property record and
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).

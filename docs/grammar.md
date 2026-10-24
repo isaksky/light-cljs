@@ -594,9 +594,10 @@ checks left to later stages:
   declarations create its non-configurable properties at entry; `let` and
   `const` stay lexical. A published closure reads the receiving task's
   globals, while lexical captures keep their usual publication rules.
-  Indirect eval shares the task's global object. Script `let`/`const`
-  bindings are still frame locals and are not dynamically visible to eval;
-  their conflicts with eval global declarations are not checked. Later script
+  Indirect eval shares both the task's global object and its script lexical
+  environment, enforcing const/TDZ errors and lexical declaration conflicts.
+  All lexical conflicts are checked before property-admissibility errors.
+  Later script
   admission into an existing global environment is not implemented. Block function
   declarations stay lexical (sloppy Annex B hoisting is not implemented).
 - **Nesting limit.** Nesting is charged against one budget of 256 units

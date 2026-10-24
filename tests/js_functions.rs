@@ -700,6 +700,7 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
             | Opcode::CheckGlobalFunction
             | Opcode::DeleteGlobal
             | Opcode::DeclareGlobalConstValue
+            | Opcode::CheckGlobalLexicalConflict
             | Opcode::DefineField => 2,
             _ => 0,
         };

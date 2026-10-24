@@ -540,6 +540,9 @@ impl Executable {
                 Opcode::CheckGlobalFunction => Instr::CheckGlobalFunction(operand as u16),
                 Opcode::DeleteGlobal => Instr::DeleteGlobal(operand as u16),
                 Opcode::DeclareGlobalConstValue => Instr::DeclareGlobalConstValue(operand as u16),
+                Opcode::CheckGlobalLexicalConflict => {
+                    Instr::CheckGlobalLexicalConflict(operand as u16)
+                }
 
                 Opcode::DefineElem => Instr::DefineElem,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
@@ -706,6 +709,7 @@ impl Executable {
                 | Instr::CheckGlobalFunction(v)
                 | Instr::DeleteGlobal(v)
                 | Instr::DeclareGlobalConstValue(v)
+                | Instr::CheckGlobalLexicalConflict(v)
                 | Instr::TemplateObject(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)

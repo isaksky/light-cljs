@@ -6883,7 +6883,8 @@ their environment cell is initialized alongside the frame value. Function
 locals and eval-local lexicals keep their existing capture rules. Eval
 closures resolve global lexicals dynamically and can yield, wait and migrate.
 All global var/function declarations have a separate read-only validation
-pass before any global property is created or reset. Lexical conflicts throw
+pass before any global property is created or reset. Every lexical conflict
+check precedes every property-admissibility check. Lexical conflicts throw
 SyntaxError; refused eval object declarations throw TypeError. Global lexical
 bindings are never object properties and cannot be deleted through eval.
 
