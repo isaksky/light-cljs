@@ -3174,7 +3174,7 @@ and hash by integer value; `__rt.get(__rt.map(10n, 1), 10n)` is `1`.
 `Object.keys` and `Object.getOwnPropertyNames` report no own keys for a
 BigInt primitive; `for-in` over it performs no iterations.
 
-Explicit gaps: BigInt arithmetic, unary minus/update, bitwise operations,
+Explicit gaps: BigInt division/remainder/exponentiation and bitwise operations,
 comparisons with strings, `BigInt()`, JavaScript string/Number conversions,
 wrappers, literal property names and BigInt property keys remain assigned to
 later pellets. Available but deferred operators/conversions throw
@@ -3275,3 +3275,20 @@ backtracking and comparisons; exhaustion returns `LimitExceeded`, never
 RangeError. Compilation has an independent allowance of the same size.
 There are no JavaScript RegExp objects, exec/test methods or lastIndex updates
 in this layer, and literal execution remains unsupported.
+
+### BigInt additive and multiplicative arithmetic (clj-quickjs-198)
+
+Lexical grammar: existing `+`, `-`, `*`, `++`, `--`, `+=`, `-=`, `*=` and
+BigInt literal tokens suffice; unary minus is an operator, not part of a literal.
+Execution: two BigInts add, subtract and multiply exactly. Unary minus keeps
+`0n` canonical. Prefix/postfix updates preserve BigInt, including bindings,
+closure cells and property references; postfix returns the old numeric value.
+Compound assignment reuses these operators. Each arithmetic operation costs one
+instruction, independent of limb count. Every intermediate result obeys the
+1 Mbit magnitude cap; overflow throws catchable `RangeError` before a store.
+Mixing BigInt with Number, boolean, undefined or null throws catchable TypeError
+(`cannot mix BigInt and other types`); unary plus on BigInt also throws TypeError.
+Object operands use resumable ToPrimitive in source order, including waits.
+Explicit gaps: division, remainder, exponentiation, bitwise operations and shifts
+remain deferred. String concatenation involving BigInt still fails explicitly
+pending BigInt ToString (clj-quickjs-202).

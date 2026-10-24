@@ -2754,7 +2754,7 @@ survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
 `Scope::bigint`, returning immutable `JsBigInt` with decimal `Display` and
 sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
 with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
-TypeError. Arithmetic/bitwise BigInt operators and JavaScript conversions remain
+TypeError. Division, remainder, exponentiation, bitwise operators and JavaScript conversions remain
 deferred to clj-quickjs-198–204 and fail explicitly; JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
@@ -2841,3 +2841,14 @@ depth is independent of pattern depth and input length. Compilation has its
 own allowance of the same size. Lookbehind, ignore-case (including scoped i),
 and Unicode matching fail explicitly. JavaScript RegExp objects/methods and
 literal execution remain deferred; global lastIndex belongs to that layer.
+
+### BigInt arithmetic (clj-quickjs-198)
+
+BigInt `+`, `-`, `*`, unary minus, prefix/postfix `++`/`--` and their compound
+assignments produce exact results, including binding and property updates.
+Mixed numeric types and unary plus throw TypeError; results above 1 Mbit throw
+RangeError before assignment. Object conversion remains resumable. Each
+arithmetic operation consumes one instruction. BigInt string conversion,
+division, exponentiation and bitwise operations remain deferred.
+Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
+`cargo test --lib value::bigint:: -- --test-threads=3`.

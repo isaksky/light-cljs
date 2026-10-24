@@ -39,7 +39,7 @@
 //! | `Freeze`        | 0x20 | –                  | b → coll               | persistent value of a builder; invalidates it |
 //! | `Div`           | 0x21 | –                  | a b → a/b              | number division |
 //! | `Rem`           | 0x22 | –                  | a b → a%b              | number remainder (sign of the dividend) |
-//! | `Neg`           | 0x23 | –                  | a → -a                 | number negation |
+//! | `Neg`           | 0x23 | –                  | a → -a                 | numeric negation |
 //! | `ToNumber`      | 0x24 | –                  | v → n                  | JavaScript ToNumber of a primitive |
 //! | `ToNumberPair`  | 0x25 | –                  | a b → n m              | ToNumber of both, `a` first |
 //! | `Gt`            | 0x26 | –                  | a b → a>b              | number greater-than |
@@ -100,6 +100,9 @@
 //! | `DeclareGlobalVar` | 0x6D | u16 name constant | – | create a non-configurable global var unless already own |
 //! | `DeclareGlobalFunction` | 0x6E | u16 name constant | – | validate a global function declaration and prepare its property |
 //! | `TemplateObject` | 0x6F | u16 part count n | cooked/raw pairs (2*n) → array | frozen, persistent per-realm/site template object (clj-quickjs-58); cooked must be String/undefined and raw String; code stays primitive-only |
+//! | `ToNumeric` | 0x70 | – | v → numeric | ToPrimitive with hint number, then preserve BigInt or apply ToNumber |
+//! | `Inc` | 0x71 | – | numeric → numeric+1 | increment using the operand's numeric type |
+//! | `Dec` | 0x72 | – | numeric → numeric-1 | decrement using the operand's numeric type |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -124,10 +127,10 @@
 //! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
 //! or 1 and strings by StringToNumber (clj-quickjs-67); objects first use
 //! resumable ToPrimitive with hint number (clj-quickjs-70).
-//! `ToNumberPair` converts both operands the same way; the compiler emits it
-//! before a number-only comparison only when the other operand of `<`, `>`,
-//! `<=` or `>=` is statically a number, so two strings never reach it there
-//! (they compare with `CompareLt` and its siblings below). `LooseEq` is JavaScript
+//! `ToNumberPair` implements ToNumeric on both operands in source order,
+//! preserving BigInts and rejecting mixed numeric types. `ToNumeric` does
+//! the same for one operand; `ToNumber` instead rejects BigInt. Comparisons
+//! with dynamic operands use `CompareLt` and its siblings below. `LooseEq` is JavaScript
 //! `==` (IsLooselyEqual) for the supported value types: `null ==
 //! undefined`, objects compare by identity, two strings by content, a
 //! number, boolean or string against another of those compares as numbers
@@ -432,8 +435,9 @@
 //! boundary. The opcode list is an append-only registry: new opcodes take the
 //! next byte and are handled in every exhaustive match.
 //!
-//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le`, `Ge`, `Pow` and the
-//! bitwise and shift opcodes support Number operands only. Other operand types fail the task with
+//! `Add`, `Sub`, `Mul`, `Neg`, `Inc` and `Dec` support Number and BigInt.
+//! `Lt`, `Div`, `Rem`, `Gt`, `Le`, `Ge`, `Pow` and the bitwise and shift opcodes
+//! currently support Number operands only. Other operand types fail the task with
 //! [`VmErrorKind::UnsupportedOperand`](crate::VmErrorKind::UnsupportedOperand)
 //! rather than applying JavaScript's coercions; a compiler applies them
 //! explicitly with `ToNumber`/`ToNumberPair`.
@@ -565,6 +569,9 @@ pub enum Opcode {
     /// Pop `2*n` interleaved cooked/raw primitives, push the per-realm/site
     /// persistent frozen template array (clj-quickjs-58).
     TemplateObject = 0x6F,
+    ToNumeric = 0x70,
+    Inc = 0x71,
+    Dec = 0x72,
 }
 
 /// Operand encoding of an opcode.
@@ -731,6 +738,9 @@ impl Opcode {
             0x6D => DeclareGlobalVar,
             0x6E => DeclareGlobalFunction,
             0x6F => TemplateObject,
+            0x70 => ToNumeric,
+            0x71 => Inc,
+            0x72 => Dec,
             _ => return None,
         })
     }
@@ -850,6 +860,9 @@ impl Opcode {
             DeclareGlobalVar => "declare_global_var",
             DeclareGlobalFunction => "declare_global_function",
             TemplateObject => "template_object",
+            ToNumeric => "to_numeric",
+            Inc => "inc",
+            Dec => "dec",
         }
     }
 
@@ -886,7 +899,7 @@ impl Opcode {
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
             | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
-            GetGlobalObject => OperandKind::None,
+            GetGlobalObject | ToNumeric | Inc | Dec => OperandKind::None,
         }
     }
 }
@@ -1050,6 +1063,9 @@ pub(crate) enum Instr {
     DeclareGlobalVar(u16),
     DeclareGlobalFunction(u16),
     TemplateObject(u16),
+    ToNumeric,
+    Inc,
+    Dec,
 }
 
 impl Instr {
@@ -1166,6 +1182,9 @@ impl Instr {
             Instr::DeclareGlobalVar(_) => Opcode::DeclareGlobalVar,
             Instr::DeclareGlobalFunction(_) => Opcode::DeclareGlobalFunction,
             Instr::TemplateObject(_) => Opcode::TemplateObject,
+            Instr::ToNumeric => Opcode::ToNumeric,
+            Instr::Inc => Opcode::Inc,
+            Instr::Dec => Opcode::Dec,
         }
     }
 
@@ -1193,8 +1212,8 @@ impl Instr {
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
-            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
-            | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
+            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | ToNumeric | Inc
+            | Dec | CellGet | BitNot | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
             PutField(_) | DefineField(_) | DefineGetter(_) | DefineSetter(_) | AppendElement
             | GetElem | SetProto | Delete => (2, 1),
             PutElem => (3, 1),

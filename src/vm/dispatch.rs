@@ -89,7 +89,7 @@ use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::realm::{self, Global};
 use crate::value::string::{number_to_string, string_to_number};
-use crate::value::{JsString, Value};
+use crate::value::{JsBigInt, JsString, Value};
 use crate::vm::builtin::{self, Builtin};
 use crate::vm::exception::{
     Completion, ErrorObject, Exception, HandlerKind, describe_thrown, error_object,
@@ -204,16 +204,12 @@ fn new_function(
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
-/// Until ToNumeric BigInt operators land, reject mixed numeric types without
-/// ever passing a BigInt through ToNumber.
+/// Reject mixed numeric types after ToNumeric, without rounding a BigInt.
 fn reject_mixed_bigint(a: &Value, b: &Value) -> Result<(), Fault> {
-    if matches!(
-        (a, b),
-        (Value::BigInt(_), Value::Number(_)) | (Value::Number(_), Value::BigInt(_))
-    ) {
-        Err(Fault::TypeError(
-            "cannot mix BigInt and Number in arithmetic".into(),
-        ))
+    if matches!((a, b), (Value::BigInt(_), Value::BigInt(_))) {
+        Ok(())
+    } else if matches!(a, Value::BigInt(_)) || matches!(b, Value::BigInt(_)) {
+        Err(Fault::TypeError("cannot mix BigInt and other types".into()))
     } else {
         Ok(())
     }
@@ -269,9 +265,7 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
         Value::Number(x) => Ok(*x),
         Value::String(s) => Ok(string_to_number(s)),
         Value::Symbol(_) => Err(Fault::TypeError("cannot convert symbol to number".into())),
-        Value::BigInt(_) => Err(Fault::Unsupported(
-            "BigInt numeric operations are not supported".into(),
-        )),
+        Value::BigInt(_) => Err(Fault::TypeError("cannot convert BigInt to Number".into())),
         Value::Object(_) => Err(Fault::Unsupported(
             "converting an object to a number (ToPrimitive) is not supported".to_string(),
         )),
@@ -303,11 +297,11 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
 
 /// JavaScript binary `+` (ApplyStringOrNumericBinaryOperator for `+`, QuickJS
 /// `js_add_slow`) on primitives: when either operand is a string, the
-/// ToString of both concatenate; otherwise the ToNumber of both add.
+/// ToString of both concatenate; otherwise matching ToNumeric values add.
 /// native::Convert handles objects with hint default before this helper.
 fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
-    reject_mixed_bigint(a, b)?;
     match (a, b) {
+        (Value::BigInt(x), Value::BigInt(y)) => bigint_result(x.checked_add(y)),
         (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
         (Value::Object(_), _) | (_, Value::Object(_)) => {
             Err(Fault::Internal("object reached primitive plus"))
@@ -316,7 +310,26 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
             .concat(&to_js_string(b)?)
             .map(Value::String)
             .ok_or(Fault::OutOfMemory("string too long")),
-        _ => Ok(Value::Number(to_number(a)? + to_number(b)?)),
+        _ => {
+            reject_mixed_bigint(a, b)?;
+            Ok(Value::Number(to_number(a)? + to_number(b)?))
+        }
+    }
+}
+
+fn bigint_result(
+    result: Result<JsBigInt, crate::value::bigint::BigIntError>,
+) -> Result<Value, Fault> {
+    result
+        .map(Value::BigInt)
+        .map_err(|error| Fault::RangeError(error.to_string()))
+}
+
+fn to_numeric(v: Value) -> Result<Value, Fault> {
+    if matches!(v, Value::BigInt(_)) {
+        Ok(v)
+    } else {
+        Ok(Value::Number(to_number(&v)?))
     }
 }
 
@@ -1153,6 +1166,18 @@ pub(crate) fn step(
         | Instr::Ge => {
             let b = state.pop()?;
             let a = state.pop()?;
+            if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
+                let result = match instr {
+                    Instr::Add => Some(x.checked_add(y)),
+                    Instr::Sub => Some(x.checked_sub(y)),
+                    Instr::Mul => Some(x.checked_mul(y)),
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    state.push(bigint_result(result)?);
+                    return Ok(Flow::Next);
+                }
+            }
             let (x, y) = numbers(instr.opcode(), &a, &b)?;
             state.push(match instr {
                 Instr::Add => Value::Number(x + y),
@@ -1389,6 +1414,7 @@ pub(crate) fn step(
         }
         Instr::Neg => match state.pop()? {
             Value::Number(x) => state.push(Value::Number(-x)),
+            Value::BigInt(x) => state.push(Value::BigInt(x.negated())),
             v => {
                 return Err(Fault::Unsupported(format!(
                     "neg supports number operands only, got {}",
@@ -1399,6 +1425,25 @@ pub(crate) fn step(
         Instr::ToNumber => {
             let v = state.pop()?;
             state.push(Value::Number(to_number(&v)?));
+        }
+        Instr::ToNumeric => {
+            let v = state.pop()?;
+            state.push(to_numeric(v)?);
+        }
+        Instr::Inc | Instr::Dec => {
+            let v = state.pop()?;
+            let increment = matches!(instr, Instr::Inc);
+            state.push(match v {
+                Value::BigInt(x) => {
+                    bigint_result(x.checked_add(&JsBigInt::from(if increment { 1 } else { -1 })))?
+                }
+                Value::Number(x) => Value::Number(if increment { x + 1.0 } else { x - 1.0 }),
+                _ => {
+                    return Err(Fault::Unsupported(
+                        "update requires a numeric operand".into(),
+                    ));
+                }
+            });
         }
         Instr::ToNumberPair => {
             let b = state.pop()?;
@@ -1413,9 +1458,9 @@ pub(crate) fn step(
             } else {
                 Value::Number(to_number(&b)?)
             };
-            let (x, y) = numbers(Opcode::ToNumberPair, &a, &b)?;
-            state.push(Value::Number(x));
-            state.push(Value::Number(y));
+            reject_mixed_bigint(&a, &b)?;
+            state.push(a);
+            state.push(b);
         }
         Instr::LooseEq => {
             let b = state.pop()?;
@@ -1766,6 +1811,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Rem
         | Instr::Neg
         | Instr::ToNumber
+        | Instr::ToNumeric
+        | Instr::Inc
+        | Instr::Dec
         | Instr::ToNumberPair
         | Instr::Gt
         | Instr::Le

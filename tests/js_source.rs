@@ -412,13 +412,10 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
 }
 
 /// Synthetic fixtures, not light-cljs output. Later BigInt pellets supply
-/// arithmetic, conversions and comparison with strings.
+/// division, exponentiation, bitwise operations and conversions.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "1n + 1n",
-        "1n - 1n",
-        "1n * 1n",
         "1n / 1n",
         "1n % 1n",
         "1n ** 1n",
@@ -428,8 +425,6 @@ fn bigint_deferred_operations_fail_explicitly() {
         "1n << 1n",
         "1n >> 1n",
         "1n >>> 1n",
-        "-1n",
-        "+1n",
         "~1n",
         "1n < '2'",
         "'1' < 2n",
@@ -438,7 +433,6 @@ fn bigint_deferred_operations_fail_explicitly() {
         "1n <= {valueOf() { return '2'; }}",
         "({valueOf() { return '1'; }}) == 1n",
         "String(1n)",
-        "let x = 1n; x++",
         "({})[1n]",
         "let o = {}; o[1n] = 3",
         "Object(1n)",
@@ -7385,15 +7379,20 @@ fn update_expressions_on_bindings() {
     let (kind, _, line, column) = failure_at("let v = __rt.vector();\n--v;");
     assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 1));
 
-    // No new opcode: ToNumber, then add or sub, then the binding's store.
+    // ToNumeric preserves BigInt; Inc/Dec apply a unit of the same type.
     let ops = opcodes(&exe("let a = 1; a++; --a"));
-    for op in [Opcode::ToNumber, Opcode::Add, Opcode::Sub, Opcode::SetLocal] {
+    for op in [
+        Opcode::ToNumeric,
+        Opcode::Inc,
+        Opcode::Dec,
+        Opcode::SetLocal,
+    ] {
         assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
     }
-    // An update's value is a number: no second conversion.
+    // An update is numeric: no second ToNumeric before negation.
     let ops = opcodes(&exe("let a = 1; -a++"));
     assert_eq!(
-        ops.iter().filter(|op| **op == Opcode::ToNumber).count(),
+        ops.iter().filter(|op| **op == Opcode::ToNumeric).count(),
         1,
         "{ops:?}"
     );
@@ -7532,19 +7531,19 @@ fn update_expressions_on_properties() {
         Opcode::ToPropertyKey,
         Opcode::Dup2,
         Opcode::GetElem,
-        Opcode::ToNumber,
+        Opcode::ToNumeric,
         Opcode::PutElem,
     ] {
         assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
     }
     let ops = opcodes(&exe("let o = {}; ++o.p;"));
-    for op in [Opcode::Dup, Opcode::GetField, Opcode::Add, Opcode::PutField] {
+    for op in [Opcode::Dup, Opcode::GetField, Opcode::Inc, Opcode::PutField] {
         assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
     }
-    // An update's value is a number: no second conversion.
+    // An update is numeric: no second ToNumeric before negation.
     let ops = opcodes(&exe("let o = {p: 1}; -o.p++"));
     assert_eq!(
-        ops.iter().filter(|op| **op == Opcode::ToNumber).count(),
+        ops.iter().filter(|op| **op == Opcode::ToNumeric).count(),
         1,
         "{ops:?}"
     );
@@ -7741,11 +7740,11 @@ fn compound_assignment_on_properties() {
     for op in [Opcode::Dup, Opcode::GetField, Opcode::Sub, Opcode::PutField] {
         assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
     }
-    // A numeric compound assignment's value is a number: no conversion
-    // before `+`.
+    // A compound assignment may return BigInt, so `+` must preserve its
+    // runtime type and check for mixed arithmetic.
     let ops = opcodes(&exe("let o = {p: 1}; 1 + (o.p *= 2)"));
-    assert!(ops.contains(&Opcode::Add), "{ops:?}");
-    assert!(!ops.contains(&Opcode::Plus), "{ops:?}");
+    assert!(ops.contains(&Opcode::Plus), "{ops:?}");
+    assert!(!ops.contains(&Opcode::Add), "{ops:?}");
 }
 
 /// Compound assignment on identifier bindings (clj-quickjs-84): read, then
@@ -14277,4 +14276,176 @@ fn intl_namespace_object() {
         ),
         ValueView::Bool(true)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. The bigint_pow rows adapt
+/// QuickJS tests/test_bigint.js at 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_additive_and_multiplicative_operators() {
+    for product in ["r = r * a", "r *= a"] {
+        let src = format!(
+            "function bigint_pow(a, n) {{ let r = 1n; for (let i = 0n; i < n; i++) {{ {product}; }} return r; }}
+             let r = bigint_pow(3n, 100n);
+             r === 515377520732011331036461129765621272702107522001n && (r - 1n) !== r"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "-(-5n) === 5n && -0n === 0n && 2n * 3n - 1n === 5n",
+        "let x = 0n; let old = x++; let next = ++x; let prev = x--; old === 0n && next === 2n && prev === 2n && x === 1n && --x === 0n",
+        "let x = 9223372036854775807n; let old = x++; old === 9223372036854775807n && x === 9223372036854775808n && --x === old",
+        "let x = -9223372036854775808n; let old = x--; old === -9223372036854775808n && x === -9223372036854775809n && ++x === old",
+        "-(-9223372036854775808n) === 9223372036854775808n && -9223372036854775808n + 9223372036854775808n === 0n",
+        "let x = 5n; x += 3n; x -= 2n; x *= -4n; x === -24n",
+        "let o = {x: 0n}; let old = o.x++; let next = ++o['x']; o.x *= 3n; o['x'] -= 1n; old === 0n && next === 2n && o.x === 5n",
+        "let x = 1n; function f() { return x++; } f() === 1n && f() === 2n && x === 3n",
+        "(1n - 1n ? false : true) && typeof (2n * 3n) === 'bigint' && typeof -0n === 'bigint'",
+        "-1n + -2n === -3n && -2n < -1n && 2n * 3n < 7n && (!1 + 1) === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    let src = format!(
+        "{n}n * {n}n - {square}n === 0n",
+        n = "9".repeat(300),
+        square = format_args!("{}8{}1", "9".repeat(299), "0".repeat(299)),
+    );
+    assert_eq!(eval(&src), ValueView::Bool(true));
+    for src in [
+        "1n + 1",
+        "1 + 1n",
+        "1 - 1n",
+        "1n - 1",
+        "2n * 2",
+        "2 * 2n",
+        "1n + true",
+        "true + 1n",
+        "1n + undefined",
+        "undefined + 1n",
+        "1n + null",
+        "null + 1n",
+        "1n - false",
+        "null * 1n",
+        "+1n",
+        "+(-1n)",
+        "+(2n * 3n)",
+        "1 + -2n",
+    ] {
+        let caught = format!(
+            "let caught = false; try {{ {src}; }} catch (e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. A failed intermediate operation
+/// must throw even when a later operation would cancel it back under the cap.
+#[test]
+fn bigint_arithmetic_size_errors_are_catchable_and_leave_bindings_unchanged() {
+    let rt = Runtime::new();
+    let cap = clj_quickjs::JsBigInt::from_sign_magnitude(
+        false,
+        vec![u32::MAX; clj_quickjs::MAX_BIGINT_BITS / 32],
+    )
+    .unwrap();
+    let root = rt.root(Primitive::BigInt(cap));
+    for expression in [
+        "a + 1n",
+        "-a - 1n",
+        "a * 2n",
+        "a++",
+        "++a",
+        "a += 1n",
+        "a *= 2n",
+        "(-a - 1n) + 1n",
+        "(a + 1n) - 1n",
+        "(a * 2n) * 0n",
+    ] {
+        let src = format!(
+            "function f(a) {{ let original = a; let caught = false; try {{ {expression}; }} catch (e) {{ caught = e instanceof RangeError; }} return caught && a === original; }}"
+        );
+        let f = compile_function(&src).unwrap();
+        assert!(
+            matches!(rt.spawn(&f, &[&root]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{expression}"
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Conversion callbacks run once,
+/// in source order, and retain their BigInt values over waits/yields/collection.
+#[test]
+fn bigint_arithmetic_resumes_object_conversion() {
+    for expression in [
+        "a + b === 11n",
+        "a - b === 3n",
+        "a * b === 28n",
+        "-a === -7n",
+        "a++ === 7n && a === 8n",
+        "++a === 8n",
+    ] {
+        let rt = Runtime::new();
+        let both = expression.contains('b');
+        let src = format!(
+            "let log = ''; let a = {{ valueOf() {{ log += 'a'; __rt.need(1981, 1); return 7n; }} }}; let b = {{ valueOf() {{ log += 'b'; __rt.need(1982, 1); return 4n; }} }}; ({expression}) && log === '{}'",
+            if both { "ab" } else { "a" }
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut completed = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= if both { 2 } else { 1 });
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Null);
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waits, if both { 2 } else { 1 });
+                    completed = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(completed, "{expression}");
+    }
 }

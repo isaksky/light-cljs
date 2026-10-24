@@ -4498,15 +4498,14 @@ immutable `Arc<[u32]>` body. `from_sign_magnitude` is the checked normalization
 boundary: it removes high zero limbs, canonicalizes negative zero to zero and
 selects the inline form whenever possible. Its representation is private, so
 value equality and hashing never depend on the construction path. Future
-add/sub/mul/divrem/pow/shift/logic and radix-conversion implementations extend
-this type and pass every result through the same boundary. They are deferred
-to the sibling BigInt pellets; this pellet implements digit parsing and decimal
-inspection, not those operators.
+divrem/pow/shift/logic and radix-conversion implementations extend this type
+and pass every result through the same boundary. Addition, subtraction,
+multiplication, negation and updates are described under clj-quickjs-198 below.
 
 The magnitude cap is 1 Mbit (`MAX_BIGINT_BITS`), following the user-selected
 QuickJS policy. Constructors return `BigIntError::TooLarge` with the text
 `BigInt is too large`. Literal overflow is a positioned frontend `TooLarge`;
-future arithmetic overflow must become catchable RangeError with that text.
+arithmetic overflow becomes catchable RangeError with that text.
 Every operation costs one VM instruction regardless of limb count. The cap
 bounds each leaf computation, including equality and hashing, but there is no
 cancellation/yield poll within that computation. Power-of-two literals pack
@@ -4844,3 +4843,32 @@ RegExp native must turn it into a catchable JavaScript RangeError. It must
 never translate this failure to no match. Compilation has its own allowance
 of the same size, bounding program expansion and validation work. These
 limits are implementation policy, so even long linear matches can fail.
+
+## BigInt arithmetic (clj-quickjs-198)
+
+`JsBigInt::checked_add`, `checked_sub` and `checked_mul` compute immutable
+base-2^32 sign/magnitude results and normalize through `from_sign_magnitude`.
+Signed subtraction compares magnitudes before borrowing; multiplication uses
+schoolbook limb products with u64 carry. The product bit-length lower bound
+rejects definite overflow before quadratic work. Buffers and carry propagation
+never store a magnitude beyond the 1 Mbit cap. `negated` shares large immutable
+bodies when canonical representation allows it; zero and the i64 endpoints
+retain canonical forms. No new dependency or traced heap kind is needed.
+
+`Add`, `Sub`, `Mul` and `Plus` dispatch two BigInts to the checked operations;
+`Neg` preserves their magnitude. Appended opcodes `ToNumeric` (0x70), `Inc`
+(0x71) and `Dec` (0x72) let binding/property updates preserve BigInt and use a
+unit of the same numeric type. Postfix lowering saves the converted old value;
+failed arithmetic never reaches the store. `ToNumberPair` now preserves two
+BigInts and rejects a mixed pair. The compiler no longer assumes an unknown
+numeric expression necessarily returns Number, including compound assignments
+and updates. Unary `+` retains ToNumber and rejects BigInt with TypeError.
+
+Object conversion continues through task-owned native Convert frames, with
+hint default for addition and number for other numeric operators; values
+survive yields, waits, collection and worker migration. Arithmetic itself is a
+leaf computation costing one instruction, without internal polls. Each result
+and intermediate operation checks the cap and maps overflow to RangeError;
+later cancellation cannot hide an oversized intermediate. BigInt/Number and
+other non-string primitive mixtures throw TypeError. BigInt ToString and the
+remaining numeric operators retain explicit failures for their sibling pellets.

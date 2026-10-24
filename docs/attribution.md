@@ -411,3 +411,15 @@ Other matcher tests are synthetic fixtures, not light-cljs output.
 `research/quickjs/libregexp.c` were consulted as semantic references at
 the same revision. The Rust compiler and matcher were written independently;
 no upstream implementation was copied or linked.
+
+## BigInt arithmetic (clj-quickjs-198)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_bigint_add`,
+`js_bigint_mul`, `js_unary_arith_slow`, `js_binary_arith_slow`, `js_add_slow`),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Rust arithmetic was written afresh using the existing in-tree limb type.
+`tests/js_source.rs::bigint_additive_and_multiplicative_operators` adapts the
+`bigint_pow` loop and mathematical constant from
+`research/quickjs/tests/test_bigint.js`; its full copyright and MIT permission
+notice is retained on the test. Other arithmetic fixtures are synthetic,
+not light-cljs output.

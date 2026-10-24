@@ -719,16 +719,17 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject | HostEffect(_)
         | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get | GetOr | Assoc
         | Dissoc | Conj | PopLast | NewVectorBuilder | NewMapBuilder | BuilderConj
-        | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumberPair | Gt | Le | Ge
-        | LooseEq | ThrowError(_) | Function(..) | Call(_) | CurrentFunction | GetCapture(_)
-        | NewCell | CellInit | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw
-        | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr
-        | BitXor | Shl | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus
-        | CompareLt | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
-        | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
-        | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
-        | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
-        | ForInNext | NewArguments | Method(..) | DefineGetter(_) | DefineSetter(_) => false,
+        | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumeric | Inc | Dec
+        | ToNumberPair | Gt | Le | Ge | LooseEq | ThrowError(_) | Function(..) | Call(_)
+        | CurrentFunction | GetCapture(_) | NewCell | CellInit | CellGet | CellSet | AtomNew
+        | AtomLoad | AtomCas | Need | Throw | PushCatch(_) | PushFinally(_) | PopCatch
+        | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl | Sar | UShr | BitNot | Pow
+        | CallFinally | DropCompletion | Plus | CompareLt | CompareGt | CompareLe | CompareGe
+        | Typeof | GetField(_) | PutField(_) | DefineField(_) | GetBuiltinGlobal(_)
+        | CallMethod(_) | NewObjectLiteral | ToString | GetThis | NewArray | AppendElement
+        | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | Construct(_) | SetProto
+        | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
+        | DefineGetter(_) | DefineSetter(_) => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -754,7 +755,7 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
 pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool, Fault> {
     use Instr::*;
     let (count, first, end, hint) = match instr {
-        ToNumber => (1, 0, 1, Hint::Number),
+        ToNumber | ToNumeric => (1, 0, 1, Hint::Number),
         ToString => (1, 0, 1, Hint::String),
         Plus => (2, 0, 2, Hint::Default),
         ToNumberPair | CompareLt | CompareGt | CompareLe | CompareGe => (2, 0, 2, Hint::Number),

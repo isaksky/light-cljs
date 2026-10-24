@@ -2675,9 +2675,9 @@ impl<'s> Lowerer<'s> {
 
     /// `++o.p`, `o.p++`, `--o[k]`, `o[k]--` (clj-quickjs-76; QuickJS
     /// `js_parse_postfix_expr` / `js_parse_unary` lvalue handling): the
-    /// reference once, its value, ToNumber, add or subtract 1, the write.
+    /// reference once, its value, ToNumeric, increment/decrement, the write.
     /// A postfix update keeps the converted old value in a scratch local
-    /// across the write (it is a number, so the local retains no object)
+    /// across the write (it is numeric, so the local retains no object)
     /// and gives it instead of the written one. The conversion and the
     /// arithmetic are reported at the `++`/`--`.
     #[inline(never)]
@@ -2690,7 +2690,7 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), SyntaxError> {
         let r = self.property_reference(target)?;
         self.reference_get(r);
-        self.out().op(Opcode::ToNumber, op_span);
+        self.out().op(Opcode::ToNumeric, op_span);
         let old = if prefix {
             None
         } else {
@@ -2699,10 +2699,9 @@ impl<'s> Lowerer<'s> {
             self.out().op_u16(Opcode::SetLocal, tmp, op_span);
             Some(tmp)
         };
-        self.constant(Primitive::Number(1.0), op_span)?;
         let arith = match op {
-            UpdateOp::Inc => Opcode::Add,
-            UpdateOp::Dec => Opcode::Sub,
+            UpdateOp::Inc => Opcode::Inc,
+            UpdateOp::Dec => Opcode::Dec,
         };
         self.out().op(arith, op_span);
         self.reference_put(r);
@@ -2996,8 +2995,15 @@ impl<'s> Lowerer<'s> {
             UnaryOp::Void => self.void_result(span),
             UnaryOp::Not => self.out().op(Opcode::Not, span),
             UnaryOp::Neg | UnaryOp::Plus => {
-                if !is_number(operand) {
-                    self.out().op(Opcode::ToNumber, span);
+                if !(is_number(operand) || op == UnaryOp::Neg && is_numeric(operand)) {
+                    self.out().op(
+                        if op == UnaryOp::Neg {
+                            Opcode::ToNumeric
+                        } else {
+                            Opcode::ToNumber
+                        },
+                        span,
+                    );
                 }
                 if op == UnaryOp::Neg {
                     self.out().op(Opcode::Neg, span);
@@ -3005,7 +3011,7 @@ impl<'s> Lowerer<'s> {
             }
             UnaryOp::BitNot => {
                 if !is_number(operand) {
-                    self.out().op(Opcode::ToNumber, span);
+                    self.out().op(Opcode::ToNumeric, span);
                 }
                 self.out().op(Opcode::BitNot, span);
             }
@@ -3106,7 +3112,7 @@ impl<'s> Lowerer<'s> {
     }
 
     /// `++target`, `target--`, ... for a binding: read the binding (with
-    /// the same checks as any read), ToNumber, add or subtract 1, store
+    /// the same checks as any read), ToNumeric, increment/decrement, store
     /// (with the same checks as `=`). A postfix update keeps the converted
     /// old value under the new one and drops the stored value.
     #[inline(never)]
@@ -3120,14 +3126,13 @@ impl<'s> Lowerer<'s> {
         let at = self.name_span(&target.name, target.span);
         let access = self.resolve_reference(&target.name);
         self.load(access, at)?;
-        self.out().op(Opcode::ToNumber, op_span);
+        self.out().op(Opcode::ToNumeric, op_span);
         if !prefix {
             self.out().op(Opcode::Dup, op_span);
         }
-        self.constant(Primitive::Number(1.0), op_span)?;
         let arith = match op {
-            UpdateOp::Inc => Opcode::Add,
-            UpdateOp::Dec => Opcode::Sub,
+            UpdateOp::Inc => Opcode::Inc,
+            UpdateOp::Dec => Opcode::Dec,
         };
         self.out().op(arith, op_span);
         self.store(access, at)?;
@@ -3642,7 +3647,14 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
 fn is_number(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Number(_) => true,
-        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Neg | UnaryOp::Plus | UnaryOp::BitNot),
+        ExprKind::Unary {
+            op: UnaryOp::Plus, ..
+        } => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::BitNot,
+            operand,
+            ..
+        } => is_number(operand),
         // `+` concatenates when an operand is a string, so it is a number
         // only when both operands are.
         ExprKind::Binary {
@@ -3651,20 +3663,26 @@ fn is_number(e: &Expr) -> bool {
             right,
             ..
         } => is_number(left) && is_number(right),
-        ExprKind::Binary { op, .. } => matches!(
-            op,
-            BinaryOp::Mul
-                | BinaryOp::Div
-                | BinaryOp::Rem
-                | BinaryOp::Sub
-                | BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::Shl
-                | BinaryOp::Sar
-                | BinaryOp::UShr
-                | BinaryOp::Exp
-        ),
+        ExprKind::Binary {
+            op, left, right, ..
+        } => {
+            is_number(left)
+                && is_number(right)
+                && matches!(
+                    op,
+                    BinaryOp::Mul
+                        | BinaryOp::Div
+                        | BinaryOp::Rem
+                        | BinaryOp::Sub
+                        | BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Sar
+                        | BinaryOp::UShr
+                        | BinaryOp::Exp
+                )
+        }
         ExprKind::Conditional {
             consequent,
             alternate,
@@ -3673,15 +3691,45 @@ fn is_number(e: &Expr) -> bool {
         ExprKind::Assign { value, .. }
         | ExprKind::AssignMember { value, .. }
         | ExprKind::AssignIndex { value, .. } => is_number(value),
-        // The binding's old value may be a string, so only `+=` may
-        // concatenate; the other compound operators are numeric.
+        // An unknown binding can hold BigInt; only unsigned shift is
+        // guaranteed to return Number when it completes.
         ExprKind::CompoundAssign { op, .. } | ExprKind::CompoundAssignProperty { op, .. } => {
-            *op != BinaryOp::Add
+            *op == BinaryOp::UShr
         }
         ExprKind::Sequence { right, .. } => is_number(right),
-        ExprKind::Update { .. } | ExprKind::UpdateProperty { .. } => true,
+        ExprKind::Update { .. } | ExprKind::UpdateProperty { .. } => false,
         _ => false,
     }
+}
+
+/// Numeric expressions need no second ToNumeric before unary minus, even
+/// when their result may be a BigInt. Unary plus still needs ToNumber.
+fn is_numeric(e: &Expr) -> bool {
+    is_number(e)
+        || matches!(
+            &e.kind,
+            ExprKind::BigInt(_)
+                | ExprKind::Unary {
+                    op: UnaryOp::Neg | UnaryOp::BitNot,
+                    ..
+                }
+                | ExprKind::Update { .. }
+                | ExprKind::UpdateProperty { .. }
+                | ExprKind::Binary {
+                    op: BinaryOp::Sub
+                        | BinaryOp::Mul
+                        | BinaryOp::Div
+                        | BinaryOp::Rem
+                        | BinaryOp::Exp
+                        | BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::Shl
+                        | BinaryOp::Sar
+                        | BinaryOp::UShr,
+                    ..
+                }
+        )
 }
 
 #[cfg(test)]

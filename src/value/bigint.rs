@@ -73,6 +73,114 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    /// Exact addition, checked against the magnitude cap.
+    pub fn checked_add(&self, other: &Self) -> Result<Self, BigIntError> {
+        self.add_signed(other, false)
+    }
+
+    /// Exact subtraction; opposite signs never need an oversized temporary.
+    pub fn checked_sub(&self, other: &Self) -> Result<Self, BigIntError> {
+        self.add_signed(other, true)
+    }
+
+    fn add_signed(&self, other: &Self, subtract: bool) -> Result<Self, BigIntError> {
+        let (mut small_a, mut small_b) = ([0; 2], [0; 2]);
+        let (negative_a, mut a) = self.magnitude(&mut small_a);
+        let (negative_b, mut b) = other.magnitude(&mut small_b);
+        let negative_b = negative_b ^ subtract;
+        let mut negative = negative_a;
+        let mut out = Vec::with_capacity(a.len().max(b.len()));
+        if negative_a == negative_b {
+            let mut carry = 0u64;
+            for i in 0..a.len().max(b.len()) {
+                let sum = a.get(i).copied().unwrap_or(0) as u64
+                    + b.get(i).copied().unwrap_or(0) as u64
+                    + carry;
+                out.push(sum as u32);
+                carry = sum >> 32;
+            }
+            if carry != 0 {
+                if out.len() == MAX_BIGINT_BITS / 32 {
+                    return Err(BigIntError::TooLarge);
+                }
+                out.push(carry as u32);
+            }
+        } else {
+            if a.len()
+                .cmp(&b.len())
+                .then_with(|| a.iter().rev().cmp(b.iter().rev()))
+                .is_lt()
+            {
+                std::mem::swap(&mut a, &mut b);
+                negative = negative_b;
+            }
+            let mut borrow = false;
+            for (i, &limb) in a.iter().enumerate() {
+                let (difference, first) = limb.overflowing_sub(b.get(i).copied().unwrap_or(0));
+                let (difference, second) = difference.overflowing_sub(u32::from(borrow));
+                out.push(difference);
+                borrow = first || second;
+            }
+            debug_assert!(!borrow);
+        }
+        Self::from_sign_magnitude(negative, out)
+    }
+
+    /// Exact product. Each base-2^32 multiply/add fits u64. Reject products
+    /// known to exceed the cap before allocating or doing quadratic work;
+    /// carry propagation never stores a magnitude beyond the cap either.
+    pub fn checked_mul(&self, other: &Self) -> Result<Self, BigIntError> {
+        let (mut small_a, mut small_b) = ([0; 2], [0; 2]);
+        let (negative_a, a) = self.magnitude(&mut small_a);
+        let (negative_b, b) = other.magnitude(&mut small_b);
+        if a.is_empty() || b.is_empty() {
+            return Ok(Self::from(0));
+        }
+        let bits = |limbs: &[u32]| {
+            (limbs.len() - 1) * 32 + 32 - limbs.last().unwrap().leading_zeros() as usize
+        };
+        if bits(a) + bits(b) - 1 > MAX_BIGINT_BITS {
+            return Err(BigIntError::TooLarge);
+        }
+        let mut out = vec![0u32; (a.len() + b.len()).min(MAX_BIGINT_BITS / 32)];
+        for (i, &x) in a.iter().enumerate() {
+            if x == 0 {
+                continue;
+            }
+            let mut carry = 0u64;
+            for (j, &y) in b.iter().enumerate() {
+                let product = x as u64 * y as u64 + carry;
+                if let Some(limb) = out.get_mut(i + j) {
+                    let sum = product + *limb as u64;
+                    *limb = sum as u32;
+                    carry = sum >> 32;
+                } else if product != 0 {
+                    return Err(BigIntError::TooLarge);
+                }
+            }
+            if carry != 0 {
+                let limb = out.get_mut(i + b.len()).ok_or(BigIntError::TooLarge)?;
+                *limb = carry as u32;
+            }
+        }
+        Self::from_sign_magnitude(negative_a ^ negative_b, out)
+    }
+
+    /// Negation has the same magnitude, with canonical zero and i64 edges.
+    pub fn negated(&self) -> Self {
+        match &self.0 {
+            Repr::Small(n) if *n != i64::MIN => Self::from(-n),
+            Repr::Large { negative, limbs } if limbs.len() > 2 => Self(Repr::Large {
+                negative: !negative,
+                limbs: limbs.clone(),
+            }),
+            _ => {
+                let (negative, limbs) = self.to_sign_magnitude();
+                Self::from_sign_magnitude(!negative, limbs).expect("negation preserves magnitude")
+            }
+        }
+    }
+
     /// Borrow canonical limbs, using caller-owned scratch space for inline values.
     fn magnitude<'a>(&'a self, small: &'a mut [u32; 2]) -> (bool, &'a [u32]) {
         match &self.0 {
@@ -359,6 +467,75 @@ mod tests {
         );
         assert_eq!(
             JsBigInt::from_sign_magnitude(false, vec![1; MAX_BIGINT_BITS / 32 + 1]),
+            Err(BigIntError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn signed_arithmetic_matches_i128_and_canonical_forms() {
+        let values = [
+            i64::MIN,
+            i64::MIN + 1,
+            -4294967296,
+            -1,
+            0,
+            1,
+            4294967295,
+            i64::MAX,
+        ];
+        let exact = |n: i128| {
+            let magnitude = n.unsigned_abs();
+            JsBigInt::from_sign_magnitude(
+                n < 0,
+                (0..4).map(|i| (magnitude >> (i * 32)) as u32).collect(),
+            )
+            .unwrap()
+        };
+        for &a in &values {
+            let x = JsBigInt::from(a);
+            assert_eq!(x.negated(), exact(-(a as i128)));
+            assert_eq!(x.negated().negated(), x);
+            for &b in &values {
+                let y = JsBigInt::from(b);
+                assert_eq!(x.checked_add(&y).unwrap(), exact(a as i128 + b as i128));
+                assert_eq!(x.checked_sub(&y).unwrap(), exact(a as i128 - b as i128));
+                assert_eq!(x.checked_mul(&y).unwrap(), exact(a as i128 * b as i128));
+            }
+        }
+        let high = JsBigInt::from_sign_magnitude(false, vec![0, 0, 1]).unwrap();
+        let below = JsBigInt::from_sign_magnitude(false, vec![u32::MAX; 2]).unwrap();
+        assert_eq!(high.checked_sub(&JsBigInt::from(1)).unwrap(), below);
+        assert_eq!(below.checked_add(&JsBigInt::from(1)).unwrap(), high);
+        assert_eq!(
+            high.checked_add(&high.negated()).unwrap(),
+            JsBigInt::from(0)
+        );
+        assert_eq!(JsBigInt::from(0).negated(), JsBigInt::from(0));
+    }
+
+    #[test]
+    fn arithmetic_size_cap_and_cancellation() {
+        let cap =
+            JsBigInt::from_sign_magnitude(false, vec![u32::MAX; MAX_BIGINT_BITS / 32]).unwrap();
+        let one = JsBigInt::from(1);
+        assert_eq!(cap.checked_add(&one), Err(BigIntError::TooLarge));
+        assert_eq!(cap.negated().checked_sub(&one), Err(BigIntError::TooLarge));
+        assert_eq!(
+            cap.checked_mul(&JsBigInt::from(2)),
+            Err(BigIntError::TooLarge)
+        );
+        assert_eq!(cap.checked_mul(&one).unwrap(), cap);
+        assert_eq!(
+            cap.checked_mul(&JsBigInt::from(0)).unwrap(),
+            JsBigInt::from(0)
+        );
+        assert_eq!(cap.checked_sub(&cap).unwrap(), JsBigInt::from(0));
+        let mut limbs = vec![u32::MAX; MAX_BIGINT_BITS / 32];
+        *limbs.last_mut().unwrap() = 0x7fffffff;
+        let almost = JsBigInt::from_sign_magnitude(false, limbs).unwrap();
+        // The bit-length lower bound fits, but the actual product does not.
+        assert_eq!(
+            almost.checked_mul(&JsBigInt::from(3)),
             Err(BigIntError::TooLarge)
         );
     }
