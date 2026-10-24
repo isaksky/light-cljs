@@ -8309,6 +8309,9 @@ properties and both value/method edges in each resource record. Root inventory:
 `disposable_stack_resources_retain_and_reclaim` verifies all those edges and
 reclamation when the holder is dropped. The native-frame holder also covers
 resources and pending errors after ownership transfers into a running disposer.
+`disposable_stack_continuation_roots_survive_collection` additionally collects
+with a continuation-only use receiver and after every disposal instruction,
+covering anonymous errors held only by native catch and suppression state.
 
 The shared immutable realm adds the constructor, unbranded prototype, five
 methods and disposed getter. `[Symbol.dispose]` aliases the dispose function

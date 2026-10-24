@@ -211,6 +211,63 @@ fn disposable_stack_use_getter_waits_and_resumes() {
     assert_eq!(log.0, [1.0, 42.0]);
 }
 
+/// Synthetic fixtures, not light-cljs output. The temporary receiver has
+/// no source binding; anonymous errors have no holder outside the native
+/// catch/disposal state until the final catch receives the complete chain.
+#[test]
+fn disposable_stack_continuation_roots_survive_collection() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        new DisposableStack().use({n: 42, get [Symbol.dispose]() {
+            __rt.effect(1, 1); __rt.need(5, 3);
+            return function() {};
+        }}).n;
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    assert_eq!(log.0, [1.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [1.0]);
+
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let s = new DisposableStack(), caught;
+        s.defer(() => { __rt.effect(1, 1); throw {tag: 'first'}; });
+        s.defer(() => { __rt.effect(1, 2); throw {tag: 'second'}; });
+        s.defer(() => { __rt.effect(1, 3); throw {tag: 'third'}; });
+        try { s.dispose(); } catch(e) { caught = e; }
+        caught instanceof SuppressedError && caught.error.tag === 'first' &&
+        caught.suppressed instanceof SuppressedError &&
+        caught.suppressed.error.tag === 'second' &&
+        caught.suppressed.suppressed.tag === 'third' ? 42 : 0;
+    "#,
+    );
+    let mut log = Log::default();
+    for _ in 0..10_000 {
+        match task.run_with(Budget::instructions(1), &mut log).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            outcome @ RunOutcome::Complete(_) => {
+                assert_eq!(number(outcome), 42.0);
+                assert_eq!(log.0, [3.0, 2.0, 1.0]);
+                return;
+            }
+            other => panic!("expected yield or completion, got {other:?}"),
+        }
+    }
+    panic!("disposal did not finish within the instruction bound");
+}
+
 #[test]
 fn cancellation_disposes_using_resources() {
     let rt = Runtime::new();

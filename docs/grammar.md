@@ -6141,9 +6141,11 @@ returned without recording. Adopt returns its value; defer returns undefined.
 Dispose marks the stack disposed before calling resources in reverse registration
 order. Method resources receive their value as this and no arguments, adopt
 callbacks receive undefined as this and the adopted value as their sole argument,
-and defer callbacks receive undefined as this and no arguments. Sloppy callbacks
-apply the ordinary global-this conversion. Callbacks and dispose-method getters
-can wait, yield, survive collection and migrate between workers without replay.
+and defer callbacks receive undefined as this and no arguments. As elsewhere in
+the subset, evaluating `this` in a sloppy callback with an undefined receiver
+fails with UnsupportedOperand; global-this substitution remains deferred.
+Callbacks and dispose-method getters can wait, yield, survive collection and
+migrate between workers without replay.
 Second disposal is a no-op returning undefined. `[Symbol.dispose]` is the same
 function object as dispose. The prototype's `[Symbol.toStringTag]` is
 `DisposableStack`; general Object.prototype.toString tag consumption remains a gap.
