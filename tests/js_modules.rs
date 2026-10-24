@@ -871,3 +871,166 @@ fn deep_acyclic_graph_evaluates_without_nested_module_calls() {
     ));
     assert_eq!(host.effects, vec![Primitive::Number(1499.0)]);
 }
+
+#[test]
+fn module_bindings_are_instantiated_before_body() {
+    let sources = [
+        ("entry.js", "import {v} from './dep.js'; __rt.effect(0, v);"),
+        (
+            "dep.js",
+            "__rt.effect(0, f()); __rt.effect(0, v === undefined); export function f() { return 7; } export var v = 3;",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Primitive::Number(7.0),
+                Primitive::Bool(true),
+                Primitive::Number(3.0)
+            ]
+        );
+    }
+}
+
+#[test]
+fn module_linking_yields_and_migrates() {
+    use clj_quickjs::module::ModulePhase;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import {n} from './0.js'; __rt.effect(0, n);");
+    for index in 0..40 {
+        host.add(
+            &format!("{index}.js"),
+            &format!("export * from './{}.js';", index + 1),
+        );
+    }
+    host.add("40.js", "export let n = 7;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut task = runtime.spawn_module(&graph);
+    assert_eq!(task.module_phase(), Some(ModulePhase::Linking));
+    let mut linking_slices = 0;
+    let mut instantiating = false;
+    let mut done = false;
+    for _ in 0..3000 {
+        let phase = task.module_phase();
+        if phase == Some(ModulePhase::Linking) {
+            linking_slices += 1;
+            assert!(host.effects.is_empty());
+        }
+        if phase == Some(ModulePhase::Instantiating) {
+            instantiating = true;
+        }
+        let (next, next_host, outcome) = std::thread::spawn(move || {
+            let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+            (task, host, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        host = next_host;
+        runtime.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Undefined);
+                done = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(done && instantiating);
+    // Every graph edge and every star table entry requires separate linking
+    // steps, before any instantiation/body instruction can execute.
+    assert!(linking_slices > 200, "{linking_slices}");
+    assert_eq!(task.module_phase(), None);
+    assert_eq!(host.effects, vec![Primitive::Number(7.0)]);
+    assert_eq!(host.fetches().len(), 42);
+}
+
+#[test]
+fn module_cancellation_stops_linking_and_runs_dependency_finally() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import './dep.js'; __rt.effect(0, 'entry');");
+    host.add(
+        "dep.js",
+        "try { __rt.need(73, 0); } finally { __rt.effect(0, 'finally'); }",
+    );
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let linking = runtime.spawn_module(&graph);
+    assert!(matches!(
+        linking
+            .run_with(Budget::instructions(1), &mut host)
+            .unwrap(),
+        RunOutcome::Yielded
+    ));
+    let _ = linking.cancel();
+    assert!(matches!(
+        linking.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert!(host.effects.is_empty());
+    let task = runtime.spawn_module(&graph);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    let _ = task.cancel();
+    let mut cancelled = false;
+    for _ in 0..100 {
+        runtime.collect().unwrap();
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Cancelled => {
+                cancelled = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(cancelled);
+    assert_eq!(host.effects, vec![Primitive::String("finally".into())]);
+}
+
+#[test]
+fn module_linker_cells_retain_and_reclaim() {
+    use clj_quickjs::module::ModulePhase;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "export let n = 7;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    assert_eq!(runtime.heap_stats().objects, 0);
+    let mut linked = false;
+    for _ in 0..100 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host).unwrap(),
+            RunOutcome::Yielded
+        ));
+        runtime.collect().unwrap();
+        if task.module_phase() == Some(ModulePhase::Instantiating) {
+            linked = true;
+            break;
+        }
+    }
+    assert!(linked);
+    // No module frame has run: the continuation is the cell's only root.
+    assert_eq!(runtime.collect().unwrap().live, 1);
+    drop(task);
+    let collected = runtime.collect().unwrap();
+    assert_eq!(collected.reclaimed, 1);
+    assert_eq!(collected.live, 0);
+}

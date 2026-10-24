@@ -286,6 +286,7 @@ public API cannot reach.
 | suspended (yielded) frames | `TaskFrame`, task root source | `suspended_frame_retains` | `suspended_frame_reclaims` |
 | task global object and its properties | `TaskFrame` (`PlainObject`) | `task_global_object_retains_and_reclaims` | `finished_task_releases_global_object` |
 | task global declarative environment | `TaskFrame` (`Cell`) | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* | `task_global_lexicals_survive_job_replacement_and_reclaim` *(lib)* |
+| module linking continuation and environment cells | `TaskFrame` (`Cell`) | `module_linker_cells_retain_and_reclaim` (`tests/js_modules.rs`) | `module_linker_cells_retain_and_reclaim` |
 | frames suspended at a pending `__rt.need` | `TaskFrame` | `pending_need_frame_retains` | `pending_need_frame_reclaims` |
 | executor ready queue | `TaskFrame` (queued task) | `ready_queue_retains` | `ready_queue_reclaims` |
 | executor parked set | `TaskFrame` (parked task) | `executor_parked_task_retains` | `executor_parked_task_reclaims` |
@@ -7595,10 +7596,11 @@ an explicit immutable code/syntax storage boundary, not a JavaScript heap object
 Default function and class declarations are distinguished from expressions in the body;
 anonymous defaults use ECMA-262's inaccessible `*default*` binding name.
 
-Linking and execution are deferred. The pre-run loader below associates
-records with world/version while keeping future instances per task. Static requests do
-not create dependency edges. This parser neither fetches sources nor starts tasks;
-it imposes no filesystem resolution policy and does not accept top-level await.
+The pre-run loader below associates records with world/version. Acyclic graphs
+link and execute with separate instances per task (see "Acyclic module execution").
+Static requests do not create dependency edges. This parser neither fetches
+sources nor starts tasks; it imposes no filesystem resolution policy and does
+not accept top-level await.
 
 QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 `js_parse_import`, `js_parse_export`, `js_parse_from_clause`, `add_import`,
@@ -7839,19 +7841,21 @@ default-locale leaf remain the shared Intl policy.
 
 ### Acyclic module execution (clj-quickjs-253)
 
-`Runtime::spawn_module(&graph)` starts one module instance per graph record in
-an entry task, in the graph's world. Static linking computes a source-order
-DFS post-order, resolves named imports through local/indirect export entries,
-and checks every link before any body can run. Star exports are resolved
+`Runtime::spawn_module(&graph)` lowers each immutable record independently,
+then starts an entry task in the graph's world. A task-owned continuation
+computes source-order DFS post-order, resolves named imports through
+local/indirect export entries, and checks every link before any body runs.
+Each graph edge, export-table entry, binding allocation or phase transition
+consumes one budget step. Star exports retain a name cursor and are resolved
 bottom-up over the DAG, excluding default. Explicit exports override stars;
 two star paths resolving to distinct origin bindings are ambiguous, while
 two paths to one binding stay unambiguous. Explicit indirect exports are
 validated even when unused. Missing exports fail the task with SyntaxError
-naming the export and module. Cycles, namespace imports,
-JSON instances and default-export declarations fail explicitly for now.
+naming the export and module. Cycles, namespace imports, JSON instances and
+default-export declarations fail explicitly for now.
 
-The compiled entry driver allocates ordinary task-owned binding cells for all
-module bindings before calling any instantiation frame. Each module has two
+The continuation allocates ordinary task-owned binding cells for all module
+bindings before entering any instantiation frame. Each module has two
 private strict executable entry points receiving those cells as internal
 parameters: instantiation creates hoisted functions, then evaluation runs the
 body. Imports receive the origin's cell, with immutable assignment semantics
@@ -7860,11 +7864,17 @@ var cells start as undefined. Declarations never create global properties and
 top-level this is undefined. Function closures capture module cells, including
 recursive references, so later writes to exported functions remain live.
 
-These are ordinary VM frames/instructions, precisely traced by the existing
-cell/function GC paths and classified as task-owned by value::share. There is
-no new heap kind, lock or host fetch during a run. Budgets, need waits, GC and
-migration preserve the exact continuation, including allocation/instantiation;
-no earlier module effect is replayed. Bodies run once in post-order; a throw
+The continuation selects ordinary VM entry frames without nesting Rust calls;
+it retains traversal indices, tables and cells across runs. `VmState::trace`
+traces these cells and prepared code, and the existing cell/function GC paths
+trace their values and closure captures. Cells remain task-owned in
+value::share. `Task::module_phase()` exposes linking, instantiating and evaluating
+for scheduler diagnostics; it returns None for scripts, finished tasks and
+snapshots unavailable during a concurrent run. There is no new heap kind, lock
+or host fetch during a run. Budgets, need waits, GC and
+migration preserve the exact continuation, including graph traversal, star
+resolution, allocation and instantiation; no earlier module effect is replayed.
+Bodies run once in post-order; a throw
 stops the driver, failing its task before later bodies run. Completion is
 undefined. A finished task cannot be run again; a fresh spawn creates fresh
 instances, including after failure. Imports create no dependency-log edges.

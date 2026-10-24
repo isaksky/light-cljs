@@ -727,6 +727,22 @@ impl Task {
         &self.0.executable
     }
 
+    /// Best-effort module scheduler phase; None for scripts, finished tasks,
+    /// or an unavailable snapshot while a run holds task state. Never blocks
+    /// a running task (including a leaf host effect querying its own task).
+    /// Linking includes graph traversal, export resolution and cell allocation.
+    pub fn module_phase(&self) -> Option<crate::module::ModulePhase> {
+        let body = match self.0.body.try_lock() {
+            Ok(body) => body,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        match &*body {
+            TaskBody::Ready(vm) => vm.module_link.as_ref().map(|link| link.phase()),
+            _ => None,
+        }
+    }
+
     /// A snapshot of the task's dependency log: recorded edges (every key it
     /// has needed, ready reads included) and its unresolved wait, if any.
     pub fn dependency_log(&self) -> DependencyLog {

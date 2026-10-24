@@ -135,13 +135,20 @@ impl Runtime {
         self.spawn_in(self.0.world, executable, args)
     }
 
-    /// Spawn a loaded acyclic module graph in its world. Module cells and
+    /// Lower each record, then spawn a loaded acyclic module graph in its
+    /// world. Graph traversal and export resolution consume the run budget.
+    /// Module cells and
     /// closures are instantiated independently in this task; no host fetch
     /// occurs during its runs. Linking errors fail the task with SyntaxError
     /// before any module body executes. Completion is undefined.
     pub fn spawn_module(&self, graph: &crate::module::ModuleGraph) -> Task {
-        self.spawn_in(graph.world(), &graph.executable(), &[])
-            .expect("module entry has no foreign arguments")
+        let linker = crate::module::Linker::new(graph);
+        self.spawn_values(
+            graph.world(),
+            &graph.entry_code(),
+            &[],
+            Some(Box::new(linker)),
+        )
     }
 
     /// [`Runtime::spawn`] in world `world`: the task's needs read the
@@ -157,18 +164,29 @@ impl Runtime {
             .iter()
             .map(|a| a.value_in(&self.0.heap))
             .collect::<Result<Vec<Value>, _>>()?;
+        Ok(self.spawn_values(world, executable, &args, None))
+    }
+
+    fn spawn_values(
+        &self,
+        world: WorldId,
+        executable: &Executable,
+        args: &[Value],
+        module_link: Option<Box<crate::module::Linker>>,
+    ) -> Task {
         // Relaxed: the counter only needs uniqueness, not ordering with other memory.
         let id = TaskId::from_raw(self.0.next_task.fetch_add(1, Ordering::Relaxed));
         let diag = DiagnosticContext { task: id, world };
-        let vm = VmState::new(&executable.0, &args, diag, self.0.limits);
-        Ok(Task::new(
+        let mut vm = VmState::new(&executable.0, args, diag, self.0.limits);
+        vm.module_link = module_link;
+        Task::new(
             id,
             world,
             executable.clone(),
             Arc::clone(&self.0.heap),
             Arc::clone(&self.0.deps),
             vm,
-        ))
+        )
     }
 
     /// Claim the single producer of `key`'s cell without subscribing to it,

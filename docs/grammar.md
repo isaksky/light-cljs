@@ -5645,8 +5645,10 @@ imports, exported declarations, export lists, `export {x} from` and `export *`
 execute. Star exports exclude default, explicit exports take precedence, and
 distinct origins for one star-exported name produce an ambiguity SyntaxError
 when that name is imported. Multiple paths to the same origin stay unambiguous.
-Imported names are immutable live aliases of the origin's binding cell, including exports of
-imports. Missing exports are SyntaxError failures before any body effect.
+Imported names are immutable live aliases of the origin's binding cell,
+including exports of imports. Missing exports are SyntaxError failures before
+any body effect. Graph traversal, export resolution and cell allocation run
+as budgeted, saved steps in the entry task; spawning only lowers source.
 Module functions are instantiated before evaluation, let/const remain in TDZ
 until initialized, and var starts as undefined. Bodies run once each in
 source-request DFS post-order; a throw fails the entry task immediately.

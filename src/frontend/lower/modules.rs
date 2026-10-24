@@ -6,7 +6,7 @@ use super::*;
 use crate::frontend::ast::ModuleItem;
 use crate::frontend::{ImportName, ModuleRecord};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct ModuleBinding {
     pub name: Ident,
     kind: BindingKind,

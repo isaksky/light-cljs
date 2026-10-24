@@ -482,8 +482,6 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
             format!("assignment to constant variable '{n}'")
         }
         (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
-        (ThrowKind::ModuleLink, Some(message)) => message.to_string(),
-        (ThrowKind::ModuleLink, None) => "could not link module".to_string(),
     }
 }
 
@@ -1661,7 +1659,6 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
             let error_kind = match kind {
                 ThrowKind::Unresolvable | ThrowKind::Uninitialized => VmErrorKind::ReferenceError,
                 ThrowKind::ConstAssignment => VmErrorKind::TypeError,
-                ThrowKind::ModuleLink => VmErrorKind::SyntaxError,
             };
             (error_kind, throw_message(code, pc, kind))
         }
@@ -2921,6 +2918,30 @@ pub(crate) fn execute_budgeted(
             }
             *left -= 1;
         }
+        if state.module_link.as_ref().is_some_and(|link| !link.running) && !state.cancelling {
+            heap.safepoint(state);
+            // The linker is root-free while moved out except for its cells.
+            // Its step never polls/collects; restore it before the next poll.
+            let mut linker = state.module_link.take().expect("module continuation");
+            let action = linker.step(heap, state.diag.task);
+            state.module_link = Some(linker);
+            let result = match action {
+                Ok(crate::module::LinkAction::Continue) => continue,
+                Ok(crate::module::LinkAction::Complete) => {
+                    state.module_link = None;
+                    return Exit::Return(Value::Undefined);
+                }
+                Ok(crate::module::LinkAction::Run(next, args)) => state.start_module(&next, &args),
+                Err(fault) => Err(fault),
+            };
+            if let Err(fault) = result {
+                let pc = state.top().pc;
+                let (kind, message) = fault_error(fault, &code, pc);
+                return Exit::Fail(state.failure(kind, message, pc));
+            }
+            code = Arc::clone(&state.top().code);
+            continue;
+        }
         // A running native frame (no call frame above it) takes the next
         // step instead of the running frame's next instruction; `pc` is then
         // its starting instruction, which a failure or a need reports.
@@ -2959,7 +2980,15 @@ pub(crate) fn execute_budgeted(
                 code = Arc::clone(&state.top().code);
                 continue;
             }
-            Ok(Flow::Complete(value)) => return Exit::Return(value),
+            Ok(Flow::Complete(value)) => {
+                if !state.cancelling
+                    && let Some(link) = &mut state.module_link
+                {
+                    link.running = false;
+                    continue;
+                }
+                return Exit::Return(value);
+            }
             Ok(Flow::CleanupEnded) => return Exit::CleanupEnded,
             Ok(Flow::Need(dependency, kind)) => {
                 native::assert_no_borrow("leaving the loop for a dependency (may suspend)");

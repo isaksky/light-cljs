@@ -1,232 +1,401 @@
-//! Static acyclic linking, followed by a resumable bytecode driver. Compiler
-//! maps contain only private keys/slots; all mutable instances are allocated
-//! by NewCell in the entry task, never retained in a loaded record.
+//! Source lowering is pre-run. Graph traversal, ResolveExport, environment
+//! allocation and module execution are saved, budgeted steps of the entry task.
+
+use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Unbounded};
 
 use super::*;
-use crate::frontend::{ModuleBinding, Span, SyntaxErrorKind, lower_module, module_bindings};
-use crate::{Assembler, Executable, Opcode};
-
-fn error(node: &ModuleNode, span: Span, message: impl Into<String>) -> SyntaxError {
-    SyntaxError::new(
-        node.module.source.text(),
-        SyntaxErrorKind::Invalid,
-        span,
-        message,
-    )
-}
-
-fn requested(node: &ModuleNode, specifier: &JsString) -> ModuleKey {
-    let index = node
-        .module
-        .record()
-        .unwrap()
-        .requested_modules()
-        .iter()
-        .position(|s| s == specifier)
-        .expect("record request");
-    node.requested_modules[index]
-}
-
-fn post_order(graph: &ModuleGraph) -> Result<Vec<ModuleKey>, SyntaxError> {
-    let mut state = HashMap::new();
-    let mut order = Vec::new();
-    let mut stack = vec![(graph.entry, 0)];
-    state.insert(graph.entry, false);
-    while let Some((key, next)) = stack.last_mut() {
-        let node = &graph.nodes[key];
-        if let Some(dep) = node.requested_modules.get(*next).copied() {
-            *next += 1;
-            match state.get(&dep) {
-                Some(true) => {}
-                Some(false) => {
-                    return Err(error(
-                        node,
-                        Span::new(0, 0),
-                        "cyclic module graphs cannot be executed yet",
-                    ));
-                }
-                None => {
-                    state.insert(dep, false);
-                    stack.push((dep, 0));
-                }
-            }
-        } else {
-            state.insert(*key, true);
-            order.push(*key);
-            stack.pop();
-        }
-    }
-    Ok(order)
-}
+use crate::frontend::{ImportName, ModuleBinding, ModuleRecord, lower_module, module_bindings};
+use crate::heap::gc::{Trace, TraceEdge};
+use crate::heap::{Heap, HeapObject};
+use crate::value::Value;
+use crate::vm::dispatch::Fault;
+use crate::vm::function::BindingCell;
+use crate::{Assembler, Executable, Opcode, TaskId};
 
 type Origin = (ModuleKey, String);
 // None is an ambiguous star export; absence is a missing export.
-type Exports = HashMap<ModuleKey, HashMap<String, Option<Origin>>>;
+type Exports = HashMap<ModuleKey, BTreeMap<String, Option<Origin>>>;
 
-fn resolve_export(
-    graph: &ModuleGraph,
-    exports: &Exports,
-    key: ModuleKey,
-    name: &str,
-) -> Result<Origin, SyntaxError> {
-    let node = &graph.nodes[&key];
-    match exports[&key].get(name) {
-        Some(Some(origin)) => Ok(origin.clone()),
-        resolution => Err(error(
-            node,
-            Span::new(0, 0),
-            match resolution {
+#[derive(Debug)]
+struct PreparedModule {
+    name: String,
+    record: ModuleRecord,
+    requests: Vec<ModuleKey>,
+    request_keys: HashMap<Vec<u16>, ModuleKey>,
+    imports: HashMap<String, Origin>,
+    bindings: Vec<ModuleBinding>,
+    instantiate: Executable,
+    body: Executable,
+}
+
+#[derive(Debug)]
+enum Stage {
+    Visit,
+    Allocate {
+        module: usize,
+        binding: usize,
+    },
+    Exports {
+        module: usize,
+        star: usize,
+        after: Option<String>,
+        local: usize,
+        indirect: usize,
+    },
+    Imports {
+        module: usize,
+        binding: usize,
+    },
+    Instantiate(usize),
+    Evaluate(usize),
+    Done,
+}
+
+pub(crate) enum Action {
+    Continue,
+    Run(Executable, Vec<Value>),
+    Complete,
+}
+
+#[derive(Debug)]
+pub(crate) struct Linker {
+    modules: HashMap<ModuleKey, PreparedModule>,
+    initial_error: Option<String>,
+    stage: Stage,
+    stack: Vec<(ModuleKey, usize)>,
+    visited: HashMap<ModuleKey, bool>,
+    order: Vec<ModuleKey>,
+    exports: Exports,
+    slots: HashMap<Origin, usize>,
+    cells: Vec<Value>,
+    arguments: HashMap<ModuleKey, Vec<Value>>,
+    pub(crate) running: bool,
+}
+
+impl Linker {
+    /// Compile each record independently. No graph traversal, export lookup,
+    /// binding-cell allocation or module instantiation happens during spawn.
+    pub(crate) fn new(graph: &ModuleGraph) -> Self {
+        let mut modules = HashMap::new();
+        let mut initial_error = None;
+        for node in graph.modules() {
+            let loaded = node.module();
+            let Some(record) = loaded.record() else {
+                initial_error = Some("JSON modules cannot be executed yet".into());
+                break;
+            };
+            let prepare = || {
+                let bindings = module_bindings(loaded.source.text(), record)?;
+                let instantiate = lower_module(
+                    loaded.source.name(),
+                    loaded.source.text(),
+                    record,
+                    &bindings,
+                    true,
+                )?;
+                let body = lower_module(
+                    loaded.source.name(),
+                    loaded.source.text(),
+                    record,
+                    &bindings,
+                    false,
+                )?;
+                Ok::<_, SyntaxError>((bindings, instantiate, body))
+            };
+            let (bindings, instantiate, body) = match prepare() {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    initial_error = Some(error.message);
+                    break;
+                }
+            };
+            let request_keys: HashMap<_, _> = record
+                .requested_modules()
+                .iter()
+                .map(|specifier| specifier.code_units().to_vec())
+                .zip(node.requested_modules.iter().copied())
+                .collect();
+            let imports = record
+                .import_entries()
+                .iter()
+                .map(|import| {
+                    let ImportName::Name(name) = &import.import_name else {
+                        unreachable!("checked namespace")
+                    };
+                    (
+                        import.local_name.clone(),
+                        (request_keys[import.specifier.code_units()], name.clone()),
+                    )
+                })
+                .collect();
+            modules.insert(
+                loaded.key(),
+                PreparedModule {
+                    name: loaded.source.name().into(),
+                    record: record.clone(),
+                    requests: node.requested_modules.clone(),
+                    request_keys,
+                    imports,
+                    bindings,
+                    instantiate,
+                    body,
+                },
+            );
+        }
+        Self {
+            modules,
+            initial_error,
+            stage: Stage::Visit,
+            stack: vec![(graph.entry, 0)],
+            visited: HashMap::from([(graph.entry, false)]),
+            order: Vec::new(),
+            exports: Exports::new(),
+            slots: HashMap::new(),
+            cells: Vec::new(),
+            arguments: HashMap::new(),
+            running: false,
+        }
+    }
+
+    pub(crate) fn phase(&self) -> super::ModulePhase {
+        match self.stage {
+            Stage::Instantiate(_) => super::ModulePhase::Instantiating,
+            Stage::Evaluate(_) | Stage::Done => super::ModulePhase::Evaluating,
+            _ => super::ModulePhase::Linking,
+        }
+    }
+
+    fn resolve_export(
+        modules: &HashMap<ModuleKey, PreparedModule>,
+        exports: &Exports,
+        key: ModuleKey,
+        name: &str,
+    ) -> Result<Origin, Fault> {
+        match exports[&key].get(name) {
+            Some(Some(origin)) => Ok(origin.clone()),
+            resolution => Err(Fault::SyntaxError(match resolution {
                 Some(None) => format!(
                     "Export '{name}' is ambiguous in module '{}'",
-                    node.module.source.name()
+                    modules[&key].name
                 ),
                 _ => format!(
                     "Could not find export '{name}' in module '{}'",
-                    node.module.source.name()
+                    modules[&key].name
                 ),
-            },
-        )),
+            })),
+        }
     }
-}
 
-fn export_tables(graph: &ModuleGraph, order: &[ModuleKey]) -> Result<Exports, SyntaxError> {
-    let mut exports = Exports::new();
-    // Bottom-up ResolveExport for a DAG. Identity is (private key, binding
-    // name), so two paths to the same cell are never spuriously ambiguous.
-    for key in order {
-        let node = &graph.nodes[key];
-        let record = node.module.record().unwrap();
-        let mut table = HashMap::new();
-        for specifier in record.star_export_entries() {
-            for (name, origin) in &exports[&requested(node, specifier)] {
-                if name == "default" {
-                    continue;
-                }
-                table
-                    .entry(name.clone())
-                    .and_modify(|prior| {
-                        if prior != origin {
-                            *prior = None;
+    /// One graph edge, binding, export entry or stage transition per step.
+    /// Star tables retain a name cursor, never copy/traverse a whole barrel
+    /// in one step. Calls use the VM's existing bounded argument binding.
+    pub(crate) fn step(&mut self, heap: &Heap, owner: TaskId) -> Result<Action, Fault> {
+        if let Some(error) = self.initial_error.take() {
+            return Err(Fault::SyntaxError(error));
+        }
+        match &mut self.stage {
+            Stage::Visit => {
+                if let Some((key, next)) = self.stack.last_mut() {
+                    if let Some(dep) = self.modules[key].requests.get(*next).copied() {
+                        *next += 1;
+                        match self.visited.get(&dep) {
+                            Some(true) => {}
+                            Some(false) => {
+                                return Err(Fault::SyntaxError(
+                                    "cyclic module graphs cannot be executed yet".into(),
+                                ));
+                            }
+                            None => {
+                                self.visited.insert(dep, false);
+                                self.stack.push((dep, 0));
+                            }
                         }
-                    })
-                    .or_insert_with(|| origin.clone());
+                    } else {
+                        self.visited.insert(*key, true);
+                        self.order.push(*key);
+                        self.stack.pop();
+                    }
+                } else {
+                    self.stage = Stage::Allocate {
+                        module: 0,
+                        binding: 0,
+                    };
+                }
             }
+            Stage::Allocate { module, binding } => {
+                if let Some(key) = self.order.get(*module) {
+                    if let Some(b) = self.modules[key].bindings.get(*binding) {
+                        *binding += 1;
+                        if !b.is_import() {
+                            let cell = BindingCell {
+                                owner,
+                                value: b.is_var().then_some(Value::Undefined),
+                            };
+                            let id = heap
+                                .alloc(HeapObject::Cell(cell))
+                                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                            self.slots
+                                .insert((*key, b.name.name.clone()), self.cells.len());
+                            self.cells.push(Value::Object(id));
+                        }
+                    } else {
+                        *module += 1;
+                        *binding = 0;
+                    }
+                } else {
+                    self.stage = Stage::Exports {
+                        module: 0,
+                        star: 0,
+                        after: None,
+                        local: 0,
+                        indirect: 0,
+                    };
+                }
+            }
+            Stage::Exports {
+                module,
+                star,
+                after,
+                local,
+                indirect,
+            } => {
+                let Some(key) = self.order.get(*module).copied() else {
+                    self.stage = Stage::Imports {
+                        module: 0,
+                        binding: 0,
+                    };
+                    return Ok(Action::Continue);
+                };
+                let node = &self.modules[&key];
+                if let Some(specifier) = node.record.star_export_entries().get(*star) {
+                    let dep = node.request_keys[specifier.code_units()];
+                    let range = after.as_ref().map_or(Unbounded, |s| Excluded(s.as_str()));
+                    let next = self.exports[&dep]
+                        .range::<str, _>((range, Unbounded))
+                        .next()
+                        .map(|(name, origin)| (name.clone(), origin.clone()));
+                    if let Some((name, origin)) = next {
+                        *after = Some(name.clone());
+                        if name != "default" {
+                            self.exports
+                                .entry(key)
+                                .or_default()
+                                .entry(name)
+                                .and_modify(|prior| {
+                                    if *prior != origin {
+                                        *prior = None;
+                                    }
+                                })
+                                .or_insert(origin);
+                        }
+                    } else {
+                        *star += 1;
+                        *after = None;
+                    }
+                } else if let Some(entry) = node.record.local_export_entries().get(*local) {
+                    *local += 1;
+                    self.exports.entry(key).or_default().insert(
+                        entry.export_name.clone(),
+                        Some((key, entry.local_name.clone())),
+                    );
+                } else if let Some(entry) = node.record.indirect_export_entries().get(*indirect) {
+                    *indirect += 1;
+                    let (dep, name, exported) = (
+                        node.request_keys[entry.specifier.code_units()],
+                        entry.import_name.clone(),
+                        entry.export_name.clone(),
+                    );
+                    let origin = Self::resolve_export(&self.modules, &self.exports, dep, &name)?;
+                    self.exports
+                        .entry(key)
+                        .or_default()
+                        .insert(exported, Some(origin));
+                } else {
+                    self.exports.entry(key).or_default();
+                    *module += 1;
+                    *star = 0;
+                    *after = None;
+                    *local = 0;
+                    *indirect = 0;
+                }
+            }
+            Stage::Imports { module, binding } => {
+                let Some(key) = self.order.get(*module).copied() else {
+                    self.stage = Stage::Instantiate(0);
+                    return Ok(Action::Continue);
+                };
+                let node = &self.modules[&key];
+                if let Some(b) = node.bindings.get(*binding) {
+                    let name = b.name.name.clone();
+                    let origin = if b.is_import() {
+                        let (dep, imported) = &node.imports[&name];
+                        Self::resolve_export(&self.modules, &self.exports, *dep, imported)?
+                    } else {
+                        (key, name)
+                    };
+                    let slot = self.slots[&origin];
+                    self.arguments
+                        .entry(key)
+                        .or_default()
+                        .push(self.cells[slot].clone());
+                    *binding += 1;
+                } else {
+                    *module += 1;
+                    *binding = 0;
+                }
+            }
+            Stage::Instantiate(_) | Stage::Evaluate(_) => {
+                let instantiate = matches!(self.stage, Stage::Instantiate(_));
+                // The index is advanced before entering the VM frame, so a
+                // suspended module can never be selected for a second run.
+                let index = match &mut self.stage {
+                    Stage::Instantiate(i) | Stage::Evaluate(i) => {
+                        let n = *i;
+                        *i += 1;
+                        n
+                    }
+                    _ => unreachable!(),
+                };
+                if let Some(key) = self.order.get(index) {
+                    let node = &self.modules[key];
+                    let code = if instantiate {
+                        &node.instantiate
+                    } else {
+                        &node.body
+                    };
+                    let args = self.arguments.get(key).cloned().unwrap_or_default();
+                    self.running = true;
+                    return Ok(Action::Run(code.clone(), args));
+                }
+                self.stage = if instantiate {
+                    Stage::Evaluate(0)
+                } else {
+                    Stage::Done
+                };
+            }
+            Stage::Done => return Ok(Action::Complete),
         }
-        for entry in record.local_export_entries() {
-            table.insert(
-                entry.export_name.clone(),
-                Some((*key, entry.local_name.clone())),
-            );
-        }
-        // Validate indirect exports even when nobody imports them.
-        for entry in record.indirect_export_entries() {
-            let origin = resolve_export(
-                graph,
-                &exports,
-                requested(node, &entry.specifier),
-                &entry.import_name,
-            )?;
-            table.insert(entry.export_name.clone(), Some(origin));
-        }
-        exports.insert(*key, table);
+        Ok(Action::Continue)
     }
-    Ok(exports)
 }
 
-pub(super) fn compile_graph(graph: &ModuleGraph) -> Result<Executable, SyntaxError> {
-    let order = post_order(graph)?;
-    let mut bindings: HashMap<ModuleKey, Vec<ModuleBinding>> = HashMap::new();
-    let mut slots = HashMap::new();
-    let mut count = 0usize;
+impl Trace for Linker {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.cells.iter().for_each(|value| value.trace(visit));
+        // Lowered executables have immutable primitive constants only. Trace
+        // them through the ordinary code path as well, keeping that invariant
+        // explicit if the code representation is extended in the future.
+        for node in self.modules.values() {
+            node.instantiate.0.trace(visit);
+            node.body.0.trace(visit);
+        }
+    }
+}
+
+pub(super) fn entry() -> Executable {
     let mut asm = Assembler::new();
-    // Allocate the entire environment before instantiating any functions.
-    for key in &order {
-        let node = &graph.nodes[key];
-        let Some(record) = node.module.record() else {
-            return Err(error(
-                node,
-                Span::new(0, 0),
-                "JSON modules cannot be executed yet",
-            ));
-        };
-        let module_bindings = module_bindings(node.module.source.text(), record)?;
-        for b in &module_bindings {
-            if b.is_import() {
-                continue;
-            }
-            if count == u16::MAX as usize {
-                return Err(error(node, record.span(), "too many graph binding cells"));
-            }
-            let slot = count as u16;
-            slots.insert((*key, b.name.name.clone()), slot);
-            count += 1;
-            asm.op(Opcode::NewCell);
-            if b.is_var() {
-                asm.op(Opcode::Dup)
-                    .op(Opcode::Undefined)
-                    .op(Opcode::CellInit);
-            }
-            asm.set_local(slot);
-        }
-        bindings.insert(*key, module_bindings);
-    }
-    let exports = export_tables(graph, &order)?;
-    // All links are checked before constructing runnable body code.
-    for key in &order {
-        let node = &graph.nodes[key];
-        for import in node.module.record().unwrap().import_entries() {
-            let crate::frontend::ImportName::Name(name) = &import.import_name else {
-                unreachable!()
-            };
-            let origin = resolve_export(graph, &exports, requested(node, &import.specifier), name)?;
-            let slot = slots[&origin];
-            slots.insert((*key, import.local_name.clone()), slot);
-        }
-    }
-    // Every module's function declarations exist before the first body.
-    for instantiate in [true, false] {
-        for key in &order {
-            let node = &graph.nodes[key];
-            let bindings = &bindings[key];
-            let code = lower_module(
-                node.module.source.name(),
-                node.module.source.text(),
-                node.module.record().unwrap(),
-                bindings,
-                instantiate,
-            )?;
-            asm.function(&code);
-            for b in bindings {
-                asm.get_local(slots[&(*key, b.name.name.clone())]);
-            }
-            asm.call(bindings.len() as u16).op(Opcode::Pop);
-        }
-    }
     asm.op(Opcode::Undefined).op(Opcode::Return);
-    asm.finish("<module graph>", 0, count as u16)
-        .map_err(|e| error(&graph.nodes[&graph.entry], Span::new(0, 0), e.to_string()))
-}
-
-pub(super) fn failure(message: String) -> Executable {
-    let mut asm = Assembler::new();
-    asm.op(Opcode::ThrowError)
-        .raw(crate::vm::ThrowKind::ModuleLink as u8)
-        .raw(0)
-        .op(Opcode::Return);
-    let span = Span::new(0, message.len());
-    Executable::load_compiled(
-        asm.into_spec("<module link>", 0, 0),
-        Arc::from("<module link>"),
-        Arc::from(message),
-        vec![
-            crate::SourceLocation {
-                span,
-                line: 1,
-                column: 1
-            };
-            2
-        ],
-        HashMap::new(),
-    )
-    .expect("fixed module failure bytecode")
+    asm.finish("<module graph>", 0, 0)
+        .expect("module entry trampoline")
 }

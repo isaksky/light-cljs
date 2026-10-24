@@ -107,11 +107,12 @@ enum Holder {
     FinalizationRegistryEdges,
     ActiveFinalizationRegistries,
     SegmenterSlots,
+    ModuleEnvironment,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 47] = [
+const HOLDERS: [Holder; 48] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -159,6 +160,7 @@ const HOLDERS: [Holder; 47] = [
     Holder::FinalizationRegistryEdges,
     Holder::ActiveFinalizationRegistries,
     Holder::SegmenterSlots,
+    Holder::ModuleEnvironment,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -250,6 +252,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             TaskGlobalLexicals,
             KeptObjects,
             ActiveFinalizationRegistries,
+            ModuleEnvironment,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -287,7 +290,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             FunctionProperties,
             MethodHomeObject,
         ],
-        ObjectKind::Cell => &[BindingCell, TaskGlobalLexicals],
+        ObjectKind::Cell => &[BindingCell, TaskGlobalLexicals, ModuleEnvironment],
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
         ObjectKind::Array => &[ArrayElement],
@@ -313,6 +316,7 @@ enum File {
     Inventory,
     /// JavaScript Map result-root tracing.
     Gc,
+    Modules,
 }
 
 /// A holder's retention and reclamation tests.
@@ -328,6 +332,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::ModuleEnvironment => Coverage {
+            retains: (Modules, "module_linker_cells_retain_and_reclaim"),
+            reclaims: (Modules, "module_linker_cells_retain_and_reclaim"),
+        },
         Holder::SegmenterSlots => Coverage {
             retains: (Inventory, "segmenter_slots_retain_and_reclaim"),
             reclaims: (Inventory, "segmenter_slots_retain_and_reclaim"),
@@ -542,6 +550,7 @@ fn every_category_and_kind_has_retention_and_reclamation_tests() {
                 File::Inventory => INVENTORY_SOURCE,
                 File::Gc => GC_SOURCE,
                 File::Promises => include_str!("../../tests/promises.rs"),
+                File::Modules => include_str!("../../tests/js_modules.rs"),
             };
             assert!(
                 defines_test(source, name),

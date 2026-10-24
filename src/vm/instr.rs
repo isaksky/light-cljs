@@ -1160,8 +1160,6 @@ pub enum ThrowKind {
     Uninitialized = 1,
     /// TypeError: assignment to a `const` binding.
     ConstAssignment = 2,
-    /// SyntaxError: a static module linking diagnostic carried by source text.
-    ModuleLink = 3,
 }
 
 impl ThrowKind {
@@ -1171,7 +1169,6 @@ impl ThrowKind {
             0 => ThrowKind::Unresolvable,
             1 => ThrowKind::Uninitialized,
             2 => ThrowKind::ConstAssignment,
-            3 => ThrowKind::ModuleLink,
             _ => return None,
         })
     }

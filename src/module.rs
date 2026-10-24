@@ -6,6 +6,15 @@
 //! Linking/evaluation runs separately in a spawned entry task.
 
 mod link;
+pub(crate) use link::{Action as LinkAction, Linker};
+
+/// Current phase of a live module entry task, for scheduler diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModulePhase {
+    Linking,
+    Instantiating,
+    Evaluating,
+}
 
 use std::collections::HashMap;
 use std::fmt;
@@ -145,8 +154,8 @@ pub struct ModuleGraph {
 }
 
 impl ModuleGraph {
-    pub(crate) fn executable(&self) -> crate::Executable {
-        link::compile_graph(self).unwrap_or_else(|error| link::failure(error.message))
+    pub(crate) fn entry_code(&self) -> crate::Executable {
+        link::entry()
     }
 
     pub fn world(&self) -> WorldId {

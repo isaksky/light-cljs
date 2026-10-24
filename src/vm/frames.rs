@@ -232,6 +232,7 @@ pub(crate) struct GlobalLexical {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    pub(crate) module_link: Option<Box<crate::module::Linker>>,
     pub(crate) sim_host: Option<Box<crate::host::sim::facilities::TaskHost>>,
     pub(crate) collection_point: bool,
     pub(crate) jobs: std::sync::Weak<crate::job::JobInbox>,
@@ -399,6 +400,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            module_link: None,
             sim_host: None,
             collection_point: false,
             jobs: std::sync::Weak::new(),
@@ -487,7 +489,25 @@ impl VmState {
         Ok(())
     }
 
+    pub(crate) fn start_module(
+        &mut self,
+        code: &crate::Executable,
+        args: &[Value],
+    ) -> Result<(), Fault> {
+        if usize::from(code.0.locals).saturating_add(code.0.max_stack)
+            > self.limits.max_stack_values
+        {
+            return Err(Fault::StackOverflow(
+                "module frame exceeds the stack limit".into(),
+            ));
+        }
+        let next = Self::new(&code.0, args, self.diag, self.limits);
+        self.replace_activation(next);
+        Ok(())
+    }
+
     fn replace_activation(&mut self, mut next: Self) {
+        next.module_link = self.module_link.take();
         next.sim_host = self.sim_host.take();
         next.jobs = self.jobs.clone();
         next.global_object = self.global_object.take();
@@ -1165,6 +1185,9 @@ impl VmState {
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(module) = &self.module_link {
+            module.trace(visit);
+        }
         if let Some(host) = &self.sim_host {
             host.trace(visit);
         }

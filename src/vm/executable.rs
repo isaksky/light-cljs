@@ -1222,8 +1222,8 @@ mod tests {
     fn throw_error_kinds_are_validated_and_specs_round_trip() {
         let t = Opcode::ThrowError as u8;
         assert_eq!(
-            kind(load(vec![t, 4, 0, RET], vec![], 0)),
-            UnknownThrowKind { code: 4 }
+            kind(load(vec![t, 3, 0, RET], vec![], 0)),
+            UnknownThrowKind { code: 3 }
         );
         // Every instruction shape survives `to_spec` and reloads identically.
         let (c, j, jf) = (
