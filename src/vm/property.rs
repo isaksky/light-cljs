@@ -477,7 +477,7 @@ pub(crate) enum Read {
 }
 
 impl Read {
-    fn property(property: &Property, has: bool) -> Read {
+    pub(crate) fn property(property: &Property, has: bool) -> Read {
         match &property.accessor {
             Some(_) if has => Read::Value(Value::Undefined),
             Some((Value::Undefined, _)) => Read::Value(Value::Undefined),
@@ -647,7 +647,11 @@ fn lookup(
         Key::Index(_) => None,
     };
     let mut realm = heap.realm().get();
+    let mut remaining = 4096usize;
     loop {
+        remaining = remaining
+            .checked_sub(1)
+            .ok_or_else(|| Fault::StackOverflow("maximum property lookup depth exceeded".into()))?;
         id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
         if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
             return entry
@@ -1005,7 +1009,8 @@ pub(crate) fn prepare_put(
             // the caller's strictness.
             // Missing Function.prototype methods also belong to that
             // policy: intrinsic writes still throw the immutable TypeError.
-            Ok(Chain::Add) | Err(Fault::TypeError(_) | Fault::Unsupported(_)) => {}
+            Ok(Chain::Add) | Err(Fault::Unsupported(_)) => {}
+            Err(Fault::TypeError(message)) if !message.starts_with("unsupported Proxy trap:") => {}
             Err(fault) => return Err(fault),
         }
     }
@@ -1039,8 +1044,11 @@ pub(crate) fn prepare_put(
         Ok(Chain::Add) => {}
         Ok(Chain::Ignored) => return Ok(None),
         Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
-        // The walk's only TypeError is an inherited read-only property.
-        Err(fault @ Fault::TypeError(_)) => return rejected(fault),
+        // Sloppy code ignores an ordinary read-only rejection, while an
+        // unsupported proxy trap remains an exception.
+        Err(Fault::TypeError(message)) if !message.starts_with("unsupported Proxy trap:") => {
+            return rejected(Fault::TypeError(message));
+        }
         Err(fault) => return Err(fault),
     }
     // Only the running task changes the receiver, so it still lacks `key`.
@@ -1128,7 +1136,11 @@ pub(crate) fn super_write(
             Some(setter) => SuperWrite::Setter(setter),
             None => SuperWrite::Done,
         }),
-        Err(Fault::TypeError(_)) if !strict => Ok(SuperWrite::Done),
+        Err(Fault::TypeError(message))
+            if !strict && !message.starts_with("unsupported Proxy trap:") =>
+        {
+            Ok(SuperWrite::Done)
+        }
         Err(fault) => Err(fault),
     }
 }
@@ -1191,7 +1203,11 @@ pub(crate) fn put_super_receiver(
     };
     check_super_receiver_mutability(heap, receiver, key)?;
     match define_own_property(heap, task, receiver, key, desc) {
-        Err(Fault::TypeError(_)) if !strict => Ok(()),
+        Err(Fault::TypeError(message))
+            if !strict && !message.starts_with("unsupported Proxy trap:") =>
+        {
+            Ok(())
+        }
         result => result,
     }
 }

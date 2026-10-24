@@ -1367,7 +1367,23 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    // These leaves never coerce operands; avoid reserving the slow built-in
+    // conversion frame before a proxy/prototype walk on a 64 KiB worker.
+    if matches!(
+        which,
+        Builtin::ObjectGetPrototypeOf | Builtin::ObjectSetPrototypeOf | Builtin::ObjectCreate
+    ) {
+        return Ok(false);
+    }
     if !construct
+        && matches!(
+            which,
+            Builtin::ObjectKeys
+                | Builtin::ObjectGetOwnPropertyNames
+                | Builtin::ObjectGetOwnPropertyDescriptor
+                | Builtin::ObjectFreeze
+                | Builtin::ObjectIsFrozen
+        )
         && let Some(Value::Object(target)) = args.first()
         && super::proxy::inspect(heap, state.diag.task, *target)?.is_some()
     {
@@ -3334,14 +3350,39 @@ impl NativeState {
                 length,
                 stage,
             } => {
-                if *stage == 0 {
+                if *stage == 0 || *stage == 3 {
                     dispatch::callee(heap, target)?;
                     let Value::Object(id) = target else {
                         unreachable!()
                     };
-                    *stage = 1;
                     let key = property::Key::Name(JsString::from("length"));
-                    if property::get_own_property(heap, task, *id, &key)?.is_some() {
+                    if *stage == 0 && super::proxy::inspect(heap, task, *id)?.is_some() {
+                        *stage = 3;
+                        let object = crate::realm::intrinsics(heap)
+                            .ok_or(Fault::OutOfMemory("realm allocation"))?
+                            .global(crate::realm::Global::Object);
+                        let callee = property::get(
+                            heap,
+                            task,
+                            &object,
+                            &property::Key::Name(JsString::from("getOwnPropertyDescriptor")),
+                        )?;
+                        return Ok(Action::Call {
+                            callee,
+                            this: object,
+                            args: vec![target.clone(), Value::String(JsString::from("length"))],
+                        });
+                    }
+                    let has_length = if *stage == 3 {
+                        match &input {
+                            Input::CallResult(v) => *v != Value::Undefined,
+                            _ => return Err(Fault::Internal("bind expected descriptor")),
+                        }
+                    } else {
+                        property::get_own_property(heap, task, *id, &key)?.is_some()
+                    };
+                    *stage = 1;
+                    if has_length {
                         match property::read(heap, task, target, &key)? {
                             Some(property::Read::Getter(callee)) => {
                                 return Ok(Action::Call {
@@ -3558,13 +3599,14 @@ impl NativeState {
                     descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
                     descriptor::DefineStep::TypedArrayValue {
                         target,
+                        result,
                         index,
                         value,
                     } => {
                         *self = NativeState::Convert {
                             formatter: None,
                             target: ConvertTarget::TypedArrayWrite,
-                            operands: vec![target.clone(), target, Value::Number(index), value],
+                            operands: vec![target, result, Value::Number(index), value],
                             next: 3,
                             end: 4,
                             hint: Hint::Number,

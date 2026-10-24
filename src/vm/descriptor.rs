@@ -192,6 +192,7 @@ pub(crate) enum DefineStep {
     },
     TypedArrayValue {
         target: Value,
+        result: Value,
         index: f64,
         value: Value,
     },
@@ -322,12 +323,14 @@ impl DefineProperty {
         let Value::Object(id) = self.target else {
             unreachable!()
         };
+        let id = super::proxy::forward(heap, task, id, "defineProperty")?;
         if let Some(value @ Value::Object(_)) = &self.desc.value
             && let Some((_, index)) =
                 property::typed_array_descriptor(heap, task, id, &self.key, &self.desc)?
         {
             return Ok(DefineStep::TypedArrayValue {
-                target: self.target.clone(),
+                target: Value::Object(id),
+                result: self.target.clone(),
                 index,
                 value: value.clone(),
             });

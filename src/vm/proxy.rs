@@ -4,7 +4,7 @@
 //! js_proxy_get_own_property, revision 7d1c13c5d8f8 (fresh Rust implementation).
 use super::dispatch::{self, Fault};
 use super::native::{Action, Input};
-use super::{descriptor, integrity, keys, property};
+use super::{descriptor, integrity, keys, property, prototype};
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
@@ -67,30 +67,82 @@ fn error(message: &str) -> Fault {
 pub(crate) fn forward(
     heap: &Heap,
     task: TaskId,
-    mut id: ObjectId,
+    id: ObjectId,
     trap: &str,
 ) -> Result<ObjectId, Fault> {
-    let mut depth = 0;
-    while let Some(p) = inspect(heap, task, id)? {
-        depth += 1;
-        if depth > 512 {
-            return Err(error("forwarding depth exceeded"));
-        }
-        let value = property::read(
-            heap,
-            task,
-            &Value::Object(p.handler),
-            &Key::Name(JsString::from(trap)),
-        )?;
-        if !matches!(
-            value,
-            None | Some(property::Read::Value(Value::Undefined | Value::Null))
-        ) {
-            return Err(Fault::TypeError(format!("unsupported Proxy trap: {trap}")));
-        }
-        id = p.target;
+    if inspect(heap, task, id)?.is_none() {
+        return Ok(id);
     }
-    Ok(id)
+    forward_cursor(heap, task, id, trap)
+}
+
+// Non-proxy probes made by the cursor must not reserve another cursor's
+// temporary Rust stack area on small executor stacks.
+#[inline(never)]
+fn forward_cursor(heap: &Heap, task: TaskId, id: ObjectId, trap: &str) -> Result<ObjectId, Fault> {
+    // Handler lookups may themselves encounter proxies. Keep the entire leaf
+    // lookup in one bounded cursor instead of re-entering property::lookup.
+    enum Work<'a> {
+        Target(ObjectId, &'a str),
+        Lookup(ObjectId, Key),
+        Trap(ObjectId, &'a str),
+        Forwarded(Key),
+    }
+    enum Found {
+        Target(ObjectId),
+        Read(Option<property::Read>),
+    }
+    let mut work = vec![Work::Target(id, trap)];
+    let mut found = None;
+    for _ in 0..4096 {
+        let Some(next) = work.pop() else {
+            return match found {
+                Some(Found::Target(id)) => Ok(id),
+                _ => Err(Fault::Internal("Proxy forwarding result missing")),
+            };
+        };
+        match next {
+            Work::Target(id, trap) => match inspect(heap, task, id)? {
+                None => found = Some(Found::Target(id)),
+                Some(p) => {
+                    work.push(Work::Trap(p.target, trap));
+                    work.push(Work::Lookup(p.handler, Key::Name(JsString::from(trap))));
+                }
+            },
+            Work::Trap(target, trap) => {
+                if !matches!(
+                    found.take(),
+                    Some(Found::Read(
+                        None | Some(property::Read::Value(Value::Undefined | Value::Null))
+                    ))
+                ) {
+                    return Err(Fault::TypeError(format!("unsupported Proxy trap: {trap}")));
+                }
+                work.push(Work::Target(target, trap));
+            }
+            Work::Lookup(id, key) => {
+                if inspect(heap, task, id)?.is_some() {
+                    work.push(Work::Forwarded(key));
+                    work.push(Work::Target(id, "get"));
+                } else if let Some(p) = property::get_own_property(heap, task, id, &key)? {
+                    found = Some(Found::Read(Some(property::Read::property(&p, false))));
+                } else if let Some(proto) = prototype::get_prototype_of(heap, task, id)? {
+                    work.push(Work::Lookup(proto, key));
+                } else {
+                    found = Some(Found::Read(None));
+                }
+            }
+            Work::Forwarded(key) => {
+                let Some(Found::Target(target)) = found.take() else {
+                    return Err(Fault::Internal("Proxy handler target missing"));
+                };
+                work.push(Work::Lookup(target, key));
+            }
+        }
+    }
+    Err(Fault::StackOverflow(
+        "maximum Proxy forwarding depth exceeded".into(),
+    ))
 }
 
 /// Classification alone observes no traps (IsCallable / IsConstructor).
@@ -660,6 +712,7 @@ pub(crate) struct State {
     pending: Option<(ObjectId, Key)>,
     started: bool,
     setter: bool,
+    coercing: Option<(ObjectId, PropertyDescriptor)>,
 }
 impl State {
     pub(crate) fn new(mode: Mode) -> Self {
@@ -672,6 +725,7 @@ impl State {
             pending: None,
             started: false,
             setter: false,
+            coercing: None,
         }
     }
     pub(crate) fn step(
@@ -680,6 +734,14 @@ impl State {
         task: TaskId,
         input: Input,
     ) -> Result<Action, Fault> {
+        if let Some((target, mut desc)) = self.coercing.take() {
+            let Mode::Set { key, value, .. } = &self.mode else {
+                unreachable!()
+            };
+            desc.value = Some(result(input)?);
+            property::define_own_property(heap, task, target, key, &desc)?;
+            return Ok(Action::Return(value.clone()));
+        }
         if !self.started {
             self.started = true;
             match &self.mode {
@@ -757,6 +819,16 @@ impl State {
                                 configurable: own.is_none().then_some(true),
                                 ..PropertyDescriptor::default()
                             };
+                            let resolved = forward(heap, task, *target, "defineProperty")?;
+                            if matches!(value, Value::Object(_))
+                                && property::typed_array_descriptor(
+                                    heap, task, resolved, key, &desc,
+                                )?
+                                .is_some()
+                            {
+                                self.coercing = Some((resolved, desc));
+                                return Ok(Action::ToNumber(value.clone()));
+                            }
                             match property::define_own_property(heap, task, *target, key, &desc) {
                                 Err(Fault::TypeError(message))
                                     if !strict
@@ -889,6 +961,12 @@ impl State {
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        if let Some((target, desc)) = &self.coercing {
+            visit((*target).into());
+            for v in [&desc.value, &desc.get, &desc.set].into_iter().flatten() {
+                v.trace(visit);
+            }
+        }
         match &self.mode {
             Mode::ForIn(it) => it.trace(visit),
             Mode::Keys { target, .. }

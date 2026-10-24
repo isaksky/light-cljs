@@ -1536,13 +1536,12 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::DefineGetterElem
         | Instr::DefineSetterElem
         | Instr::SetComputedName(_) => object_pattern_step,
-        Instr::GetField(_)
-        | Instr::PutField(_)
+        Instr::GetField(_) | Instr::GetElem => property_read_step,
+        Instr::PutField(_)
         | Instr::PutFieldStrict(_)
         | Instr::DefineField(_)
         | Instr::DefineGetter(_)
         | Instr::DefineSetter(_)
-        | Instr::GetElem
         | Instr::PutElem
         | Instr::PutElemStrict
         | Instr::Dup2
@@ -1555,6 +1554,34 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::ToSuperKey => property_step,
         _ => step,
     }
+}
+
+/// Proxy reads can walk handler properties. Reserve no write/literal
+/// temporaries beneath that bounded leaf cursor on small executor stacks.
+#[inline(never)]
+fn property_read_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let key = match instr {
+        Instr::GetField(i) => property::Key::from_name(&name_constant(code, i)?),
+        Instr::GetElem => {
+            let raw = state.pop()?;
+            let base = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("property base missing"))?;
+            property::element_key(base, &raw, false)?
+        }
+        _ => return Err(Fault::Internal("invalid property read instruction")),
+    };
+    let base = state.pop()?;
+    let read = property::read(heap, state.diag.task, &base, &key)?;
+    native::read_result(state, read, base)?;
+    Ok(Flow::Next)
 }
 
 /// Keep object-pattern temporaries out of the general dispatch frame, which
@@ -2214,6 +2241,7 @@ pub(crate) fn step(
         Instr::Call(argc) => call(state, heap, argc, false),
         Instr::CallMethod(argc) => call(state, heap, argc, true),
         Instr::Construct(argc) => construct(state, heap, argc),
+        Instr::GetField(_) | Instr::GetElem => property_read_step(state, code, heap, host, instr),
         _ => step_instruction(state, code, heap, host, instr),
     }
 }

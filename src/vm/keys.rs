@@ -811,8 +811,13 @@ pub(crate) enum ForInRequest {
 pub(crate) fn for_in_set_keys(
     heap: &Heap,
     iterator: &Value,
-    keys: Vec<OwnKey>,
+    mut keys: Vec<OwnKey>,
 ) -> Result<(), Fault> {
+    // OwnPropertyKeys carries names only. Even a forwarded non-enumerable
+    // target key must reach the proxy's current descriptor trap.
+    for key in &mut keys {
+        key.enumerable = true;
+    }
     let Value::Object(id) = iterator else {
         return Err(Fault::Internal("invalid for-in iterator"));
     };

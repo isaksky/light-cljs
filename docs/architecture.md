@@ -8706,3 +8706,14 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 its assert helper and invocation; the MIT notice is retained in
 `tests/js_source.rs`. Remaining cases are synthetic fixtures, not light-cljs
 output. Rust code is original. Revocation and other traps are deferred.
+
+Proxy forwarding uses a bounded explicit leaf cursor for handler/property walks;
+a handler inheriting from its own proxy cannot recurse through Rust frames.
+Property and prototype leaves bypass unrelated dispatcher temporaries on 64 KiB
+executor stacks. Forwarded for-in keys always reach descriptor lookup, including
+keys non-enumerable on the target. Sloppy writes preserve unsupported-trap
+exceptions. Bind's own-length query uses the descriptor continuation; typed-array
+writes and definitions select the forwarded target before resumable value
+coercion, preserving the original assignment/definition result. Object-valued
+ownKeys lengths are tested through waits, collection and migration. Prototype
+ownership/cycle checks include transparent proxy targets.

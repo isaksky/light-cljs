@@ -2209,6 +2209,8 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
         Value::String(_) => unsupported("a string"),
         Value::Symbol(_) => unsupported("a symbol"),
         Value::BigInt(_) => unsupported("a BigInt"),
+        Value::Object(_) if super::dispatch::callee(heap, this).is_ok() => Ok("Function"),
+        Value::Object(_) if is_array(heap, this)? => Ok("Array"),
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
@@ -2281,6 +2283,18 @@ pub(crate) fn call_in_state(
     this: &Value,
     args: &[Value],
 ) -> Result<Value, Fault> {
+    // Prototype forwarding may walk proxy handlers. Keep it outside the
+    // unrelated temporaries in the large leaf built-in dispatcher.
+    match which {
+        Builtin::ObjectSetPrototypeOf => {
+            return prototype::object_set_prototype_of(heap, state.diag.task, args);
+        }
+        Builtin::ObjectGetPrototypeOf => {
+            return prototype::object_get_prototype_of(heap, state.diag.task, args);
+        }
+        Builtin::ObjectCreate => return prototype::object_create(heap, state.diag.task, args),
+        _ => {}
+    }
     if matches!(
         which,
         Builtin::FinalizationRegistryRegister | Builtin::FinalizationRegistryUnregister

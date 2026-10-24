@@ -27531,3 +27531,110 @@ fn proxy_key_list_checks_follow_observable_reads() {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }
+
+#[test]
+fn proxy_forwarding_cycles_are_bounded() {
+    // Synthetic fixtures, not light-cljs output. Run on an executor-sized
+    // Rust stack so a recursive leaf lookup cannot hide behind the test stack.
+    for source in [
+        "let h={},p=new Proxy({},h); Object.setPrototypeOf(h,p); p.x",
+        "let t={},p=new Proxy(t,{}); Object.setPrototypeOf(t,p); p.x",
+    ] {
+        let executable = exe(source);
+        let rt = Runtime::new();
+        let task = rt.spawn(&executable, &[]).unwrap();
+        let outcome = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || task.run_with(Budget::UNLIMITED, &mut NoEffects).unwrap())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(
+            matches!(outcome,RunOutcome::Failed(e) if matches!(e.kind(),VmErrorKind::StackOverflow|VmErrorKind::TypeError)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn proxy_forwarded_keys_sloppy_errors_and_callable_tags() {
+    for source in [
+        "let t={},n=0; Object.defineProperty(t,'x',{value:1,configurable:true}); let p=new Proxy(t,{getOwnPropertyDescriptor(){n++;return {value:1,enumerable:true,configurable:true};}}),s=''; for(let k in p) s+=k; s==='x' && n===1",
+        "let h={apply(){throw 42;}}, p=new Proxy(function(){},h); Object.prototype.toString.call(p)==='[object Function]' && Object.prototype.toString.call(new Proxy((function(){}).bind(null),h))==='[object Function]' && Object.prototype.toString.call(new Proxy([],{}))==='[object Array]'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "let p=new Proxy({}, {set(){}}),o=Object.create(p),e; try{o.x=1;}catch(x){e=x;} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: set')>=0",
+        "let p=new Proxy({}, {set(){}}),o=new Proxy(Object.create(p),{}),e; try{o.x=1;}catch(x){e=x;} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: set')>=0",
+    ] {
+        let executable =
+            compile_script_with("proxy-sloppy", source, ScriptOptions::SLOPPY).unwrap();
+        assert!(
+            matches!(run(&executable,&[]),RunOutcome::Complete(v) if v.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn proxy_bind_and_coercion_wait_gc_and_migrate() {
+    // Synthetic fixtures, not light-cljs output. Each case exercises a
+    // distinct nested continuation while preserving callback counts.
+    for (source, expected_waits) in [
+        (
+            "let n=0; let p=new Proxy(function(a,b){return a+b;},{getOwnPropertyDescriptor(t,k){n++;__rt.need(930,1);return Object.getOwnPropertyDescriptor(t,k);}}); let b=p.bind(null,3); b.length===1 && b(5)===8 && n===1",
+            1,
+        ),
+        (
+            "let n=0,t=new Uint8Array(2),p=new Proxy(t,{}),a={valueOf(){n++;__rt.need(931,1);return 7;}},b={valueOf(){n++;__rt.need(932,1);return 9;}}; let same=(p[0]=a)===a; let defined=Object.defineProperty(p,'1',{value:b})===p; same && defined && t[0]===7 && t[1]===9 && n===2",
+            2,
+        ),
+        (
+            "let n=0,p=new Proxy({}, {ownKeys(){return {0:'a',length:{valueOf(){n++;__rt.need(933,1);return 1;}}};},getOwnPropertyDescriptor(){return {enumerable:true,configurable:true};}}),s=''; for(let k in p)s+=k; s==='a' && n===1",
+            1,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(5), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= expected_waits, "{source}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Undefined);
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "{source}");
+        assert_eq!(waits, expected_waits, "{source}");
+    }
+}
