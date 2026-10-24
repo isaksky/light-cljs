@@ -16,14 +16,28 @@
 use super::executable::{Executable, ExecutableSpec, ValidationError};
 use super::instr::{Opcode, OperandKind};
 use crate::value::Primitive;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A forward- or backward-referenceable branch target.
+///
+/// A label belongs to the assembler that created it, and only until that
+/// assembler is reset by [`Assembler::finish`]. A foreign or stale label is
+/// never resolved: binding it has no effect and branches to it keep the
+/// invalid target `u32::MAX`, so validation rejects the code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Label(usize);
+pub struct Label {
+    owner: u64,
+    index: usize,
+}
+
+/// Source of assembler identities for label ownership checks.
+static NEXT_ASSEMBLER: AtomicU64 = AtomicU64::new(1);
 
 /// Builds encoded bytecode plus its constant pool. See the module docs.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Assembler {
+    /// Identity checked against [`Label::owner`].
+    id: u64,
     code: Vec<u8>,
     constants: Vec<Primitive>,
     labels: Vec<Option<u32>>,
@@ -31,9 +45,27 @@ pub struct Assembler {
     fixups: Vec<(usize, Label)>,
 }
 
+impl Default for Assembler {
+    fn default() -> Self {
+        Assembler {
+            // Relaxed: only uniqueness matters.
+            id: NEXT_ASSEMBLER.fetch_add(1, Ordering::Relaxed),
+            code: Vec::new(),
+            constants: Vec::new(),
+            labels: Vec::new(),
+            fixups: Vec::new(),
+        }
+    }
+}
+
 impl Assembler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The slot of `label` if this assembler created it.
+    fn own(&self, label: Label) -> Option<usize> {
+        (label.owner == self.id && label.index < self.labels.len()).then_some(label.index)
     }
 
     /// Emit an operand-less opcode. Opcodes that take an operand must use
@@ -50,9 +82,10 @@ impl Assembler {
         self
     }
 
-    /// Add `value` to the constant pool and emit `Const` for it.
+    /// Add `value` to the constant pool and emit `Const` for it. Pools larger
+    /// than the u16 index range are rejected by validation.
     pub fn constant(&mut self, value: Primitive) -> &mut Self {
-        let index = self.constants.len() as u16;
+        let index = u16::try_from(self.constants.len()).unwrap_or(u16::MAX);
         self.constants.push(value);
         self.op(Opcode::Const).u16(index)
     }
@@ -76,14 +109,17 @@ impl Assembler {
     /// Create an unbound label.
     pub fn label(&mut self) -> Label {
         self.labels.push(None);
-        Label(self.labels.len() - 1)
+        Label {
+            owner: self.id,
+            index: self.labels.len() - 1,
+        }
     }
 
     /// Bind `label` to the current position.
     pub fn bind(&mut self, label: Label) -> &mut Self {
-        // A label from another assembler is ignored and stays unbound here.
-        if let Some(slot) = self.labels.get_mut(label.0) {
-            *slot = Some(self.code.len() as u32);
+        // Foreign or stale labels are ignored; see [`Label`].
+        if let Some(index) = self.own(label) {
+            self.labels[index] = Some(self.code.len() as u32);
         }
         self
     }
@@ -101,11 +137,13 @@ impl Assembler {
         self
     }
 
-    /// Resolve labels and return the encoded spec. Unbound labels keep the
-    /// target `u32::MAX`, which validation rejects.
+    /// Resolve labels and return the encoded spec. Branches to unbound,
+    /// foreign or stale labels keep the target `u32::MAX`, which validation
+    /// rejects.
     pub fn into_spec(mut self, name: &str, params: u16, locals: u16) -> ExecutableSpec {
         for &(at, label) in &self.fixups {
-            if let Some(target) = self.labels.get(label.0).copied().flatten() {
+            let target = self.own(label).and_then(|i| self.labels[i]);
+            if let Some(target) = target {
                 self.code[at..at + 4].copy_from_slice(&target.to_le_bytes());
             }
         }

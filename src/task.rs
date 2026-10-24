@@ -430,6 +430,19 @@ mod tests {
     }
 
     #[test]
+    fn dropping_unused_guard_keeps_task_runnable() {
+        let rt = Runtime::new();
+        let four = rt.root(num(4.0));
+        let task = rt.spawn(&factorial(), &[&four]).unwrap();
+        let guard = task.try_begin_run().unwrap();
+        assert_eq!(task.try_begin_run().err(), Some(RunError::AlreadyRunning));
+        drop(guard);
+        assert_eq!(task.status(), TaskStatus::Ready);
+        let guard = task.try_begin_run().unwrap();
+        assert_eq!(complete(guard.run()), ValueView::Number(24.0));
+    }
+
+    #[test]
     fn task_frames_are_traceable_until_the_task_finishes() {
         let rt = Runtime::new();
         let obj = rt.scope(|s| {

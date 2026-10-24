@@ -63,16 +63,43 @@ pub struct ValidationError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValidationErrorKind {
     EmptyCode,
-    CodeTooLarge { len: usize },
-    ParamsExceedLocals { params: u16, locals: u16 },
-    UnknownOpcode { byte: u8 },
-    TruncatedOperand { opcode: Opcode },
-    ConstantOutOfRange { index: u16, count: usize },
-    LocalOutOfRange { index: u16, count: u16 },
-    BadBranchTarget { target: u32 },
-    StackUnderflow { opcode: Opcode, depth: usize },
-    StackDepthMismatch { expected: usize, found: usize },
+    CodeTooLarge {
+        len: usize,
+    },
+    ParamsExceedLocals {
+        params: u16,
+        locals: u16,
+    },
+    UnknownOpcode {
+        byte: u8,
+    },
+    TruncatedOperand {
+        opcode: Opcode,
+    },
+    ConstantOutOfRange {
+        index: u16,
+        count: usize,
+    },
+    LocalOutOfRange {
+        index: u16,
+        count: u16,
+    },
+    BadBranchTarget {
+        target: u32,
+    },
+    StackUnderflow {
+        opcode: Opcode,
+        depth: usize,
+    },
+    StackDepthMismatch {
+        expected: usize,
+        found: usize,
+    },
     FallsOffEnd,
+    /// More constants than a u16 `Const` operand can address (65,536).
+    ConstantPoolTooLarge {
+        count: usize,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -86,6 +113,9 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
+
+/// Constant-pool capacity: every index must fit the u16 `Const` operand.
+const MAX_CONSTANTS: usize = 1 << 16;
 
 fn err(offset: u32, kind: ValidationErrorKind) -> ValidationError {
     ValidationError { offset, kind }
@@ -110,6 +140,10 @@ impl Executable {
         }
         if params > locals {
             return Err(err(0, ParamsExceedLocals { params, locals }));
+        }
+        if constants.len() > MAX_CONSTANTS {
+            let count = constants.len();
+            return Err(err(0, ConstantPoolTooLarge { count }));
         }
 
         // Pass 1: decode, checking opcodes, operand bytes and index ranges.

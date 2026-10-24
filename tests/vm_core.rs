@@ -247,3 +247,64 @@ fn embedder_drives_tasks_on_its_own_threads() {
             .all(|t| Executable::same_code(t.executable(), &exe))
     );
 }
+
+#[test]
+fn constant_pool_index_limit_is_enforced() {
+    let rt = Runtime::new();
+    // Indices 0..=65535 are addressable; a 65,537th constant is not.
+    let mut asm = Assembler::new();
+    for i in 0..=u16::MAX {
+        asm.constant(Primitive::Number(f64::from(i)))
+            .op(Opcode::Pop);
+    }
+    asm.constant(Primitive::Number(-1.0)).op(Opcode::Return);
+    assert_eq!(
+        asm.finish("too-many", 0, 0).unwrap_err().kind,
+        ValidationErrorKind::ConstantPoolTooLarge { count: 65_537 }
+    );
+
+    let mut code = vec![Opcode::Const as u8];
+    code.extend_from_slice(&u16::MAX.to_le_bytes());
+    code.push(Opcode::Return as u8);
+    let exe = Executable::load(ExecutableSpec {
+        name: "last-constant".into(),
+        params: 0,
+        locals: 0,
+        code,
+        constants: (0..=u16::MAX)
+            .map(|i| Primitive::Number(f64::from(i)))
+            .collect(),
+    })
+    .unwrap();
+    let result = complete(rt.spawn(&exe, &[]).unwrap().run().unwrap());
+    assert_eq!(result.view(), ValueView::Number(65535.0));
+}
+
+#[test]
+fn foreign_and_stale_labels_are_rejected() {
+    let a = &mut Assembler::new();
+    let b = &mut Assembler::new();
+    let foreign = a.label();
+    let own = b.label();
+    // Both labels have index 0; b must not resolve a's label through its own.
+    b.jump(foreign);
+    b.constant(Primitive::Number(1.0)).op(Opcode::Return);
+    b.bind(own).bind(foreign);
+    b.constant(Primitive::Number(2.0)).op(Opcode::Return);
+    assert_eq!(
+        b.finish("foreign", 0, 0).unwrap_err().kind,
+        ValidationErrorKind::BadBranchTarget { target: u32::MAX }
+    );
+
+    // `finish` resets the assembler; labels from before it are stale.
+    let stale = b.label();
+    b.constant(Primitive::Null).op(Opcode::Return);
+    b.finish("first", 0, 0).unwrap();
+    let fresh = b.label();
+    b.jump(stale);
+    b.bind(fresh).constant(Primitive::Null).op(Opcode::Return);
+    assert_eq!(
+        b.finish("stale", 0, 0).unwrap_err().kind,
+        ValidationErrorKind::BadBranchTarget { target: u32::MAX }
+    );
+}
