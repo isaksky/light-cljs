@@ -230,6 +230,7 @@ impl Expr {
                 .fold(callee.height, usize::max),
             ExprKind::Member { object, .. } => object.height,
             ExprKind::Function(f) => f.height,
+            ExprKind::Sequence { left, right } => left.height.max(right.height),
         };
         Expr {
             kind,
@@ -288,6 +289,13 @@ pub enum ExprKind {
         property: Ident,
     },
     Function(Box<Function>),
+    /// `left, right` (the comma operator): evaluates `left` and discards its
+    /// value, then evaluates `right`, whose value is the result. Left-
+    /// associative: `a, b, c` is `(a, b), c`.
+    Sequence {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

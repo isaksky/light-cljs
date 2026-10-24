@@ -673,12 +673,28 @@ impl<'a> Parser<'a> {
 
     // ----- expressions --------------------------------------------------
 
-    /// Expression: AssignmentExpression (the comma operator is rejected).
+    /// Expression: AssignmentExpression (`,` AssignmentExpression)*, the
+    /// comma operator, left-associative. Each `,` is charged like one link
+    /// of a binary-operator chain. Only callers whose grammar position is
+    /// Expression use this; argument lists, declarators, `? :` branches and
+    /// concise arrow bodies take an AssignmentExpression.
     fn parse_expression(&mut self) -> PResult<Expr> {
-        let expr = self.parse_assignment()?;
-        if self.is_punct(Punct::Comma) {
-            return Err(self.unsupported(self.tok.span, "the comma operator is"));
+        let saved = self.depth;
+        let mut expr = self.parse_assignment()?;
+        while self.is_punct(Punct::Comma) {
+            self.deeper(cost::OPERATOR)?;
+            self.advance()?;
+            let right = self.parse_assignment()?;
+            let span = expr.span.to(right.span);
+            expr = self.expr(
+                ExprKind::Sequence {
+                    left: Box::new(expr),
+                    right: Box::new(right),
+                },
+                span,
+            )?;
         }
+        self.depth = saved;
         Ok(expr)
     }
 

@@ -1179,3 +1179,20 @@ Deferred:
   everywhere else).
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
+
+### Comma operator (clj-quickjs-61)
+
+Supported (`cargo test --lib frontend::tests::comma_operator`,
+`cargo test --test js_source comma_operator_evaluates_left_to_right`):
+
+- `a, b, c` wherever the grammar has an Expression (expression
+  statements, parentheses, `if`/`while` tests, `return`/`throw` operands):
+  left-associative, every operand runs left to right and the last one is
+  the value (also the script's completion value). Arguments, `let`/`const`
+  declarators, `? :` branches and concise arrow bodies stay
+  AssignmentExpressions, so `f(a, b)` has two arguments, `f((a, b))` one,
+  and `a ? b, c : d` is a syntax error; `(a, b) => ...` is still an arrow.
+
+Deferred:
+
+- Template substitutions (`` `${a, b}` ``) wait for template literals.

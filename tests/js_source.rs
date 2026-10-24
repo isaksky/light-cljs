@@ -598,23 +598,34 @@ fn corrupted_compiled_bytecode_is_rejected_by_the_validator() {
 
 #[test]
 fn deep_expressions_compile_within_a_small_stack() {
-    // Near the parser's nesting budget: 60 nested parentheses and a chain of
-    // 240 additions. Compiling recurses once per tree level, so it must fit
-    // the same 2 MiB thread stack the parser is tested with.
+    // Near the parser's nesting budget: 60 nested parentheses and chains of
+    // 240 additions and 240 comma operators. Compiling recurses once per tree
+    // level, so it must fit the same 2 MiB thread stack the parser is tested
+    // with.
     let nested = format!("{}1{}", "(".repeat(60), ")".repeat(60));
     let chain = vec!["1"; 241].join(" + ");
+    let commas = vec!["1"; 241].join(", ");
     let handle = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
             let a = compile_script("nested", &nested).map(|_| ());
             let b = compile_script("chain", &chain).map(|_| ());
-            (a, b)
+            let c = compile_script("commas", &commas).map(|_| ());
+            (a, b, c)
         })
         .unwrap();
-    let (a, b) = handle.join().unwrap();
+    let (a, b, c) = handle.join().unwrap();
     a.unwrap();
     b.unwrap();
+    c.unwrap();
     assert_eq!(num(&vec!["1"; 241].join(" + ")), 241.0);
+    assert_eq!(
+        num(&(1..=241)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")),
+        241.0
+    );
 }
 
 #[test]
@@ -688,6 +699,41 @@ fn expression_evaluation_order_and_conditional_short_circuiting() {
     // A failing operand fails where it is, after the operands before it.
     let (kind, _, line, column) = failure_at("let x = 0;\n(x = missing) + 1");
     assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 6));
+}
+
+/// The comma operator (clj-quickjs-61): every operand runs, left to right,
+/// and the last one is the value.
+#[test]
+fn comma_operator_evaluates_left_to_right() {
+    assert_eq!(num("let a = 1, b = 2; a, b"), 2.0);
+    assert_eq!(num("let x = 0; (x = 1, x + 1)"), 2.0);
+    assert_eq!(num("let r = (1, 2, 3); r"), 3.0);
+    assert_eq!(num("let x = 0; x = 5, x"), 5.0);
+    assert_eq!(num("if (0, 1) 7; else 8;"), 7.0);
+    // The left operand is evaluated, not skipped.
+    let (kind, message, line, column) = failure_at("(nope, 1)");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (VmErrorKind::ReferenceError, "nope is not defined", 1, 2)
+    );
+    // Side effects happen in order; dropped values leave no trace.
+    assert_eq!(
+        num("let x = 1; let y = (x = x * 10, x = x + 2, x * 2); y * 1000 + x"),
+        24012.0
+    );
+    assert_eq!(
+        num("let i = 0, n = 0; while (n = n + 1, i < 3) i = i + 1; n"),
+        4.0
+    );
+    assert_eq!(num("function f(a) { return a = a + 1, a * 2; } f(1)"), 4.0);
+    assert_eq!(num("let g = (a, b) => (a, b); g(1, 2)"), 2.0);
+    assert_eq!(num("let h; h = a => a, 9; h(3)"), 3.0);
+    // Only the last operand's value is converted by an arithmetic operator.
+    assert_eq!(num("(1, null) + 1"), 1.0);
+    assert_eq!(num("(null, 1) + 1"), 2.0);
+    assert_eq!(num("1 - (true, 2)"), -1.0);
+    assert_eq!(eval("1, undefined"), ValueView::Undefined);
+    assert_eq!(eval("(1, 2) === 2 ? true : 0"), ValueView::Bool(true));
 }
 
 #[test]

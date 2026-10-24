@@ -1350,6 +1350,12 @@ impl<'s> Lowerer<'s> {
                 };
                 self.closure(f, self_name)?;
             }
+            ExprKind::Sequence { left, right } => {
+                // Left to right; only the last operand's value is kept.
+                self.expr(left)?;
+                self.out().op(Opcode::Pop, span);
+                self.expr(right)?;
+            }
         }
         Ok(())
     }
@@ -1522,6 +1528,7 @@ fn is_number(e: &Expr) -> bool {
             ..
         } => is_number(consequent) && is_number(alternate),
         ExprKind::Assign { value, .. } => is_number(value),
+        ExprKind::Sequence { right, .. } => is_number(right),
         _ => false,
     }
 }

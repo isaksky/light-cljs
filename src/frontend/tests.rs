@@ -78,6 +78,9 @@ fn render_expr(e: &Expr) -> String {
             format!("(. {} {})", render_expr(object), property.name)
         }
         ExprKind::Function(f) => render_function(f),
+        ExprKind::Sequence { left, right } => {
+            format!("(, {} {})", render_expr(left), render_expr(right))
+        }
     }
 }
 
@@ -245,6 +248,60 @@ fn binary_precedence_and_left_associativity() {
     assert_eq!(ast("a !== b <= c;"), "(!== a (<= b c))");
     assert_eq!(ast("a || b && c || d;"), "(|| (|| a (&& b c)) d)");
     assert_eq!(ast("a && b === c;"), "(&& a (=== b c))");
+}
+
+/// The comma operator (clj-quickjs-61): `Expression : Expression ,
+/// AssignmentExpression`, only where the grammar has Expression.
+#[test]
+fn comma_operator() {
+    use SyntaxErrorKind::{Invalid, UnexpectedToken};
+    // Left-associative, loosest of all operators.
+    assert_eq!(ast("a, b, c;"), "(, (, a b) c)");
+    assert_eq!(ast("x = 1, 2;"), "(, (= x 1) 2)");
+    assert_eq!(ast("a ? b : c, d || e;"), "(, (? a b c) (|| d e))");
+    // Arguments are AssignmentExpressions: parentheses make one argument.
+    assert_eq!(ast("f((a, b));"), "(call f (, a b))");
+    assert_eq!(ast("f(a, b);"), "(call f a b)");
+    assert_eq!(ast("x = (a, b);"), "(= x (, a b))");
+    assert_eq!(ast("(a, b)(c);"), "(call (, a b) c)");
+    // Declarators are AssignmentExpressions too.
+    assert_eq!(ast("let a = 1, b = (2, 3);"), "(let (a 1) (b (, 2 3)))");
+    // Every Expression position: tests and `return`/`throw` operands.
+    assert_eq!(
+        ast("if (a, b) c, d; else while (e, f) g;"),
+        "(if (, a b) (, c d) (while (, e f) g))"
+    );
+    assert_eq!(
+        ast("function f() { return a, b; }"),
+        "(function f () (return (, a b)))"
+    );
+    assert_eq!(ast("throw a, b;"), "(throw (, a b))");
+    // The arrow cover grammar: a parenthesized list before `=>` is still a
+    // parameter list; an arrow ends at its concise body's `,`.
+    assert_eq!(ast("(a, b) => a, b;"), "(, (arrow (a b) => a) b)");
+    assert_eq!(ast("a, b => c;"), "(, a (arrow (b) => c))");
+    assert_eq!(ast("((a, b) => a)(1, 2);"), "(call (arrow (a b) => a) 1 2)");
+    rejects_with(
+        "f = 1 + (a, b) => a;",
+        UnexpectedToken,
+        1,
+        16,
+        "parenthesized",
+    );
+    // `? :` branches are AssignmentExpressions.
+    rejects("a ? b, c : d;", UnexpectedToken, 1, 6);
+    // No empty operand, and a sequence is not an assignment target.
+    rejects("a, ;", UnexpectedToken, 1, 4);
+    rejects("(a, );", UnexpectedToken, 1, 5);
+    rejects("(a, b) = 1;", Invalid, 1, 1);
+    // The span covers the whole list (and the parentheses, if any).
+    for (src, start, end) in [("x; (a,  b);", 3, 10), ("x; a , b;", 3, 8)] {
+        let script = parse_script(src).unwrap();
+        let StmtKind::Expr(e) = &script.body[1].kind else {
+            panic!("{script:?}")
+        };
+        assert_eq!((e.span.start, e.span.end), (start, end), "{src:?}");
+    }
 }
 
 #[test]
@@ -806,8 +863,8 @@ fn rejects_lexically_ambiguous_input() {
     // `++` after a line break begins the next statement.
     rejects_with("x = a\n++b", Unsupported, 2, 1, "increment");
     // `(a, b)` before `=>` is an arrow parameter list (accepted, see
-    // `arrow_functions_and_asi`), otherwise a comma operator.
-    rejects_with("f = (a, b);", Unsupported, 1, 7, "comma");
+    // `arrow_functions_and_asi`), otherwise the comma operator (accepted,
+    // see `comma_operator`).
     // An arrow function cannot be an operand without parentheses.
     rejects_with(
         "f = 1 + (a, b) => a;",
@@ -959,7 +1016,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("let [a] = b;", 1, 5, "destructuring"),
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
-        ("a, b;", 1, 2, "comma"),
         ("a += 1;", 1, 3, "+="),
         ("a ||= 1;", 1, 3, "||="),
         ("a.b = 1;", 1, 1, "assignment to properties"),
@@ -1083,6 +1139,10 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("while", |n| format!("{}x;", "while (1) ".repeat(n))),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
+        ("comma", |n| format!("x = 1{};", ", 1".repeat(n))),
+        ("nested commas", |n| {
+            format!("x = {}1{};", "(a, ".repeat(n), ")".repeat(n))
+        }),
         ("member", |n| format!("x = a{};", ".b".repeat(n))),
         ("call chain", |n| format!("x = f{};", "()".repeat(n))),
         ("nested calls", |n| {

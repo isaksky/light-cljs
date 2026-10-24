@@ -74,7 +74,7 @@ FunctionExpression  = "function" [ BindingIdentifier ] FunctionRest
 FunctionRest        = "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
                       "{" { StatementListItem } "}"
 
-Expression            = AssignmentExpression
+Expression            = AssignmentExpression { "," AssignmentExpression }
 AssignmentExpression  = ConditionalExpression | ArrowFunction
                       | Identifier "=" AssignmentExpression
 ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
@@ -98,10 +98,11 @@ Literal               = Number | String | "true" | "false" | "null"
 
 Notes on the grammar:
 
-- Precedence, loosest to tightest: assignment (right-associative),
-  conditional (right-associative), `||`, `&&`, equality, relational,
-  additive, multiplicative, prefix unary, call/member. All binary operators
-  are left-associative. This is ECMAScript's ordering restricted to the
+- Precedence, loosest to tightest: the comma operator, assignment
+  (right-associative), conditional (right-associative), `||`, `&&`,
+  equality, relational, additive, multiplicative, prefix unary,
+  call/member. All binary operators and the comma operator are
+  left-associative. This is ECMAScript's ordering restricted to the
   supported operators.
 - `ReturnStatement` is accepted only inside a function body.
 - `FunctionDeclaration` and `LexicalDeclaration` are statement-list items:
@@ -111,13 +112,20 @@ Notes on the grammar:
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
   otherwise the parentheses are a parenthesized expression, where `(a, b)`
-  is the rejected comma operator. An arrow function is a whole
+  is the comma operator. An arrow function is a whole
   AssignmentExpression, so it cannot be an operand, callee or member object
   without parentheses: `1 + x => x`, `f(a) => a` and `() => {}()` are
   syntax errors, `(() => 1)()` is a call. Its body is a function body block
   (where `return` is allowed) or an AssignmentExpression, the value it
   returns. `async` arrows remain unsupported; `async => async` is an arrow
   with a parameter named `async`.
+- The comma operator (clj-quickjs-61) appears only where the grammar has
+  Expression: expression statements, parentheses, `if`/`while` tests and
+  `return`/`throw` operands. Arguments, declarators, `? :` branches and
+  concise arrow bodies are AssignmentExpressions, so `f(a, b)` passes two
+  arguments, `f((a, b))` one, `let a = 1, b;` declares two bindings,
+  `a ? b, c : d` is a syntax error and `x => a, b` is `(x => a), b`. A
+  comma expression is not an assignment target: `(a, b) = 1` is `Invalid`.
 - `BindingIdentifier` excludes reserved words, `undefined`, `NaN`,
   `Infinity`, `eval` and `arguments`.
 - The assignment target may be parenthesized (`(a) = 1`), as in JavaScript.
@@ -164,7 +172,7 @@ Every form below is rejected where it starts. Error kinds:
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
-| `typeof`, `void`, `delete`, `~`, `++`, `--`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `??`, `in`, `instanceof`, the comma operator, compound assignment (`+=`, `&&=`, ...) | Unsupported |
+| `typeof`, `void`, `delete`, `~`, `++`, `--`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `??`, `in`, `instanceof`, compound assignment (`+=`, `&&=`, ...) | Unsupported |
 | assignment to a property (`a.b = 1`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
@@ -197,7 +205,7 @@ checks left to later stages:
   function 3 plus its body block (or, for a concise arrow body, its
   assignment);
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
-  or one link of a binary-operator or member chain 1; each call's
+  or one link of a binary-operator, comma-operator or member chain 1; each call's
   argument list 3 plus each argument's assignment; parentheses 3 plus the
   inner assignment. So about 64 nested parentheses or calls, 128 nested
   blocks or `else if` links, 64 nested function declarations, 42 nested
@@ -243,6 +251,7 @@ Executed, with JavaScript semantics:
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
+| `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
@@ -447,6 +456,13 @@ const k = x => () => x, h = (a,) => { return k(a)(); }
 ```
 
 ```js accept
+// The comma operator; arguments and declarators are separate items.
+let a = 1, b = (a, 2);
+f((a, b), b);
+if (a = a + 1, a < b) a, b;
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -482,6 +498,10 @@ let f = x
 
 ```js reject Invalid 1:13
 let g = (a, a) => a;
+```
+
+```js reject UnexpectedToken 1:6
+a ? b, c : d;
 ```
 
 ```js reject Unsupported 1:5
@@ -554,7 +574,9 @@ its `async` arrow cases are outside the subset). For functions and closures (clj
 `get_closure_var` / `add_closure_var` (resolving a name through enclosing
 functions and threading it down as captured variables) and
 `instantiate_hoisted_definitions` (function declarations created on scope
-entry). For hashbang comments (clj-quickjs-49): `skip_shebang`. The tests
+entry). For hashbang comments (clj-quickjs-49): `skip_shebang`. For the comma operator
+(clj-quickjs-61): `js_parse_expr2` / `js_parse_expr` (each operand but the
+last is evaluated and dropped). The tests
 in `src/frontend/tests.rs` are written for this project and are not adapted
 from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
 in `hashbang_comment_only_at_start`, which carries its notice;
