@@ -6204,3 +6204,24 @@ budget; matching consumes the existing shared search budget. Exhaustion is
 catchable RangeError. Programs retain the same immutable Arc storage boundary
 and RegExp instances remain task-owned. String-property decoding is deferred
 and unsupported string property names throw SyntaxError.
+
+## Resumable Array.prototype.sort (clj-quickjs-208)
+
+`vm/native/array_sort.rs` holds a task-owned snapshot, two merge buffers, run
+width, merge cursors and pending conversion/string state. A bottom-up merge
+sort moves one element per step and chooses the left run on equality; no Rust
+stack represents a pending comparison. The collector traces the receiver,
+comparator and both buffers, including objects removed from the receiver by a
+callback. Cancellation or exceptions discard the native through the existing
+unwind protocol, preserving the original callback exception.
+
+Each scan, merge selection, write and delete is budgeted. Comparator calls,
+ToString/ToNumber and accessors use ordinary trampoline actions; completed
+comparisons are never replayed after waiting or migration. Default comparison
+incrementally flattens ropes and inspects at most 256 UTF-16 units per step.
+Undefined values bypass coercion/callbacks, sorting before holes omitted from
+the snapshot. Writeback uses throwing resumable Set, followed by throwing
+Delete for trailing holes. The built-in and realm allocation are append-only;
+there are no new heap kinds or publication categories. QuickJS's
+`js_array_sort`/`js_array_cmp_generic` in `research/quickjs/quickjs.c` at
+7d1c13c5d8f8 were consulted as semantic references; no C code was adapted.

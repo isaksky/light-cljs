@@ -365,6 +365,8 @@ pub(crate) enum Builtin {
 
     ArrayFrom,
     GeneratorNext,
+
+    ArrayPrototypeSort,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -408,6 +410,7 @@ impl Builtin {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Builtin::ArrayFrom => "from",
+            Builtin::ArrayPrototypeSort => "sort",
             Builtin::ArrayValues | Builtin::TypedArrayValues => "values",
             Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
             Builtin::IteratorNext(_) => "next",
@@ -584,6 +587,7 @@ impl Builtin {
     pub(crate) fn length(self) -> u32 {
         match self {
             Builtin::ArrayFrom => 1,
+            Builtin::ArrayPrototypeSort => 1,
             Builtin::ArrayValues
             | Builtin::TypedArrayValues
             | Builtin::StringIterator
@@ -753,6 +757,7 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayPrototypeSort => Err(Fault::Internal("sort requires a resumable frame")),
         Builtin::ArrayFrom => Err(Fault::Internal("Array.from requires a resumable frame")),
         Builtin::ArrayValues => {
             super::native::iterator::create(heap, task, this, super::native::iterator::Kind::Array)

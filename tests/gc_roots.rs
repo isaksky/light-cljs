@@ -1018,6 +1018,7 @@ fn realm_intrinsics_retain() {
         "Date.parse",
         "Map.prototype.forEach",
         "Array.from",
+        "Array.prototype.sort",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()

@@ -4271,3 +4271,21 @@ slots to observers after the pause with rooted owners. This introduces no
 JavaScript syntax or globals and does not change ordinary Map semantics.
 Explicit gaps: JavaScript WeakMap/WeakSet, WeakRef and its job keep-alives,
 and FinalizationRegistry registration and cleanup scheduling remain deferred.
+
+## Array.prototype.sort (clj-quickjs-208)
+
+Execution: `array.sort([compareFn])` validates a defined comparator before
+reading length or elements, collects present own/inherited indices, and stably
+sorts the snapshot. Default comparison applies ToString to each compared value
+and compares UTF-16 code units. A callback receives `(a, b)` with undefined
+`this`; its result undergoes ToNumber, with NaN treated as zero. Undefined
+values compare after all defined values without invoking the comparator.
+Sorted values are written back with throwing Set operations, then remaining
+indices are deleted with throwing Delete operations; length is preserved and
+the receiver is returned. Object coercions, accessors and callbacks execute as
+resumable VM calls. Array-like object receivers and Number/String wrappers
+are supported. Long default comparisons flatten ropes and compare in bounded
+chunks, beyond the general synchronous rope limitation above.
+
+Explicit gaps: typed-array `sort` and `toSorted` remain deferred. Generic sort
+on Boolean/Symbol/BigInt primitives explicitly rejects unavailable wrappers.

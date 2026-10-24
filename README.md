@@ -3350,3 +3350,13 @@ notifications root their owners and held data until consumed. Existing Map
 entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
 Deferred JavaScript surfaces: WeakMap/WeakSet, WeakRef job keep-alives and
 FinalizationRegistry registration and cleanup jobs.
+
+### `Array.prototype.sort` (clj-quickjs-208)
+
+Supported: stable in-place sorting with default UTF-16 string order or a
+resumable comparator, returning the receiver. Undefined values precede trailing
+holes; inherited indices are included. Comparators, coercions, getters and
+setters may wait, yield and migrate. Snapshot collection, merging, string
+flattening/comparison, writes and deletion are budgeted native steps.
+Deferred: typed-array `sort`, `toSorted`, and Boolean/Symbol/BigInt receiver
+wrappers (explicit UnsupportedOperand, as for generic array string methods).

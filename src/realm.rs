@@ -1076,6 +1076,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.all.push(generator_prototype);
     let next = b.function(Builtin::GeneratorNext, &[])?;
     b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;
+
+    let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;
+    b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1962,7 +1965,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 252); // Includes Array.from, generator prototype and next.
+        assert_eq!(first.all.len(), 253); // Includes generators (-243) and sort (-208).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

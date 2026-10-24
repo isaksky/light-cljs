@@ -19441,3 +19441,90 @@ fn date_parse_waits_collects_and_migrates() {
     assert!(completed);
     assert_eq!(waited, 4);
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_sort_default_and_comparator() {
+    for src in [
+        "[3, 1, 10, 2].sort().join() === '1,10,2,3'",
+        "let a = [3, 1, 10, 2]; a.sort(function(a,b) { return a-b; }) === a && a.join() === '1,2,3,10'",
+        "let a = [{k:1,v:'a'}, {k:0,v:'b'}, {k:1,v:'c'}]; a.sort(function(a,b) { return a.k-b.k; }); a[0].v === 'b' && a[1].v === 'a' && a[2].v === 'c'",
+        "let a = [undefined, 2, , 1]; a.sort(); a.join() === '1,2,,' && a.length === 4 && a[2] === undefined && (2 in a) && !(3 in a)",
+        "let ok = false; try { [1].sort(5); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let reads = 0, o = {get length() { reads++; return 1; }, get 0() { reads++; return 1; }}; let ok = false; try { Array.prototype.sort.call(o, 5); } catch(e) { ok = e instanceof TypeError; } ok && reads === 0",
+        "let a = [3,2,1]; a.sort(function(a,b) { return {valueOf() { return a-b; }}; }); a.join() === '1,2,3'",
+        "let a = [3,2,1]; a.sort(function() { return NaN; }); a.join() === '3,2,1'",
+        "let a = [3,2,1]; a.sort(function() { return '0'; }); a.join() === '3,2,1'",
+        "let calls = 0; [undefined, 1, undefined].sort(function() { calls++; return 0; }); calls === 0",
+        "let a = [{toString() { return 'b'; }}, {toString() { return 'a'; }}]; a.sort(); a[0].toString() === 'a'",
+        "['\\ue000', '\\ud800\\udc00', '\\ud800'].sort().join('|') === '\\ud800|\\ud800\\udc00|\\ue000'",
+        "let a = [3,2,1], e = {}; let caught; try { a.sort(function() { throw e; }); } catch(x) { caught = x; } caught === e && a.join() === '3,2,1'",
+        "let o = {length: 4, 0: undefined, 2: 2, 3: 1}; Array.prototype.sort.call(o) === o && o[0] === 1 && o[1] === 2 && o[2] === undefined && !(3 in o)",
+        "let a = [,2,1]; Object.setPrototypeOf(a, {0: 3}); Array.prototype.sort.call(a); a[0] === 1 && a[1] === 2 && a[2] === 3",
+        "let a = [2,1]; Object.defineProperty(a, '0', {writable: false}); let ok = false; try { a.sort(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "Array.prototype.sort.length === 1 && Array.prototype.sort.name === 'sort' && !Object.getOwnPropertyDescriptor(Array.prototype, 'sort').enumerable",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. The long common prefix must
+/// yield while flattening/comparing, between ToString and the first write.
+#[test]
+fn array_sort_default_comparison_is_budgeted() {
+    #[derive(Default)]
+    struct Log(Vec<f64>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            if let Primitive::Number(n) = call.arg {
+                self.0.push(n);
+            }
+            Ok(Primitive::Undefined)
+        }
+    }
+    let source = "let text = 'x'.padEnd(8192,'x'); let o = {length: 2, get 0() { return {toString() { __rt.effect(1,1); return text + 'b'; }}; }, set 0(v) { __rt.effect(1,3); }, get 1() { return {toString() { __rt.effect(1,2); return text + 'a'; }}; }, set 1(v) { __rt.effect(1,4); }}; Array.prototype.sort.call(o); true";
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut host = Log::default();
+    let mut comparison_yields = 0;
+    for _ in 0..20000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                if host.0.len() == 2 {
+                    comparison_yields += 1;
+                }
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(host.0, [1., 2., 3., 4.]);
+                assert!(
+                    comparison_yields >= 32,
+                    "long comparison ran without yielding"
+                );
+                return;
+            }
+            other => panic!("unexpected sort outcome: {other:?}"),
+        }
+    }
+    panic!("sort did not complete");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_sort_merge_boundaries_and_errors() {
+    for src in [
+        "let ok = true; for (let n = 0; n < 67; n++) { let a = []; for (let i = 0; i < n; i++) a.push({k: (i * 13) % 7, i: i}); a.sort(function(a,b) { return a.k-b.k; }); if (a.length !== n) ok = false; for (let i = 1; i < n; i++) if (a[i-1].k > a[i].k || (a[i-1].k === a[i].k && a[i-1].i > a[i].i)) ok = false; } ok",
+        "let a = [2,,1]; Object.defineProperty(a, '2', {configurable: false}); let ok = false; try { a.sort(); } catch(e) { ok = e instanceof TypeError; } ok && a[0] === 1 && a[1] === 2",
+        "let e = {}, caught; try { [{toString() { throw e; }}, 1].sort(); } catch(x) { caught = x; } caught === e",
+        "let e = {}, caught; try { [2,1].sort(function() { return {valueOf() { throw e; }}; }); } catch(x) { caught = x; } caught === e",
+        "let ok = false; try { [2,1].sort(function() { return 1n; }); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let ok = false; try { [Symbol(), 1].sort(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let ok = false; [2,1].sort(function(a,b) { 'use strict'; ok = this === undefined; return a-b; }); ok",
+        "let n = Array.prototype.sort.call(5); typeof n === 'object' && n.valueOf() === 5",
+        "let ok = false; try { Array.prototype.sort.call('ba'); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let count = 0; let a = [2,1]; a.sort(function(a,b) { count++; return a-b; }.bind({})); count === 1 && a.join() === '1,2'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}

@@ -1731,3 +1731,128 @@ fn array_from_mapper_failure_and_cancellation() {
             .is_empty()
     );
 }
+
+/// Synthetic fixtures, not light-cljs output. Compare a suspended sort to
+/// an uninterrupted one, collecting at every step and migrating after wakeup.
+#[test]
+fn array_sort_comparator_waits_on_dependency() {
+    for src in [
+        "let calls = 0, a = [{k:4}, {k:1}, {k:3}, {k:2}, {k:1}]; a.sort(function(a,b) { __rt.effect(1, ++calls); if (calls === 2) __rt.need(5,3); return a.k-b.k; }); a[0].k === 1 && a[1].k === 1 && a[2].k === 2 && a[3].k === 3 && a[4].k === 4",
+        // Only the snapshot retains the objects after the first callback.
+        "let calls = 0, a = [{k:4}, {k:1}, {k:3}, {k:2}]; a.sort(function(x,y) { __rt.effect(1, ++calls); if (calls === 1) { delete a[0]; delete a[1]; delete a[2]; delete a[3]; } if (calls === 2) __rt.need(5,3); return x.k-y.k; }); a[0].k === 1 && a[1].k === 2 && a[2].k === 3 && a[3].k === 4",
+        "let calls = 0; let a = [4,1,3,2]; a.sort(function(x,y) { return {valueOf() { __rt.effect(1, ++calls); if (calls === 2) __rt.need(5,3); return x-y; }}; }); a.join() === '1,2,3,4'",
+        "let calls = 0; function obj(k) { return {k: k, toString() { __rt.effect(1, ++calls); if (calls === 2) __rt.need(5,3); return this.k; }}; } let a = [obj('d'),obj('a'),obj('c'),obj('b')]; a.sort(); a[0].k === 'a' && a[1].k === 'b' && a[2].k === 'c' && a[3].k === 'd'",
+        "let calls = 0, o = {get length() { __rt.effect(1, ++calls); __rt.need(5,3); return 2; }, 0: 2, 1: 1}; Array.prototype.sort.call(o); o[0] === 1 && o[1] === 2",
+        "let calls = 0, o = {length: 2, get 0() { __rt.effect(1, ++calls); __rt.need(5,3); return 2; }, set 0(v) { __rt.effect(1, v); __rt.need(5,3); }, 1: 1}; Array.prototype.sort.call(o); o[1] === 2",
+    ] {
+        let mut baseline = None;
+        for wait in [false, true] {
+            let rt = Runtime::new();
+            let source = if wait {
+                src.to_string()
+            } else {
+                src.replace("__rt.need(5,3)", "7")
+            };
+            let task = rt
+                .spawn(&compile_script("sort-wait", &source).unwrap(), &[])
+                .unwrap();
+            let mut host = Recorder::default();
+            let expected = key(&rt, NUMBER);
+            let mut completed = None;
+            for steps in 0..4000 {
+                match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) if !wait => {
+                        completed = Some(value);
+                        break;
+                    }
+                    outcome => {
+                        assert!(wait);
+                        assert_eq!(waiting(outcome), expected);
+                        break;
+                    }
+                }
+                assert!(steps < 3999, "sort did not reach wait/completion");
+            }
+            if wait {
+                let request = one_request(&task, expected);
+                rt.collect().unwrap();
+                let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+                let worker_rt = rt.clone();
+                let (value, resumed_host) = thread::spawn(move || {
+                    for _ in 0..4000 {
+                        match resumed
+                            .run_with(Budget::instructions(1), &mut host)
+                            .unwrap()
+                        {
+                            RunOutcome::Yielded => {
+                                worker_rt.collect().unwrap();
+                            }
+                            RunOutcome::Complete(value) => return (value, host),
+                            other => panic!("unexpected resumed sort: {other:?}"),
+                        }
+                    }
+                    panic!("sort did not complete");
+                })
+                .join()
+                .unwrap();
+                completed = Some(value);
+                host = resumed_host;
+                assert_eq!(
+                    host.effects,
+                    *baseline.as_ref().unwrap(),
+                    "completed calls replayed: {src}"
+                );
+                assert_eq!(task.dependency_log().edges(), &[expected]);
+            } else {
+                baseline = Some(host.effects);
+            }
+            assert_eq!(completed.unwrap().view(), ValueView::Bool(true), "{src}");
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Dependency failures unwind the
+/// comparator; cancellation drops the sort and runs the callback's finally.
+#[test]
+fn array_sort_comparator_failure_and_cancellation() {
+    let source = "let a = [2,1]; let caught = false; try { a.sort(function(x,y) { try { __rt.need(5,3); } finally { __rt.effect(2,9); } return x-y; }); } catch(e) { caught = true; } caught && a.join() === '2,1'";
+    let code = compile_script("sort-failure", source).unwrap();
+    for cancel in [false, true] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        assert_eq!(waiting(run(&task, &mut host)), expected);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        if cancel {
+            let Cancel::Runnable(cancelled) = task.cancel() else {
+                panic!("runnable cancellation");
+            };
+            assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+            assert!(
+                publish_number(&rt, &request, 7.0)
+                    .into_runnable()
+                    .is_empty()
+            );
+        } else {
+            let error = rt.root(Primitive::Number(42.0));
+            let wakeups = rt
+                .complete(
+                    request.key(),
+                    request.producer(),
+                    Completion::Failed(&error),
+                )
+                .unwrap();
+            let RunOutcome::Complete(value) = run(&only_runnable(wakeups), &mut host) else {
+                panic!("sort did not catch failure");
+            };
+            assert_eq!(value.view(), ValueView::Bool(true));
+        }
+        assert_eq!(host.reports, [9.0]);
+        rt.collect().unwrap();
+    }
+}

@@ -220,6 +220,7 @@ pub(crate) mod iterator;
 pub(crate) mod regexp;
 
 mod array_from;
+mod array_sort;
 mod intl_service;
 mod number_format;
 mod plural_rules;
@@ -538,6 +539,7 @@ enum NativeState {
     },
     JsonStringify(Box<super::json::Stringifier>),
     TypedArray(Box<typed_array::TypedArray>),
+    ArraySort(Box<array_sort::State>),
 }
 
 #[derive(Debug)]
@@ -737,6 +739,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::ArrayFrom(from) => from.trace(visit),
+            NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Generator { id, failed } => {
                 visit(*id);
@@ -1211,6 +1214,9 @@ pub(crate) fn start_builtin(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
 
+            Builtin::ArrayPrototypeSort => Some(NativeState::ArraySort(Box::new(
+                array_sort::State::new(this.clone(), args),
+            ))),
             Builtin::ArrayFrom => Some(NativeState::ArrayFrom(Box::new(array_from::State::new(
                 this.clone(),
                 args,
@@ -2360,6 +2366,7 @@ impl NativeState {
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
+            NativeState::ArraySort(sort) => sort.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
@@ -3476,6 +3483,7 @@ impl NativeState {
             (
                 NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
+                | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)
                 | NativeState::Generator { .. }
                 | NativeState::TypedArray(_)
