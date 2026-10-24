@@ -58,7 +58,7 @@
 //! | `Math` additions (clj-quickjs-205) | same namespace | `sqrt`, `log2` (length 1), each with `name` |
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
-//! | `JSON` (clj-quickjs-161/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
+//! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
 //! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |

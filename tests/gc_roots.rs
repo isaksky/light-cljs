@@ -980,6 +980,21 @@ fn realm_intrinsics_retain() {
         "Intl",
         "Intl.Locale.prototype.maximize",
         "Intl.Locale.prototype.minimize",
+        "RegExp",
+        "RegExp.prototype",
+        "RegExp.prototype.exec",
+        "RegExp.prototype.test",
+        "RegExp.prototype.toString",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'source').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'hasIndices').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'global').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'ignoreCase').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'multiline').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'dotAll').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'unicode').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'unicodeSets').get",
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'sticky').get",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -991,9 +1006,9 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // Each completed task created its own global binding overlay (-104).
-    // Reclaim those objects, their self-cycles and the three temporary accessor
+    // Reclaim those objects, their self-cycles and the thirteen temporary accessor
     // descriptors; the intrinsic values must survive independently.
-    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 3);
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 13);
     assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
