@@ -642,8 +642,8 @@ impl<'a> Parser<'a> {
             (FunctionKind::Arrow, body)
         } else {
             // The body is an AssignmentExpression, so the arrow ends with
-            // it: no operator, call or `,` can continue an arrow function,
-            // and a line break before such a token ends the statement.
+            // it: a `,` after it separates arguments or declarators, or is
+            // the comma operator of an enclosing Expression.
             let value = self.parse_assignment()?;
             let span = value.span;
             let body = self.bounded(Stmt::new(StmtKind::Return(Some(value)), span))?;

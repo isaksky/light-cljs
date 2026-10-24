@@ -727,6 +727,12 @@ fn comma_operator_evaluates_left_to_right() {
     );
     assert_eq!(num("function f(a) { return a = a + 1, a * 2; } f(1)"), 4.0);
     assert_eq!(num("let g = (a, b) => (a, b); g(1, 2)"), 2.0);
+    assert_eq!(num("() => {}\n, 1"), 1.0);
+    // `throw` throws the last operand, after the others ran.
+    assert_eq!(
+        num("let x = 0; try { throw x = 1, 2; } catch (e) { x = x * 10 + e; } x"),
+        12.0
+    );
     assert_eq!(num("let h; h = a => a, 9; h(3)"), 3.0);
     // Only the last operand's value is converted by an arithmetic operator.
     assert_eq!(num("(1, null) + 1"), 1.0);

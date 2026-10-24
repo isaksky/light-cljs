@@ -149,8 +149,11 @@ Postfix `++`/`--` after a line break begins a new statement (where it is
 rejected as unsupported). No semicolon is ever inserted to create an empty
 statement, so `if (x)` newline `else y` is an error.
 
-Since no token can continue an arrow function whose body is a block, a
-line break after that body ends the statement: `() => {}` newline `() => {}`
+An arrow function is a whole AssignmentExpression, and only `,` (the
+comma operator, clj-quickjs-61) can follow one whose body is a block in
+the same Expression; so a line break after that body ends the statement
+unless the next token is `,`: `() => {}` newline `, 1` is one comma
+expression completing with 1, while `() => {}` newline `() => {}`
 is two statements (the script completes with the second function), and
 `() => {}` newline `+1` is two statements completing with `1`; on one line
 both are syntax errors. A concise body is an expression and continues as
@@ -460,6 +463,8 @@ const k = x => () => x, h = (a,) => { return k(a)(); }
 let a = 1, b = (a, 2);
 f((a, b), b);
 if (a = a + 1, a < b) a, b;
+() => {}
+, 1
 ```
 
 ```js accept

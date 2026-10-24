@@ -280,6 +280,9 @@ fn comma_operator() {
     // parameter list; an arrow ends at its concise body's `,`.
     assert_eq!(ast("(a, b) => a, b;"), "(, (arrow (a b) => a) b)");
     assert_eq!(ast("a, b => c;"), "(, a (arrow (b) => c))");
+    // A line break after a block body does not end the statement before
+    // `,`, which continues the enclosing Expression.
+    assert_eq!(ast("() => {}\n, 1"), "(, (arrow ()) 1)");
     assert_eq!(ast("((a, b) => a)(1, 2);"), "(call (arrow (a b) => a) 1 2)");
     rejects_with(
         "f = 1 + (a, b) => a;",
