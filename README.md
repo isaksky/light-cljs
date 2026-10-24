@@ -3318,4 +3318,4 @@ storage between yields and reattach to ordinary VM frames, preserving dependency
 waits, budgets, collection and worker migration. Publication and foreign-task
 access are rejected. Deferred: `yield*`, generator `return`/`throw`, async/await.
 Generator objects inherit the shared iterator identity protocol and can be
-consumed by `for...of` (clj-quickjs-237).
+consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).

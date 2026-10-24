@@ -202,6 +202,8 @@ fn generator_call_protocols_and_prototypes() {
         "let o={*g(x) { yield this.n+x; },n:2}; o.g(5).next().value===7",
         "function* g() { yield 2; yield 3; } let it=g(); it[Symbol.iterator]()===it && Object.getPrototypeOf(Object.getPrototypeOf(g.prototype))===Object.getPrototypeOf(Object.getPrototypeOf([].values()))",
         "function* g() { yield 2; yield 3; } let sum=0; for (let n of g()) { sum+=n; } sum===5",
+        "function* g() { yield 2; yield 3; } let a=[...g()]; a.length===2 && a[0]===2 && a[1]===3",
+        "function* g() { yield 2; yield 3; } function sum(a,b) { return a+b; } sum(...g())===5",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }

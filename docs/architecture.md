@@ -6096,6 +6096,8 @@ clj-quickjs-237, including its identity `[Symbol.iterator]`. The realm builder
 returns that shared prototype with its array/string iterator prototypes; no
 second iterator identity or iterator prototype is allocated. Generator objects
 therefore work with the existing resumable GetIterator/for-of protocol.
+Array and argument spread reuse that protocol as well; generator integration
+tests exercise both consumers after clj-quickjs-130.
 
 Root inventory: `suspended_generator_is_traced_and_reclaimed` in `tests/gc.rs`
 retains an ordinary object solely through a detached generator's saved local,
