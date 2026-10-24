@@ -3,6 +3,16 @@
 mod tables;
 use tables::*;
 
+#[path = "script_names.rs"]
+mod script_names;
+
+#[test]
+fn regexp_script_alias_subset_is_exact() {
+    assert_eq!(script_names::SCRIPT_ALIASES, unicode_script_name_table);
+    assert!(script_names::SCRIPT_ALIASES.ends_with(b"\0\0"));
+    assert!(script_names::SCRIPT_ALIASES.split(|&b| b == 0).any(|s| s == b"Greek,Grek"));
+}
+
 #[test]
 fn complete_top_level_collections() {
     assert_eq!(locale_data_table.len(), 769);

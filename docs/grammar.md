@@ -2619,6 +2619,28 @@ throw /x/;
 /aaa]/; /(?<n>a)\k<n>/u; /[\]]/u; /[\]]/v;
 ```
 
+```js accept
+false && /\p{Script=Greek}/u;
+false && /\p{Script_Extensions=Grek}/u;
+false && /\p{RGI_Emoji}/v;
+```
+
+```js reject Invalid 1:1
+/\p{Script=NotAScript}/u
+```
+
+```js reject Invalid 1:1
+/\p{RGI_Emoji}/u
+```
+
+```js reject Invalid 1:1
+/\P{RGI_Emoji}/v
+```
+
+```js reject Invalid 1:1
+/[^\p{Basic_Emoji}]/v
+```
+
 ```js reject Invalid 2:3
 
   /aaa]/u
@@ -3945,8 +3967,13 @@ apply strict pattern syntax. Invalid patterns produce `SyntaxError` kind
 `Invalid` at the literal's opening slash with a message naming the problem,
 including in unevaluated expressions and function bodies. The AST preserves
 the raw pattern and flags; matcher compilation remains in the runtime.
-The shared pattern parser's existing limits also apply to literal validation,
-including rejection of Script/Script_Extensions and v string properties.
+Literal validation recognizes exact Script/Script_Extensions aliases and the
+seven v-mode string properties independently of matcher support. Valid but
+unsupported properties compile in unevaluated expressions; evaluating them
+retains the runtime's catchable SyntaxError. Invalid names/values, string
+properties in u mode or in `\P`, and complemented classes that may contain
+strings are early errors. Script aliases use the pinned Unicode 17 name pool.
+The shared parser's existing quantifier-count limit also applies to validation.
 RegExp objects and methods execute (clj-quickjs-188);
 Unicode matching executes (clj-quickjs-190); case-insensitive matching remains deferred.
 

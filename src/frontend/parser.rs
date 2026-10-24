@@ -3878,15 +3878,14 @@ impl<'a> Parser<'a> {
         let TokenKind::RegExp { pattern, flags } = &self.tok.kind else {
             unreachable!("regexp literal token")
         };
-        crate::regexp::parse::parse(&pattern.as_str().into(), &flags.as_str().into()).map_err(
-            |e| {
+        crate::regexp::parse::validate_syntax(&pattern.as_str().into(), &flags.as_str().into())
+            .map_err(|e| {
                 self.error(
                     SyntaxErrorKind::Invalid,
                     span,
                     format!("invalid regular expression pattern: {}", e.message),
                 )
-            },
-        )?;
+            })?;
         let kind = ExprKind::RegExp {
             pattern: pattern.clone(),
             flags: flags.clone(),

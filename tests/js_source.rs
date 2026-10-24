@@ -21241,6 +21241,27 @@ fn regexp_v_outside_class_unicode_parity() {
 }
 
 #[test]
+fn regexp_unsupported_properties_remain_runtime_errors() {
+    // Synthetic fixtures, not light-cljs output.
+    assert_eq!(
+        eval(r"false && /\p{Script=Greek}/u"),
+        ValueView::Bool(false)
+    );
+    assert_eq!(
+        eval(r"false && /\p{Script_Extensions=Grek}/u"),
+        ValueView::Bool(false)
+    );
+    assert_eq!(eval(r"false && /\p{RGI_Emoji}/v"), ValueView::Bool(false));
+    for source in [
+        r"try { /\p{Script=Greek}/u; false } catch(e) { e instanceof SyntaxError }",
+        r"try { /\p{Script_Extensions=Grek}/u; false } catch(e) { e instanceof SyntaxError }",
+        r"try { /\p{RGI_Emoji}/v; false } catch(e) { e instanceof SyntaxError }",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
 fn regexp_property_escapes() {
     // Synthetic fixture, not light-cljs output. QuickJS rows retain their notice.
     assert_eq!(

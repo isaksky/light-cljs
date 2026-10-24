@@ -4305,6 +4305,48 @@ fn regexp_pattern_early_errors() {
 }
 
 #[test]
+fn regexp_property_syntax_is_independent_of_matcher_support() {
+    // Synthetic fixtures, not light-cljs output.
+    for literal in [
+        r"/\p{Script=Greek}/u",
+        r"/\P{sc=Grek}/u",
+        r"/[\p{Script_Extensions=Greek}]/u",
+        r"/[\p{scx=Grek}--\p{sc=Latin}]/v",
+        r"/\p{RGI_Emoji}/v",
+        r"/[\p{Basic_Emoji}&&\p{ASCII}]/v",
+        r"/[^\p{Basic_Emoji}&&\p{ASCII}]/v",
+        r"/[^\p{ASCII}--\p{RGI_Emoji}]/v",
+        r"/\p{Emoji_Keycap_Sequence}/v",
+        r"/\p{RGI_Emoji_Modifier_Sequence}/v",
+        r"/\p{RGI_Emoji_Flag_Sequence}/v",
+        r"/\p{RGI_Emoji_Tag_Sequence}/v",
+        r"/\p{RGI_Emoji_ZWJ_Sequence}/v",
+    ] {
+        parse_script(literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
+        compile_script("regexp", literal).unwrap_or_else(|e| panic!("{literal}: {e}"));
+    }
+    for literal in [
+        r"/\p{Script=NotAScript}/u",
+        r"/\p{script=Greek}/u",
+        r"/\p{sc=greek}/u",
+        r"/\p{Greek}/u",
+        r"/\p{scx=}/v",
+        r"/\p{gc=Greek}/u",
+        r"/\p{ASCII=Yes}/u",
+        r"/\p{RGI_Emoji}/u",
+        r"/\P{RGI_Emoji}/v",
+        r"/[^\p{Basic_Emoji}]/v",
+        r"/[^\p{RGI_Emoji}--\p{ASCII}]/v",
+        r"/[^\p{ASCII}\p{RGI_Emoji}]/v",
+        r"/\p{Script=Greek}(/u",
+        r"/[\p{sc=Greek}-a]/u",
+        r"/[\p{RGI_Emoji}-a]/v",
+    ] {
+        rejects_with(literal, SyntaxErrorKind::Invalid, 1, 1, "");
+    }
+}
+
+#[test]
 fn rejects_lexically_ambiguous_input() {
     use SyntaxErrorKind::*;
     // Regexp-goal cases parse and compile to fresh RegExp objects.

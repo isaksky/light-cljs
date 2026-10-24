@@ -15,6 +15,7 @@ output_dir=$(realpath "$2")
 bash "$script_dir/generate.sh" "$source_dir" "$output_dir/first"
 bash "$script_dir/generate.sh" "$source_dir" "$output_dir/second"
 cmp "$output_dir/first/tables.rs" "$output_dir/second/tables.rs"
+cmp "$output_dir/first/script_names.rs" "$output_dir/second/script_names.rs"
 cmp "$output_dir/first/c-values.bin" "$output_dir/second/c-values.bin"
 cp "$script_dir/edge_cases.rs" "$output_dir/first/edge_cases.rs"
 rustc --edition=2021 -D warnings --test "$output_dir/first/edge_cases.rs" -o "$output_dir/first/edge_cases"

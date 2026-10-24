@@ -61,6 +61,13 @@ permission notice is retained with the test; see `research/quickjs/LICENSE`.
 Other cases are synthetic fixtures, not light-cljs output.
 `research/quickjs/quickjs.c::js_parse_regexp` was consulted as a semantic
 reference; validation reuses the existing Rust pattern parser.
+`src/regexp/script_names.rs` is generated from the Unicode 17
+`unicode_script_name_table` in `research/quickjs/libunicode-table.h` at the
+same revision through `scripts/quickjs-data/generate.sh`. It retains the
+QuickJS and Unicode notices; the complete MIT notice is in
+`src/intl/data/QUICKJS-LICENSE` and Unicode License v3 in `docs/UNICODE-LICENSE`.
+Only exact property-alias recognition is added; no Script matching code is
+adapted. The seven string property names follow the ECMAScript property list.
 
 ## Array length changes (clj-quickjs-154)
 

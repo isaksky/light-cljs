@@ -83,7 +83,16 @@ impl Flags {
 /// rejected explicitly; Script and string property escapes are deferred.
 pub fn parse(pattern: &JsString, flags: &JsString) -> Result<Pattern, SyntaxError> {
     let flags_value = Flags::parse(flags)?;
-    Parser::new(pattern.code_units(), flags_value).run()
+    Parser::new(pattern.code_units(), flags_value, false).run()
+}
+
+/// Validate literal syntax without applying matcher property-support limits.
+/// The temporary arena is discarded and cannot be passed to the matcher.
+pub fn validate_syntax(pattern: &JsString, flags: &JsString) -> Result<(), SyntaxError> {
+    let flags_value = Flags::parse(flags)?;
+    Parser::new(pattern.code_units(), flags_value, true)
+        .run()
+        .map(|_| ())
 }
 
 enum GroupKind {
@@ -193,6 +202,10 @@ struct Parser<'a> {
     text: &'a [u16],
     pos: usize,
     flags: Flags,
+    syntax_only: bool,
+    // Metadata for the last character consumed by set_character. Required for
+    // v-mode complement/intersection rules even when property matching is deferred.
+    property_may_strings: bool,
     total_captures: usize,
     has_named: bool,
     captures: Vec<Option<JsString>>,
@@ -204,7 +217,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(text: &'a [u16], flags: Flags) -> Self {
+    fn new(text: &'a [u16], flags: Flags, syntax_only: bool) -> Self {
         // Decimal and named escapes depend on captures anywhere in the pattern,
         // including forward references. This lexical scan never interprets a
         // parenthesis inside a class or immediately after a backslash.
@@ -235,6 +248,8 @@ impl<'a> Parser<'a> {
             text,
             pos: 0,
             flags,
+            syntax_only,
+            property_may_strings: false,
             total_captures: count,
             has_named: named,
             captures: Vec::new(),
@@ -770,6 +785,7 @@ impl<'a> Parser<'a> {
                 may_strings = may;
             } else {
                 let mut member = self.set_character()?;
+                may_strings = self.property_may_strings;
                 if self.peek() == Some(45) && self.text.get(self.pos + 1) != Some(&45) {
                     self.pos += 1;
                     let right = self.set_character()?;
@@ -784,7 +800,6 @@ impl<'a> Parser<'a> {
                     range = true;
                 }
                 out.push(ClassSetItem::Member(member));
-                may_strings = false;
             }
             let frame = frames.last_mut().unwrap();
             if range && frame.operator.is_some() {
@@ -795,6 +810,7 @@ impl<'a> Parser<'a> {
     }
 
     fn set_character(&mut self) -> Result<ClassMember, SyntaxError> {
+        self.property_may_strings = false;
         let start = self.pos;
         let c = self
             .peek()
@@ -942,6 +958,17 @@ impl<'a> Parser<'a> {
                 }
                 if !self.eat(125) {
                     return Err(error(start, "invalid Unicode property escape"));
+                }
+                if self.syntax_only {
+                    let kind = super::property::syntax_kind(&name)
+                        .ok_or_else(|| error(start, "unknown Unicode property"))?;
+                    self.property_may_strings = kind == super::property::PropertyKind::String;
+                    if self.property_may_strings && (!self.flags.unicode_sets || unit == 80) {
+                        return Err(error(start, "invalid string property escape"));
+                    }
+                    // A nonliteral placeholder keeps range-endpoint checks
+                    // intact. Only validate_syntax uses and discards this arena.
+                    return Ok(ClassMember::Escape(ClassEscape::Digit));
                 }
                 let property = super::property::lookup(&name)
                     .ok_or_else(|| error(start, "unknown or unsupported Unicode property"))?;

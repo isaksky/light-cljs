@@ -3,6 +3,45 @@
 #[path = "property_data.rs"]
 mod data;
 
+#[path = "script_names.rs"]
+mod script_names;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PropertyKind {
+    CodePoint,
+    String,
+}
+
+/// Recognize syntax independently of the matcher's available range tables.
+/// ECMAScript requires exact property keys and Unicode aliases.
+pub(super) fn syntax_kind(name: &str) -> Option<PropertyKind> {
+    if lookup(name).is_some() {
+        return Some(PropertyKind::CodePoint);
+    }
+    if let Some((key, value)) = name.split_once('=') {
+        if matches!(key, "Script" | "sc" | "Script_Extensions" | "scx")
+            && !value.is_empty()
+            && script_names::SCRIPT_ALIASES
+                .split(|&b| b == 0 || b == b',')
+                .any(|alias| alias == value.as_bytes())
+        {
+            return Some(PropertyKind::CodePoint);
+        }
+    } else if matches!(
+        name,
+        "Basic_Emoji"
+            | "Emoji_Keycap_Sequence"
+            | "RGI_Emoji_Modifier_Sequence"
+            | "RGI_Emoji_Flag_Sequence"
+            | "RGI_Emoji_Tag_Sequence"
+            | "RGI_Emoji_ZWJ_Sequence"
+            | "RGI_Emoji"
+    ) {
+        return Some(PropertyKind::String);
+    }
+    None
+}
+
 struct PropertyData {
     aliases: &'static str,
     category: bool,

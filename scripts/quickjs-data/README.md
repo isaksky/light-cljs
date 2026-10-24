@@ -61,6 +61,13 @@ The generated file and its Rust consumer both use `#![forbid(unsafe_code)]`.
 The verifier builds on stable Rust with warnings denied. C is needed only to
 regenerate/validate data, not to consume the generated Rust.
 
+`generate.sh` also emits `script_names.rs`, an exact subset of the verified
+Unicode 17 `unicode_script_name_table` byte pool for regexp literal syntax
+validation (clj-quickjs-56). `verify.sh` compares repeated output and checks the
+entire subset against the C-verified pool. Install `first/script_names.rs` as
+`src/regexp/script_names.rs` after verification; retain the source notices.
+This provides alias recognition without implementing Script matching.
+
 ## Results
 
 Two complete runs produced byte-identical Rust and comparison streams. Both
