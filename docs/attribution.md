@@ -399,3 +399,15 @@ and new source tests are written afresh (synthetic fixtures, not light-cljs
 output); no QuickJS runtime is linked or wrapped. Identifiers retain their
 existing Unicode 16.0.0 policy; imported snapshot Unicode decoders and full
 collation/break tables are not introduced by this pellet.
+
+## Regular expression matching (clj-quickjs-187)
+
+`src/regexp/matcher/tests.rs::upstream_rows` adapts the matching assertions
+from `research/quickjs/tests/test_builtin.js::test_regexp` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice precedes that test.
+Other matcher tests are synthetic fixtures, not light-cljs output.
+`lre_exec`, `lre_exec_backtrack` and `re_parse_term` in
+`research/quickjs/libregexp.c` were consulted as semantic references at
+the same revision. The Rust compiler and matcher were written independently;
+no upstream implementation was copied or linked.

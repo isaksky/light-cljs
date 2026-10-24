@@ -4484,10 +4484,10 @@ Scoped modifiers permit an empty removal list when additions are present.
 Quantifier counts have an explicit u64 implementation limit and overflow
 returns a positioned error. Flags `dgimsuvy` are validated, but v patterns
 and u-mode property escapes fail explicitly pending clj-quickjs-194/-192.
-This parser introduces no matching or JavaScript RegExp objects. Literal-site
+This parser introduces no JavaScript RegExp objects. Literal-site
 early errors must reuse it in clj-quickjs-56. The matcher in clj-quickjs-187
-will be a leaf native with a documented step limit and a catchable error
-on exhaustion, per the engine policy decision.
+is a leaf operation with a documented step limit and an error on exhaustion,
+per the engine policy decision.
 
 ## BigInt primitives (clj-quickjs-196)
 
@@ -4800,3 +4800,47 @@ test text was adapted. Promise settlement/reactions, async resumes, WeakRef
 kept-object clearing, FinalizationRegistry producers and timers are deferred.
 Future unhandled-rejection checks must run only at quiescence after jobs and
 timers drain, rather than after each job; this pellet adds no rejection check.
+
+
+
+## Regular expression matcher (clj-quickjs-187)
+
+The in-tree matcher compiles the arena with an explicit build stack into
+immutable Rust bytecode. `regexp::matcher::compile` rejects lookbehind,
+Unicode and ignore-case execution explicitly. Non-Unicode backreferences
+are supported, with an undefined/forward capture matching the empty string.
+Scoped m/s modifiers are compiled into the consuming/assertion instructions.
+The compiler checks arena edges/indices and computes each atom's capture span
+bottom-up for quantified capture reset. Compilation and destruction never
+recurse with pattern depth.
+
+`exec(&Program, &[u16], start)` returns
+`Result<Option<Captures>, MatchError>` rather than losing resource failures
+inside `Option`. Captures are optional UTF-16 offset ranges; group zero and
+the match index identify the whole match. The engine searches from start,
+or only at start for sticky mode. g/d have no extra core effect; JavaScript
+RegExp objects, lastIndex and error-value construction belong to the object
+layer (clj-quickjs-188).
+
+The machine uses an explicit backtrack stack, capture/repetition registers,
+and an undo trail. Choices save offsets and a trail cursor rather than
+copying every capture. Repetition instructions implement greedy/lazy bounds,
+clear the atom's captures on entry, and fail an empty iteration once the
+minimum was already satisfied, permitting backtracking inside the atom.
+Lookahead boundary frames share the same machine and budget. Success drops
+internal choices atomically and restores the input position; positive
+captures persist, while negative assertions rewind their trail on both
+success and failure. Nested assertions never invoke the matcher recursively.
+
+Policy: a match is a bounded leaf native, with no JavaScript callbacks,
+yield, retained native stack or collector edges. The named constant
+`MAX_MATCH_STEPS = 1_000_000` bounds one entire search across candidate
+positions. Instructions, stack operations, capture writes/restores,
+class-member checks and individual backreference comparisons consume work.
+Register initialization and result extraction also consume allowance.
+Explicit stack/trail growth is bounded by this allowance. Exhaustion returns
+`MatchError::LimitExceeded`; its display identifies RangeError, and the future
+RegExp native must turn it into a catchable JavaScript RangeError. It must
+never translate this failure to no match. Compilation has its own allowance
+of the same size, bounding program expansion and validation work. These
+limits are implementation policy, so even long linear matches can fail.

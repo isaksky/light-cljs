@@ -2741,7 +2741,7 @@ groups, alternatives, assertions/lookaround, captures and forward references,
 quantifiers, classes, Annex B escapes and strict u-mode parsing, preserving
 lone surrogates. Run `cargo test --lib regexp::parse::tests::`.
 
-Deferred: JavaScript RegExp objects and matching, literal-site early errors,
+Deferred: JavaScript RegExp objects, literal-site early errors,
 v grammar and Unicode property escapes. Quantifier counts above u64::MAX
 return an explicit error. See `docs/architecture.md`, "Regular expression
 pattern IR", and `docs/grammar.md` for the API boundary.
@@ -2822,3 +2822,22 @@ kept-object clearing. Details: `docs/architecture.md`, "Task-owned jobs".
 Deferred: JavaScript-visible enqueue APIs, promise reaction producers, async
 resumes, FinalizationRegistry producers, WeakRef kept-object clearing, timers
 and rejection reporting. The queue itself adds none of those built-ins.
+
+### Regular expression matcher (clj-quickjs-187)
+
+Supported: `regexp::matcher::compile(&Pattern)` produces immutable bytecode;
+`exec(&Program, &[u16], start)` searches UTF-16 code units and returns
+`Result<Option<Captures>, MatchError>`. Captures include group zero and use
+code-unit ranges, with `None` for undefined groups. Matching supports greedy
+and lazy quantifiers, iteration capture reset, alternatives, atomic positive
+and negative lookahead, backreferences, classes, assertions, scoped m/s,
+multiline/dotAll, and sticky searches. Run
+`cargo test --lib regexp::matcher::tests:: -- --test-threads=3`.
+
+Each search is bounded by `MAX_MATCH_STEPS = 1_000_000` across all candidate
+positions, assertions and backtracks. Exhaustion returns `LimitExceeded`
+(the RegExp object layer must throw a catchable RangeError). Native stack
+depth is independent of pattern depth and input length. Compilation has its
+own allowance of the same size. Lookbehind, ignore-case (including scoped i),
+and Unicode matching fail explicitly. JavaScript RegExp objects/methods and
+literal execution remain deferred; global lastIndex belongs to that layer.

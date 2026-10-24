@@ -469,9 +469,9 @@ checks left to later stages:
 - **Regular expressions** (clj-quickjs-55): literals produce positioned
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
-  Pattern early errors are clj-quickjs-56. RegExp objects and matching are
-  deferred (clj-quickjs-187–194); the standalone pattern parser is available
-  (clj-quickjs-186). Compilation rejects literals explicitly
+  Pattern early errors are clj-quickjs-56. RegExp objects and methods are
+  deferred (clj-quickjs-188–194); standalone parsing and bounded non-Unicode
+  matching are available (clj-quickjs-186/-187). Compilation rejects literals explicitly
   with `Unsupported` naming RegExp objects.
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
@@ -3150,7 +3150,7 @@ Quantifier counts above u64::MAX fail explicitly.
 Explicit gaps: v patterns and Unicode property escapes are deferred to
 clj-quickjs-194/-192. Pattern validation at literal sites remains
 clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects,
-matching, flag-dependent matching and methods remain clj-quickjs-187–193.
+Unicode/case-insensitive matching and methods remain clj-quickjs-188–194.
 Compiling a literal continues to report `Unsupported` for RegExp objects.
 
 ### BigInt values and literals (clj-quickjs-196)
@@ -3250,3 +3250,28 @@ kept-object clearing and host timers are not implemented by this queue.
 Cross-task delivery transfers shareable arguments to an owner-registered
 callable without running JavaScript during publication. Future rejection
 reporting waits for quiescence after jobs and timers, not individual jobs.
+
+### Regular expression matcher API (clj-quickjs-187)
+
+Execution: the Rust-only `regexp::matcher::compile(&Pattern)` and
+`exec(&Program, input: &[u16], start)` execute non-Unicode pattern IR. The
+result is `Result<Option<Captures>, MatchError>`: a match, no match, or an
+explicit failure. All ranges and the match index count UTF-16 code units;
+group zero is the full match and undefined captures are `None`. Greedy/lazy
+bounded and unbounded repeats follow RepeatMatcher's empty-iteration check
+and clear captures inside the atom before each iteration. Positive lookahead
+retains captures; negative lookahead discards them. Lookahead is atomic.
+Backreferences (including forward/undefined and duplicate-name candidates),
+classes/escapes, `^`, `$`, `\b`, `\B`, dot, and scoped m/s are supported.
+The m flag changes line assertions, s changes dot, and y restricts the search
+to exactly `start`. g/d do not change the core search; capture ranges are
+always available. A start beyond the input length returns no match.
+
+Explicit gaps: lookbehind, Unicode matching and ignore-case matching
+(including scoped i) return `MatchError::Unsupported` at compilation.
+`MAX_MATCH_STEPS = 1_000_000` bounds a complete search, including assertions,
+backtracking and comparisons; exhaustion returns `LimitExceeded`, never
+`None`. The later RegExp object layer must translate it to a catchable
+RangeError. Compilation has an independent allowance of the same size.
+There are no JavaScript RegExp objects, exec/test methods or lastIndex updates
+in this layer, and literal execution remains unsupported.

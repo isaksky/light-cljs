@@ -1,7 +1,8 @@
-//! ECMAScript regular expression pattern parsing, independent of the VM.
+//! ECMAScript regular expression parsing and bounded matching, independent of the VM.
 //!
-//! Matching and JavaScript RegExp objects are separate layers. Patterns and
+//! JavaScript RegExp objects are a separate layer. Patterns and
 //! diagnostics use UTF-16 offsets, including when the input has lone surrogates.
 
 pub mod ir;
+pub mod matcher;
 pub mod parse;
