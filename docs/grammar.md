@@ -54,7 +54,9 @@ property references `o.p` and `o[k]` (clj-quickjs-124) parses and executes;
 The `in` operator (clj-quickjs-74) parses and executes.
 `var` statements (clj-quickjs-94) parse and execute, with function-level
 hoisting; top-level function declarations of a script or function body
-are var-scoped. `"use strict"` directive prologues are interpreted and
+are var-scoped. `var` heads of `for` and for-in statements
+(`for (var i = 0; ;)`, `for (var k in o)`, clj-quickjs-89) parse and
+execute. `"use strict"` directive prologues are interpreted and
 non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
 "Directive prologues and strictness").
 
@@ -114,11 +116,12 @@ IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
 WhileStatement      = "while" "(" Expression ")" Statement
 DoWhileStatement    = "do" Statement "while" "(" Expression ")" [ ";" ]   (* ";" always optional *)
 ForStatement        = "for" "(" [ ForInit ] ";" [ Expression ] ";" [ Expression ] ")" Statement
-ForInit             = Expression[~In] | ( "let" | "const" ) Declarator[~In] { "," Declarator[~In] }
+ForInit             = Expression[~In] | ( "let" | "const" | "var" ) Declarator[~In] { "," Declarator[~In] }
+                      (* "var": clj-quickjs-89 *)
                       (* [~In]: a top-level `in` ends it, ECMAScript's [In] parameter *)
 ForInStatement      = "for" "(" ForInHead "in" Expression ")" Statement   (* clj-quickjs-85 *)
 ForInHead           = LeftHandSideExpression   (* an identifier, possibly parenthesized *)
-                    | ( "let" | "const" ) BindingIdentifier
+                    | ( "let" | "const" | "var" ) BindingIdentifier
 SwitchStatement     = "switch" "(" Expression ")" "{" { CaseClause } "}"   (* at most one "default" *)
 CaseClause          = ( "case" Expression | "default" ) ":" { StatementListItem }
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
@@ -247,8 +250,8 @@ Notes on the grammar:
 - `VariableStatement` (clj-quickjs-94) is a Statement, so it may also be
   the body of `if`/`else`/`while`/`do`/`for` or of a labelled statement
   (`if (x) var y = 1;`). Its names are bindings of the enclosing function
-  or script, wherever the statement is (see "Execution"); `var` in a `for`
-  head is not supported yet.
+  or script, wherever the statement is (see "Execution"), as are those of a
+  `var` head of a `for` or for-in statement (clj-quickjs-89).
 - Function parameter names must be distinct (strict mode, and in
   ECMAScript any list with a default value; the subset requires it in
   sloppy functions too).
@@ -313,9 +316,12 @@ Notes on the grammar:
   clj-quickjs-260).
 - `const` requires an initializer.
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
-  scoped to the whole loop (a `const` needs an initializer here too).
-  For-of heads (`for (let x of y)`) and `var` heads (`for (var i = 0; ;)`,
-  `for (var k in o)`, clj-quickjs-89) are rejected as `Unsupported`.
+  scoped to the whole loop (a `const` needs an initializer here too); a
+  `var` head (clj-quickjs-89) declares bindings of the enclosing function
+  or script. For-of heads (`for (let x of y)`, `for (var k of o)`) are
+  rejected as `Unsupported`. An initializer in a for-in `var` head
+  (`for (var k = 1 in o)`) is `Invalid` as for `let`/`const`; the
+  non-strict `var` form (Annex B) is clj-quickjs-90.
 - `ForInStatement` (clj-quickjs-85): the head's first element (an
   expression, or the initializers of a declaration list) is parsed with
   `[~In]` (clj-quickjs-74), so a top-level `in` after it starts a for-in
@@ -371,7 +377,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var` as a `for` or for-in head, for-of loops, a property as a for-in target (`for (a.b in o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
+| for-of loops (`var` heads included), a property as a for-in target (`for (a.b in o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `this` at the script top level (clj-quickjs-104) and inside an arrow function, its parameters included (lexical `this`, clj-quickjs-98) | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
@@ -390,7 +396,7 @@ Every form below is rejected where it starts. Error kinds:
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, an initializer or more than one binding in a for-in head (`for (let k = 1 in o)`, `for (let a, b in o)`), a for-in target that is not a reference (`for (1 in o)`), invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, an initializer or more than one binding in a for-in head (`for (let k = 1 in o)`, `for (let a, b in o)`, `for (var k = 1 in o)` in strict code), a for-in target that is not a reference (`for (1 in o)`), invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -808,6 +814,7 @@ Executed, with JavaScript semantics:
 | `for (init; test; update) body` (clj-quickjs-81) | runs the init once (an expression's value is discarded), then repeats: evaluates the test (absent: true) and stops when it is falsy, runs the body, then the update (its value discarded) |
 | `for (let ...; ...; ...)`, `for (const ...; ...; ...)` | the head's bindings are scoped to the loop and in their temporal dead zone during their own initializers (`for (let i = i; ;)` is a ReferenceError); each iteration has its own copy of the `let` bindings (CreatePerIterationEnvironment, before the first test and before each update), so a closure created in an iteration keeps that iteration's binding, and the next iteration starts from the values it ended with, including assignments made by closures; updating a `const` head is a TypeError |
 | `for (k in o) body`, `for (let k in o)`, `for (const k in o)` (clj-quickjs-85) | evaluates `o` once (with a `let`/`const` head's binding in its temporal dead zone: `for (let k in k)` is a ReferenceError), then runs the body once per own enumerable string key of `o`, snapshotted when the loop starts, in OrdinaryOwnPropertyKeys order (array indices ascending, then the other keys in creation order; as `Object.keys`, clj-quickjs-123), each key a string; before each key it checks that the key is still an own enumerable property of `o` and skips it otherwise (so a property deleted or made non-enumerable before it is reached is not visited), and keys added during the loop are not visited. Inherited properties are not visited yet (clj-quickjs-86). `null`, `undefined`, numbers and booleans run zero iterations, a string visits its indices `"0"`, `"1"`, ...; enumerating an object of another task fails with `ForeignObject`. An identifier head is assigned each key as by `k = key` (a `const` binding is a TypeError, an undeclared name a ReferenceError, at the name); a `let`/`const` head is a fresh binding per iteration scoped to the loop, so closures keep their iteration's key. `break`, `continue`, labels, `return` and exceptions leave or continue the loop as in other loops (through finally blocks too). The enumerator is task-owned frame state (`crate::vm::keys`): a yield, a dependency wait, a collection or migration inside the loop resumes it exactly. Lowered to `for_in_start` and `for_in_next` (new, `0x63`, `0x64`) with the enumerator in a scratch local |
+| `for (var ...; ...; ...)`, `for (var k in o)` (clj-quickjs-89) | the head declares `var` bindings of the enclosing function or script, hoisted like a `var` statement's (readable, `undefined`, before the loop; one binding per name, shared with other `var`s and a parameter of that name); each initializer of a `for` head is an assignment run once, before the first test, and a for-in `var` head is assigned each key as by `k = key`; there is no per-iteration copy, so every closure created in the body shares the one binding and sees its latest value (closures made by `for (var i = 0; i < 3; i++)` all return 3 afterwards), and the binding keeps its last value after the loop (`for (var k in {x: 1, y: 2}) {}` leaves `k` `"y"`) |
 | `break`, `continue`; `break L`, `continue L`, `L: body` (clj-quickjs-82) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again (in a `for` loop, runs the update first); `break L` leaves the enclosing statement labelled `L` (a loop or any other statement, continuing after it) and `continue L` continues the enclosing loop labelled `L` (directly or through a label set `L: M: while ...`), leaving every loop in between; an unlabelled `break`/`continue` passes by labelled statements that are not loops; leaving a `try` block pops its catch handler, so a later exception is not caught by it; leaving a `try` block or catch body runs its finally block first (innermost first, clj-quickjs-79), and a finally block that completes abruptly (`return`, `throw`, `break`, `continue`) replaces the jump; a jump out of a finally block discards its pending completion (return value, exception or jump) |
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs. At the top level of a script or function body they are var-scoped (clj-quickjs-94): one may repeat a parameter, a `var` or another function declaration there, which all share one binding, and the last declaration wins (`function g() { return 1; } function g() { return 2; } g()` is 2; `var h; function h() {}` leaves `h` the function). In a block they are lexical (strict mode) |
@@ -1713,8 +1720,19 @@ for (1 in o) {}
 for (a.b in o) {}
 ```
 
-```js reject Unsupported 1:6
-for (var i = 0; i < 3; i++) {}
+```js accept
+// `var` heads (clj-quickjs-89): one function binding, readable before and
+// after the loop; a for-in `var` head keeps the last key.
+function g() {
+  const before = i;
+  for (var i = 0, j; i < 3; i++) j = i;
+  for (var k in {x: 1, y: 2}) {}
+  return before === undefined && i === 3 && j === 2 && k === "y";
+}
+```
+
+```js reject Invalid 1:16
+for (var k = 1 in o) {}
 ```
 
 ```js compile-reject Invalid 1:16
@@ -1877,6 +1895,14 @@ reuses the function's one variable of that name and is an error inside a
 lexical declaration's scope, except a catch parameter's) and
 `instantiate_hoisted_definitions` (function declarations of the body
 assigned at entry, so the last of the same name wins).
+For `var` heads of `for` and for-in statements (clj-quickjs-89): the
+`TOK_FOR` case of `js_parse_statement_or_decl` (a `var` head declared with
+`js_parse_var` without the `in` flag) and `js_parse_for_in_of` ("a
+declaration in the head of a for-in loop can't have an initializer"
+outside the non-strict `var` case). The second group of `test_for` and the
+seventh group of `test_for_in` of `research/quickjs/tests/test_loop.js`
+are adapted in `tests/js_source.rs` `var_heads_in_for_loops` with the
+notice.
 For default parameter values (clj-quickjs-100): `js_parse_function_decl2`
 (`has_parameter_expressions`: a scope of its own for the parameters, a
 default evaluated when `OP_get_arg` is `undefined`, the body's `var`s

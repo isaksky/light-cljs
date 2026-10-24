@@ -156,8 +156,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident,
-    LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
+    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
+    Ident, LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
     SwitchCase, TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
@@ -981,6 +981,22 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// The declarators of a `var` statement or `for` head: the bindings
+    /// exist from function entry (`undefined`); each initializer is an
+    /// assignment, and `var x;` does nothing.
+    fn var_declarators(&mut self, declarators: &[Declarator]) -> Result<(), SyntaxError> {
+        for d in declarators {
+            self.check_var_not_shadowed(&d.name)?;
+            if let Some(init) = &d.init {
+                self.expr(init)?;
+                let access = self.resolve(&d.name.name);
+                self.store(access, d.name.span)?;
+                self.out().op(Opcode::Pop, d.span);
+            }
+        }
+        Ok(())
+    }
+
     /// The binding `name` declared in the innermost scope.
     fn local(&self, name: &Ident) -> Result<Binding, SyntaxError> {
         self.cur()
@@ -1536,19 +1552,7 @@ impl<'s> Lowerer<'s> {
                 }
             }
             StmtKind::Lexical(decl) => self.declarators(decl)?,
-            // The bindings exist from function entry (`undefined`); each
-            // initializer is an assignment, and `var x;` does nothing.
-            StmtKind::Var(declarators) => {
-                for d in declarators {
-                    self.check_var_not_shadowed(&d.name)?;
-                    if let Some(init) = &d.init {
-                        self.expr(init)?;
-                        let access = self.resolve(&d.name.name);
-                        self.store(access, d.name.span)?;
-                        self.out().op(Opcode::Pop, d.span);
-                    }
-                }
-            }
+            StmtKind::Var(declarators) => self.var_declarators(declarators)?,
             StmtKind::Return(value) => {
                 if self.cur().completion.is_some() {
                     // The parser rejects this; kept as a guard.
@@ -1733,6 +1737,9 @@ impl<'s> Lowerer<'s> {
                 }
                 self.declarators(decl)?;
             }
+            // `var` bindings are the function's, declared at its entry: one
+            // binding for the whole loop, never copied per iteration.
+            Some(ForInit::Var(declarators)) => self.var_declarators(declarators)?,
             None => {}
         }
         let start = self.out().label();
@@ -1792,7 +1799,8 @@ impl<'s> Lowerer<'s> {
     /// local is re-initialized (closures copy it by value only when it is
     /// never assigned). The body follows the initialization, and `continue`
     /// re-enters before it, so the static TDZ decision holds. An identifier
-    /// head is assigned each key exactly as `k = key` would be.
+    /// head, or a `var` head (the function's binding, clj-quickjs-89), is
+    /// assigned each key exactly as `k = key` would be.
     #[inline(never)]
     fn for_in_statement(
         &mut self,
@@ -1801,6 +1809,9 @@ impl<'s> Lowerer<'s> {
         body: &Stmt,
         span: Span,
     ) -> Result<(), SyntaxError> {
+        if let ForInHead::Var(name) = head {
+            self.check_var_not_shadowed(name)?;
+        }
         self.reset_completion(span);
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
@@ -1847,6 +1858,13 @@ impl<'s> Lowerer<'s> {
                 let at = self.name_span(&name.name, name.span);
                 let access = self.resolve_reference(&name.name);
                 self.store(access, at)?;
+                self.out().op(Opcode::Pop, name.span);
+            }
+            // The function's `var` binding, declared at its entry: one
+            // binding for the whole loop, assigned each key.
+            ForInHead::Var(name) => {
+                let access = self.resolve(&name.name);
+                self.store(access, name.span)?;
                 self.out().op(Opcode::Pop, name.span);
             }
         }
@@ -3215,6 +3233,18 @@ fn var_names<'a>(body: &'a [Stmt], out: &mut Vec<&'a Ident>) {
 fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
     match &stmt.kind {
         StmtKind::Var(declarators) => out.extend(declarators.iter().map(|d| &d.name)),
+        StmtKind::For { init, body, .. } => {
+            if let Some(ForInit::Var(declarators)) = init {
+                out.extend(declarators.iter().map(|d| &d.name));
+            }
+            var_names_in(body, out);
+        }
+        StmtKind::ForIn { head, body, .. } => {
+            if let ForInHead::Var(name) = head {
+                out.push(name);
+            }
+            var_names_in(body, out);
+        }
         StmtKind::Block(body) => var_names(body, out),
         StmtKind::If {
             consequent,
@@ -3228,8 +3258,6 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         }
         StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. }
-        | StmtKind::For { body, .. }
-        | StmtKind::ForIn { body, .. }
         | StmtKind::Labelled { body, .. } => var_names_in(body, out),
         StmtKind::Try {
             block,

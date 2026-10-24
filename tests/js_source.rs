@@ -445,6 +445,9 @@ fn script_completion_value_follows_javascript() {
         ValueView::Undefined
     );
     assert_eq!(num("for (let i = 0; i < 3; i = i + 1) { i * 2; }"), 4.0);
+    // A `var` head (clj-quickjs-89) has no completion value either.
+    assert_eq!(eval("5; for (var i = 0; i < 0; ) {}"), ValueView::Undefined);
+    assert_eq!(num("for (var i = 7; i < 9; i++) i;"), 8.0);
     assert_eq!(
         num("for (let i = 0; i < 3; i = i + 1) { 9; continue; }"),
         9.0
@@ -1322,6 +1325,191 @@ fn for_in_over_own_properties() {
         ),
         6.0
     );
+}
+
+/// `var` heads of `for` and `for`-`in` statements (clj-quickjs-89).
+/// `TEST_FOR_VAR` is the second group of `test_for`, and `TEST_FOR_IN_VAR`
+/// is adapted from the seventh group of `test_for_in`, in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution). Modified: the keys are
+/// collected with string `+` instead of `tab.push` and `tab.toString()`,
+/// and the asserted condition is the script's completion value. The other
+/// scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn var_heads_in_for_loops() {
+    const TEST_FOR_VAR: &str = "
+        var c;
+        c = 0;
+        for(var j = 0; j < 3; j++) {
+            c++;
+        }
+        c === 3 && j === 3";
+    assert_eq!(eval(TEST_FOR_VAR), ValueView::Bool(true));
+    // The same loop inside a function, under a 3-instruction budget: it
+    // yields inside the loop and resumes there with the same result.
+    let looping = exe(
+        "function f() { var c; c = 0; for (var j = 0; j < 3; j++) { c++; } return c === 3 && j === 3; } f()",
+    );
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 1, "{yields} yields");
+
+    // Hoisting: the binding exists and is `undefined` before the loop, in a
+    // script and in a function, also when the loop never runs its head.
+    assert_eq!(
+        eval("const before = j; for (var j = 0; j < 3; j = j + 1) {} before"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num(
+            "function f() { const before = j; for (var j = 5; j < 7; j = j + 1) {} \
+             return before === undefined ? j : -1; } f()"
+        ),
+        7.0
+    );
+    assert_eq!(
+        eval("function f(go) { if (go) for (var k = 1; ; ) break; return k; } f(false)"),
+        ValueView::Undefined
+    );
+    // Several declarators; one without an initializer keeps its value.
+    assert_eq!(
+        num("var b = 4; for (var a = 0, b; a < 2; a = a + 1) b = b * 10; a * 1000 + b"),
+        2400.0
+    );
+    // The head's `var` is the function's binding: assignments in the body,
+    // in nested blocks and through a closure all reach it, and a later loop
+    // with the same `var` head reuses it.
+    assert_eq!(
+        num(
+            "function f() { for (var i = 0; i < 10; i = i + 1) { { if (i === 3) break; } } \
+             for (var i = i * 2; i < 100; i = i * 10) {} return i; } f()"
+        ),
+        600.0
+    );
+    assert_eq!(
+        num("function f(i) { for (var i = i + 1; i < 5; i = i + 1) {} return i; } f(2)"),
+        5.0
+    );
+    // No per-iteration copy: closures created in the body all share the one
+    // binding and see its final value (with a `let` head each keeps its own
+    // iteration's value: `for_loops`).
+    assert_eq!(
+        num("const b = __rt.vectorBuilder();
+             for (var i = 0; i < 3; i = i + 1) { __rt.builderConj(b, function () { return i; }); }
+             const v = __rt.freeze(b);
+             __rt.nth(v, 0)() * 100 + __rt.nth(v, 1)() * 10 + __rt.nth(v, 2)()"),
+        333.0
+    );
+    // A closure that assigns the binding steers the loop.
+    assert_eq!(
+        num(
+            "let n = 0;
+             for (var i = 0; i < 10; i = i + 1) { const skip = function () { i = i + 2; }; skip(); n = n + 1; }
+             n * 100 + i"
+        ),
+        412.0
+    );
+    // `break` and `continue` leave the binding with its current value.
+    assert_eq!(
+        num("for (var i = 0; ; i = i + 1) { if (i < 4) continue; break; } i"),
+        4.0
+    );
+
+    // For-in `var` heads: each key is assigned to the one function-scoped
+    // binding, which keeps the last key after the loop.
+    const TEST_FOR_IN_VAR: &str = r#"
+        var tab;
+        tab = "";
+        for(var j in {x:1, y: 2}) {
+            tab = tab + j + ",";
+        }
+        tab === "x,y,""#;
+    assert_eq!(eval(TEST_FOR_IN_VAR), ValueView::Bool(true));
+    assert_eq!(
+        eval(r#"for (var k in {x:1, y:2}) {} k === "y""#),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        string(r#"function f() { for (var k in {x:1, y:2}) {} return k; } f()"#),
+        "y"
+    );
+    // Hoisted: `undefined` before the loop, and after a loop over no keys.
+    assert_eq!(
+        eval(r#"const before = k; for (var k in {a: 1}) {} before === undefined && k === "a""#),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("function f() { for (var k in {}) {} return k; } f()"),
+        ValueView::Undefined
+    );
+    // `break` leaves the binding at the current key; an assignment in the
+    // body does not change the next key.
+    assert_eq!(
+        string(r#"for (var k in {a: 1, b: 2, c: 3}) { if (k === "b") break; } k"#),
+        "b"
+    );
+    assert_eq!(
+        string(r#"let s = ""; for (var k in {a: 1, b: 2}) { s = s + k; k = "z"; } s + k"#),
+        "abz"
+    );
+    // No per-iteration copy: closures created in the body all see the last
+    // key (with a `let` head each keeps its own: `for_in_over_own_properties`).
+    assert_eq!(
+        string(
+            "const b = __rt.vectorBuilder();
+             for (var k in {a: 1, b: 2, c: 3}) { __rt.builderConj(b, function () { return k; }); }
+             const v = __rt.freeze(b);
+             __rt.nth(v, 0)() + __rt.nth(v, 1)() + __rt.nth(v, 2)()"
+        ),
+        "ccc"
+    );
+    // A for-in `var` loop inside a function, under a 3-instruction budget:
+    // it yields inside the loop and resumes there with the same result.
+    let looping = exe(
+        r#"function f() { var s = ""; for (var k in {a: 1, b: 2, c: 3}) { s = s + k; } return s + k; } f()"#,
+    );
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.string().expect("a string value").to_string(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, "abcc");
+    assert!(yields >= 1, "{yields} yields");
 }
 
 /// Labelled statements and labelled `break`/`continue` (clj-quickjs-82).

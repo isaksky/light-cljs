@@ -68,6 +68,7 @@ impl Stmt {
                 let init = match init {
                     Some(ForInit::Expr(e)) => e.height,
                     Some(ForInit::Lexical(decl)) => decl.height(),
+                    Some(ForInit::Var(declarators)) => declarators_height(declarators),
                     None => 0,
                 };
                 init.max(test.as_ref().map_or(0, |e| e.height))
@@ -217,6 +218,10 @@ pub enum ForInit {
     Expr(Expr),
     /// `for (let i = 0, j; ...)` or `for (const k = 1; ...)`
     Lexical(LexicalDecl),
+    /// `for (var i = 0, j; ...)` (clj-quickjs-89): the enclosing function's
+    /// (or script's) `var` bindings, as a `var` statement there declares;
+    /// one binding for the whole loop, not one per iteration.
+    Var(Vec<Declarator>),
 }
 
 /// The left side of a `for`-`in` head (clj-quickjs-85).
@@ -227,6 +232,10 @@ pub enum ForInHead {
     /// `for (let k in o)` or `for (const k in o)`: a new binding per
     /// iteration, initialized to its key.
     Lexical(LexicalKind, Ident),
+    /// `for (var k in o)` (clj-quickjs-89): `k` is a `var` binding of the
+    /// enclosing function (or script), one for the whole loop; each key is
+    /// assigned to it.
+    Var(Ident),
 }
 
 /// `catch (param) { body }` or `catch { body }`.

@@ -358,6 +358,9 @@ fn render_stmt(s: &Stmt) -> String {
             let init = match init {
                 Some(super::ast::ForInit::Expr(e)) => render_expr(e),
                 Some(super::ast::ForInit::Lexical(decl)) => render_lexical(decl),
+                Some(super::ast::ForInit::Var(declarators)) => {
+                    render_declarators("var", declarators)
+                }
                 None => "_".into(),
             };
             let part = |e: &Option<Expr>| e.as_ref().map_or("_".into(), render_expr);
@@ -377,6 +380,7 @@ fn render_stmt(s: &Stmt) -> String {
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Const, name) => {
                     format!("(const {})", name.name)
                 }
+                super::ast::ForInHead::Var(name) => format!("(var {})", name.name),
             };
             format!(
                 "(for-in {head} {} {})",
@@ -886,12 +890,11 @@ fn for_statements() {
     rejects_with("for (const k; ;) {}", Invalid, 1, 12, "missing initializer");
     rejects_with("for (;;) let x;", Invalid, 1, 10, "cannot be the body");
     rejects("for (;;) function f() {}", Invalid, 1, 10);
-    // For-of and `var` heads are separate features (for-in heads:
-    // `for_in_heads`).
+    // For-of heads are a separate feature (for-in heads: `for_in_heads`;
+    // `var` heads: `for_var_heads`).
     rejects_with("for (x of y) {}", Unsupported, 1, 1, "`for`-`of`");
     rejects_with("for (let x of y) {}", Unsupported, 1, 1, "`for`-`of`");
     rejects_with("for (a.b of y) {}", Unsupported, 1, 1, "`for`-`of`");
-    rejects_with("for (var i = 0; ;) {}", Unsupported, 1, 6, "`var`");
     rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
     // level of the init, so an `in` after any init starts a for-in head
@@ -1044,8 +1047,8 @@ fn for_in_heads() {
     rejects("for (f() in o) {}", Invalid, 1, 6);
     rejects("for (undefined in o) {}", ReservedWord, 1, 6);
     rejects("for (let let in o) {}", ReservedWord, 1, 10);
-    // Property targets (clj-quickjs-87) and `var` heads (clj-quickjs-89)
-    // are separate features.
+    // Property targets (clj-quickjs-87) are a separate feature (`var`
+    // heads: `for_var_heads`).
     rejects_with(
         "for (a.b in o) {}",
         Unsupported,
@@ -1061,7 +1064,6 @@ fn for_in_heads() {
         "property references",
     );
     rejects("for (__rt.count in o) {}", ReservedWord, 1, 6);
-    rejects_with("for (var k in o) {}", Unsupported, 1, 6, "`var`");
     // The head is parenthesized; a declaration cannot be the body.
     rejects("for (k in o {}", UnexpectedToken, 1, 13);
     rejects("for (let k in) {}", UnexpectedToken, 1, 14);
@@ -1846,6 +1848,112 @@ fn var_statements() {
         "function a() {} var a;",
         "var a; function a() {}",
         "try {} catch (e) { var e = 1; }",
+    ] {
+        super::compile_script("v", src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+    }
+}
+
+/// `var` heads of `for` and `for`-`in` statements (clj-quickjs-89). A
+/// declarator's initializer is parsed with `[~In]` (clj-quickjs-74), so an
+/// initialized declaration before `in` is a for-in head with an
+/// initializer: an early error in strict code (the sloppy-mode form is
+/// clj-quickjs-90).
+#[test]
+fn for_var_heads() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    assert_eq!(
+        ast("for (var i = 0, j; i < 1; ) ;"),
+        "(for (var (i 0) (j)) (< i 1) _ (empty))"
+    );
+    assert_eq!(
+        ast("for (var i = 0; i < 3; i++) var k = i;"),
+        "(for (var (i 0)) (< i 3) (post++ i) (var (k i)))"
+    );
+    assert_eq!(ast("for (var x;;) {}"), "(for (var (x)) _ _ (block))");
+    assert_eq!(
+        ast("for (var f = a ? b : c, g = function () { return 1; };;) ;"),
+        "(for (var (f (? a b c)) (g (function - () (return 1)))) _ _ (empty))"
+    );
+    // `in` inside parentheses, arguments or a conditional's middle operand
+    // is the operator again.
+    for (src, init) in [
+        ("for (var a = (b in c);;) ;", "(var (a (in b c)))"),
+        ("for (var a = f(b in c);;) ;", "(var (a (call f (in b c))))"),
+        (
+            "for (var a = x ? b in c : d;;) ;",
+            "(var (a (? x (in b c) d)))",
+        ),
+    ] {
+        assert_eq!(ast(src), format!("(for {init} _ _ (empty))"), "{src}");
+    }
+    // A for-in `var` head: exactly one binding, without an initializer;
+    // the `in` of a nested for-in head is still found.
+    assert_eq!(ast("for (var k in o) ;"), "(for-in (var k) o (empty))");
+    assert_eq!(
+        ast("for (var k in a in b) { var j; }"),
+        "(for-in (var k) (in a b) (block (var (j))))"
+    );
+    rejects_with(
+        "for (var k = 1 in o) ;",
+        Invalid,
+        1,
+        16,
+        "without an initializer",
+    );
+    rejects_with(
+        "for (var k = a, j = b in o) ;",
+        Invalid,
+        1,
+        23,
+        "without an initializer",
+    );
+    rejects_with("for (var a, b in o) ;", Invalid, 1, 15, "single binding");
+    rejects_with(
+        "for (var k = () => a in o) ;",
+        Invalid,
+        1,
+        22,
+        "without an initializer",
+    );
+    rejects(
+        "for (var a = function () { for (var k = 1 in o) ; };;) ;",
+        Invalid,
+        1,
+        43,
+    );
+    rejects_with("for (var k of o) ;", Unsupported, 1, 1, "`for`-`of`");
+    rejects("for (var ;;) ;", UnexpectedToken, 1, 10);
+    rejects("for (var a b;;) ;", UnexpectedToken, 1, 12);
+    rejects("for (var let = 1;;) ;", ReservedWord, 1, 10);
+    // A `var` head names the function's binding: the same early errors as
+    // a `var` statement against `let`/`const` in its scope or an enclosing
+    // block.
+    let compile_err = |src: &str| {
+        let e = super::compile_script("v", src).expect_err(src);
+        (e.kind, e.line, e.column)
+    };
+    assert_eq!(compile_err("let i; for (var i = 0;;) ;"), (Invalid, 1, 17));
+    assert_eq!(compile_err("{ let i; for (var i;;) ; }"), (Invalid, 1, 19));
+    assert_eq!(
+        compile_err("for (let i;;) { for (var i;;) ; }"),
+        (Invalid, 1, 26)
+    );
+    assert_eq!(compile_err("let k; for (var k in o) ;"), (Invalid, 1, 17));
+    assert_eq!(
+        compile_err("{ const k = 1; for (var k in o) ; }"),
+        (Invalid, 1, 25)
+    );
+    assert_eq!(
+        compile_err("for (let k in o) { for (var k in o) ; }"),
+        (Invalid, 1, 29)
+    );
+    for src in [
+        "var i; for (var i = 0;;) ;",
+        "for (var i;;) ; for (var i;;) ;",
+        "function f(i) { for (var i = i;;) ; }",
+        "for (var i;;) { var i; }",
+        "var k; for (var k in o) ; for (var k in o) { var k; }",
+        "function f(k) { for (var k in k) ; }",
     ] {
         super::compile_script("v", src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
     }
@@ -3305,6 +3413,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("{}x;", "for (let i = 0; i < 1; i = i + 1) ".repeat(n)),
         format!("{}x;", "for (let k in o) ".repeat(n)),
         format!("{}x;", "for (k in (o)) ".repeat(n)),
+        format!("{}x;", "for (var i = 0; i < 1; i = i + 1) ".repeat(n)),
+        format!("{}x;", "for (var k in o) ".repeat(n)),
         format!("{}{}", "function f() {".repeat(n), "}".repeat(n)),
         format!(
             "x = {}1{};",
@@ -3404,6 +3514,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("for with heads", |n| {
             format!("{}x;", "for (let i = (a, b); (i); i = i + 1) ".repeat(n))
+        }),
+        ("for with var heads", |n| {
+            format!("{}x;", "for (var i = (a, b); (i); i = i + 1) ".repeat(n))
         }),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("void", |n| format!("x = {}f();", "void ".repeat(n))),

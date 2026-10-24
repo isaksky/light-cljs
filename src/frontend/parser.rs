@@ -686,13 +686,13 @@ impl<'a> Parser<'a> {
     /// Expression? `)` Statement, where ForInit is an Expression or a
     /// `let`/`const` declaration list (QuickJS `TOK_FOR` in
     /// `js_parse_statement_or_decl`). Or ForInStatement (clj-quickjs-85):
-    /// `for` `(` (LeftHandSideExpression | (`let` | `const`)
+    /// `for` `(` (LeftHandSideExpression | (`let` | `const` | `var`)
     /// BindingIdentifier) `in` Expression `)` Statement (QuickJS
     /// `js_parse_for_in_of`), told apart from the three-part form after the
     /// head's first element, which is parsed without a top-level `in`
-    /// operator (`[~In]`, [`Self::no_in`], clj-quickjs-74). For-of heads are
-    /// rejected as unsupported at the `for` keyword, `var` heads at the
-    /// `var`.
+    /// operator (`[~In]`, [`Self::no_in`], clj-quickjs-74). ForInit may also
+    /// be a `var` declaration list (clj-quickjs-89). For-of heads are
+    /// rejected as unsupported at the `for` keyword.
     fn parse_for(&mut self) -> PResult<StmtKind> {
         let saved = self.depth;
         self.deeper(cost::BODY)?;
@@ -783,8 +783,8 @@ impl<'a> Parser<'a> {
     /// frame of [`Self::parse_for`], which recurses through the body, stays
     /// small. An expression head and the initializers of a declaration head
     /// are parsed with `[~In]` ([`Self::no_in`]), so an `in` after the
-    /// head's first element starts a for-in head; a `let`/`const` head is a
-    /// for-in head when `in` follows its first name.
+    /// head's first element starts a for-in head; a `let`/`const`/`var` head
+    /// is a for-in head when `in` follows its first name.
     #[inline(never)]
     fn parse_for_head(&mut self) -> PResult<ForHead> {
         let keyword = self.advance()?.span;
@@ -805,7 +805,16 @@ impl<'a> Parser<'a> {
                 Some(ForInit::Lexical(LexicalDecl { kind, declarators }))
             }
             TokenKind::Keyword(Keyword::Var) => {
-                return Err(self.unsupported(self.tok.span, "`var` in a `for` head is"));
+                self.advance()?;
+                let name = self.parse_binding_identifier("a variable name")?;
+                if self.is_keyword(Keyword::In) {
+                    return self.parse_for_in_rest(ForInHead::Var(name));
+                }
+                Some(ForInit::Var(self.parse_declarators(
+                    None,
+                    Some(keyword),
+                    Some(name),
+                )?))
             }
             _ => {
                 let outer = std::mem::replace(&mut self.no_in, true);

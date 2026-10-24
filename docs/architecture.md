@@ -656,7 +656,12 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   value; `var x;` emits nothing. The `var` statement checks the scopes
   between it and the body for a lexical binding of its name (an early
   error), skipping a catch parameter (Annex B). Script-level `var`s are
-  script bindings until the global object (clj-quickjs-104) exists.
+  script bindings until the global object (clj-quickjs-104) exists. A
+  `var` head of a `for` or `for`-`in` statement (clj-quickjs-89)
+  contributes its names to the same body-wide set and lowers like a `var`
+  statement (`var_declarators`; a for-in head is assigned each key) inside
+  the loop's head scope, so it is never part of the per-iteration copy of
+  `let` heads.
 - **Reserved intrinsic binding** (`src/frontend/intrinsics.rs`, the
   contract and table; `docs/grammar.md`, "Reserved intrinsic binding").
   `__rt` is a binding in the scope outside the outermost function. It cannot
@@ -2455,10 +2460,13 @@ local is re-initialized; the object expression sees it uninitialized, so
 the static temporal-dead-zone decision still holds. The parser tells the
 heads apart with the `[~In]` flag of clj-quickjs-74 (`no_in`), set for an
 expression head and for each initializer of a declaration head; a
-`let`/`const` head is a for-in head when `in` follows its first name.
+`let`/`const`/`var` head is a for-in head when `in` follows its first
+name. A `var` head (clj-quickjs-89) names a `var` binding of the function
+(collected by `var_names_in`, so it is hoisted) and is assigned each key
+as an identifier head is; it adds nothing to the loop's own scope.
 Deferred: the prototype-chain walk
-(clj-quickjs-86), property targets (clj-quickjs-87), `var` heads
-(clj-quickjs-89, -90), Proxy traps (clj-quickjs-91).
+(clj-quickjs-86), property targets (clj-quickjs-87), the non-strict
+`for (var k = 1 in o)` (clj-quickjs-90), Proxy traps (clj-quickjs-91).
 
 ## QuickJS references and provenance
 
@@ -2700,7 +2708,7 @@ and Charlie Gordon) and is listed here with its source path and revision:
   7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
   `let` for `var`, `c = c + 1` for `c++` in the body, and the asserted
   condition is the script's completion value; the second group (a `var`
-  head) is left to the `var`-heads pellet. The test carries the full
+  head) is in `var_heads_in_for_loops`. The test carries the full
   notice. The `TOK_FOR` case of `js_parse_statement_or_decl` in
   `research/quickjs/quickjs.c` (the head's scope, `continue` targeting the
   update, the loop variables closed before the first iteration and before
@@ -2715,6 +2723,17 @@ and Charlie Gordon) and is listed here with its source path and revision:
   -90. The test carries the full notice. `js_parse_for_in_of`,
   `build_for_in_iterator`, `js_for_in_start` and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
+- `tests/js_source.rs` `var_heads_in_for_loops` (clj-quickjs-89): the
+  second group of `test_for` (line 61) and the seventh group of
+  `test_for_in` (line 77) of `research/quickjs/tests/test_loop.js`,
+  revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
+  Modified: the for-in keys are collected with string `+` instead of
+  `tab.push` and `tab.toString()`, and the asserted condition is the
+  script's completion value. The test carries the full notice. The
+  `TOK_FOR` case of `js_parse_statement_or_decl` and `js_parse_for_in_of`
+  in `research/quickjs/quickjs.c` (a `var` head parsed without the `in`
+  flag; the initializer early error of a for-in head) were consulted only.
+  No code was copied.
 - String values (clj-quickjs-65): `research/quickjs/quickjs.c`, revision
   7d1c13c5d8f8: `JSString` (8- and 16-bit code-unit storage),
   `JS_STRING_LEN_MAX`, `js_strict_eq2` (string branch), `js_add_slow`

@@ -1414,8 +1414,8 @@ Supported (`cargo test --lib frontend::tests::for_statements`,
 
 Deferred:
 
-- `var` heads (clj-quickjs-89) and for-of (`Unsupported`). (Labelled
-  `for`: clj-quickjs-82; for-in: clj-quickjs-85, below.)
+- For-of (`Unsupported`). (Labelled `for`: clj-quickjs-82; for-in:
+  clj-quickjs-85; `var` heads: clj-quickjs-89, below.)
 
 ### String values (clj-quickjs-65)
 
@@ -1685,7 +1685,7 @@ Deferred:
 
 - Script-level `var`s and function declarations are bindings of the
   script, not properties of a global object (clj-quickjs-104).
-  `var` in a `for` head (clj-quickjs-89) stays `Unsupported`.
+  `var` in a `for` head runs since clj-quickjs-89 (below).
 
 ### Ordinary objects and named properties (clj-quickjs-114)
 
@@ -2193,4 +2193,28 @@ Deferred:
 
 - Inherited properties (clj-quickjs-86), property targets `for (a.b in o)`
   (clj-quickjs-87, `Unsupported`), array regression tests (clj-quickjs-88),
-  `var` heads (clj-quickjs-89, -90), Proxy traps (clj-quickjs-91).
+  the non-strict `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps
+  (clj-quickjs-91). (`var` heads: clj-quickjs-89, below.)
+
+### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
+
+Supported (`cargo test --lib frontend::tests::for_var_heads`,
+`cargo test --test js_source var_heads_in_for_loops`):
+
+- `for (var i = 0, j; test; update)` and `for (var k in o)`: the names are
+  `var` bindings of the enclosing function or script (hoisted, `undefined`
+  before the loop, the last value after it), with no per-iteration copy, so
+  closures created in the body share one binding. A for-in `var` head is
+  assigned each key, as `for (k in o)` is. Upstream `test_for`'s second
+  group and `test_for_in`'s seventh group run from source (the latter
+  adapted, with notice).
+- A declarator's initializer in a `for` head is parsed with `[~In]`, so
+  `for (var k = 1 in o)` and `for (var a, b in o)` are strict-mode early
+  errors (`Invalid`), as for `let`/`const` heads. A `var` head repeating a
+  `let`/`const` name of the script, the function or an enclosing block is
+  `Invalid`, as for a `var` statement.
+
+Deferred:
+
+- The non-strict `for (var k = 1 in o)` (Annex B) is clj-quickjs-90;
+  `for (var k of o)` stays `Unsupported` with for-of.
