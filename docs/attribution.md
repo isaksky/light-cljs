@@ -1129,3 +1129,15 @@ execution. `js_finrec_constructor`, `js_finrec_register`, `js_finrec_unregister`
 `js_finrec_mark`, `finrec_delete_weakref` and `js_finrec_job` in
 `research/quickjs/quickjs.c` were semantic references only, with no C port.
 Other fixtures are synthetic, not light-cljs output.
+
+### Relative time formatting (clj-quickjs-221)
+
+`src/intl/data/relative_time.rs` repacks literal tables and auto-return strings
+from `research/quickjs/intl/relativetimeformat.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, through the pinned data pipeline.
+QuickJS's MIT notice is retained in `src/intl/data/QUICKJS-LICENSE`; the Unicode
+notice for locale data is in `docs/UNICODE-LICENSE`. Runtime code is a Rust-native
+implementation, using that file as a semantic reference. The synthetic
+`intl_relative_time_format` test references the 16 result rows in
+`research/quickjs/tests/test_intl.js::test_relativeTimeFormat` at that revision;
+the QuickJS copyright/license notice is retained at the top of the test file.

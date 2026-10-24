@@ -3764,3 +3764,17 @@ timers, outside the pause. A finished or cancelled owner drops cleanup.
 Instances remain task-owned even when empty/frozen, and publication rejects
 them directly or through collections/closures. Deferred: `cleanupSome` and
 cross-task registry publication. Tests use opt-in `std.gc()` and virtual timers.
+
+### Intl.RelativeTimeFormat (clj-quickjs-221)
+
+Supported: construction with `new`, `localeMatcher`, `numberingSystem`, `style`
+(`long`, `short`, `narrow`), `numeric` (`always`, `auto`), `format`,
+`formatToParts`, `resolvedOptions`, `supportedLocalesOf` and the standard tag.
+Units run from second through year, including quarter and plural spellings.
+Finite values use NumberFormat rounding/grouping/digits and PluralRules
+categories; negative zero selects the past pattern. Auto phrases and unit
+forms come from the pinned QuickJS snapshot, including its English fallback,
+spacing and limited locale-specific auto coverage. Number parts carry the
+singular unit; literal parts do not. Getters and coercions can yield or wait.
+Coverage remains the agreed Intl test locales; other CLDR relative-time
+patterns and auto phrases absent from this snapshot remain deferred.

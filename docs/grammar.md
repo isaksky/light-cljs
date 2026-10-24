@@ -5199,3 +5199,19 @@ migrate. Finished/cancelled tasks drop cleanup. Collection never calls JS inline
 Explicit gaps: no `cleanupSome`, cross-task registry publication, or guarantee
 of collection without an explicit/requested collection point. The opt-in
 simulated `std.gc()` waits for notification delivery, not execution of jobs.
+
+### Execution: Intl.RelativeTimeFormat (clj-quickjs-221)
+
+`new Intl.RelativeTimeFormat(locales?, options?)` constructs an ordinary object
+with immutable slots. Options include `localeMatcher`, `numberingSystem`,
+`style` and `numeric`. `format(value, unit)` and `formatToParts(value, unit)`
+coerce value to Number and unit to String through saved VM continuations.
+Nonfinite values and invalid units throw RangeError; receiver brands and the
+required `new` are checked with TypeError. Singular and plural second, minute,
+hour, day, week, month, quarter and year units are accepted. Negative zero
+selects past; numeric auto can replace a number with a snapshot literal.
+`resolvedOptions`, `supportedLocalesOf` and `Symbol.toStringTag` are supported.
+
+Explicit gaps: relative-time coverage follows the agreed Intl locale subset
+and QuickJS snapshot phrases, including its fallbacks and spacing. No extra
+CLDR patterns or ±2 auto phrases are invented where the snapshot has none.

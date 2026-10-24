@@ -840,6 +840,7 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::Promise
             | Builtin::IntlNumberFormat
             | Builtin::IntlPluralRules
+            | Builtin::IntlRelativeTimeFormat
             | Builtin::IntlCollator
             | Builtin::IntlDateTimeFormat
             | Builtin::IntlListFormat),

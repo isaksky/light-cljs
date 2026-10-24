@@ -320,6 +320,9 @@ pub(crate) struct OrdinaryObject {
     date_time_format: Option<Box<DateTimeFormatSlots>>,
     /// Immutable options have no heap edges; this ordinary object remains task-owned.
     list_format: Option<Box<crate::intl::list_format::ListFormat>>,
+
+    // Immutable Rust strings/static tables only; no additional GC edges.
+    relative_time_format: Option<Box<crate::intl::relative_time_format::RelativeTimeFormat>>,
 }
 
 impl OrdinaryObject {
@@ -367,6 +370,8 @@ impl OrdinaryObject {
             collator: None,
             date_time_format: None,
             list_format: None,
+
+            relative_time_format: None,
         }
     }
 
@@ -433,6 +438,18 @@ impl OrdinaryObject {
         self.regexp.as_ref()
     }
 
+    pub(crate) fn with_relative_time_format(
+        mut self,
+        data: crate::intl::relative_time_format::RelativeTimeFormat,
+    ) -> Self {
+        self.relative_time_format = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn relative_time_format(
+        &self,
+    ) -> Option<&crate::intl::relative_time_format::RelativeTimeFormat> {
+        self.relative_time_format.as_deref()
+    }
     pub(crate) fn with_plural_rules(
         mut self,
         data: crate::intl::plural_rules::PluralRules,

@@ -120,6 +120,58 @@ for my $name (qw(intl_all_numbering_systems nf_digit_base hanidec_cps)) {
     $decls{$name} = {type => $name eq 'intl_all_numbering_systems' ? 'char*' : 'uint32_t', array => 1, value => $values};
     push @decl_order, $name;
 }
+# Relative-time data is embedded in the pinned service source. Flatten only its
+# literal tables and literal-return switches; no service implementation is linked.
+my $rtf = strip_comments(read_file("$root/intl/relativetimeformat.c"));
+sub string_array {
+    my ($name, $values) = @_;
+    die "nonliteral relative-time data\n" if grep { !/^(?:"(?:\\.|[^"\\])*"|NULL)$/s } @$values;
+    push @number_declarations, "static const char *$name\[\] = {" . join(',', @$values) . '};';
+    $decls{$name} = {type => 'char*', array => 1, value => $values};
+    push @decl_order, $name;
+}
+my @rtf_units;
+while ($rtf =~ /static const RTFLocaleUnits rtf_\w+\s*=\s*(\{.*?\n\});/gs) {
+    my $row = node($1);
+    die "relative-time row shape\n" unless @$row == 9;
+    for my $i (1..4) { die "relative-time unit count\n" unless ref($row->[$i]) && @{$row->[$i]} == 8; }
+    push @rtf_units, map { ref($_) ? @$_ : $_ } @$row;
+}
+die "relative-time locale count\n" unless @rtf_units == 11 * 37;
+string_array('rtf_units', \@rtf_units);
+$rtf =~ /static const char \*en_narrow\[8\]\s*=\s*(\{[^{}]*\})/s or die "relative-time narrow table\n";
+string_array('rtf_en_narrow', node($1));
+$rtf =~ /static const char \*rtf_auto_exception\([^)]*\)\s*\{(.*?)\n\}\n/s or die "relative-time auto data\n";
+my $auto = $1;
+my @auto_locales;
+my @auto_values;
+my @blocks = split /if \(strstart\(locale, "([a-z]+)", NULL\)\)/, $auto;
+shift @blocks;
+while (@blocks) {
+    my ($locale, $block) = splice @blocks, 0, 2;
+    # The last block ends with the English default switch sequence.
+    my $english;
+    if (!@blocks) { ($block, $english) = split /\n    \}\n/, $block, 2; }
+    for my $entry ([$locale, $block], (defined($english) ? ['en', $english] : ())) {
+        my ($lang, $body) = @$entry;
+        my @values = ('NULL') x 40; # -2..2, eight units each
+        while ($body =~ /if \(ivalue == (-?\d+)\)\s*\{\s*switch \(unit_idx\)\s*\{([^{}]*)\}/gs) {
+            my ($value, $cases) = ($1, $2);
+            die "relative-time auto value\n" unless $value >= -2 && $value <= 2;
+            while ($cases =~ /case ([0-7]): return ("(?:\\.|[^"\\])*");/g) {
+                $values[($value + 2) * 8 + $1] = $2;
+            }
+            $cases =~ s/case [0-7]: return "(?:\\.|[^"\\])*";//g;
+            die "unknown relative-time auto case\n" if $cases =~ /\S/;
+        }
+        push @auto_locales, cq($lang);
+        push @auto_values, @values;
+    }
+}
+die "relative-time auto locales\n" unless @auto_locales == 6;
+string_array('rtf_auto_locales', \@auto_locales);
+string_array('rtf_auto', \@auto_values);
+
 my %numbers = (uint8_t=>'u8', uint16_t=>'u16', uint32_t=>'u32',
     int32_t=>'i32', int64_t=>'i64', int=>'i32', unsigned=>'u32');
 sub rust_type {

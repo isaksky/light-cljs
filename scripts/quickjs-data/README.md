@@ -33,7 +33,7 @@ nix develop --command bash scripts/quickjs-data/verify.sh \
 ## Conversion
 
 Inputs are pinned to QuickJS revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all eight local
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all nine local
 data/header files read by the exporter. Hashes are checked before and after
 conversion; an upstream change needs an explicit manifest and converter review.
 
@@ -141,7 +141,7 @@ the Rust data layout if this experiment becomes maintained tooling.
 ## Checked-in Intl modules
 
 The runtime uses the same verified output, repacked by `repack-intl.pl` into
-`src/intl/data/{numbers,dates,locale,display_names,likely_subtags,preferences}.rs`.
+`src/intl/data/{numbers,dates,locale,display_names,likely_subtags,preferences,relative_time}.rs`.
 The repacker selects the agreed test-locale records plus required parents and
 only their referenced compact-pattern arrays. Shared byte pools and all their
 indices remain intact, including embedded and terminal NULs. Keeping unused
@@ -162,7 +162,7 @@ cp target/intl-repacked-new/*.rs target/intl-repacked-new/provenance.txt \
 `data/mod.rs` is handwritten; `docs/UNICODE-LICENSE` holds the Unicode v3
 notice and is not regenerated. The provenance includes the exporter and
 repacker hashes. To check the repack, repeat it against `second` in a fresh
-output directory and compare the six `.rs` files and `provenance.txt` with
+output directory and compare the seven `.rs` files and `provenance.txt` with
 `cmp`. Run `cargo test --lib intl:: -- --test-threads=3` and
 `cargo test --test js_source intl_namespace_object -- --exact --test-threads=3`
 for consumer semantics. Normal Cargo builds need none of these tools or inputs.
@@ -338,3 +338,15 @@ CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-thread
 
 The existing QuickJS MIT and Unicode notices apply. `list_provenance.txt`
 includes the verified import provenance and selector/repacker hashes.
+
+### Relative-time literals (clj-quickjs-221)
+
+`intl/relativetimeformat.c` is a pinned additional input. The exporter reads
+only literal unit tables, prefixes/suffixes, English narrow forms and the
+literal auto-return switches. It flattens them into string arrays, preserving
+NULL and compiler-added terminal NULs. C evaluates the original string
+literals; the independent Rust wire comparison checks all emitted values.
+No Intl service code is linked or executed. The Intl repacker additionally
+writes `relative_time.rs`; include it when comparing repeated repacks.
+`edge_cases.rs` pins non-ASCII auto phrases, table offsets, and absence of ±2
+phrases. The runtime retains the snapshot's auto fallback and CJK spacing.

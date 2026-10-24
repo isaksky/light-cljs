@@ -72,3 +72,21 @@ fn numbering_system_indices_and_digits_agree() {
         for digit in 0..10 { assert!(char::from_u32(base + digit).is_some()); }
     }
 }
+
+#[test]
+fn relative_time_literals_and_auto_switches_survive() {
+    assert_eq!(rtf_units.len(), 11 * 37);
+    assert_eq!(rtf_units[0], Some(&b"en\0"[..]));
+    assert_eq!(rtf_units[4], Some(&b"day\0"[..]));
+    assert_eq!(rtf_units[33], Some(&b"in \0"[..]));
+    assert_eq!(rtf_en_narrow[5], Some(&b"mo\0"[..]));
+    let index = |name: &[u8]| rtf_auto_locales.iter().position(|&n| n == Some(name)).unwrap();
+    assert_eq!(rtf_auto.len(), rtf_auto_locales.len() * 40);
+    assert_eq!(rtf_auto[index(b"de\0") * 40 + 8 + 3], Some("gestern\0".as_bytes()));
+    assert_eq!(rtf_auto[index(b"en\0") * 40 + 16 + 3], Some("today\0".as_bytes()));
+    assert_eq!(rtf_auto[index(b"ja\0") * 40 + 8 + 4], Some("先週\0".as_bytes()));
+    for row in rtf_auto.chunks_exact(40) {
+        assert!(row[..8].iter().all(Option::is_none));
+        assert!(row[32..].iter().all(Option::is_none));
+    }
+}

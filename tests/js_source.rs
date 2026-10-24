@@ -24043,3 +24043,262 @@ fn finalization_registries_reject_access_from_another_task() {
         );
     }
 }
+
+/// Synthetic fixture, not light-cljs output. Rows reference QuickJS
+/// tests/test_intl.js::test_relativeTimeFormat at 7d1c13c5d8f8; see attribution.
+#[test]
+fn intl_relative_time_format() {
+    for (locale, numeric, value, unit, expected) in [
+        ("en", "auto", "-1", "day", "yesterday"),
+        ("en", "auto", "1", "day", "tomorrow"),
+        ("en", "auto", "-1", "week", "last week"),
+        ("en", "auto", "1", "week", "next week"),
+        ("en", "always", "-1", "day", "1 day ago"),
+        ("en", "always", "1", "day", "in 1 day"),
+        ("de", "auto", "-1", "day", "gestern"),
+        ("de", "auto", "1", "day", "morgen"),
+        ("de", "auto", "-1", "week", "letzte Woche"),
+        ("de", "auto", "1", "week", "nächste Woche"),
+        ("de", "always", "-1", "day", "vor 1 Tag"),
+        ("de", "always", "1", "day", "in 1 Tag"),
+        ("fr", "auto", "-1", "day", "hier"),
+        ("es", "auto", "-1", "day", "ayer"),
+        ("ja", "auto", "-1", "day", "昨日"),
+        ("ja", "auto", "-1", "week", "先週"),
+        ("en", "always", "2", "days", "in 2 days"),
+        ("en", "always", "-0", "day", "0 days ago"),
+        ("en", "auto", "0", "day", "today"),
+        ("en", "always", "1000", "day", "in 1,000 days"),
+    ] {
+        let source = format!(
+            "new Intl.RelativeTimeFormat('{locale}',{{numeric:'{numeric}'}}).format({value},'{unit}') === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "let r=new Intl.RelativeTimeFormat('en'); let p=r.formatToParts(-1,'day'); p[0].type === 'integer' && p[0].value === '1' && p[0].unit === 'day' && p[1].type === 'literal' && p[1].value === ' day ago' && !('unit' in p[1])",
+        "let r=new Intl.RelativeTimeFormat('en'); let o=r.resolvedOptions(); o.locale === 'en' && o.style === 'long' && o.numeric === 'always' && o.numberingSystem === 'latn'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for expression in [
+        "new Intl.RelativeTimeFormat('en').format(1,'fortnight')",
+        "new Intl.RelativeTimeFormat('en').format(Infinity,'day')",
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let caught=false; try {{{expression};}} catch(e){{caught=e instanceof RangeError;}} caught"
+            )),
+            ValueView::Bool(true),
+            "{expression}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_relative_time_format_options_parts_and_brands() {
+    for source in [
+        "new Intl.RelativeTimeFormat('en',{style:'short'}).format(-2,'quarters') === '2 qtrs. ago'",
+        "new Intl.RelativeTimeFormat('en',{style:'narrow'}).format(2,'minutes') === 'in 2 m'",
+        "new Intl.RelativeTimeFormat('de',{style:'narrow'}).format(-2,'days') === 'vor 2 Tagen'",
+        "new Intl.RelativeTimeFormat('ja').format(2,'day') === '2 日後'",
+        "new Intl.RelativeTimeFormat('fr',{numeric:'auto'}).format(0,'day') === 'dans 0 jour'",
+        "new Intl.RelativeTimeFormat('en',{numeric:'auto'}).format(-2,'day') === '2 days ago'",
+        "new Intl.RelativeTimeFormat('ru').format(21,'day') === 'через 21 день'",
+        "new Intl.RelativeTimeFormat('en').format(0.9999,'day') === 'in 1 day'",
+        "let r=new Intl.RelativeTimeFormat('en',{numeric:'auto'}); let p=r.formatToParts(-0,'days'); p.length === 1 && p[0].type === 'literal' && p[0].value === 'today' && !('unit' in p[0])",
+        "let r=new Intl.RelativeTimeFormat('de'); let p=r.formatToParts(-1000.25,'days'); let values=[];let types=[];for(let i=0;i<p.length;i++){values.push(p[i].value);types.push(p[i].type);} values.join('') === r.format(-1000.25,'days') && types.join() === 'literal,integer,group,integer,decimal,fraction,literal' && p[2].value === '.' && p[2].unit === 'day' && p[4].value === ',' && p[5].unit === 'day'",
+        "let r=new Intl.RelativeTimeFormat('en-u-nu-arab'); let p=r.formatToParts(12.5,'day'); let values=[];for(let i=0;i<p.length;i++){values.push(p[i].value);} r.resolvedOptions().numberingSystem === 'arab' && r.resolvedOptions().locale === 'en-u-nu-arab' && p[1].type === 'integer' && p[1].value === '١٢' && p[1].unit === 'day' && values.join('') === r.format(12.5,'day')",
+        "new Intl.RelativeTimeFormat('en-u-nu-arab',{numberingSystem:'latn'}).resolvedOptions().locale === 'en'",
+        "new Intl.RelativeTimeFormat('en-u-nu-arab',{numberingSystem:'bogus'}).resolvedOptions().numberingSystem === 'arab'",
+        "let r=new Intl.RelativeTimeFormat('en'); r instanceof Intl.RelativeTimeFormat && r[Symbol.toStringTag] === 'Intl.RelativeTimeFormat' && Intl.RelativeTimeFormat.name === 'RelativeTimeFormat' && Intl.RelativeTimeFormat.length === 0 && r.format.length === 2 && r.formatToParts.length === 2 && r.resolvedOptions.length === 0 && Intl.RelativeTimeFormat.supportedLocalesOf.length === 1",
+        "Intl.RelativeTimeFormat.supportedLocalesOf(['EN-us-u-nu-arab','de-DE','xx'],{localeMatcher:'lookup'}).join() === 'en-US-u-nu-arab,de-DE'",
+        "let later=false; Intl.RelativeTimeFormat.supportedLocalesOf('en',{get style(){later=true;throw 9;}}); !later",
+        "let log=''; let r=new Intl.RelativeTimeFormat('en',{get localeMatcher(){log+='l';return {toString(){log+='L';return 'lookup';}};},get numberingSystem(){log+='s';return 'latn';},get style(){log+='t';return 'short';},get numeric(){log+='n';return 'auto';}}); log === 'lLstn' && r.format(1,'day') === 'tomorrow'",
+        "let log=''; let r=new Intl.RelativeTimeFormat('en'); r.format({valueOf(){log+='v';return -1;}},{toString(){log+='u';return 'day';}}) === '1 day ago' && log === 'vu'",
+        "let log=''; let caught=false; try {new Intl.RelativeTimeFormat('en').format(Infinity,{toString(){log+='u';return 'day';}});} catch(e){caught=e instanceof RangeError;} caught && log === ''",
+        "let caught=false; let later=false; try {new Intl.RelativeTimeFormat('en',{get style(){throw 9;},get numeric(){later=true;return 'always';}});} catch(e){caught=e === 9;} caught && !later",
+        "let log=''; let caught=false; try {Intl.RelativeTimeFormat.prototype.format.call({}, {valueOf(){log+='v';return 1;}}, 'day');} catch(e){caught=e instanceof TypeError;} caught && log === ''",
+        "let r=new Intl.RelativeTimeFormat('en'); let p=r.formatToParts(2,'day'); p[1].value='bad'; r.format(2,'day') === 'in 2 days'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for (kind, expressions) in [
+        (
+            "TypeError",
+            &[
+                "Intl.RelativeTimeFormat()",
+                "new Intl.RelativeTimeFormat('en',null)",
+                "new Intl.RelativeTimeFormat('en',5)",
+                "Intl.RelativeTimeFormat.prototype.resolvedOptions.call({})",
+                "Intl.RelativeTimeFormat.prototype.formatToParts.call({},1,'day')",
+                "new Intl.RelativeTimeFormat('en').format(1n,'day')",
+                "new Intl.RelativeTimeFormat('en').format(Symbol(),'day')",
+                "new Intl.RelativeTimeFormat('en').format(1,Symbol())",
+                "new Intl.RelativeTimeFormat.supportedLocalesOf('en')",
+            ][..],
+        ),
+        (
+            "RangeError",
+            &[
+                "new Intl.RelativeTimeFormat('en',{style:'bogus'})",
+                "new Intl.RelativeTimeFormat('en',{numeric:'bogus'})",
+                "new Intl.RelativeTimeFormat('en',{numberingSystem:'x'})",
+                "new Intl.RelativeTimeFormat('en',{localeMatcher:'bogus'})",
+                "new Intl.RelativeTimeFormat('en').format(NaN,'day')",
+                "new Intl.RelativeTimeFormat('en').format(-Infinity,'day')",
+                "new Intl.RelativeTimeFormat('en').format(1,'DAY')",
+                "new Intl.RelativeTimeFormat('en').format(1,'day\\0')",
+                "new Intl.RelativeTimeFormat('en').format(1)",
+            ][..],
+        ),
+    ] {
+        for expression in expressions {
+            let source = format!(
+                "let caught=false; try {{{expression};}} catch(e){{caught=e instanceof {kind};}} caught"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_relative_time_format_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let r=new Intl.RelativeTimeFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'DE';}},
+            {get numeric(){log+='n';__rt.need(3,1);return {toString(){log+='s';__rt.need(4,1);return 'always';}};}});
+        let p=r.formatToParts({valueOf(){log+='v';__rt.need(5,1);return -1000.25;}},
+            {toString(){log+='u';__rt.need(6,1);return 'days';}});
+        let values=[];for(let i=0;i<p.length;i++){values.push(p[i].value);}
+        values.join('') === 'vor 1.000,25 Tagen' && p[1].unit === 'day' && log === 'ltnsvu'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 6);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("RelativeTimeFormat continuation did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_relative_time_format_host_and_ownership() {
+    struct LocaleHost(usize);
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            self.0 += 1;
+            "de".into()
+        }
+    }
+    let rt = Runtime::new();
+    let mut host = LocaleHost(0);
+    for (source, calls) in [
+        (
+            "let r=new Intl.RelativeTimeFormat(); r.format(1,'day') === 'in 1 Tag' && r.resolvedOptions().locale === 'de'",
+            1,
+        ),
+        (
+            "new Intl.RelativeTimeFormat('en').resolvedOptions().locale === 'en'",
+            0,
+        ),
+        (
+            "Intl.RelativeTimeFormat.supportedLocalesOf('xx').length === 0",
+            0,
+        ),
+        (
+            "let caught=false; try {new Intl.RelativeTimeFormat(undefined,{numberingSystem:'x'});} catch(e){caught=e instanceof RangeError;} caught",
+            0,
+        ),
+    ] {
+        host.0 = 0;
+        let outcome = rt
+            .spawn(&exe(source), &[])
+            .unwrap()
+            .run_with(Budget::UNLIMITED, &mut host)
+            .unwrap();
+        assert!(
+            matches!(outcome,RunOutcome::Complete(v) if v.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+        assert_eq!(host.0, calls);
+    }
+    for source in [
+        "new Intl.RelativeTimeFormat('en')",
+        "Object.freeze(new Intl.RelativeTimeFormat('en'))",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("RelativeTimeFormat construction");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "Intl.RelativeTimeFormat.prototype.format.call(value,1,'day')",
+            "Intl.RelativeTimeFormat.prototype.formatToParts.call(value,1,'day')",
+            "Intl.RelativeTimeFormat.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            assert!(
+                matches!(rt.spawn(&code,&[&value]).unwrap().run().unwrap(),RunOutcome::Failed(e) if matches!(e.kind(),VmErrorKind::ForeignObject{..}))
+            );
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Every accepted unit has both forms.
+#[test]
+fn intl_relative_time_format_all_units_and_locale_data() {
+    assert_eq!(
+        eval(
+            "let r=new Intl.RelativeTimeFormat('en'); let units=['second','minute','hour','day','week','month','quarter','year']; let ok=true; for(let i=0;i<units.length;i++){let unit=units[i]; ok=ok && r.format(1,unit) === 'in 1 '+unit && r.format(-2,unit+'s') === '2 '+unit+'s ago';} ok"
+        ),
+        ValueView::Bool(true)
+    );
+    for locale in clj_quickjs::intl::LOCALES {
+        let source = format!(
+            "let r=new Intl.RelativeTimeFormat('{locale}'); let units=['second','minute','hour','day','week','month','quarter','year']; let ok=true; for(let i=0;i<units.length;i++){{let p=r.formatToParts(1234.5678,units[i]); let text=''; for(let j=0;j<p.length;j++){{text+=p[j].value; ok=ok && (p[j].type === 'literal' || p[j].unit === units[i]);}} ok=ok && text === r.format(1234.5678,units[i]);}} ok"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{locale}");
+    }
+}

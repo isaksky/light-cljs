@@ -412,6 +412,12 @@ pub(crate) enum Builtin {
     FinalizationRegistry,
     FinalizationRegistryRegister,
     FinalizationRegistryUnregister,
+
+    IntlRelativeTimeFormat,
+    IntlRelativeTimeFormatFormat,
+    IntlRelativeTimeFormatToParts,
+    IntlRelativeTimeFormatResolvedOptions,
+    IntlRelativeTimeFormatSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -475,6 +481,11 @@ impl Builtin {
             Builtin::BigIntPrototypeToString => "toString",
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
+            Builtin::IntlRelativeTimeFormat => "RelativeTimeFormat",
+            Builtin::IntlRelativeTimeFormatFormat => "format",
+            Builtin::IntlRelativeTimeFormatToParts => "formatToParts",
+            Builtin::IntlRelativeTimeFormatResolvedOptions => "resolvedOptions",
+            Builtin::IntlRelativeTimeFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlPluralRules => "PluralRules",
             Builtin::IntlListFormat => "ListFormat",
             Builtin::IntlListFormatFormat => "format",
@@ -692,6 +703,10 @@ impl Builtin {
             Builtin::IntlListFormatFormat
             | Builtin::IntlListFormatFormatToParts
             | Builtin::IntlListFormatSupportedLocales => 1,
+
+            Builtin::IntlRelativeTimeFormat | Builtin::IntlRelativeTimeFormatResolvedOptions => 0,
+            Builtin::IntlRelativeTimeFormatFormat | Builtin::IntlRelativeTimeFormatToParts => 2,
+            Builtin::IntlRelativeTimeFormatSupportedLocales => 1,
             Builtin::IntlCollator
             | Builtin::IntlCollatorGetCompare
             | Builtin::IntlCollatorResolvedOptions => 0,
@@ -905,6 +920,17 @@ pub(crate) fn call(
         }
         Builtin::IntlDateTimeFormatResolvedOptions => {
             crate::intl::date_time_format::record(heap, task, this)?.resolved(heap, task)
+        }
+        Builtin::IntlRelativeTimeFormat => Err(Fault::TypeError(
+            "Intl.RelativeTimeFormat requires new".into(),
+        )),
+        Builtin::IntlRelativeTimeFormatFormat
+        | Builtin::IntlRelativeTimeFormatToParts
+        | Builtin::IntlRelativeTimeFormatSupportedLocales => {
+            Err(Fault::Internal("RelativeTimeFormat requires native frame"))
+        }
+        Builtin::IntlRelativeTimeFormatResolvedOptions => {
+            crate::intl::relative_time_format::record(heap, task, this)?.resolved(heap, task)
         }
         Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
         Builtin::IntlListFormat => Err(Fault::TypeError("Intl.ListFormat requires new".into())),

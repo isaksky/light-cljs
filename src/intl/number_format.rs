@@ -182,6 +182,49 @@ impl NumberFormat {
         let result = map_digits(self.numbering, &result);
         Ok(Value::String(JsString::from(result.as_str())))
     }
+    /// Parts of a finite unsigned decimal, sharing the formatter's rounding,
+    /// grouping and digit mapping. RelativeTimeFormat adds its unit metadata.
+    pub fn unsigned_decimal_parts(&self, n: f64) -> Result<Vec<(&'static str, String)>, Fault> {
+        let Value::String(formatted) = self.format(&Value::Number(n))? else {
+            unreachable!()
+        };
+        let text = formatted.to_string_lossy();
+        let decimal = self.data.decimal_separator().unwrap();
+        let group = self.data.group_separator().unwrap();
+        let digits = map_digits(self.numbering, "0123456789");
+        let mut parts: Vec<(&'static str, String)> = Vec::new();
+        let mut rest = text.as_str();
+        let mut fraction = false;
+        while !rest.is_empty() {
+            let (kind, length) = if !decimal.is_empty() && rest.starts_with(decimal) {
+                fraction = true;
+                ("decimal", decimal.len())
+            } else if !group.is_empty() && rest.starts_with(group) {
+                ("group", group.len())
+            } else {
+                let c = rest.chars().next().unwrap();
+                (
+                    if digits.contains(c) {
+                        if fraction { "fraction" } else { "integer" }
+                    } else {
+                        "literal"
+                    },
+                    c.len_utf8(),
+                )
+            };
+            if let Some((last_kind, last_value)) = parts.last_mut()
+                && *last_kind == kind
+                && kind != "group"
+                && kind != "decimal"
+            {
+                last_value.push_str(&rest[..length]);
+            } else {
+                parts.push((kind, rest[..length].to_owned()));
+            }
+            rest = &rest[length..];
+        }
+        Ok(parts)
+    }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let mut fields = vec![
             (

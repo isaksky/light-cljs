@@ -7390,3 +7390,33 @@ replacement registration with out-of-order collections, and a 4096-cell batch
 checks once-per-cell cleanup mixed with unregister. Dropped-owner tests verify
 held-value reclamation while the host continues rooting the registry.
 See docs/attribution.md for the upstream notice.
+
+### Intl.RelativeTimeFormat (clj-quickjs-221)
+
+RelativeTimeFormat appends six realm intrinsics. Each instance stores a boxed
+immutable record on its task-owned ordinary object: decimal NumberFormat
+configuration, style and numeric mode. The record contains owned Rust strings
+and static data references, with no heap edges. The existing Plain category,
+property/prototype tracing and ownership checks apply; freezing does not make
+instances publishable across tasks. The native continuation traces its locale
+list, options, receiver, value and unit across getters, ToNumber, ToString,
+host-default lookup, waits, collection and migration. No callback retains a
+Rust frame. `supportedLocalesOf` uses the common canonical list reader and
+reads only localeMatcher, without observing a host default.
+
+The existing importer pins `intl/relativetimeformat.c`, extracts its literal
+unit/prefix/suffix tables, English narrow forms and auto-return switches, and
+exports them through the same C/Rust value comparison. The Intl repacker emits
+`data/relative_time.rs`; repeatability, input drift and literal edge checks run
+in the existing verifier. No C engine is linked or run. The snapshot has no ±2
+auto phrases. Its per-language auto branches and English fallback are retained,
+including its numeric fallback for German/French/Spanish/Japanese zero.
+
+Numeric patterns choose one versus other from shared PluralRules applied to
+the rounded decimal operands. Other categories use the snapshot's other form.
+NumberFormat supplies rounding, grouping, decimal symbols and mapped digits;
+its unsigned decimal parts helper is reused by relative-time formatting.
+Literal prefix and unit/suffix parts surround those number parts. Only numeric
+parts receive the canonical singular unit. Joining the parts reproduces format,
+including the snapshot's space before CJK unit strings. The agreed locale
+subset and existing NumberFormat/PluralRules limitations still apply.

@@ -228,6 +228,7 @@ mod intl_service;
 mod list_format;
 mod number_format;
 mod plural_rules;
+mod relative_time_format;
 mod string_raw;
 mod string_replace;
 mod sum_precise;
@@ -593,6 +594,7 @@ enum NativeState {
     Intl(Box<intl::Intl>),
     NumberFormat(Box<number_format::State>),
     PluralRules(Box<plural_rules::State>),
+    RelativeTimeFormat(Box<relative_time_format::State>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -867,6 +869,7 @@ impl Trace for NativeFrame {
             NativeState::Intl(intl) => intl.trace(visit),
             NativeState::NumberFormat(format) => format.trace(visit),
             NativeState::PluralRules(rules) => rules.trace(visit),
+            NativeState::RelativeTimeFormat(format) => format.trace(visit),
             NativeState::Collator(collator) => collator.trace(visit),
             NativeState::DateTimeFormat(format) => format.trace(visit),
             NativeState::ListFormat(format) => format.trace(visit),
@@ -1411,6 +1414,20 @@ fn start_builtin_slow(
         let native = date_time_format::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::DateTimeFormat(Box::new(native)))?;
+        return Ok(true);
+    }
+    if (which == Builtin::IntlRelativeTimeFormat && construct)
+        || (!construct
+            && matches!(
+                which,
+                Builtin::IntlRelativeTimeFormatFormat
+                    | Builtin::IntlRelativeTimeFormatToParts
+                    | Builtin::IntlRelativeTimeFormatSupportedLocales
+            ))
+    {
+        let native = relative_time_format::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::RelativeTimeFormat(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlPluralRules && construct)
@@ -2844,6 +2861,7 @@ impl NativeState {
             NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
+            NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),
             NativeState::Collator(collator) => collator.step(heap, task, input),
             NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
             NativeState::ListFormat(format) => format.step(heap, task, input),
@@ -4038,6 +4056,7 @@ impl NativeState {
                 | NativeState::StringRaw(_)
                 | NativeState::Intl(_)
                 | NativeState::PluralRules(_)
+                | NativeState::RelativeTimeFormat(_)
                 | NativeState::Collator(_)
                 | NativeState::DateTimeFormat(_)
                 | NativeState::ListFormat(_)
