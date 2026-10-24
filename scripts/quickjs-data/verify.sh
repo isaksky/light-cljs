@@ -122,3 +122,30 @@ fi
 test ! -e "$output_dir/tailoring-drift-result/export.c"
 test "$(cat "$output_dir/tailoring-drift.log")" = 'unpinned intl/collator.c'
 echo 'PASS: phonebook corruption detection and tailoring input pinning'
+
+# List patterns live in the snapshot's separator selector. Export all agreed
+# locales/types/styles and compare every byte through a separate Rust reader.
+perl "$script_dir/repack-lists.pl" "$output_dir/first" "$source_dir" "$output_dir/lists-first"
+perl "$script_dir/repack-lists.pl" "$output_dir/second" "$source_dir" "$output_dir/lists-second"
+for file in lists.rs provenance.txt reference.txt; do
+    cmp "$output_dir/lists-first/$file" "$output_dir/lists-second/$file"
+done
+rustc --edition=2024 -D warnings "$output_dir/lists-first/verify.rs" -o "$output_dir/lists-first/verify"
+"$output_dir/lists-first/verify" "$output_dir/lists-first/reference.txt"
+mkdir "$output_dir/lists-corrupt"
+cp "$output_dir/lists-first/verify.rs" "$output_dir/lists-corrupt/"
+sed 's/\\x61\\x6e\\x64/\\x61\\x6e\\x65/' "$output_dir/lists-first/lists.rs" > "$output_dir/lists-corrupt/lists.rs"
+if cmp -s "$output_dir/lists-first/lists.rs" "$output_dir/lists-corrupt/lists.rs"; then
+    echo 'list mutation did not apply' >&2; exit 1
+fi
+rustc --edition=2024 -D warnings "$output_dir/lists-corrupt/verify.rs" -o "$output_dir/lists-corrupt/verify"
+if "$output_dir/lists-corrupt/verify" "$output_dir/lists-first/reference.txt" > "$output_dir/list-corruption.log" 2>&1; then
+    echo 'incorrect list separator escaped comparison' >&2; exit 1
+fi
+cp "$source_dir/intl/listformat.c" "$output_dir/drift/intl/listformat.c"
+echo '/* intentional list drift */' >> "$output_dir/drift/intl/listformat.c"
+if perl "$script_dir/repack-lists.pl" "$output_dir/first" "$output_dir/drift" "$output_dir/lists-drift-result" > "$output_dir/list-drift.log" 2>&1; then
+    echo 'unpinned list selector accepted' >&2; exit 1
+fi
+test ! -e "$output_dir/lists-drift-result/export.c"
+echo 'PASS: list separators, repeatability, corruption detection and input pinning'

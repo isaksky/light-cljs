@@ -313,3 +313,28 @@ stream, repeats generation, detects phonebook-weight corruption, and rejects
 modified tailoring source. This uses only the pinned snapshot's rules;
 neither complete Turkish contextual folding nor a separate CLDR release is
 inferred. See the runtime's documented tailoring limits in docs/architecture.md.
+
+## ListFormat separator patterns (clj-quickjs-220)
+
+The pinned snapshot stores list patterns in `intl/listformat.c`, with no list
+fields in locale-data.c. `repack-lists.pl` compiles only its separator selector
+and locale-prefix helpers as an offline exporter. It emits 540 separators:
+15 agreed test locales × 3 types × 3 styles × start/middle/end/pair. The runtime
+preserves QuickJS's finite patterns (including English fallbacks and Spanish
+limitations); it does not claim a newer CLDR dataset. Normal builds use only
+safe immutable Rust strings.
+
+`verify.sh` now repeats list export, compares every separator byte through a
+separate Rust reader, detects a deliberately corrupted conjunction, and rejects
+an unpinned selector. Regenerate inside a worktree with a new output directory:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/list-import-new
+cp target/list-import-new/lists-first/lists.rs src/intl/data/lists.rs
+cp target/list-import-new/lists-first/provenance.txt src/intl/data/list_provenance.txt
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-threads=3
+```
+
+The existing QuickJS MIT and Unicode notices apply. `list_provenance.txt`
+includes the verified import provenance and selector/repacker hashes.

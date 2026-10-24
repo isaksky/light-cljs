@@ -225,6 +225,7 @@ mod collator;
 mod date_time_format;
 mod eval;
 mod intl_service;
+mod list_format;
 mod number_format;
 mod plural_rules;
 mod string_raw;
@@ -607,6 +608,7 @@ enum NativeState {
     ArraySort(Box<array_sort::State>),
     Collator(Box<collator::State>),
     DateTimeFormat(Box<date_time_format::State>),
+    ListFormat(Box<list_format::State>),
 }
 
 #[derive(Debug)]
@@ -867,6 +869,7 @@ impl Trace for NativeFrame {
             NativeState::PluralRules(rules) => rules.trace(visit),
             NativeState::Collator(collator) => collator.trace(visit),
             NativeState::DateTimeFormat(format) => format.trace(visit),
+            NativeState::ListFormat(format) => format.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -1419,6 +1422,19 @@ fn start_builtin_slow(
         let native = plural_rules::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::PluralRules(Box::new(native)))?;
+        return Ok(true);
+    }
+    if (which == Builtin::IntlListFormat && construct)
+        || (matches!(
+            which,
+            Builtin::IntlListFormatFormat
+                | Builtin::IntlListFormatFormatToParts
+                | Builtin::IntlListFormatSupportedLocales
+        ) && !construct)
+    {
+        let native = list_format::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::ListFormat(Box::new(native)))?;
         return Ok(true);
     }
     if matches!(
@@ -2299,6 +2315,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     // height is exactly the native base. Other boundaries catch only calls.
     if match &state.natives[native_index].state {
         NativeState::ArrayFrom(from) => from.catches_step(),
+        NativeState::ListFormat(format) => format.catches_step(),
         NativeState::MathSumPrecise(sum) => sum.catches_step(),
         _ => false,
     } {
@@ -2514,6 +2531,7 @@ pub(crate) fn catch(
         NativeState::Async(a) => a.failed = Some(exception.value),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
+        NativeState::ListFormat(format) if format.catches() => format.failed(exception),
         NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
         _ => return Err("invalid native catch"),
@@ -2712,6 +2730,7 @@ impl NativeState {
             Self::Async(_) => true,
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
+            Self::ListFormat(format) => format.catches(),
             Self::MathSumPrecise(sum) => sum.catches(),
             _ => false,
         }
@@ -2827,6 +2846,7 @@ impl NativeState {
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::Collator(collator) => collator.step(heap, task, input),
             NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
+            NativeState::ListFormat(format) => format.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -4020,6 +4040,7 @@ impl NativeState {
                 | NativeState::PluralRules(_)
                 | NativeState::Collator(_)
                 | NativeState::DateTimeFormat(_)
+                | NativeState::ListFormat(_)
                 | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }

@@ -3722,3 +3722,24 @@ cannot be published. Verify with `cargo test --test js_source base_classes` and
 
 Deferred: inheritance and `super()` (-137), super properties (-138), fields and
 static initialization blocks (-139); these forms fail explicitly.
+
+### Intl.ListFormat (clj-quickjs-220)
+
+Supported: `new Intl.ListFormat(locales, options)`, `format`, `formatToParts`,
+`resolvedOptions`, `supportedLocalesOf`, and the `Intl.ListFormat` tag. Types
+are `conjunction`, `disjunction`, `unit`; styles are `long`, `short`, `narrow`.
+String iterables, empty lists and single elements work. Non-string elements
+throw TypeError and close the iterator. Getters, coercions, iterator operations,
+closing and output construction resume across yields, waits, collection and
+thread migration; large formatted strings use ropes.
+
+Patterns reproduce the pinned QuickJS selector for the agreed test locales:
+English/default, British English without the conjunction serial comma, and
+Spanish. Deferred: additional translated patterns and contextual Spanish
+`y` → `e` / `o` → `u`; the snapshot has neither. It also uses `y` for Spanish
+disjunctions and English patterns for its other locales. These limits are
+preserved explicitly rather than claiming complete modern CLDR ListFormat.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-threads=3
+```

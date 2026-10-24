@@ -835,7 +835,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::IntlNumberFormat
             | Builtin::IntlPluralRules
             | Builtin::IntlCollator
-            | Builtin::IntlDateTimeFormat),
+            | Builtin::IntlDateTimeFormat
+            | Builtin::IntlListFormat),
         )) => {
             if super::native::start_builtin(
                 heap,

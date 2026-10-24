@@ -3,6 +3,25 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+/// Synthetic fixtures, not light-cljs output. The first three rows adapt
+/// QuickJS tests/test_intl.js::test_listFormat (MIT notice below).
+#[test]
+fn intl_list_format() {
+    for source in [
+        "new Intl.ListFormat('en', {type:'conjunction'}).format(['A','B','C']) === 'A, B, and C'",
+        "new Intl.ListFormat('en-GB', {type:'conjunction'}).format(['A','B','C']) === 'A, B and C'",
+        "new Intl.ListFormat('es', {type:'conjunction'}).format(['A','B','C']) === 'A, B y C'",
+        "let f=new Intl.ListFormat('en'); f.format([]) === '' && f.format(['A']) === 'A' && f.format(['A','B']) === 'A and B'",
+        "new Intl.ListFormat('en', {type:'disjunction'}).format(['A','B','C']) === 'A, B, or C'",
+        "new Intl.ListFormat('en', {type:'unit',style:'short'}).format(['1 hr','30 min']) === '1 hr, 30 min'",
+        "let p=new Intl.ListFormat('en').formatToParts(['A','B']); p.length === 3 && p[0].type === 'element' && p[0].value === 'A' && p[1].type === 'literal' && p[1].value === ' and ' && p[2].type === 'element' && p[2].value === 'B'",
+        "let caught=false; try {new Intl.ListFormat('en').format(['A',1]);} catch(e){caught=e instanceof TypeError;} caught",
+        "let caught=false; try {new Intl.ListFormat('en',{type:'bogus'});} catch(e){caught=e instanceof RangeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 use clj_quickjs::frontend::{
     ScriptOptions, SyntaxErrorKind, compile_function, compile_function_with, compile_script,
     compile_script_with,
@@ -23604,4 +23623,291 @@ fn weak_refs_reject_access_from_another_task() {
             "{body}"
         );
     }
+}
+
+/// Synthetic fixtures, not light-cljs output. Pattern expectations follow the
+/// pinned QuickJS selector, including its English fallback and Spanish limits.
+#[test]
+fn intl_list_format_options_patterns_and_brands() {
+    for source in [
+        "let f=new Intl.ListFormat('en'); f.format() === '' && f.formatToParts().length === 0 && f.format('ABC') === 'A, B, and C' && f.format('😀B') === '😀 and B'",
+        "let f=new Intl.ListFormat('en'); let p=f.formatToParts(['']); p.length === 1 && p[0].type === 'element' && p[0].value === ''",
+        "let f=new Intl.ListFormat('en',{style:'short'}); f.format(['A','B']) === 'A & B' && f.format(['A','B','C','D']) === 'A, B, C, & D'",
+        "let f=new Intl.ListFormat('en',{style:'narrow'}); f.format(['A','B','C']) === 'A B C' && f.format(['A','B']) === 'A B'",
+        "new Intl.ListFormat('en-GB',{type:'disjunction'}).format(['A','B','C']) === 'A, B, or C'",
+        "new Intl.ListFormat('es',{type:'disjunction'}).format(['A','B']) === 'A y B'",
+        "new Intl.ListFormat('es',{style:'short'}).format(['A','B','C']) === 'A, B, C'",
+        "new Intl.ListFormat('es',{type:'unit'}).format(['A','B']) === 'A y B'",
+        "new Intl.ListFormat('es').format(['A','iglesia']) === 'A y iglesia'",
+        "new Intl.ListFormat('de').format(['A','B','C']) === 'A, B, and C'",
+        "new Intl.ListFormat(['xx','en-GB']).resolvedOptions().locale === 'en-GB' && new Intl.ListFormat('en-US-u-nu-arab').resolvedOptions().locale === 'en-US'",
+        "let r=new Intl.ListFormat('fr',{type:'unit',style:'narrow'}).resolvedOptions(); r.locale === 'fr' && r.type === 'unit' && r.style === 'narrow' && Object.keys(r).join() === 'locale,type,style'",
+        "Intl.ListFormat.supportedLocalesOf(['EN-us-u-nu-arab','de-DE','xx']).join() === 'en-US-u-nu-arab,de-DE'",
+        "let f=new Intl.ListFormat('en'); f instanceof Intl.ListFormat && f[Symbol.toStringTag] === 'Intl.ListFormat' && Object.getOwnPropertyDescriptor(Intl.ListFormat.prototype,Symbol.toStringTag).writable === false && Intl.ListFormat.length === 0 && Intl.ListFormat.name === 'ListFormat' && f.format.length === 1 && f.formatToParts.length === 1 && f.resolvedOptions.length === 0 && Intl.ListFormat.supportedLocalesOf.length === 1",
+        "let f=new Intl.ListFormat('en'); let r=f.resolvedOptions(); r.type='unit'; f.format(['A','B']) === 'A and B'",
+        "let log=''; let f=new Intl.ListFormat('en',{get localeMatcher(){log+='m';return {toString(){log+='M';return 'lookup';}};},get type(){log+='t';return {toString(){log+='T';return 'disjunction';}};},get style(){log+='s';return {toString(){log+='S';return 'short';}};}}); log === 'mMtTsS' && f.format(['A','B']) === 'A or B'",
+        "let log=''; Intl.ListFormat.supportedLocalesOf('en',{get localeMatcher(){log+='m';return 'lookup';},get type(){throw 99;}}); log === 'm'",
+        "let caught=false; let log=''; try {new Intl.ListFormat('en',{get type(){throw 7;},get style(){log+='s';}});} catch(e){caught=e === 7;} caught && log === ''",
+        "let f=new Intl.ListFormat('en'); let list=['A','B','C','D']; let p=f.formatToParts(list); let text=''; let types=''; for(let part of p){text+=part.value;types+=part.type + ',';} text === f.format(list) && types === 'element,literal,element,literal,element,literal,element,'",
+        r"let f=new Intl.ListFormat('en'); f.format(['A\0B','\uD800']) === 'A\0B and \uD800'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for call in [
+        "Intl.ListFormat()",
+        "new Intl.ListFormat('en',null)",
+        "new Intl.ListFormat('en',5)",
+        "Intl.ListFormat.supportedLocalesOf('en',5)",
+        "Intl.ListFormat.prototype.format.call({}, {get [Symbol.iterator](){throw 99;}})",
+        "Intl.ListFormat.prototype.formatToParts.call({})",
+        "Intl.ListFormat.prototype.resolvedOptions.call({})",
+        "new Intl.ListFormat.supportedLocalesOf('en')",
+        "new Intl.ListFormat.prototype.format()",
+        "new Intl.ListFormat('en').format(null)",
+        "new Intl.ListFormat('en').format({length:1,0:'A'})",
+        "new Intl.ListFormat('en').format([new String('A')])",
+        "new Intl.ListFormat('en').formatToParts(['A',Symbol()])",
+        "new Intl.ListFormat('en',{type:Symbol()})",
+        "new Intl.ListFormat('en').format([,'A'])",
+    ] {
+        let source = format!(
+            "let caught=false;try {{{call};}}catch(e){{caught=e instanceof TypeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for options in [
+        "{type:'bogus'}",
+        "{style:'bogus'}",
+        "{localeMatcher:'bogus'}",
+    ] {
+        let source = format!(
+            "let caught=false;try {{new Intl.ListFormat('en',{options});}}catch(e){{caught=e instanceof RangeError;}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. IteratorClose preserves the
+/// pending TypeError even when reading/calling return fails or returns a primitive.
+#[test]
+fn intl_list_format_iterator_close_and_cached_next() {
+    for method in ["format", "formatToParts"] {
+        for close in [
+            "return(){log+='r';return {};}",
+            "get return(){log+='r';throw 99;}",
+            "return(){log+='r';throw 99;}",
+            "return(){log+='r';return 42;}",
+            "get return(){log+='r';return 42;}",
+        ] {
+            let source = format!(
+                r#"
+                let log=''; let caught=false;
+                let iterator={{next(){{log+='n';return {{done:false,value:1}};}},{close}}};
+                let iterable={{[Symbol.iterator](){{return iterator;}}}};
+                try {{new Intl.ListFormat('en').{method}(iterable);}} catch(e) {{caught=e instanceof TypeError;}}
+                caught && log === 'nr'
+            "#
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+    for source in [
+        "let i=0;let reads=0;let closes=0;let iterator={get next(){reads++;return function(){i++;return {done:i>2,value:i === 1?'A':'B'};};},return(){closes++;return {};}};let f=new Intl.ListFormat('en'); f.format({[Symbol.iterator](){return iterator;}}) === 'A and B' && reads === 1 && closes === 0",
+        "let closes=0;let caught=false;let iterator={next(){throw 19;},return(){closes++;return {};}};try{new Intl.ListFormat('en').format({[Symbol.iterator](){return iterator;}});}catch(e){caught=e === 19;}caught && closes === 0",
+        "let caught=false;let iterator={next(){return 1;}};try{new Intl.ListFormat('en').format({[Symbol.iterator](){return iterator;}});}catch(e){caught=e instanceof TypeError;}caught",
+        "let caught=false;let iterator={next(){return {get done(){throw 23;}};}};try{new Intl.ListFormat('en').format({[Symbol.iterator](){return iterator;}});}catch(e){caught=e === 23;}caught",
+        "let caught=false;let iterator={next(){return {get value(){throw 24;}};}};try{new Intl.ListFormat('en').format({[Symbol.iterator](){return iterator;}});}catch(e){caught=e === 24;}caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Options, iterator acquisition,
+/// next, result getters and IteratorClose all wait, collect and migrate.
+#[test]
+fn intl_list_format_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let f=new Intl.ListFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'en';}},
+            {get type(){log+='o';__rt.need(3,1);return {toString(){log+='c';__rt.need(4,1);return 'conjunction';}};}});
+        let i=0; let iterable={get [Symbol.iterator](){log+='g';__rt.need(5,1);return function(){log+='i';__rt.need(6,1);return {
+            get next(){log+='n';__rt.need(7,1);return function(){i++;__rt.need(8+i,1);return {
+                get done(){__rt.need(20+i,1);return i>2;},
+                get value(){__rt.need(30+i,1);return i === 1?'A':'B';}
+            };};}
+        };};}};
+        let text=f.format(iterable);
+        let parts=f.formatToParts(['A','B','C']);
+        let bad={ [Symbol.iterator](){return {
+            next(){return {value:{toString(){throw 999;}}};},
+            get return(){log+='r';__rt.need(40,1);return function(){log+='R';__rt.need(41,1);throw 99;};}
+        };}};
+        let caught=false;try{f.formatToParts(bad);}catch(e){caught=e instanceof TypeError;}
+        text === 'A and B' && parts.length === 5 && parts[2].value === 'B' && parts[3].value === ', and ' && caught && log === 'ltocginrR'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..4000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 17);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 17);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("ListFormat continuation did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Host markers bracket output
+/// construction, excluding both iterator processing and result validation.
+#[test]
+fn intl_list_format_large_lists_and_ropes_are_budgeted() {
+    struct Phase(u16);
+    impl Host for Phase {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            assert_eq!(call.op, self.0 + 1);
+            self.0 = call.op;
+            Ok(call.arg)
+        }
+    }
+    let rt = Runtime::new();
+    let mut rope = clj_quickjs::JsString::from("a");
+    for _ in 0..500 {
+        rope = rope.concat(&clj_quickjs::JsString::from("b")).unwrap();
+    }
+    let input = rt.root(Primitive::String(rope));
+    for (method, check) in [
+        ("format", "result.length === 200*501+199*2"),
+        (
+            "formatToParts",
+            "result.length === 399 && result[0].value === text && result[398].value === text",
+        ),
+    ] {
+        let source = r#"function f(text){
+            let i=0;
+            let iterable={ [Symbol.iterator](){return {next(){
+                i++;
+                return {
+                    get done(){if(i>200){__rt.effect(1,0);return true;}return false;},
+                    value:text
+                };
+            }};}};
+            let f=new Intl.ListFormat('en',{type:'unit'});
+            let result=f.METHOD(iterable);
+            __rt.effect(2,0);
+            return CHECK;
+        }"#
+        .replace("METHOD", method)
+        .replace("CHECK", check);
+        let task = rt
+            .spawn(&compile_function(&source).unwrap(), &[&input])
+            .unwrap();
+        let mut phase = Phase(0);
+        let mut input_yields = 0;
+        let mut output_yields = 0;
+        let mut complete = false;
+        for _ in 0..30000 {
+            match task.run_with(Budget::instructions(1), &mut phase).unwrap() {
+                RunOutcome::Yielded => {
+                    if phase.0 == 0 {
+                        input_yields += 1;
+                        if input_yields % 100 == 0 {
+                            rt.collect().unwrap();
+                        }
+                    } else if phase.0 == 1 {
+                        output_yields += 1;
+                        rt.collect().unwrap();
+                    }
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{method}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{method}: {other:?}"),
+            }
+        }
+        assert!(complete, "budgeted {method} did not finish");
+        assert_eq!(phase.0, 2);
+        assert!(input_yields > 1000, "{method}: {input_yields} input yields");
+        assert!(
+            output_yields >= 200,
+            "{method}: {output_yields} output yields"
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Public freezing never changes
+/// ordinary object ownership; default locale remains a leaf host effect.
+#[test]
+fn intl_list_format_ownership_and_host_default() {
+    let rt = Runtime::new();
+    for source in [
+        "new Intl.ListFormat('en')",
+        "Object.freeze(new Intl.ListFormat('en'))",
+    ] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("expected ListFormat");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        for body in [
+            "Intl.ListFormat.prototype.format.call(value,['A','B'])",
+            "Intl.ListFormat.prototype.formatToParts.call(value,[])",
+            "Intl.ListFormat.prototype.resolvedOptions.call(value)",
+        ] {
+            let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+            let caller = rt.spawn(&code, &[&value]).unwrap();
+            assert!(
+                matches!(caller.run().unwrap(), RunOutcome::Failed(error) if matches!(error.kind(), VmErrorKind::ForeignObject { .. }))
+            );
+        }
+    }
+    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    host.set_default_locale("en-GB");
+    let task = rt
+        .spawn(
+            &exe("new Intl.ListFormat().format(['A','B','C']) === 'A, B and C'"),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(value) = task
+        .run_with(Budget::instructions(10000), &mut host)
+        .unwrap()
+    else {
+        panic!("expected formatted list");
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
+    assert!(task.dependency_log().edges().is_empty());
 }

@@ -5131,3 +5131,33 @@ class C extends B {}
 ```js reject Unsupported 1:11
 class C { x; }
 ```
+
+### Intl.ListFormat (clj-quickjs-220)
+
+Execution: `new Intl.ListFormat(locales, options)` constructs an ordinary
+object with immutable `locale`, `type`, `style` internal options. Calling it
+without `new` throws TypeError. `localeMatcher` accepts `lookup`/`best fit`;
+`type` defaults to `conjunction` and accepts `disjunction`/`unit`; `style`
+defaults to `long` and accepts `short`/`narrow`. Invalid strings throw RangeError.
+Options use the shared strict undefined-or-object policy. Locale resolution,
+canonical locale lists, `supportedLocalesOf` and the guarded host default follow
+the shared Intl helpers, with no relevant Unicode extension keys.
+
+`format(iterable)` and `formatToParts(iterable)` acquire the standard synchronous
+iterator and cache its `next` method. Undefined means an empty list. Every
+value must be a primitive string: wrappers and other primitives throw TypeError
+without coercion and call IteratorClose. A pending TypeError wins over a failed
+`return` getter/call or non-object return. Iterator-step/result-getter failures
+propagate directly. Empty and singleton lists preserve their natural forms;
+parts are ordinary `{type:'element'|'literal', value:string}` objects in a fresh
+array, including empty elements. UTF-16 strings retain NULs and lone surrogates.
+Methods validate the receiver before observing the iterable. `resolvedOptions`
+returns fresh `locale`, `type`, `style` properties in that order. The prototype
+carries `Symbol.toStringTag = 'Intl.ListFormat'`. Each input/output element is
+budgeted, with every user getter/coercion/call resumable across waits and GC.
+
+Explicit gaps: patterns follow QuickJS 7d1c13c5d8f8's finite selector, with
+English fallbacks outside Spanish and British English. All narrow patterns use
+spaces; Spanish disjunction uses `y`, short Spanish multi-item lists use commas,
+and Spanish has no sound-dependent conjunction. Further translations and
+contextual alternation require separately pinned data and are deferred.

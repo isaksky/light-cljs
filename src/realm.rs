@@ -418,6 +418,7 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_date_time_format_prototype: ObjectId,
     pub(crate) intl_date_time_format_bound: ObjectId,
     pub(crate) symbol_prototype: ObjectId,
+    pub(crate) intl_list_format_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1246,6 +1247,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (intl_date_time_format_prototype, intl_date_time_format_bound) =
         intl_date_time_format_intrinsics(&mut b, object_prototype, intl)?;
     let eval = b.function(Builtin::Eval, &[])?;
+    let intl_list_format_prototype = intl_list_format_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1330,6 +1332,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_date_time_format_prototype,
         intl_date_time_format_bound,
         symbol_prototype,
+        intl_list_format_prototype,
     })
 }
 
@@ -1980,6 +1983,52 @@ fn regexp_intrinsics(
     Some((prototype, constructor))
 }
 
+fn intl_list_format_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlListFormat,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "ListFormat", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlListFormatSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which) in [
+        ("format", Builtin::IntlListFormatFormat),
+        ("formatToParts", Builtin::IntlListFormatFormatToParts),
+        ("resolvedOptions", Builtin::IntlListFormatResolvedOptions),
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, name, method, PropertyFlags::METHOD)?;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |object| match object {
+        HeapObject::Plain(object) => object.define_with(
+            key,
+            Value::String(JsString::from("Intl.ListFormat")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(prototype)
+}
+
 fn intl_plural_rules_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
@@ -2341,7 +2390,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 284); // Includes WeakRef (-176) and Symbol.prototype with four methods (-129).
+        assert_eq!(first.all.len(), 290); // Includes WeakRef, Symbol wrappers and six ListFormat intrinsics.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

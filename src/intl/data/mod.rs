@@ -5,6 +5,7 @@ pub(crate) mod collation;
 pub mod dates;
 pub mod display_names;
 pub mod likely_subtags;
+pub(crate) mod lists;
 pub mod locale;
 pub mod numbers;
 pub mod preferences;

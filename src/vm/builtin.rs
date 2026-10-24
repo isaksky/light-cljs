@@ -403,6 +403,11 @@ pub(crate) enum Builtin {
     SymbolPrototypeValueOf,
     SymbolPrototypeDescription,
     SymbolPrototypeToPrimitive,
+    IntlListFormat,
+    IntlListFormatFormat,
+    IntlListFormatFormatToParts,
+    IntlListFormatResolvedOptions,
+    IntlListFormatSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -467,6 +472,11 @@ impl Builtin {
             Builtin::BigIntPrototypeValueOf => "valueOf",
 
             Builtin::IntlPluralRules => "PluralRules",
+            Builtin::IntlListFormat => "ListFormat",
+            Builtin::IntlListFormatFormat => "format",
+            Builtin::IntlListFormatFormatToParts => "formatToParts",
+            Builtin::IntlListFormatResolvedOptions => "resolvedOptions",
+            Builtin::IntlListFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlCollator => "Collator",
             Builtin::IntlCollatorGetCompare => "get compare",
             Builtin::IntlCollatorBound => "",
@@ -671,6 +681,10 @@ impl Builtin {
             | Builtin::IntlPluralRulesSelect
             | Builtin::IntlPluralRulesSupportedLocales => 1,
             Builtin::IntlPluralRulesResolvedOptions => 0,
+            Builtin::IntlListFormat | Builtin::IntlListFormatResolvedOptions => 0,
+            Builtin::IntlListFormatFormat
+            | Builtin::IntlListFormatFormatToParts
+            | Builtin::IntlListFormatSupportedLocales => 1,
             Builtin::IntlCollator
             | Builtin::IntlCollatorGetCompare
             | Builtin::IntlCollatorResolvedOptions => 0,
@@ -884,6 +898,15 @@ pub(crate) fn call(
             crate::intl::date_time_format::record(heap, task, this)?.resolved(heap, task)
         }
         Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
+        Builtin::IntlListFormat => Err(Fault::TypeError("Intl.ListFormat requires new".into())),
+        Builtin::IntlListFormatFormat
+        | Builtin::IntlListFormatFormatToParts
+        | Builtin::IntlListFormatSupportedLocales => {
+            Err(Fault::Internal("ListFormat requires native continuation"))
+        }
+        Builtin::IntlListFormatResolvedOptions => {
+            crate::intl::list_format::record(heap, task, this)?.resolved(heap, task)
+        }
         Builtin::IntlCollator
         | Builtin::IntlCollatorBound
         | Builtin::IntlCollatorSupportedLocales => {

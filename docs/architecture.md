@@ -7260,3 +7260,41 @@ before defining class elements, preserving explicit class names and later static
 `name` methods/accessors. Async class tests await both property names and method
 bodies, forcing collection and migration while the class's saved construction
 state, receiver and inner-name captures remain live.
+
+### Intl.ListFormat (clj-quickjs-220)
+
+ListFormat uses an ordinary task-owned object with one immutable boxed record
+(locale plus type/style), without heap edges or a new heap kind. Freezing its
+public properties leaves it task-owned under the existing publication category.
+The append-only built-in registry and realm install its prototype, constructor
+and four methods. Constructor locale/option stages use the shared resumable
+canonicalizer, ordered GetOption helpers and guarded host-default leaf effect.
+The supported-locale method reads only localeMatcher and never the host default.
+
+`vm::native::list_format` stores the GetIterator continuation, cached iterator
+and next, current result, collected strings, output, and pending exception in
+traced task state. Getters and calls use ordinary VM frames. A non-string value
+is validated at a separate native catch boundary so IteratorClose can wait or
+collect, and rethrow the original diagnostic even if closing fails. Failures in
+IteratorStep/IteratorValue propagate directly, following the existing iterable
+consumer convention. Input collection and result construction each advance by
+one element per budgeted step. String concatenation retains rope subtrees;
+parts retain original string bodies, including empty strings, NULs and lone
+surrogates. Finite option values reject oversized ropes by length before the
+leaf spelling comparison, avoiding an unbudgeted flatten.
+
+The snapshot's locale records have no list fields. `repack-lists.pl` extends the
+existing verified-data pipeline by extracting only JSListFormatData and the
+pinned `js_listformat_get_separators` selector/helpers into an offline exporter.
+It emits all four separator positions for each of 15 test locales × 3 types ×
+3 styles as safe Rust in `data/lists.rs`, with input/generator hashes in
+`data/list_provenance.txt`. `verify.sh` repeats generation, compares every byte
+with an independent Rust reader, detects deliberate corruption, and rejects
+source drift. Cargo never invokes C or the importer. The selector's start
+separator is empty and unused, just as in QuickJS; middle/end/pair delimiters
+produce the final order and parts.
+
+Coverage reproduces the pinned selector's strings, including English fallback
+for other locales, Spanish `y` for disjunction and no contextual `e` alternation.
+It does not infer a CLDR release or general translated-list coverage. Further
+patterns require a separately pinned extension of this same data pipeline.

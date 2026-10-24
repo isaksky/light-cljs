@@ -19,11 +19,12 @@
 //! edges, and preserve identity across publication. BigInts have an inline
 //! small form or an immutable Arc limb body, also without heap edges, so
 //! no heap-kind category is needed and collection never descends into them.
-//! Ordinary objects
-//! (`crate::object`, clj-quickjs-114) are the mutable JavaScript objects of
-//! `design.md` §4: task-owned mutation, never shareable, whatever their
-//! properties hold (an object literal is rejected like a builder). The
-//! same applies to ArrayBuffer objects, including detached buffers: their
+//! Ordinary objects (`crate::object`, clj-quickjs-114) are the mutable JavaScript
+//! objects of `design.md` §4: task-owned mutation, never shareable, whatever
+//! their properties hold (an object literal is rejected like a builder).
+//! This includes Intl.ListFormat instances: their internal options have no
+//! heap edges, but freezing public properties never makes them shareable.
+//! The same applies to ArrayBuffer objects, including detached buffers: their
 //! mutable backing stores and ordinary properties are task-owned. Typed-array
 //! views retain their task-owned buffer and remain task-owned after detachment. The
 //! exception is the realm's intrinsic objects (`Object.prototype`, and the

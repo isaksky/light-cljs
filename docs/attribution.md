@@ -1065,3 +1065,20 @@ MIT license notice are retained in both test modules. `js_parse_class`,
 `js_parse_class_default_ctor`, `js_op_define_class` and `OP_set_home_object` in
 `research/quickjs/quickjs.c` were consulted for semantics; no C code was ported.
 All other class tests are synthetic fixtures, not light-cljs output.
+
+### Intl.ListFormat (clj-quickjs-220)
+
+`research/quickjs/intl/listformat.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), supplies the
+separator selector exported offline by `scripts/quickjs-data/repack-lists.pl`.
+Its input SHA-256 and exporter provenance accompany `src/intl/data/lists.rs` in
+`list_provenance.txt`. The QuickJS copyright and MIT permission notice are
+preserved in `src/intl/data/QUICKJS-LICENSE` and copied to each exporter result;
+the Unicode notice remains in `docs/UNICODE-LICENSE`. Runtime state machines
+are independently written Rust; no QuickJS runtime is linked.
+
+The first three `tests/js_source.rs::intl_list_format` rows adapt
+`research/quickjs/tests/test_intl.js::test_listFormat` at that revision; the full
+QuickJS copyright and MIT notice appear at the top of the test file. Remaining
+fixtures are synthetic, not light-cljs output. Snapshot limitations, including
+Spanish and default-language fallbacks, are recorded in grammar/architecture.

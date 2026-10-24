@@ -915,7 +915,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 284); // Includes WeakRef (-176) and Symbol.prototype with four methods (-129).
+    assert_eq!(ids.len(), 290); // Includes WeakRef, Symbol wrappers and six ListFormat intrinsics.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

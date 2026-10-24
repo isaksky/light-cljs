@@ -317,9 +317,20 @@ pub(crate) struct OrdinaryObject {
     plural_rules: Option<Box<crate::intl::plural_rules::PluralRules>>,
     collator: Option<Box<CollatorSlots>>,
     date_time_format: Option<Box<DateTimeFormatSlots>>,
+    /// Immutable options have no heap edges; this ordinary object remains task-owned.
+    list_format: Option<Box<crate::intl::list_format::ListFormat>>,
 }
 
 impl OrdinaryObject {
+    pub(crate) fn with_list_format(mut self, data: crate::intl::list_format::ListFormat) -> Self {
+        self.list_format = Some(Box::new(data));
+        self
+    }
+
+    pub(crate) fn list_format(&self) -> Option<&crate::intl::list_format::ListFormat> {
+        self.list_format.as_deref()
+    }
+
     pub(crate) fn with_iterator(mut self, data: crate::vm::native::iterator::Data) -> Self {
         self.iterator = Some(Box::new(data));
         self
@@ -354,6 +365,7 @@ impl OrdinaryObject {
             plural_rules: None,
             collator: None,
             date_time_format: None,
+            list_format: None,
         }
     }
 
