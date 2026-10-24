@@ -1185,6 +1185,19 @@ fn labelled_break_and_continue() {
              n * 10 + i"),
         5.0
     );
+    // A labelled `do`-`while`: `continue L` evaluates its test, `break L`
+    // skips it.
+    let looping = exe("let i = 0, t = 0;
+         L: do { i++; while (true) { if (i < 3) continue L; break L; } } while ((t = t + 1) < 5);
+         i * 10 + t");
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    match task
+        .run_with(Budget::instructions(100_000), &mut NoEffects)
+        .unwrap()
+    {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(32.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
     // `break` to an outer label leaves every loop and block in between;
     // `break` to the label of a non-loop statement continues after it.
     assert_eq!(

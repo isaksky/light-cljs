@@ -212,6 +212,48 @@ fn for_waits_resume_body_and_update_with_per_iteration_bindings() {
     assert_eq!(log.0, [0.0, 10.0, 1.0, 7.0, 11.0]);
 }
 
+/// Labelled jumps (clj-quickjs-82) through finally blocks: a `continue` to
+/// a labelled `do`-`while` parks in its test, then a `break` out of a
+/// labelled block parks in the finally block it runs on the way. Each time
+/// a collection runs while it is parked and it resumes on another thread
+/// exactly where it stopped, completing the pending jump, with every effect
+/// run once.
+#[test]
+fn labelled_jumps_wait_and_resume_after_migration() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "let n = 0;
+         outer: do {
+           n = n + 1;
+           L: {
+             try { if (n === 1) continue outer; break L; }
+             finally { __rt.effect(1, 10 + n); if (n === 2) __rt.effect(1, __rt.need(5, 3)); }
+             __rt.effect(1, 91);
+           }
+           __rt.effect(1, n);
+           if (n === 2) break outer;
+           __rt.effect(1, 92);
+         } while (__rt.need(6, 3));
+         n",
+    );
+    let mut log = Log::default();
+    // Iteration 1: `continue outer` runs the finally block; the test waits.
+    run_to_wait(&rt, &task, &mut log, B);
+    assert_eq!(log.0, [11.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 1.0);
+    // Iteration 2: `break L` runs the finally block, which waits.
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, A));
+    assert_eq!(log.0, [11.0, 12.0]);
+    rt.collect().unwrap();
+    // The jump completes past `L`, then `break outer` ends the loop.
+    let (outcome, log) = run_elsewhere(publish(&rt, &task, 7.0), log);
+    assert_eq!(number(outcome), 2.0);
+    assert_eq!(log.0, [11.0, 12.0, 7.0, 2.0]);
+}
+
 /// A wait in a protected block, a catch block, and a finally block: parking
 /// runs no handler, the finally block runs once after the resumed code, and
 /// nothing before the wait is replayed.

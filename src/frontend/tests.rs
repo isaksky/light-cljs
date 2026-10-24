@@ -534,6 +534,10 @@ fn labelled_statements() {
         "(do (label x (block (break x))) 0)"
     );
     assert_eq!(
+        ast("L: do { continue L; } while (a);"),
+        "(label L (do (block (continue L)) a))"
+    );
+    assert_eq!(
         ast("for (;;) L: { if (a) break; continue; }"),
         "(for _ _ _ (label L (block (if a (break)) (continue))))"
     );

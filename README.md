@@ -1420,7 +1420,8 @@ Deferred:
 ### Labelled statements (clj-quickjs-82)
 
 Supported (`cargo test --lib frontend::tests::labelled_statements`,
-`cargo test --test js_source labelled_break_and_continue`):
+`cargo test --test js_source labelled_break_and_continue`,
+`cargo test --test exception_waits labelled_jumps_wait_and_resume_after_migration`):
 
 - `L: Statement` on any statement but a declaration, including blocks,
   `if`, `try` and loops, and as the body of `if`/`else` and loops; label
