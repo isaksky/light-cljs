@@ -28,11 +28,32 @@ impl TimeZone {
     /// Resolve a snapshot canonical name or alias. The 598-name inventory is
     /// broader than the 59 records with rules; inventory-only names fail.
     pub fn named(name: &str) -> Result<Self, String> {
-        if matches!(name, "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT") {
+        Self::lookup_named(name, false)
+    }
+
+    /// ECMA-402 matches available zone identifiers without ASCII case.
+    pub(crate) fn named_case_insensitive(name: &str) -> Result<Self, String> {
+        Self::lookup_named(name, true)
+    }
+
+    fn lookup_named(name: &str, ignore_case: bool) -> Result<Self, String> {
+        if ["UTC", "Etc/UTC", "Etc/GMT", "GMT"].iter().any(|n| {
+            if ignore_case {
+                n.eq_ignore_ascii_case(name)
+            } else {
+                *n == name
+            }
+        }) {
             return Ok(Self::UTC);
         }
         let matches = |bytes: Option<&[u8]>| {
-            bytes.is_some_and(|s| s.strip_suffix(&[0]) == Some(name.as_bytes()))
+            bytes.and_then(|s| s.strip_suffix(&[0])).is_some_and(|s| {
+                if ignore_case {
+                    s.eq_ignore_ascii_case(name.as_bytes())
+                } else {
+                    s == name.as_bytes()
+                }
+            })
         };
         let index = tables::ti_tz_zone_data
             .iter()

@@ -4624,7 +4624,7 @@ long/short/narrow. Missing date fields default to numeric year/month/day.
 Locale resolution uses `ca`/`hc`/`nu`, and options include `localeMatcher`,
 `calendar`, `numberingSystem`, `hour12`, `hourCycle`, `timeZone`, `formatMatcher`.
 The service shares Date's cached host zone and accepts UTC, fixed minute offsets
-and the host's named zone/aliases. Date names and numeric digits reproduce the
+and the host's named zone/aliases (matched without ASCII case). Date names and numeric digits reproduce the
 pinned QuickJS snapshot, including its manual component layout.
 
 Explicit gaps: calendars other than `gregory`, time fields (`dayPeriod`, `hour`,

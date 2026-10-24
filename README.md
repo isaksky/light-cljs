@@ -3483,7 +3483,7 @@ Gregorian weekday/era/year/month/day options use snapshot names, locale digits
 (including Arabic-Indic defaults for `ar`), and QuickJS's manual field layout.
 No fields defaults to numeric month/day/year. The formatter shares Date's one
 host zone per runtime; UTC, fixed minute offsets and the host's selected named
-zone (with recorded aliases) work. `format()` reads the unrecorded host clock;
+zone (with recorded aliases) work. Named identifiers match without ASCII case. `format()` reads the unrecorded host clock;
 without a clock it throws RangeError. Invalid time values also throw RangeError.
 
 Explicit gaps: time fields, time zone names, `dateStyle` and `timeStyle` validate

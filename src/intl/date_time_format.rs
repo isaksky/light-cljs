@@ -231,9 +231,6 @@ pub(crate) fn explicit_zone(text: &str, host: TimeZone) -> Result<TimeZone, Faul
     {
         return Ok(TimeZone::UTC);
     }
-    if text == host.identifier() || TimeZone::named(text).ok() == Some(host) {
-        return Ok(host);
-    }
     let bytes = text.as_bytes();
     if matches!(bytes.first(), Some(b'+' | b'-')) {
         let digits: Vec<u8> = match bytes.len() {
@@ -261,6 +258,11 @@ pub(crate) fn explicit_zone(text: &str, host: TimeZone) -> Result<TimeZone, Faul
             (hour * 60 + minute) * 60 * if bytes[0] == b'-' { -1 } else { 1 },
         )
         .map_err(|_| invalid());
+    }
+    if text.eq_ignore_ascii_case(&host.identifier())
+        || TimeZone::named_case_insensitive(text).ok() == Some(host)
+    {
+        return Ok(host);
     }
     Err(invalid())
 }

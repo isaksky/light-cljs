@@ -1228,7 +1228,11 @@ fn intl_date_time_format_host_zones_and_transitions() {
         if (f.format(Date.UTC(2017,10,6,4,59,59)) !== '11/05/2017') throw 'fall midnight before';
         if (f.format(Date.UTC(2017,10,6,5)) !== '11/06/2017') throw 'fall midnight after';
         let named=new Intl.DateTimeFormat('en',{timeZone:'US/Eastern',year:'numeric'});
+        let lower=new Intl.DateTimeFormat('en',{timeZone:'america/new_york',year:'numeric'});
+        let alias=new Intl.DateTimeFormat('en',{timeZone:'us/eastern',year:'numeric'});
         named.resolvedOptions().timeZone === 'America/New_York' && named.format(0) === '1969'
+        && lower.resolvedOptions().timeZone === 'America/New_York' && lower.format(0) === '1969'
+        && alias.resolvedOptions().timeZone === 'America/New_York' && alias.format(0) === '1969'
     "#;
     let code = clj_quickjs::frontend::compile_script("dtf-host-zone", source).unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
@@ -1247,4 +1251,78 @@ fn intl_date_time_format_host_zones_and_transitions() {
         matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
     );
     assert_eq!(host.clock_reads(), 0);
+}
+
+/// Synthetic fixture, not light-cljs output. Host zones may retain second
+/// precision, while explicit Intl offset options must use minute precision.
+#[test]
+fn intl_date_time_format_fixed_second_host_zone() {
+    use clj_quickjs::{
+        Budget, RunOutcome,
+        host::{TimeZone, sim::SimTimeHost},
+    };
+    let rt = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(3630).unwrap());
+    let code = clj_quickjs::frontend::compile_script("dtf-fixed-second-zone", r#"
+        let d=new Intl.DateTimeFormat('en',{year:'numeric'});
+        let minute=new Intl.DateTimeFormat('en',{year:'numeric',timeZone:'+01:00'});
+        let caught=false;
+        try {new Intl.DateTimeFormat('en',{timeZone:'+01:00:30'});} catch(e) {caught=e instanceof RangeError;}
+        caught && d.resolvedOptions().timeZone === '+01:00:30'
+        && d.format(Date.UTC(2017,11,31,22,59,30)) === '2018'
+        && minute.format(Date.UTC(2017,11,31,22,59,30)) === '2017'
+    "#).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    assert!(
+        matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. ResolveLocale observes the host
+/// after the saved matcher getter and coercion have completed.
+#[test]
+fn intl_date_time_format_host_default_locale() {
+    use clj_quickjs::{Budget, RunOutcome};
+    for locales in ["undefined", "'xx'"] {
+        let rt = Runtime::new();
+        let mut host = SimHost::new(&rt);
+        host.set_default_locale("de");
+        let source = format!(
+            "let d=new Intl.DateTimeFormat({locales},{{month:'long'}}); d.resolvedOptions().locale === 'de' && d.format(0) === 'Januar'"
+        );
+        let code = clj_quickjs::frontend::compile_script("dtf-host-locale", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        assert!(
+            matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
+        );
+        assert!(task.dependency_log().edges().is_empty());
+
+        let source = format!(
+            "let d=new Intl.DateTimeFormat({locales},{{get localeMatcher(){{__rt.need(2151,1);return {{toString(){{__rt.need(2152,1);return 'lookup';}}}};}},month:'long'}}); d.resolvedOptions().locale === 'de' && d.format(0) === 'Januar'"
+        );
+        let code =
+            clj_quickjs::frontend::compile_script("dtf-locale-after-matcher", &source).unwrap();
+        host.set_default_locale("en-US");
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        for locale in ["fr", "de"] {
+            assert!(matches!(
+                task.run_with(Budget::instructions(10000), &mut host)
+                    .unwrap(),
+                RunOutcome::Waiting(_)
+            ));
+            host.set_default_locale(locale);
+            rt.collect().unwrap();
+            let request = task.take_producer_requests().pop().unwrap();
+            let zero = rt.root(Primitive::Number(0.0));
+            task = rt
+                .complete(request.key(), request.producer(), Completion::Ready(&zero))
+                .unwrap()
+                .into_runnable()
+                .pop()
+                .unwrap();
+        }
+        assert!(
+            matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
+        );
+    }
 }

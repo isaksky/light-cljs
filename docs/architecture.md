@@ -6656,7 +6656,8 @@ conversion, including offsets across TimeClip endpoints. UTC, ±HH, ±HHMM and
 ±HH:MM are accepted; offsets resolve to ±HH:MM (zero resolves to +00:00).
 Host fixed zones report `TimeZone::identifier()` (UTC at zero; second precision
 when needed); named host zones report the canonical snapshot identifier. A
-requested named zone must be the host-selected zone or its recorded alias;
+requested named zone must be the host-selected zone or its recorded alias,
+matched without ASCII case;
 other names fail explicitly, including inventory-only names. Default-zone
 selection shares Date's runtime cache. First/last transition offsets extend
 indefinitely without extrapolating recurrence rules. Clock/default-zone reads
