@@ -69,11 +69,13 @@ enum Holder {
     /// The realm's intrinsic objects (`crate::realm`) and the property
     /// values of built-in functions.
     Intrinsic,
+    /// Elements of an array object.
+    ArrayElement,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 21] = [
+const HOLDERS: [Holder; 22] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -95,6 +97,7 @@ const HOLDERS: [Holder; 21] = [
     Holder::NativePayloadEdges,
     Holder::ObjectProperty,
     Holder::Intrinsic,
+    Holder::ArrayElement,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -110,7 +113,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 10] = [
+const KINDS: [ObjectKind; 11] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -121,6 +124,7 @@ const KINDS: [ObjectKind; 10] = [
     ObjectKind::Cell,
     ObjectKind::Atom,
     ObjectKind::Builtin,
+    ObjectKind::Array,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -148,6 +152,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             NativeFrame,
             TransientBuilder,
             ObjectProperty,
+            ArrayElement,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -170,6 +175,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Cell => &[BindingCell],
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
+        ObjectKind::Array => &[ArrayElement],
     }
 }
 
@@ -248,6 +254,7 @@ fn coverage(holder: Holder) -> Coverage {
             retains: (GcRoots, "realm_intrinsics_retain"),
             reclaims: (Inventory, "realm_intrinsics_reclaim_with_their_heap"),
         },
+        Holder::ArrayElement => public("array_element_retains", "array_element_reclaims"),
     }
 }
 
@@ -500,7 +507,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 5);
+    assert_eq!(ids.len(), 8);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

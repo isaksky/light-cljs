@@ -148,6 +148,32 @@ fn render_expr(e: &Expr) -> String {
             out.push(')');
             out
         }
+        ExprKind::Array(elements) => {
+            let mut out = "(array".to_string();
+            for element in elements {
+                out.push(' ');
+                match element {
+                    Some(e) => out.push_str(&render_expr(e)),
+                    None => out.push_str("<hole>"),
+                }
+            }
+            out.push(')');
+            out
+        }
+        ExprKind::Index { object, index, .. } => {
+            format!("([] {} {})", render_expr(object), render_expr(index))
+        }
+        ExprKind::AssignIndex {
+            object,
+            index,
+            value,
+            ..
+        } => format!(
+            "(= ([] {} {}) {})",
+            render_expr(object),
+            render_expr(index),
+            render_expr(value)
+        ),
     }
 }
 
@@ -1123,7 +1149,13 @@ fn update_expressions() {
         3,
         "increment and decrement of properties",
     );
-    rejects_with("a[0]++;", Unsupported, 1, 2, "computed member");
+    rejects_with(
+        "a[0]++;",
+        Unsupported,
+        1,
+        1,
+        "increment and decrement of properties",
+    );
     // The result of a postfix update is not a callee or member object, and
     // two operands need an operator between them.
     rejects("a++();", UnexpectedToken, 1, 4);
@@ -1297,6 +1329,78 @@ fn property_assignment() {
         "increment and decrement of properties",
     );
     rejects_with("__rt.x = 1;", ReservedWord, 1, 1, "cannot be assigned");
+}
+
+/// Array literals (clj-quickjs-118): elisions are holes, one final comma
+/// adds nothing, elements are assignment expressions; spread elements and
+/// array assignment patterns stay rejected.
+#[test]
+fn array_literals() {
+    use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken, Unsupported};
+    assert_eq!(ast("[];"), "(array)");
+    assert_eq!(ast("[1, 2,];"), "(array 1 2)");
+    assert_eq!(ast("[ , ];"), "(array <hole>)");
+    assert_eq!(ast("[1, , 3];"), "(array 1 <hole> 3)");
+    assert_eq!(ast("[,,];"), "(array <hole> <hole>)");
+    assert_eq!(ast("[1,,];"), "(array 1 <hole>)");
+    assert_eq!(ast("[, 1];"), "(array <hole> 1)");
+    assert_eq!(
+        ast("x = [a = 1, [b], {c: [d, (1, 2)]}, f => f];"),
+        "(= x (array (= a 1) (array b) (object (c (array d (, 1 2)))) (arrow (f) => f)))"
+    );
+    // A literal is a member object and a callee like any primary.
+    assert_eq!(ast("[1].length;"), "(. (array 1) length)");
+    assert_eq!(ast("[f][0](1);"), "(call ([] (array f) 0) 1)");
+    // Spans cover the brackets.
+    let src = "x = [1, , 3,];";
+    let script = parse_script(src).unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    let ExprKind::Assign { value, .. } = &e.kind else {
+        panic!("not an assignment")
+    };
+    assert_eq!(value.span.text(src), "[1, , 3,]");
+
+    rejects_with("x = [...a];", Unsupported, 1, 6, "spread elements");
+    rejects_with("x = [1, ...a];", Unsupported, 1, 9, "spread elements");
+    rejects_with("[a] = b;", Unsupported, 1, 1, "destructuring assignment");
+    rejects_with("[a, b] = [b, a];", Unsupported, 1, 1, "destructuring");
+    rejects_with("let [a] = b;", Unsupported, 1, 5, "destructuring");
+    rejects("[a] += 1;", Invalid, 1, 1);
+    rejects("x = [1 2];", UnexpectedToken, 1, 8);
+    rejects("x = [1,", UnexpectedEnd, 1, 8);
+}
+
+/// Computed member access `a[k]` and assignment `a[k] = v`, as the array
+/// pellet needs them (clj-quickjs-118; the rest of computed access is
+/// clj-quickjs-115). A computed callee is a method call, rejected when
+/// lowered; compound assignment and `++`/`--` of a computed property stay
+/// rejected, and `__rt` cannot be indexed.
+#[test]
+fn computed_member_access_for_arrays() {
+    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    assert_eq!(ast("a[b];"), "([] a b)");
+    assert_eq!(ast("a[b][c];"), "([] ([] a b) c)");
+    assert_eq!(ast("a.b[c].d;"), "(. ([] (. a b) c) d)");
+    assert_eq!(ast("a[b, c];"), "([] a (, b c))");
+    assert_eq!(ast("a[b](c);"), "(call ([] a b) c)");
+    assert_eq!(ast("a[b] = c;"), "(= ([] a b) c)");
+    assert_eq!(
+        ast("(a[b]) = c = d[e] = f;"),
+        "(= ([] a b) (= c (= ([] d e) f)))"
+    );
+    // No line-terminator restriction: `a` newline `[0]` is one member.
+    assert_eq!(ast("a\n[0]"), "([] a 0)");
+    rejects_with(
+        "a[0] += 1;",
+        Unsupported,
+        1,
+        1,
+        "compound assignment to properties",
+    );
+    rejects_with("__rt[0];", ReservedWord, 1, 5, "computed access");
+    rejects_with("__rt[0] = 1;", ReservedWord, 1, 5, "computed access");
 }
 
 /// A number literal followed by a member access (clj-quickjs-48). The
@@ -2762,8 +2866,8 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = super.y;", 1, 5, "super"),
         ("delete x.y;", 1, 1, "delete"),
         ("++x.y;", 1, 3, "increment and decrement of properties"),
-        ("x = [1];", 1, 5, "array literals"),
-        ("a[0];", 1, 2, "computed member"),
+        ("x = [...a];", 1, 6, "spread elements"),
+        ("[a] = b;", 1, 1, "destructuring assignment"),
         ("f(...a);", 1, 3, "spread"),
         ("function f(...a) {}", 1, 12, "rest"),
         ("let [a] = b;", 1, 5, "destructuring"),
@@ -2974,6 +3078,19 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("templates", |n| {
             format!("x = {}1{};", "`${".repeat(n), "}`".repeat(n))
+        }),
+        ("array literals", |n| {
+            format!("x = {}1{};", "[".repeat(n), "]".repeat(n))
+        }),
+        ("array elements", |n| {
+            format!("x = {}1{};", "[1, , a[0] = ".repeat(n), ", 2]".repeat(n))
+        }),
+        ("index chains", |n| format!("x = a{};", "[0]".repeat(n))),
+        ("nested indexes", |n| {
+            format!("x = {}0{};", "a[".repeat(n), "]".repeat(n))
+        }),
+        ("index assignments", |n| {
+            format!("x = {}1;", "a[0] = ".repeat(n))
         }),
         ("wrapped member chains", |n| {
             let mut s = "a".to_string();

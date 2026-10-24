@@ -4112,11 +4112,8 @@ fn method_calls_bind_this() {
     // A parenthesized member callee keeps its receiver.
     assert_eq!(num(&format!("{o} (o.m)()")), 1.0);
     assert_eq!(num(&format!("{o} ((o.m))()")), 1.0);
-    // `o["m"]()` needs computed member access (clj-quickjs-115), which is
-    // still an explicit compile-time error.
-    let e = compile_script("t", &format!("{o} o[\"m\"]()")).unwrap_err();
-    assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{e}");
-    assert!(e.message.contains("computed member access"), "{e}");
+    // A computed member callee is a method call too (clj-quickjs-118).
+    assert_eq!(num(&format!("{o} o[\"m\"]()")), 1.0);
     // A comma or assignment result, or a plain reference, is not a member
     // callee: `this` is undefined, so `this.x` throws a catchable TypeError.
     for call in ["(0, o.m)()", "let f = o.m; f()", "let f; (f = o.m)()"] {
@@ -4526,4 +4523,278 @@ fn object_intrinsics_reject_what_they_do_not_support() {
         assert!(e.message.contains("`Object`"), "{src}: {e}");
     }
     assert_eq!(num("let Object = 1; Object = 2; Object"), 2.0);
+}
+
+/// Array literals and array objects (clj-quickjs-118): elisions are holes
+/// (absent elements), one final comma adds nothing, `length` follows the
+/// greatest index written, elements are evaluated left to right, and every
+/// literal is a new task-owned object. Computed member access `a[k]` is
+/// covered as far as arrays need it (clj-quickjs-115 owns the rest).
+/// Arrays inherit from the realm intrinsic `Array.prototype` (no methods
+/// yet; `Object.getPrototypeOf` is the reflection pellet's), which
+/// inherits from `Object.prototype` (clj-quickjs-117).
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_literals() {
+    assert_eq!(num("[1, 2, 3][2]"), 3.0);
+    assert_eq!(num("[1, 2, 3].length"), 3.0);
+    assert_eq!(num("[].length"), 0.0);
+    assert_eq!(num("[1, 2,].length"), 2.0);
+    assert_eq!(num("[ , ].length"), 1.0);
+    assert_eq!(num("[,,].length"), 2.0);
+    assert_eq!(num("[1, , 3].length"), 3.0);
+    assert_eq!(eval("[1, , 3][1]"), ValueView::Undefined);
+    assert_eq!(eval("[ , ][0]"), ValueView::Undefined);
+    assert_eq!(eval("[1, 2][2]"), ValueView::Undefined);
+    let a = "let a = [1]; a[3] = 4;";
+    assert_eq!(num(&format!("{a} a.length")), 4.0);
+    assert_eq!(num(&format!("{a} a[\"0\"]")), 1.0);
+    assert_eq!(num(&format!("{a} a[1 + 2]")), 4.0);
+    assert_eq!(eval(&format!("{a} a[2]")), ValueView::Undefined);
+    // A write below the length leaves it; an assignment's value is the
+    // assigned value.
+    assert_eq!(
+        num("let a = [1, 2, 3]; a[0] = 9; a.length * 10 + a[0]"),
+        39.0
+    );
+    assert_eq!(num("let a = []; (a[0] = 5) + a[0]"), 10.0);
+    // Identity: a literal is a new object each time; aliases share it.
+    assert_eq!(eval("[] !== []"), ValueView::Bool(true));
+    assert_eq!(eval("let a = []; a === a"), ValueView::Bool(true));
+    assert_eq!(
+        eval("let a = []; let b = a; b[0] = 1; a[0] === 1"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        num("function f() { return []; } let x = f(), y = f(); x[0] = 1; y.length"),
+        0.0
+    );
+    assert_eq!(string("typeof []"), "object");
+    // Elements of every kind, nested literals included.
+    assert_eq!(string("[\"a\", \"b\"][1]"), "b");
+    assert_eq!(num("[[1, 2], [3, 4]][1][0]"), 3.0);
+    assert_eq!(num("[{x: 7}][0].x"), 7.0);
+    assert_eq!(num("({a: [1, 2]}).a[1]"), 2.0);
+    assert_eq!(
+        num("let f = [function (n) { return n * 2; }][0]; f(21)"),
+        42.0
+    );
+    assert_eq!(eval("[null, undefined][1]"), ValueView::Undefined);
+    // The `docs/grammar.md` example lines, each true.
+    for line in [
+        "[1, 2, 3][2] === 3 && [1, 2,].length === 2 && [ , ].length === 1 && [].length === 0;",
+        "[1, , 3].length === 3 && [1, , 3][1] === undefined && [] !== [] && typeof [] === \"object\";",
+        "let a = [1]; a[3] = 4; a.length === 4 && a[\"0\"] === 1 && a[2] === undefined;",
+    ] {
+        assert_eq!(eval(line), ValueView::Bool(true), "{line}");
+    }
+
+    // Elements evaluate left to right; holes evaluate nothing.
+    let log = "let log = 0; function f(n) { log = log * 10 + n; return n; }";
+    assert_eq!(num(&format!("{log} [f(1), , f(2), f(3)]; log")), 123.0);
+    assert_eq!(
+        num(&format!(
+            "{log} let a = [f(1), , f(2)]; log * 10 + a.length"
+        )),
+        123.0
+    );
+    // `g()[k()] = h()`: the base, the key, then the value.
+    assert_eq!(
+        num(&format!(
+            "{log} let t = []; function g() {{ f(1); return t; }} \
+             function k() {{ f(2); return 0; }} function h() {{ f(3); return 9; }} \
+             g()[k()] = h(); log * 10 + t[0]"
+        )),
+        1239.0
+    );
+
+    // Keys: a number or string that is an array index names an element; any
+    // other key is an ordinary property of the array and leaves `length`.
+    let keys = [
+        ("let a = [5]; a[-0]", 5.0),
+        ("let a = [5]; a['0']", 5.0),
+        ("let a = [5]; a[0.0]", 5.0),
+        ("let a = []; a['2'] = 1; a.length", 3.0),
+        ("let a = []; a[1.5] = 1; a.length * 10 + a['1.5']", 1.0),
+        ("let a = []; a['01'] = 1; a.length * 10 + a['01']", 1.0),
+        ("let a = []; a[-1] = 1; a.length * 10 + a['-1']", 1.0),
+        ("let a = [3]; a.x = 2; a.length * 10 + a.x", 12.0),
+        ("let a = [3]; a[true] = 2; a.length * 10 + a['true']", 12.0),
+        ("let a = []; a[4294967294] = 1; a.length", 4294967295.0),
+        ("let a = []; a[4294967295] = 1; a.length", 0.0),
+    ];
+    for (src, expected) in keys {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    assert_eq!(eval("let a = [5]; a['00']"), ValueView::Undefined);
+    // Far writes are stored sparsely; holes in between read undefined.
+    assert_eq!(
+        num("let a = [1]; a[100000] = 2; a[50] === undefined ? a.length : -1"),
+        100001.0
+    );
+    assert_eq!(
+        num("let a = []; let i = 0; while (i < 3000) { a[i] = i; i = i + 1; } a[2999] + a.length"),
+        5999.0
+    );
+    assert_eq!(
+        num("let a = []; a[5000] = 1; a[0] = 2; a[5001] = 3; a[0] + a[5000] + a[5001] + a.length"),
+        5008.0
+    );
+    // Computed access on ordinary objects names the same properties.
+    assert_eq!(
+        num("let o = {}; o['x'] = 1; o[1] = 2; o.x * 10 + o['1']"),
+        12.0
+    );
+    assert_eq!(num("let o = {1: 4}; o[1]"), 4.0);
+    // Persistent vectors are not JavaScript arrays: no elements, no length.
+    assert_eq!(eval("__rt.vector(1, 2)[0]"), ValueView::Undefined);
+    assert_eq!(eval("__rt.vector(1, 2).length"), ValueView::Undefined);
+    // ... and an array is not a collection.
+    let (kind, message, ..) = failure_at("__rt.count([1, 2]);");
+    assert!(
+        matches!(kind, VmErrorKind::Collection(_)) && message.contains("array"),
+        "{kind:?}: {message}"
+    );
+
+    // Errors: a null/undefined base is a catchable TypeError at the `[`.
+    assert_eq!(
+        string("let r = 'none'; try { null[0]; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        failure_at("let u;\nu[0];"),
+        (
+            VmErrorKind::TypeError,
+            "cannot read property '0' of undefined".to_string(),
+            2,
+            2
+        )
+    );
+    assert_eq!(
+        failure_at("let n = null;\n  n['x'] = [];"),
+        (
+            VmErrorKind::TypeError,
+            "cannot set property 'x' of null".to_string(),
+            2,
+            4
+        )
+    );
+    // The right-hand side runs before the base is checked.
+    assert_eq!(
+        num("let hit = 0; try { null[0] = (hit = 1); } catch (e) {} hit"),
+        1.0
+    );
+    // A null/undefined base is checked before the key is converted, so an
+    // object key (which needs ToPrimitive) still gives the catchable
+    // TypeError, after the key expression ran.
+    for src in [
+        "let r = 0; try { null[{}]; } catch (e) { r = 1; } r",
+        "let r = 0; let u; try { u[[]] = 1; } catch (e) { r = 1; } r",
+        "let r = 0; try { null[(r = 5, {})]; } catch (e) { r = r + 1; } r - 5",
+    ] {
+        assert_eq!(num(src), 1.0, "{src}");
+    }
+    assert_eq!(
+        failure_at("let n = null;\n  n[{}];"),
+        (
+            VmErrorKind::TypeError,
+            "cannot read a property of null".to_string(),
+            2,
+            4
+        )
+    );
+    // Explicitly unsupported, never a wrong value: setting `length`
+    // (clj-quickjs-39) and an object key (ToPrimitive, clj-quickjs-70).
+    for (src, needle) in [
+        ("let a = [1];\na.length = 0;", "length"),
+        ("let a = [1];\na[[]];", "ToPrimitive"),
+        ("let a = [1];\na[{}] = 1;", "ToPrimitive"),
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+    // The prototype chain: Array.prototype, then Object.prototype. Its
+    // methods do not exist yet; toString and the constructor fail
+    // explicitly rather than answer as Object's would.
+    for src in [
+        "[].valueOf === Object.prototype.valueOf",
+        "let a = [1]; a.valueOf() === a",
+        "[].push === undefined && [].hasOwnProperty === undefined",
+        "[].toString !== Object.prototype.toString && typeof [].toString === 'function'",
+        "[].constructor !== Object && [].constructor.name === 'Array'",
+        "[].constructor.prototype === [1].constructor.prototype",
+        "[].constructor.length === 1 && [].length === 0",
+        "Object.prototype.toString === ({}).toString",
+        // Object.prototype.toString itself tags an array receiver `Array`.
+        "let a = []; a.tag = Object.prototype.toString; a.tag() === '[object Array]'",
+        "let o = {tag: Object.prototype.toString}; o.tag() === '[object Object]'",
+        // A method call through an index passes the array as receiver.
+        "let a = [function (n) { return n * 2; }]; a[0](21) === 42",
+        "let o = {m: Object.prototype.valueOf}; o['m']() === o",
+        "let o = {f: function () { return this; }}; o['f']() === o",
+        "let a = [function () { return this; }]; a[0]() === a",
+        // An element or named property shadows the chain, a hole does not.
+        "let a = [1]; a.valueOf = 5; a.valueOf === 5 && [].valueOf !== 5",
+        "let a = []; a[0] = 1; a.toString = 2; a.length === 1 && a.toString === 2",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (src, needle) in [
+        ("let a = [1];\na.toString();", "Array.prototype.toString"),
+        ("let a = [];\na.constructor();", "Array constructor"),
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+    // Array.prototype is a shared built-in object: writes through
+    // `constructor.prototype` are rejected like any built-in's.
+    assert_eq!(
+        string(
+            "let r = 'none'; try { [].constructor.prototype.x = 1; } \
+             catch (e) { r = 'caught'; } r"
+        ),
+        "caught"
+    );
+    assert_eq!(
+        eval("[].constructor.prototype[0] === undefined && [][0] === undefined"),
+        ValueView::Bool(true)
+    );
+
+    // Destructuring and spread are their own pellets.
+    for src in ["[a] = [1];", "let [a] = [1];", "x = [...a];"] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+    }
+
+    // The literal compiles to the array instructions.
+    let ops = opcodes(&exe("let a = [1, , 2]; a[0] = a[2];"));
+    for op in [
+        Opcode::NewArray,
+        Opcode::AppendElement,
+        Opcode::AppendHole,
+        Opcode::GetElem,
+        Opcode::PutElem,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+
+    // Deep literals and long index chains compile within the 2 MiB stack
+    // the parser is tested with.
+    let nested = format!("x = {}1{};", "[".repeat(62), "]".repeat(62));
+    let chain = format!("let a = [];\na{};", "[0]".repeat(240));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let a = compile_script("nested", &nested).map(|_| ());
+            let b = compile_script("chain", &chain).map(|_| ());
+            (a, b)
+        })
+        .unwrap();
+    let (a, b) = handle.join().unwrap();
+    a.unwrap();
+    b.unwrap();
 }

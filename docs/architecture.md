@@ -212,6 +212,7 @@ public API cannot reach.
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
+| array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -314,12 +315,14 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   | Category | Kinds | Shareable |
   |----------|-------|-----------|
   | `Persistent` | vector, map, occurrence; natives declaring it | when everything it references is |
-  | `TaskOwned` | builders in every state, ordinary objects, binding cells, natives declaring it | never |
+  | `TaskOwned` | builders in every state, ordinary objects, arrays, binding cells, natives declaring it | never |
   | `ConcurrentReference` | atoms (clj-quickjs-10); reserved for any heap-object handle to a dependency cell (cells are runtime-owned, not heap objects) | always; not descended into |
 
   Primitives are shareable. Ordinary objects are the mutable JavaScript
   objects of §4 (clj-quickjs-114, "Ordinary objects" below): task-owned
-  mutation whatever their properties hold. A native payload declares its category through
+  mutation whatever their properties hold. So are arrays (clj-quickjs-118,
+  "Array objects" below), whose description path continues into their
+  elements by index. A native payload declares its category through
   `NativePayload::shareability`.
 - **The check** walks the value graph breadth-first with an explicit queue
   and a visited set: no recursion (depth is bounded only by memory), each
@@ -1646,7 +1649,9 @@ moment (a leaf lock, never taken by the collector).
   extension differently (`design.md` §5 allows private lowering), or a
   later per-task overlay; this is listed under "Explicit gaps".
 - Later intrinsics follow the same pattern: `Function.prototype`
-  (clj-quickjs-102), `Array.prototype` and `Array` (clj-quickjs-153),
+  (clj-quickjs-102), `Array.prototype` (added by clj-quickjs-118, with an
+  `Array` stub as its `constructor`) and the `Array` global and methods
+  (clj-quickjs-39, -153),
   `Symbol.prototype` (clj-quickjs-129) and the error prototypes and
   constructors (clj-quickjs-230) are added to `realm::build` as intrinsic
   ordinary objects and `Builtin` functions, their constructors to `Global`
@@ -1661,6 +1666,133 @@ moment (a leaf lock, never taken by the collector).
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
   literal or `Object()`).
+
+## Array objects (clj-quickjs-118)
+
+Contract: `src/object/array.rs` (`ArrayObject`, `array_index`),
+`src/vm/property.rs` (`GetElem`, `PutElem`, `NewArray`, `AppendElement`,
+`AppendHole`; property keys and ToPropertyKey), `src/value/share.rs`
+(publication). Design: `design.md` §§4, 11. QuickJS reference:
+`js_create_array`, `JS_NewArray`, `OP_array_from`, `OP_get_array_el`,
+`OP_put_array_el` and its fast arrays (`research/quickjs/quickjs.c`,
+revision 7d1c13c5d8f8); no code is ported.
+
+**Decision.** A JavaScript array is a new heap kind,
+`HeapObject::Array` (`ObjectKind::Array`, `ObjectCounts::array`),
+holding a boxed `ArrayObject` (boxed so that its storage does not enlarge
+the slot of every heap object):
+
+- an embedded **`OrdinaryObject`** for everything an array shares with
+  an ordinary object: the owner task, the `[[Prototype]]`, the
+  `[[Extensible]]` flag and the own properties whose key is not an array
+  index (`a.name = 1`, `a["01"]`, `a[-1]`), so ownership, foreign-task
+  failures and named-property storage are exactly "Ordinary objects";
+- **elements** in task-owned storage: a dense `Vec<Option<Value>>` for
+  indices below its length (`None` is a hole, an absent property), and a
+  sparse `BTreeMap<u32, Value>` fallback for indices at or beyond it. A
+  write lands in the dense part when it is inside it, or when the sparse
+  part is empty and the index is at most 1024 past the dense end (the gap
+  fills with holes); otherwise in the sparse part. The dense part thus
+  only grows while the sparse part is empty, so every sparse index lies
+  beyond every dense one and elements enumerate in index order without
+  sorting. Literals and sequential appends stay dense; `a[4294967294] = 1`
+  costs one map entry;
+- **`length`**, a `u32` that is the own `length` property (non-enumerable,
+  writable, non-configurable, never stored as a named property): one more
+  than the greatest index present, or more (trailing holes). Writing an
+  index at or beyond it sets it to index + 1.
+
+An array index is the canonical decimal string of an integer
+`0 ..= 2^32 - 2` (`"0"`, `"7"`, not `"07"`, `"-0"` or `"4294967295"`).
+Property access carries a key as `Key::Index(u32)` or `Key::Name`: a
+number that is such an integer (`-0` included) converts to an index
+without building a string, a string is parsed once, and an ordinary
+object stores an index key under its name. `__rt.vector(...)` values are
+untouched: a persistent vector is not a JavaScript array (it has no
+JavaScript properties: `v[0]` and `v.length` read `undefined`), and an
+array is not a persistent vector (the collection intrinsics reject it as
+they reject an ordinary object).
+
+Arrays are `Shareability::TaskOwned`, like ordinary objects. The
+collector traces every element, then the embedded object (root inventory:
+`array_element_retains` / `array_element_reclaims`). Publication rejects
+a value that reaches an array at the array, and the description walks on
+into its elements, in index order and before its named properties, with
+a `PathStep::Element(i)` step (`value[1][3]`), to the innermost
+task-owned object along the first such chain.
+
+Array literals compile to `NewArray` (`0x57`), then per element its
+value and `AppendElement` (`0x58`), or `AppendHole` (`0x59`) for an
+elision; computed member access to `GetElem` (`0x5A`) and `PutElem`
+(`0x5B`), which run ToPropertyKey on the key operand; `o[k](...)` is a
+method call (`Dup`, `GetElem`, `CallMethod`). Only `NewArray` allocates a
+heap object (a poll point; it also builds the realm on first use);
+element storage grows outside the object table, as property storage
+does.
+
+**Prototype.** Following the realm decision of clj-quickjs-117 ("Realm
+intrinsics"), `Array.prototype` is a shared immutable intrinsic: an
+ordinary object (not itself an array, which is unobservable while nobody
+can write to it) inheriting from `Object.prototype`, with an own `length`
+of 0, a `toString` that fails explicitly until `Array.prototype.join`
+exists (so `[].toString()` never answers `"[object Array]"`), and a
+`constructor` that is the `Array` built-in, a stub that fails when called
+and is not yet a global name (clj-quickjs-39). Every array literal
+inherits from it; a hole or a missing name reads along the chain, and a
+write of an absent index or name consults the chain (OrdinarySet) before
+the element or property is added.
+
+**Alternatives considered.**
+
+- *Back arrays by the persistent vector of `src/collections`* (a
+  task-owned array object holding a `PVector` in a mutable slot,
+  replaced on each write). Snapshotting an array into a publishable value
+  would be O(1), but every element write would path-copy and allocate trie
+  nodes, a persistent vector has no hole (absent element) distinct from
+  `undefined`, and an index near `2^32 - 2` would need a 4-billion-slot
+  trie or a second representation anyway. Rejected: the vector stays the
+  shareable sequence type (`__rt.vector`), and converting an array into
+  one is an explicit copy (a later intrinsic if fixtures need it).
+- *Elements as ordinary named properties* (QuickJS's slow arrays only):
+  no new storage, but every index would be interned in the runtime-wide
+  key table (which never shrinks), each element would cost a key lookup
+  under the table lock, and index order would need a sort. Rejected.
+- *A dense vector only*: holes are cheap, but `a[4294967294] = 1` would
+  allocate gigabytes. Rejected for the dense-plus-sparse split, which
+  costs one extra branch on a miss.
+- *An array flag inside `OrdinaryObject` (no new heap kind)*: fewer
+  matches to extend, but every ordinary object would carry or check the
+  element storage, heap statistics could not count arrays, and
+  publication errors could not name the kind. Rejected; the embedded
+  `OrdinaryObject` already gives the shared behaviour.
+
+**Consequences.**
+
+- `typeof []` is `"object"`, `[] !== []`, and an array behaves as an
+  ordinary object for every named key, so later object pellets (getters,
+  `Object.keys`, `delete`, `defineProperty`) apply to the embedded object
+  and must add the elements: enumeration lists indices first in ascending
+  order (clj-quickjs-123), `delete a[i]` makes a hole (clj-quickjs-124),
+  and a non-default element attribute (`defineProperty`, freezing) needs
+  per-element flags or a move to a named property, which the sparse part
+  can take.
+- `Object.getPrototypeOf([])` (the reflection pellet) and an `Array`
+  global (clj-quickjs-39) will make `Array.prototype` nameable; it is
+  reachable today only as `[].constructor.prototype`. Its methods are
+  added to the realm (`realm::build`, `Builtin`, append-only).
+- Assigning `length` (truncation or extension), the `Array` constructor,
+  `Array.isArray` and the `Array.prototype` methods (clj-quickjs-39,
+  -153..-156) are not implemented; assigning `length` fails with
+  `UnsupportedOperand` instead of misbehaving. With dense storage,
+  truncation is a `Vec::truncate` plus a sparse `split_off`.
+- Computed keys make the property-key table data-dependent: `o[k] = v`
+  with arbitrary string keys interns each new name (array indices on
+  arrays never do). Key reclamation by the collector is still owed
+  ("Ordinary objects", Consequences).
+- Computed access as clj-quickjs-115 specifies it is partly covered here:
+  `a[k]` and `a[k] = v` with primitive keys on every base. Object keys
+  (ToPrimitive, clj-quickjs-70) fail with `UnsupportedOperand`, and
+  `o[k](...)` is a method call passing `o` (clj-quickjs-117's `CallMethod`).
 
 ## QuickJS references and provenance
 

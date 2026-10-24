@@ -46,8 +46,10 @@
 //! |----------|--------|
 //! | `Object(v)` | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; a boolean, number or string: `UnsupportedOperand` (wrapper objects are clj-quickjs-72) |
 //! | `Object.is(a, b)` | SameValue: `NaN` is `NaN`, `0` is not `-0`, strings by content, objects by identity |
-//! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); an error object or a primitive receiver: `UnsupportedOperand` (their tags belong to clj-quickjs-230 and clj-quickjs-72/-73) |
+//! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Array]"` for an array (clj-quickjs-118); `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); an error object or a primitive receiver: `UnsupportedOperand` (their tags belong to clj-quickjs-230 and clj-quickjs-72/-73) |
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
+//! | `Array.prototype.toString()` (clj-quickjs-118) | `UnsupportedOperand` until `Array.prototype.join` exists (clj-quickjs-39), never `Object.prototype.toString`'s answer |
+//! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -71,6 +73,13 @@ pub(crate) enum Builtin {
     ObjectPrototypeToString,
     /// `Object.prototype.valueOf` (QuickJS `js_object_valueOf`).
     ObjectPrototypeValueOf,
+    /// `Array.prototype.toString` (clj-quickjs-118): fails explicitly
+    /// until `Array.prototype.join` exists (clj-quickjs-39).
+    ArrayPrototypeToString,
+    /// `Array` (clj-quickjs-118): reachable only as
+    /// `Array.prototype.constructor`; fails when called until the Array
+    /// constructor exists (clj-quickjs-39).
+    Array,
 }
 
 impl Builtin {
@@ -81,15 +90,19 @@ impl Builtin {
             Builtin::ObjectIs => "is",
             Builtin::ObjectPrototypeToString => "toString",
             Builtin::ObjectPrototypeValueOf => "valueOf",
+            Builtin::ArrayPrototypeToString => "toString",
+            Builtin::Array => "Array",
         }
     }
 
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
-            Builtin::Object => 1,
+            Builtin::Object | Builtin::Array => 1,
             Builtin::ObjectIs => 2,
-            Builtin::ObjectPrototypeToString | Builtin::ObjectPrototypeValueOf => 0,
+            Builtin::ObjectPrototypeToString
+            | Builtin::ObjectPrototypeValueOf
+            | Builtin::ArrayPrototypeToString => 0,
         }
     }
 }
@@ -145,6 +158,12 @@ pub(crate) fn call(
                 v.type_name()
             ))),
         },
+        Builtin::ArrayPrototypeToString => Err(Fault::Unsupported(
+            "Array.prototype.toString (Array.prototype.join) is not supported".to_string(),
+        )),
+        Builtin::Array => Err(Fault::Unsupported(
+            "the Array constructor is not supported".to_string(),
+        )),
     }
 }
 
@@ -179,6 +198,7 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) | HeapObject::Builtin(_) => Ok("Function"),
+                HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(payload) => {
                     let any: &dyn std::any::Any = &**payload;
                     if any.is::<ErrorObject>() {

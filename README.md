@@ -1658,7 +1658,8 @@ Supported (`cargo test --lib frontend::tests::object_literals`,
 Deferred:
 
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
-  Getters/setters, methods, computed keys and `o[k]`, `delete`,
+  Getters/setters, methods, computed keys in literals (`o[k]` with a
+  primitive key is clj-quickjs-118, below), `delete`,
   `__proto__`, property `++`/`--` and compound assignment; properties of
   functions, error objects and primitives fail with `UnsupportedOperand`.
 
@@ -1812,9 +1813,43 @@ Deferred:
 
 - `this` at the script top level (the global object, clj-quickjs-104) and
   an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
-- `o[k]()` (computed member access, clj-quickjs-115), `new`
-  (clj-quickjs-71), `call`/`apply` (clj-quickjs-102).
+- `new` (clj-quickjs-71; `o[k]()` passes `o` as `this` since
+  clj-quickjs-118), `call`/`apply` (clj-quickjs-102).
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
   clj-quickjs-73); an object receiver works as in strict code.
+
+### Array literals and array objects (clj-quickjs-118)
+
+Supported (`cargo test --lib frontend::tests::array_literals`,
+`cargo test --lib frontend::tests::computed_member_access_for_arrays`,
+`cargo test --lib object::array`,
+`cargo test --test js_source array_literals`,
+`cargo test --test publication publishing_an_array_is_rejected_with_index_path`,
+`cargo test --test gc_roots array_element`):
+
+- Array literals `[]`, `[1, 2,]`, `[ , ]`, `[1, , 3]` (holes, one trailing
+  comma, left-to-right evaluation); `a.length`; `a[k]` reads and
+  `a[k] = v` writes, which extend `length` past the greatest index.
+- Representation (decision record in `docs/architecture.md`, "Array
+  objects"): a task-owned `Array` heap kind with dense element storage
+  (holes as absent entries), a sparse fallback for far indices, a `u32`
+  `length` and an embedded ordinary object for named properties; traced
+  by the collector; rejected by publication with an `[index]` path step;
+  another task's access fails with `VmErrorKind::ForeignObject`.
+- Computed member access with primitive keys (ToPropertyKey: `a[1]` is
+  `a["1"]`, `a[-0]` is `a["0"]`) on objects and arrays, as far as arrays
+  need it (the rest is clj-quickjs-115).
+- `Array.prototype` (a realm intrinsic inheriting from `Object.prototype`)
+  as every array's prototype; `a[k](...)` as a method call.
+
+Deferred:
+
+- `Array.prototype` methods, the `Array` global and constructor,
+  `Array.isArray`, assigning `length` (clj-quickjs-39, -153..-156: arrays
+  inherit from an `Array.prototype` intrinsic whose `toString` and
+  `constructor` fail when called, and `a.length = n` fails with
+  `UnsupportedOperand`); spread elements and array destructuring
+  (`Unsupported`); object keys in `o[k]` (ToPrimitive, clj-quickjs-70).
+  `__rt.vector` values stay persistent vectors, not arrays.

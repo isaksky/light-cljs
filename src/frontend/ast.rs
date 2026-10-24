@@ -368,6 +368,19 @@ impl Expr {
             }
             ExprKind::AssignMember { object, value, .. } => object.height.max(value.height),
             ExprKind::Template { exprs, .. } => exprs.iter().map(|e| e.height).max().unwrap_or(0),
+            ExprKind::Array(elements) => elements
+                .iter()
+                .flatten()
+                .map(|e| e.height)
+                .max()
+                .unwrap_or(0),
+            ExprKind::Index { object, index, .. } => object.height.max(index.height),
+            ExprKind::AssignIndex {
+                object,
+                index,
+                value,
+                ..
+            } => object.height.max(index.height).max(value.height),
         };
         Expr {
             kind,
@@ -492,6 +505,32 @@ pub enum ExprKind {
     Template {
         quasis: Vec<TemplateElement>,
         exprs: Vec<Expr>,
+    },
+    /// An array literal `[a, , b,]` (clj-quickjs-118): its elements in
+    /// source order, `None` for an elision (a hole). A final comma ends the
+    /// list without adding an element, so `[a,]` has one element and `[,]`
+    /// one hole.
+    Array(Vec<Option<Expr>>),
+    /// `object[index]`: computed member access (clj-quickjs-118). `object`
+    /// is evaluated before `index`; the key is the ToPropertyKey of the
+    /// index's value, converted when the access runs.
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        /// The `[` token, where run-time failures of the access are
+        /// reported.
+        op_span: Span,
+    },
+    /// `object[index] = value`: assignment to a computed property.
+    /// `object`, then `index`, then `value` are evaluated; the key is
+    /// converted after `value`; the expression's value is `value`.
+    AssignIndex {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        value: Box<Expr>,
+        /// The member's `[` token, where run-time failures of the write
+        /// are reported.
+        op_span: Span,
     },
 }
 

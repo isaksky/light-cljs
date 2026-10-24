@@ -72,10 +72,14 @@
 //! property (in creation order) whose value is a task-owned object not yet
 //! on the path, the path continues with a `.property(name)` step to it. So
 //! publishing `[{inner: {}}]` fails at `value[0].property(inner)`, naming
-//! the innermost mutable object along the first such chain, and every
-//! object the path passes after its last persistent step is an ordinary
-//! object, which is itself task-owned: the value becomes publishable only
-//! once nothing on the path is reachable from it. The extension reads each
+//! the innermost mutable object along the first such chain. An array
+//! (clj-quickjs-118) is walked the same way, its elements first in index
+//! order with an `[index]` step ([`PathStep::Element`]), then its named
+//! properties: publishing `[[1, {}]]` (an array inside a vector) fails at
+//! `value[0][1]`. Every object the path passes after its last persistent
+//! step is an ordinary object or an array, which is itself task-owned:
+//! the value becomes publishable only once nothing on the path is
+//! reachable from it. The extension reads each
 //! object under its own short lock, like the walk, and is bounded by the
 //! number of objects (no object is entered twice).
 //!
@@ -127,6 +131,7 @@ use std::fmt;
 use crate::collections::{PMap, PVector, object_name};
 use crate::heap::{HandleError, Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
+use crate::object::{OrdinaryObject, PropertyKey};
 use crate::value::{Primitive, Value};
 
 #[cfg(doc)]
@@ -164,6 +169,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Atom(_) => Shareability::ConcurrentReference,
         // A realm intrinsic: immutable once built (`crate::vm::builtin`).
         HeapObject::Builtin(_) => Shareability::Persistent,
+        HeapObject::Array(_) => Shareability::TaskOwned,
     }
 }
 
@@ -173,6 +179,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         HeapObject::Builder(b) => Some(b.owner()),
         HeapObject::Cell(c) => Some(c.owner),
         HeapObject::Plain(o) => o.owner(),
+        HeapObject::Array(a) => a.object().owner(),
         HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
@@ -227,6 +234,10 @@ pub enum PathStep {
     /// Displayed `.property(name)`. Only in the description of a rejected
     /// ordinary object (see [`PublishError::NotShareable`]).
     Property(String),
+    /// The element of an array object at an index. Displayed `[i]`, like
+    /// a vector element. Only in the description of a rejected array (see
+    /// [`PublishError::NotShareable`]).
+    Element(u32),
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -253,6 +264,7 @@ impl fmt::Display for ValuePath {
                 PathStep::NativeEdge(n) => write!(f, ".edge({n})")?,
                 PathStep::Capture(n) => write!(f, ".capture({n})")?,
                 PathStep::Property(name) => write!(f, ".property({name})")?,
+                PathStep::Element(i) => write!(f, "[{i}]")?,
             }
         }
         Ok(())
@@ -439,10 +451,28 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     Ok(())
 }
 
+/// How [`into_properties`] reaches a child: an array element or a named
+/// property.
+enum Via {
+    Element(u32),
+    Property(PropertyKey),
+}
+
+/// The object-valued named own properties of `object`, in creation order.
+fn object_properties(object: &OrdinaryObject) -> Vec<(Via, ObjectId)> {
+    object
+        .properties()
+        .filter_map(|(key, p)| match p.value {
+            Value::Object(child) => Some((Via::Property(key), child)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Extend the path of a rejected object `id` through ordinary objects'
-/// property values (module docs, "The check"); returns the kind and owner
-/// of the object the extended path ends at (`rejected` if it is not
-/// extended).
+/// property values and arrays' elements (module docs, "The check");
+/// returns the kind and owner of the object the extended path ends at
+/// (`rejected` if it is not extended).
 fn into_properties(
     heap: &Heap,
     mut id: ObjectId,
@@ -451,16 +481,22 @@ fn into_properties(
 ) -> (&'static str, Option<TaskId>) {
     let mut entered = HashSet::from([id]);
     loop {
-        // The object-valued own properties of `id`, if it is ordinary.
+        // The object-valued own properties of `id`, if it is ordinary or an
+        // array (an array's elements first, in index order).
         let candidates = heap
             .read(id, |object| match object {
-                HeapObject::Plain(o) => o
-                    .properties()
-                    .filter_map(|(key, p)| match p.value {
-                        Value::Object(child) => Some((key, child)),
-                        _ => None,
-                    })
-                    .collect(),
+                HeapObject::Plain(o) => object_properties(o),
+                HeapObject::Array(a) => {
+                    let mut found: Vec<(Via, ObjectId)> = a
+                        .elements()
+                        .filter_map(|(index, v)| match *v {
+                            Value::Object(child) => Some((Via::Element(index), child)),
+                            _ => None,
+                        })
+                        .collect();
+                    found.extend(object_properties(a.object()));
+                    found
+                }
                 _ => Vec::new(),
             })
             .unwrap_or_default();
@@ -478,11 +514,14 @@ fn into_properties(
         let Some((key, child, found)) = next else {
             return rejected;
         };
-        let name = heap
-            .keys()
-            .name(key)
-            .map_or_else(|| "<unnamed>".to_string(), |n| n.to_string_lossy());
-        path.0.push(PathStep::Property(name));
+        path.0.push(match key {
+            Via::Element(index) => PathStep::Element(index),
+            Via::Property(key) => PathStep::Property(
+                heap.keys()
+                    .name(key)
+                    .map_or_else(|| "<unnamed>".to_string(), |n| n.to_string_lossy()),
+            ),
+        });
         entered.insert(child);
         (id, rejected) = (child, found);
     }

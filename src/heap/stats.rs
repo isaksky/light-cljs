@@ -8,7 +8,8 @@
 //! exclude storage the table points to but does not own inline: persistent
 //! collection trie bodies (immutable `Arc` nodes shared between versions),
 //! atom cells, native payload boxes, function captures, ordinary objects'
-//! property vectors and key indexes, the property-key table, and everything
+//! property vectors and key indexes, array object boxes and their element
+//! storage, the property-key table, and everything
 //! outside the heap (executable code, task VM state, dependency cells, the
 //! root table). The measurement harness (`examples/bench`) measures those
 //! with a counting allocator instead; see `docs/measurement.md`.
@@ -44,6 +45,8 @@ pub struct ObjectCounts {
     pub atom: usize,
     /// Built-in functions of the realm (`Object`, `Object.is`, ...).
     pub builtin: usize,
+    /// Array objects (array literals).
+    pub array: usize,
 }
 
 impl ObjectCounts {
@@ -59,6 +62,7 @@ impl ObjectCounts {
             + self.cell
             + self.atom
             + self.builtin
+            + self.array
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -73,6 +77,7 @@ impl ObjectCounts {
             HeapObject::Cell(_) => &mut self.cell,
             HeapObject::Atom(_) => &mut self.atom,
             HeapObject::Builtin(_) => &mut self.builtin,
+            HeapObject::Array(_) => &mut self.array,
         };
         *n += 1;
     }

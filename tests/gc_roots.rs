@@ -345,6 +345,22 @@ fn object_property(rt: &Runtime) -> Held {
     Held::new(vec![weak], move || drop(task))
 }
 
+/// An array's elements (clj-quickjs-118): the argument is reachable only
+/// as an element of arrays held by another array's dense and sparse
+/// elements, and the outer array is a local of a suspended frame. Once the
+/// task is gone, all of them are garbage.
+fn array_element(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!(
+            "function f(o) {{ const outer = [1, , [2, o]]; outer[5000] = [o]; o = 0; \
+             {SPIN} return outer; }}"
+        ),
+    );
+    run_prologue(&task);
+    Held::new(vec![weak], move || drop(task))
+}
+
 /// A pending `return` completion of a running `finally` block (handler
 /// stack). The argument is overwritten, so only the completion holds it.
 fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
@@ -680,17 +696,18 @@ fn object_property_reclaims() {
     assert_retained(&rt, &held);
     // The argument, the inner object and the outer object go together: no
     // ordinary object is left once the task is gone but `Object.prototype`
-    // (the realm intrinsic the literals inherit from, clj-quickjs-117),
-    // which the realm keeps for the runtime's lifetime.
+    // (the realm intrinsic the literals inherit from, clj-quickjs-117) and
+    // `Array.prototype` (clj-quickjs-118), which the realm keeps for the
+    // runtime's lifetime.
     let Held {
         weak,
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 1);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 2);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 1);
+    assert_eq!(rt.heap_usage().objects.plain, 2);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -718,8 +735,10 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // No task, root or scope is left: only the realm holds them.
-    assert_eq!(rt.heap_usage().objects.builtin, 4);
-    assert_eq!(rt.heap_usage().objects.plain, 1);
+    // (`Array.prototype` and its `toString` and `constructor` too,
+    // clj-quickjs-118.)
+    assert_eq!(rt.heap_usage().objects.builtin, 6);
+    assert_eq!(rt.heap_usage().objects.plain, 2);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -736,6 +755,90 @@ fn realm_intrinsics_retain() {
     drop((object, prototype, task));
     rt.request_collection().unwrap();
     assert_live(&weak);
+}
+
+/// An array's named (non-index) properties are traced too
+/// (clj-quickjs-118): the argument is reachable only through `a.child` of
+/// an array held by a suspended frame.
+fn array_property(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!("function f(o) {{ const a = [1]; a.child = {{p: o}}; o = 0; {SPIN} return a; }}"),
+    );
+    run_prologue(&task);
+    Held::new(vec![weak], move || drop(task))
+}
+
+#[test]
+fn array_property_retains_and_reclaims() {
+    let rt = Runtime::new();
+    let held = array_property(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+/// An array literal under construction (clj-quickjs-118) lives on the
+/// operand stack while its elements run: suspended at a pending
+/// `__rt.need` inside an element, with its first element reachable only
+/// from that partial array, it survives collections, resumes on another
+/// thread, and finishes with each element evaluated once.
+#[test]
+fn array_literal_survives_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { let n = 0; \
+         const a = [o, , (n = n + 1, o = 0, __rt.need(9, 1)), 3]; \
+         return __rt.vector(a[0], a.length === 4 && a[1] === undefined && a[2] === 0 \
+           && a[3] === 3 && n === 1); }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+    }
+    for request in task.take_producer_requests() {
+        let value = rt.root(Primitive::Number(0.0));
+        let wakeups = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+    let result = thread::spawn(move || run_to_end(&task)).join().unwrap();
+    let original = weak.upgrade().unwrap();
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        let first = s.nth(v, 0).unwrap();
+        assert!(s.same_object(first, s.local(&original).unwrap()));
+        assert_eq!(s.view(s.nth(v, 1).unwrap()), ValueView::Bool(true));
+    });
+}
+
+#[test]
+fn array_element_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &array_element(&rt));
+}
+
+#[test]
+fn array_element_reclaims() {
+    let rt = Runtime::new();
+    let held = array_element(&rt);
+    assert_retained(&rt, &held);
+    // The argument and the three arrays go together; the realm's two
+    // prototypes (`Object.prototype`, `Array.prototype`) stay.
+    let Held {
+        weak,
+        release,
+        keep,
+    } = held;
+    let usage = rt.heap_usage().objects;
+    assert_eq!((usage.plain, usage.array), (1 + 2, 3));
+    assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
+    rt.request_collection().unwrap();
+    let usage = rt.heap_usage().objects;
+    assert_eq!((usage.plain, usage.array), (2, 0));
 }
 
 #[test]
@@ -961,6 +1064,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         binding_cell(&rt),
         transient_builder(&rt),
         object_property(&rt),
+        array_element(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),
         handler_completion(&rt, finally_return_across_wait),

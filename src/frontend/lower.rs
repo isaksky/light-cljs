@@ -2103,7 +2103,7 @@ impl<'s> Lowerer<'s> {
     #[inline(never)]
     fn property_expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
         match &e.kind {
-            ExprKind::Member { .. } => self.get_field(e),
+            ExprKind::Member { .. } | ExprKind::Index { .. } => self.get_field(e),
             ExprKind::Object(properties) => self.object_literal(properties, e.span),
             ExprKind::AssignMember {
                 object,
@@ -2112,43 +2112,101 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.assign_member(object, property, value, *op_span),
             ExprKind::Template { quasis, exprs } => self.template(quasis, exprs, e.span),
+            ExprKind::Array(elements) => self.array_literal(elements, e.span),
+            ExprKind::AssignIndex {
+                object,
+                index,
+                value,
+                op_span,
+            } => {
+                // Base, key, value, then `PutElem` (which converts the key
+                // and leaves the value), reported at the `[`.
+                self.expr(object)?;
+                self.expr(index)?;
+                self.expr(value)?;
+                self.out().op(Opcode::PutElem, *op_span);
+                Ok(())
+            }
             _ => Err(self.internal(e.span, "not a property expression")),
         }
     }
 
-    /// `object.property`: the base, then `GetField`. A chain `a.b.c.d` is
-    /// lowered iteratively (its base once, then one `GetField` per link),
-    /// so a long chain takes no Rust stack per link.
+    /// `object.property` and `object[index]`: the base, then `GetField`, or
+    /// the index expression and `GetElem`. A chain `a.b[c].d` is lowered
+    /// iteratively (its base once, then one access per link), so a long
+    /// chain takes no Rust stack per link; only an index expression
+    /// recurses.
     #[inline(never)]
     fn get_field(&mut self, member: &Expr) -> Result<(), SyntaxError> {
         let mut links = Vec::new();
         let mut base = member;
-        while let ExprKind::Member {
-            object,
-            property,
-            op_span,
-        } = &base.kind
-        {
-            links.push((base.span, property, *op_span));
-            base = object;
+        loop {
+            match &base.kind {
+                ExprKind::Member {
+                    object,
+                    property,
+                    op_span,
+                } => {
+                    links.push((Ok(property), *op_span));
+                    base = object;
+                }
+                ExprKind::Index {
+                    object,
+                    index,
+                    op_span,
+                } => {
+                    links.push((Err(&**index), *op_span));
+                    base = object;
+                }
+                _ => break,
+            }
         }
-        let Some(&(span, property, _)) = links.last() else {
-            return Err(self.internal(member.span, "not a member expression"));
-        };
-        if self.is_intrinsic_binding(base) {
-            return Err(self.error(
-                SyntaxErrorKind::ReservedWord,
-                span,
-                format!(
-                    "the intrinsic `{RESERVED_BINDING}.{}` must be called directly: intrinsics are not values",
-                    property.name
-                ),
-            ));
+        match links.last() {
+            None => return Err(self.internal(member.span, "not a member expression")),
+            // `__rt[x]` is rejected by the parser.
+            Some((Ok(property), _)) if self.is_intrinsic_binding(base) => {
+                let span = base.span.to(property.span);
+                return Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    span,
+                    format!(
+                        "the intrinsic `{RESERVED_BINDING}.{}` must be called directly: intrinsics are not values",
+                        property.name
+                    ),
+                ));
+            }
+            Some(_) => {}
         }
         self.expr(base)?;
-        for &(_, property, op_span) in links.iter().rev() {
-            let index = self.name_index(&property.name, property.span)?;
-            self.out().op_u16(Opcode::GetField, index, op_span);
+        for &(link, op_span) in links.iter().rev() {
+            match link {
+                Ok(property) => {
+                    let index = self.name_index(&property.name, property.span)?;
+                    self.out().op_u16(Opcode::GetField, index, op_span);
+                }
+                Err(index) => {
+                    self.expr(index)?;
+                    self.out().op(Opcode::GetElem, op_span);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An array literal (clj-quickjs-118): `NewArray`, then each element in
+    /// source order followed by `AppendElement`, or an `AppendHole` for an
+    /// elision. Out of line, like [`Self::get_field`].
+    #[inline(never)]
+    fn array_literal(&mut self, elements: &[Option<Expr>], span: Span) -> Result<(), SyntaxError> {
+        self.out().op(Opcode::NewArray, span);
+        for element in elements {
+            match element {
+                Some(e) => {
+                    self.expr(e)?;
+                    self.out().op(Opcode::AppendElement, e.span);
+                }
+                None => self.out().op(Opcode::AppendHole, span),
+            }
         }
         Ok(())
     }
@@ -2161,18 +2219,30 @@ impl<'s> Lowerer<'s> {
     /// recursive [`Self::expr`] frame stays small.
     #[inline(never)]
     fn method_callee(&mut self, callee: &Expr) -> Result<(), SyntaxError> {
-        let ExprKind::Member {
-            object,
-            property,
-            op_span,
-        } = &callee.kind
-        else {
-            return Err(self.internal(callee.span, "not a member callee"));
-        };
-        self.expr(object)?;
-        self.out().op(Opcode::Dup, *op_span);
-        let index = self.name_index(&property.name, property.span)?;
-        self.out().op_u16(Opcode::GetField, index, *op_span);
+        match &callee.kind {
+            ExprKind::Member {
+                object,
+                property,
+                op_span,
+            } => {
+                self.expr(object)?;
+                self.out().op(Opcode::Dup, *op_span);
+                let index = self.name_index(&property.name, property.span)?;
+                self.out().op_u16(Opcode::GetField, index, *op_span);
+            }
+            // `o[k](...)` (clj-quickjs-118): the base once, then the key.
+            ExprKind::Index {
+                object,
+                index,
+                op_span,
+            } => {
+                self.expr(object)?;
+                self.out().op(Opcode::Dup, *op_span);
+                self.expr(index)?;
+                self.out().op(Opcode::GetElem, *op_span);
+            }
+            _ => return Err(self.internal(callee.span, "not a member callee")),
+        }
         Ok(())
     }
 
@@ -2371,6 +2441,9 @@ impl<'s> Lowerer<'s> {
                     }
                     method = true;
                 }
+                if let ExprKind::Index { .. } = callee.kind {
+                    method = true;
+                }
                 if args.len() > MAX_COUNT {
                     return Err(self.error(
                         SyntaxErrorKind::TooLarge,
@@ -2396,7 +2469,10 @@ impl<'s> Lowerer<'s> {
             ExprKind::Member { .. }
             | ExprKind::Object(_)
             | ExprKind::AssignMember { .. }
-            | ExprKind::Template { .. } => {
+            | ExprKind::Template { .. }
+            | ExprKind::Array(_)
+            | ExprKind::Index { .. }
+            | ExprKind::AssignIndex { .. } => {
                 self.property_expr(e)?;
             }
             ExprKind::Function(f) => {
@@ -2762,7 +2838,9 @@ fn is_number(e: &Expr) -> bool {
             alternate,
             ..
         } => is_number(consequent) && is_number(alternate),
-        ExprKind::Assign { value, .. } | ExprKind::AssignMember { value, .. } => is_number(value),
+        ExprKind::Assign { value, .. }
+        | ExprKind::AssignMember { value, .. }
+        | ExprKind::AssignIndex { value, .. } => is_number(value),
         // The binding's old value may be a string, so only `+=` may
         // concatenate; the other compound operators are numeric.
         ExprKind::CompoundAssign { op, .. } => *op != BinaryOp::Add,

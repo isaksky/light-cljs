@@ -50,6 +50,8 @@ mod cost {
     pub const OBJECT: usize = 3;
     /// A template literal (on top of each substitution's `ASSIGNMENT`).
     pub const TEMPLATE: usize = 3;
+    /// `[ ... ]` array literal (on top of each element's `ASSIGNMENT`).
+    pub const ARRAY: usize = 3;
 }
 
 /// Global names the subset treats as reserved constants: they parse as
@@ -1392,8 +1394,15 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return Ok(left);
         }
-        if matches!(&left.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object)) {
+        if matches!(&left.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object))
+            || matches!(&left.kind, ExprKind::Index { .. })
+        {
             return self.assign_member(left, saved);
+        }
+        if matches!(&left.kind, ExprKind::Array(_)) && left.span.text(self.src).starts_with('[') {
+            // An array assignment pattern `[a, b] = v` (clj-quickjs-118
+            // parses the literal; destructuring is its own pellet).
+            return Err(self.unsupported(left.span, "destructuring assignment is"));
         }
         let target = self.simple_target(&left, TargetUse::Assign)?;
         self.advance()?;
@@ -1468,7 +1477,9 @@ impl<'a> Parser<'a> {
                 left.span,
                 format!("intrinsics of the reserved binding `{RESERVED_BINDING}` cannot be {verb}"),
             )),
-            ExprKind::Member { .. } => Err(self.unsupported(left.span, properties)),
+            ExprKind::Member { .. } | ExprKind::Index { .. } => {
+                Err(self.unsupported(left.span, properties))
+            }
             ExprKind::Undefined | ExprKind::Number(_) if RESERVED_CONSTANTS.contains(&text) => {
                 Err(self.error(
                     SyntaxErrorKind::ReservedWord,
@@ -1480,29 +1491,98 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `object.property = value` (clj-quickjs-114), with the current token
-    /// the `=`; `left` is the member expression (possibly parenthesized),
-    /// whose object is not the reserved intrinsic binding. Only plain `=`:
-    /// compound assignment and `++`/`--` of properties stay rejected.
+    /// `object.property = value` (clj-quickjs-114) or `object[index] =
+    /// value` (clj-quickjs-118), with the current token the `=`; `left` is
+    /// the member expression (possibly parenthesized), whose object is not
+    /// the reserved intrinsic binding. Only plain `=`: compound assignment
+    /// and `++`/`--` of properties stay rejected.
     #[inline(never)]
     fn assign_member(&mut self, left: Expr, saved: usize) -> PResult<Expr> {
-        let ExprKind::Member {
-            object,
-            property,
-            op_span,
-        } = left.kind
-        else {
-            return Err(self.unexpected("a property assignment"));
-        };
+        let span = left.span;
         self.advance()?;
-        let value = self.parse_assignment()?;
+        let value = Box::new(self.parse_assignment()?);
         self.depth = saved;
-        let span = left.span.to(value.span);
-        self.expr(
-            ExprKind::AssignMember {
+        let span = span.to(value.span);
+        let kind = match left.kind {
+            ExprKind::Member {
                 object,
                 property,
-                value: Box::new(value),
+                op_span,
+            } => ExprKind::AssignMember {
+                object,
+                property,
+                value,
+                op_span,
+            },
+            ExprKind::Index {
+                object,
+                index,
+                op_span,
+            } => ExprKind::AssignIndex {
+                object,
+                index,
+                value,
+                op_span,
+            },
+            _ => return Err(self.unexpected("a property assignment")),
+        };
+        self.expr(kind, span)
+    }
+
+    /// ArrayLiteral: `[` (Elision? AssignmentExpression `,`)* Elision?
+    /// `]` (clj-quickjs-118), with the current token the `[`. Each comma
+    /// not directly after an element is a hole; a final comma after an
+    /// element adds nothing. Spread elements are rejected explicitly.
+    #[inline(never)]
+    fn parse_array_literal(&mut self) -> PResult<Expr> {
+        let start = self.tok.span.start;
+        let saved = self.depth;
+        self.deeper(cost::ARRAY)?;
+        self.advance()?;
+        let mut elements = Vec::new();
+        loop {
+            match self.tok.kind {
+                TokenKind::Punct(Punct::RBracket) => break,
+                TokenKind::Punct(Punct::Comma) => {
+                    elements.push(None);
+                    self.advance()?;
+                    continue;
+                }
+                TokenKind::Punct(Punct::Ellipsis) => {
+                    return Err(self.unsupported(self.tok.span, "spread elements are"));
+                }
+                _ => {}
+            }
+            elements.push(Some(self.parse_assignment()?));
+            if !self.eat_punct(Punct::Comma)? {
+                break;
+            }
+        }
+        self.expect_punct(Punct::RBracket)?;
+        self.depth = saved;
+        let span = self.span_from(start);
+        self.expr(ExprKind::Array(elements), span)
+    }
+
+    /// `[` Expression `]` after a member object (clj-quickjs-118), with the
+    /// current token the `[`. The link costs one unit of the chain, like
+    /// `.`; the bracketed expression is charged like a parenthesized one
+    /// while it is parsed.
+    #[inline(never)]
+    fn parse_index(&mut self, object: Expr) -> PResult<Expr> {
+        self.deeper(cost::OPERATOR)?;
+        let link = self.depth;
+        self.deeper(cost::PAREN)?;
+        let op_span = self.tok.span;
+        self.advance()?;
+        let index = self.parse_expression()?;
+        self.expect_punct(Punct::RBracket)?;
+        self.depth = link;
+        let span = self.span_from(object.span.start);
+        self.expr(
+            ExprKind::Index {
+                object: Box::new(object),
+                index: Box::new(index),
                 op_span,
             },
             span,
@@ -1878,6 +1958,8 @@ impl<'a> Parser<'a> {
                     },
                     span,
                 )?;
+            } else if self.is_punct(Punct::LBracket) && !is_reserved_binding(&expr) {
+                expr = self.parse_index(expr)?;
             } else {
                 if let Some(op) = self.postfix_update_op() {
                     let op_span = self.advance()?.span;
@@ -1928,9 +2010,6 @@ impl<'a> Parser<'a> {
                     "computed access to the reserved intrinsic binding `{RESERVED_BINDING}` is not allowed: name the intrinsic statically, as `{RESERVED_BINDING}.name(...)`"
                 ),
             )),
-            TokenKind::Punct(Punct::LBracket) => {
-                Err(self.unsupported(span, "computed member access is"))
-            }
             TokenKind::Punct(Punct::OptionalChain) => {
                 Err(self.unsupported(span, "optional chaining is"))
             }
@@ -2015,6 +2094,7 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::LParen) => return self.parse_parenthesized(),
             TokenKind::Punct(Punct::LBrace) => return self.parse_object_literal(),
             TokenKind::Template(part) if part.head => return self.parse_template(),
+            TokenKind::Punct(Punct::LBracket) => return self.parse_array_literal(),
             _ => return Err(self.primary_error()),
         };
         self.advance()?;
@@ -2067,7 +2147,6 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Slash | Punct::SlashAssign) => {
                 self.unsupported(span, "regular expression literals are")
             }
-            TokenKind::Punct(Punct::LBracket) => self.unsupported(span, "array literals are"),
             TokenKind::Punct(Punct::Ellipsis) => self.unsupported(span, "spread syntax is"),
             TokenKind::Keyword(k) => {
                 if let Some(what) = unsupported_expression_keyword(*k) {

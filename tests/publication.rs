@@ -450,6 +450,104 @@ fn publishing_an_object_literal_is_rejected_with_property_path() {
     );
 }
 
+/// Arrays (clj-quickjs-118) are task-owned mutation like ordinary objects:
+/// a value that reaches one is rejected at the array, and the path
+/// continues into its elements by index (`[i]`, [`PathStep::Element`]),
+/// before its named properties, to the innermost task-owned object along
+/// the first such chain. Handed to another task anyway, an array can be
+/// neither read nor written there. JavaScript source is a synthetic
+/// fixture, not light-cljs output.
+#[test]
+fn publishing_an_array_is_rejected_with_index_path() {
+    let rt = Runtime::new();
+    let run = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("arrays", src).unwrap(), &[])
+            .unwrap();
+        (complete(task.run().unwrap()), task.id())
+    };
+    let (holder, producer) = run("__rt.vector(1, [2, , 'x', {}])");
+    let (path, found, owner) = not_shareable(rt.publish(&holder).unwrap_err());
+    assert_eq!(path, vec![PathStep::Index(1), PathStep::Element(3)]);
+    assert_eq!((found, owner), ("object", Some(producer)));
+    assert_eq!(
+        rt.publish(&holder).unwrap_err().to_string(),
+        format!(
+            "cannot publish: value[1][3] is a task-owned object \
+             (owned by {producer}), which is not shareable"
+        )
+    );
+    // Elements in index order (sparse ones too), then named properties;
+    // through objects and arrays alike.
+    for (src, steps, found) in [
+        (
+            "let a = [1, [], {}]; a[9000] = {}; a.p = {}; __rt.vector(a)",
+            vec![PathStep::Index(0), PathStep::Element(1)],
+            "array",
+        ),
+        (
+            "let a = [1]; a[9000] = [0, {}]; a.p = {}; __rt.vector(a)",
+            vec![
+                PathStep::Index(0),
+                PathStep::Element(9000),
+                PathStep::Element(1),
+            ],
+            "object",
+        ),
+        (
+            "let a = [1, 2]; a.p = [3]; __rt.vector(a)",
+            vec![PathStep::Index(0), PathStep::Property("p".to_string())],
+            "array",
+        ),
+        (
+            "__rt.map('k', {o: [[{}]]})",
+            vec![
+                PathStep::MapValue(KeyName::Primitive(Primitive::String("k".into()))),
+                PathStep::Property("o".to_string()),
+                PathStep::Element(0),
+                PathStep::Element(0),
+            ],
+            "object",
+        ),
+    ] {
+        let (value, producer) = run(src);
+        assert_eq!(
+            not_shareable(rt.publish(&value).unwrap_err()),
+            (steps, found, Some(producer)),
+            "{src}"
+        );
+    }
+    // A cycle ends the chain; an array of primitives is rejected at itself.
+    let (cycle, _) = run("let a = [0]; a[1] = a; __rt.vector(a)");
+    let (path, found, _) = not_shareable(rt.publish(&cycle).unwrap_err());
+    assert_eq!((path, found), (vec![PathStep::Index(0)], "array"));
+    let (alone, producer) = run("[1, 2, 3]");
+    assert_eq!(
+        not_shareable(rt.publish(&alone).unwrap_err()),
+        (vec![], "array", Some(producer))
+    );
+    assert_eq!(alone.view(), ValueView::Object);
+
+    // Another task can neither read nor write it.
+    let read = compile_function("function f(a) { return a[0]; }").unwrap();
+    let write = compile_function("function f(a) { a[0] = 2; return 0; }").unwrap();
+    let length = compile_function("function f(a) { return a.length; }").unwrap();
+    for exe in [&read, &write, &length] {
+        let task = rt.spawn(exe, &[&alone]).unwrap();
+        match task.run().unwrap() {
+            RunOutcome::Failed(e) => assert_eq!(
+                e.kind(),
+                VmErrorKind::ForeignObject {
+                    owner: Some(producer),
+                    caller: task.id()
+                },
+                "{e}"
+            ),
+            other => panic!("expected ForeignObject, got {other:?}"),
+        }
+    }
+}
+
 /// An ordinary object is task-owned (clj-quickjs-114): handed to another
 /// task anyway (`spawn` does not check its arguments), it can be neither
 /// read nor written there, and the failure is not a catchable JavaScript

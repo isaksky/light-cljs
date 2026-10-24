@@ -328,7 +328,8 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Occurrence(_)
                 | HeapObject::Builder(_)
                 | HeapObject::Cell(_)
-                | HeapObject::Atom(_) => "object",
+                | HeapObject::Atom(_)
+                | HeapObject::Array(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -842,6 +843,39 @@ fn step(
                 state.push(object);
             }
         }
+        Instr::GetElem => {
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let key = property::element_key(&base, &key, false)?;
+            let v = property::get(heap, state.diag.task, &base, &key)?;
+            state.push(v);
+        }
+        Instr::PutElem => {
+            // ToPropertyKey runs here, after the right-hand side; the value
+            // stays on the stack as the result (`o[k] = v` is `v`).
+            let v = state.pop()?;
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let key = property::element_key(&base, &key, true)?;
+            property::put(heap, state.diag.task, &base, &key, v.clone())?;
+            state.push(v);
+        }
+        Instr::NewArray => {
+            // Pushed in the same instruction, like `NewObject`: no
+            // collection can run in between.
+            let array = property::new_array(heap, state.diag.task)?;
+            state.push(array);
+        }
+        Instr::AppendElement | Instr::AppendHole => {
+            // The array stays on the stack for the next element.
+            let element = match instr {
+                Instr::AppendElement => Some(state.pop()?),
+                _ => None,
+            };
+            let array = state.pop()?;
+            property::append(heap, state.diag.task, &array, element)?;
+            state.push(array);
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1089,6 +1123,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::GetBuiltinGlobal(_) => true,
         Instr::NewObject
         | Instr::NewObjectLiteral
+        | Instr::NewArray
         | Instr::NewVector(_)
         | Instr::NewMap(_)
         | Instr::Assoc
@@ -1154,6 +1189,10 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::GetField(_)
         | Instr::PutField(_)
         | Instr::DefineField(_)
+        | Instr::AppendElement
+        | Instr::AppendHole
+        | Instr::GetElem
+        | Instr::PutElem
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

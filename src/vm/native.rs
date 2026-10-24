@@ -338,7 +338,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
         | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
         | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
-        | GetThis => false,
+        | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem => false,
     }
 }
 

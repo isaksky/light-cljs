@@ -125,6 +125,7 @@ Expression            = AssignmentExpression { "," AssignmentExpression }
 AssignmentExpression  = ConditionalExpression | ArrowFunction
                       | Identifier AssignOperator AssignmentExpression
                       | Call "." IdentifierName "=" AssignmentExpression
+                      | Call "[" Expression "]" "=" AssignmentExpression
 AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
                       | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
 ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
@@ -145,15 +146,17 @@ Exponentiation        = Unary | Update "**" Exponentiation
 Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
-Call                  = Primary { Arguments | "." IdentifierName }
+Call                  = Primary { Arguments | "." IdentifierName | "[" Expression "]" }
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
-                      | TemplateLiteral | "this" | "(" Expression ")"
+                      | ArrayLiteral | TemplateLiteral | "this" | "(" Expression ")"
 TemplateLiteral       = NoSubstitutionTemplate
                       | TemplateHead Expression { TemplateMiddle Expression } TemplateTail
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
 PropertyName          = IdentifierName | String | Number
+ArrayLiteral          = "[" { [ AssignmentExpression ] "," } [ AssignmentExpression ] "]"
+                        (* an omitted element is a hole; see the notes *)
 Literal               = Number | String | "true" | "false" | "null"
                       | "undefined" | "NaN" | "Infinity"
 ```
@@ -268,6 +271,22 @@ Notes on the grammar:
   evaluated once and passed as the receiver (clj-quickjs-117). Computed access to `__rt`
   (`__rt[x]`) and assignment to one of its intrinsics (`__rt.count = f`)
   are rejected by the parser as `ReservedWord`.
+- `ArrayLiteral` (clj-quickjs-118): `[a, b]`, with each element an
+  AssignmentExpression. A comma that does not follow an element is an
+  elision, a hole: `[ , ]` has length 1 and no element, `[1, , 3]` has a
+  hole at index 1. One comma after the last element ends the list without
+  adding anything (`[1, 2,]` has length 2). Spread elements (`[...a]`)
+  are `Unsupported`, and so is an array literal as an assignment target
+  (`[a, b] = v`, destructuring); `let [a] = v` stays rejected as before.
+- `a[k]` (clj-quickjs-118) reads a computed property, and `a[k] = v`
+  (the target may be parenthesized) writes one; the key is an Expression
+  (`a[b, c]` is `a[c]` after evaluating `b`). It joins a member chain like
+  `.` (`a.b[c].d`, `a[0][1]`), with no line-terminator restriction: `a`
+  newline `[0]` is one member expression, as in JavaScript. A call of a
+  computed property, `a[k](...)`, is a method call like `a.m(...)`
+  (clj-quickjs-117: the base is evaluated once and passed as the
+  receiver), and compound assignment and `++`/`--` of a computed property
+  are `Unsupported`, as for `a.b`.
 - `const` requires an initializer.
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
   scoped to the whole loop (a `const` needs an initializer here too). For-in
@@ -320,11 +339,11 @@ Every form below is rejected where it starts. Error kinds:
 | `this` at the script top level (clj-quickjs-104) and inside an arrow function, its parameters included (lexical `this`, clj-quickjs-98) | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
-| array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` (also in an object literal) | Unsupported |
+| optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
 | in object literals: computed keys `{[k]: v}`, methods `{m() {}}`, getters and setters, `async` and generator methods, `__proto__: v` (it sets the prototype) | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
 | `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
-| compound assignment to a property (`a.b += 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
+| compound assignment to a property (`a.b += 1`, `a[0] += 1`), `++`/`--` on a property (`a.b++`, `a[0]++`) | Unsupported |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
@@ -365,7 +384,9 @@ checks left to later stages:
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
   or one link of a binary-operator, comma-operator or member chain 1; each call's
   argument list 3 plus each argument's assignment; parentheses 3 plus the
-  inner assignment; an object literal 3 plus each value's assignment. So about 64 nested parentheses or calls, 128 nested
+  inner assignment; an object literal or an array literal 3 plus each
+  value's or element's assignment; a computed member `[k]` 1 as a chain
+  link plus 3 for its key expression while it is parsed. So about 64 nested parentheses or calls, 128 nested
   blocks or `else if` links, 64 nested function declarations, 42 nested
   function expressions, or a chain of about 250 binary operators fit. The whole budget fits a 2 MiB thread stack
   even in a debug build (tested). Separately, the syntax tree itself may be
@@ -374,14 +395,37 @@ checks left to later stages:
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
   passes can rely on that bound.
 - **Objects have only data properties** (clj-quickjs-114). Getters,
-  setters, methods, computed keys and `__proto__: v` in literals, `o[k]`,
+  setters, methods, computed keys and `__proto__: v` in literals,
   `delete`, and `++`/`--` and compound assignment on properties are
   rejected explicitly (their pellets: -115, -120, -121, -124, -126, -76).
   An object literal inherits from `Object.prototype` (clj-quickjs-117);
   an embedder-made object (`Scope::new_object`) has a null prototype.
+- **Computed keys are primitives** (clj-quickjs-118 covers `o[k]` as far
+  as arrays need it; clj-quickjs-115 owns the rest). A key is converted by
+  ToPropertyKey when the access runs (for a write, after the right-hand
+  side): strings as they are, numbers by Number::toString (`o[1]` is
+  `o["1"]`, `o[-0]` is `o["0"]`), booleans, `null` and `undefined` by
+  ToString. An object key needs ToPrimitive (clj-quickjs-70) and fails
+  with `UnsupportedOperand`, except on an `undefined`/`null` base, which
+  is checked first and throws its catchable `TypeError` (`null[{}]`);
+  symbols do not exist yet.
+- **Arrays have no methods and a read-only `length`** (clj-quickjs-118).
+  An array literal is an array object with elements, holes and an
+  automatic `length`, inheriting from `Array.prototype`, a realm
+  intrinsic that inherits from `Object.prototype` and has no methods yet:
+  `[].push` reads `undefined` until the `Array.prototype` method pellets
+  (-153..-156), and `[].toString()` fails with `UnsupportedOperand`
+  rather than give `"[object Array]"` (`Array.prototype.join`,
+  clj-quickjs-39). Assigning `a.length` (truncation or extension), the
+  `Array` constructor (so `Array.prototype` has no JavaScript name yet)
+  and `Array.isArray` belong to clj-quickjs-39 and fail explicitly
+  (`UnsupportedOperand`) or are unbound; `Object.getPrototypeOf([])` is
+  the reflection pellet's. A persistent vector (`__rt.vector(...)`) is
+  not an array: `v[0]` and `v.length` read `undefined`.
 - **Built-in objects are shared and immutable** (clj-quickjs-117,
   `docs/architecture.md`, "Realm intrinsics"). `Object`,
-  `Object.prototype` and their methods are one set of objects shared by
+  `Object.prototype`, `Array.prototype` (clj-quickjs-118) and their
+  methods are one set of objects shared by
   every task of a runtime; any write to one (`Object.prototype.x = 1`,
   `Object.is = f`) throws a catchable `TypeError` ("built-in objects are
   shared by all tasks and immutable"), although their properties report
@@ -395,8 +439,8 @@ checks left to later stages:
 - **`this` is only a non-arrow function's receiver** (clj-quickjs-116):
   `this` at the script top level (the global object, clj-quickjs-104) and
   an arrow's lexical `this` (clj-quickjs-98) are rejected; there is no
-  `new` (clj-quickjs-71), `call`/`apply`/`bind` (clj-quickjs-102), and a
-  method call `o[k]()` waits on computed member access (clj-quickjs-115).
+  `new` (clj-quickjs-71) or `call`/`apply`/`bind` (clj-quickjs-102); a
+  computed method call `o[k]()` passes `o` like `o.m()` (clj-quickjs-118).
   In sloppy code `this` of a call without an object receiver (a plain
   call `f()`, which would see the global object, or a primitive one,
   which would be wrapped, clj-quickjs-73) fails with `UnsupportedOperand`
@@ -409,10 +453,11 @@ checks left to later stages:
   `Object.prototype.toString`/`valueOf` of such a receiver need wrapper
   objects (clj-quickjs-72, -73) and fail the same way; `new Object()` is
   clj-quickjs-71.
-- **Objects are task-owned.** An object belongs to the task that created
-  it: only that task reads or writes its properties (another task fails
-  with `ForeignObject`), and publishing a value that reaches one to
-  another task is rejected (`Runtime::publish`).
+- **Objects are task-owned.** An object or array belongs to the task that
+  created it: only that task reads or writes its properties (another task
+  fails with `ForeignObject`), and publishing a value that reaches one to
+  another task is rejected (`Runtime::publish`), with a path that names
+  the property or element index leading to the innermost one.
 - **No string `length`, indexing or `String.fromCharCode` yet**
   (clj-quickjs-142 and the string-methods pellets). A string is already a
   sequence of UTF-16 code units (clj-quickjs-141; `docs/architecture.md`,
@@ -638,7 +683,7 @@ Executed, with JavaScript semantics:
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
-| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
+| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
@@ -646,6 +691,9 @@ Executed, with JavaScript semantics:
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property and fails with `UnsupportedOperand` for any other name (no `Function.prototype` yet, clj-quickjs-102); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; function objects, caught error objects, numbers, booleans and strings fail with `UnsupportedOperand` until their properties exist (clj-quickjs-101, -230, -73); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes (strict mode): an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only (a `TypeError`), a new own data property is added, so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; the other bases fail as for a read. The expression's value is `v` |
+| `[a, , b,]` array literals (clj-quickjs-118) | a new array object owned by the running task (`docs/architecture.md`, "Array objects"), inheriting from `Array.prototype` (a realm intrinsic without methods yet, which inherits from `Object.prototype`; see "Explicit gaps"): the elements are evaluated left to right and each defines the next index; an elision skips an index, leaving a hole (no own property: reading it continues along the prototype chain and gives `undefined`); `length` is the number of elements and holes (`[1, , 3].length` is 3, `[ , ].length` 1, `[1, 2,].length` 2). Two evaluations are distinct objects (`[] !== []`); `typeof` is `"object"`. Lowered to `new_array` and one `append_element`/`append_hole` per element |
+| `o[k]` (clj-quickjs-118) | evaluates `o`, then `k`, then converts `k` by ToPropertyKey (see "Explicit gaps") and reads as `o.name` does: on an array an array index (the canonical decimal string of an integer `0` to `2^32 - 2`, from a string or a number: `a[1]`, `a["1"]`, `a[-0]`) names an element, `length` its length, any other key an ordinary property; failures as for `o.name`, at the `[`. Lowered to `get_elem` |
+| `o[k] = v` (clj-quickjs-118) | evaluates `o`, `k`, then `v`, then converts `k` and writes as `o.name = v` does; writing an array index at or beyond an array's `length` sets `length` to that index plus one (`let a = [1]; a[3] = 4` gives length 4 with holes at 1 and 2), and any other key adds an ordinary property without changing `length`; assigning an array's `length` fails with `UnsupportedOperand` (clj-quickjs-39). The expression's value is `v`. Lowered to `put_elem` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
@@ -722,6 +770,30 @@ script below evaluates to `true`:
 const x = 1;
 function f(a, b = a + 1, g = () => x) { var x = 2; return b * 10 + g(); }
 f(1) === 21 && f(1, undefined) === 21 && f(1, 5) === 51 && ((a = 1, c) => a + c)(undefined, 2) === 3;
+```
+
+Array literals have holes and a `length` one past the greatest index
+written (clj-quickjs-118); each line below evaluates to `true`:
+
+```js accept
+[1, 2, 3][2] === 3 && [1, 2,].length === 2 && [ , ].length === 1 && [].length === 0;
+[1, , 3].length === 3 && [1, , 3][1] === undefined && [] !== [] && typeof [] === "object";
+let a = [1]; a[3] = 4; a.length === 4 && a["0"] === 1 && a[2] === undefined;
+```
+
+An array literal is not an assignment target (destructuring is its own
+pellet):
+
+```js reject Unsupported 1:1
+[a, b] = [b, a];
+```
+
+Arrays inherit from `Array.prototype`, which has no methods yet: its
+`toString` fails explicitly instead of answering `"[object Array]"`
+(`UnsupportedOperand` at run time, at the call's `(`):
+
+```js accept
+[1, 2].toString();
 ```
 
 A body `let`/`const` cannot repeat a parameter, with or without defaults:

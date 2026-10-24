@@ -59,6 +59,8 @@
 //! revision 7d1c13c5d8f8, `__JS_NewAtom`); they are not called atoms here
 //! because [`crate::atom`] is the concurrent reference.
 
+pub(crate) mod array;
+
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
@@ -258,6 +260,17 @@ impl OrdinaryObject {
     /// The `[[Prototype]]`: an object, or `None` for null.
     pub(crate) fn prototype(&self) -> Option<ObjectId> {
         self.prototype
+    }
+
+    /// The `[[Extensible]]` flag.
+    pub(crate) fn extensible(&self) -> bool {
+        self.extensible
+    }
+
+    /// Set the `[[Prototype]]` (tests; no operation of this slice sets it).
+    #[cfg(test)]
+    pub(crate) fn set_prototype(&mut self, prototype: Option<ObjectId>) {
+        self.prototype = prototype;
     }
 
     fn position(&self, key: PropertyKey) -> Option<usize> {

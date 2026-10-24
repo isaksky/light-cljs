@@ -257,13 +257,29 @@
 //! objects, a function object and a built-in function (clj-quickjs-117; the
 //! callable kinds, `Call` accepts nothing else) are `"function"`; every
 //! other kind is `"object"`: plain
-//! objects, native payload objects (error objects among them), persistent
+//! objects, arrays, native payload objects (error objects among them), persistent
 //! vectors, maps and syntax occurrences, transient builders, atoms and
 //! binding cells (which JavaScript code never holds as values). It never
 //! fails on a live value and calls no JavaScript. The string lives outside
 //! the heap, so it allocates nothing there and is not a poll point. The
 //! compiler lowers `typeof name` for a name with no binding to `Undefined`
 //! and `Typeof` instead of the ReferenceError a plain read throws.
+//!
+//! Opcodes `0x4F`–`0x51` (`GetField`, `PutField`, `DefineField`,
+//! clj-quickjs-114) and `0x57`–`0x5B` (clj-quickjs-118) are property
+//! access; their contract is in `crate::vm::property`:
+//!
+//! | Opcode          | Byte | Operand            | Stack (before → after) | Meaning |
+//! |-----------------|------|--------------------|------------------------|---------|
+//! | `NewArray`      | 0x57 | –                  | → arr                  | allocate a fresh empty array owned by the running task |
+//! | `AppendElement` | 0x58 | –                  | arr v → arr            | define index `length` of an array literal as v |
+//! | `AppendHole`    | 0x59 | –                  | arr → arr              | skip index `length` of an array literal (a hole) |
+//! | `GetElem`       | 0x5A | –                  | o k → v                | `o[k]`: ToPropertyKey(k), then `[[Get]]` |
+//! | `PutElem`       | 0x5B | –                  | o k v → v              | `o[k] = v`: ToPropertyKey(k), then `[[Set]]` (strict) |
+//!
+//! `NewArray` allocates (and builds the realm on first use, for
+//! `Array.prototype`), so it is a poll point, as `NewObjectLiteral` is; the
+//! others allocate no heap object.
 //!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
@@ -417,6 +433,11 @@ pub enum Opcode {
     NewObjectLiteral = 0x54,
     ToString = 0x55,
     GetThis = 0x56,
+    NewArray = 0x57,
+    AppendElement = 0x58,
+    AppendHole = 0x59,
+    GetElem = 0x5A,
+    PutElem = 0x5B,
 }
 
 /// Operand encoding of an opcode.
@@ -558,6 +579,11 @@ impl Opcode {
             0x54 => NewObjectLiteral,
             0x55 => ToString,
             0x56 => GetThis,
+            0x57 => NewArray,
+            0x58 => AppendElement,
+            0x59 => AppendHole,
+            0x5A => GetElem,
+            0x5B => PutElem,
             _ => return None,
         })
     }
@@ -652,6 +678,11 @@ impl Opcode {
             NewObjectLiteral => "new_object_literal",
             ToString => "to_string",
             GetThis => "get_this",
+            NewArray => "new_array",
+            AppendElement => "append_element",
+            AppendHole => "append_hole",
+            GetElem => "get_elem",
+            PutElem => "put_elem",
         }
     }
 
@@ -676,9 +707,8 @@ impl Opcode {
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis => {
-                OperandKind::None
-            }
+            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
+            | AppendElement | AppendHole | GetElem | PutElem => OperandKind::None,
         }
     }
 }
@@ -814,6 +844,11 @@ pub(crate) enum Instr {
     NewObjectLiteral,
     ToString,
     GetThis,
+    NewArray,
+    AppendElement,
+    AppendHole,
+    GetElem,
+    PutElem,
 }
 
 impl Instr {
@@ -905,6 +940,11 @@ impl Instr {
             Instr::NewObjectLiteral => Opcode::NewObjectLiteral,
             Instr::ToString => Opcode::ToString,
             Instr::GetThis => Opcode::GetThis,
+            Instr::NewArray => Opcode::NewArray,
+            Instr::AppendElement => Opcode::AppendElement,
+            Instr::AppendHole => Opcode::AppendHole,
+            Instr::GetElem => Opcode::GetElem,
+            Instr::PutElem => Opcode::PutElem,
         }
     }
 
@@ -915,7 +955,7 @@ impl Instr {
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
             | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
-            | NewObjectLiteral | GetThis => (0, 1),
+            | NewObjectLiteral | GetThis | NewArray => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
@@ -927,8 +967,9 @@ impl Instr {
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
-            | Typeof | GetField(_) | ToString => (1, 1),
-            PutField(_) | DefineField(_) => (2, 1),
+            | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
+            PutField(_) | DefineField(_) | AppendElement | GetElem => (2, 1),
+            PutElem => (3, 1),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
@@ -954,6 +995,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 86);
+        assert_eq!(assigned, 91);
     }
 }

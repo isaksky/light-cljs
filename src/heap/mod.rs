@@ -77,6 +77,7 @@ pub use stats::{HeapUsage, ObjectCounts};
 
 use crate::atom::AtomCell;
 use crate::collections::{Builder, Occurrence, PMap, PVector};
+use crate::object::array::ArrayObject;
 use crate::object::{OrdinaryObject, PropertyKeys};
 use crate::realm::Realm;
 use crate::value::Value;
@@ -141,6 +142,10 @@ pub(crate) enum ObjectKind {
     /// A built-in function of the realm (`crate::vm::builtin`): callable
     /// Rust code with an immutable property store, shared by every task.
     Builtin,
+    /// A JavaScript array object (`crate::object::array`): task-owned, with
+    /// element storage and an automatic `length` beside the properties of
+    /// an ordinary object.
+    Array,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -199,6 +204,11 @@ pub(crate) enum HeapObject {
     /// A built-in function (`crate::vm::builtin`): a realm intrinsic,
     /// immutable after the realm is built and shared by every task.
     Builtin(BuiltinFunction),
+    /// A JavaScript array object: task-owned and mutable by its owning
+    /// task's run only, in place under the object lock
+    /// (`crate::object::array`). Boxed: its element storage would otherwise
+    /// enlarge every heap object.
+    Array(Box<ArrayObject>),
 }
 
 impl HeapObject {
@@ -221,6 +231,7 @@ impl HeapObject {
             HeapObject::Cell(_) => ObjectKind::Cell,
             HeapObject::Atom(_) => ObjectKind::Atom,
             HeapObject::Builtin(_) => ObjectKind::Builtin,
+            HeapObject::Array(_) => ObjectKind::Array,
         }
     }
 }
@@ -238,6 +249,7 @@ impl Trace for HeapObject {
             HeapObject::Cell(c) => c.trace(visit),
             HeapObject::Atom(a) => a.trace(visit),
             HeapObject::Builtin(f) => f.trace(visit),
+            HeapObject::Array(a) => a.trace(visit),
         }
     }
 }

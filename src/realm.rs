@@ -24,6 +24,9 @@
 //! | `Object.is` | built-in function | `length` (2), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
+//! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
+//! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
+//! | `Array` (only as `Array.prototype.constructor`; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
 //!
 //! Property attributes are the standard ones (ECMAScript §18): methods and
 //! `constructor` are writable, non-enumerable and configurable; `length` and
@@ -129,6 +132,8 @@ pub(crate) struct Intrinsics {
     pub(crate) object_prototype: ObjectId,
     /// The `Object` constructor.
     pub(crate) object: ObjectId,
+    /// `Array.prototype`, the prototype of every array (clj-quickjs-118).
+    pub(crate) array_prototype: ObjectId,
     /// Every intrinsic object (the collector's roots).
     all: Vec<ObjectId>,
     /// A copy of every intrinsic's own properties and prototype, taken once
@@ -268,6 +273,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     if defined != Some(true) {
         return None;
     }
+    let array_prototype = array_prototype(heap, &mut all, object_prototype)?;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
         .iter()
@@ -291,9 +297,62 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     Some(Intrinsics {
         object_prototype,
         object,
+        array_prototype,
         all,
         views,
     })
+}
+
+/// `Array.prototype` (clj-quickjs-118): an intrinsic ordinary object
+/// inheriting from `Object.prototype`, with an own `length` of 0 (writable,
+/// not enumerable, not configurable, as an array's) and a `toString` that
+/// fails explicitly until `Array.prototype.join` exists (clj-quickjs-39), so
+/// `[].toString()` never answers `Object.prototype.toString`'s
+/// `"[object Array]"`. ECMAScript makes it an array exotic object itself;
+/// that is not observable while no code can write to it. Its
+/// `constructor` is the `Array` constructor, which is not a global name
+/// yet and fails when called; it and the methods are clj-quickjs-39 and
+/// -153..-156.
+fn array_prototype(
+    heap: &Heap,
+    all: &mut Vec<ObjectId>,
+    object_prototype: ObjectId,
+) -> Option<ObjectId> {
+    let to_string = builtin(heap, all, Builtin::ArrayPrototypeToString, &[])?;
+    let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    let length = heap.keys().intern(&JsString::from("length"))?;
+    let length_flags = PropertyFlags {
+        writable: true,
+        enumerable: false,
+        configurable: false,
+    };
+    prototype
+        .define_with(length, Value::Number(0.0), length_flags)
+        .then_some(())?;
+    define(
+        heap,
+        &mut prototype,
+        "toString",
+        to_string,
+        PropertyFlags::METHOD,
+    )?;
+    let id = heap.alloc(HeapObject::Plain(prototype))?;
+    all.push(id);
+    // `Array.prototype.constructor` is the `Array` constructor, a stub
+    // that fails when called until clj-quickjs-39 (so `[].constructor` is
+    // not the inherited `Object`).
+    let array = builtin(
+        heap,
+        all,
+        Builtin::Array,
+        &[("prototype", id, PropertyFlags::FIXED)],
+    )?;
+    let key = heap.keys().intern(&JsString::from("constructor"))?;
+    let defined = heap.with_object_mut(id, |o| match o {
+        HeapObject::Plain(o) => o.define_with(key, Value::Object(array), PropertyFlags::METHOD),
+        _ => false,
+    });
+    (defined == Some(true)).then_some(id)
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -352,7 +411,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 5);
+        assert_eq!(first.all.len(), 8);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
