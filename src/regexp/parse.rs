@@ -102,20 +102,35 @@ enum GroupKind {
 
 struct Frame {
     start: usize,
+    context: usize,
     kind: GroupKind,
     alternatives: Vec<NodeId>,
     terms: Vec<NodeId>,
 }
 
 impl Frame {
-    fn new(start: usize, kind: GroupKind) -> Self {
+    fn new(start: usize, context: usize, kind: GroupKind) -> Self {
         Self {
             start,
+            context,
             kind,
             alternatives: Vec::new(),
             terms: Vec::new(),
         }
     }
+}
+
+/// One alternative in a disjunction, linked to its containing alternative.
+/// Capture declarations retain just this index rather than copying ancestry.
+struct Context {
+    parent: Option<usize>,
+    depth: usize,
+    disjunction: usize,
+}
+
+struct NamedCapture {
+    index: usize,
+    context: usize,
 }
 
 struct Parser<'a> {
@@ -125,10 +140,11 @@ struct Parser<'a> {
     total_captures: usize,
     has_named: bool,
     captures: Vec<Option<JsString>>,
-    names: HashMap<JsString, usize>,
+    names: HashMap<JsString, Vec<NamedCapture>>,
     references: Vec<(NodeId, JsString, usize)>,
     nodes: Vec<Node>,
     frames: Vec<Frame>,
+    contexts: Vec<Context>,
 }
 
 impl<'a> Parser<'a> {
@@ -169,7 +185,12 @@ impl<'a> Parser<'a> {
             names: HashMap::new(),
             references: Vec::new(),
             nodes: Vec::new(),
-            frames: vec![Frame::new(0, GroupKind::Root)],
+            frames: vec![Frame::new(0, 0, GroupKind::Root)],
+            contexts: vec![Context {
+                parent: None,
+                depth: 0,
+                disjunction: 0,
+            }],
         }
     }
 
@@ -217,6 +238,14 @@ impl<'a> Parser<'a> {
                 124 => {
                     self.pos += 1;
                     self.alternative();
+                    let old = &self.contexts[self.frames.last().unwrap().context];
+                    let context = Context {
+                        parent: old.parent,
+                        depth: old.depth,
+                        disjunction: old.disjunction,
+                    };
+                    self.frames.last_mut().unwrap().context = self.contexts.len();
+                    self.contexts.push(context);
                 }
                 40 => {
                     self.pos += 1;
@@ -276,11 +305,12 @@ impl<'a> Parser<'a> {
             }
         };
         for (id, name, offset) in &self.references {
-            let index = self
+            let captures = self
                 .names
                 .get(name)
                 .ok_or_else(|| error(*offset, "unknown named backreference"))?;
-            self.nodes[id.0] = Node::Backreference(*index);
+            self.nodes[id.0] =
+                Node::Backreference(captures.iter().map(|capture| capture.index).collect());
         }
         Ok(Pattern {
             flags: self.flags,
@@ -317,11 +347,19 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 let name = self.group_name(start)?;
-                if self.names.contains_key(&name) {
+                let context = self.frames.last().unwrap().context;
+                if self.names.get(&name).is_some_and(|captures| {
+                    captures
+                        .iter()
+                        .any(|capture| self.might_both_participate(capture.context, context))
+                }) {
                     return Err(error(start, "duplicate group name"));
                 }
                 let index = self.captures.len() + 1;
-                self.names.insert(name.clone(), index);
+                self.names
+                    .entry(name.clone())
+                    .or_default()
+                    .push(NamedCapture { index, context });
                 self.captures.push(Some(name));
                 GroupKind::Group(Some(index))
             }
@@ -334,7 +372,6 @@ impl<'a> Parser<'a> {
                 Modifiers::default()
             };
             if enable == Modifiers::default() && disable == Modifiers::default()
-                || minus && disable == Modifiers::default()
                 || enable.ignore_case && disable.ignore_case
                 || enable.multiline && disable.multiline
                 || enable.dot_all && disable.dot_all
@@ -346,8 +383,36 @@ impl<'a> Parser<'a> {
         } else {
             return Err(error(start, "invalid group prefix"));
         };
-        self.frames.push(Frame::new(start, kind));
+        let parent = self.frames.last().unwrap().context;
+        let context = self.contexts.len();
+        self.contexts.push(Context {
+            parent: Some(parent),
+            depth: self.contexts[parent].depth + 1,
+            disjunction: context,
+        });
+        self.frames.push(Frame::new(start, context, kind));
         Ok(())
+    }
+
+    // ECMAScript MightBothParticipate: declarations are disjoint precisely
+    // when their ancestry includes different alternatives of one disjunction.
+    fn might_both_participate(&self, mut left: usize, mut right: usize) -> bool {
+        while left != right {
+            let a = &self.contexts[left];
+            let b = &self.contexts[right];
+            if a.depth > b.depth {
+                left = a.parent.unwrap();
+            } else if b.depth > a.depth {
+                right = b.parent.unwrap();
+            } else {
+                if a.disjunction == b.disjunction {
+                    return false;
+                }
+                left = a.parent.unwrap();
+                right = b.parent.unwrap();
+            }
+        }
+        true
     }
 
     fn modifiers(&mut self, start: usize) -> Result<Modifiers, SyntaxError> {
@@ -515,7 +580,7 @@ impl<'a> Parser<'a> {
                 let digits = self.pos;
                 let value = self.count().unwrap();
                 if let Some(n) = value.filter(|&n| n <= self.total_captures as u64) {
-                    return Ok(Node::Backreference(n as usize));
+                    return Ok(Node::Backreference(vec![n as usize]));
                 }
                 if self.flags.unicode {
                     return Err(error(start, "invalid decimal backreference"));
@@ -533,7 +598,7 @@ impl<'a> Parser<'a> {
                 // after parsing all groups, so forward names work as well.
                 self.references
                     .push((NodeId(self.nodes.len()), name, start));
-                Ok(Node::Backreference(0))
+                Ok(Node::Backreference(Vec::new()))
             }
             _ => match self.character_escape(false, start)? {
                 ClassMember::Literal(cp) => Ok(Node::Literal(cp)),
@@ -984,12 +1049,12 @@ mod tests {
     fn forward_references_and_legacy_decimal_escapes() {
         for flags in ["", "u"] {
             let p = pattern(r"\2(a)(b)\1", flags).unwrap();
-            assert_eq!(terms(&p)[0], &Node::Backreference(2));
-            assert_eq!(terms(&p)[3], &Node::Backreference(1));
+            assert_eq!(terms(&p)[0], &Node::Backreference(vec![2]));
+            assert_eq!(terms(&p)[3], &Node::Backreference(vec![1]));
             let p = pattern(r"\k<n>(?<n>a)\k<\u006e>", flags).unwrap();
             assert_eq!(p.captures, [Some(JsString::from("n"))]);
-            assert_eq!(terms(&p)[0], &Node::Backreference(1));
-            assert_eq!(terms(&p)[2], &Node::Backreference(1));
+            assert_eq!(terms(&p)[0], &Node::Backreference(vec![1]));
+            assert_eq!(terms(&p)[2], &Node::Backreference(vec![1]));
         }
         for (source, expected) in [
             (r"\1", vec![1]),
@@ -1030,7 +1095,7 @@ mod tests {
         }
         let p = pattern(r"(?<\u{10400}>a)\k<𐐀>", "").unwrap();
         assert_eq!(p.captures, [Some(JsString::from("𐐀"))]);
-        assert_eq!(terms(&p)[1], &Node::Backreference(1));
+        assert_eq!(terms(&p)[1], &Node::Backreference(vec![1]));
     }
 
     #[test]
@@ -1184,10 +1249,180 @@ mod tests {
                 ..Modifiers::default()
             }
         );
-        for source in [
-            "(?ii:a)", "(?i-i:a)", "(?-:a)", "(?i-:a)", "(?x:a)", "(?i)", "(?a)",
-        ] {
+        for flags in ["", "u"] {
+            let p = pattern("(?i-:a)", flags).unwrap();
+            let [
+                Node::Modifiers {
+                    enable, disable, ..
+                },
+            ] = terms(&p).as_slice()
+            else {
+                panic!()
+            };
+            assert_eq!(
+                *enable,
+                Modifiers {
+                    ignore_case: true,
+                    ..Modifiers::default()
+                }
+            );
+            assert_eq!(*disable, Modifiers::default());
+        }
+        for source in ["(?ii:a)", "(?i-i:a)", "(?-:a)", "(?x:a)", "(?i)", "(?a)"] {
             assert!(pattern(source, "").is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn duplicate_names_in_disjoint_alternatives() {
+        for flags in ["", "u"] {
+            for source in [
+                r"(?:(?<n>a)|(?<n>b))\k<n>",
+                r"\k<n>(?:(?<n>a)|(?:(?<n>b)|(?<n>c)))",
+                r"(?:(?<n>a)|(?<n>b))+\k<n>",
+            ] {
+                let p = pattern(source, flags).unwrap();
+                assert!(
+                    p.captures
+                        .iter()
+                        .all(|name| name.as_ref() == Some(&JsString::from("n")))
+                );
+                let references: Vec<_> = p
+                    .nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        Node::Backreference(indices) => Some(indices),
+                        _ => None,
+                    })
+                    .collect();
+                let expected: Vec<_> = (1..=p.captures.len()).collect();
+                assert_eq!(references, [&expected]);
+            }
+            for source in [
+                r"(?<n>a)(?<n>b)",
+                r"(?<n>(?<n>a)|b)",
+                r"(?:(?<n>a)|b)(?:c|(?<n>d))",
+                r"(?:(?<n>a)|(?<n>b))(?<n>c)",
+                r"(?:(?<n>a)(?<n>b)|c)",
+                r"(?<n>a)(?<\u006e>b)",
+            ] {
+                assert_eq!(
+                    pattern(source, flags).unwrap_err().message,
+                    "duplicate group name",
+                    "{source}"
+                );
+            }
+            let p = pattern(r"(?:(?<n>a)|(?<n>b))\1\k<n>+", flags).unwrap();
+            let t = terms(&p);
+            assert_eq!(t[1], &Node::Backreference(vec![1]));
+            let Node::Repeat {
+                body,
+                min: 1,
+                max: None,
+                ..
+            } = t[2]
+            else {
+                panic!()
+            };
+            assert_eq!(p.nodes[body.0], Node::Backreference(vec![1, 2]));
+            let p = pattern(r"(?:x(?<a>a)|(?<b>b)(?<a>c))\k<a>\k<b>", flags).unwrap();
+            let t = terms(&p);
+            assert_eq!(t[1], &Node::Backreference(vec![1, 3]));
+            assert_eq!(t[2], &Node::Backreference(vec![2]));
+        }
+    }
+
+    fn branch(p: &Pattern, disjunction: NodeId, index: usize) -> &[NodeId] {
+        let Node::Disjunction(alts) = &p.nodes[disjunction.0] else {
+            panic!()
+        };
+        let Node::Alternative(terms) = &p.nodes[alts[index].0] else {
+            panic!()
+        };
+        terms
+    }
+
+    #[test]
+    fn nested_ir_preserves_atoms_and_branch_contents() {
+        for flags in ["", "u"] {
+            let p = pattern(r"a(?:b.|c(d|e))(?=f|g)(?i:h|i)j", flags).unwrap();
+            let t = terms(&p);
+            assert_eq!(t.len(), 5);
+            assert_eq!(t[0], &Node::Literal(97));
+            assert_eq!(t[4], &Node::Literal(106));
+            let Node::Group {
+                body,
+                capture: None,
+            } = t[1]
+            else {
+                panic!()
+            };
+            let first = branch(&p, *body, 0);
+            assert_eq!(first.len(), 2);
+            assert_eq!(p.nodes[first[0].0], Node::Literal(98));
+            assert_eq!(p.nodes[first[1].0], Node::Dot);
+            let second = branch(&p, *body, 1);
+            assert_eq!(second.len(), 2);
+            assert_eq!(p.nodes[second[0].0], Node::Literal(99));
+            let Node::Group {
+                body: capture_body,
+                capture: Some(1),
+            } = p.nodes[second[1].0]
+            else {
+                panic!()
+            };
+            for (index, cp) in [100, 101].into_iter().enumerate() {
+                let b = branch(&p, capture_body, index);
+                assert_eq!(b.len(), 1);
+                assert_eq!(p.nodes[b[0].0], Node::Literal(cp));
+            }
+            assert_eq!(p.captures, [None]);
+            let Node::Lookaround {
+                body,
+                behind: false,
+                negative: false,
+            } = t[2]
+            else {
+                panic!()
+            };
+            for (index, cp) in [102, 103].into_iter().enumerate() {
+                let b = branch(&p, *body, index);
+                assert_eq!(b.len(), 1);
+                assert_eq!(p.nodes[b[0].0], Node::Literal(cp));
+            }
+            let Node::Modifiers {
+                body,
+                enable,
+                disable,
+            } = t[3]
+            else {
+                panic!()
+            };
+            assert_eq!(
+                *enable,
+                Modifiers {
+                    ignore_case: true,
+                    ..Modifiers::default()
+                }
+            );
+            assert_eq!(*disable, Modifiers::default());
+            for (index, cp) in [104, 105].into_iter().enumerate() {
+                let b = branch(&p, *body, index);
+                assert_eq!(b.len(), 1);
+                assert_eq!(p.nodes[b[0].0], Node::Literal(cp));
+            }
+            let p = pattern(r"\. [.]", flags).unwrap();
+            assert_eq!(
+                terms(&p),
+                [
+                    &Node::Literal(46),
+                    &Node::Literal(32),
+                    &Node::Class(CharacterClass {
+                        inverted: false,
+                        members: vec![ClassMember::Literal(46)]
+                    })
+                ]
+            );
         }
     }
 

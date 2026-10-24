@@ -38,7 +38,9 @@ pub enum Node {
         enable: Modifiers,
         disable: Modifiers,
     },
-    Backreference(usize),
+    /// One numeric capture, or all candidates for a named reference whose
+    /// duplicate declarations are in mutually exclusive alternatives.
+    Backreference(Vec<usize>),
     Class(CharacterClass),
     Repeat {
         body: NodeId,

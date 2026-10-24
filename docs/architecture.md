@@ -4474,7 +4474,11 @@ literal malformed braces, class-escape range endpoints, and quantified
 lookahead. Unicode parsing enforces strict escapes and syntax characters,
 combines raw or fixed-width escaped surrogate pairs, and preserves lone
 surrogates. Capture names reuse the frontend's Unicode 16.0.0 identifier
-predicates, including escaped names. Duplicate names are rejected globally.
+predicates, including escaped names. Duplicate names are allowed only in
+disjoint alternatives; named references retain every candidate capture index
+for the matcher. This follows ECMAScript's
+[MightBothParticipate early error](https://tc39.es/ecma262/2025/multipage/text-processing.html#sec-static-semantics-mightbothparticipate).
+Scoped modifiers permit an empty removal list when additions are present.
 Quantifier counts have an explicit u64 implementation limit and overflow
 returns a positioned error. Flags `dgimsuvy` are validated, but v patterns
 and u-mode property escapes fail explicitly pending clj-quickjs-194/-192.
