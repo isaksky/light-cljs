@@ -428,6 +428,11 @@ fn engine_errors_are_error_instances() {
             "invalid array length",
         ),
         (
+            "JSON.parse('?');",
+            "SyntaxError",
+            "JSON.parse: expected a JSON value at line 1 column 1 (UTF-16 offset 0)",
+        ),
+        (
             "function f() { return f(); } f();",
             "InternalError",
             "stack overflow",

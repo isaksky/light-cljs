@@ -1932,6 +1932,50 @@ mod tests {
     }
 
     #[test]
+    fn syntax_errors_use_the_intrinsic_and_unobserved_failures_allocate_nothing() {
+        // Early VM test: inject the fault independently of a source built-in.
+        let mut asm = Assembler::new();
+        let catch = asm.label();
+        asm.push_catch(catch)
+            .op(Opcode::Undefined)
+            .op(Opcode::Throw);
+        asm.bind(catch).op(Opcode::Return);
+        let exe = asm.finish("syntax-error", 0, 0).unwrap();
+        let heap = Heap::default();
+        let mut s = state(&exe, 1);
+        let original = s.failure(VmErrorKind::SyntaxError, "bad JSON".into(), 0);
+        let before = heap.stats().objects;
+        assert!(
+            matches!(raise_failure(&mut s, &heap, original.clone(), Value::Undefined), Some(Exit::Fail(e)) if e == original)
+        );
+        assert_eq!(heap.stats().objects, before);
+        let Instr::PushCatch(target) = exe.0.instrs[0] else {
+            unreachable!()
+        };
+        s.push_handler(HandlerKind::Catch { target }).ok().unwrap();
+        let fatal = s.failure(VmErrorKind::OutOfMemory, "exhausted".into(), 0);
+        assert!(
+            matches!(raise_failure(&mut s, &heap, fatal.clone(), Value::Undefined), Some(Exit::Fail(e)) if e == fatal)
+        );
+        assert_eq!(heap.stats().objects, before);
+        assert!(raise_failure(&mut s, &heap, original.clone(), Value::Undefined).is_none());
+        let Exit::Return(value) = execute(&mut s, &heap, &mut NoHost, None) else {
+            panic!("expected caught value")
+        };
+        let Value::Object(id) = value else {
+            panic!("expected Error instance")
+        };
+        let intrinsics = realm::intrinsics(&heap).unwrap();
+        assert_eq!(
+            super::super::prototype::get_prototype_of(&heap, TaskId::from_raw(1), id)
+                .ok()
+                .unwrap(),
+            Some(intrinsics.native_error_prototype(super::super::builtin::NativeErrorKind::Syntax))
+        );
+        assert_eq!(error_object(&heap, &value).unwrap().0, original);
+    }
+
+    #[test]
     fn two_tasks_share_function_code_but_not_frames() {
         // function child() { 1; 2; return 3; }  function parent() { return child(); }
         let mut asm = Assembler::new();
