@@ -1104,8 +1104,10 @@ Supported:
   unrelated work alone versus with parked consumers.
 - Memory rows from a counting global allocator in the example: shared
   input and code bytes versus per-consumer bytes for 1 to 10,000 parked
-  consumers, heap objects per consumer, host-owned handle storage, RSS,
-  and instrumentation overhead rows.
+  consumers, both parked in a plain frame and inside an `__rt.reduce`
+  callback (a suspended native continuation), heap objects per consumer,
+  storage kept after drop, host-owned handle storage (excluded from task
+  figures), RSS, and instrumentation overhead rows.
 - Read-only snapshots: `Runtime::heap_usage` (`HeapUsage`: live objects by
   kind, known-shareable count, slots, shallow table bytes) and
   `Task::stats` (`TaskStats`: saved frames, stack values, native frames,
