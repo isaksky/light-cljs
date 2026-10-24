@@ -17420,6 +17420,8 @@ fn intl_number_format_options_and_rounding() {
         "let g=Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'format'); !g.enumerable && g.configurable && g.set === undefined && g.get.name === 'get format' && g.get.length === 0 && Intl.NumberFormat.name === 'NumberFormat' && Intl.NumberFormat.length === 1 && Intl.NumberFormat.supportedLocalesOf.length === 1",
         "let n=new Intl.NumberFormat('en'); Object.freeze(n); n.format === n.format && n.format(1.5) === '1.5'",
         "let n=new Intl.NumberFormat('en',{useGrouping:''}); n.format(1234) === '1234'",
+        "let caught=false; let later=false; let finalized=false; try { new Intl.NumberFormat('en',{style:1n << 1000n,get notation(){later=true;return 'standard';}}); } catch(e) { caught=e instanceof RangeError; } finally { finalized=true; } caught && !later && finalized",
+        "let caught=false; try { new Intl.NumberFormat('en',{maximumFractionDigits:1n << 1000n}); } catch(e) { caught=e instanceof TypeError; } caught",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -17652,6 +17654,9 @@ fn intl_number_format_decimal_resource_limits() {
         "xE+10001",
         "1x0e999999999999999999999",
         ".e-999999999999999999999",
+        "\u{0085}1",
+        "\u{0085}1e10001",
+        "1e-10001\u{0085}",
     ] {
         assert_eq!(
             eval(&format!(
@@ -17692,10 +17697,74 @@ fn intl_number_format_decimal_resource_limits() {
     );
     assert_eq!(
         eval(
-            "let f=new Intl.NumberFormat('en',{useGrouping:false}).format; let s=f('1e10000'); s.length === 10001 && s[0] === '1' && s[10000] === '0' && f('1e-10000') === '0' && f('1e+00000000000000000000001') === '10'"
+            "let f=new Intl.NumberFormat('en',{useGrouping:false}).format; let s=f('1e10000'); s.length === 10001 && s[0] === '1' && s[10000] === '0' && f('1e-10000') === '0' && f('1e+00000000000000000000001') === '10' && f('\u{feff}\u{00a0}1\u{2028}\u{2029}') === '1'"
         ),
         ValueView::Bool(true)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. BigInt decimal conversion must
+/// keep yielding after argument evaluation, including after object conversion.
+#[test]
+fn intl_number_format_large_bigint_yields_collects_and_migrates() {
+    let digits: String = (0..4000)
+        .map(|i| char::from(b'0' + ((i * 7 + 1) % 10) as u8))
+        .collect();
+    for (argument, calls) in [
+        ("__rt.need(2131,1)", 0),
+        ("{valueOf(){calls++;return __rt.need(2131,1);}}", 1),
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let calls=0; let f=new Intl.NumberFormat('en',{{useGrouping:false}}).format; let result=f({argument}); result === '{digits}' && calls === {calls}"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut conversion_yields = 0;
+        let mut completed = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    if waits == 1 {
+                        conversion_yields += 1;
+                    }
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let bigint = clj_quickjs::JsBigInt::from_digits(&digits, 10).unwrap();
+                    let value = rt.root(Primitive::BigInt(bigint));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{argument}");
+                    assert_eq!(waits, 1);
+                    assert!(conversion_yields > 100, "{conversion_yields}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{argument}: {other:?}"),
+            }
+        }
+        assert!(completed, "{argument}");
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output. Resolve the complete requested

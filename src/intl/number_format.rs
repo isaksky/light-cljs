@@ -42,7 +42,6 @@ impl NumberFormat {
     }
     pub fn format(&self, value: &Value) -> Result<Value, Fault> {
         let text = match value {
-            Value::BigInt(n) => n.to_string(),
             Value::String(s) => s.to_string_lossy(),
             _ => {
                 let n = dispatch::to_number(value)?;
@@ -53,7 +52,9 @@ impl NumberFormat {
                 }
             }
         };
-        let text = text.trim();
+        let text = text.trim_matches(|c: char| {
+            u16::try_from(u32::from(c)).is_ok_and(crate::value::string::is_str_white_space)
+        });
         let negative = text.starts_with('-');
         let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
         let symbol =

@@ -113,7 +113,7 @@ impl State {
             return Ok(Action::Continue);
         }
         self.stage = Stage::Converted;
-        if matches!(value, Value::Object(_)) {
+        if matches!(value, Value::Object(_) | Value::BigInt(_)) {
             return Ok(if (4..=8).contains(&self.option) {
                 Action::ToNumber(value)
             } else {
@@ -335,6 +335,9 @@ impl State {
                 if matches!(self.argument, Value::Object(_)) {
                     self.stage = Stage::Primitive;
                     Ok(Action::ToPrimitiveNumber(self.argument.clone()))
+                } else if matches!(self.argument, Value::BigInt(_)) {
+                    self.stage = Stage::Primitive;
+                    Ok(Action::ToString(self.argument.clone()))
                 } else {
                     number_format::record(heap, task, &self.this)?
                         .format(&self.argument)
