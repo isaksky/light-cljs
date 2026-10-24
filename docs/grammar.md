@@ -477,8 +477,10 @@ Directive"; QuickJS `js_parse_directives` and
   right after a directive is lexed before the directive is recognised, so
   a `"use strict"` directive checks that token again: `"use strict"; 010`
   and `function f() { 'use strict'; 010; }` are `InvalidToken` at the
-  `0`. The token after a strict function's closing `}` is lexed in the
-  enclosing mode again.
+  `0`, also when lexing it as sloppy code fails (`"use strict"; 01n` is
+  the strict error at the `0`, not the sloppy one at the `n`). The token
+  after a strict function's closing `}` is lexed in the enclosing mode
+  again.
 
 ```js sloppy-accept
 // Sloppy code may bind eval and arguments; directives apply per function.

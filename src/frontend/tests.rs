@@ -2418,6 +2418,17 @@ fn legacy_octal_literals_in_sloppy_mode() {
         1,
         34,
     );
+    // That token is strict even when lexing it as sloppy code fails: the
+    // strict error at its leading zero is reported, not the sloppy one.
+    sloppy_rejects("\"use strict\"; 08.1_2;", InvalidToken, 1, 15);
+    sloppy_rejects("\"use strict\"; 01n;", InvalidToken, 1, 15);
+    sloppy_rejects("'use strict'\n01n;", InvalidToken, 2, 1);
+    sloppy_rejects("'use strict' /*\n*/ 0_1;", InvalidToken, 2, 4);
+    sloppy_rejects("function f() { 'use strict'; 08n }", InvalidToken, 1, 30);
+    // Not a directive: the sloppy error stands.
+    sloppy_rejects("'use strict' 01n;", InvalidToken, 1, 16);
+    sloppy_rejects("1; 'use strict'; 01n;", InvalidToken, 1, 20);
+    sloppy_rejects("x = 'use strict'; 01n;", InvalidToken, 1, 21);
     // ... and only to the code it applies to: the literal after the
     // function's closing brace is sloppy again.
     assert_eq!(

@@ -15,7 +15,8 @@ use super::ast::{
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{
-    Keyword, Lexer, Punct, Token, TokenKind, is_leading_zero_literal, leading_zero_in_strict_code,
+    Keyword, Lexer, Punct, Token, TokenKind, is_leading_zero_literal, is_line_terminator,
+    leading_zero_in_strict_code,
 };
 use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
@@ -88,6 +89,11 @@ pub(super) struct Parser<'a> {
     /// The labels of the enclosing labelled statements of the current
     /// function, outermost first.
     labels: Vec<LabelEntry>,
+    /// While a statement of a sloppy directive prologue that starts with a
+    /// `"use strict"` string token is parsed, that token's span: the
+    /// statement may turn out to be the directive, which makes the token
+    /// after it strict code (see [`Self::directive_lex_error`]).
+    use_strict_candidate: Option<Span>,
 }
 
 /// A label of an enclosing labelled statement (clj-quickjs-82).
@@ -118,6 +124,7 @@ impl<'a> Parser<'a> {
             in_loop: false,
             in_switch: false,
             labels: Vec::new(),
+            use_strict_candidate: None,
         }
     }
 
@@ -133,10 +140,45 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) -> PResult<Token> {
-        let next = self.lexer.next_token()?;
+        let before = self.use_strict_candidate.map(|_| self.lexer.clone());
+        let next = match self.lexer.next_token() {
+            Ok(next) => next,
+            Err(e) => return Err(self.directive_lex_error(before, e)),
+        };
         let tok = std::mem::replace(&mut self.tok, next);
         self.prev_end = tok.span.end;
         Ok(tok)
+    }
+
+    /// `e`, the error lexing the next token in sloppy code, or the strict
+    /// one if that token is strict code (clj-quickjs-51). It is when it
+    /// follows a `"use strict"` directive ([`Self::use_strict_candidate`],
+    /// whose statement the parser has not finished yet): the current token
+    /// is the candidate string and a line break comes before the next
+    /// token (a number literal there ends the statement), or it is the `;`
+    /// right after the string. Only a leading-zero number literal lexes
+    /// differently in strict code, so the strict error is used only when
+    /// it is the strict-mode error at such a literal's leading `0`.
+    /// `before` is the lexer as it was before the failed token.
+    #[cold]
+    fn directive_lex_error(&self, before: Option<Lexer<'a>>, e: SyntaxError) -> SyntaxError {
+        let (Some(mut lexer), Some(candidate)) = (before, self.use_strict_candidate) else {
+            return e;
+        };
+        lexer.set_strict(true);
+        let Err(strict) = lexer.next_token() else {
+            return e;
+        };
+        let zero = strict.span.start;
+        if strict != leading_zero_in_strict_code(self.src, zero) {
+            return e;
+        }
+        let ends_directive = if self.tok.span == candidate {
+            self.src[candidate.end..zero].contains(is_line_terminator)
+        } else {
+            self.is_punct(Punct::Semicolon) && self.prev_end == candidate.end
+        };
+        if ends_directive { strict } else { e }
     }
 
     /// The token after the current one, if it lexes cleanly. Used only to
@@ -272,7 +314,7 @@ impl<'a> Parser<'a> {
         let mut body = Vec::new();
         let mut prologue = true;
         while self.tok.kind != TokenKind::Eof {
-            let stmt = self.parse_statement_list_item()?;
+            let stmt = self.parse_body_item(prologue)?;
             prologue = prologue && self.directive(&stmt, None, &[])?;
             body.push(stmt);
         }
@@ -335,6 +377,19 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(true)
+    }
+
+    /// A StatementListItem of a script or function body, which is part of
+    /// its directive prologue if `prologue` (the prologue has not ended).
+    fn parse_body_item(&mut self, prologue: bool) -> PResult<Stmt> {
+        let candidate = prologue
+            && !self.strict
+            && matches!(self.tok.kind, TokenKind::String(_))
+            && USE_STRICT.contains(&self.tok.span.text(self.src));
+        self.use_strict_candidate = candidate.then_some(self.tok.span);
+        let stmt = self.parse_statement_list_item();
+        self.use_strict_candidate = None;
+        stmt
     }
 
     /// StatementListItem: a declaration or a statement.
@@ -1067,7 +1122,7 @@ impl<'a> Parser<'a> {
             if self.tok.kind == TokenKind::Eof {
                 return Err(self.unexpected("`}`"));
             }
-            let stmt = self.parse_statement_list_item()?;
+            let stmt = self.parse_body_item(prologue)?;
             if prologue && !simple {
                 self.reject_use_strict(&stmt)?;
             }
