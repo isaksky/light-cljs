@@ -2728,7 +2728,7 @@ those of ordinary objects; virtual properties introduce no heap edges.
 ## QuickJS references and provenance
 
 - String length overflow (clj-quickjs-231) follows `string_buffer_realloc`,
-  `js_new_string`, and `JS_ConcatString` in `research/quickjs/quickjs.c`,
+  `JS_NewStringLen`, and `JS_ConcatString` in `research/quickjs/quickjs.c`,
   revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, as semantic references.
   No source or test text was adapted. `Fault::StringTooLong` maps to the
   appended `VmErrorKind::StringTooLong` and a catchable InternalError with

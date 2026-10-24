@@ -163,6 +163,15 @@ pub(crate) fn source(source: &JsString) -> Result<JsString, Fault> {
     let mut escaped = false;
     let mut class = false;
     for &c in source.code_units().iter() {
+        let extra = match c {
+            10 | 13 => 2 - usize::from(escaped),
+            0x2028 | 0x2029 => 6 - usize::from(escaped),
+            47 if !escaped && !class => 2,
+            _ => 1,
+        };
+        if out.len() > crate::value::string::MAX_STRING_LEN - extra {
+            return Err(Fault::StringTooLong);
+        }
         if matches!(c, 10 | 13 | 0x2028 | 0x2029) {
             // A literal backslash before a line terminator must not consume
             // the escape we insert (constructor patterns can contain both).
@@ -193,7 +202,7 @@ pub(crate) fn source(source: &JsString) -> Result<JsString, Fault> {
         out.push(c);
         escaped = !escaped && c == 92;
     }
-    JsString::from_code_units(out).ok_or_else(|| Fault::RangeError("RegExp source too long".into()))
+    JsString::from_code_units(out).ok_or(Fault::StringTooLong)
 }
 
 pub(crate) fn exec(
