@@ -871,7 +871,7 @@ Executed, with JavaScript semantics:
 | `Function.prototype`, `Function` (clj-quickjs-102) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` are not supported yet (clj-quickjs-111): the call fails with `UnsupportedOperand`, `new` with a `TypeError` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
-| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumber / ToString of a primitive argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments and implicit wrapper conversion still fail with `UnsupportedOperand` until resumable ToPrimitive (clj-quickjs-70). A String wrapper's `length`, indices below its length, and own-key enumeration fail explicitly until clj-quickjs-142; a read never answers the inherited length 0 for a nonempty wrapper. Boolean wrappers, other radixes, and Number constants are deferred. |
+| `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumber / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper's `length`, indices below its length, and own-key enumeration fail explicitly until clj-quickjs-142; a read never answers the inherited length 0 for a nonempty wrapper. Boolean wrappers, other radixes, and Number constants are deferred. |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
 | `__rt.name(args)` | the private VM operation of that intrinsic (see "Reserved intrinsic binding") |
 
@@ -1176,7 +1176,7 @@ Gaps specific to execution:
   fails with `UnsupportedOperand`); it can be compared, passed around and
   rethrown.
 - **Conversion gaps.** Symbols and `Symbol.toPrimitive` (clj-quickjs-127
-  and -128) and wrapper objects (clj-quickjs-72) remain deferred.
+  and -128) remain deferred.
   `Function.prototype.toString` is absent: conversion uses the available
   Object.prototype default (`"[object Function]"`) until that method exists.
   `Array.prototype.toString` still rejects the missing `join` explicitly.
@@ -2095,17 +2095,22 @@ Explicit gaps: primitive receivers require wrappers (clj-quickjs-72), and
 object-valued lengths require resumable ToPrimitive (clj-quickjs-70);
 `push` fails explicitly with `UnsupportedOperand` for these cases. Null and
 undefined receivers always throw caught `TypeError`.
+
 ### Number and String constructor examples (clj-quickjs-72)
 
 Synthetic fixtures, not light-cljs output. Each script evaluates to true:
 
 ```js accept
 Number('0x10') === 16 && Number() === 0 && String(null) === 'null' && String(1e21) === '1e+21';
-let n = new Number(5); typeof n === 'object' && n !== 5 && n.valueOf() + 1 === 6 && n instanceof Number;
-let s = new String('a'); s.valueOf() + 'b' === 'ab' && s.toString() === 'a' && s instanceof String;
+let n = new Number(5); typeof n === 'object' && n !== 5 && n + 1 === 6 && n instanceof Number;
+let s = new String('a'); s + "b" === "ab" && s.toString() === 'a' && s instanceof String;
 (new Number()).valueOf() === 0 && (new String()).valueOf() === '';
 ```
 
-Implicit `new Number(1) == 1`, wrapper `+`, and object arguments to either
-constructor require clj-quickjs-70's resumable OrdinaryToPrimitive. They
-currently fail explicitly rather than bypassing overridden conversion methods.
+Wrapper equality, addition and object arguments use resumable
+OrdinaryToPrimitive, preserving overridden conversion methods.
+
+```js accept
+new Number(1) == 1 && 2 == new Number(2) && new String('abc') == 'abc';
+Number({valueOf: function () { return 7; }}) === 7 && String({toString: function () { return 's'; }}) === 's';
+```

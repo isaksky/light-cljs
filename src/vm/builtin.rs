@@ -85,7 +85,7 @@
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72); `getOwnPropertyNames` of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-261) |
 //! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or a Number wrapper (including `Number.prototype`, holding `+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or a String wrapper (including `String.prototype`, holding `""`); any other receiver: catchable `TypeError` |
-//! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert a primitive argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments await resumable ToPrimitive (clj-quickjs-70) |
+//! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
@@ -428,9 +428,9 @@ fn wrapper_data(heap: &Heap, task: TaskId, this: &Value) -> Result<Option<Primit
     .unwrap_or(Err(Fault::Internal("wrapper receiver was reclaimed")))
 }
 
-/// Call or construct Number/String. Argument conversion currently accepts
-/// primitives; object arguments await resumable ToPrimitive (clj-quickjs-70).
-/// All arguments stay rooted on the calling frame's operand stack. The result
+/// Finish a Number/String call or construction after resumable ToPrimitive
+/// (when needed) has produced a primitive. Arguments remain traced on the
+/// calling frame's operand stack or in its native continuation. The result
 /// replaces them before any safepoint, so allocation needs no temporary root.
 pub(crate) fn primitive_constructor(
     heap: &Heap,

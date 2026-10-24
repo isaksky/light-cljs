@@ -466,6 +466,15 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             Ok(Flow::FrameChanged)
         }
         (Callee::Builtin(which), forward) => {
+            if super::native::start_primitive_constructor(
+                state,
+                which,
+                &forward.args,
+                false,
+                popped,
+            )? {
+                return Ok(Flow::Next);
+            }
             let result = builtin::call(heap, task, which, &forward.this, &forward.args)?;
             state.replace(popped, result)?;
             Ok(Flow::Next)
@@ -557,10 +566,10 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
         Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String))) => {
-            let [_, args @ ..] = top_operands(state, argc + 1)? else {
-                return Err(Fault::Internal("operand stack underflow"));
-            };
-            let result = builtin::primitive_constructor(heap, task, which, args, true)?;
+            if super::native::start_primitive_constructor(state, which, &args, true, argc + 1)? {
+                return Ok(Flow::Next);
+            }
+            let result = builtin::primitive_constructor(heap, task, which, &args, true)?;
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }

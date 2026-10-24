@@ -2371,18 +2371,18 @@ Supported (`cargo test --test js_source objects_convert_with_to_primitive`,
   yields, `__rt.need` waits, GC and migration. Exceptions propagate and
   cancellation runs finally blocks without restarting a conversion.
 
-Deferred: Symbol.toPrimitive and wrappers; Function.prototype.toString and
+Deferred: Symbol.toPrimitive; Function.prototype.toString and
 Array.prototype.join. Functions use the available Object.prototype default (`"[object Function]"`);
 runtime collections with no conversion methods throw TypeError. Leaf built-ins
 still reject object conversion arguments (for example descriptor keys,
 array lengths and apply's argument-list length); these require their own
 resumable built-in paths.
 
-### Number and String wrapper constructors (clj-quickjs-72, partial)
+### Number and String wrapper constructors (clj-quickjs-72)
 
 Supported (`cargo test --test js_source primitive_wrapper`):
 
-- `Number(v)` / `String(v)` convert primitive arguments using ToNumber /
+- `Number(v)` / `String(v)` convert arguments using ToNumber /
   ToString; no argument gives 0 / `""`.
 - `new Number(v)` / `new String(v)` allocate distinct task-owned objects
   holding `[[NumberData]]` / `[[StringData]]`, inheriting from the matching
@@ -2392,9 +2392,11 @@ Supported (`cargo test --test js_source primitive_wrapper`):
 - Wrapper data and own properties survive waits, collection and migration.
   Publication rejects wrappers; another task cannot read or mutate them.
 
-Deferred: implicit wrapper conversion (`new Number(1) == 1`, wrapper `+`)
-requires clj-quickjs-70, as do object arguments to `Number` / `String`.
-String wrapper `length`, indices and own-key enumeration explicitly fail
+Object arguments use resumable OrdinaryToPrimitive with number / string hint.
+Wrapper equality and addition call observable valueOf / toString methods;
+conversion callbacks can yield, wait, be collected around and migrate.
+
+Deferred: String wrapper `length`, indices and own-key enumeration explicitly fail
 until clj-quickjs-142. Boolean wrappers, other radixes and Number constants
 remain deferred. ToObject integration for `Object(primitive)`, reflection
 on primitives and sloppy-mode `this` remains unsupported.

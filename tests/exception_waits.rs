@@ -1283,3 +1283,100 @@ fn cancelling_to_primitive_runs_finally_and_discards_the_conversion() {
         matches!(rt.cell_status(key(&rt, A)), CellStatus::Pending { ref waiters, .. } if waiters.is_empty())
     );
 }
+
+/// Synthetic fixtures, not light-cljs output. Pending constructor conversions
+/// share the native unwind rules, including nested built-in callbacks.
+#[test]
+fn primitive_wrapper_conversion_dependency_failure_unwinds() {
+    for expression in [
+        "Number(o)",
+        "new Number(o)",
+        "String(o)",
+        "new String(o)",
+        "+({valueOf: Number.bind(null, o)})",
+        "String({toString: String.bind(null, o)})",
+    ] {
+        let rt = Runtime::new();
+        let task = spawn(
+            &rt,
+            &format!(
+                r#"
+            function convert() {{
+                try {{ return __rt.need(5, 3); }}
+                finally {{ __rt.effect(1, 1); }}
+            }}
+            let o = {{valueOf: convert, toString: convert}};
+            let result = 0;
+            try {{ {expression}; }}
+            catch(e) {{ result = e; }}
+            finally {{ __rt.effect(1, 2); }}
+            result;
+        "#
+            ),
+        );
+        let mut log = Log::default();
+        assert_eq!(waiting(run(&task, &mut log)), key(&rt, A));
+        assert!(log.0.is_empty());
+        rt.collect().unwrap();
+        let error = rt.root(Primitive::String("conversion failed".into()));
+        let resumed = fail(&rt, &task, &error);
+        let (outcome, log) = run_elsewhere(resumed, log);
+        let caught = complete(outcome);
+        assert_eq!(
+            caught.error().expect("dependency error").kind(),
+            VmErrorKind::DependencyFailed(key(&rt, A)),
+            "{expression}"
+        );
+        assert_eq!(
+            caught.error_cause().unwrap().string().unwrap().to_string(),
+            "conversion failed",
+            "{expression}"
+        );
+        assert_eq!(log.0, [1.0, 2.0], "{expression}");
+        rt.collect().unwrap();
+        assert_eq!(rt.heap_usage().objects.function, 0);
+    }
+}
+
+#[test]
+fn primitive_wrapper_conversion_cancellation_discards_nested_natives() {
+    for expression in [
+        "Number(o)",
+        "new Number(o)",
+        "String(o)",
+        "new String(o)",
+        "+({valueOf: Number.bind(null, o)})",
+        "String({toString: String.bind(null, o)})",
+    ] {
+        let rt = Runtime::new();
+        let task = spawn(
+            &rt,
+            &format!(
+                r#"
+            function convert() {{
+                try {{ return __rt.need(5, 3); }}
+                finally {{ __rt.effect(1, 1); }}
+            }}
+            let o = {{valueOf: convert, toString: convert}};
+            try {{ {expression}; }}
+            catch(e) {{ __rt.effect(1, 98); }}
+            finally {{ __rt.effect(1, 2); }}
+            __rt.effect(1, 97);
+        "#
+            ),
+        );
+        let mut log = Log::default();
+        assert_eq!(waiting(run(&task, &mut log)), key(&rt, A));
+        assert!(log.0.is_empty());
+        rt.collect().unwrap();
+        let resumed = cancel_parked(&task);
+        let (outcome, log) = run_elsewhere(resumed, log);
+        cancelled(outcome);
+        assert_eq!(log.0, [1.0, 2.0], "{expression}");
+        rt.collect().unwrap();
+        assert_eq!(rt.heap_usage().objects.function, 0);
+        assert!(
+            matches!(rt.cell_status(key(&rt, A)), CellStatus::Pending { ref waiters, .. } if waiters.is_empty())
+        );
+    }
+}

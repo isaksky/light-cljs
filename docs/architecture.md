@@ -3289,10 +3289,10 @@ a yield or wait. Every callback and native step consumes budget and uses
 the existing safepoints. NativeFrame::trace visits all operands, including
 the unvisited right operand and unrelated property values. Exceptions and
 cancellation use the same unwind/discard path as reduce and needAll.
-Symbols, wrappers and resumable conversions inside leaf built-ins remain
+Symbols and resumable conversions inside other leaf built-ins remain
 with their own pellets.
 
-## Number and String wrapper data (clj-quickjs-72, partial)
+## Number and String wrapper data (clj-quickjs-72)
 
 `OrdinaryObject` has an optional, typed `PrimitiveData` slot (`Number(f64)`
 or `String(JsString)`), initialized before allocation and immutable thereafter.
@@ -3316,21 +3316,25 @@ while wrappers and nested properties are held across a wait, resumes on another
 thread, verifies data, rejects publication and foreign reads, then checks
 reclamation after the last root is dropped.
 
-Calls and construction accept primitive arguments through the existing pure
-ToNumber/ToString helpers. They run within one instruction while their arguments
-remain on the traced operand stack; the result replaces the operands before
-any poll. Object arguments and implicit wrapper operands still fail explicitly:
-they need clj-quickjs-70's resumable ToPrimitive, which is absent on master.
-No constructor runs a JavaScript callback on the Rust stack. String exotic
-own properties and own-key enumeration are explicitly deferred to -142.
+Calls and construction use the pure ToNumber/ToString helpers for primitives.
+An object argument enters the same NativeState::Convert continuation as
+coercing instructions, with number hint for Number and string hint for String.
+The conversion target records whether to return a primitive or allocate a
+wrapper after conversion. Forwarded calls and bound constructors resolve their
+arguments first. Built-in callbacks can push a nested conversion at the same
+call depth; native-frame count is bounded by the call-depth limit. Every
+operand remains traced until its method returns a primitive, and callbacks
+run through explicit VM frames, preserving waits, GC, budget yields, migration,
+exceptions and cancellation. Implicit wrapper equality and addition use the
+existing resumable operator paths, observing overridden conversion methods.
+String exotic own properties and own-key enumeration remain deferred to -142.
 
 Semantic references only (no upstream implementation code copied):
 `research/quickjs/quickjs.c` at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_number_constructor`,
 `js_string_constructor`, `js_thisNumberValue`, `js_thisStringValue`.
 The first three snippets in `tests/js_source.rs`
-`primitive_wrappers_report_deferred_conversions_and_string_properties` adapt
+`primitive_wrappers_convert_with_value_of` adapt
 the wrapper expressions of `research/quickjs/tests/test_language.js`, `test_eq`,
-at that revision, asserting explicit unsupported conversion until
-clj-quickjs-70. The test references the full QuickJS copyright and MIT notice
+at that revision. The test references the full QuickJS copyright and MIT notice
 on `loose_equality_with_a_boolean_left_operand` in the same file.

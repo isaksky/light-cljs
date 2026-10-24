@@ -35,3 +35,19 @@ reference; the Rust implementation was written afresh.
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), were read
 as semantic references. The Rust continuation and synthetic source tests
 were written afresh; no C implementation or upstream test text was copied.
+
+## Number and String wrappers (clj-quickjs-72)
+
+`tests/js_source.rs::primitive_wrappers_convert_with_value_of` adapts the
+three Number/String wrapper equality groups in `test_eq` from
+`research/quickjs/tests/test_language.js`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The test refers to the full QuickJS copyright and MIT permission notice
+on `loose_equality_with_a_boolean_left_operand` in the same file;
+see `research/quickjs/LICENSE`. Other cases are synthetic fixtures written
+for this runtime, not light-cljs output.
+
+`js_number_constructor`, `js_string_constructor`, `js_thisNumberValue`,
+`js_thisStringValue`, `js_number_valueOf`, `js_number_toString` and
+`js_string_toString` in `research/quickjs/quickjs.c` at that revision were
+read as semantic references. No upstream implementation code was copied.

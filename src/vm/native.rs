@@ -43,7 +43,8 @@
 //!   instructions. Its `Return` delivers the result into the native's
 //!   operand area and the loop resumes the native with `CallResult`. A
 //!   built-in function callee (`crate::vm::builtin`, clj-quickjs-117) runs
-//!   to completion instead and its result is delivered the same way, with
+//!   to completion or pushes its own conversion continuation (Number/String
+//!   with an object argument); its result is delivered the same way, with
 //!   the supplied `this` (undefined for reduce); a forwarding built-in (`Reflect.apply`,
 //!   clj-quickjs-102) is first followed to the call it makes
 //!   (`crate::vm::dispatch::resolve`), whose frame then delivers the result.
@@ -97,8 +98,10 @@
 //! Native frames are stacked beside the call frames: each records the call
 //! depth of the frame that started it, and it is *running* when no call
 //! frame is above that depth. A callback may itself start a resumable
-//! native, so frames nest; at most one is running per call depth, so their
-//! number is bounded by the task's call-depth limit.
+//! native, so frames nest. A Number/String built-in callback can push a
+//! conversion at the same call depth; its parent awaits its return. Only
+//! the innermost frame at that depth runs. These pushes check the native
+//! count against the task's call-depth limit.
 //!
 //! # Rooting, locks and safepoints
 //!
@@ -286,6 +289,16 @@ enum Hint {
     String,
 }
 
+/// What to finish after OrdinaryToPrimitive has converted its operands.
+#[derive(Clone, Copy, Debug)]
+enum ConvertTarget {
+    Instruction(Instr),
+    PrimitiveConstructor {
+        which: builtin::Builtin,
+        construct: bool,
+    },
+}
+
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
@@ -311,11 +324,11 @@ enum NativeState {
         next: usize,
         len: usize,
     },
-    /// OrdinaryToPrimitive, left to right, before completing `instr`.
+    /// OrdinaryToPrimitive, left to right, before completing `target`.
     /// The original receiver stays in `operands[next]` until its method
     /// returns a primitive; completed operands are never converted again.
     Convert {
-        instr: Instr,
+        target: ConvertTarget,
         operands: Vec<Value>,
         next: usize,
         end: usize,
@@ -460,10 +473,58 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         pc: state.top().pc.saturating_sub(1),
         awaiting: Awaiting::Nothing,
         state: NativeState::Convert {
-            instr,
+            target: ConvertTarget::Instruction(instr),
             operands,
             next: first,
             end,
+            hint,
+            method: 0,
+        },
+    });
+    Ok(true)
+}
+
+/// Number/String's object argument uses the same resumable method lookup
+/// and callback protocol as coercing instructions. Callers resolve forwarding
+/// first and remove their operands before entering this frame. The first
+/// argument is the only one needed after argument evaluation has completed.
+pub(crate) fn start_primitive_constructor(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    let hint = match which {
+        builtin::Builtin::Number => Hint::Number,
+        builtin::Builtin::String => Hint::String,
+        _ => return Ok(false),
+    };
+    let Some(value @ Value::Object(_)) = args.first() else {
+        return Ok(false);
+    };
+    // A built-in callback can start another native at the same call depth.
+    // Bound recursion through such callbacks must still have a finite limit.
+    let limit = state.forward_limits(state.stack_len() - popped).1;
+    if state.natives.len() >= limit {
+        return Err(Fault::StackOverflow(format!(
+            "maximum native call depth of {limit} frames exceeded"
+        )));
+    }
+    let operands = vec![value.clone()];
+    let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
+    state.truncate_operands(state.stack_len() - popped)?;
+    assert_no_borrow("starting a constructor conversion frame (growing native storage)");
+    state.natives.push(NativeFrame {
+        depth: state.depth(),
+        base: state.stack_len(),
+        pc,
+        awaiting: Awaiting::Nothing,
+        state: NativeState::Convert {
+            target: ConvertTarget::PrimitiveConstructor { which, construct },
+            operands,
+            next: 0,
+            end: 1,
             hint,
             method: 0,
         },
@@ -537,8 +598,8 @@ pub(crate) fn start(
 /// "Errors"). An `Err` names a native that refused; the natives not yet
 /// passed are left as they were.
 pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(), &'static str> {
-    // A native started by frame index `i` has depth `i + 1`; depths strictly
-    // increase along the stack (at most one native runs per call depth).
+    // A native started by frame index `i` has depth `i + 1`; depths never
+    // decrease along the stack (built-in conversions can share a depth).
     while let Some(native) = natives.last_mut().filter(|n| frame < n.depth) {
         let failure = match native.awaiting {
             Awaiting::CallResult => Failure::Callback,
@@ -628,11 +689,14 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 (Callee::Bound(_), _) => return Err(Fault::Internal("unresolved bound function")),
                 (Callee::Code(id, code), call) => (id, code, call),
                 (Callee::Builtin(which), call) => {
+                    set_awaiting(state, Awaiting::CallResult)?;
+                    if start_primitive_constructor(state, which, &call.args, false, 0)? {
+                        return Ok(Flow::Next);
+                    }
                     // Runs to completion (`crate::vm::builtin`); no safepoint
                     // falls between here and the push that roots its result.
                     // The next step receives it like a callback's return.
                     let result = builtin::call(heap, task, which, &call.this, &call.args)?;
-                    set_awaiting(state, Awaiting::CallResult)?;
                     state.push(result);
                     return Ok(Flow::Next);
                 }
@@ -739,7 +803,7 @@ impl NativeState {
                 })
             }
             NativeState::Convert {
-                instr,
+                target,
                 operands,
                 next,
                 end,
@@ -792,10 +856,16 @@ impl NativeState {
                         "cannot convert object to primitive value".to_string(),
                     ));
                 }
-                Ok(Action::Resume {
-                    instr: *instr,
-                    operands: operands.clone(),
-                })
+                match *target {
+                    ConvertTarget::Instruction(instr) => Ok(Action::Resume {
+                        instr,
+                        operands: operands.clone(),
+                    }),
+                    ConvertTarget::PrimitiveConstructor { which, construct } => {
+                        builtin::primitive_constructor(heap, task, which, operands, construct)
+                            .map(Action::Return)
+                    }
+                }
             }
         }
     }

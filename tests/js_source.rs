@@ -9159,9 +9159,7 @@ fn objects_compare_after_to_primitive() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. Implicit wrapper conversion
-/// awaits OrdinaryToPrimitive (clj-quickjs-70); these exercise the constructors
-/// and thisNumberValue/thisStringValue directly (clj-quickjs-72).
+/// Synthetic fixtures, not light-cljs output: constructors and receiver checks.
 #[test]
 fn primitive_wrapper_constructors_and_methods() {
     for src in [
@@ -9206,33 +9204,9 @@ fn primitive_wrapper_constructors_and_methods() {
     }
 }
 
-/// The first three expressions adapt the wrapper rows of `test_eq` in
-/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8, with
-/// unsupported conversion asserted until clj-quickjs-70. QuickJS copyright
-/// and MIT license notice: see `loose_equality_with_a_boolean_left_operand`.
+/// String exotic properties are deferred to clj-quickjs-142.
 #[test]
-fn primitive_wrappers_report_deferred_conversions_and_string_properties() {
-    // clj-quickjs-70 owns implicit OrdinaryToPrimitive, including wrapper
-    // operands. Do not silently unbox and bypass an own valueOf/toString.
-    for src in [
-        "new Number(1) == 1",
-        "2 == new Number(2)",
-        "new String('abc') == 'abc'",
-        "new Number(5) + 1",
-        "new String('a') + 'b'",
-        "Number({valueOf: function () { return 1; }})",
-        "String({toString: function () { return 'a'; }})",
-        "new Number({valueOf: function () { return 1; }})",
-        "new String({toString: function () { return 'a'; }})",
-    ] {
-        let error = failure(src);
-        assert_eq!(
-            error.kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}: {error}"
-        );
-        assert!(error.message().contains("ToPrimitive"), "{src}: {error}");
-    }
+fn primitive_wrappers_report_deferred_string_properties() {
     // The string exotic properties belong to clj-quickjs-142. A wrapper
     // must not answer the inherited String.prototype.length = 0 or permit
     // overwriting indices while that implementation is missing.
@@ -9258,13 +9232,13 @@ fn primitive_wrappers_report_deferred_conversions_and_string_properties() {
         assert!(error.message().contains("string wrapper"), "{src}: {error}");
     }
     for (src, column) in [
-        ("let o = {};\nNumber(o)", 7),
-        ("let o = {};\nString(o)", 7),
-        ("let o = {};\nnew Number(o)", 1),
-        ("let o = {};\nnew String(o)", 1),
+        ("let o = Object.create(null);\nNumber(o)", 7),
+        ("let o = Object.create(null);\nString(o)", 7),
+        ("let o = Object.create(null);\nnew Number(o)", 1),
+        ("let o = Object.create(null);\nnew String(o)", 1),
     ] {
         let (kind, _, line, actual_column) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+        assert_eq!(kind, VmErrorKind::TypeError);
         assert_eq!((line, actual_column), (2, column), "{src}");
     }
 }
@@ -9334,5 +9308,158 @@ fn primitive_wrappers_survive_wait_collection_and_migration() {
         drop((wrapper, owner, intruder));
         rt.collect().unwrap();
         assert!(weak.upgrade().is_err());
+    }
+}
+
+/// The first three expressions adapt test_eq in QuickJS tests/test_language.js,
+/// revision 7d1c13c5d8f8. Copyright and MIT license notice: see
+/// loose_equality_with_a_boolean_left_operand above. Synthetic fixture,
+/// not light-cljs output.
+#[test]
+fn primitive_wrappers_convert_with_value_of() {
+    for src in [
+        "(new Number(1)) == 1",
+        "2 == (new Number(2))",
+        "(new String('abc')) == 'abc'",
+        "typeof new Number(1) === 'object'",
+        "(new Number(1) === 1) === false",
+        "(new Number(1) == new Number(1)) === false",
+        "new Number(5) + 1 === 6",
+        "new String('a') + 'b' === 'ab'",
+        "new Number() == 0 && new String() == ''",
+        "Number('0x10') === 16 && Number() === 0",
+        "String(null) === 'null' && String(1e21) === '1e+21'",
+        "(new String('abc') == new String('abc')) === false",
+        "let n = new Number(1); n.valueOf = function () { return 7; }; n + 1 === 8 && n == 7",
+        "let s = new String('a'); s.valueOf = function () { return {}; }; s.toString = function () { return 'c'; }; s + 'b' === 'cb'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Constructors use observable,
+/// hint-appropriate ToPrimitive after resolving call/apply/bind forwarding.
+#[test]
+fn primitive_wrapper_constructors_convert_object_arguments() {
+    for src in [
+        "Number({valueOf: function () { return 7; }}) === 7",
+        "String({toString: function () { return 's'; }}) === 's'",
+        "new Number({valueOf: function () { return 7; }}) == 7",
+        "new String({toString: function () { return 's'; }}) == 's'",
+        "Number(new String('0x10')) === 16 && String(new Number(1e21)) === '1e+21'",
+        "let o = {valueOf: function () { return 3; }, toString: function () { return 's'; }}; Number(o) === 3 && String(o) === 's'",
+        "Number({valueOf: function () { return {}; }, toString: function () { return '4'; }}) === 4",
+        "String({toString: function () { return {}; }, valueOf: function () { return 4; }}) === '4'",
+        "let log = ''; let o = {valueOf: function () { log = log + 'v'; return 3; }}; Number(o, log = log + 'a') === 3 && log === 'av'",
+        "let o = {valueOf: function () { return 3; }}; Number.call(null, o) === 3 && Number.apply(null, [o]) === 3 && Reflect.apply(Number, null, [o]) === 3",
+        "let o = {toString: function () { return 's'; }}; String.call(null, o) === 's' && String.apply(null, [o]) === 's' && Reflect.apply(String, null, [o]) === 's'",
+        "let N = Number.bind(null, {valueOf: function () { return 8; }}); N() === 8 && new N() == 8",
+        "let S = String.bind(null, {toString: function () { return 's'; }}); S() === 's' && new S() == 's'",
+        "let o = {valueOf: Number.bind(null, {valueOf: function () { return 6; }})}; +o === 6",
+        "let o = {toString: String.bind(null, {toString: function () { return 's'; }})}; String(o) === 's'",
+        "__rt.reduce(Number, 0, __rt.vector({valueOf: function () { return 4; }})) === 0",
+        "let o = {valueOf: function () { return Number({valueOf: function () { return 6; }}); }}; Number(o) === 6",
+        "let caught = false; try { Number({valueOf: function () { throw 42; }}); } catch(e) { caught = e === 42; } caught",
+        "let caught = false; try { new String({toString: function () { return {}; }, valueOf: function () { return {}; }}); } catch(e) { caught = true; } caught",
+        "String({}) === '[object Object]' && Number({}) !== Number({})",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn primitive_wrapper_conversion_waits_yields_collects_and_migrates() {
+    for (expression, expected) in [
+        ("Number(argument())", "7"),
+        ("new Number(argument())", "7"),
+        ("String(argument())", "'seven'"),
+        ("new String(argument())", "'seven'"),
+        ("Number.call(null, argument())", "7"),
+        ("String.apply(null, [argument()])", "'seven'"),
+        ("Reflect.apply(Number, null, [argument()])", "7"),
+        ("new (Number.bind(null, argument()))()", "7"),
+        ("new (String.bind(null, argument()))()", "'seven'"),
+        ("+({valueOf: Number.bind(null, argument())})", "7"),
+        (
+            "String({toString: String.bind(null, argument())})",
+            "'seven'",
+        ),
+        ("__rt.reduce(Number, argument(), __rt.vector(0))", "7"),
+        ("__rt.reduce(String, argument(), __rt.vector(0))", "'seven'"),
+        ("Number(wrapper())", "7"),
+        ("wrapper() + 1", "8"),
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let calls = 0; function argument() {{ return {{n: 7, s: 'seven',
+                valueOf: function () {{ calls++; __rt.need(72, 1); return this.n; }},
+                toString: function () {{ calls++; __rt.need(72, 1); return this.s; }}
+            }}; }}
+            function wrapper() {{ let n = new Number(3); n.n = 7;
+                n.valueOf = argument().valueOf; return n; }}
+            let result = {expression}; result == {expected} && calls === 1"
+        );
+        let script = exe(&src);
+        let mut task = rt.spawn(&script, &[]).unwrap();
+        let mut waited = false;
+        let mut complete = false;
+        // A finite instruction bound makes repeated conversion or a lost
+        // continuation fail deterministically. Every yield is a GC boundary.
+        for _ in 0..1000 {
+            let (next_task, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next_task;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    assert!(!waited, "repeated wait: {expression}");
+                    waited = true;
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(waited && complete, "{expression}");
+    }
+}
+
+#[test]
+fn primitive_wrapper_native_recursion_obeys_depth_limit() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 8,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let script = exe(
+        "let o = {}; o.valueOf = Number.bind(null, o); let caught = false; try { Number(o); } catch(e) { caught = true; } caught",
+    );
+    match rt
+        .spawn(&script, &[])
+        .unwrap()
+        .run_with(Budget::instructions(1000), &mut NoEffects)
+        .unwrap()
+    {
+        RunOutcome::Complete(result) => assert_eq!(result.view(), ValueView::Bool(true)),
+        other => panic!("native recursion did not unwind: {other:?}"),
     }
 }
