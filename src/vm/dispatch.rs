@@ -340,7 +340,8 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Builder(_)
                 | HeapObject::Cell(_)
                 | HeapObject::Atom(_)
-                | HeapObject::Array(_) => "object",
+                | HeapObject::Array(_)
+                | HeapObject::JsMap(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -577,6 +578,11 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(Callee::Builtin(Builtin::Map)) => {
+            let result = builtin::map_constructor(heap, task, &args)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(Builtin::Array)) => {
             let result = builtin::array_constructor(heap, task, &args)?;
             state.replace(argc + 1, result)?;

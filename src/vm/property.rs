@@ -428,6 +428,7 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
     };
     match object {
         HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
+        HeapObject::JsMap(m) => readable(m.object()).map(|()| Visit::Store(m.object())),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
         HeapObject::Builtin(f) => Ok(Visit::Store(&f.properties)),
         other => Ok(Visit::Other(other)),
@@ -777,6 +778,10 @@ fn store(
             check_write(o, task)?;
             named(o)
         }
+        HeapObject::JsMap(m) => {
+            check_write(m.object(), task)?;
+            named(m.object_mut())
+        }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
             match key {
@@ -928,6 +933,9 @@ pub(crate) fn prepare_put(
                 chain_key.is_some_and(|k| a.object_mut().add(k, value)),
             )),
             (HeapObject::Plain(o), _) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
+            (HeapObject::JsMap(m), _) => Ok(added(
+                chain_key.is_some_and(|k| m.object_mut().add(k, value)),
+            )),
             _ => Err(Fault::Internal("property base changed kind")),
         })
         .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
@@ -1220,6 +1228,10 @@ pub(crate) fn define_own_property(
             check_write(o, task)?;
             named(o)
         }
+        HeapObject::JsMap(m) => {
+            check_write(m.object(), task)?;
+            named(m.object_mut())
+        }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;
             match key {
@@ -1432,6 +1444,10 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
                 return Ok(DeleteOutcome::NonConfigurable);
             }
             Ok(named(o))
+        }
+        HeapObject::JsMap(m) => {
+            check_write(m.object(), task)?;
+            Ok(named(m.object_mut()))
         }
         HeapObject::Array(a) => {
             check_write(a.object(), task)?;

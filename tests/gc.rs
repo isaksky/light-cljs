@@ -392,3 +392,55 @@ fn strings_in_frames_captures_and_collections_survive_collections() {
     assert!(runs > 5, "collections ran mid-program ({runs} runs)");
     assert_eq!(result.view(), ValueView::Bool(true));
 }
+
+/// Synthetic JavaScript fixture, not light-cljs output. The Map is the
+/// only root path to both objects after the task and host roots are dropped.
+#[test]
+fn map_entries_are_traced() {
+    use clj_quickjs::frontend::compile_function;
+    let rt = Runtime::new();
+    let key = new_rooted_object(&rt);
+    let value = new_rooted_object(&rt);
+    let key_weak = key.downgrade();
+    let value_weak = value.downgrade();
+    let code =
+        compile_function("function make(k, v) { let m = new Map(); m.set(k, v); return m; }")
+            .unwrap();
+    let task = rt.spawn(&code, &[&key, &value]).unwrap();
+    let map = complete(task.run().unwrap());
+    let map_weak = map.downgrade();
+    drop((task, key, value));
+    rt.collect().unwrap();
+    assert!(key_weak.upgrade().is_ok());
+    assert!(value_weak.upgrade().is_ok());
+    assert!(map_weak.upgrade().unwrap().same_object(&map));
+    drop(map);
+    rt.collect().unwrap();
+    for weak in [key_weak, value_weak, map_weak] {
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+}
+
+/// Tombstones retain positions, never the removed key/value heap edges.
+#[test]
+fn map_deleted_and_cleared_entries_are_reclaimed() {
+    use clj_quickjs::frontend::compile_function;
+    for operation in ["m.delete(k)", "m.clear()"] {
+        let rt = Runtime::new();
+        let key = new_rooted_object(&rt);
+        let value = new_rooted_object(&rt);
+        let key_weak = key.downgrade();
+        let value_weak = value.downgrade();
+        let code = compile_function(&format!(
+            "function make(k, v) {{ let m = new Map(); m.set(k, v); {operation}; return m; }}"
+        ))
+        .unwrap();
+        let task = rt.spawn(&code, &[&key, &value]).unwrap();
+        let map = complete(task.run().unwrap());
+        drop((task, key, value));
+        rt.collect().unwrap();
+        assert_eq!(key_weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+        assert_eq!(value_weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+        assert!(map.downgrade().is_live());
+    }
+}

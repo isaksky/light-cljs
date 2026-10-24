@@ -57,6 +57,8 @@
 //! | `Error`, `Error.prototype` (clj-quickjs-228) | callable/constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `name` ("Error"), `message` (""), `toString` (length 0) |
 //! | NativeError constructors and prototypes (clj-quickjs-229) | TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError, InternalError; constructors inherit from Error, prototypes from Error.prototype | constructor length 1 and respective name; prototype owns constructor, name and empty message, inherits toString |
 //! | `JSON` (clj-quickjs-159/-160) | ordinary object, prototype `Object.prototype` | `parse` (length 2), `stringify` (length 3), resumable conversion/callbacks and budgeted JSON processing |
+
+//! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -179,11 +181,12 @@ pub(crate) enum Global {
     Json = 19,
 
     Symbol = 20,
+    Map = 21,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 21] = [
+    const ALL: [Global; 22] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -205,6 +208,7 @@ impl Global {
         Global::InternalError,
         Global::Json,
         Global::Symbol,
+        Global::Map,
     ];
 
     /// The JavaScript name.
@@ -233,6 +237,7 @@ impl Global {
             Global::Json => "JSON",
 
             Global::Symbol => "Symbol",
+            Global::Map => "Map",
         }
     }
 
@@ -302,6 +307,8 @@ pub(crate) struct Intrinsics {
     json: ObjectId,
 
     symbol: ObjectId,
+    pub(crate) map_prototype: ObjectId,
+    map: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -367,6 +374,7 @@ impl Intrinsics {
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
             Global::Object => Value::Object(self.object),
+            Global::Map => Value::Object(self.map),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
             Global::Function => Value::Object(self.function),
@@ -816,6 +824,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     }
     let stringify = b.function(Builtin::JsonStringify, &[])?;
     b.add(json, "stringify", stringify, PropertyFlags::METHOD)?;
+
+    let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -865,6 +875,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         json,
 
         symbol,
+        map_prototype,
+        map,
     })
 }
 
@@ -963,6 +975,47 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let is_array = b.function(Builtin::ArrayIsArray, &[])?;
     b.add(array, "isArray", is_array, PropertyFlags::METHOD)?;
     Some((id, array))
+}
+
+/// Append the Map constructor/prototype cycle and its ordinary accessor.
+fn map_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::Map,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::MapSet,
+        Builtin::MapGet,
+        Builtin::MapHas,
+        Builtin::MapDelete,
+        Builtin::MapClear,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let getter = b.function(Builtin::MapSize, &[])?;
+    let key = b.heap.keys().intern(&JsString::from("size"))?;
+    let desc = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        set: Some(Value::Undefined),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    b.heap
+        .with_object_mut(prototype, |object| match object {
+            HeapObject::Plain(o) => o.define_own_property(key, &desc) == DefineOutcome::Done,
+            _ => false,
+        })?
+        .then_some(())?;
+    Some((prototype, constructor))
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -1168,7 +1221,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 94); // Includes Symbol.for and Symbol.keyFor.
+        assert_eq!(first.all.len(), 102); // Includes Symbol.for/keyFor and Map.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1209,7 +1262,9 @@ mod tests {
 
         assert_eq!(Global::from_name("Symbol"), Some(Global::Symbol));
         assert_eq!(Global::from_u16(20), Some(Global::Symbol));
-        assert_eq!(Global::from_u16(21), None);
+        assert_eq!(Global::from_name("Map"), Some(Global::Map));
+        assert_eq!(Global::from_u16(21), Some(Global::Map));
+        assert_eq!(Global::from_u16(22), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

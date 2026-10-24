@@ -3081,3 +3081,27 @@ let s = Symbol.for(1);
 s === Symbol.for('1') && Symbol.keyFor(s) === '1';
 Symbol.keyFor(Symbol('1')) === undefined;
 ```
+
+
+### Execution: JavaScript Map (clj-quickjs-169)
+
+`new Map()`, `new Map(undefined)` and `new Map(null)` construct an empty,
+task-owned Map inheriting from `Map.prototype`. Calling `Map` without `new`
+throws a catchable TypeError. `set(key, value)` returns its receiver;
+`get(key)` returns the stored value or `undefined`; `has(key)` returns a
+boolean; `delete(key)` returns whether an entry existed; `clear()` returns
+`undefined`. The inherited, non-enumerable `size` getter counts live entries
+and has no setter. These methods/getter require a branded Map receiver and
+throw TypeError otherwise. Own properties, prototype reflection, `in`,
+`instanceof`, deletion and integrity operations follow ordinary object rules.
+
+Keys use SameValueZero: NaN equals NaN, -0 equals +0 (stored as +0), strings
+compare by content and objects by identity. Undefined, null, booleans,
+numbers and strings are supported; equal-looking objects remain distinct.
+Updating a key preserves insertion position; deleting and reinserting
+moves it to the end. No user conversion or comparison code is invoked.
+
+Explicit gaps: non-nullish constructor arguments throw TypeError instead of
+consuming iterables. Map iteration and `forEach` (clj-quickjs-170), BigInt
+keys (clj-quickjs-171), and symbols/`Symbol.toStringTag` until the Symbol
+value kind lands (clj-quickjs-127) are deferred.

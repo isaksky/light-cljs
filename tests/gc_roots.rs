@@ -851,10 +851,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 15);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 16);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 15);
+    assert_eq!(rt.heap_usage().objects.plain, 16);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -927,6 +927,15 @@ fn realm_intrinsics_retain() {
         "JSON",
         "JSON.parse",
         "JSON.stringify",
+
+        "Map",
+        "Map.prototype",
+        "Map.prototype.set",
+        "Map.prototype.get",
+        "Map.prototype.has",
+        "Map.prototype.delete",
+        "Map.prototype.clear",
+        "Object.getOwnPropertyDescriptor(Map.prototype, 'size').get",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -938,9 +947,9 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // Each completed task created its own global binding overlay (-104).
-    // Reclaim those objects, their self-cycles and the two temporary accessor
+    // Reclaim those objects, their self-cycles and the three temporary accessor
     // descriptors; the intrinsic values must survive independently.
-    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 2);
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 3);
     assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
@@ -965,8 +974,9 @@ fn realm_intrinsics_retain() {
     // Symbol, clj-quickjs-127. Two unary Math functions: clj-quickjs-205;
     // String.raw: clj-quickjs-58; Symbol.for/keyFor: clj-quickjs-128.
     // JSON.stringify: clj-quickjs-160.
-    assert_eq!(rt.heap_usage().objects.builtin, 79);
-    assert_eq!(rt.heap_usage().objects.plain, 15);
+    // Map adds its constructor, five methods and size getter (-169).
+    assert_eq!(rt.heap_usage().objects.builtin, 86);
+    assert_eq!(rt.heap_usage().objects.plain, 16);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1172,11 +1182,11 @@ fn function_properties_reclaim() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 15, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 16, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (15, 0));
+    assert_eq!((usage.plain, usage.function), (16, 0));
 }
 
 #[test]
@@ -1193,11 +1203,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 15, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 16, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (15, 0));
+    assert_eq!((usage.plain, usage.array), (16, 0));
 }
 
 #[test]

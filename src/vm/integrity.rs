@@ -111,6 +111,7 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
     };
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
+        HeapObject::JsMap(m) => readable(m.object().owner()).map(|()| has_level(m.object(), level)),
         HeapObject::Array(a) => readable(a.object().owner()).map(|()| match level {
             Level::NonExtensible => !a.object().extensible(),
             Level::Frozen => a.is_frozen(),
@@ -161,6 +162,14 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             match level {
                 Level::NonExtensible => o.prevent_extensions(),
                 Level::Frozen => o.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::JsMap(m) => {
+            writable(m.object().owner())?;
+            match level {
+                Level::NonExtensible => m.object_mut().prevent_extensions(),
+                Level::Frozen => m.object_mut().freeze(),
             }
             Ok(())
         }

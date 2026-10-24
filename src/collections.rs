@@ -124,7 +124,7 @@
 //!   collections.
 
 pub(crate) mod builder;
-mod map;
+pub(crate) mod map;
 mod vector;
 
 use std::collections::HashSet;
@@ -259,6 +259,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Atom(_) => "atom",
         HeapObject::Builtin(_) => "built-in function",
         HeapObject::Array(_) => "array",
+        HeapObject::JsMap(_) => "Map",
     }
 }
 

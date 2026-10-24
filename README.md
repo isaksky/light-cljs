@@ -2721,3 +2721,11 @@ Tests: `cargo test --test js_source symbol_registry`,
 `cargo test --test executor symbol_registry_is_shared_across_tasks`, and
 `cargo test --test gc_roots symbol_registry_retains_unreferenced_symbols_across_collection`.
 Symbol wrappers and further well-known protocols remain deferred above.
+
+JavaScript Map (clj-quickjs-169): `new Map()` (also null/undefined), `set`,
+`get`, `has`, `delete`, `clear` and the inherited `size` getter are supported.
+Keys use SameValueZero, string content and object identity, with stable
+insertion positions; Maps are task-owned and rejected by atom publication.
+Own properties and prototype/integrity operations follow ordinary objects.
+Deferred: iterable construction (non-nullish arguments throw TypeError),
+iteration/forEach, BigInt keys and Symbol keys/toStringTag until Symbol lands.

@@ -13338,3 +13338,114 @@ fn json_stringify_symbols() {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }
+
+/// Synthetic fixture, not light-cljs output. Integer and identity rows adapt
+/// QuickJS tests/test_builtin.js::test_map and test_map1 (7d1c13c5d8f8).
+/// Copyright (c) 2017-2021 Fabrice Bellard. MIT permission notice retained
+/// in docs/attribution.md, "JavaScript Map tests".
+#[test]
+fn map_number_and_object_keys() {
+    assert_eq!(failure("Map()").kind(), VmErrorKind::TypeError);
+    for src in [
+        "let m = new Map(); for (let i = 0; i < 1000; i++) m.set(i, i); let ok = m.size === 1000; for (let i = 0; i < 1000; i++) { if (m.get(i) !== i) ok = false; } m.set(-2147483648, 1); ok && m.get(-2147483648) === 1 && m.get(-2147483647 - 1) === 1 && m.get(-2147483647.5 - 0.5) === 1",
+        "let m = new Map(); m.set(-0, 'z'); m.set(NaN, 1); m.get(0) === 'z' && m.get(NaN) === 1 && m.size === 2 && m.has(-0) && m.has(0 / 0)",
+        "let m = new Map(); let keys = []; let values = []; for (let i = 0; i < 1000; i++) { let k = {id: i}; let v = {}; keys.push(k); values.push(v); m.set(k, v); } let ok = m.size === 1000; for (let i = 0; i < 1000; i++) { if (m.get(keys[i]) !== values[i]) ok = false; } ok && m.get({id: 0}) === undefined",
+        "let m = new Map(); m.set(1, 2) === m && m.delete(1) === true && m.delete(1) === false && !m.has(1) && m.get(1) === undefined && m.size === 0",
+        "let m = new Map(); m.set(1, 2); m.set(1, 3); let ok = m.size === 1 && m.get(1) === 3; m.set(2, 4); ok && m.clear() === undefined && m.size === 0 && !m.has(1) && !m.has(2) && m.set(1, 5) === m && m.size === 1 && m.get(1) === 5",
+        "let m = new Map(); m.set(undefined, 1); m.set(null, 2); m.set(true, 3); m.set(false, 4); m.set('a' + 'b', 5); m.size === 5 && m.get() === 1 && m.get(null) === 2 && m.get(true) === 3 && m.get(false) === 4 && m.get('ab') === 5 && !m.has('missing')",
+        "new Map(undefined).size === 0 && new Map(null).size === 0 && new Map().size === 0",
+        "let caught = false; try { Map(); } catch (e) { caught = true; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: brand checks and the ordinary
+/// property store must remain independent of the entry storage.
+#[test]
+fn map_receivers_properties_and_explicit_gaps() {
+    for src in [
+        "let m = new Map(); m instanceof Map && Object.getPrototypeOf(m) === Map.prototype && m.constructor === Map && Map.name === 'Map' && Map.length === 1 && typeof m === 'object'",
+        "let d = Object.getOwnPropertyDescriptor(Map, 'prototype'); d.value === Map.prototype && !d.writable && !d.enumerable && !d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Map.prototype, 'size'); typeof d.get === 'function' && d.set === undefined && !d.enumerable && d.configurable && d.get.name === 'get size' && d.get.length === 0",
+        "let m = new Map(); m.foo = 7; m[1] = 8; m.size === 0 && m.foo === 7 && m[1] === 8 && 'size' in m && Object.keys(m).length === 2 && delete m.foo && !('foo' in m)",
+        "let m = new Map(); Object.defineProperty(m, 'foo', {value: 9}); m.foo === 9 && Object.getOwnPropertyDescriptor(m, 'foo').value === 9 && Object.getOwnPropertyDescriptor(m, 'size') === undefined",
+        "let m = new Map(); Object.freeze(m); m.set(1, 2); Object.isFrozen(m) && !Object.isExtensible(m) && m.get(1) === 2 && m.size === 1",
+        "let m = new Map(); let p = {x: 4}; Object.setPrototypeOf(m, p); m.x === 4 && Object.getPrototypeOf(m) === p && Map.prototype.set.call(m, 1, 2) === m && Map.prototype.get.call(m, 1) === 2",
+        "let m = new Map(); let o = {get valueOf() { throw 1; }, get toString() { throw 2; }}; m.set(o, 9); m.get(o) === 9 && m.has(o) && m.delete(o)",
+        "let m = new Map(); m.set(); m.has(undefined) && m.size === 1 && m.get() === undefined && m.delete() && !m.has()",
+        "let m = new Map(); m.set(0, 'a'); m.set(-0, 'b'); m.set(NaN, 1); m.set(0/0, 2); m.size === 2 && m.get(0) === 'b' && m.get(NaN) === 2 && m.delete(-0) && !m.has(0)",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (method, length) in [
+        ("set", 2),
+        ("get", 1),
+        ("has", 1),
+        ("delete", 1),
+        ("clear", 0),
+    ] {
+        let src = format!(
+            "let d = Object.getOwnPropertyDescriptor(Map.prototype, '{method}'); d.writable && !d.enumerable && d.configurable && d.value.name === '{method}' && d.value.length === {length}"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for receiver in [
+            "undefined",
+            "null",
+            "1",
+            "'x'",
+            "{}",
+            "[]",
+            "Map.prototype",
+            "Object.create(Map.prototype)",
+        ] {
+            let src = format!("Map.prototype.{method}.call({receiver}, 1, 2)");
+            assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
+        }
+        assert_eq!(
+            failure(&format!("new Map.prototype.{method}()")).kind(),
+            VmErrorKind::TypeError
+        );
+    }
+    for src in [
+        "new Map([])",
+        "new Map(1)",
+        "new Map({})",
+        "new Map('')",
+        "Map.prototype.size",
+        "Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call({})",
+        "'use strict'; let m = new Map(); m.size = 2",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+        let caught =
+            format!("let caught = false; try {{ {src}; }} catch (e) {{ caught = true; }} caught");
+        assert_eq!(eval(&caught), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn maps_reject_access_from_another_task() {
+    let rt = Runtime::new();
+    let owner = rt.spawn(&exe("new Map().set(1, 2)"), &[]).unwrap();
+    let RunOutcome::Complete(map) = owner.run().unwrap() else {
+        panic!("expected Map")
+    };
+    for body in [
+        "m.size",
+        "m.get(1)",
+        "m.set(1, 3)",
+        "Map.prototype.get.call(m, 1)",
+        "m.foo = 3",
+        "Object.keys(m)",
+        "Object.getPrototypeOf(m)",
+        "Object.isFrozen(m)",
+        "Object.freeze(m)",
+    ] {
+        let code = compile_function(&format!("function read(m) {{ return {body}; }}")).unwrap();
+        let task = rt.spawn(&code, &[&map]).unwrap();
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+            "{body}"
+        );
+    }
+}

@@ -85,11 +85,13 @@ enum Holder {
     TemplateCache,
     /// The original cause in an engine Error's internal diagnostic slot.
     EngineErrorCause,
+    /// Live JavaScript Map keys and values, plus its ordinary properties.
+    JsMapEntries,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 28] = [
+const HOLDERS: [Holder; 29] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -118,6 +120,7 @@ const HOLDERS: [Holder; 28] = [
     Holder::TaskGlobalObject,
     Holder::TemplateCache,
     Holder::EngineErrorCause,
+    Holder::JsMapEntries,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -133,7 +136,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 12] = [
+const KINDS: [ObjectKind; 13] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -146,6 +149,7 @@ const KINDS: [ObjectKind; 12] = [
     ObjectKind::Builtin,
     ObjectKind::Array,
     ObjectKind::BoundFunction,
+    ObjectKind::JsMap,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -165,6 +169,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             BoundFunction,
             MethodHomeObject,
             EngineErrorCause,
+            JsMapEntries,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -213,6 +218,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Builtin => &[Intrinsic],
         ObjectKind::Array => &[ArrayElement],
         ObjectKind::BoundFunction => &[BoundFunction],
+        ObjectKind::JsMap => &[JsMapEntries],
     }
 }
 
@@ -223,6 +229,8 @@ enum File {
     GcRoots,
     /// This module: crate-internal holders.
     Inventory,
+    /// JavaScript Map result-root tracing.
+    Gc,
 }
 
 /// A holder's retention and reclamation tests.
@@ -241,6 +249,10 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::TemplateCache => Coverage {
             retains: (Inventory, "template_cache_retains_and_reclaims"),
             reclaims: (Inventory, "template_cache_retains_and_reclaims"),
+        },
+        Holder::JsMapEntries => Coverage {
+            retains: (Gc, "map_entries_are_traced"),
+            reclaims: (Gc, "map_entries_are_traced"),
         },
         Holder::TaskGlobalObject => public(
             "task_global_object_retains_and_reclaims",
@@ -315,6 +327,7 @@ fn coverage(holder: Holder) -> Coverage {
 }
 
 const GC_ROOTS_SOURCE: &str = include_str!("../../tests/gc_roots.rs");
+const GC_SOURCE: &str = include_str!("../../tests/gc.rs");
 const INVENTORY_SOURCE: &str = include_str!("inventory.rs");
 const ARCHITECTURE_DOC: &str = include_str!("../../docs/architecture.md");
 
@@ -354,6 +367,7 @@ fn every_category_and_kind_has_retention_and_reclamation_tests() {
             let source = match file {
                 File::GcRoots => GC_ROOTS_SOURCE,
                 File::Inventory => INVENTORY_SOURCE,
+                File::Gc => GC_SOURCE,
             };
             assert!(
                 defines_test(source, name),
@@ -642,7 +656,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 94); // Includes Symbol.for and Symbol.keyFor.
+    assert_eq!(ids.len(), 102); // Includes Symbol.for/keyFor and Map.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

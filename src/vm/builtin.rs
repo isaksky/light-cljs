@@ -259,6 +259,15 @@ pub(crate) enum Builtin {
     /// Runtime-wide symbol registry (clj-quickjs-128).
     SymbolFor,
     SymbolKeyFor,
+
+    /// Task-owned JavaScript Map constructor and leaf operations.
+    Map,
+    MapSet,
+    MapGet,
+    MapHas,
+    MapDelete,
+    MapClear,
+    MapSize,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -363,6 +372,13 @@ impl Builtin {
             Builtin::MathPow => "pow",
             Builtin::MathSqrt => "sqrt",
             Builtin::MathLog2 => "log2",
+            Builtin::Map => "Map",
+            Builtin::MapSet => "set",
+            Builtin::MapGet => "get",
+            Builtin::MapHas => "has",
+            Builtin::MapDelete => "delete",
+            Builtin::MapClear => "clear",
+            Builtin::MapSize => "get size",
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -430,6 +446,9 @@ impl Builtin {
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
             Builtin::MathSqrt | Builtin::MathLog2 => 1,
+            Builtin::Map | Builtin::MapGet | Builtin::MapHas | Builtin::MapDelete => 1,
+            Builtin::MapSet => 2,
+            Builtin::MapClear | Builtin::MapSize => 0,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -474,6 +493,13 @@ pub(crate) fn call(
         | Builtin::JsonParse
         | Builtin::JsonStringify => Err(Fault::Internal("built-in requires a resumable frame")),
         Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
+        Builtin::Map => Err(Fault::TypeError("Map requires new".to_string())),
+        Builtin::MapSet
+        | Builtin::MapGet
+        | Builtin::MapHas
+        | Builtin::MapDelete
+        | Builtin::MapClear
+        | Builtin::MapSize => map_operation(heap, task, which, this, args),
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
             v @ Value::Object(_) => Ok(v),
@@ -1135,6 +1161,71 @@ pub(crate) fn array_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Re
         .ok_or_else(exhausted)
 }
 
+/// Nullish arguments create an empty Map. Iterable construction needs a
+/// resumable iterator frame and is deliberately rejected until supported.
+pub(crate) fn map_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Value, Fault> {
+    if !matches!(args.first(), None | Some(Value::Undefined | Value::Null)) {
+        return Err(Fault::TypeError(
+            "Map iterable construction is not supported".to_string(),
+        ));
+    }
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .map_prototype;
+    let map = crate::object::map::MapObject::new(task, prototype);
+    heap.alloc(HeapObject::JsMap(Box::new(map)))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+fn map_operation(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let invalid = || {
+        Fault::TypeError(format!(
+            "Map.prototype.{} requires a Map receiver",
+            which.name()
+        ))
+    };
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    // The frame roots receiver and arguments throughout this leaf operation.
+    // The object lock is the same task-owned mutation boundary as plain objects.
+    heap.with_object_mut(*id, |object| {
+        let HeapObject::JsMap(map) = object else {
+            return Err(invalid());
+        };
+        if map.object().owner() != Some(task) {
+            return Err(Fault::ForeignObject {
+                owner: map.object().owner(),
+                caller: task,
+            });
+        }
+        let key = args.first().cloned().unwrap_or(Value::Undefined);
+        Ok(match which {
+            Builtin::MapSet => {
+                map.set(key, args.get(1).cloned().unwrap_or(Value::Undefined));
+                this.clone()
+            }
+            Builtin::MapGet => map.get(&key).cloned().unwrap_or(Value::Undefined),
+            Builtin::MapHas => Value::Bool(map.get(&key).is_some()),
+            Builtin::MapDelete => Value::Bool(map.delete(&key)),
+            Builtin::MapClear => {
+                map.clear();
+                Value::Undefined
+            }
+            Builtin::MapSize => Value::Number(map.size() as f64),
+            _ => return Err(Fault::Internal("not a Map operation")),
+        })
+    })
+    .unwrap_or(Err(Fault::Internal("Map receiver was reclaimed")))
+}
+
 /// Array.prototype is an immutable empty-array intrinsic whose property
 /// storage remains ordinary. Its realm identity carries the array brand;
 /// prototype inheritance alone never makes an ordinary object an array.
@@ -1177,6 +1268,7 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
                 }
                 HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(_) => Ok("Object"),
+                HeapObject::JsMap(_) => Ok("Object"),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",

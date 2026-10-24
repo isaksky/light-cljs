@@ -98,6 +98,9 @@ pub(crate) fn get_prototype_of(
     let function = heap
         .read(id, |object| match object {
             HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::JsMap(m) => {
+                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+            }
             HeapObject::Array(a) => {
                 readable(a.object(), task).map(|()| Some(a.object().prototype()))
             }
@@ -146,6 +149,7 @@ pub(crate) fn set_prototype_of(
     };
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => writable(o),
+        HeapObject::JsMap(m) => writable(m.object()),
         HeapObject::Array(a) => writable(a.object()),
         HeapObject::Builtin(_) => immutable(),
         // A function's prototype lives in its property record, which
@@ -164,6 +168,10 @@ pub(crate) fn set_prototype_of(
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) => {
             o.set_prototype(proto);
+            Ok(())
+        }
+        HeapObject::JsMap(m) => {
+            m.object_mut().set_prototype(proto);
             Ok(())
         }
         HeapObject::Array(a) => {
@@ -199,6 +207,7 @@ fn check_chain(
         proto = heap
             .read(p, |object| match object {
                 HeapObject::Plain(o) => readable(o, task).map(|()| o.prototype()),
+                HeapObject::JsMap(m) => readable(m.object(), task).map(|()| m.object().prototype()),
                 HeapObject::Array(a) => readable(a.object(), task).map(|()| a.object().prototype()),
                 // A fixed prototype that cannot lead back (module docs).
                 _ => Ok(None),

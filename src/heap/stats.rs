@@ -9,7 +9,7 @@
 //! collection trie bodies (immutable `Arc` nodes shared between versions),
 //! atom cells, native payload boxes, function captures, ordinary objects'
 //! property vectors and key indexes, array object boxes and their element
-//! storage, the property-key table, and everything
+//! storage, JavaScript Map boxes and their entry/index storage, the property-key table, and everything
 //! outside the heap (executable code, task VM state, dependency cells, the
 //! root table). The measurement harness (`examples/bench`) measures those
 //! with a counting allocator instead; see `docs/measurement.md`.
@@ -49,6 +49,8 @@ pub struct ObjectCounts {
     pub array: usize,
     /// Bound function objects.
     pub bound_function: usize,
+    /// Task-owned JavaScript Map objects.
+    pub js_map: usize,
 }
 
 impl ObjectCounts {
@@ -66,6 +68,7 @@ impl ObjectCounts {
             + self.builtin
             + self.array
             + self.bound_function
+            + self.js_map
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -82,6 +85,7 @@ impl ObjectCounts {
             HeapObject::Atom(_) => &mut self.atom,
             HeapObject::Builtin(_) => &mut self.builtin,
             HeapObject::Array(_) => &mut self.array,
+            HeapObject::JsMap(_) => &mut self.js_map,
         };
         *n += 1;
     }

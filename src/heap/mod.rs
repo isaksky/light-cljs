@@ -148,6 +148,8 @@ pub(crate) enum ObjectKind {
     Array,
     /// A callable with immutable bound target, receiver and arguments.
     BoundFunction,
+    /// Task-owned JavaScript Map with insertion-ordered entries.
+    JsMap,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -213,6 +215,8 @@ pub(crate) enum HeapObject {
     Array(Box<ArrayObject>),
     /// A bound callable (`crate::vm::function`, clj-quickjs-103).
     BoundFunction(BoundFunction),
+    /// A task-owned JavaScript Map (distinct from the persistent HAMT).
+    JsMap(Box<crate::object::map::MapObject>),
 }
 
 impl HeapObject {
@@ -236,6 +240,7 @@ impl HeapObject {
             HeapObject::Atom(_) => ObjectKind::Atom,
             HeapObject::Builtin(_) => ObjectKind::Builtin,
             HeapObject::Array(_) => ObjectKind::Array,
+            HeapObject::JsMap(_) => ObjectKind::JsMap,
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
         }
     }
@@ -255,6 +260,7 @@ impl Trace for HeapObject {
             HeapObject::Atom(a) => a.trace(visit),
             HeapObject::Builtin(f) => f.trace(visit),
             HeapObject::Array(a) => a.trace(visit),
+            HeapObject::JsMap(m) => m.trace(visit),
             HeapObject::BoundFunction(f) => f.trace(visit),
         }
     }

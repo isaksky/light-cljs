@@ -214,6 +214,8 @@ public API cannot reach.
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
 | realm template-site cache | `Intrinsic` (`Array`, cooked → raw) | `template_cache_retains_and_reclaims` *(lib)* | `template_cache_retains_and_reclaims` *(lib)* |
+
+| JavaScript Map keys and values | `PersistentHandle` (`JsMap` → key and value objects) | `map_entries_are_traced` | `map_entries_are_traced` |
 | array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
 | function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
 | bound function target, bound receiver, bound arguments and immutable metadata (clj-quickjs-103) | `PersistentHandle` (`BoundFunction` → target closure / receiver / arguments / metadata) | `bound_function_retains` | `bound_function_reclaims` |
@@ -4355,3 +4357,37 @@ primitive undergoes ToString before registry access, so returning a symbol
 throws TypeError and returning undefined names the string "undefined".
 `keyFor` validates its argument without coercion before looking up its identity.
 Symbol.prototype and well-known protocol integration remain separate work.
+
+## JavaScript Map objects (clj-quickjs-169)
+
+`HeapObject::JsMap` holds a boxed `object::map::MapObject`, distinct from
+`HeapObject::Map` (the immutable persistent HAMT). It embeds an ordinary
+object for ownership, prototype, own properties and extensibility, plus an
+insertion-ordered vector of optional key/value entries and a private hash
+index from hash to entry positions. Only the owning task reads or mutates
+it, under the same short object-table lock as ordinary objects; publication
+classifies it as `TaskOwned`, including after `Object.freeze`. Freezing
+properties does not freeze the Map's internal entries.
+
+The hash and SameValueZero helpers are shared with the persistent HAMT:
+numbers compare by value, all NaNs compare equal, and signed zeros share a
+hash; stored zero keys are normalized to positive zero. Strings compare by
+UTF-16 contents, objects by stable heap identity (generation included).
+Hash collisions always compare actual keys, with no user code, coercion or
+property access. The heap is nonmoving and live identities are never reused.
+Keys of future primitive kinds must extend those helpers consistently.
+
+Updating an existing key preserves its slot. Deletion empties the slot;
+reinserting appends a new one. `clear` empties every slot without truncating
+the vector. There is deliberately no compaction: positions remain stable
+for later live iteration, including deletions, clearing and appends during
+a callback. Tombstones hold no key/value edges, though their slot storage
+lasts until the Map dies. `Trace` reports the ordinary object's edges and
+both key and value of every live entry. The root inventory test
+`map_entries_are_traced` covers result-only retention and reclamation.
+
+The realm appends an immutable ordinary `Map.prototype`, constructor,
+methods and `size` accessor. Leaf calls never invoke JavaScript. Constructing
+with a non-nullish argument explicitly throws TypeError until resumable
+iterable construction exists. Iteration/forEach and BigInt keys belong to
+later pellets; symbols use the shared key helpers once that value kind exists.

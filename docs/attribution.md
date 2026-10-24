@@ -300,3 +300,36 @@ The full QuickJS copyright and MIT permission notice is retained on
 fixtures, not light-cljs output. `js_symbol_for` and `js_symbol_keyFor` in
 `research/quickjs/quickjs.c` at that revision were semantic references;
 the runtime-owned Rust registry and continuation were written afresh.
+
+## JavaScript Map tests (clj-quickjs-169)
+
+`tests/js_source.rs::map_number_and_object_keys` adapts the integer-key,
+-2147483648 arithmetic-equivalence and 1000 object-identity cases in
+`research/quickjs/tests/test_builtin.js::test_map` and `test_map1`, at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Fixtures are synthetic, not light-cljs output. The implementation was
+written afresh; `map_normalize_key`, `js_map_constructor`, `js_map_set`,
+`js_map_get`, `js_map_has`, `js_map_delete`, `js_map_clear` and
+`js_map_get_size` in `research/quickjs/quickjs.c` were semantic references.
+The adapted tests retain this notice from `research/quickjs/LICENSE`:
+
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

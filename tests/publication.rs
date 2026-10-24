@@ -1135,3 +1135,38 @@ fn symbols_publish_with_identity() {
     assert!(a.strict_equals(&b).unwrap());
     rt.publish(&a).unwrap();
 }
+
+/// Synthetic fixture, not light-cljs output: even an empty or frozen Map
+/// is task-owned, so atom creation and replacement must reject it.
+#[test]
+fn javascript_maps_cannot_be_published_through_atoms() {
+    use clj_quickjs::AtomError;
+    let rt = Runtime::new();
+    for src in [
+        "new Map()",
+        "new Map().set({}, {})",
+        "Object.freeze(new Map())",
+    ] {
+        let task = rt
+            .spawn(&compile_script("map-publication", src).unwrap(), &[])
+            .unwrap();
+        let map = complete(task.run().unwrap());
+        assert_eq!(
+            not_shareable(rt.publish(&map).unwrap_err()),
+            (vec![], "Map", Some(task.id()))
+        );
+        let check = |error| match error {
+            AtomError::NotShareable(e) => {
+                assert_eq!(not_shareable(e), (vec![], "Map", Some(task.id())))
+            }
+            other => panic!("expected task-owned rejection, got {other:?}"),
+        };
+        check(rt.new_atom(&map).unwrap_err());
+        let initial = rt.root(num(0.0));
+        let atom = rt.new_atom(&initial).unwrap();
+        let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+        check(publisher.publish(&map).unwrap_err());
+        check(rt.atom_compare_and_set(&atom, &initial, &map).unwrap_err());
+        assert_eq!(rt.atom_load(&atom).unwrap().view(), ValueView::Number(0.0));
+    }
+}

@@ -68,6 +68,7 @@
 //! because [`crate::atom`] is the concurrent reference.
 
 pub(crate) mod array;
+pub(crate) mod map;
 
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
