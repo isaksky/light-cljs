@@ -336,6 +336,11 @@ type Brand<'s> = PhantomData<fn(&'s ()) -> &'s ()>;
 /// A collection started on the scope's own thread runs at once (the locals
 /// are roots). A scope never spans a task suspension: it ends when its
 /// callback returns. See [`crate::heap::gc`].
+///
+/// Do not block on another thread while holding a scope: if that thread
+/// needs to enter heap access while a collection is requested, it waits for
+/// the collection, which waits for this scope. Block inside
+/// [`Scope::released`] instead.
 pub struct Scope<'s> {
     heap: &'s Arc<Heap>,
     /// This scope's entry in the heap's scope table.

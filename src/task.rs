@@ -8,8 +8,11 @@
 //! # Execution claim
 //!
 //! Running requires a [`RunGuard`], obtained with [`Task::try_begin_run`].
-//! Acquisition never blocks: it is one compare-and-swap on the task's atomic
-//! state word (`Runnable → Executing`). If the task is executing on any
+//! Acquisition never waits for another run: it is one compare-and-swap on the
+//! task's atomic state word (`Runnable → Executing`). (Registering the
+//! thread as a heap mutator first may wait while a collection request is
+//! pending, if the thread is not already in heap access; see
+//! [`crate::heap::gc`].) If the task is executing on any
 //! thread (including this one) it fails with [`RunError::AlreadyRunning`], if
 //! it is parked with [`RunError::Waiting`], if it finished with
 //! [`RunError::Finished`]. So a task can never execute on two workers at
@@ -569,7 +572,13 @@ impl Task {
         self.0.deliver(handle)
     }
 
-    /// Acquire the execution guard without blocking (the claim, module docs).
+    /// Acquire the execution guard without waiting for another run (the
+    /// claim, module docs). Entering heap access waits for a pending
+    /// collection request ([`Runtime::request_collection`](crate::Runtime::request_collection)).
+    ///
+    /// The guard's thread delays every requested collection until its run
+    /// reaches a VM safepoint or the guard is dropped; a guard acquired and
+    /// held without running does not reach one.
     pub fn try_begin_run(&self) -> Result<RunGuard<'_>, RunError> {
         if crate::host::inside_effect() {
             return Err(RunError::InsideHostEffect);
