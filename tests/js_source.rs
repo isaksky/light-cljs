@@ -27518,3 +27518,16 @@ result==='a' && log==='gklihdecv';
     }
     panic!("Proxy callbacks exceeded instruction bound");
 }
+
+#[test]
+fn proxy_key_list_checks_follow_observable_reads() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let log='',e; let p=new Proxy({}, {ownKeys(){return {length:3,0:'a',1:'a',get 2(){log+='z';return 'b';}};}}); try {Object.keys(p);} catch(x){e=x;} log==='z' && e instanceof TypeError",
+        "let e; let p=new Proxy({}, {ownKeys(){return {length:3,0:'a',1:'a',get 2(){throw 42;}};}}); try {Object.keys(p);} catch(x){e=x;} e===42",
+        "let t={},log='',e; Object.defineProperty(t,'a',{value:1}); Object.defineProperty(t,'b',{value:2}); let inner=new Proxy(t,{getOwnPropertyDescriptor(t,k){log+=k;return Object.getOwnPropertyDescriptor(t,k);}}); let outer=new Proxy(inner,{ownKeys(){return [];}}); try {Object.getOwnPropertyNames(outer);} catch(x){e=x;} log==='ab' && e instanceof TypeError",
+        "let t={},p=new Proxy(t,{}),e; try {Object.setPrototypeOf(t,p);} catch(x){e=x;} e instanceof TypeError && Object.getPrototypeOf(t)===Object.prototype",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}

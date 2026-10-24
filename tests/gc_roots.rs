@@ -1138,7 +1138,7 @@ fn realm_intrinsics_retain() {
     // DisposableStack adds one prototype and seven built-ins (-239).
     // AsyncDisposableStack adds one prototype and eight built-ins (-241).
     // Array unscopables adds one ordinary record (-110).
-    assert_eq!(rt.heap_usage().objects.builtin, 284);
+    assert_eq!(rt.heap_usage().objects.builtin, 285); // Proxy constructor (-91).
     assert_eq!(rt.heap_usage().objects.plain, 57);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

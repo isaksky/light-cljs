@@ -256,6 +256,9 @@ fn check_chain(
 ) -> Result<(), Fault> {
     let realm = heap.realm().get();
     while let Some(p) = proto {
+        // A proxy target participates in ownership and cycle validation even
+        // though the stored link keeps the proxy's identity.
+        let p = super::proxy::forward(heap, task, p, "getPrototypeOf")?;
         if Some(p) == target {
             return Err(Fault::TypeError(
                 "cannot set the prototype: the prototype chain would be circular".to_string(),

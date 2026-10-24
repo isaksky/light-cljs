@@ -38,6 +38,16 @@ pub(crate) fn construct(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Val
     .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Proxy>, Fault> {
+    // Immutable realm views are authoritative. Intrinsic property reads must
+    // retain their lock-free path, including while another worker holds the
+    // object table for collection or allocation.
+    if heap
+        .realm()
+        .get()
+        .is_some_and(|realm| realm.view(id).is_some())
+    {
+        return Ok(None);
+    }
     heap.read(id, |o| match o {
         HeapObject::Proxy(p) if p.owner != task => Err(Fault::ForeignObject {
             owner: Some(p.owner),
@@ -138,6 +148,7 @@ enum Stage {
     LengthValue,
     Element,
     ElementValue,
+    ValidateKeys,
     TargetKeys,
     CheckKeys,
     TargetKeyDescriptor,
@@ -161,6 +172,7 @@ struct Operation {
     reported: Option<Property>,
     target_descriptor: Option<Property>,
     extensible: bool,
+    missing_nonconfig: bool,
 }
 impl Operation {
     fn keys(object: ObjectId) -> Self {
@@ -184,6 +196,7 @@ impl Operation {
             reported: None,
             target_descriptor: None,
             extensible: true,
+            missing_nonconfig: false,
         }
     }
     fn trap(&self) -> &'static str {
@@ -397,6 +410,22 @@ impl Operations {
                     return read(heap, task, &op.value, Key::Index(op.index as u32));
                 }
                 op.index = 0;
+                op.phase = Stage::ValidateKeys;
+            }
+            Stage::ValidateKeys => {
+                // CreateListFromArrayLike finishes every observable element
+                // read before the duplicate/invariant checks begin.
+                if op.index < op.keys.len() {
+                    if op.keys[..op.index]
+                        .iter()
+                        .any(|k| k.key == op.keys[op.index].key)
+                    {
+                        return Err(error("ownKeys returned duplicate keys"));
+                    }
+                    op.index += 1;
+                    return Ok(Progress::Action(Action::Continue));
+                }
+                op.index = 0;
                 op.phase = Stage::TargetKeys;
                 let target = op.proxy.as_ref().unwrap().target;
                 op.extensible = extensible(heap, task, target)?;
@@ -409,9 +438,6 @@ impl Operations {
                     Value::Symbol(s) => Key::Symbol(s),
                     _ => return Err(error("ownKeys entries must be strings or symbols")),
                 };
-                if op.keys.iter().any(|k| k.key == key) {
-                    return Err(error("ownKeys returned duplicate keys"));
-                }
                 op.keys.push(keys::OwnKey {
                     key,
                     enumerable: true,
@@ -429,6 +455,9 @@ impl Operations {
             Stage::CheckKeys => {
                 let p = op.proxy.as_ref().unwrap();
                 if op.index == op.target_keys.len() {
+                    if op.missing_nonconfig {
+                        return Err(error("ownKeys omitted a non-configurable key"));
+                    }
                     if !op.extensible
                         && (op.keys.len() != op.target_keys.len()
                             || op
@@ -456,7 +485,7 @@ impl Operations {
                         .iter()
                         .any(|k| k.key == op.target_keys[op.index].key)
                 {
-                    return Err(error("ownKeys omitted a non-configurable key"));
+                    op.missing_nonconfig = true;
                 }
                 op.index += 1;
                 op.phase = Stage::CheckKeys;
