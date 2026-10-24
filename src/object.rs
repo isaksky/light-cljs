@@ -757,10 +757,8 @@ pub(crate) enum DeleteOutcome {
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
-        // PrimitiveData contains only f64 / JsString, with no heap edges.
-        // locale_data owns Rust strings and also contains no heap edges.
-
         // PrimitiveData and DateValue contain only f64 / JsString, with no heap edges.
+        // locale_data owns Rust strings and also contains no heap edges.
         if let Some(error) = &self.engine_error {
             error.trace(visit);
         }

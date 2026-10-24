@@ -918,7 +918,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         )?;
     }
 
-
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
@@ -1236,7 +1235,6 @@ fn intl_locale_intrinsics(
     .then_some(())?;
     Some(prototype)
 }
-
 
 /// Date.prototype is ordinary and unbranded; only constructed Dates have a slot.
 fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {

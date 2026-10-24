@@ -1021,9 +1021,9 @@ fn realm_intrinsics_retain() {
     // JSON.stringify: clj-quickjs-160; ArrayBuffer: clj-quickjs-165.
     // Integer typed arrays add 12 built-ins and 8 prototypes (-166).
     // Intl adds its ordinary namespace (-209).
+    // Locale adds one prototype and fourteen built-ins (-210).
     // Locale likely-subtag methods add two built-in functions (-211).
-
-    // Locale adds one prototype and fourteen built-ins (-210). Date adds one prototype and five built-ins (-179).
+    // Date adds one prototype and five built-ins (-179).
     assert_eq!(rt.heap_usage().objects.builtin, 124);
     assert_eq!(rt.heap_usage().objects.plain, 28);
     for _ in 0..2 {
@@ -1245,8 +1245,8 @@ fn array_element_reclaims() {
     assert_retained(&rt, &held);
     // The argument and the three arrays go together; the realm's twenty-four
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
-    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Date` and the eight typed-array prototypes), `Reflect`, `Math`,
-    // `JSON` and `Intl` stay.
+    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Date` and the eight
+    // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
     let Held {
         weak,
         release,
