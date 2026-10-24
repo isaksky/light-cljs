@@ -83,7 +83,7 @@
 //! | `CompareLe`     | 0x4C | –                  | a b → a<=b             | JavaScript `<=` on primitives |
 //! | `CompareGe`     | 0x4D | –                  | a b → a>=b             | JavaScript `>=` on primitives |
 //! | `Typeof`        | 0x4E | –                  | v → type               | JavaScript `typeof`: the type name of v as a string |
-//! | `GetBuiltinGlobal` | 0x52 | u16 built-in global | → v                  | push the realm's value of a built-in global name (`crate::realm::Global`: 0 is `Object`) |
+//! | `GetBuiltinGlobal` | 0x52 | u16 built-in global | → v                  | push the realm's value of a built-in global name (`crate::realm::Global`: 0 is `Object`, 1 `Number`, 2 `String`) |
 //! | `CallMethod`    | 0x53 | u16 argument count | this f a1 … an → r     | call `f` with receiver `this` (a method call) |
 //! | `NewObjectLiteral` | 0x54 | –               | → obj                  | allocate a fresh ordinary object inheriting from `Object.prototype` (an object literal) |
 //! | `ToString`      | 0x55 | –                  | v → s                  | JavaScript ToString on primitives (clj-quickjs-57) |
@@ -378,7 +378,7 @@
 //! non-arrow function. In strict code the value is pushed as is; in sloppy
 //! code an `undefined`, `null` or primitive `this` would be replaced by the
 //! global object or wrapped (ToObject), neither of which exists yet
-//! (clj-quickjs-104, clj-quickjs-73), so it fails the task with
+//! (clj-quickjs-104, clj-quickjs-72), so it fails the task with
 //! `UnsupportedOperand` instead of pushing a wrong value. It never
 //! allocates and is not a poll point.
 //!

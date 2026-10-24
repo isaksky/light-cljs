@@ -5547,8 +5547,10 @@ fn a_constructor_suspends_at_a_need_and_completes_after_publication() {
 /// The values of the runtime that are not ordinary objects
 /// (clj-quickjs-114, `crate::vm::property`): persistent collections and
 /// builders have no JavaScript properties (reads give `undefined`, writes
-/// throw a TypeError); function objects, error objects and primitives other
-/// than `undefined`/`null` fail explicitly until their properties exist.
+/// throw a TypeError); function objects, error objects, a string's own
+/// properties and boolean reads fail explicitly until their properties
+/// exist (numbers and strings read through their prototypes since
+/// clj-quickjs-73, `methods_on_primitive_bases`).
 #[test]
 fn property_access_on_values_that_are_not_ordinary_objects() {
     assert_eq!(eval("__rt.vector(1, 2).x"), ValueView::Undefined);
@@ -5602,9 +5604,8 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
     for (src, needle) in [
         ("let f = function () {};\nf.call;", "of a function"),
         ("let f = function () {};\nf.length = 1;", "of a function"),
-        ("let n = 1;\nn.x;", "of a number"),
         ("let s = 'a';\ns.length;", "of a string"),
-        ("let b = true;\nb.x = 1;", "of a boolean"),
+        ("let b = true;\nb.x;", "of a boolean"),
         (
             "let e; try { null.x; } catch (c) { e = c; }\ne.message;",
             "of an error object",
@@ -5617,7 +5618,7 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
     }
     // An unsupported operand is not catchable: no JavaScript sees a wrong
     // answer.
-    let (kind, ..) = failure_at("let r; try { (1).x; } catch (e) { r = 1; } r");
+    let (kind, ..) = failure_at("let r; try { true.x; } catch (e) { r = 1; } r");
     assert_eq!(kind, VmErrorKind::UnsupportedOperand);
 }
 
@@ -8178,4 +8179,248 @@ fn delete_property_references() {
     ] {
         truth(src);
     }
+}
+
+/// Property reads and method calls on number and string primitives
+/// through `Number.prototype` and `String.prototype`, without wrapper
+/// objects (clj-quickjs-73; `docs/architecture.md`, "Primitive bases").
+/// The `(19686109595169230000).toString()` row is the `test_cvt` (line 108)
+/// case of `research/quickjs/tests/test_language.js`, revision
+/// 7d1c13c5d8f8, restated as a Rust assertion; the QuickJS MIT notice on
+/// `addition_concatenates_strings` covers it. The rest are synthetic
+/// fixtures, not light-cljs output.
+#[test]
+fn methods_on_primitive_bases() {
+    // The pellet's acceptance rows.
+    for (src, want) in [
+        ("(19686109595169230000).toString()", "19686109595169230000"),
+        ("(1.5).toString()", "1.5"),
+        ("(-0).toString()", "0"),
+        ("(1e21).toString()", "1e+21"),
+        ("\"abc\".toString()", "abc"),
+    ] {
+        assert_eq!(string(src), want, "{src}");
+    }
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    truth("(1).toString === Number.prototype.toString");
+    assert_eq!(eval("(1).valueOf()"), ValueView::Number(1.0));
+    for src in ["let u; u.x", "null.toString()", "(1).x = 2"] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+        let caught = format!("let r = false; try {{ {src}; }} catch (e) {{ r = true; }} r");
+        truth(&caught);
+    }
+
+    // More conversions, bindings, computed keys and number-literal members.
+    for (src, want) in [
+        ("let n = 255; n.toString()", "255"),
+        ("(0 / 0).toString() + (-1 / 0).toString()", "NaN-Infinity"),
+        ("(123e-20).toString()", "1.23e-18"),
+        ("1..toString() + 2 .toString()", "12"),
+        ("(1).toString(10) + (2).toString(undefined)", "12"),
+        ("(7)['toString']()", "7"),
+        ("let s = 'x'; s['valueOf']() + s.toString()", "xx"),
+        ("''.toString()", ""),
+        ("`a${1}`.toString()", "a1"),
+        // `Number.prototype` and `String.prototype` hold +0 and "".
+        ("Number.prototype.toString()", "0"),
+        (
+            "String.prototype.toString() + String.prototype.valueOf()",
+            "",
+        ),
+        (
+            "(1).toString.name + (1).valueOf.name + 'a'.toString.name",
+            "toStringvalueOftoString",
+        ),
+    ] {
+        assert_eq!(string(src), want, "{src}");
+    }
+    for src in [
+        "(1).valueOf() === 1 && (2.5).valueOf() + 1 === 3.5",
+        "Number.prototype.valueOf() === 0 && Object.is(Number.prototype.valueOf(), 0)",
+        "Object.is((-0).valueOf(), -0)",
+        "'ab'.valueOf() === 'ab'",
+        "'a'.toString === String.prototype.toString && 'a'.valueOf === String.prototype.valueOf",
+        "(1).toString !== 'a'.toString && (1).valueOf !== Object.prototype.valueOf",
+        // The prototypes inherit from Object.prototype; their constructors
+        // are the `Number` and `String` globals.
+        "(1).constructor === Number && 'a'.constructor === String",
+        "Object.getPrototypeOf(Number.prototype) === Object.prototype",
+        "Object.getPrototypeOf(String.prototype) === Object.prototype",
+        "(1).isPrototypeOf === undefined && 'toString' in Number.prototype",
+        "typeof Number === 'function' && typeof String === 'function'",
+        "Number.prototype.toString.length === 1 && Number.prototype.valueOf.length === 0",
+        "String.prototype.toString.length === 0 && Number.length === 1 && String.name === 'String'",
+        // `__proto__` reads the wrapper's prototype.
+        "(1).__proto__ === Number.prototype && 'a'.__proto__ === String.prototype",
+        // Absent names read undefined, also a string index past the end.
+        "(1).x === undefined && 'abc'.x === undefined && 'abc'[3] === undefined",
+        "'abc'[-1] === undefined && 'abc'['1.5'] === undefined",
+        // The same function on every read.
+        "let f = (1).toString; f === (2).toString && f === Number.prototype.toString",
+    ] {
+        truth(src);
+    }
+
+    // A method that needs a number or string receiver throws a catchable
+    // TypeError for any other: `this` is `undefined` in a plain call.
+    for (src, message) in [
+        (
+            "let f = (1).toString;\nf();",
+            "Number.prototype.toString requires that 'this' be a Number, not undefined",
+        ),
+        (
+            "let o = {m: (1).valueOf};\no.m();",
+            "Number.prototype.valueOf requires that 'this' be a Number, not an object",
+        ),
+        (
+            "let o = {m: 'a'.toString};\no.m();",
+            "String.prototype.toString requires that 'this' be a String, not an object",
+        ),
+    ] {
+        let (kind, m, line, _) = failure_at(src);
+        assert_eq!(
+            (kind, m.as_str(), line),
+            (VmErrorKind::TypeError, message, 2),
+            "{src}"
+        );
+    }
+    truth("let o = {m: 'a'.valueOf}; let r = false; try { o.m(); } catch (e) { r = true; } r");
+
+    // `undefined` and `null` bases are TypeErrors at the member operator.
+    for (src, message, column) in [
+        ("let u;\nu.x;", "cannot read property 'x' of undefined", 2),
+        (
+            "let u;\n(null).toString();",
+            "cannot read property 'toString' of null",
+            7,
+        ),
+        (
+            "let u;\nu['x'] = 1;",
+            "cannot set property 'x' of undefined",
+            2,
+        ),
+    ] {
+        let (kind, m, line, col) = failure_at(src);
+        assert_eq!(
+            (kind, m.as_str(), line, col),
+            (VmErrorKind::TypeError, message, 2, column),
+            "{src}"
+        );
+    }
+
+    // Writes: strict code throws, since a primitive takes no property (a
+    // string's index and `length` are read-only own properties of its
+    // wrapper); `__proto__` runs the setter, which ignores a primitive.
+    for (src, message) in [
+        (
+            "let n = 1;\nn.x = 2;",
+            "cannot create property 'x' on a number: primitive values have no own properties",
+        ),
+        (
+            "let s = 'abc';\ns[5] = 2;",
+            "cannot create property '5' on a string: primitive values have no own properties",
+        ),
+        (
+            "let s = 'abc';\ns[0] = 'x';",
+            "cannot assign to read-only property '0' of a string",
+        ),
+        (
+            "let s = 'abc';\ns.length = 1;",
+            "cannot assign to read-only property 'length' of a string",
+        ),
+        (
+            "let s = 'abc';\ns.toString = 1;",
+            "cannot create property 'toString' on a string: primitive values have no own properties",
+        ),
+        (
+            "let b = true;\nb.x = 1;",
+            "cannot create property 'x' on a boolean: primitive values have no own properties",
+        ),
+        (
+            "let n = 1;\nn.x += 1;",
+            "cannot create property 'x' on a number: primitive values have no own properties",
+        ),
+    ] {
+        let (kind, m, line, _) = failure_at(src);
+        assert_eq!(
+            (kind, m.as_str(), line),
+            (VmErrorKind::TypeError, message, 2),
+            "{src}"
+        );
+    }
+    truth("let n = 1; n.__proto__ = null; 'a'.__proto__ = {}; n.__proto__ === Number.prototype");
+    // Sloppy code ignores the writes.
+    let sloppy = compile_script_with(
+        "t",
+        "let n = 1; n.x = 2; 'abc'[0] = 'y'; 'abc'.length = 0; true.x = 1; n.x === undefined",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    match run(&sloppy, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+
+    // Explicitly unsupported until their pellets: a string's own `length`
+    // and indices (clj-quickjs-142), boolean properties (clj-quickjs-39),
+    // radixes other than 10 (clj-quickjs-39), calling the constructors
+    // (clj-quickjs-72). Not catchable: no JavaScript sees a wrong answer.
+    for (src, needle) in [
+        (
+            "let s = 'abc';\ns.length;",
+            "string length and index properties",
+        ),
+        (
+            "let s = 'abc';\ns[0];",
+            "string length and index properties",
+        ),
+        (
+            "let s = 'abc';\ns['2'];",
+            "string length and index properties",
+        ),
+        ("let b = true;\nb.toString();", "of a boolean"),
+        ("let n = 1;\nn.toString(2);", "radix other than 10"),
+        ("let n = 1;\nn.toString('10');", "radix other than 10"),
+        ("let n = 1;\nNumber(n);", "Number constructor"),
+        ("let n = 1;\nString(n);", "String constructor"),
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+    let (kind, ..) = failure_at("let r; try { 'abc'.length; } catch (e) { r = 1; } r");
+    assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "(19686109595169230000).toString() === \"19686109595169230000\" && (1.5).toString() === \"1.5\" && (1).valueOf() === 1;",
+        "\"abc\".toString() === \"abc\" && (1).toString === Number.prototype.toString && (1).constructor === Number;",
+        "let r = 0; try { null.toString(); } catch (e) { r = 1; } try { (1).x = 2; } catch (e) { r = r + 10; } r === 11;",
+    ] {
+        truth(src);
+    }
+}
+
+/// A method call on a primitive allocates no wrapper object
+/// (clj-quickjs-73): once the realm exists, a loop of property reads and
+/// method calls on numbers and strings leaves the live-object count
+/// unchanged. Synthetic fixture, not light-cljs output.
+#[test]
+fn methods_on_primitive_bases_allocate_no_wrappers() {
+    let rt = Runtime::new();
+    let warm = exe("Number.prototype.toString(); 0");
+    assert!(matches!(
+        rt.spawn(&warm, &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    rt.collect().unwrap();
+    let before = rt.heap_stats().objects;
+    let src = "let r = 0; for (let i = 0; i < 200; i++) { r = r + i.valueOf(); \
+               if (('' + i).toString() === i.toString()) { r = r + 1; } } r";
+    match rt.spawn(&exe(src), &[]).unwrap().run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(19900.0 + 200.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    assert_eq!(rt.heap_stats().objects, before);
 }

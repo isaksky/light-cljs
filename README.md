@@ -1733,8 +1733,10 @@ Supported (`cargo test --lib frontend::tests::computed_member_access`,
 Deferred:
 
 - Object keys (ToPrimitive, clj-quickjs-70) and symbol keys
-  (clj-quickjs-127) fail explicitly; primitive and function bases fail
-  with `UnsupportedOperand` (clj-quickjs-73, -125); optional chaining.
+  (clj-quickjs-127) fail explicitly; boolean bases and a string's own
+  indices fail with `UnsupportedOperand` (clj-quickjs-39, -142; numbers
+  and strings otherwise read through their prototypes since
+  clj-quickjs-73); optional chaining.
   (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
 - Interned property names are never reclaimed, so writing many distinct
   computed keys grows the runtime's key table (clj-quickjs-259;
@@ -1851,7 +1853,7 @@ Deferred:
 - (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
   (built-in constructors; `new` on ordinary functions is clj-quickjs-71), `Function.prototype` (built-in functions' inherited
   properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
-  objects for `Object(1)` and primitive receivers (clj-quickjs-72/-73),
+  objects for `Object(1)` and primitive receivers (clj-quickjs-72),
   `Object.getPrototypeOf` and the other reflection functions.
 
 ### Untagged template literals (clj-quickjs-57)
@@ -1895,7 +1897,7 @@ Deferred:
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
-  clj-quickjs-73); an object receiver works as in strict code.
+  clj-quickjs-72); an object receiver works as in strict code.
 
 ### Array literals and array objects (clj-quickjs-118)
 
@@ -2218,3 +2220,26 @@ Deferred:
 
 - The non-strict `for (var k = 1 in o)` (Annex B) is clj-quickjs-90;
   `for (var k of o)` stays `Unsupported` with for-of.
+
+### Properties and methods of number and string primitives (clj-quickjs-73)
+
+Supported (`cargo test --test js_source methods_on_primitive_bases`,
+`cargo test --test js_source methods_on_primitive_bases_allocate_no_wrappers`):
+
+- `n.x`, `s[k]`, `(1).toString()`, `"abc".valueOf()`: a read on a number or string looks the
+  key up from `Number.prototype` / `String.prototype` through `Object.prototype`, without
+  allocating a wrapper; a method call passes the primitive itself as `this`.
+- `Number.prototype.toString()` (radix 10), `Number.prototype.valueOf()`,
+  `String.prototype.toString()`, `String.prototype.valueOf()`; any other receiver is a
+  catchable `TypeError`. `Number` and `String` are built-in globals carrying the prototypes
+  (`(1).constructor === Number`).
+- Writes to a primitive base are a catchable `TypeError` in strict code and ignored in sloppy
+  code (`__proto__` runs its setter, which ignores a primitive); `undefined`/`null` bases
+  throw catchable `TypeError`s for reads, writes and method calls.
+
+Deferred:
+
+- Calling `Number(v)` / `String(v)` and wrapper objects (clj-quickjs-72), a string's own
+  `length` and indices (clj-quickjs-142), boolean bases (`Boolean.prototype`), radixes other
+  than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
+  with `UnsupportedOperand` (an absent method reads `undefined`).

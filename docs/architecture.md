@@ -515,7 +515,7 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   collections, waits and migration to another worker (`tests/need.rs`).
   Strict code reads the slot as is; sloppy code fails with
   `UnsupportedOperand` for a non-object receiver (the global object is
-  clj-quickjs-104, primitive wrappers clj-quickjs-73). The compiler emits
+  clj-quickjs-104, primitive wrappers clj-quickjs-72). The compiler emits
   `get_this` for `this` in a non-arrow function; the parser still rejects
   it at the script top level and in arrows (clj-quickjs-104, -98).
 - **`new` (clj-quickjs-71).** `construct n` (`0x5E`) is `call n` for a
@@ -1506,7 +1506,8 @@ as for a non-extensible object without properties in strict mode. Function
 objects and caught error objects do have JavaScript properties (`length`,
 `name`, `message`, ...), so until clj-quickjs-101/-125/-230 every access
 to them fails with `UnsupportedOperand` instead of a wrong `undefined`;
-so do numbers, booleans and strings (clj-quickjs-73). `undefined` and
+so did numbers and strings until clj-quickjs-73 ("Primitive bases"), and
+so do booleans (clj-quickjs-39). `undefined` and
 `null` bases throw catchable `TypeError`s (`cannot read property 'x' of
 undefined`, `cannot set property 'x' of null`) at the member expression;
 for a write the right-hand side is evaluated first (PutValue).
@@ -1711,7 +1712,7 @@ moment (a leaf lock, never taken by the collector).
   through the realm; built-in functions get it as their `[[Prototype]]`.
   Until it exists, reading a property a built-in function does not have
   itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's objects (nineteen since clj-quickjs-123) and its interned names live as long as the
+- The realm's objects (nineteen since clj-quickjs-123, twenty-seven since clj-quickjs-73) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -2468,6 +2469,42 @@ Deferred: the prototype-chain walk
 (clj-quickjs-86), property targets (clj-quickjs-87), the non-strict
 `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps (clj-quickjs-91).
 
+## Primitive bases (clj-quickjs-73)
+
+Contract: `src/vm/property.rs` (module docs, "Primitive bases";
+`primitive_prototype`, `put_primitive`), `src/realm.rs`
+(`Intrinsics::primitive_prototype`, `Number.prototype`,
+`String.prototype`), `src/vm/builtin.rs` (`this_number_value`,
+`this_string_value`). Semantics: `docs/grammar.md`, "Execution".
+
+**Decision.** A property read on a number or string starts the ordinary
+prototype walk at `Number.prototype` or `String.prototype` instead of
+allocating the wrapper object ECMAScript's ToObject describes, as QuickJS's
+`JS_GetPrototypePrimitive` does. A wrapper is never observable through a
+read: a Number wrapper has no own properties, and a String wrapper's own
+properties (`length`, indices) are answered before the walk, today by an
+explicit `UnsupportedOperand` until clj-quickjs-142 implements them. A
+method call needs no new mechanism: `call_method` already passes the base
+value as the receiver, so `(1).toString()` hands the number itself to the
+built-in as `this`, which is the strict-mode receiver; there is no
+sloppy-mode function that could observe a wrapped `this`, since the
+prototypes are immutable realm intrinsics. Writes need no prototype at
+all: the receiver is a primitive, so OrdinarySet returns false for every
+data property (a strict-mode TypeError), and only `Object.prototype`'s
+`__proto__` setter, which ignores a primitive `this`, succeeds; booleans
+share that rule now, while boolean reads wait for `Boolean.prototype`.
+
+Consequences: no allocation and no task-owned state per access (tested by
+an unchanged live-object count), the same functions on every task
+(`(1).toString === Number.prototype.toString` everywhere), and the realm is
+built by the first primitive read, so `GetField`/`GetElem` stay poll points.
+The prototypes are ordinary intrinsics inheriting from `Object.prototype`
+rather than exotic Number/String objects; the two methods treat them as
+holding `+0` and `""`, and clj-quickjs-72 adds `[[NumberData]]` /
+`[[StringData]]` for wrapper objects. `Number` and `String` are built-in
+globals now (operands 1 and 2 of `get_builtin_global`) whose calls fail
+explicitly until clj-quickjs-72, so `Number.prototype` is reachable by name.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -3010,3 +3047,13 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `loose_equality_with_a_boolean_left_operand` covers it.
   `research/quickjs/quickjs.c` `js_operator_in`, `OP_in` and
   `JS_HasProperty` were consulted only, for semantics. No code was copied.
+- `tests/js_source.rs` `methods_on_primitive_bases` (clj-quickjs-73): the
+  `assert((19686109595169230000).toString() === "19686109595169230000")`
+  case of `test_cvt` (line 108) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: the `assert` is a Rust assertion on the string value. The
+  notice on `addition_concatenates_strings` covers it.
+  `research/quickjs/quickjs.c` `JS_GetPrototypePrimitive`,
+  `js_thisNumberValue`, `js_number_valueOf`, `js_number_toString` and
+  `js_thisStringValue` were consulted only, for semantics. No code was
+  copied.

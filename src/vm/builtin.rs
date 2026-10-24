@@ -58,6 +58,9 @@
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
 //! | `Object.isExtensible(v)`, `Object.isFrozen(v)` (clj-quickjs-122) | the `[[Extensible]]` flag / TestIntegrityLevel(frozen); a primitive is not extensible and is frozen; vectors, maps and published functions are frozen (`crate::vm::integrity`) |
 //! | `Object.keys(o)`, `Object.getOwnPropertyNames(o)` (clj-quickjs-123) | a fresh array of the own enumerable (`keys`) or all (`getOwnPropertyNames`) string keys of `o`, array indices ascending first, then the other names in creation order (`crate::vm::keys`); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72); `getOwnPropertyNames` of a function or of `Object.prototype`: `UnsupportedOperand` (clj-quickjs-101, -261) |
+//! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or `Number.prototype` (`+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
+//! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or `String.prototype` (`""`); any other receiver: catchable `TypeError` |
+//! | `Number(...)`, `String(...)` (clj-quickjs-73; global names that carry the prototypes) | `UnsupportedOperand` until the constructors exist (clj-quickjs-72) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -65,6 +68,7 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
 use crate::realm;
+use crate::value::string::number_to_string;
 use crate::value::{JsString, Value};
 use crate::vm::descriptor;
 use crate::vm::dispatch::Fault;
@@ -124,6 +128,24 @@ pub(crate) enum Builtin {
     /// `Object.getOwnPropertyNames` (QuickJS
     /// `js_object_getOwnPropertyNames`; clj-quickjs-123).
     ObjectGetOwnPropertyNames,
+    /// `Number` (clj-quickjs-73): the global that carries
+    /// `Number.prototype`; fails when called until clj-quickjs-72.
+    Number,
+    /// `Number.prototype.toString` (QuickJS `js_number_toString`;
+    /// clj-quickjs-73), radix 10 only.
+    NumberPrototypeToString,
+    /// `Number.prototype.valueOf` (QuickJS `js_number_valueOf`;
+    /// clj-quickjs-73).
+    NumberPrototypeValueOf,
+    /// `String` (clj-quickjs-73): the global that carries
+    /// `String.prototype`; fails when called until clj-quickjs-72.
+    String,
+    /// `String.prototype.toString` (QuickJS `js_string_toString`;
+    /// clj-quickjs-73).
+    StringPrototypeToString,
+    /// `String.prototype.valueOf` (clj-quickjs-73; the same function body
+    /// as `toString`).
+    StringPrototypeValueOf,
 }
 
 impl Builtin {
@@ -147,6 +169,10 @@ impl Builtin {
             Builtin::ObjectIsFrozen => "isFrozen",
             Builtin::ObjectKeys => "keys",
             Builtin::ObjectGetOwnPropertyNames => "getOwnPropertyNames",
+            Builtin::Number => "Number",
+            Builtin::String => "String",
+            Builtin::NumberPrototypeToString | Builtin::StringPrototypeToString => "toString",
+            Builtin::NumberPrototypeValueOf | Builtin::StringPrototypeValueOf => "valueOf",
         }
     }
 
@@ -167,6 +193,10 @@ impl Builtin {
             | Builtin::ObjectFreeze
             | Builtin::ObjectIsFrozen => 1,
             Builtin::ObjectKeys | Builtin::ObjectGetOwnPropertyNames => 1,
+            Builtin::Number | Builtin::String | Builtin::NumberPrototypeToString => 1,
+            Builtin::NumberPrototypeValueOf
+            | Builtin::StringPrototypeToString
+            | Builtin::StringPrototypeValueOf => 0,
         }
     }
 }
@@ -241,6 +271,79 @@ pub(crate) fn call(
         Builtin::ObjectIsFrozen => integrity::is_frozen(heap, task, &arg(0)),
         Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
         Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
+        Builtin::Number | Builtin::String => Err(Fault::Unsupported(format!(
+            "calling the {} constructor is not supported",
+            which.name()
+        ))),
+        Builtin::NumberPrototypeToString => {
+            let n = this_number_value(heap, this, "toString")?;
+            match arg(0) {
+                Value::Undefined => {}
+                Value::Number(10.0) => {}
+                _ => {
+                    return Err(Fault::Unsupported(
+                        "Number.prototype.toString with a radix other than 10 is not supported"
+                            .to_string(),
+                    ));
+                }
+            }
+            Ok(Value::String(JsString::from(number_to_string(n).as_str())))
+        }
+        Builtin::NumberPrototypeValueOf => {
+            this_number_value(heap, this, "valueOf").map(Value::Number)
+        }
+        Builtin::StringPrototypeToString | Builtin::StringPrototypeValueOf => {
+            this_string_value(heap, this, which.name()).map(Value::String)
+        }
+    }
+}
+
+/// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a
+/// number receiver is itself; `Number.prototype`, a Number object holding
+/// `+0` in ECMAScript, is `0`. Number wrapper objects are clj-quickjs-72;
+/// any other receiver is a catchable `TypeError`.
+fn this_number_value(heap: &Heap, this: &Value, method: &str) -> Result<f64, Fault> {
+    match this {
+        Value::Number(n) => Ok(*n),
+        Value::Object(id) if is_intrinsic(heap, *id, |r| r.number_prototype) => Ok(0.0),
+        other => Err(Fault::TypeError(format!(
+            "Number.prototype.{method} requires that 'this' be a Number, not {}",
+            describe_receiver(other)
+        ))),
+    }
+}
+
+/// thisStringValue (ECMAScript §22.1.3; QuickJS `js_thisStringValue`): a
+/// string receiver is itself; `String.prototype` (a String object holding
+/// `""`) is `""`. String wrapper objects are clj-quickjs-72; any other
+/// receiver is a catchable `TypeError`.
+fn this_string_value(heap: &Heap, this: &Value, method: &str) -> Result<JsString, Fault> {
+    match this {
+        Value::String(s) => Ok(s.clone()),
+        Value::Object(id) if is_intrinsic(heap, *id, |r| r.string_prototype) => {
+            Ok(JsString::from(""))
+        }
+        other => Err(Fault::TypeError(format!(
+            "String.prototype.{method} requires that 'this' be a String, not {}",
+            describe_receiver(other)
+        ))),
+    }
+}
+
+/// True when `id` is the realm intrinsic `which` selects.
+fn is_intrinsic(heap: &Heap, id: ObjectId, which: fn(&realm::Intrinsics) -> ObjectId) -> bool {
+    heap.realm().get().is_some_and(|r| which(r) == id)
+}
+
+/// A receiver's kind for a thisNumberValue/thisStringValue message.
+fn describe_receiver(v: &Value) -> &'static str {
+    match v {
+        Value::Undefined => "undefined",
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Object(_) => "an object",
     }
 }
 

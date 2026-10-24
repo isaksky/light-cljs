@@ -23,7 +23,8 @@
 //! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; a name `Function.prototype` will own `UnsupportedOperand`; any other name continues at `Object.prototype` | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
-//! | number, boolean, string | `UnsupportedOperand` (primitive wrappers are clj-quickjs-73) | `UnsupportedOperand` |
+//! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"); a string's `length` and indices below it: `UnsupportedOperand` (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
+//! | boolean | `UnsupportedOperand` (`Boolean.prototype`, clj-quickjs-39) | as a number |
 //!
 //! The non-ordinary heap kinds are this runtime's own values (or values
 //! JavaScript code never holds), not JavaScript objects with hidden
@@ -67,6 +68,27 @@
 //! read-only element rejects writes like a read-only named property, and a
 //! read-only `length` rejects new elements at or beyond it; a define that
 //! would change `length` fails with `UnsupportedOperand` (clj-quickjs-39).
+//!
+//! # Primitive bases
+//!
+//! A property access on a number or string (clj-quickjs-73; ECMAScript
+//! GetValue and PutValue, which apply ToObject to the base; QuickJS
+//! `JS_GetPrototypePrimitive`) acts on the wrapper object ToObject would
+//! make, without allocating it. A read starts the prototype walk at
+//! `Number.prototype` or `String.prototype` (`crate::realm`, building the
+//! realm if needed), so `(1).toString` is `Number.prototype.toString`. The
+//! wrapper's own properties are not looked at: a Number wrapper has none,
+//! and a string's `length` and its indices below the length belong to
+//! clj-quickjs-142 and fail with `UnsupportedOperand` rather than reading
+//! `undefined` (an index at or past the length is not an own property and
+//! continues at `String.prototype`). `__proto__` answers the wrapper's
+//! prototype. A method call `(1).m()` reads `m` this way and passes the
+//! primitive itself as `this` (the `CallMethod` receiver is the base value,
+//! as in strict mode). A write cannot succeed: the receiver is a primitive,
+//! so `[[Set]]` returns false (a `TypeError` in strict code, nothing in
+//! sloppy code), except that `Object.prototype`'s `__proto__` setter
+//! accepts a primitive `this` and ignores it. Booleans follow the same
+//! write rule; their reads wait for `Boolean.prototype` (clj-quickjs-39).
 //!
 //! # Deleting properties
 //!
@@ -247,6 +269,35 @@ fn primitive_base(base: &Value, key: &Key, access: Access) -> Fault {
             base.type_name()
         )),
     }
+}
+
+/// Where a read of `key` on the primitive `base` starts (module docs,
+/// "Primitive bases"): `Number.prototype` for a number, `String.prototype`
+/// for a string, building the realm if needed. A string's own `length` and
+/// index properties are clj-quickjs-142 (`UnsupportedOperand`); a boolean
+/// fails with `UnsupportedOperand` until `Boolean.prototype` exists
+/// (clj-quickjs-39); `undefined`/`null` are a catchable `TypeError`.
+fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
+    if let Value::String(s) = base {
+        let own = match key {
+            Key::Index(index) => (*index as usize) < s.len(),
+            _ => key.is_length(),
+        };
+        if own {
+            return Err(Fault::Unsupported(format!(
+                "cannot read property '{key}' of a string: string length and index properties are not supported"
+            )));
+        }
+    }
+    let intrinsics = match base {
+        Value::Number(_) | Value::String(_) => {
+            realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        }
+        _ => return Err(primitive_base(base, key, Access::Read)),
+    };
+    intrinsics
+        .primitive_prototype(base)
+        .ok_or(Fault::Internal("a number or string without a prototype"))
 }
 
 /// The failure of an access to a heap object that has no ordinary property
@@ -459,10 +510,14 @@ fn lookup(
     key: &Key,
     has: bool,
 ) -> Result<Option<Value>, Fault> {
-    let Value::Object(mut id) = *base else {
-        return Err(primitive_base(base, key, Access::Read));
+    // A primitive base reads through its wrapper's prototype without
+    // allocating a wrapper (module docs, "Primitive bases"); `receiver` is
+    // then `None`.
+    let (mut id, receiver) = match *base {
+        Value::Object(id) => (id, Some(id)),
+        _ => (primitive_prototype(heap, base, key)?, None),
     };
-    let receiver = id;
+    let start = id;
     // A name that was never interned is no object's property; the owner
     // and kind checks below still apply.
     let mut interned: Interned = match key {
@@ -483,7 +538,12 @@ fn lookup(
                 if has {
                     return Ok(Some(Value::Undefined));
                 }
-                return prototype::proto_getter(heap, task, receiver).map(Some);
+                return match receiver {
+                    Some(receiver) => prototype::proto_getter(heap, task, receiver).map(Some),
+                    // The getter's ToObject of a primitive: its wrapper's
+                    // prototype, where the walk started.
+                    None => Ok(Some(Value::Object(start))),
+                };
             }
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(property.value.clone())),
@@ -644,7 +704,7 @@ pub(crate) fn put(
     strict: bool,
 ) -> Result<(), Fault> {
     let Value::Object(mut id) = *base else {
-        return Err(primitive_base(base, key, Access::Write));
+        return put_primitive(base, key, strict);
     };
     // The base itself: a function's writes go to its property record
     // (`id` below), but the `__proto__` setter gets the function.
@@ -722,6 +782,41 @@ pub(crate) fn put(
         SetOutcome::NotExtensible => rejected(not_extensible(key)),
         SetOutcome::Inherited => Err(Fault::Internal("an inherited write was not decided")),
     }
+}
+
+/// `base[key] = value` on a primitive `base` (module docs, "Primitive
+/// bases"; ECMAScript PutValue: OrdinarySet on ToObject(base) with the
+/// primitive as the receiver, which never creates a wrapper here).
+/// `undefined`/`null` are a TypeError in both modes. A number, string or
+/// boolean can take no property: a string's own index or `length` is
+/// read-only, an inherited data property or an absent one needs an object
+/// receiver, so `[[Set]]` returns false (a TypeError in strict code,
+/// nothing in sloppy code). The one exception is `__proto__`, whose
+/// `Object.prototype` setter accepts a primitive `this` and does nothing.
+fn put_primitive(base: &Value, key: &Key, strict: bool) -> Result<(), Fault> {
+    let what = match base {
+        Value::Undefined | Value::Null => return Err(primitive_base(base, key, Access::Write)),
+        Value::Object(_) => return Err(Fault::Internal("an object base is not primitive")),
+        other => other.type_name(),
+    };
+    if matches!(key, Key::Name(name) if *name == "__proto__") {
+        return Ok(());
+    }
+    if !strict {
+        return Ok(());
+    }
+    let own = match (base, key) {
+        (Value::String(s), Key::Index(index)) => (*index as usize) < s.len(),
+        (Value::String(_), _) => key.is_length(),
+        _ => false,
+    };
+    Err(Fault::TypeError(if own {
+        format!("cannot assign to read-only property '{key}' of a string")
+    } else {
+        format!(
+            "cannot create property '{key}' on a {what}: primitive values have no own properties"
+        )
+    }))
 }
 
 /// `base.name = value` (`PutField`).

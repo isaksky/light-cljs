@@ -9,8 +9,8 @@
 //!
 //! Each heap (one per [`Runtime`](crate::Runtime)) has at most one realm,
 //! built the first time an instruction needs it (`NewObjectLiteral`, for
-//! the prototype of a literal, `GetBuiltinGlobal`, or a write of `__proto__`,
-//! clj-quickjs-121) and kept until the heap
+//! the prototype of a literal, `GetBuiltinGlobal`, a write of `__proto__`,
+//! clj-quickjs-121, or a property read on a number or string, clj-quickjs-73) and kept until the heap
 //! is dropped. Every task of the runtime sees the same intrinsic objects,
 //! with the same identities (`({}).toString === Object.prototype.toString`
 //! in every task, and a closure that captured `Object` in one task calls the
@@ -36,6 +36,9 @@
 //! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
 //! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
 //! | `Array` (only as `Array.prototype.constructor`; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
+//! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf` |
+//! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
+//! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
 //!
 //! Property attributes are the standard ones (ECMAScript §18): methods and
 //! `constructor` are writable, non-enumerable and configurable; `length` and
@@ -90,7 +93,7 @@
 //!
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
-//! today only `Object`. The compiler emits `get_builtin_global i` for such a
+//! `Object`, `Number` and `String` (clj-quickjs-73). The compiler emits `get_builtin_global i` for such a
 //! name. When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
@@ -110,16 +113,24 @@ use crate::vm::builtin::{Builtin, BuiltinFunction};
 pub(crate) enum Global {
     /// `Object`, the Object constructor.
     Object = 0,
+    /// `Number`, the Number constructor (clj-quickjs-73: it carries
+    /// `Number.prototype` and fails when called until clj-quickjs-72).
+    Number = 1,
+    /// `String`, the String constructor (clj-quickjs-73: it carries
+    /// `String.prototype` and fails when called until clj-quickjs-72).
+    String = 2,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 1] = [Global::Object];
+    const ALL: [Global; 3] = [Global::Object, Global::Number, Global::String];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Global::Object => "Object",
+            Global::Number => "Number",
+            Global::String => "String",
         }
     }
 
@@ -154,6 +165,16 @@ pub(crate) struct Intrinsics {
     /// `__proto__` accessor, which the property walk applies
     /// (clj-quickjs-121, `crate::vm::prototype`).
     proto_key: PropertyKey,
+    /// `Number.prototype`: a property read on a number primitive starts
+    /// here (clj-quickjs-73, [`Intrinsics::primitive_prototype`]).
+    pub(crate) number_prototype: ObjectId,
+    /// `String.prototype`: a property read on a string primitive starts
+    /// here (clj-quickjs-73).
+    pub(crate) string_prototype: ObjectId,
+    /// The `Number` constructor (fails when called until clj-quickjs-72).
+    number: ObjectId,
+    /// The `String` constructor (fails when called until clj-quickjs-72).
+    string: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -195,10 +216,26 @@ impl Intrinsics {
         key == self.proto_key
     }
 
+    /// The prototype a property access on the primitive `v` starts at, as
+    /// if on its wrapper object, which is not allocated (clj-quickjs-73;
+    /// QuickJS `JS_GetPrototypePrimitive`): `Number.prototype` for a
+    /// number, `String.prototype` for a string. `None` for anything else
+    /// (objects, `undefined`, `null`, and booleans until `Boolean.prototype`
+    /// exists, clj-quickjs-39).
+    pub(crate) fn primitive_prototype(&self, v: &Value) -> Option<ObjectId> {
+        match v {
+            Value::Number(_) => Some(self.number_prototype),
+            Value::String(_) => Some(self.string_prototype),
+            _ => None,
+        }
+    }
+
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
             Global::Object => Value::Object(self.object),
+            Global::Number => Value::Object(self.number),
+            Global::String => Value::Object(self.string),
         }
     }
 }
@@ -334,6 +371,26 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         return None;
     }
     let array_prototype = array_prototype(heap, &mut all, object_prototype)?;
+    let (number_prototype, number) = primitive_prototype(
+        heap,
+        &mut all,
+        object_prototype,
+        [
+            Builtin::Number,
+            Builtin::NumberPrototypeToString,
+            Builtin::NumberPrototypeValueOf,
+        ],
+    )?;
+    let (string_prototype, string) = primitive_prototype(
+        heap,
+        &mut all,
+        object_prototype,
+        [
+            Builtin::String,
+            Builtin::StringPrototypeToString,
+            Builtin::StringPrototypeValueOf,
+        ],
+    )?;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
         .iter()
@@ -362,7 +419,61 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         all,
         views,
         proto_key,
+        number_prototype,
+        string_prototype,
+        number,
+        string,
     })
+}
+
+/// `Number.prototype` or `String.prototype` (clj-quickjs-73) and its
+/// constructor, from `[constructor, toString, valueOf]`: an intrinsic
+/// ordinary object inheriting from `Object.prototype` with `constructor`,
+/// `toString` and `valueOf`. ECMAScript makes `Number.prototype` a Number
+/// object holding `+0` and `String.prototype` a String object holding `""`;
+/// the methods treat these two receivers so (`crate::vm::builtin`), and
+/// `String.prototype`'s own `length` (0) belongs with the string own
+/// properties of clj-quickjs-142. The constructor is a built-in function
+/// with `prototype` that fails when called until clj-quickjs-72.
+fn primitive_prototype(
+    heap: &Heap,
+    all: &mut Vec<ObjectId>,
+    object_prototype: ObjectId,
+    [constructor, to_string, value_of]: [Builtin; 3],
+) -> Option<(ObjectId, ObjectId)> {
+    let to_string = builtin(heap, all, to_string, &[])?;
+    let value_of = builtin(heap, all, value_of, &[])?;
+    let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    define(
+        heap,
+        &mut prototype,
+        "toString",
+        to_string,
+        PropertyFlags::METHOD,
+    )?;
+    define(
+        heap,
+        &mut prototype,
+        "valueOf",
+        value_of,
+        PropertyFlags::METHOD,
+    )?;
+    let id = heap.alloc(HeapObject::Plain(prototype))?;
+    all.push(id);
+    let constructor = builtin(
+        heap,
+        all,
+        constructor,
+        &[("prototype", id, PropertyFlags::FIXED)],
+    )?;
+    let key = heap.keys().intern(&JsString::from("constructor"))?;
+    let defined = heap.with_object_mut(id, |o| match o {
+        HeapObject::Plain(o) => {
+            o.define_with(key, Value::Object(constructor), PropertyFlags::METHOD)
+        }
+        _ => false,
+    });
+    (defined == Some(true)).then_some((id, constructor))
 }
 
 /// `Array.prototype` (clj-quickjs-118): an intrinsic ordinary object
@@ -473,7 +584,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 19);
+        assert_eq!(first.all.len(), 27);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -482,7 +593,10 @@ mod tests {
         assert_eq!(Global::from_name("Object"), Some(Global::Object));
         assert_eq!(Global::from_name("object"), None);
         assert_eq!(Global::from_u16(0), Some(Global::Object));
-        assert_eq!(Global::from_u16(1), None);
+        assert_eq!(Global::from_name("Number"), Some(Global::Number));
+        assert_eq!(Global::from_name("String"), Some(Global::String));
+        assert_eq!(Global::from_u16(2), Some(Global::String));
+        assert_eq!(Global::from_u16(3), None);
     }
 
     #[test]
