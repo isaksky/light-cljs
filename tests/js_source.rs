@@ -12918,3 +12918,248 @@ fn symbol_setters_wait_yield_collect_and_migrate() {
     }
     panic!("symbol setter did not finish");
 }
+/// Synthetic fixtures, not light-cljs output. The round trip adapts
+/// QuickJS test_builtin.js::test_json at 7d1c13c5d8f8; the full MIT notice
+/// is retained above at string_code_unit_access.
+#[test]
+fn json_stringify() {
+    for src in [
+        r#"let s = '{"x":1,"y":true,"z":null,"a":[1,2,3],"s":"str"}'; JSON.stringify(JSON.parse(s)) === s"#,
+        r#"JSON.stringify(1) === '1' && JSON.stringify(-0) === '0' && JSON.stringify(NaN) === 'null' && JSON.stringify(Infinity) === 'null'"#,
+        r#"JSON.stringify(true) === 'true' && JSON.stringify(false) === 'false' && JSON.stringify(null) === 'null'"#,
+        r#"JSON.stringify('a"b\n\u0001') === '"a\\"b\\n\\u0001"'"#,
+        r#"JSON.stringify('\ud800') === '"\\ud800"' && JSON.stringify('\udc00') === '"\\udc00"' && JSON.stringify('😀') === '"😀"'"#,
+        r#"JSON.stringify('\b\f\r\t\\\u0000\u001f') === '"\\b\\f\\r\\t\\\\\\u0000\\u001f"'"#,
+        r#"JSON.stringify([undefined, function () {}, NaN, , 1]) === '[null,null,null,null,1]'"#,
+        r#"JSON.stringify({a: undefined, b: 1, c: function(){}}) === '{"b":1}'"#,
+        r#"JSON.stringify(undefined) === undefined && JSON.stringify(function(){}) === undefined && JSON.stringify() === undefined"#,
+        r#"JSON.stringify({}) === '{}' && JSON.stringify([]) === '[]'"#,
+        r#"JSON.stringify({b: 1, a: 2, 1: 3}) === '{"1":3,"b":1,"a":2}'"#,
+        r#"let o = {a: 1}; Object.defineProperty(o, 'b', {value: 2}); JSON.stringify(o) === '{"a":1}'"#,
+        r#"JSON.stringify(new Number(3)) === '3' && JSON.stringify(new String('hi')) === '"hi"'"#,
+        r#"JSON.stringify({toJSON: function () { return 5; }}) === '5'"#,
+        r#"let log = ''; let o = {get toJSON() { log += 'g'; return function(k) { log += k; return this.x; }; }, x: 4}; JSON.stringify({a:o}) === '{"a":4}' && log === 'ga'"#,
+        r#"let o = {toJSON(k) { return k; }}; JSON.stringify([o]) === '["0"]' && JSON.stringify(o) === '""'"#,
+        r#"let f = function(){}; f.toJSON = function(){ return 7; }; JSON.stringify(f) === '7'"#,
+        r#"JSON.stringify({toJSON(){ return {toJSON(){return 3;}, x:1}; }}) === '{"x":1}'"#,
+        r#"let o = {valueOf() { return 6; }}; let n = new Number(3); n.valueOf = o.valueOf; JSON.stringify(n) === '6'"#,
+        r#"let s = new String('x'); s.toString = function(){return 'y';}; JSON.stringify(s) === '"y"'"#,
+        r#"let c = {}; c.self = c; let caught = false; try { JSON.stringify(c); } catch(e) { caught = true; } caught"#,
+        r#"let c = []; c[0] = c; let caught = false; try { JSON.stringify(c); } catch(e) { caught = true; } caught"#,
+        r#"let c = {x:1}; JSON.stringify([c,c]) === '[{"x":1},{"x":1}]'"#,
+        r#"let c = {}; c.self = c; c.toJSON = function(){return 2;}; JSON.stringify(c) === '2'"#,
+        r#"let o = {a:1, get b(){delete this.c; this.d = 4; return 2;}, c:3}; JSON.stringify(o) === '{"a":1,"b":2}'"#,
+        r#"let a = [1,2]; Object.defineProperty(a, '0', {get(){this.length = 1; return 3;}}); JSON.stringify(a) === '[3,null]'"#,
+        r#"let o = Object.create({a:3}); o.b = 2; JSON.stringify(o) === '{"b":2}'"#,
+        r#"let d = Object.getOwnPropertyDescriptor(JSON, 'stringify'); d.writable && !d.enumerable && d.configurable && JSON.stringify.name === 'stringify' && JSON.stringify.length === 3"#,
+        r#"JSON.stringify.call(null, 3) === '3' && JSON.stringify.apply(null, [4]) === '4' && JSON.stringify.bind(null, 5)() === '5'"#,
+        r#"let caught = false; try { JSON.stringify({get a(){throw 42;}}); } catch(e) { caught = e === 42; } caught"#,
+        r#"let caught = false; try { JSON.stringify({get toJSON(){throw 43;}}); } catch(e) { caught = e === 43; } caught"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "JSON.stringify(1, function(k,v){return v;})",
+        "JSON.stringify(1, null)",
+        "JSON.stringify(1, [])",
+    ] {
+        let error = failure(src);
+        assert_eq!(error.kind(), VmErrorKind::TypeError);
+        assert!(
+            error
+                .message()
+                .contains("JSON.stringify replacer is not supported")
+        );
+    }
+    let error = failure("JSON.stringify(1, undefined, 2)");
+    assert_eq!(error.kind(), VmErrorKind::TypeError);
+    assert!(
+        error
+            .message()
+            .contains("JSON.stringify space is not supported")
+    );
+    assert_eq!(
+        failure("new JSON.stringify(1)").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        failure("let c = {}; c.self = c; JSON.stringify(c)").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Every callback suspends once;
+/// continuation roots and active-path identities survive GC and migration.
+#[test]
+fn json_stringify_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log = '';
+        let result = JSON.stringify({keep: {n: 7}, get a() {
+            log += 'a'; __rt.need(1, 1);
+            return {get toJSON() {
+                log += 'g'; __rt.need(2, 1);
+                return function(key) {
+                    log += key; __rt.need(3, 1);
+                    let n = new Number(3);
+                    n.valueOf = function() { log += 'v'; __rt.need(4, 1); return 8; };
+                    return n;
+                };
+            }};
+        }});
+        result === '{"keep":{"n":7},"a":8}' && log === 'agav'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..1500 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 4);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 4);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("JSON.stringify did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Isolate quoting from traversal
+/// so a long string must yield independently of the number of members.
+#[test]
+fn json_stringify_long_strings_are_budgeted() {
+    let rt = Runtime::new();
+    let code =
+        compile_function("function stringify(text) { return JSON.stringify(text); }").unwrap();
+    for (unit, expected) in [(0xd800, "\\ud800"), (0x61, "a"), (0x0, "\\u0000")] {
+        let root = rt.root(Primitive::String(
+            clj_quickjs::JsString::from_code_units(vec![unit; 65536]).unwrap(),
+        ));
+        let task = rt.spawn(&code, &[&root]).unwrap();
+        drop(root);
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..10000 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(
+                        value.string().unwrap(),
+                        format!("\"{}\"", expected.repeat(65536)).as_str()
+                    );
+                    assert!(yields >= 256, "quoting must consume budget");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete, "JSON.stringify did not finish");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Deep input is constructed by a
+/// loop, avoiding source/parser recursion; wide arrays stream their indices.
+#[test]
+fn json_stringify_depth_width_and_member_limits() {
+    assert_eq!(
+        eval(
+            "let a = 7; for (let i = 0; i < 512; i++) { a = [a]; } JSON.stringify(a).length === 1025"
+        ),
+        ValueView::Bool(true)
+    );
+    let error = failure("let a = 7; for (let i = 0; i < 513; i++) { a = [a]; } JSON.stringify(a)");
+    assert_eq!(error.kind(), VmErrorKind::RangeError);
+    assert!(error.message().contains("nesting limit of 512"));
+    assert_eq!(
+        eval(
+            "let caught = false; let a = 7; for (let i = 0; i < 10000; i++) { a = [a]; } try { JSON.stringify(a); } catch(e) { caught = true; } caught"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            "let a = []; for (let i = 0; i < 4097; i++) { a.push(1); } JSON.stringify(a).length === 8195"
+        ),
+        ValueView::Bool(true)
+    );
+    let code = compile_function(
+        "function stringify(name) { let o = {}; o[name] = 2; return JSON.stringify(o); }",
+    )
+    .unwrap();
+    let name = "a".repeat(4096);
+    let RunOutcome::Complete(value) = run(&code, &[Primitive::String(name.as_str().into())]) else {
+        panic!("bounded member name");
+    };
+    assert_eq!(value.string().unwrap().len(), 4102);
+    let name = "a".repeat(4097);
+    assert!(
+        matches!(run(&code, &[Primitive::String(name.as_str().into())]), RunOutcome::Failed(e) if e.kind() == VmErrorKind::RangeError && e.message().contains("member name limit of 4096"))
+    );
+    assert_eq!(
+        eval(
+            "let o = {}; for (let i = 0; i < 4096; i++) { o[i] = 1; } JSON.parse(JSON.stringify(o))[4095] === 1"
+        ),
+        ValueView::Bool(true)
+    );
+    let error =
+        failure("let o = {}; for (let i = 0; i < 4097; i++) { o[i] = 1; } JSON.stringify(o)");
+    assert_eq!(error.kind(), VmErrorKind::RangeError);
+    assert!(error.message().contains("object property limit of 4096"));
+}
+
+/// Synthetic fixtures, not light-cljs output. toJSON results retain the
+/// ordinary task ownership boundary, even for an empty foreign array.
+#[test]
+fn json_stringify_rejects_foreign_objects() {
+    let rt = Runtime::new();
+    for source in ["[]", "({})", "new Number(3)"] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("object");
+        };
+        for body in [
+            "return JSON.stringify(value);",
+            "return JSON.stringify({toJSON(){return value;}});",
+        ] {
+            let code =
+                compile_function(&format!("function stringify(value) {{ {body} }}")).unwrap();
+            let task = rt.spawn(&code, &[&value]).unwrap();
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+                "{source} {body}"
+            );
+        }
+    }
+}

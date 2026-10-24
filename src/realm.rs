@@ -810,6 +810,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             PropertyFlags::FIXED,
         )?;
     }
+    let stringify = b.function(Builtin::JsonStringify, &[])?;
+    b.add(json, "stringify", stringify, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all

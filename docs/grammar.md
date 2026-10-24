@@ -2826,7 +2826,7 @@ catchable SyntaxError on the first over-limit unit. Escaped and raw names
 count equally; string values retain the normal `2^30 - 1` code-unit limit.
 
 Explicit gaps: a callable reviver throws a catchable TypeError after parsing;
-a non-callable second argument is ignored. Reviver traversal, stringify,
+a non-callable second argument is ignored. Reviver traversal,
 JSON extensions and richer error-position properties are deferred.
 
 Synthetic fixtures, not light-cljs output:
@@ -2989,3 +2989,52 @@ conversion callbacks on the right, so a symbol on the left immediately throws.
 Plus and relational comparisons first obtain both primitive operands.
 Inherited symbol-keyed setters run as ordinary resumable calls and retain the
 receiver, assigned value and assignment-expression result through waits and GC.
+### JSON.stringify (clj-quickjs-160)
+
+Execution: `JSON.stringify(value)` (name `"stringify"`, length 3) produces
+compact JSON. Null, booleans, finite numbers and strings serialize normally;
+Number::toString supplies the number spelling, including `-0` as `0`, and
+non-finite numbers become `null`. Quoting escapes double quotes, backslashes,
+controls (short escapes where available, otherwise lower-case `\u00xx`),
+and lone UTF-16 surrogates; surrogate pairs remain paired. Number and String
+wrappers undergo observable, resumable ToNumber/ToString after `toJSON`.
+
+Objects snapshot their own enumerable string keys in ECMAScript order;
+subsequent reads observe getter effects, deletion and inherited replacements.
+Arrays snapshot length and read each index, including inherited properties.
+Undefined and functions are omitted from objects, become `null` in arrays,
+and yield `undefined` at the top level. Object/function `toJSON` lookup runs
+before filtering or unwrapping; a callable method receives the original
+value as `this` and the string member name (root `""`, array index digits).
+A result is serialized without applying `toJSON` again at that same position.
+Accessors, methods and coercion may yield, wait, collect or migrate without
+replaying effects. A circular active path throws catchable TypeError;
+repeated references outside that path are allowed.
+
+Traversal uses an explicit stack with at most 512 open containers (catchable
+RangeError beyond it). Each step visits one member/transition or quotes at
+most 256 UTF-16 units; final string assembly copies at most 256 units/part
+boundaries per step. Output retains the normal `2^30 - 1` code-unit limit.
+Shared leaf own-key enumeration is bounded by a limit of 4096 stored
+properties per ordinary object, including non-enumerable properties. Member
+names read during serialization are limited to 4096 UTF-16 units to bound
+leaf key hashing. Both resource limits throw catchable RangeError. Arrays
+stream indices and have no corresponding element-count limit.
+
+Explicit gaps: every non-undefined replacer throws TypeError
+`"JSON.stringify replacer is not supported"`; every non-undefined space
+argument throws TypeError `"JSON.stringify space is not supported"`.
+Replacer functions/lists and indentation are deferred (indentation belongs
+to clj-quickjs-161). Boolean wrapper construction and Symbol primitives are
+unavailable in the underlying value model at this revision, so those rows
+remain explicit prerequisite gaps; `new Boolean(true)` fails ReferenceError.
+Boolean primitives are supported. BigInt and JSON extensions are deferred.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+JSON.stringify({b: 1, a: undefined, 1: 3}) === '{"1":3,"b":1}';
+JSON.stringify([undefined, , NaN]) === '[null,null,null]';
+JSON.stringify({toJSON(key) { return key; }}) === '""';
+JSON.stringify('\ud800') === '"\\ud800"';
+```

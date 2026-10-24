@@ -2675,7 +2675,7 @@ engine SyntaxError path, with input line/UTF-16 column/offset in its message.
 The explicit parser stack permits 512 open containers; object member names
 permit 4096 decoded UTF-16 units. Exceeding either limit throws SyntaxError.
 Callable revivers explicitly throw TypeError; reviver traversal and
-JSON.stringify remain deferred. See `docs/grammar.md` for details.
+JSON extensions remain deferred. Compact JSON.stringify is described below.
 
 Tests: `cargo test --test js_source json_parse`.
 
@@ -2694,3 +2694,17 @@ Tests: `cargo test --test js_source symbol_`,
 `cargo test --lib vm::keys::tests::symbol_keys_follow_all_strings_in_creation_order`.
 Symbol.prototype, wrappers, registry operations, other well-known symbols and
 protocol dispatch remain deferred.
+
+### Compact JSON.stringify (clj-quickjs-160)
+
+`JSON.stringify(value)` serializes primitives, Number/String wrappers, arrays
+and ordinary objects in ECMAScript key order, with well-formed UTF-16 quoting,
+resumable getters/`toJSON`/wrapper conversion and catchable cycle errors.
+Undefined/functions are omitted in objects, become null in arrays and yield
+undefined at the root. Traversal and string work respect instruction budgets;
+512-container, 4096-stored-property and 4096-unit member-name limits throw
+RangeError. Non-undefined replacer or space arguments fail explicitly.
+Indentation/replacers, Boolean wrappers and Symbol primitives remain deferred
+or prerequisite gaps. See `docs/grammar.md` for precise limits and behavior.
+
+Tests: `cargo test --test js_source json_stringify`.

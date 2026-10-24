@@ -447,6 +447,7 @@ enum NativeState {
         converted: bool,
         parser: Option<Box<super::json::Parser>>,
     },
+    JsonStringify(Box<super::json::Stringifier>),
 }
 
 #[derive(Debug)]
@@ -612,6 +613,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
             NativeState::StringSplit { out, .. } => out.trace(visit),
+            NativeState::JsonStringify(stringifier) => stringifier.trace(visit),
             NativeState::Json {
                 text,
                 reviver,
@@ -858,6 +860,21 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::JsonStringify => {
+                if !matches!(arg(1), Value::Undefined) {
+                    return Err(Fault::TypeError(
+                        "JSON.stringify replacer is not supported".into(),
+                    ));
+                }
+                if !matches!(arg(2), Value::Undefined) {
+                    return Err(Fault::TypeError(
+                        "JSON.stringify space is not supported".into(),
+                    ));
+                }
+                Some(NativeState::JsonStringify(Box::new(
+                    super::json::Stringifier::new(arg(0)),
+                )))
+            }
             Builtin::JsonParse => Some(NativeState::Json {
                 text: arg(0),
                 reviver: arg(1),
@@ -1533,6 +1550,22 @@ impl NativeState {
                     return Ok(Action::Continue);
                 }
                 raw.step(heap, task, input)
+            }
+            NativeState::JsonStringify(stringifier) => {
+                use super::json::StringifyStep;
+                let result = match input {
+                    Input::CallResult(value) => Some(value),
+                    _ => None,
+                };
+                Ok(match stringifier.advance(heap, task, result)? {
+                    StringifyStep::Continue => Action::Continue,
+                    StringifyStep::Call { callee, this, args } => {
+                        Action::Call { callee, this, args }
+                    }
+                    StringifyStep::ToNumber(value) => Action::ToNumber(value),
+                    StringifyStep::ToString(value) => Action::ToString(value),
+                    StringifyStep::Return(value) => Action::Return(value),
+                })
             }
             NativeState::Join(join) => {
                 if matches!(join.stage, JoinStage::Element) && join.next == join.len {
@@ -2330,7 +2363,8 @@ impl NativeState {
                 | NativeState::StringSplit { .. }
                 | NativeState::StringBuild(_)
                 | NativeState::NumberParse(_)
-                | NativeState::Json { .. },
+                | NativeState::Json { .. }
+                | NativeState::JsonStringify(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }

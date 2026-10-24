@@ -277,3 +277,15 @@ fixtures written for this runtime, not light-cljs output.
 `research/quickjs/quickjs.c`, `js_symbol_constructor`, `JS_NewSymbolFromAtom`
 and `JS_ToPropertyKey` at that revision were semantic references. The Rust
 representation, key storage and continuations were written afresh.
+
+## JSON.stringify (clj-quickjs-160)
+
+`tests/js_source.rs::json_stringify` adapts the compact JSON round trip from
+`research/quickjs/tests/test_builtin.js::test_json` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained at
+`string_code_unit_access` in the same test file. Remaining cases are synthetic
+fixtures, not light-cljs output. `js_json_check`, `js_json_to_str` and
+`JS_JSONStringify` in `research/quickjs/quickjs.c` at that revision were read
+as semantic references. The resumable Rust serializer was written afresh;
+no upstream C implementation was copied.

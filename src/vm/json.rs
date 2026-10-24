@@ -1,5 +1,5 @@
-//! Budgeted JSON grammar parser (clj-quickjs-159). All container state is
-//! explicit and traced; no Rust recursion or JavaScript property callbacks.
+//! Budgeted JSON parsing and serialization (clj-quickjs-159/-160). All
+//! container state is explicit and traced; callbacks use native continuations.
 //! QuickJS json_parse_value/json_next_token at 7d1c13c5d8f8 are semantic
 //! references only. No upstream implementation is copied.
 
@@ -427,5 +427,429 @@ fn hex(c: u16) -> Option<u16> {
         65..=70 => Some(c - 65 + 10),
         97..=102 => Some(c - 97 + 10),
         _ => None,
+    }
+}
+
+// JSON.stringify (clj-quickjs-160). SerializeJSONProperty and QuoteJSONString
+// are implemented afresh; QuickJS js_json_check/js_json_to_str are semantic
+// references. The explicit stack, callbacks and output builder are task-owned.
+use super::{dispatch, keys};
+use crate::heap::HeapObject;
+use crate::object::PrimitiveData;
+use crate::value::string::{MAX_STRING_LEN, StringBuild, number_to_string};
+use std::collections::HashSet;
+
+// Own-key collection is a shared leaf API. Bound its scan/sort here; arrays
+// stream their indices and have no corresponding element-count limit.
+const MAX_OBJECT_PROPERTIES: usize = 4096;
+
+#[derive(Debug)]
+enum Members {
+    Array {
+        next: u32,
+        len: u32,
+    },
+    Object {
+        keys: std::vec::IntoIter<keys::OwnKey>,
+        emitted: bool,
+    },
+}
+
+#[derive(Debug)]
+struct StringifyContainer {
+    value: Value,
+    members: Members,
+}
+
+#[derive(Debug)]
+enum StringifyStage {
+    Prepare,
+    Method,
+    ToJsonResult,
+    Unwrap,
+    Converted,
+    Ready,
+    Emit,
+    Next,
+    PropertyResult,
+    Quote {
+        text: JsString,
+        next: usize,
+        key: bool,
+    },
+    Build(StringBuild),
+}
+
+pub(super) enum StringifyStep {
+    Continue,
+    Call {
+        callee: Value,
+        this: Value,
+        args: Vec<Value>,
+    },
+    ToNumber(Value),
+    ToString(Value),
+    Return(Value),
+}
+
+#[derive(Debug)]
+pub(super) struct Stringifier {
+    value: Value,
+    key: JsString,
+    stack: Vec<StringifyContainer>,
+    active: HashSet<ObjectId>,
+    stage: StringifyStage,
+    parts: Vec<(JsString, usize, usize)>,
+    units: usize,
+}
+
+impl Trace for Stringifier {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.value.trace(visit);
+        for container in &self.stack {
+            container.value.trace(visit);
+        }
+    }
+}
+
+impl Stringifier {
+    pub(super) fn new(value: Value) -> Self {
+        Self {
+            value,
+            key: JsString::from(""),
+            stack: Vec::new(),
+            active: HashSet::new(),
+            stage: StringifyStage::Prepare,
+            parts: Vec::new(),
+            units: 0,
+        }
+    }
+
+    fn append(&mut self, text: JsString) -> Result<(), Fault> {
+        self.units = self
+            .units
+            .checked_add(text.len())
+            .filter(|n| *n <= MAX_STRING_LEN)
+            .ok_or_else(|| Fault::RangeError("JSON.stringify string too long".into()))?;
+        if !text.is_empty() {
+            let len = text.len();
+            self.parts.push((text, 0, len));
+        }
+        Ok(())
+    }
+
+    fn method(&mut self, heap: &Heap, method: Value) -> StringifyStep {
+        if dispatch::callee(heap, &method).is_ok() {
+            self.stage = StringifyStage::ToJsonResult;
+            StringifyStep::Call {
+                callee: method,
+                this: self.value.clone(),
+                args: vec![Value::String(self.key.clone())],
+            }
+        } else {
+            self.stage = StringifyStage::Unwrap;
+            StringifyStep::Continue
+        }
+    }
+
+    fn container(&mut self, heap: &Heap, task: TaskId, id: ObjectId) -> Result<(), Fault> {
+        if self.active.contains(&id) {
+            return Err(Fault::TypeError("JSON.stringify circular reference".into()));
+        }
+        if self.stack.len() == MAX_DEPTH {
+            return Err(Fault::RangeError(
+                "JSON.stringify nesting limit of 512 exceeded".into(),
+            ));
+        }
+        let len = heap
+            .read(id, |o| match o {
+                HeapObject::Array(a) => {
+                    if let Some(owner) = a.object().owner()
+                        && owner != task
+                    {
+                        return Err(Fault::ForeignObject {
+                            owner: Some(owner),
+                            caller: task,
+                        });
+                    }
+                    Ok(Some(a.length()))
+                }
+                HeapObject::Plain(o)
+                    if o.properties().take(MAX_OBJECT_PROPERTIES + 1).count()
+                        > MAX_OBJECT_PROPERTIES =>
+                {
+                    Err(Fault::RangeError(
+                        "JSON.stringify object property limit of 4096 exceeded".into(),
+                    ))
+                }
+                _ => Ok(None),
+            })
+            .ok_or(Fault::Internal("JSON.stringify object reclaimed"))??;
+        let members = if let Some(len) = len {
+            self.append(JsString::from("["))?;
+            Members::Array { next: 0, len }
+        } else {
+            let keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
+            self.append(JsString::from("{"))?;
+            Members::Object {
+                keys: keys.into_iter(),
+                emitted: false,
+            }
+        };
+        self.active.insert(id);
+        self.stack.push(StringifyContainer {
+            value: self.value.clone(),
+            members,
+        });
+        self.value = Value::Undefined;
+        self.stage = StringifyStage::Next;
+        Ok(())
+    }
+
+    /// One transition, one property/callback, or at most 256 quoted/copied
+    /// code units. No recursive traversal, output-sized copy or string scan.
+    pub(super) fn advance(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Option<Value>,
+    ) -> Result<StringifyStep, Fault> {
+        use StringifyStage as S;
+        use StringifyStep as A;
+        match std::mem::replace(&mut self.stage, S::Next) {
+            S::Prepare => {
+                if matches!(self.value, Value::Object(_)) {
+                    match property::read(
+                        heap,
+                        task,
+                        &self.value,
+                        &property::Key::Name(JsString::from("toJSON")),
+                    )? {
+                        Some(property::Read::Getter(callee)) => {
+                            self.stage = S::Method;
+                            return Ok(A::Call {
+                                callee,
+                                this: self.value.clone(),
+                                args: vec![],
+                            });
+                        }
+                        Some(property::Read::Value(method)) => return Ok(self.method(heap, method)),
+                        None => {}
+                    }
+                }
+                self.stage = S::Unwrap;
+            }
+            S::Method => {
+                return Ok(self.method(
+                    heap,
+                    input.ok_or(Fault::Internal("JSON.stringify missing method"))?,
+                ));
+            }
+            S::ToJsonResult => {
+                self.value =
+                    input.ok_or(Fault::Internal("JSON.stringify missing toJSON result"))?;
+                self.stage = S::Unwrap;
+            }
+            S::Unwrap => {
+                self.stage = S::Ready;
+                match builtin::wrapper_data(heap, task, &self.value)? {
+                    Some(PrimitiveData::Number(_)) => {
+                        self.stage = S::Converted;
+                        return Ok(A::ToNumber(self.value.clone()));
+                    }
+                    Some(PrimitiveData::String(_)) => {
+                        self.stage = S::Converted;
+                        return Ok(A::ToString(self.value.clone()));
+                    }
+                    None => {}
+                }
+            }
+            S::Converted => {
+                self.value =
+                    input.ok_or(Fault::Internal("JSON.stringify missing wrapper conversion"))?;
+                self.stage = S::Ready;
+            }
+            S::Ready => {
+                let omitted = matches!(self.value, Value::Undefined)
+                    || dispatch::callee(heap, &self.value).is_ok();
+                if omitted {
+                    match self.stack.last().map(|c| &c.members) {
+                        None => return Ok(A::Return(Value::Undefined)),
+                        Some(Members::Object { .. }) => return Ok(A::Continue),
+                        Some(Members::Array { .. }) => self.value = Value::Null,
+                    }
+                }
+                if let Some(StringifyContainer {
+                    members: Members::Object { emitted, .. },
+                    ..
+                }) = self.stack.last_mut()
+                {
+                    let comma = *emitted;
+                    *emitted = true;
+                    if comma {
+                        self.append(JsString::from(","))?;
+                    }
+                    self.append(JsString::from("\""))?;
+                    self.stage = S::Quote {
+                        text: self.key.clone(),
+                        next: 0,
+                        key: true,
+                    };
+                } else {
+                    self.stage = S::Emit;
+                }
+            }
+            S::Emit => match &self.value {
+                Value::String(text) => {
+                    let text = text.clone();
+                    self.append(JsString::from("\""))?;
+                    self.stage = S::Quote {
+                        text,
+                        next: 0,
+                        key: false,
+                    };
+                }
+                Value::Number(n) => self.append(JsString::from(
+                    if n.is_finite() {
+                        number_to_string(*n)
+                    } else {
+                        "null".into()
+                    }
+                    .as_str(),
+                ))?,
+                Value::Null => self.append(JsString::from("null"))?,
+                Value::Bool(b) => self.append(JsString::from(if *b { "true" } else { "false" }))?,
+                Value::Object(id) => self.container(heap, task, *id)?,
+                Value::Undefined => {
+                    return Err(Fault::Internal("JSON.stringify emitting undefined"));
+                }
+            },
+            S::Next => {
+                self.value = Value::Undefined;
+                let Some(top) = self.stack.last_mut() else {
+                    self.stage = S::Build(
+                        StringBuild::with_length(std::mem::take(&mut self.parts), self.units)
+                            .ok_or(Fault::OutOfMemory("JSON.stringify output buffer"))?,
+                    );
+                    return Ok(A::Continue);
+                };
+                let (key, comma) = match &mut top.members {
+                    Members::Array { next, len } if *next < *len => {
+                        let key = property::Key::Index(*next);
+                        let comma = *next != 0;
+                        *next += 1;
+                        (Some(key), comma)
+                    }
+                    Members::Array { .. } => (None, false),
+                    Members::Object { keys, .. } => (keys.next().map(|k| k.key), false),
+                };
+                let Some(key) = key else {
+                    let container = self.stack.pop().unwrap();
+                    let Value::Object(id) = container.value else {
+                        unreachable!()
+                    };
+                    self.active.remove(&id);
+                    self.append(JsString::from(
+                        if matches!(container.members, Members::Array { .. }) {
+                            "]"
+                        } else {
+                            "}"
+                        },
+                    ))?;
+                    return Ok(A::Continue);
+                };
+                let holder = top.value.clone();
+                self.key = match &key {
+                    property::Key::Index(n) => JsString::from(n.to_string().as_str()),
+                    property::Key::Name(name) => name.clone(),
+                };
+                if self.key.len() > MAX_MEMBER_NAME_UNITS {
+                    return Err(Fault::RangeError(
+                        "JSON.stringify member name limit of 4096 UTF-16 units exceeded".into(),
+                    ));
+                }
+                if comma {
+                    self.append(JsString::from(","))?;
+                }
+                match property::read(heap, task, &holder, &key)? {
+                    Some(property::Read::Getter(callee)) => {
+                        self.stage = S::PropertyResult;
+                        return Ok(A::Call {
+                            callee,
+                            this: holder,
+                            args: vec![],
+                        });
+                    }
+                    Some(property::Read::Value(value)) => self.value = value,
+                    None => {}
+                }
+                self.stage = S::Prepare;
+            }
+            S::PropertyResult => {
+                self.value =
+                    input.ok_or(Fault::Internal("JSON.stringify missing getter result"))?;
+                self.stage = S::Prepare;
+            }
+            S::Quote {
+                text,
+                mut next,
+                key,
+            } => {
+                let mut units = Vec::with_capacity(STEP * 6);
+                let source = text.code_units();
+                for _ in 0..STEP {
+                    let Some(&c) = source.get(next) else {
+                        break;
+                    };
+                    next += 1;
+                    let escape = match c {
+                        34 => Some(34),
+                        92 => Some(92),
+                        8 => Some(98),
+                        12 => Some(102),
+                        10 => Some(110),
+                        13 => Some(114),
+                        9 => Some(116),
+                        _ => None,
+                    };
+                    if let Some(escaped) = escape {
+                        units.extend([92, escaped]);
+                    } else if c <= 31
+                        || (0xd800..=0xdfff).contains(&c)
+                            && !((0xd800..=0xdbff).contains(&c)
+                                && source
+                                    .get(next)
+                                    .is_some_and(|n| (0xdc00..=0xdfff).contains(n))
+                                || (0xdc00..=0xdfff).contains(&c)
+                                    && next >= 2
+                                    && (0xd800..=0xdbff).contains(&source[next - 2]))
+                    {
+                        const HEX: &[u8] = b"0123456789abcdef";
+                        units.extend([92, 117]);
+                        for shift in [12, 8, 4, 0] {
+                            units.push(u16::from(HEX[((c >> shift) & 15) as usize]));
+                        }
+                    } else {
+                        units.push(c);
+                    }
+                }
+                self.append(
+                    JsString::from_owned_code_units(units).expect("bounded JSON quote chunk"),
+                )?;
+                if next == source.len() {
+                    self.append(JsString::from(if key { "\":" } else { "\"" }))?;
+                    self.stage = if key { S::Emit } else { S::Next };
+                } else {
+                    self.stage = S::Quote { text, next, key };
+                }
+            }
+            S::Build(mut build) => {
+                if let Some(text) = build.advance(STEP) {
+                    return Ok(A::Return(Value::String(text)));
+                }
+                self.stage = S::Build(build);
+            }
+        }
+        Ok(A::Continue)
     }
 }

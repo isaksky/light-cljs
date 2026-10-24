@@ -4240,3 +4240,43 @@ including an object that returns one: TypeError prevents any right-hand
 conversion callback or wait. The native ToNumberPair continuation stores each
 converted Number before advancing. Plus and relational comparisons preserve
 their distinct rule of first obtaining both primitive operands.
+
+### Budgeted JSON serialization (clj-quickjs-160)
+
+The realm's JSON namespace appends a `stringify` method without changing
+existing global or built-in identities. `src/vm/json.rs::Stringifier` is a
+native continuation with an explicit stack of container values, array
+length/index cursors or enumerable own-key snapshots, the current value and
+member name, and a private ObjectId hash set for the active path. It adds no
+heap kind and never recurses on the Rust stack. The native tracer roots the
+current receiver/result and every open container; the identity set contains
+only objects already rooted by those containers. Paths are removed on close,
+so shared subobjects serialize repeatedly while cycles throw TypeError.
+
+Property reads (including `toJSON` accessors), method calls and wrapper
+coercions use ordinary VM callbacks/conversion frames. The saved stage makes
+these effects occur once across budget exhaustion, dependency waits, GC and
+worker migration. Errors/cancellation discard state through the existing
+native-frame protocol. Objects snapshot keys through `vm::keys`; arrays
+snapshot length once and stream ordinary index reads. Task ownership is
+checked for direct values and `toJSON` results, including empty arrays.
+
+Each native transition does one property/structural operation, quotes at
+most 256 input code units, or copies at most 256 final output units/part
+boundaries. Quoted chunks hold at most 1536 units, so their allocation and
+transfer have bounded size, even for long escaped strings or member names.
+Output length is checked incrementally. Chunks and punctuation are retained
+as immutable JsString parts, then the existing StringBuild reserves once and
+fills the final body in bounded steps, transferring its Vec without a final
+linear copy. Container/part vector growth and allocator calls remain leaf
+operations, as in other native builders.
+
+Until own-key enumeration itself is resumable, ordinary objects are limited
+to 4096 stored properties: a bounded preflight scan rejects excess before
+calling its leaf scan/sort. Member names are capped at 4096 UTF-16 units before
+property lookup to bound shared key hashing. Traversal caps open containers
+at 512. Limits throw catchable RangeError and are independent of native stack
+size; array lengths and string values retain their underlying limits.
+Unsupported replacer and space arguments fail explicitly. Boolean wrappers
+and Symbol primitives remain prerequisites absent from this value model;
+no placeholder values or alternative serialization are introduced for them.

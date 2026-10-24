@@ -255,6 +255,7 @@ pub(crate) enum Builtin {
 
     /// Symbol primitives (clj-quickjs-127); callable, never constructible.
     Symbol,
+    JsonStringify,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -365,6 +366,7 @@ impl Builtin {
             Builtin::NativeError(kind) => kind.name(),
             Builtin::JsonParse => "parse",
             Builtin::StringRaw => "raw",
+            Builtin::JsonStringify => "stringify",
         }
     }
 
@@ -430,6 +432,7 @@ impl Builtin {
             Builtin::NativeError(_) => 1,
             Builtin::JsonParse => 2,
             Builtin::StringRaw => 1,
+            Builtin::JsonStringify => 3,
         }
     }
 }
@@ -462,7 +465,8 @@ pub(crate) fn call(
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)
-        | Builtin::JsonParse => Err(Fault::Internal("Error built-ins require a resumable frame")),
+        | Builtin::JsonParse
+        | Builtin::JsonStringify => Err(Fault::Internal("built-in requires a resumable frame")),
         Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
         Builtin::Object => match arg(0) {
             Value::Undefined | Value::Null => new_object(heap, task),
@@ -910,7 +914,11 @@ fn this_string_value(
 
 /// Inspect the receiver's own internal slots, never its prototype's slots.
 /// Owned wrappers obey the same read boundary as their ordinary properties.
-fn wrapper_data(heap: &Heap, task: TaskId, this: &Value) -> Result<Option<PrimitiveData>, Fault> {
+pub(super) fn wrapper_data(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+) -> Result<Option<PrimitiveData>, Fault> {
     let Value::Object(id) = this else {
         return Ok(None);
     };
