@@ -16545,6 +16545,7 @@ fn typed_array_methods() {
         let buffer = new ArrayBuffer(16);
         new Uint32Array(buffer, 12, 1)[0] = -1;
         new Uint16Array(buffer, 2)[0] = -1;
+        new Float16Array(buffer, 8, 1)[0] = 1;
         new Float32Array(buffer, 8, 1)[0] = 1;
         ok = ok && new Uint8Array(buffer).toString() === "0,0,255,255,0,0,0,0,0,0,128,63,255,255,255,255";
         a = new Uint8Array([1, 2, 3, 4]);
@@ -16554,6 +16555,8 @@ fn typed_array_methods() {
         let caught = false;
         try { a.set([1, 2, 3], 3); } catch (e) { caught = e instanceof RangeError; }
         ok = ok && caught && a.toString() === "1,2,10,11";
+        buffer = new ArrayBuffer(16);
+        a = new Uint8Array(buffer);
         a.fill(42);
         ok && a[0] === 42 && Uint8Array.prototype.toString === Array.prototype.toString &&
         new Uint8Array(new Int8Array([-1])).toString() === "255"
