@@ -396,6 +396,10 @@ pub struct HeapStats {
     pub collections: u64,
 }
 
+/// The object-table lock held by a test ([`Heap::hold_objects`]).
+#[cfg(test)]
+pub(crate) struct ObjectsHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ObjectTable>);
+
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
@@ -570,6 +574,13 @@ impl Heap {
     /// or read it.
     pub(crate) fn realm(&self) -> &Realm {
         &self.realm
+    }
+
+    /// Hold the object-table lock until the guard drops (tests: proves a
+    /// path takes no object lock).
+    #[cfg(test)]
+    pub(crate) fn hold_objects(&self) -> ObjectsHeld<'_> {
+        ObjectsHeld(lock(&self.objects))
     }
 
     /// The realm slot, to drop the realm (tests).

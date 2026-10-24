@@ -33,9 +33,8 @@
 //! # Shared and immutable
 //!
 //! An intrinsic object has no owner task and is marked intrinsic
-//! ([`OrdinaryObject::intrinsic`]). Every task reads it without a lock of
-//! its own (each read takes the heap's one short object-table lock, like any
-//! property read) and no task changes it: a write to any of its properties
+//! ([`OrdinaryObject::intrinsic`]). Every task reads it without taking any
+//! lock (see "Lock-free reads") and no task changes it: a write to any of its properties
 //! is a catchable `TypeError` (`crate::vm::property`), whatever the
 //! property's `writable` attribute says. Immutability comes from sharing,
 //! not from the descriptors, so an ordinary object that inherits
@@ -53,6 +52,19 @@
 //! taken only while the realm does not exist yet; it is a leaf lock held
 //! across allocations (which take the object-table lock) and never taken
 //! by the collector.
+//!
+//! # Lock-free reads
+//!
+//! When the realm is complete, before it is installed, `build` copies every
+//! intrinsic's own properties and prototype into an immutable
+//! [`IntrinsicView`] stored with the [`Intrinsics`]. Property reads
+//! (`crate::vm::property`) that reach an intrinsic, as a base or along a
+//! prototype chain, use the view instead of the object table: after the
+//! one atomic load of the installed realm and a scan of the few intrinsic
+//! identities, they take no lock at all, so tasks on every worker read
+//! `Object.prototype.toString` without contending. The views are exact
+//! because nothing changes an intrinsic after installation, and they hold
+//! only intrinsics and primitives, so they need no root report of their own.
 //!
 //! # Roots
 //!
@@ -75,7 +87,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
-use crate::object::{OrdinaryObject, PropertyFlags};
+use crate::object::{OrdinaryObject, Property, PropertyFlags, PropertyKey};
 use crate::value::{JsString, Value};
 use crate::vm::builtin::{Builtin, BuiltinFunction};
 
@@ -119,9 +131,40 @@ pub(crate) struct Intrinsics {
     pub(crate) object: ObjectId,
     /// Every intrinsic object (the collector's roots).
     all: Vec<ObjectId>,
+    /// A copy of every intrinsic's own properties and prototype, taken once
+    /// the realm is complete: property reads that reach an intrinsic use it
+    /// instead of the object table, so they take no lock (module docs,
+    /// "Lock-free reads").
+    views: Vec<IntrinsicView>,
+}
+
+/// The immutable property view of one intrinsic object.
+#[derive(Debug)]
+pub(crate) struct IntrinsicView {
+    id: ObjectId,
+    /// A built-in function rather than `Object.prototype`: it has only its
+    /// own properties (`Function.prototype` does not exist yet).
+    pub(crate) builtin: bool,
+    pub(crate) prototype: Option<ObjectId>,
+    properties: Vec<(PropertyKey, Property)>,
+}
+
+impl IntrinsicView {
+    /// The own property `key`, if any.
+    pub(crate) fn get_own(&self, key: PropertyKey) -> Option<&Property> {
+        self.properties
+            .iter()
+            .find_map(|(k, p)| (*k == key).then_some(p))
+    }
 }
 
 impl Intrinsics {
+    /// The property view of `id` if it is an intrinsic: a scan of the few
+    /// intrinsic identities, no lock.
+    pub(crate) fn view(&self, id: ObjectId) -> Option<&IntrinsicView> {
+        self.views.iter().find(|v| v.id == id)
+    }
+
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
@@ -133,6 +176,9 @@ impl Intrinsics {
 /// Report every intrinsic object.
 impl Trace for Intrinsics {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        // The views copy property values of these objects, which are
+        // intrinsics (listed here) or primitives, so they need no report of
+        // their own (`realm_views_hold_only_intrinsics` checks it).
         self.all.iter().copied().for_each(visit);
     }
 }
@@ -222,10 +268,31 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     if defined != Some(true) {
         return None;
     }
+    // Nothing changes the intrinsics from here on, so the views stay exact.
+    let views = all
+        .iter()
+        .map(|&id| {
+            heap.read(id, |object| {
+                let (store, builtin) = match object {
+                    HeapObject::Plain(o) => (o, false),
+                    HeapObject::Builtin(f) => (&f.properties, true),
+                    _ => return None,
+                };
+                Some(IntrinsicView {
+                    id,
+                    builtin,
+                    prototype: store.prototype(),
+                    properties: store.properties().map(|(k, p)| (k, p.clone())).collect(),
+                })
+            })
+            .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
         object_prototype,
         object,
         all,
+        views,
     })
 }
 
@@ -295,5 +362,29 @@ mod tests {
         assert_eq!(Global::from_name("object"), None);
         assert_eq!(Global::from_u16(0), Some(Global::Object));
         assert_eq!(Global::from_u16(1), None);
+    }
+
+    #[test]
+    fn realm_views_hold_only_intrinsics() {
+        let heap = Heap::default();
+        let intrinsics = intrinsics(&heap).unwrap();
+        assert_eq!(intrinsics.views.len(), intrinsics.all.len());
+        for view in &intrinsics.views {
+            assert!(intrinsics.all.contains(&view.id));
+            for (_, property) in &view.properties {
+                if let Value::Object(id) = property.value {
+                    assert!(intrinsics.all.contains(&id), "{view:?}");
+                }
+            }
+            // The view equals the object's own properties.
+            let count = heap
+                .read(view.id, |o| match o {
+                    HeapObject::Plain(o) => o.properties().count(),
+                    HeapObject::Builtin(f) => f.properties.properties().count(),
+                    _ => usize::MAX,
+                })
+                .unwrap();
+            assert_eq!(count, view.properties.len());
+        }
     }
 }

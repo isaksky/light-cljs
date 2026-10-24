@@ -1533,9 +1533,10 @@ until the heap is dropped. Its objects are:
   and an intrinsic `OrdinaryObject` as its property store (`length`,
   `name`; `Object` also `prototype` and `is`).
 
-Every task reads them with the ordinary property path (the one short
-object-table lock per object visited, no other lock) and gets the same
-identities; no task changes them: any write to an intrinsic, of any
+Every task reads them without any lock (an immutable copy of each
+intrinsic's properties and prototype is published with the realm, and
+property reads that reach an intrinsic use it instead of the object table;
+`intrinsic_property_reads_do_not_lock_heap`) and gets the same identities; no task changes them: any write to an intrinsic, of any
 property, is a catchable `TypeError` ("built-in objects are shared by all
 tasks and immutable", `docs/grammar.md` "Explicit gaps"). The property
 attributes are still the standard ones (methods writable, non-enumerable,

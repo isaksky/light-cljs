@@ -41,7 +41,8 @@
 //!
 //! No operation here allocates a heap object or runs JavaScript, so none is
 //! a poll point; each object visited is read or changed under one short
-//! object-table lock, and the property-key table is consulted before, never
+//! object-table lock (a realm intrinsic is read from the realm's immutable
+//! view instead, with no lock: `crate::realm`, "Lock-free reads"), and the property-key table is consulted before, never
 //! while that lock is held.
 
 use crate::collections::object_name;
@@ -189,7 +190,23 @@ pub(crate) fn get_field(
     // A name that was never interned is no object's property; the owner
     // and kind checks below still apply.
     let key = heap.keys().lookup(name);
+    let realm = heap.realm().get();
     loop {
+        // An intrinsic is read from the realm's immutable view, without the
+        // object-table lock (`crate::realm`, "Lock-free reads").
+        if let Some(view) = realm.and_then(|r| r.view(id)) {
+            match key.and_then(|k| view.get_own(k)) {
+                Some(property) => return Ok(property.value.clone()),
+                None if view.builtin => return Err(function_prototype_miss(name, Access::Read)),
+                None => match view.prototype {
+                    Some(prototype) => {
+                        id = prototype;
+                        continue;
+                    }
+                    None => return Ok(Value::Undefined),
+                },
+            }
+        }
         let step = heap
             .read(id, |object| match visit(object, task)? {
                 Visit::Store(o, builtin) => match key.and_then(|k| o.get_own(k)) {
@@ -273,7 +290,23 @@ fn check_inherited(
     key: PropertyKey,
     name: &JsString,
 ) -> Result<(), Fault> {
+    let realm = heap.realm().get();
     loop {
+        // Intrinsics through their immutable view, as in `get_field`.
+        if let Some(view) = realm.and_then(|r| r.view(id)) {
+            match view.get_own(key) {
+                Some(property) if !property.flags.writable => return Err(read_only(name)),
+                Some(_) => return Ok(()),
+                None if view.builtin => return Err(function_prototype_miss(name, Access::Write)),
+                None => match view.prototype {
+                    Some(prototype) => {
+                        id = prototype;
+                        continue;
+                    }
+                    None => return Ok(()),
+                },
+            }
+        }
         let next = heap
             .read(id, |object| match visit(object, task)? {
                 Visit::Store(o, builtin) => match o.get_own(key) {
@@ -353,6 +386,62 @@ mod tests {
     impl NativePayload for Opaque {
         fn shareability(&self) -> Shareability {
             Shareability::Persistent
+        }
+    }
+
+    /// Reads of intrinsic properties (and the prototype-chain check of a
+    /// write) use the realm's immutable views: they finish while another
+    /// thread holds the object-table lock (clj-quickjs-117).
+    #[test]
+    fn intrinsic_property_reads_do_not_lock_heap() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+        let heap = Arc::new(Heap::default());
+        let (prototype, object) = {
+            let r = crate::realm::intrinsics(&heap).unwrap();
+            (Value::Object(r.object_prototype), Value::Object(r.object))
+        };
+        let held = heap.hold_objects();
+        let (tx, rx) = mpsc::channel();
+        let reader = {
+            let heap = Arc::clone(&heap);
+            std::thread::spawn(move || {
+                let task = TaskId::from_raw(1);
+                let s = |t: &str| JsString::from(t);
+                let read = |base: &Value, name: &str| get_field(&heap, task, base, &s(name));
+                let results = [
+                    read(&prototype, "toString").is_ok_and(|v| matches!(v, Value::Object(_))),
+                    read(&prototype, "missing").is_ok_and(|v| v == Value::Undefined),
+                    read(&object, "length").is_ok_and(|v| v == Value::Number(1.0)),
+                    read(&object, "prototype").is_ok_and(|v| v.same_object(&prototype)),
+                    matches!(read(&object, "call"), Err(Fault::Unsupported(_))),
+                    check_inherited(
+                        &heap,
+                        task,
+                        prototype_id(&prototype),
+                        key(&heap),
+                        &s("valueOf"),
+                    )
+                    .is_ok(),
+                ];
+                tx.send(results).unwrap();
+            })
+        };
+        let results = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("an intrinsic read waited for the object-table lock");
+        drop(held);
+        reader.join().unwrap();
+        assert!(results.iter().all(|&ok| ok), "{results:?}");
+
+        fn prototype_id(v: &Value) -> ObjectId {
+            match v {
+                Value::Object(id) => *id,
+                _ => unreachable!(),
+            }
+        }
+        fn key(heap: &Heap) -> crate::object::PropertyKey {
+            heap.keys().lookup(&JsString::from("valueOf")).unwrap()
         }
     }
 
