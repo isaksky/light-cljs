@@ -1182,3 +1182,16 @@ example driver prepends exactly this line, also recorded in its fixture header:
 No other lines, assertions, expected values or default digit counts change.
 The example's output is compared with the first 1002 characters of the
 unchanged 2000-decimal-place `test_pi` expectation.
+
+### Intl.Segmenter (clj-quickjs-222)
+
+`src/intl/segmenter.rs` adapts the grapheme/Hangul and ASCII/non-ASCII word
+heuristics from `research/quickjs/intl/segmenter.c`, pinned revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Its MIT notice is retained in the
+module (QuickJS LICENSE: Fabrice Bellard and Charlie Gordon, 2017–2021).
+`tests/js_source.rs::intl_segmenter_grapheme_and_word` adapts the six assertions
+in `research/quickjs/tests/test_intl.js::test_segmenter`; the existing QuickJS
+MIT notice in that test file applies. Regional-indicator pairing is corrected;
+all UAX #29 and sentence limitations are documented in architecture/grammar.
+The existing generated combining-class data and provenance are reused without
+changes; the Unicode notice remains in `docs/UNICODE-LICENSE`.

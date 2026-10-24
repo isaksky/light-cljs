@@ -3832,3 +3832,14 @@ The in-memory recording host and upstream parse fixtures are exercised with
 
 Deferred: linking, evaluation, per-task instances, namespace objects, cyclic
 binding initialization, and JSON default exports. The CLI remains script-only.
+
+### Intl.Segmenter (clj-quickjs-222)
+
+Supported: grapheme and word granularity, `segment`, `resolvedOptions`,
+`supportedLocalesOf`, Segments `containing` and independent iterable cursors.
+Offsets are UTF-16 units. Options and coercions can suspend; rope flattening,
+boundary scans and segment copying are budgeted and survive GC/migration.
+The runtime reuses the generated Unicode 17.0.0 combining-class table and
+pinned QuickJS heuristic, with regional indicators paired correctly.
+Deferred: full UAX #29 break rules and dictionary word segmentation; sentence
+requests throw RangeError. See architecture for the exact heuristic limits.

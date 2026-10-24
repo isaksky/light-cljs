@@ -229,6 +229,7 @@ mod list_format;
 mod number_format;
 mod plural_rules;
 mod relative_time_format;
+pub(crate) mod segmenter;
 mod string_raw;
 mod string_replace;
 mod sum_precise;
@@ -611,6 +612,7 @@ enum NativeState {
     Collator(Box<collator::State>),
     DateTimeFormat(Box<date_time_format::State>),
     ListFormat(Box<list_format::State>),
+    Segmenter(Box<segmenter::State>),
 }
 
 #[derive(Debug)]
@@ -873,6 +875,7 @@ impl Trace for NativeFrame {
             NativeState::Collator(collator) => collator.trace(visit),
             NativeState::DateTimeFormat(format) => format.trace(visit),
             NativeState::ListFormat(format) => format.trace(visit),
+            NativeState::Segmenter(segmenter) => segmenter.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -1445,6 +1448,20 @@ fn start_builtin_slow(
         let native = plural_rules::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::PluralRules(Box::new(native)))?;
+        return Ok(true);
+    }
+    if (which == Builtin::IntlSegmenter && construct)
+        || (matches!(
+            which,
+            Builtin::IntlSegmenterSegment
+                | Builtin::IntlSegmenterSupportedLocales
+                | Builtin::IntlSegmentsContaining
+                | Builtin::IntlSegmentIteratorNext
+        ) && !construct)
+    {
+        let native = segmenter::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Segmenter(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlListFormat && construct)
@@ -2871,6 +2888,7 @@ impl NativeState {
             NativeState::Collator(collator) => collator.step(heap, task, input),
             NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
             NativeState::ListFormat(format) => format.step(heap, task, input),
+            NativeState::Segmenter(segmenter) => segmenter.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -4066,6 +4084,7 @@ impl NativeState {
                 | NativeState::Collator(_)
                 | NativeState::DateTimeFormat(_)
                 | NativeState::ListFormat(_)
+                | NativeState::Segmenter(_)
                 | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }

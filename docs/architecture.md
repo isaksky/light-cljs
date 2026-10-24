@@ -7606,3 +7606,49 @@ the sources without evaluating their bodies. QuickJS references and provenance:
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, informed resolution/caching and
 suffix classification; no C implementation was adapted. The existing fixture
 copyright notices and provenance above remain applicable.
+
+### Intl.Segmenter (clj-quickjs-222)
+
+`intl::segmenter::Data` stores one of three private slots on ordinary task-owned
+objects: immutable locale/granularity; Segments (segmenter, input, flat text);
+or cursor (segmenter, input, flat text, next UTF-16 position). Segments and
+cursors trace their segmenter edge; immutable JsString bodies have no heap
+edges. The collector also traces every native continuation's receiver,
+segmenter, options and locale-reader state. No Rust borrow survives a step.
+Freezing public properties never permits publication or foreign-task reads.
+The append-only builtin and realm additions install service, Segments and
+Segment Iterator prototypes; the last inherits the existing Iterator prototype.
+
+The selected algorithm follows `research/quickjs/intl/segmenter.c` at
+7d1c13c5d8f8, rather than claiming full UAX #29. Graphemes join the snapshot's
+Hangul L/V/LV/LVT/T ranges, nonzero canonical combining classes, Thai
+U+0E31..0E3A/U+0E47..0E4E, emoji modifiers U+1F3FB..1F3FF, variation selectors
+U+FE00..FE0F, ZWJ and any character after ZWJ. Combining classes come from the
+existing generated Unicode 17.0.0 `data::collation::CCC` table and its verified
+quickjs-data pipeline; no new break-property input or importer is needed for
+these rules. Consecutive regional indicators join in pairs, correcting the
+snapshot's unbounded RI chain. Word segments group equal word-like status:
+ASCII letters/digits, every non-ASCII scalar, and `. - + % $ _ '` are word-like;
+other ASCII characters are not. This deliberately classifies emoji and
+non-ASCII punctuation/whitespace as word-like and groups adjacent CJK letters.
+
+Differences from UAX #29: no CR/LF or control special cases, Prepend,
+SpacingMark, Indic conjunct, full Grapheme_Extend or extended Hangul property
+rules; combining classes cover fewer marks than Grapheme_Extend; ZWJ joining
+is unconditional rather than Extended_Pictographic-contextual. Word rules
+have no UAX letter/number/Katakana/ExtendNumLet classes, ignored format/mark
+handling, contextual mid-letter/number rules, newline or RI word rules, or
+dictionary boundaries. Sentence requests throw RangeError instead of the
+snapshot's single whole-input segment. Both iterator and containing use the
+same scanner, including lone-surrogate word runs (the snapshot's containing
+path separately splits these). All other documented heuristic outputs match
+the snapshot; no complete UAX #29 conformance is implied.
+
+`segment()` budget-flattens ropes in batches of 128 nodes/units, retaining the
+original immutable input for record identity/content. Each boundary scan step
+consumes at most one scalar. `containing` scans from zero with the same rules;
+`next` starts at its saved cursor. Substring copies use StringBuild batches of
+128 units, with no final linear copy. These continuations may yield, collect
+or migrate between steps, including within a single enormous grapheme or word.
+The cursor commits its next position only when its result is ready. Iterator
+creation and resolved-options allocation are bounded leaf operations.

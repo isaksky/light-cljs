@@ -350,3 +350,14 @@ No Intl service code is linked or executed. The Intl repacker additionally
 writes `relative_time.rs`; include it when comparing repeated repacks.
 `edge_cases.rs` pins non-ASCII auto phrases, table offsets, and absence of ±2
 phrases. The runtime retains the snapshot's auto fallback and CJK spacing.
+
+### Segmenter heuristic consumer (clj-quickjs-222)
+
+The Segmenter scanner reuses `collation.rs::CCC` for the pinned snapshot's
+nonzero-combining-class heuristic. The existing collation export, repeatability
+and full-domain C/Rust comparison cover this data; no generator or table
+representation changes are required. This is not a Grapheme_Cluster_Break or
+Word_Break dataset and does not claim full UAX #29 coverage. Runtime rule limits
+and regional-indicator pairing corrections are documented in architecture.
+Consumer checks: `cargo test --lib intl::segmenter::` and
+`cargo test --test js_source intl_segmenter -- --test-threads=3`.

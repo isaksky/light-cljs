@@ -24349,3 +24349,254 @@ fn intl_relative_time_format_all_units_and_locale_data() {
         assert_eq!(eval(&source), ValueView::Bool(true), "{locale}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. First six assertions adapt
+/// QuickJS tests/test_intl.js::test_segmenter (MIT notice above).
+#[test]
+fn intl_segmenter_grapheme_and_word() {
+    for source in [
+        "let s=Array.from(new Intl.Segmenter('ja',{granularity:'grapheme'}).segment('𠮷野家')); s.length === 3 && s[0].segment === '𠮷' && s[0].isWordLike === undefined && s[1].index === 2 && s[0].input === '𠮷野家'",
+        "let s=Array.from(new Intl.Segmenter('en',{granularity:'word'}).segment('Hello world')); s.length === 3 && s[0].segment === 'Hello' && s[0].isWordLike === true && s[1].isWordLike === false && s[2].index === 6",
+        "let s=new Intl.Segmenter('en',{granularity:'word'}).segment('Hello world'); s.containing(7).segment === 'world' && s.containing(99) === undefined",
+        "let caught=false;try {new Intl.Segmenter('en',{granularity:'bogus'});}catch(e){caught=e instanceof RangeError;} caught",
+        "let s=Array.from(new Intl.Segmenter().segment('🇫🇷🇩🇪')); s.length === 2 && s[1].index === 4",
+        "let s=Array.from(new Intl.Segmenter().segment('éx')); s.length === 2 && s[1].index === 2",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn intl_segmenter_options_and_protocol() {
+    for source in [
+        "let s=new Intl.Segmenter('en-u-nu-arab'); let r=s.resolvedOptions(); s instanceof Intl.Segmenter && r.locale === 'en' && r.granularity === 'grapheme' && Object.keys(r).join() === 'locale,granularity' && s[Symbol.toStringTag] === 'Intl.Segmenter'",
+        "let p=Intl.Segmenter.prototype; Intl.Segmenter.name === 'Segmenter' && Intl.Segmenter.length === 0 && p.segment.length === 1 && p.resolvedOptions.length === 0 && Intl.Segmenter.supportedLocalesOf.length === 1 && !Object.getOwnPropertyDescriptor(p,Symbol.toStringTag).writable",
+        "Intl.Segmenter.supportedLocalesOf(['EN-us','xx','ja']).join() === 'en-US,ja'",
+        "let log='';let s=new Intl.Segmenter('en',{get localeMatcher(){log+='m';return {toString(){log+='M';return 'lookup';}};},get granularity(){log+='g';return {toString(){log+='G';return 'word';}};}}); log === 'mMgG' && s.resolvedOptions().granularity === 'word'",
+        "let s=new Intl.Segmenter().segment('𠮷x'); s.containing(0).segment === '𠮷' && s.containing(1).index === 0 && s.containing(2.9).segment === 'x' && s.containing(-0.9).index === 0 && s.containing(NaN).index === 0 && s.containing() .index === 0 && s.containing(-1) === undefined && s.containing(Infinity) === undefined && s.containing(-Infinity) === undefined",
+        "let i=new Intl.Segmenter().segment('ab')[Symbol.iterator](); let p=Object.getPrototypeOf(i); i[Symbol.iterator]() === i && Object.getPrototypeOf(p) === Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())) && i[Symbol.toStringTag] === 'Segmenter String Iterator' && i.next().value.segment === 'a' && i.next().value.segment === 'b' && i.next().done && i.next().done",
+        "let s=new Intl.Segmenter().segment('ab');let a=s[Symbol.iterator]();let b=s[Symbol.iterator](); a.next().value.segment === 'a' && a.next().value.segment === 'b' && b.next().value.segment === 'a'",
+        "let s=new Intl.Segmenter().segment(''); Array.from(s).length === 0 && s.containing(0) === undefined && Array.from(new Intl.Segmenter().segment()).length === 9",
+        r"let s=Array.from(new Intl.Segmenter().segment('\uD800A\uDC00')); s.length === 3 && s[0].segment === '\uD800' && s[2].index === 2",
+        "let s=new Intl.Segmenter('en',{granularity:'word'}).segment('a.b 😀!'); let a=Array.from(s); a.length === 4 && a[0].segment === 'a.b' && a[0].isWordLike && a[2].isWordLike && s.containing(5).index === 4",
+        "let s=new Intl.Segmenter().segment('éx'); let a=s.containing(1); a.index === 0 && a.segment === 'é' && !('isWordLike' in a) && Object.keys(a).join() === 'segment,index,input'",
+        "let log='';Intl.Segmenter.supportedLocalesOf('en',{get localeMatcher(){log+='m';return 'lookup';},get granularity(){throw 99;}});log === 'm'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for (source, error) in [
+        ("Intl.Segmenter()", "TypeError"),
+        ("new Intl.Segmenter('en',null)", "TypeError"),
+        (
+            "new Intl.Segmenter('en',{granularity:'sentence'})",
+            "RangeError",
+        ),
+        (
+            "new Intl.Segmenter('en',{localeMatcher:'bad'})",
+            "RangeError",
+        ),
+        (
+            "Intl.Segmenter.prototype.segment.call({},'abc')",
+            "TypeError",
+        ),
+        (
+            "Intl.Segmenter.prototype.resolvedOptions.call({})",
+            "TypeError",
+        ),
+        ("new Intl.Segmenter().segment(Symbol())", "TypeError"),
+        (
+            "new Intl.Segmenter().segment('a').containing(1n)",
+            "TypeError",
+        ),
+        ("new Intl.Segmenter.prototype.segment('a')", "TypeError"),
+        ("new Intl.Segmenter.supportedLocalesOf('en')", "TypeError"),
+        (
+            "let s=new Intl.Segmenter().segment('a');s.containing.call({},0)",
+            "TypeError",
+        ),
+        (
+            "let s=new Intl.Segmenter().segment('a');s[Symbol.iterator].call({})",
+            "TypeError",
+        ),
+        (
+            "let i=new Intl.Segmenter().segment('a')[Symbol.iterator]();i.next.call({})",
+            "TypeError",
+        ),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let caught=false;try{{{source};}}catch(e){{caught=e instanceof {error};}}caught"
+            )),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Retains only the cursor, forces
+/// collection after every budget boundary, and migrates through user coercions.
+#[test]
+fn intl_segmenter_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let segmenter=new Intl.Segmenter({get length(){__rt.need(1,1);return 1;},get 0(){__rt.need(2,1);return 'en';}},
+            {get granularity(){__rt.need(3,1);return {toString(){__rt.need(4,1);return 'word';}};}});
+        let segments=segmenter.segment({toString(){log+='s';__rt.need(5,1);return 'Hello world';}});
+        let c=segments.containing({valueOf(){log+='i';__rt.need(6,1);return 7;}});
+        let iterator=segments[Symbol.iterator]();
+        segments=null;segmenter=null;
+        let a=iterator.next().value; __rt.need(7,1);
+        let b=iterator.next().value; let d=iterator.next().value;
+        log === 'si' && c.segment === 'world' && a.segment === 'Hello' && b.segment === ' ' && d.segment === 'world' && iterator.next().done
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 7);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 7);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("Segmenter continuation did not finish");
+}
+
+#[test]
+fn intl_segmenter_long_scans_are_budgeted() {
+    struct Phase(u16);
+    impl Host for Phase {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            assert_eq!(call.op, self.0 + 1);
+            self.0 = call.op;
+            Ok(call.arg)
+        }
+    }
+    let rt = Runtime::new();
+    // A deep rope ending in one long combining sequence exercises flatten,
+    // scanning and substring copying independently, with no timer assertions.
+    let mut text = clj_quickjs::JsString::from("a");
+    for _ in 0..1000 {
+        text = text.concat(&clj_quickjs::JsString::from("́")).unwrap();
+    }
+    let text = text.concat(&clj_quickjs::JsString::from("!")).unwrap();
+    let input = rt.root(Primitive::String(text));
+    for granularity in ["grapheme", "word"] {
+        let source = r#"function f(text){
+        let s=new Intl.Segmenter('en',{granularity:'GRANULARITY'});__rt.effect(1,0);
+        let segments=s.segment(text);__rt.effect(2,0);
+        let i=segments[Symbol.iterator]();let first=i.next();__rt.effect(3,0);
+        let c=segments.containing(999);__rt.effect(4,0);
+        return first.value.segment.length === text.length-1 && c.segment === first.value.segment && c.index === 0 && i.next().value.segment === "!" && i.next().done;
+    }"#.replace("GRANULARITY", granularity);
+        let task = rt
+            .spawn(&compile_function(&source).unwrap(), &[&input])
+            .unwrap();
+        let mut phase = Phase(0);
+        let mut yields = [0; 5];
+        let mut complete = false;
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(1), &mut phase).unwrap() {
+                RunOutcome::Yielded => {
+                    yields[phase.0 as usize] += 1;
+                    if yields[phase.0 as usize] % 50 == 0 {
+                        rt.collect().unwrap();
+                    }
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete);
+        assert_eq!(phase.0, 4);
+        assert!(yields[1] > 20, "rope flatten: {yields:?}");
+        assert!(yields[2] >= 1000, "next: {yields:?}");
+        assert!(yields[3] >= 1000, "containing: {yields:?}");
+    }
+}
+
+#[test]
+fn intl_segmenter_ownership_and_default_locale() {
+    let rt = Runtime::new();
+    for source in [
+        "new Intl.Segmenter('en')",
+        "Object.freeze(new Intl.Segmenter('en'))",
+        "new Intl.Segmenter('en').segment('abc')",
+        "new Intl.Segmenter('en').segment('abc')[Symbol.iterator]()",
+    ] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("Segmenter allocation");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        let body = if source.contains("[Symbol.iterator]") {
+            "value.next()"
+        } else if source.contains("segment('abc')") {
+            "value.containing(0)"
+        } else {
+            "value.resolvedOptions()"
+        };
+        let caller = rt
+            .spawn(
+                &compile_function(&format!("function f(value){{return {body};}}")).unwrap(),
+                &[&value],
+            )
+            .unwrap();
+        assert!(
+            matches!(caller.run().unwrap(),RunOutcome::Failed(error) if matches!(error.kind(),VmErrorKind::ForeignObject{..}))
+        );
+    }
+    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    host.set_default_locale("ja");
+    let task = rt
+        .spawn(
+            &exe("new Intl.Segmenter().resolvedOptions().locale === 'ja'"),
+            &[],
+        )
+        .unwrap();
+    loop {
+        match task.run_with(Budget::instructions(100), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}

@@ -323,9 +323,17 @@ pub(crate) struct OrdinaryObject {
 
     // Immutable Rust strings/static tables only; no additional GC edges.
     relative_time_format: Option<Box<crate::intl::relative_time_format::RelativeTimeFormat>>,
+    segmenter: Option<Box<crate::intl::segmenter::Data>>,
 }
 
 impl OrdinaryObject {
+    pub(crate) fn with_segmenter(mut self, data: crate::intl::segmenter::Data) -> Self {
+        self.segmenter = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn segmenter(&mut self) -> Option<&mut crate::intl::segmenter::Data> {
+        self.segmenter.as_deref_mut()
+    }
     pub(crate) fn with_list_format(mut self, data: crate::intl::list_format::ListFormat) -> Self {
         self.list_format = Some(Box::new(data));
         self
@@ -372,6 +380,7 @@ impl OrdinaryObject {
             list_format: None,
 
             relative_time_format: None,
+            segmenter: None,
         }
     }
 
@@ -921,6 +930,9 @@ pub(crate) enum DeleteOutcome {
 /// The collector traces every property value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(segmenter) = &self.segmenter {
+            segmenter.trace(visit);
+        }
         if let Some(iterator) = &self.iterator {
             iterator.trace(visit);
         }

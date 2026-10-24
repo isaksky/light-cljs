@@ -843,7 +843,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::IntlRelativeTimeFormat
             | Builtin::IntlCollator
             | Builtin::IntlDateTimeFormat
-            | Builtin::IntlListFormat),
+            | Builtin::IntlListFormat
+            | Builtin::IntlSegmenter),
         )) => {
             if super::native::start_builtin(
                 heap,

@@ -5468,3 +5468,27 @@ Explicit gaps: QuickJS shell globals `__loadScript`, `scriptArgs` and
 top-level `arguments` are deliberately absent. The upstream missing-helper
 catch and default-argument branch execute as written. These fixtures add no
 syntax, engine behavior or broader shell compatibility.
+
+### Execution: Intl.Segmenter (clj-quickjs-222)
+
+`new Intl.Segmenter(locales?, options?)` resolves locales through the shared
+Intl helpers and embedding host default. It reads `localeMatcher`, then
+`granularity` (`grapheme` by default, or `word`), with resumable getters and
+string coercions. Calling without `new` throws TypeError. `supportedLocalesOf`
+reads only localeMatcher; `resolvedOptions()` returns locale and granularity.
+The prototype carries the nonwritable `Intl.Segmenter` toStringTag.
+
+`segment(value)` performs resumable ToString and returns a Segments object.
+`containing(index)` performs ToIntegerOrInfinity (NaN/undefined become zero),
+then returns the segment containing that UTF-16 code-unit offset, or undefined
+outside the string. Each `@@iterator` call creates an independent cursor whose
+prototype inherits `%IteratorPrototype%`. `next()` yields ordinary records
+with `segment`, `index`, `input`, plus `isWordLike` for word granularity only.
+Lone surrogates are preserved. Receiver brands and task ownership are checked
+before observable coercion. Segments, cursors and service objects remain
+unshareable even when their public properties are frozen.
+
+Explicit gaps: sentence granularity throws RangeError. Grapheme and word
+boundaries use the pinned QuickJS heuristic documented in architecture, with
+regional-indicator pairs corrected; they do not implement complete UAX #29 or
+dictionary segmentation. Public properties cannot change the internal slots.

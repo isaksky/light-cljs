@@ -418,6 +418,13 @@ pub(crate) enum Builtin {
     IntlRelativeTimeFormatToParts,
     IntlRelativeTimeFormatResolvedOptions,
     IntlRelativeTimeFormatSupportedLocales,
+    IntlSegmenter,
+    IntlSegmenterSegment,
+    IntlSegmenterResolvedOptions,
+    IntlSegmenterSupportedLocales,
+    IntlSegmentsContaining,
+    IntlSegmentsIterator,
+    IntlSegmentIteratorNext,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -487,6 +494,13 @@ impl Builtin {
             Builtin::IntlRelativeTimeFormatResolvedOptions => "resolvedOptions",
             Builtin::IntlRelativeTimeFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlPluralRules => "PluralRules",
+            Builtin::IntlSegmenter => "Segmenter",
+            Builtin::IntlSegmenterSegment => "segment",
+            Builtin::IntlSegmenterResolvedOptions => "resolvedOptions",
+            Builtin::IntlSegmenterSupportedLocales => "supportedLocalesOf",
+            Builtin::IntlSegmentsContaining => "containing",
+            Builtin::IntlSegmentsIterator => "[Symbol.iterator]",
+            Builtin::IntlSegmentIteratorNext => "next",
             Builtin::IntlListFormat => "ListFormat",
             Builtin::IntlListFormatFormat => "format",
             Builtin::IntlListFormatFormatToParts => "formatToParts",
@@ -699,6 +713,13 @@ impl Builtin {
             | Builtin::IntlPluralRulesSelect
             | Builtin::IntlPluralRulesSupportedLocales => 1,
             Builtin::IntlPluralRulesResolvedOptions => 0,
+            Builtin::IntlSegmenter
+            | Builtin::IntlSegmenterResolvedOptions
+            | Builtin::IntlSegmentsIterator
+            | Builtin::IntlSegmentIteratorNext => 0,
+            Builtin::IntlSegmenterSegment
+            | Builtin::IntlSegmenterSupportedLocales
+            | Builtin::IntlSegmentsContaining => 1,
             Builtin::IntlListFormat | Builtin::IntlListFormatResolvedOptions => 0,
             Builtin::IntlListFormatFormat
             | Builtin::IntlListFormatFormatToParts
@@ -933,6 +954,15 @@ pub(crate) fn call(
             crate::intl::relative_time_format::record(heap, task, this)?.resolved(heap, task)
         }
         Builtin::IntlPluralRules => Err(Fault::TypeError("Intl.PluralRules requires new".into())),
+        Builtin::IntlSegmenter => Err(Fault::TypeError("Intl.Segmenter requires new".into())),
+        Builtin::IntlSegmenterSegment
+        | Builtin::IntlSegmenterSupportedLocales
+        | Builtin::IntlSegmentsContaining
+        | Builtin::IntlSegmentIteratorNext => {
+            Err(Fault::Internal("Segmenter requires native continuation"))
+        }
+        Builtin::IntlSegmenterResolvedOptions => crate::intl::segmenter::resolved(heap, task, this),
+        Builtin::IntlSegmentsIterator => super::native::segmenter::iterator(heap, task, this),
         Builtin::IntlListFormat => Err(Fault::TypeError("Intl.ListFormat requires new".into())),
         Builtin::IntlListFormatFormat
         | Builtin::IntlListFormatFormatToParts

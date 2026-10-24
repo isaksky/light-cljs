@@ -426,6 +426,9 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_list_format_prototype: ObjectId,
 
     pub(crate) intl_relative_time_format_prototype: ObjectId,
+    pub(crate) intl_segmenter_prototype: ObjectId,
+    pub(crate) intl_segments_prototype: ObjectId,
+    pub(crate) intl_segment_iterator_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1268,6 +1271,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let intl_relative_time_format_prototype =
         intl_relative_time_format_intrinsics(&mut b, object_prototype, intl)?;
+    let (intl_segmenter_prototype, intl_segments_prototype, intl_segment_iterator_prototype) =
+        intl_segmenter_intrinsics(&mut b, object_prototype, iterator_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1357,6 +1362,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_list_format_prototype,
 
         intl_relative_time_format_prototype,
+        intl_segmenter_prototype,
+        intl_segments_prototype,
+        intl_segment_iterator_prototype,
     })
 }
 
@@ -2390,6 +2398,82 @@ fn intl_relative_time_format_intrinsics(
     Some(prototype)
 }
 
+fn intl_segmenter_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    iterator_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<(ObjectId, ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlSegmenter,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "Segmenter", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlSegmenterSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    for (name, which) in [
+        ("segment", Builtin::IntlSegmenterSegment),
+        ("resolvedOptions", Builtin::IntlSegmenterResolvedOptions),
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, name, method, PropertyFlags::METHOD)?;
+    }
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            tag,
+            Value::String(JsString::from("Intl.Segmenter")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    let containing = b.function(Builtin::IntlSegmentsContaining, &[])?;
+    let iterable = b.function(Builtin::IntlSegmentsIterator, &[])?;
+    let mut segments = OrdinaryObject::intrinsic(Some(object_prototype));
+    define(
+        heap,
+        &mut segments,
+        "containing",
+        containing,
+        PropertyFlags::METHOD,
+    )?;
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("iterator"))?;
+    segments
+        .define_with(key, Value::Object(iterable), PropertyFlags::METHOD)
+        .then_some(())?;
+    let segments = heap.alloc(HeapObject::Plain(segments))?;
+    b.all.push(segments);
+    let next = b.function(Builtin::IntlSegmentIteratorNext, &[])?;
+    let mut iterator = OrdinaryObject::intrinsic(Some(iterator_prototype));
+    define(heap, &mut iterator, "next", next, PropertyFlags::METHOD)?;
+    iterator
+        .define_with(
+            tag,
+            Value::String(JsString::from("Segmenter String Iterator")),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
+    let iterator = heap.alloc(HeapObject::Plain(iterator))?;
+    b.all.push(iterator);
+    Some((prototype, segments, iterator))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2507,7 +2591,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 300); // Includes ListFormat (-220), FinalizationRegistry (-177) and RelativeTimeFormat (-221).
+        assert_eq!(first.all.len(), 310); // Includes Segmenter (-222), its Segments and iterator prototypes.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
