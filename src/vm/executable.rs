@@ -696,7 +696,8 @@ impl Executable {
                 | Instr::PutField(v)
                 | Instr::DefineField(v)
                 | Instr::DefineGetter(v)
-                | Instr::DefineSetter(v) => u32::from(v),
+                | Instr::DefineSetter(v)
+                | Instr::SetComputedName(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t)

@@ -131,6 +131,26 @@ fn computed_property_function_name_publication() {
     assert_eq!(value.view(), ValueView::Bool(true));
 }
 
+/// Synthetic fixtures. Reloaded bytecode must retain the naming prefix's
+/// constant index, including when constant zero is numeric or another name.
+#[test]
+fn computed_property_names_bytecode_roundtrip() {
+    for source in [
+        "({['m']() {}}).m.name === 'm'",
+        "({[2]() {}})[2].name === '2'",
+        "let o = {get ['x']() { return 7; }, set ['x'](v) {}}; let d = Object.getOwnPropertyDescriptor(o, 'x'); d.get.name === 'get x' && d.set.name === 'set x' && o.x === 7",
+        "let s = Symbol('d'); ({[s]() {}})[s].name === '[d]'",
+        "let o = {['f']: () => 7}; o.f.name === 'f' && o.f() === 7",
+    ] {
+        let code = Executable::load(exe(source).to_spec()).unwrap();
+        let rt = Runtime::new();
+        let RunOutcome::Complete(value) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("complete: {source}")
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Compile and initialize the realm outside the 64 KiB execution worker.
 #[test]
 fn computed_properties_on_small_worker_stack() {
