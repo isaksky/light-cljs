@@ -1989,18 +1989,24 @@ fn date_slots_and_coercion() {
             assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
         }
     }
+    // ISO construction is supported by clj-quickjs-184; default coercion
+    // still awaits Date's Symbol.toPrimitive protocol.
+    assert_eq!(
+        eval("new Date('2017-09-22').getTime()"),
+        ValueView::Number(1506038400000.0)
+    );
+    // Keep invalid ISO strings on both direct and object-conversion paths;
+    // non-ISO numeric strings are reserved for the fallback parser (-185).
     for src in [
-        "new Date('2017-09-22')",
-        "new Date('5')",
-        "new Date({valueOf() {return '5';}})",
-        "'' + new Date(0)",
+        "Number.isNaN(new Date('2000-13').getTime())",
+        "Number.isNaN(new Date({valueOf() {return '2000-13';}}).getTime())",
     ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
+    assert_eq!(
+        failure("'' + new Date(0)").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
     // Calling Date now uses the host clock; a hostless runtime has none.
     for src in ["Date()", "Date(1)"] {
         assert_eq!(failure(src).kind(), VmErrorKind::RangeError, "{src}");
@@ -18741,4 +18747,207 @@ fn intl_number_format_currency_callbacks_wait_collect_and_migrate() {
         }
     }
     panic!("currency option continuation did not finish");
+}
+
+// ISO rows adapted from QuickJS tests/test_builtin.js::test_date,
+// revision 7d1c13c5d8f8. Synthetic fixtures, not light-cljs output.
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+#[test]
+fn date_parse_iso_strings() {
+    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+
+    for offset in [0, 3600] {
+        let rt = Runtime::new();
+        let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(offset).unwrap());
+        let mut sources = Vec::new();
+        for (text, expected) in [
+            ("2000", 946684800000_i64),
+            ("2000-01", 946684800000),
+            ("2000-01-01", 946684800000),
+            ("2000-01-01T00:00Z", 946684800000),
+            ("2000-01-01T00:00:00Z", 946684800000),
+            ("2000-01-01T00:00:00+00:00", 946684800000),
+            ("2000-01-01T00:00:00.1Z", 946684800100),
+            ("2000-01-01T00:00:00.10Z", 946684800100),
+            ("2000-01-01T00:00:00.100Z", 946684800100),
+            ("2000-01-01T00:00:00.1000Z", 946684800100),
+            ("2000-01-01T00:00:00.123456789Z", 946684800123),
+            ("+002000-01-01T00:00:00Z", 946684800000),
+            ("-000001-01-01T00:00:00Z", -62198755200000),
+            ("2000-01-01T24:00Z", 946771200000),
+            ("2000-01-01T00:00+00:30", 946683000000),
+            ("2000-01-01T00:00-01:30", 946690200000),
+            ("+275760-09-13T00:00:00.000Z", 8640000000000000),
+            ("-271821-04-20T00:00:00.000Z", -8640000000000000),
+        ] {
+            sources.push(format!(
+                "Date.parse('{text}') === {expected} && new Date('{text}').getTime() === {expected}"
+            ));
+        }
+        for text in [
+            "",
+            "-000000-01-01T00:00:00Z",
+            "2000-13",
+            "2000-00",
+            "2000-01-00",
+            "2000-01-32",
+            "2000-01-01T25:00Z",
+            "2000-01-01T24:00:01Z",
+            "2000-01-01T24:00:00.001Z",
+            "2000-01-01T00:60Z",
+            "2000-01-01T00:00:60Z",
+            "2000-01-01T00:00+24:00",
+            "2000-01-01T00:00+00:60",
+            "2000-01-01T00:00:00.Z",
+            "2000-01-01T00:00:00.123Zjunk",
+            "2000-01-01T00:00:00.123Z\u{0}",
+            "2000-01-01T00:00:00.123Z\u{d7ff}",
+            "+275760-09-13T00:00:00.001Z",
+            "-271821-04-19T23:59:59.999Z",
+        ] {
+            // Debug quoting escapes the NUL and preserves the non-ASCII unit.
+            sources.push(format!(
+                "Number.isNaN(Date.parse({text:?})) && Number.isNaN(new Date({text:?}).getTime())"
+            ));
+        }
+        for (fraction, expected) in [
+            ("123", "123"),
+            ("1", "100"),
+            ("12", "120"),
+            ("1234", "123"),
+            ("12345", "123"),
+            ("1235", "123"),
+            ("9999", "999"),
+        ] {
+            sources.push(format!("new Date('2020-01-01T01:01:01.{fraction}Z').toISOString() === '2020-01-01T01:01:01.{expected}Z'"));
+        }
+        let local = 946684800000_i64 - i64::from(offset) * 1000;
+        let local_iso = if offset == 0 {
+            "2000-01-01T00:00:00.000Z"
+        } else {
+            "1999-12-31T23:00:00.000Z"
+        };
+        sources.push(format!("new Date('2000T00:00').toISOString() === '{local_iso}' && new Date('2000-01-01T00:00').getTime() === {local} && Date.parse('2000-01T00:00') === {local} && Date.parse('2000-01-01') === 946684800000"));
+        sources.push("let d = new Date(1506098258091); d.setUTCHours(18, 10, 11); new Date(Date.parse(d.toISOString())).toISOString() === d.toISOString()".into());
+        sources.push("let p = Object.getOwnPropertyDescriptor(Date, 'parse'); p.value === Date.parse && p.writable && !p.enumerable && p.configurable && Date.parse.name === 'parse' && Date.parse.length === 1 && Number.isNaN(Date.parse())".into());
+        for source in sources {
+            let task = rt
+                .spawn(&compile_script("date-parse.js", &source).unwrap(), &[])
+                .unwrap();
+            let mut completed = false;
+            for _ in 0..10000 {
+                match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(
+                            value.view(),
+                            ValueView::Bool(true),
+                            "offset {offset}: {source}"
+                        );
+                        completed = true;
+                        break;
+                    }
+                    other => panic!("{source}: {other:?}"),
+                }
+            }
+            assert!(completed, "bounded ISO parse completes: {source}");
+        }
+        assert_eq!(host.clock_reads(), 0);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. String conversion uses the
+/// string hint for parse and the default hint for construction, exactly once.
+#[test]
+fn date_parse_coercion_and_long_fractions() {
+    for source in [
+        "Date.parse(2000) === 946684800000 && Date.parse(2000n) === 946684800000 && Date.parse({toString() {return 2000n;}}) === 946684800000",
+        "let log = ''; Date.parse({toString() {log += 's'; return {};}, valueOf() {log += 'v'; return '2000';}}) === 946684800000 && log === 'sv'",
+        "let log = ''; new Date({valueOf() {log += 'v'; return {};}, toString() {log += 's'; return '2000';}}).getTime() === 946684800000 && log === 'vs'",
+        "Date.parse('2000', {toString() {throw 1;}}) === 946684800000 && Number.isNaN(Date.parse(undefined)) && Number.isNaN(Date.parse(null))",
+        "let caught = false; try {Date.parse(Symbol());} catch(e) {caught = e instanceof TypeError;} caught",
+        "let caught = false; try {new Date.parse('2000');} catch(e) {caught = e instanceof TypeError;} caught",
+        "let caught = false; try {Date.parse({toString() {throw 42;}});} catch(e) {caught = e === 42;} caught",
+        "let text = '2000-01-01T00:00:00.123' + ''.padEnd(10000, '9') + 'Z'; Date.parse(text) === 946684800123 && new Date(text).getTime() === 946684800123 && Number.isNaN(Date.parse(text + 'x')) && Number.isNaN(Date.parse(text + '\\ud800'))",
+        "Date.parse('2000-02-31') === Date.UTC(2000, 2, 2) && Date.parse('+275760-09-13T01:00+01:00') === 8.64e15 && Date.parse('-271821-04-19T23:00-01:00') === -8.64e15",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Coercion getters and methods
+/// survive waits, collection, and worker migration before entering the parser.
+#[test]
+fn date_parse_waits_collects_and_migrates() {
+    let rt = Runtime::new();
+    let source = r"
+        let log = '';
+        let parsed = Date.parse({get toString() {
+            log += 'g'; __rt.need(1, 1);
+            return function() {log += 's'; __rt.need(2, 1); return '2000';};
+        }});
+        let d = new Date({get valueOf() {
+            log += 'v'; __rt.need(3, 1);
+            return function() {log += 'c'; __rt.need(4, 1); return '2000-01-01T00:00:00.123Z';};
+        }});
+        parsed === 946684800000 && d.getTime() === 946684800123 && log === 'gsvc'
+    ";
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    let mut completed = false;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 4);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                completed = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(completed);
+    assert_eq!(waited, 4);
 }

@@ -5894,3 +5894,31 @@ Consumer tests validate every selected locale currency record, decoder bounds,
 locale acceptance strings, minor units, accounting/display options, percent
 scaling and resumable callbacks across collection and migration. No generator,
 OS locale access or dependency is added.
+
+## Date ISO parser (clj-quickjs-184)
+
+`vm/date.rs::IsoParser` is a pure resumable UTF-16 parser returning integer
+calendar fields, an explicit offset, and a local-time flag. Fixed-width fields
+require constant work; arbitrary-length fractions validate at most 256 digits
+per native step and retain only truncated milliseconds. Total scan work is
+O(input length), with constant parser state and no new length limit. The
+immutable JsString may flatten a rope once in O(input length), as in the
+shared number parsers. No UTF-8/lossy conversion, NUL termination, or prefix
+truncation can discard a trailing invalid code unit.
+
+`date::Parser` is the shared string parsing entry point for `Date.parse` and
+single-argument string construction, ready for the fallback grammar in
+clj-quickjs-185. `NativeState::DateParse` holds only immutable string storage
+and scalar parser state, with no collector edges. Conversion preceding it
+uses the existing traced Convert operands and resumable ToPrimitive method
+lookups/calls. Date.parse uses the string hint (including budgeted BigInt
+formatting); construction retains default-hint conversion and Date-slot copy.
+After a successful local parse, the continuation obtains the runtime's zone
+and calls the existing `TimeZone::utc_time_millis`, preserving earlier-overlap
+and pre-transition-gap disambiguation. Date-only and explicitly offset strings
+do not select or freeze the runtime's zone. Calendar/offset arithmetic finishes
+before TimeClip; invalid parsing returns NaN or constructs an invalid Date.
+The new Date.parse intrinsic is allocated after previously rooted intrinsics,
+preserving their identities. Source tests cover UTC and UTC+01:00, long
+fractions, metadata, coercion order, waits/GC/migration, clipping, and named-zone
+DST transitions. Non-ISO fallback parsing remains deferred.

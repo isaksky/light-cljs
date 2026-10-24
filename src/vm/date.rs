@@ -7,7 +7,7 @@
 //! is selected per runtime (UTC without a host). Never read the OS clock or
 //! zone here. Snapshot coverage is limited; uncovered names are rejected.
 //! Shared decomposition, ISO and non-locale string formatting are implemented
-//! below; parsing remains a separate pellet.
+//! below, together with ISO parsing (clj-quickjs-184). Non-ISO parsing is deferred.
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
@@ -15,6 +15,210 @@ use crate::value::Value;
 use crate::vm::dispatch::{Fault, to_number};
 
 pub(crate) const MS_PER_DAY: f64 = 86_400_000.0;
+
+/// Parsed calendar fields use a zero-based month, with no 1900 adjustment.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParsedDate {
+    fields: [i32; 7],
+    pub(crate) is_local: bool,
+    offset_minutes: i32,
+}
+
+impl Default for ParsedDate {
+    fn default() -> Self {
+        Self {
+            fields: [0, 0, 1, 0, 0, 0, 0],
+            is_local: false,
+            offset_minutes: 0,
+        }
+    }
+}
+
+impl ParsedDate {
+    pub(crate) fn time(self, zone: crate::host::TimeZone) -> f64 {
+        let [y, m, d, h, min, s, ms] = self.fields.map(f64::from);
+        let wall = make_date(make_day(y, m, d), make_time(h, min, s, ms));
+        let utc = if self.is_local {
+            zone.utc_time_millis(wall)
+        } else {
+            wall - f64::from(self.offset_minutes) * 60_000.0
+        };
+        time_clip(utc)
+    }
+}
+
+/// Date parsing entry point, shared by Date.parse and string construction.
+/// The fallback pellet can extend this dispatcher after ISO parsing fails.
+/// It owns only immutable string storage and scalar state, with no heap edges.
+#[derive(Debug)]
+pub(crate) struct Parser {
+    text: crate::value::JsString,
+    iso: IsoParser,
+}
+
+impl Parser {
+    pub(crate) fn new(text: crate::value::JsString) -> Self {
+        Self {
+            text,
+            iso: IsoParser::default(),
+        }
+    }
+
+    /// At most `budget` fractional digits and constant-size calendar/zone
+    /// fields per step. Total O(input length), constant parser storage. As for
+    /// the shared number parsers, a rope may flatten once in O(input length).
+    /// There is no date-string length cap; every trailing unit is validated.
+    pub(crate) fn advance(&mut self, budget: usize) -> Option<Option<ParsedDate>> {
+        self.iso.advance(self.text.code_units(), budget)
+    }
+}
+
+/// Pure UTF-16 ISO grammar, separate from zone lookup and heap operations.
+#[derive(Debug, Default)]
+struct IsoParser {
+    next: usize,
+    started: bool,
+    fraction_multiplier: Option<i32>,
+    parsed: ParsedDate,
+}
+
+struct IsoCursor<'a> {
+    units: &'a [u16],
+    next: usize,
+}
+
+impl IsoCursor<'_> {
+    fn eat(&mut self, ascii: u8) -> bool {
+        if self.units.get(self.next) == Some(&u16::from(ascii)) {
+            self.next += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn digits(&mut self, count: usize) -> Option<i32> {
+        let mut number = 0;
+        for _ in 0..count {
+            let &unit = self.units.get(self.next)?;
+            if !(48..=57).contains(&unit) {
+                return None;
+            }
+            number = number * 10 + i32::from(unit - 48);
+            self.next += 1;
+        }
+        Some(number)
+    }
+}
+
+impl IsoParser {
+    /// Fixed-width prefix work is bounded independently of input length.
+    fn start(&mut self, units: &[u16]) -> Option<()> {
+        let mut cursor = IsoCursor { units, next: 0 };
+        let expanded = cursor.eat(b'+');
+        let negative = !expanded && cursor.eat(b'-');
+        let mut year = cursor.digits(if expanded || negative { 6 } else { 4 })?;
+        if negative {
+            if year == 0 {
+                return None;
+            }
+            year = -year;
+        }
+        self.parsed.fields[0] = year;
+        if cursor.eat(b'-') {
+            self.parsed.fields[1] = cursor.digits(2)? - 1;
+            if cursor.eat(b'-') {
+                self.parsed.fields[2] = cursor.digits(2)?;
+            }
+        }
+        if cursor.eat(b'T') {
+            self.parsed.is_local = true;
+            self.parsed.fields[3] = cursor.digits(2)?;
+            if !cursor.eat(b':') {
+                return None;
+            }
+            self.parsed.fields[4] = cursor.digits(2)?;
+            if cursor.eat(b':') {
+                self.parsed.fields[5] = cursor.digits(2)?;
+                if cursor.eat(b'.') {
+                    if !units
+                        .get(cursor.next)
+                        .is_some_and(|u| (48..=57).contains(u))
+                    {
+                        return None;
+                    }
+                    self.fraction_multiplier = Some(100);
+                }
+            }
+        }
+        self.next = cursor.next;
+        Some(())
+    }
+
+    fn finish(&mut self, units: &[u16]) -> Option<ParsedDate> {
+        let mut cursor = IsoCursor {
+            units,
+            next: self.next,
+        };
+        if self.parsed.is_local {
+            if cursor.eat(b'Z') {
+                self.parsed.is_local = false;
+            } else {
+                let positive = cursor.eat(b'+');
+                let negative = !positive && cursor.eat(b'-');
+                if positive || negative {
+                    let hour = cursor.digits(2)?;
+                    if !cursor.eat(b':') {
+                        return None;
+                    }
+                    let minute = cursor.digits(2)?;
+                    if hour > 23 || minute > 59 {
+                        return None;
+                    }
+                    self.parsed.offset_minutes =
+                        (hour * 60 + minute) * if negative { -1 } else { 1 };
+                    self.parsed.is_local = false;
+                }
+            }
+        }
+        let [_, month, day, hour, minute, second, ms] = self.parsed.fields;
+        if cursor.next != units.len()
+            || !(0..12).contains(&month)
+            || !(1..=31).contains(&day)
+            || hour > 24
+            || minute > 59
+            || second > 59
+            || (hour == 24 && (minute != 0 || second != 0 || ms != 0))
+        {
+            return None;
+        }
+        Some(self.parsed)
+    }
+
+    fn advance(&mut self, units: &[u16], budget: usize) -> Option<Option<ParsedDate>> {
+        if !self.started {
+            self.started = true;
+            if self.start(units).is_none() {
+                return Some(None);
+            }
+        }
+        if let Some(multiplier) = &mut self.fraction_multiplier {
+            for _ in 0..budget {
+                let Some(&digit) = units.get(self.next).filter(|&&u| (48..=57).contains(&u)) else {
+                    self.fraction_multiplier = None;
+                    break;
+                };
+                self.parsed.fields[6] += i32::from(digit - 48) * *multiplier;
+                *multiplier /= 10;
+                self.next += 1;
+            }
+            if self.fraction_multiplier.is_some() {
+                return None;
+            }
+        }
+        Some(self.finish(units))
+    }
+}
 
 /// UTC calendar fields shared by ISO formatting and UTC getters/setters. Month is
 /// zero-based and weekday counts from Sunday (zero), as in ECMA-262.
@@ -463,15 +667,9 @@ pub(crate) fn this_time_value(heap: &Heap, task: TaskId, this: &Value) -> Result
         .ok_or_else(|| Fault::TypeError("Date method requires a Date receiver".into()))
 }
 
-/// A Date argument is copied before ToPrimitive; every other argument reaches
-/// here after resumable ToPrimitive with the default hint.
-pub(crate) fn construct(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
-    if matches!(value, Value::String(_)) {
-        return Err(Fault::Unsupported(
-            "Date string parsing is not supported".into(),
-        ));
-    }
-    let time = time_clip(to_number(value)?);
+/// Construct after resumable argument conversion and optional string parsing.
+pub(crate) fn construct(heap: &Heap, task: TaskId, time: f64) -> Result<Value, Fault> {
+    let time = time_clip(time);
     let realm =
         crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
     let object = OrdinaryObject::with_prototype(task, realm.date_prototype).with_date_value(time);
@@ -504,6 +702,89 @@ pub(crate) fn set_time(heap: &Heap, task: TaskId, this: &Value, time: f64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ISO rows adapted from the same QuickJS test_date function credited
+    // with the complete copyright/permission notice below (date_time_arithmetic).
+    #[test]
+    fn date_iso_parse_fields() {
+        for (text, expected) in [
+            ("2000", 946684800000.0),
+            ("2000-01", 946684800000.0),
+            ("2000-01-01", 946684800000.0),
+            ("2000-01-01T00:00Z", 946684800000.0),
+            ("2000-01-01T00:00:00Z", 946684800000.0),
+            ("2000-01-01T00:00:00+00:00", 946684800000.0),
+            ("2000-01-01T00:00:00.1Z", 946684800100.0),
+            ("2000-01-01T00:00:00.10Z", 946684800100.0),
+            ("2000-01-01T00:00:00.100Z", 946684800100.0),
+            ("2000-01-01T00:00:00.1000Z", 946684800100.0),
+            ("2000T00:00", 946684800000.0),
+            ("2017-09-22T18:10:11.091Z", 1506103811091.0),
+            ("+002000-01-01T00:00:00Z", 946684800000.0),
+            ("-000001-01-01T00:00:00Z", -62198755200000.0),
+            ("2000-01-01T00:00:00.123456789Z", 946684800123.0),
+            ("2020-01-01T01:01:01.123Z", 1577840461123.0),
+            ("2020-01-01T01:01:01.1Z", 1577840461100.0),
+            ("2020-01-01T01:01:01.12Z", 1577840461120.0),
+            ("2020-01-01T01:01:01.1234Z", 1577840461123.0),
+            ("2020-01-01T01:01:01.12345Z", 1577840461123.0),
+            ("2020-01-01T01:01:01.1235Z", 1577840461123.0),
+            ("2020-01-01T01:01:01.9999Z", 1577840461999.0),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = IsoParser::default();
+            let fields = loop {
+                if let Some(result) = parser.advance(&units, 1) {
+                    break result.expect(text);
+                }
+            };
+            assert_eq!(fields.is_local, text == "2000T00:00", "{text}");
+            assert_eq!(fields.time(crate::host::TimeZone::UTC), expected, "{text}");
+        }
+        for text in [
+            "",
+            "-000000-01-01T00:00:00Z",
+            "2000-13",
+            "2000-01-01T25:00Z",
+            "2000-01-01T24:00:01Z",
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut parser = IsoParser::default();
+            assert!(parser.advance(&units, 256).unwrap().is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn date_iso_parse_budget() {
+        // Synthetic input beyond the existing numeric conversion limit. Each
+        // advance validates at most its allotted fractional digits.
+        let mut units: Vec<u16> = "2000-01-01T00:00:00.123".encode_utf16().collect();
+        units.extend(std::iter::repeat_n(u16::from(b'9'), 8192));
+        units.push(u16::from(b'Z'));
+        let mut parser = IsoParser::default();
+        let mut steps = 0;
+        let fields = loop {
+            let before = parser.next;
+            let result = parser.advance(&units, 256);
+            if steps > 0 {
+                assert!(parser.next - before <= 256);
+            }
+            steps += 1;
+            if let Some(result) = result {
+                break result.unwrap();
+            }
+        };
+        assert_eq!(steps, 33);
+        assert_eq!(fields.time(crate::host::TimeZone::UTC), 946684800123.0);
+        units.push(0xd800);
+        let mut parser = IsoParser::default();
+        loop {
+            if let Some(result) = parser.advance(&units, 256) {
+                assert!(result.is_none());
+                break;
+            }
+        }
+    }
 
     #[test]
     fn date_utc_decomposition() {

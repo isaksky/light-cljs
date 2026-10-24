@@ -4066,3 +4066,34 @@ Spanish grouping; narrowSymbol and name both use the regular currency symbol,
 code inserts the literal code without added spacing, and nonfinite values have
 no percent/currency affix. Explicit gaps: unit style throws RangeError; distinct
 narrow symbols and translated currency names beyond QuickJS remain deferred.
+
+### Execution: Date ISO parsing (clj-quickjs-184)
+
+`Date.parse(value)` (name `parse`, length 1, ordinary method flags) converts
+only its first argument with ToString using the string hint. It is not a
+constructor. A single-argument `new Date(value)` copies an actual Date slot;
+otherwise default-hint ToPrimitive runs, and a resulting string is parsed
+rather than converted to Number. Observable getters/methods can wait, yield,
+collect, throw, or migrate as ordinary VM frames.
+
+The ISO grammar accepts four-digit years or signed six-digit expanded years
+(`-000000` is invalid), optional `-MM` and then `-DD`, and optional `THH:mm`
+after any of those date forms. Seconds `:ss` and then a fraction `.f+` are
+optional; all fractional digits are validated and only the first three
+contribute milliseconds, padding shorter fractions with zeros. A time may
+end in `Z` or `±HH:mm`. Without a time, omitted month/day are January/1 and the
+value is UTC. A time with no offset uses the runtime's local zone. There is
+no 1900 adjustment for parsed years 0–99. Month/day bounds are 1–12/1–31;
+calendar arithmetic balances days within those bounds across month ends.
+Hours/minutes/seconds must be at most 24/59/59, with hour 24 requiring zero
+minutes, seconds and milliseconds. Offset hours/minutes are at most 23/59.
+Trailing units, including NUL and lone surrogates, invalidate the ISO form.
+Conversion uses MakeDay/MakeTime/MakeDate, the host's local-to-UTC rule when
+needed, the explicit offset when present, and finally TimeClip. Failure is
+NaN or an invalid Date object, rather than an unsupported-operation error.
+
+Explicit gaps: these rules supersede earlier ISO parsing gaps. Non-ISO
+fallback parsing is reserved for clj-quickjs-185; default Date primitive
+conversion, `toJSON`, and locale formatting remain deferred. Parsing introduces
+no new input-length cap; the existing 4096-unit Date numeric-field conversion
+limit still applies only to numeric conversions.

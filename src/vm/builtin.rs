@@ -359,6 +359,9 @@ pub(crate) enum Builtin {
     IntlPluralRulesSelect,
     IntlPluralRulesResolvedOptions,
     IntlPluralRulesSupportedLocales,
+
+
+    DateParse,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -541,6 +544,7 @@ impl Builtin {
             Builtin::MapSize => "get size",
             Builtin::Date => "Date",
             Builtin::DateNow => "now",
+            Builtin::DateParse => "parse",
             Builtin::DateGetLocalField(field) => super::date::LOCAL_GETTERS[field as usize],
             Builtin::DateSetLocalField(first) => super::date::LOCAL_SETTERS[first as usize].0,
             Builtin::DateTimezoneOffset => "getTimezoneOffset",
@@ -686,6 +690,7 @@ impl Builtin {
             Builtin::DateNow | Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset => 0,
             Builtin::DateSetLocalField(first) => super::date::LOCAL_SETTERS[first as usize].1,
             Builtin::DateUtc => 2,
+            Builtin::DateParse => 1,
             Builtin::DateGetTime | Builtin::DateValueOf => 0,
             Builtin::DateSetTime => 1,
             Builtin::DateToISOString => 0,
@@ -831,6 +836,7 @@ pub(crate) fn call(
         )),
 
         Builtin::Date
+        | Builtin::DateParse
         | Builtin::DateUtc
         | Builtin::DateSetTime
         | Builtin::DateSetUtcField(_)

@@ -1053,6 +1053,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     }
 
     let intl_plural_rules_prototype = intl_plural_rules_intrinsics(&mut b, object_prototype, intl)?;
+
+    let date_parse = b.function(Builtin::DateParse, &[])?;
+    b.add(date, "parse", date_parse, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1937,7 +1940,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 247); // Includes iterators, BigInt wrapping and PluralRules.
+        assert_eq!(first.all.len(), 248); // Includes iterators, BigInt wrapping, PluralRules and Date.parse.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

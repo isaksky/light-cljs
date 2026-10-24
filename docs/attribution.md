@@ -747,3 +747,19 @@ Implementation is written afresh over the already attributed locale, pattern
 and currency pools. The integration examples adapt upstream expectations and
 refer to the full QuickJS copyright/permission notice beside the decimal tests
 and `src/intl/data/QUICKJS-LICENSE`. No new dataset or C runtime is used.
+
+## Date ISO parsing (clj-quickjs-184)
+
+`src/vm/date.rs::tests::date_iso_parse_fields` and
+`tests/js_source.rs::date_parse_iso_strings` adapt ISO parsing, fraction
+truncation and ISO round-trip rows from
+`research/quickjs/tests/test_builtin.js::test_date` (lines 623–637, 662–680),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The copyright/MIT permission notice from `research/quickjs/LICENSE` is retained
+with the source tests and in the unit-test module. Other cases are synthetic
+fixtures, not light-cljs output. `research/quickjs/quickjs.c` functions
+`js_Date_parse`, `js_date_parse_isostring`, `string_get_digits`,
+`string_get_milliseconds`, `string_get_tzoffset`, and `js_date_constructor`
+were semantic references. The Rust parser/continuation is written afresh;
+QuickJS's 128-byte prefix truncation and nine-digit fraction scan cap are not
+copied. Non-ISO syntax extensions are reserved for the fallback parser.

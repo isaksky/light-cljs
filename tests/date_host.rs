@@ -356,3 +356,35 @@ fn date_zone_transition_boundaries() {
         );
     }
 }
+
+#[test]
+fn date_iso_local_zone_disambiguation() {
+    let rt = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    for source in [
+        "Date.parse('2020-03-29T02:30') === Date.UTC(2020, 2, 29, 1, 30)",
+        "new Date('2020-10-25T02:30').getTime() === Date.UTC(2020, 9, 25, 0, 30)",
+        "Date.parse('2020-03-29') === Date.UTC(2020, 2, 29) && Date.parse('2020-10-25T02:30+01:00') === Date.UTC(2020, 9, 25, 1, 30)",
+    ] {
+        assert_eq!(
+            evaluate(&rt, &mut host, source),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+    let mut utc = SimTimeHost::new(0.0, TimeZone::UTC);
+    assert_eq!(
+        evaluate(&rt, &mut utc, "Date.parse('2000T00:00')"),
+        ValueView::Number(946681200000.0)
+    );
+    // Explicit UTC parsing leaves the first-local-operation zone selection free.
+    let rt = Runtime::new();
+    assert_eq!(
+        evaluate(&rt, &mut utc, "Date.parse('2000')"),
+        ValueView::Number(946684800000.0)
+    );
+    assert_eq!(
+        evaluate(&rt, &mut host, "Date.parse('2000T00:00')"),
+        ValueView::Number(946681200000.0)
+    );
+}

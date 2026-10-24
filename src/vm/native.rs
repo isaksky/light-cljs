@@ -404,11 +404,17 @@ enum ConvertTarget {
     BigIntAsN {
         signed: bool,
     },
+
+    DateParse,
 }
 
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    DateParse {
+        parser: Box<super::date::Parser>,
+        construct: bool,
+    },
     BigIntFormat(Box<crate::value::bigint::BigIntToString>),
     Iterator(Box<iterator::State>),
     BigIntParse {
@@ -736,6 +742,7 @@ impl Trace for NativeFrame {
                 }
             }
             NativeState::StringSearch(_)
+            | NativeState::DateParse { .. }
             | NativeState::StringBuild(_)
             | NativeState::BigIntFormat(_)
             | NativeState::NumberParse(_) => {} // No heap edges.
@@ -1306,6 +1313,11 @@ pub(crate) fn start_builtin(
             ConvertTarget::DateNow { construct: false },
             vec![],
             Hint::Number,
+        ),
+        Builtin::DateParse if !construct => (
+            ConvertTarget::DateParse,
+            vec![args.first().cloned().unwrap_or(Value::Undefined)],
+            Hint::String,
         ),
         Builtin::DateToLocalString(part) if !construct => {
             super::date::this_time_value(heap, state.diag.task, this)?;
@@ -2118,7 +2130,7 @@ pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), F
 fn string_operand(target: ConvertTarget, index: usize) -> bool {
     use ConvertTarget::*;
     match target {
-        StringValue | SymbolDescription | SymbolRegistryKey => true,
+        StringValue | SymbolDescription | SymbolRegistryKey | DateParse => true,
         PrimitiveConstructor { which, .. } => {
             matches!(which, builtin::Builtin::String | builtin::Builtin::Symbol)
         }
@@ -2894,8 +2906,7 @@ impl NativeState {
                     ConvertTarget::DateNow { construct } => {
                         let time = super::date::now(host)?;
                         if construct {
-                            super::date::construct(heap, task, &Value::Number(time))
-                                .map(Action::Return)
+                            super::date::construct(heap, task, time).map(Action::Return)
                         } else {
                             Ok(Action::Return(Value::Number(time)))
                         }
@@ -2908,7 +2919,7 @@ impl NativeState {
                     ConvertTarget::DateLocalConstructor => {
                         let zone = super::date::zone(heap, host);
                         let time = zone.utc_time_millis(super::date::fields_time(operands)?);
-                        super::date::construct(heap, task, &Value::Number(time)).map(Action::Return)
+                        super::date::construct(heap, task, time).map(Action::Return)
                     }
                     ConvertTarget::DateSetLocalField { first, time } => {
                         let zone = super::date::zone(heap, host);
@@ -2924,7 +2935,24 @@ impl NativeState {
                         .map(Action::Return)
                     }
                     ConvertTarget::DateConstructor => {
-                        super::date::construct(heap, task, &operands[0]).map(Action::Return)
+                        if let Value::String(text) = &operands[0] {
+                            *self = NativeState::DateParse {
+                                parser: Box::new(super::date::Parser::new(text.clone())),
+                                construct: true,
+                            };
+                            Ok(Action::Continue)
+                        } else {
+                            super::date::construct(heap, task, dispatch::to_number(&operands[0])?)
+                                .map(Action::Return)
+                        }
+                    }
+                    ConvertTarget::DateParse => {
+                        let text = dispatch::to_js_string(&operands[0])?;
+                        *self = NativeState::DateParse {
+                            parser: Box::new(super::date::Parser::new(text)),
+                            construct: false,
+                        };
+                        Ok(Action::Continue)
                     }
                     ConvertTarget::DateUtc => super::date::utc(operands).map(Action::Return),
                     ConvertTarget::DateSetUtcField { first, time } => super::date::set_utc_field(
@@ -3279,6 +3307,24 @@ impl NativeState {
                 Some(number) => Action::Return(Value::Number(number)),
                 None => Action::Continue,
             }),
+            NativeState::DateParse { parser, construct } => {
+                let Some(parsed) = parser.advance(256) else {
+                    return Ok(Action::Continue);
+                };
+                let time = parsed.map_or(f64::NAN, |fields| {
+                    let zone = if fields.is_local {
+                        super::date::zone(heap, host)
+                    } else {
+                        crate::host::TimeZone::UTC
+                    };
+                    fields.time(zone)
+                });
+                if *construct {
+                    super::date::construct(heap, task, time).map(Action::Return)
+                } else {
+                    Ok(Action::Return(Value::Number(time)))
+                }
+            }
         }
     }
 
@@ -3318,6 +3364,7 @@ impl NativeState {
                 | NativeState::StringSplit { .. }
                 | NativeState::StringBuild(_)
                 | NativeState::NumberParse(_)
+                | NativeState::DateParse { .. }
                 | NativeState::Json { .. }
                 | NativeState::JsonStringify(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,

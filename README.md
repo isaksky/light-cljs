@@ -3233,3 +3233,20 @@ name and narrowSymbol use the snapshot's regular symbol, code uses the literal
 code without extra spacing, and NaN/infinity have no style affixes.
 Deferred: unit style (RangeError), distinct narrow symbols and translated
 currency names beyond the pinned QuickJS behavior.
+
+Date ISO parsing (clj-quickjs-184): `Date.parse(value)` performs resumable
+ToString with the string hint; single-argument `new Date(value)` parses a
+string returned by default-hint ToPrimitive and otherwise converts to Number.
+Accepted ISO forms are `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, optionally followed by
+`THH:mm`, `THH:mm:ss`, or `THH:mm:ss.f+`, with optional `Z` or `±HH:mm` on
+the time. Signed six-digit years work except `-000000`. Fractions of any length
+truncate to milliseconds. Date-only forms use UTC; time forms without an
+offset use the runtime's frozen host zone (UTC without a host), including its
+existing DST gap/overlap rules. Fields are range-checked, `24:00` advances to
+the next day, and invalid or TimeClip-out-of-range input returns NaN (an invalid
+Date on construction). This supersedes earlier ISO parsing gaps. Non-ISO
+fallback grammar remains deferred to clj-quickjs-185; Date default coercion,
+`toJSON`, and locale formatting remain deferred.
+Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`,
+`CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`, and
+`CARGO_BUILD_JOBS=3 cargo test --lib vm::date:: -- --test-threads=3`.
