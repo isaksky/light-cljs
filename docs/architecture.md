@@ -5599,8 +5599,9 @@ surrounds the disposal entry: same-loop continue disposes without closing;
 break, return, throw, outer jumps and cancellation dispose before closing.
 The body's scopes nest inside the head resource scope. A validation or
 disposal failure occurs with the consumer flag set, so IteratorClose runs.
-All resource, method and error state uses the existing traced frame locals;
-no new opcode, heap kind or native suspension mechanism is introduced.
+Registration retains resource/method snapshots in traced frame locals.
+With clj-quickjs-239, scope exit transfers them into the shared `using_dispose`
+native loop; its remaining resources and pending errors are traced there.
 
 `src/vm/native/iterator.rs` exposes reusable resumable GetIterator state to
 native consumers. `get_iterator` (`0x74`) returns a hidden task-owned record
