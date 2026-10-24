@@ -881,10 +881,10 @@ mod tests {
     fn builtin_global_operands_are_validated() {
         let g = Opcode::GetBuiltinGlobal as u8;
         assert_eq!(
-            kind(load(vec![g, 19, 0, RET], vec![], 0)),
-            UnknownBuiltinGlobal { index: 19 }
+            kind(load(vec![g, 20, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 20 }
         );
-        for i in 0..19 {
+        for i in 0..20 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
     }
