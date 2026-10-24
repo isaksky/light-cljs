@@ -1281,7 +1281,10 @@ pub(crate) fn start_direct_eval(
     for source in &site.environments {
         captures.push(eval_source(heap, state, *source)?);
     }
-    if let Some(source) = site.initializer_home {
+    if let Some(source) = site.super_home {
+        captures.push(eval_source(heap, state, source)?);
+    }
+    if let Some((source, _)) = site.super_fields {
         captures.push(eval_source(heap, state, source)?);
     }
     native.caller = Some(eval::Caller { site, captures });

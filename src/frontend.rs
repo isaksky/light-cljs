@@ -291,6 +291,7 @@ pub(crate) fn compile_direct_eval(
     let mut parser = parser::Parser::new(source, site.strict);
     parser.allow_new_target(site.new_target.is_some());
     parser.class_initializer_eval(site.class_initializer);
+    parser.allow_super(site.super_home.is_some(), site.super_fields.is_some());
     let script = parser.parse_script()?;
     lower::lower_direct_eval(name, source, &script, site)
 }

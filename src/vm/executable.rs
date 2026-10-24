@@ -117,8 +117,11 @@ pub struct EvalSite {
     pub receiver_strict: bool,
     /// Direct eval inherits the initializer's early error for `arguments`.
     pub class_initializer: bool,
-    /// Lexical method context for direct eval inside a field initializer.
-    pub initializer_home: Option<EvalSource>,
+    /// Lexical method context, also inherited through arrows and nested eval.
+    pub super_home: Option<EvalSource>,
+    /// Derived constructor's instance initializer binding and whether it is a cell.
+    /// Its presence also permits super() in direct eval.
+    pub super_fields: Option<(EvalSource, bool)>,
     /// None at script scope; arrows and eval inherit the enclosing function's
     /// binding, whose value can itself be undefined on an ordinary call.
     pub new_target: Option<EvalSource>,
@@ -741,13 +744,19 @@ impl Executable {
                     > usize::from(u16::MAX)
                         - 1
                         - usize::from(site.new_target.is_some())
-                        - usize::from(site.initializer_home.is_some())
+                        - usize::from(site.super_home.is_some())
+                        - usize::from(site.super_fields.is_some())
                 || !valid_source(site.receiver)
                 || site.new_target.is_some_and(|source| !valid_source(source))
+                || site.super_home.is_some_and(|source| !valid_source(source))
+                || site.class_initializer && site.super_home.is_none()
                 || site
-                    .initializer_home
-                    .is_some_and(|source| !valid_source(source))
-                || site.initializer_home.is_some() != site.class_initializer
+                    .super_fields
+                    .is_some_and(|(source, _)| !valid_source(source))
+                || site.super_fields.is_some()
+                    && (site.super_home.is_none()
+                        || site.new_target.is_none()
+                        || site.class_initializer)
                 || site.environments.iter().any(|s| !valid_source(*s))
                 || site.variable_environment.is_some_and(|s| !valid_source(s))
                 || site
@@ -1084,7 +1093,8 @@ mod tests {
                 receiver: EvalSource::This,
                 receiver_strict: true,
                 class_initializer: false,
-                initializer_home: None,
+                super_home: None,
+                super_fields: None,
                 new_target,
                 environments: vec![EvalSource::This; environments],
                 variable_environment: None,
@@ -1093,15 +1103,23 @@ mod tests {
             });
             let mut initializer = spec.clone();
             initializer.eval_sites[0].class_initializer = true;
-            initializer.eval_sites[0].initializer_home = Some(EvalSource::CurrentFunction);
+            initializer.eval_sites[0].super_home = Some(EvalSource::CurrentFunction);
             let initializer_valid =
                 valid && count + environments + usize::from(new_target.is_some()) < 65_534;
             assert_eq!(
                 Executable::load(initializer.clone()).is_ok(),
                 initializer_valid
             );
-            initializer.eval_sites[0].initializer_home = Some(EvalSource::Local(spec.locals));
+            initializer.eval_sites[0].super_home = Some(EvalSource::Local(spec.locals));
             assert!(matches!(Executable::load(initializer), Err(e) if e.kind == InvalidEvalSite));
+            let mut derived = spec.clone();
+            derived.eval_sites[0].super_home = Some(EvalSource::CurrentFunction);
+            derived.eval_sites[0].super_fields = Some((EvalSource::CurrentFunction, false));
+            let derived_valid = new_target.is_some()
+                && count + environments + usize::from(new_target.is_some()) < 65_533;
+            assert_eq!(Executable::load(derived.clone()).is_ok(), derived_valid);
+            derived.eval_sites[0].super_fields = Some((EvalSource::Local(spec.locals), true));
+            assert!(matches!(Executable::load(derived), Err(e) if e.kind == InvalidEvalSite));
             let result = Executable::load(spec);
             if valid {
                 result.unwrap_or_else(|error| {

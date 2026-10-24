@@ -795,6 +795,11 @@ impl<'a> Parser<'a> {
         })
     }
 
+    pub(super) fn allow_super(&mut self, property: bool, call: bool) {
+        self.super_property = property;
+        self.super_call = call;
+    }
+
     pub(super) fn class_initializer_eval(&mut self, enabled: bool) {
         self.class_initializer = enabled;
         self.super_property = enabled;
@@ -2087,8 +2092,6 @@ impl<'a> Parser<'a> {
     /// holds, at the start of an AssignmentExpression.
     #[inline(never)]
     fn parse_arrow_function(&mut self) -> PResult<Expr> {
-        let property = self.super_property && self.class_initializer;
-        let outer_property = std::mem::replace(&mut self.super_property, property);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
@@ -2154,7 +2157,6 @@ impl<'a> Parser<'a> {
             strict,
         );
         function.asynchronous = asynchronous;
-        self.super_property = outer_property;
         self.check_height(function.height)?;
         let span = function.span;
         self.expr(ExprKind::Function(Box::new(function)), span)
@@ -3778,7 +3780,6 @@ impl<'a> Parser<'a> {
                     "super properties require a method",
                 ));
             }
-            // Arrows and direct eval need lexical home-object transport (-112).
             if !(self.is_punct(Punct::Dot) || self.is_punct(Punct::LBracket)) {
                 return Err(self.error(
                     SyntaxErrorKind::Invalid,

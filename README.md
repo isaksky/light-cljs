@@ -1201,7 +1201,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 Deferred:
 
 - Rest parameters (defaults: clj-quickjs-100,
-  below) and `super` (rejected inside arrows).
+  below). Lexical `super` through method arrows and direct eval is supported (-112).
   Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
@@ -3726,8 +3726,9 @@ construction of other built-in subclasses is explicitly rejected. Verify with
 `cargo test --test js_source derived_classes` and
 `cargo test --test need derived_constructor_waits_inside_super`.
 
-Deferred: lexical super properties in arrows/eval (-112), fields and static
-initialization blocks (-139), and super calls from runtime eval source.
+Lexical super properties through arrows/direct eval and constructor super calls
+from direct eval execute (-112). Public fields execute (-139); private fields
+and static initialization blocks remain deferred.
 
 ### Intl.ListFormat (clj-quickjs-220)
 
@@ -3820,7 +3821,8 @@ yields, dependency waits, collection and worker migration.
 
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_functions -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib frontend:: -- --test-threads=3`.
-`Reflect.construct`, built-in subclassing and `super` remain deferred.
+`Reflect.construct` and built-in subclassing remain deferred. Lexical `super`
+through arrows and direct eval is supported (-112).
 
 ### Static module loading (clj-quickjs-252)
 
@@ -3937,7 +3939,7 @@ deletions (ReferenceError) and calls in object/class methods and accessors,
 including static methods and constructors. Lookup uses the defining home
 object's current prototype and preserves `this` for getters, setters and calls.
 Keys and callbacks can yield, wait, collect and migrate on 64 KiB workers.
-Lexical super properties through arrows and runtime eval remain deferred (-112).
+Lexical super properties through arrows and direct eval execute (-112).
 
 Verify with `cargo test --test js_source super_property_access` and
 `cargo test --test need super_property_access_waits_collects_and_migrates`.
@@ -4040,3 +4042,18 @@ migration. Import attributes and JSON5 extensions remain rejected; the CLI
 remains script-only.
 
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.
+
+### Lexical super in arrows and direct eval (clj-quickjs-112)
+
+Supported: `super.name`, `super[key]`, calls and writes through arrows and
+direct eval nested in methods, accessors, constructors and field initializers.
+Arrows retain the enclosing method's home object and receiver after it returns;
+direct eval and eval-created arrows inherit both. In derived constructors,
+`eval('super()')` shares the receiver binding and initializes instance fields.
+Ordinary nested functions and indirect eval establish a fresh context;
+`super` outside a valid method/constructor context throws SyntaxError.
+Captures obey existing tracing and publication rules, and super callbacks can
+yield, wait, collect and migrate. Direct eval in parameter expressions remains
+deferred (-109).
+
+Verify with `cargo test --test js_functions super_`.

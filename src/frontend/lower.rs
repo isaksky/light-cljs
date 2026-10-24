@@ -22,7 +22,7 @@
 //! implicit binding only when referenced, using the analysis pass's facts.
 //! Their `this` is captured by value from the nearest ordinary function
 //! through intervening arrows (clj-quickjs-98). `new.target` uses the same capture path (clj-quickjs-99);
-//! `super` remains deferred.
+//! `super` captures its method context through the same path (clj-quickjs-112).
 //!
 //! **Bindings.** Every `let`/`const`/function binding and every parameter
 //! lives in a frame local. Entering a statement list (script, function body,
@@ -264,10 +264,14 @@ fn lower_script_kind(
                     + 1
                     + usize::from(site.new_target.is_some())
                     + site.environments.len()
-                    + usize::from(site.initializer_home.is_some())
+                    + usize::from(site.super_home.is_some())
+                    + usize::from(site.super_fields.is_some())
             ];
             lower.cur_mut().this_strict = site.receiver_strict;
             lower.cur_mut().class_initializer = site.class_initializer;
+            lower.cur_mut().super_property = site.super_home.is_some();
+            lower.cur_mut().super_call = site.super_fields.is_some();
+            lower.cur_mut().instance_fields = lower.eval_super_fields;
         }
         lower.cur_mut().global_declarations =
             !eval || (!script.strict && lower.eval_variable_environment.is_none());
@@ -620,6 +624,9 @@ struct FnCtx {
     this_capture: Option<u16>,
     raw_this_capture: Option<u16>,
     new_target_capture: Option<u16>,
+    super_capture: Option<u16>,
+    super_property: bool,
+    super_call: bool,
     /// Strictness of the ordinary function supplying lexical `this`, which
     /// can differ from an arrow/eval's own directive-selected strictness.
     this_strict: bool,
@@ -715,7 +722,8 @@ struct Lowerer<'s> {
     eval_bindings: HashMap<String, Access>,
     eval_this: Option<u16>,
     eval_new_target: Option<u16>,
-    eval_initializer_home: Option<u16>,
+    eval_super_home: Option<u16>,
+    eval_super_fields: Option<Access>,
     /// Names indexed by `Access::Global`, keeping the recursive resolver's
     /// return type small and Copy. Constant indices belong to each emitter.
     global_names: Vec<String>,
@@ -744,7 +752,8 @@ impl<'s> Lowerer<'s> {
             eval_bindings: HashMap::new(),
             eval_this: None,
             eval_new_target: None,
-            eval_initializer_home: None,
+            eval_super_home: None,
+            eval_super_fields: None,
             global_names: Vec::new(),
             source,
             shared_source: Arc::from(source),
@@ -764,10 +773,27 @@ impl<'s> Lowerer<'s> {
         self.eval_lexical_conflicts = site.lexical_conflicts.clone();
         let bindings = &site.bindings;
         self.eval_new_target = site.new_target.map(|_| (bindings.len() + 1) as u16);
-        self.eval_initializer_home = site.initializer_home.map(|_| {
+        self.eval_super_home = site.super_home.map(|_| {
             (bindings.len() + 1 + usize::from(site.new_target.is_some()) + site.environments.len())
                 as u16
         });
+        if let Some((_, cell)) = site.super_fields {
+            let key = self.next_self_key;
+            self.next_self_key -= 1;
+            self.eval_super_fields = Some(Access::Found {
+                place: Place::Capture(
+                    (bindings.len()
+                        + 1
+                        + usize::from(site.new_target.is_some())
+                        + site.environments.len()
+                        + usize::from(site.super_home.is_some())) as u16,
+                ),
+                target: Target::Binding(BindingKind::Const),
+                repr: if cell { Repr::Cell } else { Repr::Value },
+                initialized: true,
+                key,
+            });
+        }
         for i in 0..site.environments.len() {
             let key = self.next_self_key;
             self.next_self_key -= 1;
@@ -880,6 +906,9 @@ impl<'s> Lowerer<'s> {
             this_capture: None,
             raw_this_capture: None,
             new_target_capture: None,
+            super_capture: None,
+            super_property: false,
+            super_call: false,
             this_strict: strict,
 
             arguments_key,
@@ -2043,19 +2072,23 @@ impl<'s> Lowerer<'s> {
         Some(Place::Capture(index))
     }
 
-    fn resolve_super_constructor(&mut self, level: usize) -> Place {
+    fn resolve_super_function(&mut self, level: usize) -> Place {
         if self.fns[level].completion.is_some()
-            && let Some(index) = self.eval_initializer_home
+            && let Some(index) = self.eval_super_home
         {
             return Place::Capture(index);
         }
         if !self.fns[level].lexical_this {
             return Place::Current;
         }
-        let parent = self.resolve_super_constructor(level - 1);
+        if let Some(index) = self.fns[level].super_capture {
+            return Place::Capture(index);
+        }
+        let parent = self.resolve_super_function(level - 1);
         let ctx = &mut self.fns[level];
         let index = ctx.captures.len().min(MAX_COUNT) as u16;
         ctx.captures.push(parent);
+        ctx.super_capture = Some(index);
         Place::Capture(index)
     }
 
@@ -2079,12 +2112,8 @@ impl<'s> Lowerer<'s> {
         if method {
             self.out().op(Opcode::Dup, span);
         }
-        if self.cur().class_initializer {
-            let home = self.resolve_super_constructor(self.fns.len() - 1);
-            self.out().load(home, span);
-        } else {
-            self.out().op(Opcode::CurrentFunction, span);
-        }
+        let home = self.resolve_super_function(self.fns.len() - 1);
+        self.out().load(home, span);
         self.out().op(Opcode::GetSuperBase, span);
         Ok(())
     }
@@ -2097,7 +2126,7 @@ impl<'s> Lowerer<'s> {
         let level = self.fns.len() - 1;
         let receiver = self.resolve_this(level, true);
         self.out().load(receiver, span);
-        let constructor = self.resolve_super_constructor(level);
+        let constructor = self.resolve_super_function(level);
         self.out().load(constructor, span);
         self.out().op(Opcode::GetSuperConstructor, span);
         let target = self
@@ -2523,15 +2552,25 @@ impl<'s> Lowerer<'s> {
             }
         }
         let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
-        let initializer_home = self
+        let super_home = self
             .cur()
-            .class_initializer
-            .then(|| eval_source(self.resolve_super_constructor(self.fns.len() - 1)));
+            .super_property
+            .then(|| eval_source(self.resolve_super_function(self.fns.len() - 1)));
+        let super_fields = if self.cur().super_call {
+            let fields = self.resolve_instance_fields(self.fns.len() - 1, span)?;
+            let Access::Found { place, repr, .. } = fields else {
+                return Err(self.internal(span, "invalid constructor field binding"));
+            };
+            Some((eval_source(place), repr == Repr::Cell))
+        } else {
+            None
+        };
         if bindings.len() + environments.len()
             > MAX_COUNT
                 - 1
                 - usize::from(new_target.is_some())
-                - usize::from(initializer_home.is_some())
+                - usize::from(super_home.is_some())
+                - usize::from(super_fields.is_some())
         {
             return Err(self.error(
                 SyntaxErrorKind::TooLarge,
@@ -2547,7 +2586,8 @@ impl<'s> Lowerer<'s> {
             receiver,
             receiver_strict: self.cur().this_strict,
             class_initializer: self.cur().class_initializer,
-            initializer_home,
+            super_home,
+            super_fields,
             new_target,
             environments,
             variable_environment,
@@ -2801,6 +2841,8 @@ impl<'s> Lowerer<'s> {
         }
         let parent_this_strict = self.cur().this_strict;
         let parent_initializer = self.cur().class_initializer;
+        let parent_super_property = self.cur().super_property;
+        let parent_super_call = self.cur().super_call;
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor_kind = constructor_kind(f);
         if self.cur().constructor_kind.is_class() {
@@ -2821,6 +2863,13 @@ impl<'s> Lowerer<'s> {
             matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
         self.cur_mut().class_initializer =
             fields.is_some() || self.cur().lexical_this && parent_initializer;
+        self.cur_mut().super_property = if self.cur().lexical_this {
+            parent_super_property
+        } else {
+            !matches!(f.kind, FunctionKind::Ordinary)
+        };
+        self.cur_mut().super_call = self.cur().constructor_kind.is_derived()
+            || self.cur().lexical_this && parent_super_call;
         if fields.is_some() {
             self.cur_mut().own_arguments = false;
         }

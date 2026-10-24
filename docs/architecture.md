@@ -8270,3 +8270,27 @@ newline where a field may end through ASI. Binding, reference and label parsing
 still reject the reserved spelling when the token belongs to an expression.
 This preserves both initialized/uninitialized fields before escaped names and
 multiline accessors without treating get/set as line-restricted modifiers.
+
+### Lexical super contexts (clj-quickjs-112)
+
+The lowerer captures the enclosing method function through arrows, memoizing one
+capture per arrow as for `new.target`. Super property bytecode uses that method's
+home object and a separate lexical receiver, so existing resumable property/key
+conversion paths remain unchanged. Direct-eval descriptors carry optional method
+and derived-constructor field bindings, alongside the raw receiver and construct
+target. Presence of these bindings controls eval's parser permissions. The
+validated descriptor counts every hidden capture and checks its source index.
+Nested eval and eval-created arrows forward the same bindings; ordinary functions
+establish new contexts. In derived constructors the captured receiver is the
+existing shared binding cell. After `BindThis`, eval runs the captured field
+initializer on the ordinary VM call path. No native interpreter recursion or
+new heap kinds are introduced; existing closure and eval tracing retains all
+values across suspension and prevents publication of task-owned home objects.
+
+QuickJS references and provenance: `tests/fixtures/js/quickjs_super_arrow.js`
+adapts the super row in `research/quickjs/tests/test_closure.js`,
+`test_arrow_function`, revision `7d1c13c5d8f8` (VERSION 2026-06-04), replacing
+`assert` with a boolean script completion and retaining its MIT notice. Other
+new tests are synthetic fixtures, not light-cljs output. QuickJS's `OP_get_super`
+and `js_method_set_home_object` in `research/quickjs/quickjs.c` are semantic
+references; the Rust capture and eval transport follows this runtime's design.

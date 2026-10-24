@@ -49,6 +49,75 @@ fn eval(src: &str) -> ValueView {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output; the upstream row is attributed
+/// and licensed in fixtures/js/quickjs_super_arrow.js.
+#[test]
+fn super_in_arrows_and_eval() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/quickjs_super_arrow.js")),
+        ValueView::Bool(true)
+    );
+    for src in [
+        "const o1 = {f() { return this; }}; const o2 = {g() { return () => super.f(); }}; o2.__proto__ = o1; o2.g()() === o2",
+        "const p = {x: 3, f() { return this; }}; const o = {__proto__: p, g() { return () => () => super['f'](); }}; const f = o.g()(); f.call({}) === o",
+        "const p = {x: 3}; const o = {__proto__: p, g(a = () => super.x) { return a(); }}; o.g() === 3",
+        "const o = {__proto__: {x: 3}, g() { return eval('super.x'); }}; o.g() === 3",
+        r#"const o = {__proto__: {f() { return this; }}, g() { return eval('super["f"]()'); }}; o.g() === o"#,
+        "const o = {__proto__: {f() { return this; }}, g() { return eval('() => eval(\"super.f()\")'); }}; o.g()() === o",
+        "const o = {__proto__: {x: 1}, g() { return () => super.x; }}; const f = o.g(); Object.setPrototypeOf(o, {x: 9}); f() === 9",
+        "const p = {get x() { return this.y; }, set x(v) { this.y = v; }}; const o = {__proto__: p, y: 2, g() { return () => { super.x += 3; return eval('super.x'); }; }}; o.g()() === 5 && o.y === 5",
+        "class B { f() { return this; } static f() { return this; } } class C extends B { g() { return () => super.f(); } static g() { return () => eval('super.f()'); } } const c = new C(); c.g()() === c && C.g()() === C",
+        "function p() { return eval('super.x'); } let ok = false; try { p(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+        "const o = {m() { return function() { return eval('super.x'); }; }}; let ok = false; try { o.m()(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+        "const o = {m() { return (0, eval)('super.x'); }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+        "const o = {m() { return eval('super()'); }}; let ok = false; try { o.m(); } catch(e) { ok = e instanceof SyntaxError; } ok",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "const a = () => super.x;",
+        "const a = () => super();",
+        "const o = {m() { return function() { return () => super.x; }; }};",
+    ] {
+        assert_eq!(
+            compile_script("super", src).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{src}"
+        );
+    }
+}
+
+#[test]
+fn super_in_constructor_eval() {
+    for src in [
+        "class B { constructor(x) { this.x = x; } } class C extends B { y = 4; constructor() { eval('super(3)'); } } const c = new C(); c.x === 3 && c.y === 4",
+        "class B { constructor(x) { this.x = x; } } class C extends B { y = 4; constructor() { (() => eval('super(...[3])'))(); } } const c = new C(); c.x === 3 && c.y === 4",
+        "class B {} class C extends B { y = 4; constructor() { eval('(() => eval(\"super()\"))()'); } } new C().y === 4",
+        "class B {} class C extends B { y = 4; constructor() { eval('() => super()')(); } } new C().y === 4",
+        "class B {} class C extends B { constructor() { const f = () => eval('super.x'); let ok = false; try { f(); } catch(e) { ok = e instanceof ReferenceError; } if (!ok) throw 1; eval('super()'); } } new C() instanceof C",
+        "let n = 0; class B { constructor() { n++; } } class C extends B { y = ++n; constructor() { eval('super()'); try { eval('super()'); } catch(e) { if (!(e instanceof ReferenceError)) throw e; } } } const c = new C(); c.y === 2 && n === 3",
+        "class B {} class C extends B { y = 4; constructor() { class Other { static z = eval('1'); } eval('super()'); } } new C().y === 4",
+        "class B {} class C extends B { y = 4; constructor() { class Other { [eval('super()')]() {} } } } new C().y === 4",
+        "let init; class B {} class C extends B { y = 4; constructor() { init = eval('() => super()'); return {}; } } new C(); const c = init(); c instanceof C && c.y === 4",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn super_capture_publication() {
+    let rt = Runtime::new();
+    let program = exe("const o = {m() { return () => super.x; }}; o.m.call(1)");
+    let RunOutcome::Complete(f) = rt.spawn(&program, &[]).unwrap().run().unwrap() else {
+        panic!("method did not return an arrow");
+    };
+    // Even a primitive receiver cannot make the task-owned home object shared.
+    assert!(matches!(
+        rt.publish(&f),
+        Err(PublishError::NotShareable { .. })
+    ));
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn new_target_in_functions_and_arrows() {
@@ -128,10 +197,24 @@ fn new_target_capture_publication() {
 
 #[test]
 fn new_target_survives_yields_waits_collection_and_migration() {
-    let rt = Runtime::new();
-    let program = exe(
+    lexical_context_survives_yields_waits_collection_and_migration(
         "function F(a = () => () => new.target) { __rt.need(5,3); return eval('() => a()() === new.target'); } const f = new F(); f() && F()();",
     );
+}
+
+#[test]
+fn super_survives_yields_waits_collection_and_migration() {
+    for src in [
+        "const p = {get x() { return __rt.need(5,3) + this.y; }}; const o = {__proto__: p, y: 2, m() { return () => eval('super.x'); }}; o.m()() === 3",
+        "class B { constructor() { this.x = __rt.need(5,3); } } class C extends B { y = 2; constructor() { (() => eval('super()'))(); } } const c = new C(); c.x + c.y === 3",
+    ] {
+        lexical_context_survives_yields_waits_collection_and_migration(src);
+    }
+}
+
+fn lexical_context_survives_yields_waits_collection_and_migration(src: &str) {
+    let rt = Runtime::new();
+    let program = exe(src);
     // Eval descriptors and the new bytecode also survive executable reloads.
     let mut spec = program.to_spec();
     spec.functions = spec
