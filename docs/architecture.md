@@ -4001,3 +4001,24 @@ Tests cover all 20 upstream rows with length, every element and join, limit
 wrapping, empty inputs, surrogate pairs, conversion order and throws,
 forwarding, callback dependency waits, collection and thread migration
 during coercion, scanning, copying and result-array construction.
+
+## Error stack capture (clj-quickjs-59)
+
+`VmState::error_stack` snapshots at most 64 explicit JS frames before an
+Error constructor starts its resumable conversions, or before a catchable
+engine failure unwinds. It uses the same instruction/source-location table
+and saved caller PCs as diagnostics. Native callbacks keep the invoking JS
+operation as their caller position. Compiled debug metadata retains the
+script filename separately from each function's name, so nested closures
+and separately compiled scripts keep the right origin. Names use immutable
+compiled metadata; diagnostic capture never runs JavaScript.
+
+The snapshot is an ordinary immutable `JsString` leaf buffer with no heap
+edges, using the existing coarse immutable Arc boundary for strings. It
+retains no frame, function object, source text or task; creation cost is
+bounded by 64 frames and the names written. Constructed Errors store it as
+an ordinary non-enumerable property; native engine errors keep it in their
+payload and expose a fixed virtual own property through property reads,
+HasProperty and descriptor queries. Their cause remains their only traced
+heap edge. No worker-local state or system-stack walk is involved, so
+waiting, migration and collection need no additional roots or protocol.

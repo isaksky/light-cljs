@@ -15,6 +15,7 @@ pub(super) enum ErrorState {
         object: Value,
         message: Value,
         options: Value,
+        stack: JsString,
         stage: u8,
     },
     ToString {
@@ -46,7 +47,12 @@ impl Trace for ErrorState {
 }
 
 impl ErrorState {
-    pub(super) fn constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Self, Fault> {
+    pub(super) fn constructor(
+        heap: &Heap,
+        task: TaskId,
+        args: &[Value],
+        stack: JsString,
+    ) -> Result<Self, Fault> {
         // NewTarget is Error itself (or a bound Error, resolved by Construct).
         // Reflect.construct and subclass syntax are not supported yet. The
         // intrinsic's fixed prototype is Error.prototype in both call modes.
@@ -61,6 +67,7 @@ impl ErrorState {
             object: Value::Object(id),
             message: args.first().cloned().unwrap_or(Value::Undefined),
             options: args.get(1).cloned().unwrap_or(Value::Undefined),
+            stack,
             stage: 0,
         })
     }
@@ -89,6 +96,7 @@ impl ErrorState {
                 object,
                 message,
                 options,
+                stack,
                 stage,
             } => {
                 let delivered = result(input)?;
@@ -102,6 +110,7 @@ impl ErrorState {
                     1 => define(heap, object, "message", delivered)?,
                     2 => {
                         define(heap, object, "cause", delivered)?;
+                        define(heap, object, "stack", Value::String(stack.clone()))?;
                         return Ok(Action::Return(object.clone()));
                     }
                     _ => return Err(Fault::Internal("invalid Error constructor stage")),
@@ -115,6 +124,7 @@ impl ErrorState {
                         property::Read::Value(v) => define(heap, object, "cause", v)?,
                     }
                 }
+                define(heap, object, "stack", Value::String(stack.clone()))?;
                 Ok(Action::Return(object.clone()))
             }
             Self::ToString { this, name, stage } => {

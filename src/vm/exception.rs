@@ -113,14 +113,16 @@
 use crate::error::VmError;
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
-use crate::value::Value;
 use crate::value::share::Shareability;
+use crate::value::{JsString, Value};
 
 /// The payload of an error object: the exception value of a catchable
 /// run-time error. Immutable; its only heap edge is its cause, so it is
 /// shareable exactly when its cause is.
 #[derive(Debug)]
 pub(crate) struct ErrorObject {
+    /// Bounded immutable snapshot captured before exception unwinding.
+    pub(crate) stack: JsString,
     /// The failure, as reported if the exception is never caught.
     pub(crate) error: VmError,
     /// What caused it: for a failed dependency, the error value its producer

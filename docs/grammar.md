@@ -426,8 +426,9 @@ checks left to later stages:
   result copying are budgeted.
 - **Error instances** (clj-quickjs-228): `Error` is callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
-  generic `Error.prototype.toString`. Engine-raised errors remain opaque
-  (clj-quickjs-230); NativeError constructors and stacks remain deferred.
+  generic `Error.prototype.toString` and captured `stack` strings
+  (clj-quickjs-59). Engine-raised errors expose stacks; their other properties
+  and instance behavior (clj-quickjs-230) and NativeError constructors remain deferred.
 - **Number prefix parsing** (clj-quickjs-148): global `parseInt` and
   `parseFloat`, and their identical `Number` aliases, execute with resumable
   object coercion and budgeted scans. Their global bindings are writable
@@ -1266,7 +1267,7 @@ try { f(); } catch (e) { throw e; } finally {}
 |--------|-----------------------|----------------------|
 | `throw v` (any value) | `v` itself, by identity | `VmErrorKind::Thrown`, "uncaught exception: v", at the last `throw` of it |
 | `throw Error("boom")` or `throw new Error("boom")` (clj-quickjs-228) | the task-owned Error instance with ordinary properties | `VmErrorKind::Thrown`, "uncaught exception: Error: boom", at the last `throw`; name/message are read from data properties only, with no user code; accessors or object-valued fields fall back to "an object" |
-| ReferenceError, TypeError, RangeError (invalid array length), StackOverflow above | a fresh immutable error object (no properties yet) | the original error, at the failing instruction, also when the object is rethrown |
+| ReferenceError, TypeError, RangeError (invalid array length), StackOverflow above | a fresh immutable error object with a `stack` string | the original error, at the failing instruction, also when the object is rethrown |
 | a failed or cancelled cell read by `__rt.need` (clj-quickjs-27) | a fresh immutable error object whose cause is the producer's published error value (`undefined` for a cancelled cell) | `DependencyFailed(key)` / `DependencyCancelled(key)` at the `need`, also when rethrown |
 | any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory) | not catchable: the task fails at once without running catch or finally blocks | that failure |
 
@@ -1292,13 +1293,13 @@ Gaps specific to execution:
   (clj-quickjs-143) and `toString`/`valueOf` (clj-quickjs-73) execute;
   additional string methods remain deferred. Untagged template literals execute (clj-quickjs-57);
   tagged templates and `String.raw` are clj-quickjs-58.
-- **Engine-raised error objects are opaque.** A caught ReferenceError, TypeError, RangeError or
-  StackOverflow is an object without properties (`e.message`, `e.name`,
+- **Engine-raised error objects expose stacks only.** A caught ReferenceError, TypeError, RangeError or
+  StackOverflow has an immutable `stack` string (`e.message`, `e.name`,
   and `e instanceof C`
   fails with `UnsupportedOperand`); it can be compared, passed around and
   rethrown. JavaScript-created `Error` instances have ordinary properties;
   NativeError constructors (clj-quickjs-229), engine errors as instances
-  (clj-quickjs-230) and stacks (clj-quickjs-59) remain deferred.
+  (clj-quickjs-230) remain deferred.
 - **Conversion gaps.** Symbols and `Symbol.toPrimitive` (clj-quickjs-127
   and -128) remain deferred.
   Number radix formatting supports every radix 2..36, including fractions
@@ -2564,4 +2565,43 @@ error.message === 'text' && error.cause === 0 && error instanceof Error;
 Error(undefined).message === '' && Error(12).message === '12';
 Error.prototype.toString.call({name: '', message: 'm'}) === 'm';
 try { throw Error('getter'); } catch (caught) { caught.message === 'getter'; }
+```
+
+### Error stack strings (clj-quickjs-59)
+
+`Error(...)` and `new Error(...)` capture `stack` at construction, including
+when the object is never thrown. Catchable engine errors capture it at the
+failing instruction, before unwinding. Reading it later or rethrowing the
+object keeps the creation positions. The first line is the creating/failing
+frame; each following line is its caller at the call's `(` token. Callback
+callers use the JS operation that invoked the native continuation (for
+example, the `*` invoking `valueOf`, or `.` invoking a getter/setter).
+
+Each line is `    at name (filename:line:column)` followed by a newline;
+there is no message/header line. Names come from the compiled function name
+(including inferred names), with `<anonymous>` for an empty name; capture
+never reads user-defined `name` properties or calls getters. Every function
+in a compiled script uses the name passed to `compile_script` as filename.
+Lines and columns use the existing source-location convention described in
+Errors above. Hand-assembled bytecode has the executable name and omits
+`:line:column`. Capture retains the innermost **64 JS frames**, silently
+omitting older callers. The immutable string has no heap edges and survives
+frame teardown, yields, dependency waits, worker migration and collection.
+
+A constructed Error's stack is a writable, configurable, non-enumerable own
+data property, as in QuickJS. An engine error remains an immutable native
+object: its stack is a read-only, non-configurable, non-enumerable virtual
+own property, readable through property access, `in` and
+`Object.getOwnPropertyDescriptor`. Other native error properties and key
+enumeration remain unsupported until clj-quickjs-230. Direct/indirect eval
+remain deferred; eval SyntaxError stacks will use eval's source map when
+eval is implemented. NativeError constructors and function
+`lineNumber`/`columnNumber` properties are outside this addition.
+
+```js accept
+Error('hello').stack.indexOf('    at <anonymous> (') === 0;
+function make() { return Error(); } make().stack.indexOf('    at make (') === 0;
+let stack; try { null(); } catch (e) { stack = e.stack; } typeof stack === 'string';
+let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.writable && d.configurable && !d.enumerable;
+let has = false; try { missing; } catch (e) { has = 'stack' in e; } has;
 ```

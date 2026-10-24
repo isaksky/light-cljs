@@ -21,7 +21,7 @@
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
 //! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
-//! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
+//! | error object (a caught run-time error) | immutable `stack` string; other properties `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `stack`: catchable `TypeError`; other properties `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"), after a string's own `length` and indices below it (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
 //! | boolean | `UnsupportedOperand` (`Boolean.prototype`, clj-quickjs-39) | as a number |
@@ -35,7 +35,8 @@
 //! JavaScript array: `v[0]` and `v.length` read `undefined`.
 //! Function objects and error objects do have JavaScript properties
 //! (`length`, `name`, `message`, ...); until those exist, touching them is
-//! rejected explicitly instead of answering `undefined`.
+//! rejected explicitly instead of answering `undefined`. Engine errors expose
+//! their immutable `stack` as a virtual own property (clj-quickjs-59).
 //!
 //! **Writes and the prototype chain** (clj-quickjs-117, OrdinarySet). A
 //! write to a property the receiver has itself updates it (a read-only one
@@ -331,10 +332,31 @@ fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId,
         .ok_or(Fault::Internal("a number or string without a prototype"))
 }
 
-/// The failure of an access to a heap object that has no ordinary property
-/// store, or `None` when the access proceeds as on an object with no
-/// properties (module docs).
+/// Engine errors retain their immutable native representation until
+/// clj-quickjs-230; stack is a virtual, non-enumerable own data property.
+fn error_stack_property(object: &HeapObject, key: &Key) -> Option<Property> {
+    let HeapObject::Native(payload) = object else {
+        return None;
+    };
+    let error = (&**payload as &dyn std::any::Any).downcast_ref::<ErrorObject>()?;
+    if !matches!(key, Key::Name(name) if name == "stack") {
+        return None;
+    }
+    Some(Property {
+        value: Value::String(error.stack.clone()),
+        flags: PropertyFlags::FIXED,
+        accessor: None,
+    })
+}
+
+/// The failure of an access to a heap object without an ordinary store.
 fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
+    if error_stack_property(object, key).is_some() {
+        return match access {
+            Access::Read => None,
+            Access::Write | Access::Delete => Some(read_only(key)),
+        };
+    }
     let verb = access.verb();
     let unsupported = |what: &str| {
         Some(Fault::Unsupported(format!(
@@ -654,10 +676,15 @@ fn lookup(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
                 }
-                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-                    Some(fault) => Err(fault),
-                    None => Ok(Lookup::Next(None)),
-                },
+                Visit::Other(other) => {
+                    if let Some(property) = error_stack_property(other, key) {
+                        return Ok(Lookup::Found(Read::Value(property.value)));
+                    }
+                    match not_ordinary(other, key, Access::Read) {
+                        Some(fault) => Err(fault),
+                        None => Ok(Lookup::Next(None)),
+                    }
+                }
             })
             // The frame keeps the base alive and every object keeps its
             // prototype alive; a stale id is reported, not trusted.
@@ -1082,10 +1109,15 @@ fn check_inherited(
                 // Another kind as a prototype: one without JavaScript
                 // properties ends the walk; an error object, whose
                 // properties are not supported yet, fails as for a read.
-                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-                    Some(fault) => Err(fault),
-                    None => Ok(Walk::Next(None)),
-                },
+                Visit::Other(other) => {
+                    if error_stack_property(other, key).is_some() {
+                        return Err(read_only(key));
+                    }
+                    match not_ordinary(other, key, Access::Read) {
+                        Some(fault) => Err(fault),
+                        None => Ok(Walk::Next(None)),
+                    }
+                }
             })
             .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
         match next {
@@ -1341,10 +1373,15 @@ pub(crate) fn get_own_property(
             _ if key.is_length() => Some(a.length_property()),
             Key::Name(_) => named(a.object()),
         }),
-        Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-            Some(fault) => Err(fault),
-            None => Ok(None),
-        },
+        Visit::Other(other) => {
+            if let Some(property) = error_stack_property(other, key) {
+                return Ok(Some(property));
+            }
+            match not_ordinary(other, key, Access::Read) {
+                Some(fault) => Err(fault),
+                None => Ok(None),
+            }
+        }
     })
     .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
 }

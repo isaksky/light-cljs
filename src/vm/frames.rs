@@ -67,7 +67,7 @@ use crate::error::{CallSite, Diagnostic, VmError, VmErrorKind};
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::ids::{DependencyKey, TaskId, WorldId};
-use crate::value::Value;
+use crate::value::{JsString, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::{Completion, Exception, Handler, HandlerKind};
 use crate::vm::executable::Code;
@@ -756,6 +756,40 @@ impl VmState {
             return true;
         }
         false
+    }
+
+    /// Snapshot at most 64 JS frames, innermost first. Native callbacks use
+    /// their initiating JS instruction's saved position, just like diagnostics.
+    /// This reads immutable code metadata only: no getters, heap edges, or
+    /// worker/Rust-stack state. The resulting string survives frame teardown.
+    pub(crate) fn error_stack(&self, pc: usize) -> JsString {
+        use std::fmt::Write;
+        let mut stack = String::new();
+        for (index, frame) in std::iter::once(&self.entry)
+            .chain(&self.calls)
+            .rev()
+            .take(64)
+            .enumerate()
+        {
+            let at = if index == 0 {
+                pc
+            } else {
+                frame.pc.saturating_sub(1)
+            };
+            let code = &frame.code;
+            let name = if code.function_name.is_empty() {
+                "<anonymous>".to_string()
+            } else {
+                code.function_name.to_string_lossy()
+            };
+            let file = code.debug.as_ref().map_or(&*code.name, |d| &*d.filename);
+            let _ = write!(stack, "    at {name} ({file}");
+            if let Some(source) = code.location(at) {
+                let _ = write!(stack, ":{}:{}", source.line, source.column);
+            }
+            stack.push_str(")\n");
+        }
+        JsString::from(stack.as_str())
     }
 
     /// A failure at instruction `pc` of the running frame, with the call

@@ -1018,7 +1018,7 @@ Supported:
 
 Deferred:
 
-- Engine-raised error objects still have no properties (`message`, `cause` are not
+- Engine-raised error objects expose `stack` only (`message`, `cause` are not
   readable from JavaScript); a cancellation cleanup that ends early reports
   only `Cancelled`, not why.
 
@@ -2572,7 +2572,7 @@ as a dependency failure, is rejected as task-owned mutation.
 
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
-NativeError constructors, engine-raised errors as instances, stacks,
+NativeError constructors, engine-raised errors as instances,
 subclasses and `Reflect.construct` remain deferred.
 
 ### String splitting (clj-quickjs-157)
@@ -2589,3 +2589,17 @@ separators currently undergo ToString.
 
 Tests: `cargo test --test js_source string_split` and
 `cargo test --test js_source string_code_unit_coercion_waits_yields_collects_and_migrates`.
+
+### Error stacks (clj-quickjs-59)
+
+Constructed Errors and catchable engine errors expose `stack`: up to 64
+innermost JS frames, one `    at name (filename:line:column)` line each,
+starting at creation/failure. Caller positions include operator sites that
+invoke getters, setters or coercion callbacks. Script filenames and compiled
+function names are preserved. Stacks survive waits, migration, collection
+and rethrowing; capture runs no user code. Constructed Error stacks are
+ordinary writable, configurable, non-enumerable properties; native engine
+errors expose immutable stack strings while their other properties and
+instance behavior remain deferred. Eval remains deferred.
+
+Test: `cargo test --test error_stacks`.

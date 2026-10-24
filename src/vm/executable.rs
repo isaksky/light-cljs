@@ -126,6 +126,8 @@ impl Drop for Code {
 /// what an instruction does.
 #[derive(Debug)]
 pub(crate) struct DebugInfo {
+    /// Name supplied when the whole script/function tree was compiled.
+    pub(crate) filename: Arc<str>,
     /// The compiled source text (failure messages quote binding names from it).
     pub(crate) source: Arc<str>,
     /// One location per instruction, in instruction order.
@@ -276,15 +278,23 @@ impl Executable {
     /// as [`Executable::load`]; the locations only feed diagnostics.
     pub(crate) fn load_compiled(
         spec: ExecutableSpec,
+        filename: Arc<str>,
         source: Arc<str>,
         locations: Vec<SourceLocation>,
     ) -> Result<Executable, ValidationError> {
-        Executable::load_with(spec, Some((source, locations)))
+        Executable::load_with(
+            spec,
+            Some(DebugInfo {
+                filename,
+                source,
+                locations: locations.into(),
+            }),
+        )
     }
 
     fn load_with(
         spec: ExecutableSpec,
-        debug: Option<(Arc<str>, Vec<SourceLocation>)>,
+        debug: Option<DebugInfo>,
     ) -> Result<Executable, ValidationError> {
         use ValidationErrorKind::*;
         let ExecutableSpec {
@@ -531,19 +541,16 @@ impl Executable {
 
         let max_stack = check_stack(&instrs, &offsets)?;
         let debug = match debug {
-            Some((_, locations)) if locations.len() != instrs.len() => {
+            Some(info) if info.locations.len() != instrs.len() => {
                 return Err(err(
                     0,
                     SourceMapMismatch {
                         instructions: instrs.len(),
-                        locations: locations.len(),
+                        locations: info.locations.len(),
                     },
                 ));
             }
-            Some((source, locations)) => Some(DebugInfo {
-                source,
-                locations: locations.into(),
-            }),
+            Some(info) => Some(info),
             None => None,
         };
         Ok(Executable(Arc::new(Code {
@@ -948,7 +955,8 @@ mod tests {
             line: 1,
             column: 1,
         };
-        let e = Executable::load_compiled(spec.clone(), "x".into(), vec![at]).unwrap_err();
+        let e = Executable::load_compiled(spec.clone(), "file".into(), "x".into(), vec![at])
+            .unwrap_err();
         assert_eq!(
             e.kind,
             SourceMapMismatch {
@@ -956,7 +964,7 @@ mod tests {
                 locations: 1
             }
         );
-        let exe = Executable::load_compiled(spec, "x".into(), vec![at, at]).unwrap();
+        let exe = Executable::load_compiled(spec, "file".into(), "x".into(), vec![at, at]).unwrap();
         assert_eq!(exe.source_location(1), Some(at));
         assert_eq!(exe.source_location(2), None);
     }

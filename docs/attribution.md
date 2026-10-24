@@ -185,3 +185,16 @@ The full QuickJS copyright and MIT permission notice is retained on
 split fixtures are synthetic, not light-cljs output. `js_string_split` in
 `research/quickjs/quickjs.c` at that revision was consulted for semantics;
 the resumable Rust implementation was written afresh.
+
+## Error stack positions (clj-quickjs-59)
+
+`tests/error_stacks.rs` adapts the `@` marker technique of `get_string_pos`
+and position cases of `test_line_column_numbers` in
+`research/quickjs/tests/test_builtin.js`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS copyright and MIT permission notice are retained in that test.
+The helper runs in Rust over synthetic JavaScript fixtures, not light-cljs
+output; eval and NativeError instance checks are left to their own pellets.
+`research/quickjs/quickjs.c`, `build_backtrace` and `get_line_col`, at the
+same revision were read as semantic references. No C code was copied;
+capture uses this runtime's explicit frames and immutable string storage.

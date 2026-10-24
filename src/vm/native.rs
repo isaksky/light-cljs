@@ -812,7 +812,8 @@ pub(crate) fn start_builtin(
     use builtin::Builtin;
     if which == Builtin::Error || (which == Builtin::ErrorPrototypeToString && !construct) {
         let native = if which == Builtin::Error {
-            error::ErrorState::constructor(heap, state.diag.task, args)?
+            let stack = state.error_stack(state.top().pc.saturating_sub(1));
+            error::ErrorState::constructor(heap, state.diag.task, args, stack)?
         } else {
             error::ErrorState::to_string(this)?
         };

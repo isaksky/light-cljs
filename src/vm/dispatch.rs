@@ -863,6 +863,7 @@ pub(crate) fn raise_failure(
     // The error object is stored by `raise` (pushed for a catch block or
     // kept in a pending completion) before any poll.
     let object = HeapObject::Native(Box::new(ErrorObject {
+        stack: state.error_stack(pc),
         error: error.clone(),
         cause,
     }));

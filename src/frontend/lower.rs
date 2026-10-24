@@ -658,7 +658,7 @@ impl<'s> Lowerer<'s> {
     ) -> Result<Executable, SyntaxError> {
         let ctx = self.fns.pop().expect("the entry function");
         self.seal(ctx, name, params, length, function_name)?;
-        self.load_all()
+        self.load_all(name)
     }
 
     /// Resolve `ctx`'s branch targets and keep its code for
@@ -716,8 +716,9 @@ impl<'s> Lowerer<'s> {
     /// were sealed in), and return the last one, the outermost. The source
     /// positions of all instructions are computed in one pass over the
     /// source, however many functions there are.
-    fn load_all(&mut self) -> Result<Executable, SyntaxError> {
+    fn load_all(&mut self, filename: &str) -> Result<Executable, SyntaxError> {
         let source = self.source;
+        let filename: Arc<str> = Arc::from(filename);
         let sealed = std::mem::take(&mut self.sealed);
         let mut starts: Vec<usize> = sealed
             .iter()
@@ -758,13 +759,14 @@ impl<'s> Lowerer<'s> {
                 constructor: f.constructor,
             };
             let shared = Arc::clone(&self.shared_source);
-            let exe = Executable::load_compiled(spec, shared, locations).map_err(|e| {
-                self.error(
-                    SyntaxErrorKind::Internal,
-                    Span::new(0, source.len()),
-                    format!("compiler produced invalid bytecode: {e}"),
-                )
-            })?;
+            let exe = Executable::load_compiled(spec, Arc::clone(&filename), shared, locations)
+                .map_err(|e| {
+                    self.error(
+                        SyntaxErrorKind::Internal,
+                        Span::new(0, source.len()),
+                        format!("compiler produced invalid bytecode: {e}"),
+                    )
+                })?;
             loaded.push(Some(exe));
         }
         loaded
