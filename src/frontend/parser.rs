@@ -730,8 +730,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The current token is a `=>` that cannot start an arrow function's
-    /// body: its parameters are not an identifier or a parenthesized list
+    /// `arrow` is a `=>` token that cannot start an arrow function's body:
+    /// its parameters are not an identifier or a parenthesized list
     /// at the start of an AssignmentExpression (an arrow function cannot be
     /// an operand, callee or member object without parentheses), or a line
     /// break precedes it.
