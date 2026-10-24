@@ -885,7 +885,8 @@ fn object_property_reclaims() {
     // Map.prototype (clj-quickjs-169), ArrayBuffer.prototype (clj-quickjs-165),
     // Intl (clj-quickjs-209) and Intl.Locale.prototype (clj-quickjs-210),
     // Date.prototype (clj-quickjs-179), RegExp.prototype (clj-quickjs-188),
-    // Intl.NumberFormat.prototype (clj-quickjs-213) and
+    // Intl.NumberFormat.prototype (clj-quickjs-213), the three iterator
+    // prototypes (clj-quickjs-237), and
     // the typed-array prototypes (clj-quickjs-166, clj-quickjs-167),
     // which the realm keeps for the
     // runtime's lifetime.
@@ -894,10 +895,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 35);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 38);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 35);
+    assert_eq!(rt.heap_usage().objects.plain, 38);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1065,8 +1066,9 @@ fn realm_intrinsics_retain() {
     // Local Date fields and host inputs add seventeen built-ins (-182).
     // NumberFormat adds one prototype and five built-ins (-213).
     // Date non-locale formatting adds four built-ins (-183).
-    assert_eq!(rt.heap_usage().objects.builtin, 196);
-    assert_eq!(rt.heap_usage().objects.plain, 35);
+    // Iteration adds three prototypes and six built-ins (-237).
+    assert_eq!(rt.heap_usage().objects.builtin, 202);
+    assert_eq!(rt.heap_usage().objects.plain, 38);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1265,18 +1267,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's thirty-five ordinary objects stay.
+    // go with the function; the realm's thirty-eight ordinary objects stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 35, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 38, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (35, 0));
+    assert_eq!((usage.plain, usage.function), (38, 0));
 }
 
 #[test]
@@ -1287,7 +1289,7 @@ fn array_element_reclaims() {
     // The argument and the three arrays go together; the realm's
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
     // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Intl.NumberFormat`,
-    // `Date`, `RegExp`, `BigInt` and the eleven
+    // `Date`, `RegExp`, `BigInt`, the three iterator prototypes and the eleven
     // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
     let Held {
         weak,
@@ -1295,11 +1297,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 35, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 38, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (35, 0));
+    assert_eq!((usage.plain, usage.array), (38, 0));
 }
 
 #[test]
@@ -1956,6 +1958,6 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 35);
+        assert_eq!(rt.heap_usage().objects.plain, 38);
     }
 }
