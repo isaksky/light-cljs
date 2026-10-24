@@ -883,7 +883,9 @@ pub(crate) fn prepare_put(
             // The store below applies the receiver's data-write policy:
             // immutable intrinsics always throw; function metadata follows
             // the caller's strictness.
-            Ok(Chain::Add) | Err(Fault::TypeError(_)) => {}
+            // Missing Function.prototype methods also belong to that
+            // policy: intrinsic writes still throw the immutable TypeError.
+            Ok(Chain::Add) | Err(Fault::TypeError(_) | Fault::Unsupported(_)) => {}
             Err(fault) => return Err(fault),
         }
     }

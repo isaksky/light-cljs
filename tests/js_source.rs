@@ -430,6 +430,8 @@ fn stored_proto_accessor() {
         "new d.set({})",
         "Object.defineProperty(Object.prototype, '__proto__', {get: d.get})",
         "delete Object.prototype.__proto__",
+        "d.get.toString = 1",
+        "d.set.caller = 1",
     ] {
         let src = format!("{descriptor} {src}");
         assert_eq!(failure(&src).kind(), VmErrorKind::TypeError, "{src}");
