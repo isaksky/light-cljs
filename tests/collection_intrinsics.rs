@@ -530,6 +530,68 @@ fn map_builder_assoc_overwrites_and_freezes_to_a_persistent_map() {
 }
 
 #[test]
+fn vector_builder_assoc_appends_at_count_and_replaces_below_it() {
+    let rt = Runtime::new();
+    let v = complete(eval(&rt, |a| {
+        a.op(Opcode::NewVectorBuilder);
+        for (i, x) in [(0.0, 1.0), (1.0, 2.0), (0.0, 3.0), (2.0, 4.0)] {
+            a.constant(num(i)).constant(num(x)).op(Opcode::BuilderAssoc);
+        }
+        a.op(Opcode::Freeze).op(Opcode::Return);
+    }));
+    assert_eq!(numbers(&rt, &v), [3.0, 2.0, 4.0]);
+}
+
+/// `function () { let m = map_builder(); for (let i = 0; i < 10; i++) assoc!(m, {}, {});
+///   return persistent!(m); }`
+fn object_map() -> Executable {
+    let mut asm = Assembler::new();
+    let (top, done) = (asm.label(), asm.label());
+    asm.op(Opcode::NewMapBuilder).set_local(0);
+    asm.constant(num(0.0)).set_local(1);
+    asm.bind(top);
+    asm.get_local(1)
+        .constant(num(10.0))
+        .op(Opcode::Lt)
+        .jump_if_false(done);
+    asm.get_local(0)
+        .op(Opcode::NewObject)
+        .op(Opcode::NewObject)
+        .op(Opcode::BuilderAssoc)
+        .op(Opcode::Pop);
+    asm.get_local(1)
+        .constant(num(1.0))
+        .op(Opcode::Add)
+        .set_local(1);
+    asm.jump(top);
+    asm.bind(done);
+    asm.get_local(0).op(Opcode::Freeze).op(Opcode::Return);
+    asm.finish("object-map", 0, 2).unwrap()
+}
+
+#[test]
+fn map_builder_keys_and_values_are_traced_across_yields() {
+    let rt = Runtime::new();
+    let task = rt.spawn(&object_map(), &[]).unwrap();
+    // Collects (reclaiming nothing) after every bounded run.
+    let (m, runs) = drive_across_threads(&rt, &task, 4);
+    assert!(runs > 10, "the build was split over many runs ({runs})");
+    assert_eq!(count(&rt, &m), 10);
+    let views = rt.scope(|s| {
+        let entries = s.entries(s.local(&m).unwrap()).unwrap();
+        entries
+            .iter()
+            .flat_map(|&(k, v)| [s.view(k), s.view(v)])
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(views, vec![ValueView::Object; 20]);
+    // Map, 20 objects and the frozen builder; only the builder is garbage.
+    drop(task);
+    assert_eq!(rt.collect().unwrap().reclaimed, 1);
+    assert_eq!(rt.heap_stats().objects, 21);
+}
+
+#[test]
 fn builder_use_after_freeze_is_rejected() {
     let rt = Runtime::new();
     let n = rt.root(num(3.0));

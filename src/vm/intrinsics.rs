@@ -275,4 +275,36 @@ mod tests {
         });
         assert_eq!(items, [ValueView::Number(1.0), ValueView::Number(2.0)]);
     }
+
+    #[test]
+    fn an_owner_that_fails_releases_its_builders() {
+        use Opcode::*;
+        // let b = vector_builder(); conj!(b, {}); /* yield */ count(1) -> fails
+        let mut asm = Assembler::new();
+        asm.op(NewVectorBuilder).set_local(0);
+        asm.get_local(0).op(NewObject).op(BuilderConj).op(Pop);
+        asm.constant(Primitive::Number(1.0)).op(Count).op(Return);
+        let rt = Runtime::new();
+        let owner = rt.spawn(&asm.finish("owner", 0, 1).unwrap(), &[]).unwrap();
+        let first = owner.run_with(Budget::instructions(6), &mut NoHost);
+        assert!(matches!(first, Ok(RunOutcome::Yielded)), "{first:?}");
+        let (_, _, locals) = owner.saved_state().unwrap();
+        let handle = Rooted::new(rt.heap(), locals[0]);
+        let RunOutcome::Failed(_) = owner.run().unwrap() else {
+            panic!("owner did not fail")
+        };
+
+        // The released builder dropped its draft: only the builder survives.
+        assert_eq!(rt.collect().unwrap().reclaimed, 1);
+        let mut asm = Assembler::new();
+        asm.get_local(0).op(Freeze).op(Return);
+        let other = rt
+            .spawn(&asm.finish("other", 1, 1).unwrap(), &[&handle])
+            .unwrap();
+        let RunOutcome::Failed(err) = other.run().unwrap() else {
+            panic!("expected Failed")
+        };
+        let expected = BuilderError::OwnerFinished { owner: owner.id() };
+        assert_eq!(err.kind(), VmErrorKind::Builder(expected));
+    }
 }
