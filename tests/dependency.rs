@@ -15,7 +15,7 @@ use std::thread;
 use clj_quickjs::{
     Assembler, CellStatus, ClaimError, CompleteError, Completion, DependencyId, DependencyKey,
     HandleError, Need, NeedError, Opcode, PathStep, Primitive, ProducerId, PublishError,
-    ResultKind, Rooted, Runtime, Task, TaskId, ValueView, WorldId,
+    ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, ValueView, WorldId,
 };
 
 const DEF_HELPER: DependencyId = DependencyId::new(7);
@@ -317,6 +317,54 @@ fn a_task_suspended_on_one_key_cannot_demand_another() {
         CellStatus::Absent
     ));
     assert_eq!(task.dependency_log().edges().len(), 1);
+}
+
+/// A scheduler refusing a wait (pellet clj-quickjs-26: a wait cycle) abandons
+/// it: the task leaves the cell's waiters and has no unresolved wait, the
+/// recorded edge stays, the producer claim stays, and the task may demand
+/// another key.
+#[test]
+fn an_abandoned_wait_leaves_the_cell_but_keeps_the_recorded_edge() {
+    let rt = Runtime::new();
+    let task = consumer(&rt, rt.world());
+    let other = consumer(&rt, rt.world());
+    let callable = key(rt.world(), RESULT_CALLABLE);
+    let mut guard = task.try_begin_run().unwrap();
+    let Need::Waiting {
+        produce: Some(request),
+        ..
+    } = guard.need(DEF_HELPER, RESULT_CALLABLE).unwrap()
+    else {
+        panic!("the first need claims the producer");
+    };
+    assert!(matches!(
+        need(&other, RESULT_CALLABLE),
+        Need::Waiting { produce: None, .. }
+    ));
+    guard.abandon_wait();
+    assert!(matches!(
+        guard.need(DEF_HELPER, RESULT_INITIALIZED).unwrap(),
+        Need::Waiting { .. }
+    ));
+    guard.abandon_wait();
+    assert!(
+        matches!(guard.park(), RunOutcome::Yielded),
+        "nothing to park on"
+    );
+    let log = task.dependency_log();
+    assert_eq!(
+        (log.edges(), log.waiting()),
+        (&[callable, key(rt.world(), RESULT_INITIALIZED)][..], None)
+    );
+    assert!(matches!(
+        rt.cell_status(callable),
+        CellStatus::Pending { producer: Some(p), waiters } if p == request.producer() && waiters == [other.id()]
+    ));
+    let value = rt.root(Primitive::Number(1.0));
+    assert_eq!(
+        complete(&rt, callable, request.producer(), Completion::Ready(&value)),
+        Ok(vec![other.id()])
+    );
 }
 
 #[test]

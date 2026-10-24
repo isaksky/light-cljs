@@ -887,6 +887,18 @@ impl RunGuard<'_> {
         VmNeed::Fail(Box::new(vm.failure(kind, message, pc)))
     }
 
+    /// Abandon this run's pending need without cancelling the task: clear the
+    /// task's unresolved wait and remove its waiter entry from that cell, as
+    /// consumer cancellation's cleanup does; recorded edges stay. For a
+    /// scheduler that refuses the wait (a wait cycle, [`crate::dep::DependencyGraph`]):
+    /// the task will not be woken by that cell, and a later
+    /// [`RunGuard::park`] in this run yields instead of parking. The cell, its
+    /// producer and its other waiters are unchanged.
+    pub fn abandon_wait(&mut self) {
+        dep::withdraw(&self.task.deps, &self.task.log, self.task.id);
+        self.subscribed = None;
+    }
+
     /// End this run suspended on the dependency this run's last need found
     /// pending, and release the guard.
     ///

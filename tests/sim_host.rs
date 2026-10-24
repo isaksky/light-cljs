@@ -16,7 +16,7 @@ use clj_quickjs::host::sim::{
 };
 use clj_quickjs::{
     CellStatus, Completion, DependencyId, DependencyKey, Primitive, ResultKind, Rooted, Runtime,
-    ValueView, WorldId,
+    TaskId, ValueView, WorldId,
 };
 
 const IS_EVEN: DependencyId = DependencyId::new(1);
@@ -140,6 +140,13 @@ fn mutually_recursive_callables_run_without_waiting_for_initializers() {
         [key(IS_EVEN, CALLABLE), key(IS_ODD, CALLABLE)]
     );
     assert_eq!(host.parked(), 0);
+    // Jobs really waited (on each callable and binding as it was first
+    // produced), yet the recursion closed no wait cycle and left no wait.
+    assert!(host.events().iter().any(
+        |e| matches!(e, SimEvent::Parked { waiting, .. } if *waiting == key(IS_ODD, CALLABLE))
+    ));
+    assert!(host.cycles().is_empty());
+    assert_eq!(host.graph().active_waits(), 0);
     // One producer per key, however often a callable was needed.
     for def in [IS_EVEN, IS_ODD] {
         assert_eq!(scheduled(&host, key(def, CALLABLE)), 1);
@@ -414,12 +421,31 @@ fn a_failing_producer_settles_its_cell_as_failed_and_wakes_its_waiters() {
     assert!(matches!(rt.cell_status(analysis), CellStatus::Failed(_)));
 }
 
+fn pass_through() -> Producer {
+    Producer::rust(|_, inputs| Ok(inputs[0].clone()))
+}
+
+/// The tasks that parked on `key`, in order.
+fn parked_on(host: &SimHost, key: DependencyKey) -> Vec<TaskId> {
+    host.events()
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::Parked { task, waiting } if *waiting == key => Some(*task),
+            _ => None,
+        })
+        .collect()
+}
+
+/// a's initializer needs b's and b's needs a's: an execution cycle (not a
+/// reference cycle). The newest demand (b's producer needing a) is refused
+/// with the cycle; b fails with it, which fails a's input, which answers the
+/// request. Everything settles and nothing stays parked or waiting, while
+/// every recorded use survives.
 #[test]
-fn a_genuine_wait_cycle_is_reported_as_stalled_instead_of_hanging() {
+fn a_genuine_wait_cycle_is_reported_and_settles_every_waiter() {
     let rt = Runtime::new();
     let mut host = SimHost::new(&rt);
     let mut spec = WorldSpec::new();
-    let pass_through = || Producer::rust(|_, inputs| Ok(inputs[0].clone()));
     spec.define(CONFIG, "a").produce(
         CONFIG,
         INITIALIZED,
@@ -431,12 +457,155 @@ fn a_genuine_wait_cycle_is_reported_as_stalled_instead_of_hanging() {
         pass_through().needing(CONFIG, INITIALIZED),
     );
     let w = host.add_world(spec);
-    let answer = host.need(w, CONFIG, INITIALIZED);
     let a = DependencyKey::new(w, CONFIG, INITIALIZED);
-    assert_eq!(answer.result.unwrap_err(), SimError::Stalled { waiting: a });
-    assert_eq!(answer.log.waiting(), Some(a));
-    // The request and both producers are parked on each other's cells.
-    assert_eq!(host.parked(), 3);
+    let b = DependencyKey::new(w, USER, INITIALIZED);
+    let answer = host.need(w, CONFIG, INITIALIZED);
+    assert_eq!(
+        answer.result.unwrap_err(),
+        SimError::InputFailed { key: a, input: b }
+    );
+    assert_eq!(answer.log.waiting(), None);
+
+    // One cycle, reported once, with a readable path.
+    let cycles = host.cycles();
+    assert_eq!(cycles.len(), 1);
+    let cycle = cycles[0].clone();
+    let steps = cycle.steps();
+    assert_eq!(cycle.keys(), [a, b]);
+    let (b_job, a_job) = (steps[0].task, steps[1].task);
+    assert_eq!(
+        (steps[0].producer_task, steps[1].producer_task),
+        (a_job, b_job)
+    );
+    assert_eq!(steps[0].site.description, "b.initialized: input 0");
+    assert_eq!(steps[1].site.description, "a.initialized: input 0");
+    assert_eq!(
+        host.failure(b),
+        Some(&SimError::WaitCycle {
+            key: b,
+            cycle: cycle.clone()
+        })
+    );
+    assert_eq!(
+        host.failure(b).unwrap().to_string(),
+        format!(
+            "{b}: wait cycle of 2 demand(s): {b_job} (b.initialized: input 0) waits on {a}, \
+             produced by {} on {a_job} -> {a_job} (a.initialized: input 0) waits on {b}, \
+             produced by {} on {b_job}",
+            steps[0].producer, steps[1].producer
+        )
+    );
+
+    // Everything settled: no parked job, no active wait.
+    assert!(matches!(rt.cell_status(a), CellStatus::Failed(_)));
+    assert!(matches!(rt.cell_status(b), CellStatus::Failed(_)));
+    assert_eq!(host.parked(), 0);
+    assert_eq!(host.graph().active_waits(), 0);
+    // a's producer really waited on b; b's producer never parked.
+    assert_eq!(parked_on(&host, b), [a_job]);
+    assert_eq!(parked_on(&host, a), [answer.task]);
+
+    // Failure removed the waits but kept the history.
+    let graph = host.graph();
+    assert_eq!(graph.uses(a_job), [b]);
+    assert_eq!(graph.uses(b_job), [a]);
+    assert_eq!(graph.uses(answer.task), [a]);
+    assert_eq!((graph.waiting(a_job), graph.waiting(b_job)), (None, None));
+    for (key, used) in [(a, b), (b, a)] {
+        let log = host.producer_log(key).unwrap();
+        assert_eq!(log.edges(), [used]);
+        assert_eq!(log.waiting(), None, "the refused wait was withdrawn");
+    }
+}
+
+#[test]
+fn a_definition_waiting_on_itself_is_a_cycle_of_one() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let mut spec = WorldSpec::new();
+    spec.define(CONFIG, "a").produce(
+        CONFIG,
+        INITIALIZED,
+        pass_through().needing(CONFIG, INITIALIZED),
+    );
+    let w = host.add_world(spec);
+    let a = DependencyKey::new(w, CONFIG, INITIALIZED);
+    let err = host.need(w, CONFIG, INITIALIZED).result.unwrap_err();
+    let SimError::WaitCycle { key, cycle } = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(*key, a);
+    assert_eq!(cycle.keys(), [a]);
+    assert_eq!(cycle.steps()[0].task, cycle.steps()[0].producer_task);
+    assert_eq!(host.parked(), 0);
+}
+
+/// A cycle through different result kinds and a call: a's initializer calls
+/// f, f's callable needs g's analysis, and g's analysis needs a's
+/// initializer. The path names each task, demand, world and result kind.
+#[test]
+fn a_cycle_through_a_call_and_several_result_kinds_names_each_demand() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let mut spec = WorldSpec::new();
+    let f = compile_function("function f(n) { return n; }").unwrap();
+    spec.define(CONFIG, "a").produce(
+        CONFIG,
+        INITIALIZED,
+        Producer::invoke(USER, Primitive::Number(1.0)),
+    );
+    spec.define(USER, "f").produce(
+        USER,
+        CALLABLE,
+        Producer::callable(f, None).needing(PARITY, ANALYSIS),
+    );
+    spec.define(PARITY, "g").produce(
+        PARITY,
+        ANALYSIS,
+        pass_through().needing(CONFIG, INITIALIZED),
+    );
+    let w = host.add_world(spec);
+    let a = DependencyKey::new(w, CONFIG, INITIALIZED);
+    let f_callable = DependencyKey::new(w, USER, CALLABLE);
+    let g = DependencyKey::new(w, PARITY, ANALYSIS);
+
+    let answer = host.need(w, CONFIG, INITIALIZED);
+    assert_eq!(
+        answer.result.unwrap_err(),
+        SimError::InputFailed {
+            key: a,
+            input: f_callable
+        }
+    );
+    let cycles = host.cycles();
+    assert_eq!(cycles.len(), 1);
+    let steps = cycles[0].steps();
+    let path: Vec<_> = steps
+        .iter()
+        .map(|s| (s.site.description.as_str(), s.key.world(), s.key.kind()))
+        .collect();
+    assert_eq!(
+        path,
+        [
+            ("g.analysis: input 0", w, INITIALIZED),
+            ("a.initialized: call of f.callable", w, CALLABLE),
+            ("f.callable: input 0", w, ANALYSIS),
+        ]
+    );
+    assert_eq!(cycles[0].keys(), [a, f_callable, g]);
+    for i in 0..3 {
+        assert_eq!(steps[i].producer_task, steps[(i + 1) % 3].task);
+    }
+    assert_eq!(
+        host.failure(f_callable),
+        Some(&SimError::InputFailed {
+            key: f_callable,
+            input: g
+        })
+    );
+    assert!(matches!(host.failure(g), Some(SimError::WaitCycle { key, .. }) if *key == g));
+    assert_eq!(activations(&host), 0, "f never became callable");
+    assert_eq!((host.parked(), host.graph().active_waits()), (0, 0));
 }
 
 #[test]
@@ -673,4 +842,69 @@ fn a_producer_keeps_its_ordered_inputs_across_several_waits() {
         })
         .collect();
     assert_eq!(waits, [a, b]);
+}
+
+/// A ready read is a recorded use with no wait: nothing parks, and the
+/// graph records the use.
+#[test]
+fn ready_reads_are_recorded_without_an_active_wait() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let w = identity_world(&mut host);
+    let callable = DependencyKey::new(w, USER, CALLABLE);
+    let first = host.need(w, USER, CALLABLE);
+    assert!(first.result.is_ok());
+    assert_eq!(parked_on(&host, callable), [first.task], "the first waited");
+
+    let second = host.need(w, USER, CALLABLE);
+    assert!(second.result.is_ok());
+    assert_eq!(
+        parked_on(&host, callable),
+        [first.task],
+        "the second did not"
+    );
+    assert_eq!(second.log.edges(), [callable]);
+    let graph = host.graph();
+    assert_eq!(graph.uses(second.task), [callable]);
+    assert_eq!(graph.waiting(second.task), None);
+    assert_eq!(graph.uses(first.task), [callable]);
+    assert_eq!(graph.active_waits(), 0);
+    assert!(host.cycles().is_empty());
+}
+
+/// An embedder cancels a cell that a parked request waits on (its producer
+/// was claimed outside the host, so no cycle can be found): the wake removes
+/// the stale wait edge, and the use stays recorded.
+#[test]
+fn cancellation_removes_the_stale_wait_but_keeps_the_use() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let w = identity_world(&mut host);
+    let alias = DependencyKey::new(w, CONFIG, CALLABLE);
+    let _claim = rt.claim(alias).unwrap();
+    let stalled = host.need(w, CONFIG, CALLABLE);
+    assert_eq!(
+        stalled.result.unwrap_err(),
+        SimError::Stalled { waiting: alias }
+    );
+    assert_eq!(host.graph().waiting(stalled.task), Some(alias));
+    assert_eq!(host.graph().waiters(alias), [stalled.task]);
+    assert_eq!(
+        host.graph()
+            .waiting_site(stalled.task)
+            .map(|s| s.description.as_str()),
+        Some("request for alias.callable")
+    );
+
+    let woken = rt.cancel_cell(alias).unwrap().task_ids();
+    assert_eq!(woken, [stalled.task]);
+    host.wake(&woken);
+    let graph = host.graph();
+    assert_eq!(graph.waiting(stalled.task), None);
+    assert_eq!(graph.waiters(alias), []);
+    assert!(graph.used(stalled.task, alias));
+    host.run_until_idle();
+    assert_eq!(host.parked(), 0);
+    assert_eq!(host.graph().uses(stalled.task), [alias]);
+    assert!(host.cycles().is_empty());
 }

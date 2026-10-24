@@ -39,6 +39,7 @@ cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowerin
 cargo test --test wakeup           # parking and wakeups: many waiters, duplicate wakes, one owner
 cargo test --lib task::           # task state machine and hook-forced handoff windows
 cargo test --test sim_host        # simulated host: worlds, result kinds, producers
+cargo test --lib dep::graph::     # recorded uses vs active waits, wait-cycle detection
 cargo test --test atoms           # atoms: identity CAS, single-writer publication, load-to-root
 cargo test --lib atom::           # SameValue comparison, replaced-box reclamation
 cargo test --test cancellation    # consumer and cell cancellation racing settlement and parking
@@ -391,8 +392,9 @@ Supported:
   without any initializer being needed and without a wait.
 - Failures settle cells deterministically: `UnknownWorld`,
   `MissingDefinition`, `MissingResult`, `ProducerFailed` (error or
-  unshareable result), `InputFailed`/`InputCancelled`; `Stalled` when a
-  request is left waiting with no runnable work. Events (`Scheduled`,
+  unshareable result), `InputFailed`/`InputCancelled`, `WaitCycle`
+  (clj-quickjs-26); `Stalled` when a request is left waiting on a cell no
+  host job produces. Events (`Scheduled`,
   `Parked`, `Woken`, `Activation`, `Settled`) and per-producer dependency
   logs are recorded. Contract: `src/host/sim.rs` module docs; summary in
   [`docs/architecture.md`](docs/architecture.md).
@@ -403,8 +405,8 @@ Deferred:
   stand-in tail-call convention (a returned number calls the declared tail
   callee) until VM calls, function values and `__rt.need` exist
   (clj-quickjs-4, -20, -21, -23).
-- Worker threads (clj-quickjs-8), wait-cycle detection and reporting
-  (clj-quickjs-26), cancelling a stalled request, and invalidation.
+- Worker threads (clj-quickjs-8), cancelling a stalled request, and
+  invalidation.
 
 ### Calls and recursion in task-owned frames (clj-quickjs-4)
 
@@ -649,6 +651,7 @@ Deferred:
   long-running leaf host effect (a request waits for the effect to return).
 - A thread holding two run guards at once, or a guard it is not executing,
   delays collection until it drops them (only a thread's single run parks).
+
 ### Reference executor (clj-quickjs-8)
 
 Supported:
@@ -730,3 +733,31 @@ Deferred:
 - Definition ids and result kinds are numbers (no string values yet).
 - `src/host/sim.rs` jobs still need through `RunGuard::need` in Rust and
   publish callables as host tokens.
+
+### Dependency graph and wait cycles (clj-quickjs-26)
+
+Supported (`src/dep/graph.rs` module docs; tests in `tests/sim_host.rs`,
+`src/dep/graph.rs`):
+
+- `dep::DependencyGraph` keeps recorded uses (every need, ready reads
+  included; never removed) apart from active waits (at most one per task,
+  removed when the key resolves, when the waiter is woken or cancelled, or
+  when the wait is refused). Producer bindings (key → task running its
+  claimed producer) connect them. Maps are keyed by private numeric IDs.
+- A new wait that would close a chain of active waits back to its own task
+  is a genuine wait cycle: it is refused and reported as a `WaitCycle`
+  (each step's waiting task, `DemandSite`, awaited world/definition/kind,
+  producer and producer task; readable `Display`).
+- Policy: the newest demand fails. `SimHost` abandons the refused
+  subscription (`RunGuard::abandon_wait`), records `SimEvent::WaitCycle`
+  (`SimHost::cycles`) and fails the job with `SimError::WaitCycle`; the
+  failure propagates around the cycle as `InputFailed`, so every job and
+  request on it settles instead of stalling. Recursion through bindings
+  (recorded uses, no wait) is never reported.
+
+Deferred:
+
+- Demand sites from VM source locations (the `__rt.need` operation,
+  clj-quickjs-23) and cycle detection in `exec::Executor`, which has no
+  producer bindings (the graph would sit under one leaf lock; ordering
+  rules are in the module docs).

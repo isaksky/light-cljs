@@ -95,6 +95,16 @@
 //!   refused because its task is cancelled is [`NeedError::Cancelled`],
 //!   not [`Need::Cancelled`].
 //!
+//! # Dependency graph
+//!
+//! A task's [`DependencyLog`] separates what it used from what it waits on.
+//! Across tasks, a scheduler keeps a [`DependencyGraph`] (recorded uses,
+//! active waits removed on resolution or cancellation, producer bindings)
+//! to detect genuine wait cycles; it refuses the wait that would close one
+//! and the task then leaves the cell with
+//! [`RunGuard::abandon_wait`](crate::RunGuard::abandon_wait). See the
+//! `graph` submodule docs for the cycle policy.
+//!
 //! # Lock and ordering contract
 //!
 //! * **Dependency table lock** (`RwLock`): held only to find (read) or
@@ -145,6 +155,10 @@ use crate::ids::{DependencyKey, ProducerId, TaskId, WakeHandle};
 use crate::task::{TaskInner, Wake, deliver_wake};
 use crate::value::Value;
 use crate::value::share::{self, PublishError};
+
+mod graph;
+
+pub use graph::{DemandSite, DependencyGraph, WaitCycle, WaitStep};
 
 /// Lock a dependency mutex, recovering from poisoning: every critical
 /// section in this module is plain bookkeeping that cannot panic halfway.

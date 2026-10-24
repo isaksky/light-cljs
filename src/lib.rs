@@ -86,8 +86,8 @@ pub mod vm;
 pub use atom::{AtomError, AtomErrorKind, CasOutcome, Publisher};
 pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
 pub use dep::{
-    CellStatus, ClaimError, CompleteError, Completion, DependencyLog, Need, NeedError,
-    ProducerRequest, Wakeups,
+    CellStatus, ClaimError, CompleteError, Completion, DemandSite, DependencyGraph, DependencyLog,
+    Need, NeedError, ProducerRequest, WaitCycle, WaitStep, Wakeups,
 };
 pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use exec::{Executor, ExecutorConfig, Placement, WorkerId};

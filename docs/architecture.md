@@ -680,8 +680,9 @@ parser, analyzer, namespace or module linking.
   the cell at once (never a timeout). Producer errors, unshareable results
   and failed or cancelled inputs settle the cell as `Failed`; the published
   error value is a numeric code, the structured `SimError` stays with the
-  host. A top-level request left waiting with no runnable work returns
-  `Stalled` rather than hanging.
+  host. A demand that would close a wait cycle fails (clj-quickjs-26,
+  below). A top-level request left waiting on a cell no host job produces
+  returns `Stalled` rather than hanging.
 - **Calls (stand-in).** Until the VM has call instructions and function
   values (clj-quickjs-4, -20, -21, -23) a callable is a host token (a fresh
   persistent vector, checked by identity) and each activation is a new VM
@@ -691,8 +692,7 @@ parser, analyzer, namespace or module linking.
   and arguments are computed by the JavaScript; activations per invocation
   are bounded.
 - **Deferred.** VM-level `__rt.need` and real calls/closures; worker
-  threads (clj-quickjs-8); wait-cycle detection and reporting
-  (clj-quickjs-26); cancelling a stalled request (its job stays parked;
+  threads (clj-quickjs-8); cancelling a stalled request (its job stays parked;
   the host does not call `Task::cancel` of clj-quickjs-24 yet); invalidation.
 
 ## Consumer and cell cancellation (clj-quickjs-24)
@@ -736,6 +736,41 @@ Design: `design.md` §§8, 10, 15.
   `tests/fixtures/js/cancel_consumer.js`.
 - **Deferred.** Polling between VM instructions; language-level
   cancellation semantics (clj-quickjs-27, -28).
+
+## Dependency graph and wait cycles (clj-quickjs-26)
+
+`src/dep/graph.rs` (contract in its module docs), used by `src/host/sim.rs`
+("Wait cycles"). Design: `design.md` §9.
+
+- **Two relationships.** Recorded uses (task used key; every need, ready
+  reads included) are history and are never removed. Active waits (task
+  is suspended on a pending key; at most one per task) are removed when
+  the key resolves (`Ready`, `Failed` or `Cancelled`), when the waiter is
+  woken or cancelled, or when the wait is refused. The per-task
+  `DependencyLog` keeps the same split inside the runtime.
+- **Cycles.** A producer binding links a pending key to the task running
+  its claimed producer. A new wait `task → key` follows the single chain
+  key → producer task → its waited key → ... and closes a cycle only if it
+  returns to `task` (linear in the chain). Recursive references (callables
+  needing each other's bindings) create uses, not waits, so they are never
+  reported; keys without a known producer end the chain.
+- **Policy: the newest demand fails.** The closing wait is not added; the
+  `WaitCycle` (tasks, demand sites, world/definition/kind, producers) is
+  returned. `SimHost` abandons the subscription (`RunGuard::abandon_wait`:
+  withdraws the waiter entry and the log's unresolved wait, keeps the
+  recorded edge), records `SimEvent::WaitCycle` and fails the job with
+  `SimError::WaitCycle`. Its cell fails, waking the previous job on the
+  cycle, which fails with `InputFailed`, and so on: every job and request
+  on the cycle settles. One report per cycle.
+- **Ordering.** Waits are recorded after the need returned `Waiting`; a
+  producer resolves its key before completing it (a completing producer is
+  not blocked, so no reported cycle runs through a completed key), and a
+  resolved key never gets an edge again. The graph is plain data: the
+  single-thread `SimHost` owns one; a worker-thread scheduler would hold
+  it under one leaf lock.
+- **Deferred.** Demand sites carrying VM source locations (the `__rt.need`
+  instruction, clj-quickjs-23); cycle detection in `exec::Executor`,
+  which has no producer bindings.
 
 ## Atoms (clj-quickjs-10)
 

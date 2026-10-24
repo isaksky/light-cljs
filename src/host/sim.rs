@@ -76,10 +76,11 @@
 //! was cancelled fails with [`SimError::InputFailed`] /
 //! [`SimError::InputCancelled`]. The published error value is the number
 //! [`SimError::code`]; the full error is kept by the host
-//! ([`SimHost::failure`]). When the queue runs dry while a top-level request
-//! is still waiting, the request reports [`SimError::Stalled`] instead of
-//! hanging; reporting the wait cycle itself is pellet clj-quickjs-26. Its
-//! job stays parked (consumer cancellation is pellet clj-quickjs-24); if a
+//! ([`SimHost::failure`]). A demand that would close a wait cycle fails as
+//! described under "Wait cycles". When the queue runs dry while a top-level
+//! request is still waiting (on a cell whose producer is not a job of this
+//! host, for example one claimed outside it), the request reports
+//! [`SimError::Stalled`] instead of hanging. Its job stays parked (consumer cancellation is pellet clj-quickjs-24); if a
 //! later completion wakes it, it runs to the end and its answer is dropped.
 //!
 //! # Calls (stand-in)
@@ -97,12 +98,43 @@
 //! flow (base case, recursion step, result) is the JavaScript's: the host
 //! only performs the call that the function requested. Activations per
 //! invocation are bounded ([`SimHost::set_activation_limit`]).
+//!
+//! # Wait cycles
+//!
+//! The host keeps a [`DependencyGraph`] of its jobs ([`SimHost::graph`];
+//! semantics in [`crate::dep::DependencyGraph`]'s module docs). Every need
+//! records a use, ready reads included, kept forever. A need that parks
+//! records the job's active wait, with a [`DemandSite`] naming the demand
+//! (`b.initialized: input 0`, `a.initialized: call of f.callable`,
+//! `request for a.initialized`). A producer job is bound to its key when it
+//! is scheduled. A key's waits and binding are removed when its producer
+//! settles it (just before the completion) and a parked job's wait when it
+//! is woken, including by a completion or cancellation from outside the
+//! host ([`SimHost::wake`]).
+//!
+//! A need whose wait would close a cycle (the producer of the awaited key is,
+//! through a chain of active waits, waiting on this job's own key) is a
+//! genuine deadlock. Policy: **the newest demand fails**. Its job does not
+//! park: it abandons the subscription
+//! ([`RunGuard::abandon_wait`](crate::RunGuard::abandon_wait)), the host
+//! records [`SimEvent::WaitCycle`] ([`SimHost::cycles`]), and the job fails
+//! with [`SimError::WaitCycle`], carrying every step (waiting task, demand
+//! site, awaited world/definition/kind, producer and its task). A producer
+//! job thereby settles its cell `Failed`, which wakes the previous job on the
+//! cycle; that job reads a failed input and fails with
+//! [`SimError::InputFailed`], and so on, so every cell on the cycle and
+//! every request waiting on one settles. Recursion through recorded uses
+//! (callables needing each other's bindings) creates no active wait and is
+//! never reported.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::dep::{CompleteError, Completion, DependencyLog, Need, ProducerRequest};
+use crate::dep::{
+    CompleteError, Completion, DemandSite, DependencyGraph, DependencyLog, Need, ProducerRequest,
+    WaitCycle,
+};
 use crate::heap::Rooted;
 use crate::ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WorldId};
 use crate::runtime::Runtime;
@@ -301,6 +333,14 @@ pub enum SimError {
         callable: DependencyKey,
         message: String,
     },
+    /// The demand that would have closed `cycle`, a genuine active wait cycle,
+    /// was refused (module docs, "Wait cycles"). `key` is the result this
+    /// error settles: the refused job's own cell, or for a top-level request
+    /// the requested key.
+    WaitCycle {
+        key: DependencyKey,
+        cycle: WaitCycle,
+    },
 }
 
 impl SimError {
@@ -321,6 +361,7 @@ impl SimError {
             SimError::Cancelled { .. } => 12.0,
             SimError::Internal { .. } => 13.0,
             SimError::ArgumentNotShareable { .. } => 14.0,
+            SimError::WaitCycle { .. } => 15.0,
         }
     }
 }
@@ -354,6 +395,7 @@ impl fmt::Display for SimError {
             SimError::ArgumentNotShareable { callable, message } => {
                 write!(f, "cannot pass the argument to {callable}: {message}")
             }
+            SimError::WaitCycle { key, cycle } => write!(f, "{key}: {cycle}"),
         }
     }
 }
@@ -382,6 +424,8 @@ pub enum SimEvent {
     },
     /// `key`'s cell was completed by this host; `ok` unless `Failed`.
     Settled { key: DependencyKey, ok: bool },
+    /// A demand would have closed `cycle` and was refused.
+    WaitCycle { cycle: WaitCycle },
 }
 
 /// The answer to a top-level request ([`SimHost::need`], [`SimHost::invoke`]).
@@ -440,7 +484,21 @@ enum Got {
     Cancelled(DependencyKey),
     /// Pending: park, then schedule the request if this need claimed one.
     Pending(DependencyKey, Option<ProducerRequest>),
+    /// Pending, but waiting would close this cycle: the wait was refused.
+    Cycle(WaitCycle),
     Error(SimError),
+}
+
+/// Where a job demanded a result, described with names for
+/// [`DemandSite`]s (formatted only when the job waits).
+#[derive(Clone, Copy)]
+enum Site {
+    /// A top-level [`SimHost::need`].
+    Request,
+    /// Input `index` of the producer of `of`.
+    Input { of: DependencyKey, index: usize },
+    /// The callable of a call made for `of` (`None`: a top-level invoke).
+    Call { of: Option<DependencyKey> },
 }
 
 /// The simulated host. See the module docs.
@@ -462,6 +520,8 @@ pub struct SimHost {
     next_answer: u64,
     events: Vec<SimEvent>,
     activation_limit: usize,
+    /// Recorded uses, active waits and producer bindings of the jobs.
+    graph: DependencyGraph,
 }
 
 impl fmt::Debug for SimHost {
@@ -494,6 +554,7 @@ impl SimHost {
             next_answer: 0,
             events: Vec::new(),
             activation_limit: 10_000,
+            graph: DependencyGraph::new(),
         }
     }
 
@@ -534,6 +595,56 @@ impl SimHost {
         self.parked.len()
     }
 
+    /// The jobs' dependency graph: recorded uses (every need, ready reads
+    /// included), current active waits, and producer bindings (module docs,
+    /// "Wait cycles").
+    pub fn graph(&self) -> &DependencyGraph {
+        &self.graph
+    }
+
+    /// The wait cycles detected so far, oldest first.
+    pub fn cycles(&self) -> Vec<&WaitCycle> {
+        self.events
+            .iter()
+            .filter_map(|e| match e {
+                SimEvent::WaitCycle { cycle } => Some(cycle),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A readable name for `key`: the definition's name in its world (or
+    /// its id) and the result kind, for example `isEven.callable`.
+    pub fn label(&self, key: DependencyKey) -> String {
+        let definition = match self
+            .worlds
+            .get(&key.world())
+            .and_then(|w| w.name(key.dependency()))
+        {
+            Some(name) => name.to_owned(),
+            None => key.dependency().to_string(),
+        };
+        let kind = match key.kind() {
+            BINDING => "binding".to_owned(),
+            CALLABLE => "callable".to_owned(),
+            INITIALIZED => "initialized".to_owned(),
+            ANALYSIS => "analysis".to_owned(),
+            other => other.to_string(),
+        };
+        format!("{definition}.{kind}")
+    }
+
+    fn demand_site(&self, site: Site, key: DependencyKey) -> DemandSite {
+        DemandSite::new(match site {
+            Site::Request => format!("request for {}", self.label(key)),
+            Site::Input { of, index } => format!("{}: input {index}", self.label(of)),
+            Site::Call { of: Some(of) } => {
+                format!("{}: call of {}", self.label(of), self.label(key))
+            }
+            Site::Call { of: None } => format!("request: call of {}", self.label(key)),
+        })
+    }
+
     /// Request result `kind` of `definition` in `world` and run until it is
     /// answered or no work is left.
     pub fn need(&mut self, world: WorldId, definition: DependencyId, kind: ResultKind) -> Answer {
@@ -566,6 +677,9 @@ impl SimHost {
     pub fn wake(&mut self, tasks: &[TaskId]) {
         for &task in tasks {
             if let Some(job) = self.parked.remove(&task) {
+                // Runnable again: no longer an active wait (its next need
+                // records a new one if the cell is still pending).
+                self.graph.withdraw(task);
                 self.events.push(SimEvent::Woken { task });
                 self.ready.push_back(job);
             }
@@ -636,25 +750,56 @@ impl SimHost {
             })
     }
 
-    /// One need by job task `task`.
-    fn need_for(&self, task: &Task, definition: DependencyId, kind: ResultKind) -> Got {
+    /// One need by job task `task`, demanded at `site`: recorded as a use in
+    /// every case, and as an active wait when the cell is pending, unless
+    /// that wait would close a cycle (then the wait is refused and abandoned).
+    fn need_for(
+        &mut self,
+        task: &Task,
+        definition: DependencyId,
+        kind: ResultKind,
+        site: Site,
+    ) -> Got {
         let key = DependencyKey::new(task.world(), definition, kind);
-        let need = match task.try_begin_run() {
-            Ok(mut guard) => guard.need(definition, kind),
-            Err(e) => {
-                return Got::Error(SimError::Internal {
-                    message: format!("job {} cannot need {key}: {e}", task.id()),
-                });
-            }
-        };
-        match need {
-            Ok(Need::Ready(value)) => Got::Value(value),
-            Ok(Need::Failed(_)) => Got::Failed(key),
-            Ok(Need::Cancelled) => Got::Cancelled(key),
-            Ok(Need::Waiting { key, produce }) => Got::Pending(key, produce),
-            Err(e) => Got::Error(SimError::Internal {
+        let internal = |e: &dyn fmt::Display| {
+            Got::Error(SimError::Internal {
                 message: format!("job {} cannot need {key}: {e}", task.id()),
-            }),
+            })
+        };
+        let mut guard = match task.try_begin_run() {
+            Ok(guard) => guard,
+            Err(e) => return internal(&e),
+        };
+        let need = match guard.need(definition, kind) {
+            Ok(need) => need,
+            Err(e) => return internal(&e),
+        };
+        self.graph.record_use(task.id(), key);
+        match need {
+            Need::Ready(value) => Got::Value(value),
+            Need::Failed(_) => Got::Failed(key),
+            Need::Cancelled => Got::Cancelled(key),
+            Need::Waiting { key, produce } => {
+                let site = self.demand_site(site, key);
+                match self.graph.wait(task.id(), key, site) {
+                    Ok(()) => Got::Pending(key, produce),
+                    Err(cycle) => {
+                        // Refused: the job will not park on `key`, so it must
+                        // not stay subscribed or recorded as waiting.
+                        guard.abandon_wait();
+                        drop(guard);
+                        self.events.push(SimEvent::WaitCycle {
+                            cycle: cycle.clone(),
+                        });
+                        // A cycle runs through `key`'s bound producer, so this
+                        // need cannot have claimed it; never drop a claim.
+                        if let Some(request) = produce {
+                            self.schedule(request);
+                        }
+                        Got::Cycle(cycle)
+                    }
+                }
+            }
         }
     }
 
@@ -683,14 +828,17 @@ impl SimHost {
             Err(error) => return self.settle(request, Err(error), None),
         };
         match self.spawn_job(key.world()) {
-            Ok(task) => self.ready.push_back(Job {
-                task,
-                work: Work::Produce {
-                    request,
-                    producer,
-                    inputs: Vec::new(),
-                },
-            }),
+            Ok(task) => {
+                self.graph.bind_producer(key, request.producer(), task.id());
+                self.ready.push_back(Job {
+                    task,
+                    work: Work::Produce {
+                        request,
+                        producer,
+                        inputs: Vec::new(),
+                    },
+                });
+            }
             Err(error) => self.settle(request, Err(error), None),
         }
     }
@@ -725,6 +873,10 @@ impl SimHost {
         if let Some(task) = task {
             self.producer_logs.insert(key, task.dependency_log());
         }
+        // Resolved before completion (`dep::graph` module docs): the
+        // producer is not blocked, so no cycle can run through `key`. Every
+        // path below leaves the cell terminal.
+        self.graph.resolve(key);
         let mut result = result;
         loop {
             let completed = match &result {
@@ -786,7 +938,7 @@ impl SimHost {
                 answer,
                 definition,
                 kind,
-            } => match self.need_for(&task, definition, kind) {
+            } => match self.need_for(&task, definition, kind, Site::Request) {
                 Got::Value(value) => self.finish_answer(answer, &task, Ok(value)),
                 Got::Failed(key) => {
                     let error = self
@@ -798,6 +950,11 @@ impl SimHost {
                 }
                 Got::Cancelled(key) => {
                     self.finish_answer(answer, &task, Err(SimError::Cancelled { key }))
+                }
+                Got::Cycle(cycle) => {
+                    let key = DependencyKey::new(task.world(), definition, kind);
+                    let error = SimError::WaitCycle { key, cycle };
+                    self.finish_answer(answer, &task, Err(error));
                 }
                 Got::Error(error) => self.finish_answer(answer, &task, Err(error)),
                 Got::Pending(waiting, produce) => {
@@ -827,7 +984,11 @@ impl SimHost {
     ) {
         let key = request.key();
         while let Some(&(definition, kind)) = producer.needs.get(inputs.len()) {
-            match self.need_for(&task, definition, kind) {
+            let site = Site::Input {
+                of: key,
+                index: inputs.len(),
+            };
+            match self.need_for(&task, definition, kind, site) {
                 Got::Value(value) => inputs.push(value),
                 Got::Pending(waiting, produce) => {
                     let work = Work::Produce {
@@ -843,6 +1004,10 @@ impl SimHost {
                 }
                 Got::Cancelled(input) => {
                     let error = SimError::InputCancelled { key, input };
+                    return self.settle(request, Err(error), Some(&task));
+                }
+                Got::Cycle(cycle) => {
+                    let error = SimError::WaitCycle { key, cycle };
                     return self.settle(request, Err(error), Some(&task));
                 }
                 Got::Error(error) => return self.settle(request, Err(error), Some(&task)),
@@ -923,7 +1088,13 @@ impl SimHost {
     ) {
         let result = loop {
             let callable = DependencyKey::new(task.world(), callee, CALLABLE);
-            let token = match self.need_for(&task, callee, CALLABLE) {
+            let site = Site::Call {
+                of: match &sink {
+                    Sink::Cell(request) => Some(request.key()),
+                    Sink::Answer(_) => None,
+                },
+            };
+            let token = match self.need_for(&task, callee, CALLABLE, site) {
                 Got::Value(token) => token,
                 Got::Pending(waiting, produce) => {
                     let work = Work::Call {
@@ -936,6 +1107,13 @@ impl SimHost {
                 }
                 Got::Failed(input) => break self.input_error(&sink, input, false),
                 Got::Cancelled(input) => break self.input_error(&sink, input, true),
+                Got::Cycle(cycle) => {
+                    let key = match &sink {
+                        Sink::Cell(request) => request.key(),
+                        Sink::Answer(_) => callable,
+                    };
+                    break Err(SimError::WaitCycle { key, cycle });
+                }
                 Got::Error(error) => break Err(error),
             };
             let Some((function, tail_callee)) = self.callable_of(&token) else {
