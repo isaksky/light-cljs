@@ -3104,6 +3104,40 @@ fn deep_expressions_compile_within_a_small_stack() {
     );
 }
 
+/// Right-associative chains of 120 compound assignments on properties
+/// (clj-quickjs-260), named and computed, compile on a 2 MiB thread stack
+/// (each level keeps the lowering's `compound_assign_property` frame while
+/// its right operand compiles; 120 as for the `=` chains of
+/// `deep_expressions_compile_within_a_small_stack`) and run.
+#[test]
+fn deep_property_compound_assignments_compile_within_a_small_stack() {
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            [
+                ("o.b", "let o = {b: 0};"),
+                ("o[0]", "let o = [0];"),
+                ("o.b[k]", "let k = 'c'; let o = {b: {c: 0}};"),
+            ]
+            .map(|(target, init)| {
+                // Each level adds the old value 0 to the result of the
+                // level to its right, so the value is 1.
+                let src = format!("{init} {}1", format!("{target} += ").repeat(120));
+                compile_script("deep", &src)
+                    .map(|exe| (target, exe))
+                    .map_err(|e| format!("{target}: {e}"))
+            })
+        })
+        .unwrap();
+    for compiled in handle.join().unwrap() {
+        let (target, exe) = compiled.unwrap();
+        match run(&exe, &[]) {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(1.0), "{target}"),
+            other => panic!("{target}: expected Complete, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn entry_function_name_refers_to_the_running_function() {
     let complete = |src: &str, args: &[Primitive]| match run(&compile_function(src).unwrap(), args)

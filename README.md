@@ -1596,6 +1596,7 @@ Deferred:
 
 Supported (`cargo test --lib frontend::tests::compound_assignment`,
 `cargo test --test js_source compound_assignment_on_properties`,
+`cargo test --test js_source deep_property_compound_assignments`,
 `cargo test --test need property_compound_assignment_resumes_after_wait`,
 `cargo test --test gc_roots property_compound_assignment_base_survives`):
 
@@ -1616,7 +1617,9 @@ Deferred:
 
 - Logical assignment on properties (`o.p &&= v`) stays `Unsupported`; a
   property value, operand or key that is an object waits for ToPrimitive
-  (`UnsupportedOperand`).
+  (`UnsupportedOperand`). Assignment chains deeper than about 190
+  levels can overflow a 2 MiB debug stack before the nesting limit
+  (clj-quickjs-262).
 
 ### `typeof` (clj-quickjs-69)
 
