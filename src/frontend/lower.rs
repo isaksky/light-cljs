@@ -91,9 +91,10 @@
 //! declaration (or inside its own
 //! initializer) still always runs before initialization, and one after it
 //! always runs after. Such references, assignments to `const` bindings and
-//! references to undeclared names lower to `throw_error`. (As the operand of
-//! `typeof`, an undeclared name lowers to `undefined` instead, clj-quickjs-69,
-//! while a binding in its temporal dead zone still throws.) Only closures can
+//! references to lexical bindings in their TDZ lower to `throw_error`.
+//! Otherwise free names and script `var`/function bindings use run-time
+//! global-property lookup (clj-quickjs-104); `typeof` permits a missing global.
+//! Only closures can
 //! run a reference at another time, and they use the run-time check above.
 //! The exception is a `switch` (clj-quickjs-83), which enters its case
 //! block at the selected clause, past the declarations of the clauses
@@ -166,7 +167,6 @@ use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
 use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
-use crate::realm::Global;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Primitive};
 use crate::vm::executable::{Executable, ExecutableSpec};
@@ -267,6 +267,8 @@ enum Repr {
 
 #[derive(Clone, Copy)]
 struct Binding {
+    /// A script object binding, resolved dynamically rather than captured.
+    global: bool,
     kind: BindingKind,
     slot: u16,
     initialized: bool,
@@ -330,6 +332,7 @@ enum Target {
 /// How the running function reaches a binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
+    GlobalObject,
     Local(u16),
     Capture(u16),
     /// `current_function`.
@@ -352,10 +355,9 @@ enum Access {
     },
     /// The reserved intrinsic binding `__rt`.
     Intrinsic,
-    /// A built-in global of the realm (`crate::realm`, clj-quickjs-117): a
-    /// free name resolved after every lexical scope.
-    Global(Global),
-    Unresolvable,
+    /// A name in `Lowerer::global_names`, looked up in the task's global
+    /// object at run time. Also used for script `var`/function bindings.
+    Global(usize),
     /// A sloppy-mode reference to `eval` or `arguments` that denotes
     /// something the subset lacks (clj-quickjs-95,
     /// `Lowerer::resolve_reference`): any use is an `Unsupported` compile
@@ -429,6 +431,7 @@ impl Emitter {
     /// Push the value at `place` (a cell itself for a cell binding).
     fn load(&mut self, place: Place, span: Span) {
         match place {
+            Place::GlobalObject => self.op(Opcode::GetGlobalObject, span),
             Place::Local(slot) => self.op_u16(Opcode::GetLocal, slot, span),
             Place::Capture(i) => self.op_u16(Opcode::GetCapture, i, span),
             Place::Current => self.op(Opcode::CurrentFunction, span),
@@ -536,6 +539,9 @@ struct Sealed {
 }
 
 struct Lowerer<'s> {
+    /// Names indexed by `Access::Global`, keeping the recursive resolver's
+    /// return type small and Copy. Constant indices belong to each emitter.
+    global_names: Vec<String>,
     source: &'s str,
     shared_source: Arc<str>,
     /// Enclosing functions, innermost (the one being lowered) last.
@@ -551,6 +557,7 @@ struct Lowerer<'s> {
 impl<'s> Lowerer<'s> {
     fn new(source: &'s str, facts: Option<HashMap<usize, Facts>>) -> Lowerer<'s> {
         Lowerer {
+            global_names: Vec::new(),
             source,
             shared_source: Arc::from(source),
             fns: Vec::new(),
@@ -880,6 +887,16 @@ impl<'s> Lowerer<'s> {
             if arguments.is_some_and(|a| a.key == b.key) {
                 continue;
             }
+            if b.global {
+                let index = self.string_index(JsString::from(name.name.as_str()), name.span)?;
+                let op = if b.kind == BindingKind::Function {
+                    Opcode::DeclareGlobalFunction
+                } else {
+                    Opcode::DeclareGlobalVar
+                };
+                self.out().op_u16(op, index, name.span);
+                continue;
+            }
             if top_level && b.kind == BindingKind::Var && self.cur().var_scope > 0 {
                 self.init_body_var(name, b);
                 continue;
@@ -912,9 +929,14 @@ impl<'s> Lowerer<'s> {
                 let name = self.declaration_name(f)?;
                 let b = self.local(name)?;
                 let facts = self.facts_of(b.key);
-                let self_name = (self.analyzing() || !facts.assigned)
+                let self_name = (!b.global && (self.analyzing() || !facts.assigned))
                     .then(|| (name.name.clone(), SelfKind::Declaration { key: b.key }));
-                if b.repr == Repr::Cell {
+                if b.global {
+                    self.closure(f, None, None)?;
+                    let access = self.resolve(&name.name);
+                    self.store(access, name.span)?;
+                    self.out().op(Opcode::Pop, name.span);
+                } else if b.repr == Repr::Cell {
                     self.out().op_u16(Opcode::GetLocal, b.slot, f.span);
                     self.closure(f, self_name, None)?;
                     // `cell_init` also overwrites an initialized cell.
@@ -1007,6 +1029,9 @@ impl<'s> Lowerer<'s> {
         }
         let key = name.span.start;
         let binding = Binding {
+            global: ctx.completion.is_some()
+                && top_level
+                && matches!(kind, BindingKind::Var | BindingKind::Function),
             kind,
             slot: ctx.next_slot as u16,
             initialized: matches!(kind, BindingKind::Param | BindingKind::Var),
@@ -1097,6 +1122,21 @@ impl<'s> Lowerer<'s> {
         self.resolve_in(self.fns.len() - 1, name)
     }
 
+    #[inline(never)]
+    fn global_access(&mut self, name: &str) -> Access {
+        let index = self.global_names.len();
+        self.global_names.push(name.to_string());
+        Access::Global(index)
+    }
+
+    #[inline(never)]
+    fn global_op(&mut self, op: Opcode, name: usize, at: Span) -> Result<(), SyntaxError> {
+        let name = JsString::from(self.global_names[name].as_str());
+        let index = self.string_index(name, at)?;
+        self.out().op_u16(op, index, at);
+        Ok(())
+    }
+
     /// Resolve a reference to `name` written in the source (a read, an
     /// assignment or update target, a `typeof` operand). Only unbound
     /// `eval` remains unsupported (clj-quickjs-106). `arguments` resolves
@@ -1153,6 +1193,7 @@ impl<'s> Lowerer<'s> {
             Some(b) => b,
             None => {
                 let b = Binding {
+                    global: false,
                     kind: BindingKind::Var,
                     // Analysis bytecode is discarded. A symbolic slot keeps
                     // an unused candidate from reducing the local budget,
@@ -1202,6 +1243,9 @@ impl<'s> Lowerer<'s> {
             if self.analyzing() {
                 self.fact(b.key).referenced = true;
             }
+            if b.global {
+                return self.global_access(name);
+            }
             return Access::Found {
                 place: Place::Local(b.slot),
                 target: Target::Binding(b.kind),
@@ -1228,10 +1272,8 @@ impl<'s> Lowerer<'s> {
         if level == 0 {
             return if name == RESERVED_BINDING {
                 Access::Intrinsic
-            } else if let Some(global) = Global::from_name(name) {
-                Access::Global(global)
             } else {
-                Access::Unresolvable
+                self.global_access(name)
             };
         }
         match self.resolve_in(level - 1, name) {
@@ -1279,11 +1321,13 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Capture `this` through each intervening arrow, stopping at an
-    /// ordinary function. The parser rejects a script-level `this`, so
-    /// every lexical chain reaches an ordinary frame. Capture counts are
+    /// ordinary function or the script global object. Capture counts are
     /// checked by `closure`, as for named bindings.
     #[inline(never)]
     fn resolve_this(&mut self, level: usize) -> Place {
+        if self.fns[level].completion.is_some() {
+            return Place::GlobalObject;
+        }
         if !self.fns[level].lexical_this {
             return Place::This;
         }
@@ -1341,12 +1385,8 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::CellGet, at);
                 }
             }
-            Access::Global(global) => {
-                self.out()
-                    .op_u16(Opcode::GetBuiltinGlobal, global as u16, at);
-            }
+            Access::Global(global) => self.global_op(Opcode::GetGlobal, global, at)?,
             Access::Intrinsic => return Err(self.not_a_value(at)),
-            Access::Unresolvable => self.throw(ThrowKind::Unresolvable, at),
             Access::Unsupported(message) => {
                 return Err(self.error(SyntaxErrorKind::Unsupported, at, message));
             }
@@ -1384,18 +1424,7 @@ impl<'s> Lowerer<'s> {
                     ),
                 ));
             }
-            Access::Unresolvable => {
-                self.out().op(Opcode::Pop, at);
-                self.throw(ThrowKind::Unresolvable, at);
-            }
-            Access::Global(global) => {
-                // Built-in globals become global-object properties with
-                // clj-quickjs-104; until then they cannot be assigned.
-                return Err(self.unsupported(
-                    at,
-                    &format!("assignment to the built-in global `{}`", global.name()),
-                ));
-            }
+            Access::Global(global) => self.global_op(Opcode::PutGlobal, global, at)?,
             Access::Found {
                 target: Target::SelfFn(SelfKind::Entry),
                 ..
@@ -3330,8 +3359,7 @@ impl<'s> Lowerer<'s> {
 
     /// `typeof name`: the operand is a reference (parentheses included),
     /// so a name with no binding is `undefined` rather than a
-    /// ReferenceError (QuickJS `OP_get_var_undef`). With no global object
-    /// that is known statically; once one exists the name must be looked
+    /// ReferenceError (QuickJS `OP_get_var_undef`). A global name is looked
     /// up at run time. A binding in its temporal dead zone still throws, as
     /// a plain read does. Out of line, so the recursive [`Self::expr`]
     /// frame stays small.
@@ -3342,7 +3370,7 @@ impl<'s> Lowerer<'s> {
         };
         let at = self.name_span(name, operand.span);
         match self.resolve_reference(name) {
-            Access::Unresolvable => self.out().op(Opcode::Undefined, at),
+            Access::Global(global) => self.global_op(Opcode::GetGlobalOrUndefined, global, at)?,
             access => self.load(access, at)?,
         }
         self.out().op(Opcode::Typeof, span);

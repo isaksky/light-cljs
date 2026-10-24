@@ -179,7 +179,7 @@ New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expre
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
                       | ArrayLiteral | TemplateLiteral | "this" | "(" Expression ")"
-                        (* `this`: ordinary functions and their nested arrows, including defaults *)
+                        (* `this`: script global object, ordinary receivers, lexical arrow captures *)
 TemplateLiteral       = NoSubstitutionTemplate
                       | TemplateHead Expression { TemplateMiddle Expression } TemplateTail
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
@@ -390,7 +390,6 @@ Every form below is rejected where it starts. Error kinds:
 |------|------|
 | for-of loops (`var` heads included), a property as a for-in target (`for (a.b in o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
-| `this` at the script top level, including arrows without an enclosing non-arrow function (clj-quickjs-104) | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
@@ -435,14 +434,14 @@ checks left to later stages:
   repeats a parameter name and declarations of the reserved binding `__rt`;
   `compile_script` rejects them (see "Execution"). Temporal-dead-zone use
   and assignment to a `const` are run-time errors, as in JavaScript.
-- **Script-level `var` and function declarations are script bindings.**
-  A `var` or function declaration at the top level of a script binds a
-  name of that script only, like a top-level `let`: there is no global
-  object yet, so it does not become a property of one and is not visible
-  to other scripts (clj-quickjs-104 will make them global object
-  properties). Function declarations in blocks are lexical (strict-mode
-  semantics; the sloppy-mode Annex B hoisting out of blocks is not
-  implemented).
+- **Global state is task-owned** (clj-quickjs-104). Each task has its own
+  global object with writable built-in bindings. Script `var` and function
+  declarations create its non-configurable properties at entry; `let` and
+  `const` stay lexical. A published closure reads the receiving task's
+  globals, while lexical captures keep their usual publication rules.
+  There is one script per task; indirect eval and later script admission
+  into an existing global environment are not implemented. Block function
+  declarations stay lexical (sloppy Annex B hoisting is not implemented).
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
@@ -559,18 +558,8 @@ checks left to later stages:
   frozen. `Object.seal`/`isSealed` and `Reflect.preventExtensions` are
   not provided. Freezing an accessor makes it non-configurable and keeps
   its getter and setter; the setter may still run (clj-quickjs-120).
-- **Built-in globals cannot be assigned** until the global object exists
-  (clj-quickjs-104): `Object = x` (also compound and `++`/`--`) is a
-  compile-time `Unsupported` error. A lexical binding named `Object`
-  shadows the built-in as usual.
-- **Script-level `this` needs the global object** (clj-quickjs-104):
-  `this` at the script top level and in arrows without an enclosing
-  non-arrow function is rejected. Arrows nested in ordinary functions
-  capture their receiver by value (clj-quickjs-98); `new F()`
-  passes the new object (clj-quickjs-71); `f.call(t)`, `f.apply(t)` and
-  `Reflect.apply(f, t, args)` pass `t` (clj-quickjs-102), and `bind`
-  saves it (clj-quickjs-103). An arrow ignores these receivers. A
-  computed method call `o[k]()` passes `o` like `o.m()` (clj-quickjs-118).
+- **Sloppy receiver substitution remains deferred.** Script top-level
+  `this` is the task's global object, and arrows capture it by value.
   In sloppy code `this` of a call without an object receiver (a plain
   call `f()`, which would see the global object, or a primitive one,
   which would be wrapped, clj-quickjs-72, also through `call`/`apply`)
@@ -865,7 +854,7 @@ Executed, with JavaScript semantics:
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
-| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
+| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: the compiler emits a run-time global lookup allowing a missing property; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
 | `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey uses hint string for an object key, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (deleting initial `length`/`name` creates the record first, clj-quickjs-101); an error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
 | `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, which inherits no `prototype` from `Function.prototype` or `Object.prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function's chain runs through `Function.prototype` (clj-quickjs-102: `F instanceof Function && F instanceof Object`); an error object on the left (a caught error) fails with `UnsupportedOperand` until `Error.prototype` (clj-quickjs-230) exists; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) is not consulted. Bound functions delegate to their targets; a `prototype` accessor runs resumably (clj-quickjs-120) |
@@ -897,14 +886,14 @@ Executed, with JavaScript semantics:
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs. At the top level of a script or function body they are var-scoped (clj-quickjs-94): one may repeat a parameter, a `var` or another function declaration there, which all share one binding, and the last declaration wins (`function g() { return 1; } function g() { return 2; } g()` is 2; `var h; function h() {}` leaves `h` the function). In a block they are lexical (strict mode) |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
-| arrow functions | lowered as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; `arguments` resolves lexically through enclosing functions, including in defaults (clj-quickjs-97); an arrow creates no arguments object. `new.target` and `super` stay rejected. In bodies and default parameters, `this` is the nearest enclosing non-arrow function's receiver, captured by value when the arrow is created, through every intervening arrow (clj-quickjs-98). Plain calls, method calls, `call`, `apply`, `Reflect.apply` and `bind` cannot change it. An ordinary function nested inside an arrow has its own receiver. An arrow without an enclosing non-arrow function still rejects `this` (global object, clj-quickjs-104). A closure capturing `this` follows transitive publication rules: a primitive or otherwise shareable receiver is publishable, a task-owned object receiver is not; no binding cell is introduced. An arrow remains non-constructible (`new` throws a catchable TypeError) |
+| arrow functions | lowered as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; `arguments` resolves lexically through enclosing functions, including in defaults (clj-quickjs-97); an arrow creates no arguments object. `new.target` and `super` stay rejected. In bodies and default parameters, `this` is the nearest enclosing non-arrow function's receiver, captured by value when the arrow is created, through every intervening arrow (clj-quickjs-98). Plain calls, method calls, `call`, `apply`, `Reflect.apply` and `bind` cannot change it. An ordinary function nested inside an arrow has its own receiver. An arrow without an enclosing non-arrow function captures the script global object (clj-quickjs-104). A closure capturing `this` follows transitive publication rules: a primitive or otherwise shareable receiver is publishable, a task-owned object receiver is not; no binding cell is introduced. An arrow remains non-constructible (`new` throws a catchable TypeError) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing parameters are `undefined`, extra values are available through `arguments`; falling off the end returns `undefined`; the callee's `this` is `undefined` (strict-mode semantics; see `this` below) |
 | `arguments` (clj-quickjs-97) | an ordinary task-owned object inheriting from `Object.prototype`, created at entry only for non-arrow functions that reference it directly or through arrows. It holds all actual arguments in writable, enumerable, configurable index properties and a writable, non-enumerable, configurable `length`. Defaults see original actual values before parameter initialization. A parameter, function or lexical declaration named `arguments` shadows it; a plain `var arguments;` preserves it. Arrows capture the binding under the value/cell rule; closures reaching the object cannot be published. Original arguments and the object are traced across yields, waits, GC and migration. At script level it is an ordinary identifier (ReferenceError if unresolved, `typeof` yields `"undefined"`) |
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
 | `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`, and so does a JavaScript function (clj-quickjs-116). `(f = o.m)()` and `let f = o.m; f()` are plain calls too. A plain call passes `undefined` as the receiver |
-| `this` (clj-quickjs-116) | inside a non-arrow function (its body and its parameters' defaults, and blocks, `try` and nested statements in it): the receiver the running call was made with, the very object (`get_this`, which reads the frame's `this` slot and allocates nothing): `o` for a method call `o.m()`, `undefined` for a plain call `f()`, for a task's entry function and for a callback of a resumable native (`__rt.reduce`). A function nested in it has its own `this`. In strict code the receiver is used as is, so `this.x` in a plain call throws a catchable TypeError. In sloppy code an object receiver is used as is, and evaluating `this` with any other receiver fails the task with `UnsupportedOperand` (it would be the global object, clj-quickjs-104, or a wrapper, clj-quickjs-72). The frame's `this` is task-owned and traced with the frame, so it survives waits, collections and migration |
+| `this` (clj-quickjs-116, -104) | at script level: the task's global object, even in strict code. Inside a non-arrow function (its body and its parameters' defaults, and blocks, `try` and nested statements in it): the receiver the running call was made with, the very object (`get_this`, which reads the frame's `this` slot and allocates nothing): `o` for a method call `o.m()`, `undefined` for a plain call `f()`, for a task's entry function and for a callback of a resumable native (`__rt.reduce`). A function nested in it has its own `this`. In strict code the receiver is used as is, so `this.x` in a plain call throws a catchable TypeError. In sloppy code an object receiver is used as is, and evaluating `this` with any other receiver fails the task with `UnsupportedOperand` (it would be the global object, clj-quickjs-104, or a wrapper, clj-quickjs-72). The frame's `this` is task-owned and traced with the frame, so it survives waits, collections and migration |
 | `new F(a, b)`, `new F` (clj-quickjs-71) | evaluates `F`, then the arguments (none without an argument list), then `construct` at the `new` token (ECMAScript EvaluateNew, QuickJS `OP_call_constructor`): `Number` and `String` construct wrappers (clj-quickjs-72, below); otherwise `F` must be a function from a `function` declaration or expression; anything else (a primitive, an arrow function, a built-in such as `Object`, a collection, a plain object) is a catchable TypeError `… is not a constructor` reported at `new`. A new ordinary object owned by the task inherits from `F.prototype` (the lazy prototype object, created on first use, whose `constructor` is `F`) or, when `F.prototype` is not an object, from `Object.prototype`; `F` runs in a new task-owned frame with it as `this` (so it may yield, wait on `__rt.need`, be collected around and migrate like any call). If `F` returns an object, that object is the result, otherwise the new object is (return override). `new F()()` calls the result; `new new F()()` constructs with it. `new` on a published (shared) function fails like reading its `prototype` |
-| `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (`Object`; `Number` and `String`, clj-quickjs-73; `Function` and `Reflect`, clj-quickjs-102) is the runtime's shared, immutable intrinsic (`get_builtin_global`), the same object in every task; a `let`/`const`/`var`/parameter of that name shadows it |
+| `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (`Object`; `Number` and `String`, clj-quickjs-73; `Function` and `Reflect`, clj-quickjs-102) is read from the task's global object (`get_global`); its initial value is the shared immutable intrinsic, the same object in every task. The binding can be replaced without changing the intrinsic. A `let`/`const`/parameter shadows it; script `var` reuses the property |
 | `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
 | `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
 | `Object.prototype.toString()`, `.valueOf()` (clj-quickjs-117) | inherited by every literal: `toString` gives `"[object Object]"` for an ordinary object and the runtime's other non-function heap values, `"[object Function]"` for a function, `"[object Undefined]"`/`"[object Null]"` for those receivers (a plain call); `valueOf` gives the receiver itself, and throws a catchable `TypeError` for `undefined`/`null`; primitive receivers and error objects fail with `UnsupportedOperand` (clj-quickjs-72/-73, -230) |
@@ -1162,10 +1151,10 @@ Errors:
 |-----------|------|-------------|
 | A name declared twice in one block, script, function body or `switch` case block (including a `let`/`const` that repeats a parameter, also with default values, and a function declaration that clashes with a `let`/`const` or repeats one in a block), other than the var-scoped repetitions above | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A `var` whose name a `let`, `const` or block-level function declaration binds in the same body (`let a; var a;`) or in a block enclosing the `var` within the same function (`{ let a; { var a; } }`), or a `for` head binding of an enclosing loop | compile time | `SyntaxError`, kind `Invalid`, at the `var`'s name |
-| Assigning a built-in global (`Object = x`, `Object += 1`, `Object++`; clj-quickjs-104 makes them global-object properties), and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| In `compile_function`, assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
-| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object, so sloppy code fails the same way until clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading, assigning, incrementing or decrementing a name with no binding (a name absent from the global object; sloppy implicit creation is deferred to clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, a parameter in its own or an earlier parameter's default value, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
 | Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it (also in sloppy code until clj-quickjs-96) | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
@@ -1350,8 +1339,7 @@ Gaps specific to execution:
   published, and a published function cannot get any (`TypeError`) or
   create its `prototype` (`UnsupportedOperand`), so `new` on it fails too. No
   rest parameters or generators. Arrows capture their enclosing
-  non-arrow function's receiver; script-level `this` remains rejected (see
-  "Explicit gaps").
+  non-arrow function's receiver, or the script global object.
 
 ### Accessor execution (clj-quickjs-120)
 
@@ -1780,11 +1768,10 @@ index (clj-quickjs-142); each line below evaluates to `true`:
 "\u{10ffff}".length === 2 && "\u{10ffff}"[0] === "\u{dbff}" && Object.getOwnPropertyNames("ab")[2] === "length";
 ```
 
-Rejected (`kind line:column` of the reported position):
+Script and arrow receivers:
 
-```js reject Unsupported 2:12
-// `this` at the script top level (clj-quickjs-104).
-let self = this;
+```js accept
+let self = this; self === globalThis;
 ```
 
 ```js accept
@@ -1793,9 +1780,8 @@ function F() { this.get = () => () => this; } const o = new F(); o.get()() === o
 function f() { return (x = this) => x; } f.call(7).bind(8)() === 7;
 ```
 
-```js reject Unsupported 2:17
-// A script-level arrow still needs the global object (clj-quickjs-104).
-const f = () => this;
+```js accept
+const f = () => this; f() === globalThis;
 ```
 
 ```js reject ReservedWord 1:3
@@ -1810,9 +1796,9 @@ const f = () => this;
 ({get x() { return 1; }});
 ```
 
-```js compile-reject Unsupported 2:1
+```js accept
 let o = {f: function () { return 1; }};
-Object = o.f;
+Object = o.f; Object() === 1;
 ```
 
 ```js reject Unsupported 1:9
@@ -2462,3 +2448,35 @@ bindings shadow `Math`. Like every realm intrinsic, Math is shared and
 immutable despite its methods' writable/configurable descriptor flags.
 `Math()` and `new Math()` throw catchable TypeErrors; error constructors
 remain deferred, so tests verify caught failures and the runtime error kind.
+
+### Global object bindings (clj-quickjs-104)
+
+Execution uses a global object owned by the running task, alongside the
+shared immutable realm intrinsics. `globalThis` is its writable,
+non-enumerable, configurable own self-reference. Top-level `this` reads
+the object directly. Script `var` and function declarations create
+non-configurable enumerable properties at entry. `let` and `const` stay
+lexical. Otherwise free names are looked up at every access; replacing
+properties is observed immediately. Missing reads/writes are
+`ReferenceError`; only a `typeof` lookup permits a missing property.
+Read-only global writes throw `TypeError` in strict code and do nothing
+in sloppy code. A declaration conflict with lexical bindings is an early
+SyntaxError; a restricted global function property is a catchable run-time
+`VmErrorKind::SyntaxError` at the declaration's name.
+
+```js accept
+globalThis === this;
+var a = 1; globalThis.a === 1;
+function g() {} globalThis.g === g;
+let b = 1; globalThis.b === undefined;
+Object.defineProperty(globalThis, "x", {value: 1, writable: true}); x = 2; globalThis.x === 2;
+Object = 3; globalThis.Object === 3;
+```
+
+Global objects are task-owned and cannot be published. A published closure
+that refers to a global reads the calling task's globals; a closure with a
+lexical capture follows the usual value/cell publication rule. A script
+arrow capturing `this` captures the task-owned object and cannot publish.
+There is one script per task. Accessor properties remain unavailable until
+clj-quickjs-120; implicit globals/identifier deletion (-105), indirect eval
+(-106), and sloppy non-object receiver substitution are still deferred.

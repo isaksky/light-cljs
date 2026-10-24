@@ -688,6 +688,11 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
             | Opcode::GetCapture
             | Opcode::GetField
             | Opcode::PutField
+            | Opcode::GetGlobal
+            | Opcode::GetGlobalOrUndefined
+            | Opcode::PutGlobal
+            | Opcode::DeclareGlobalVar
+            | Opcode::DeclareGlobalFunction
             | Opcode::DefineField => 2,
             _ => 0,
         };
@@ -722,12 +727,12 @@ fn fixtures_run_calls_recursion_and_closures_through_vm_instructions() {
     assert_eq!(run(&quickjs), ValueView::Number(0.0));
 
     // The programs are lowered to calls and closures, not interpreted
-    // otherwise: child code, `function`, `call`, `current_function` (fact's
+    // otherwise: child code, `function`, `call`, `get_global` (fact's
     // self-reference), captures and binding cells.
     assert!(functions.function(0).is_some());
     uses(
         &functions,
-        &[Opcode::Function, Opcode::Call, Opcode::CurrentFunction],
+        &[Opcode::Function, Opcode::Call, Opcode::GetGlobal],
     );
     uses(
         &closures,
@@ -859,7 +864,7 @@ fn call_failures_are_type_and_reference_errors_at_the_call() {
 fn hoisted_declarations_and_self_references() {
     // Declarations are created when their block is entered, in order.
     assert_eq!(num("{ const r = g(); function g() { return 7; } r }"), 7.0);
-    // A declaration's own name inside it is the running function...
+    // A script declaration reads its global binding, without a capture.
     let exe = exe("function f(n) { return n > 0 ? f(n - 1) : 42; } f(3)");
     assert_eq!(
         all_opcodes(&exe.function(0).unwrap())
@@ -868,8 +873,8 @@ fn hoisted_declarations_and_self_references() {
             .count(),
         0
     );
-    uses(&exe, &[Opcode::CurrentFunction]);
-    // ...unless the binding is reassigned: then it is the binding.
+    uses(&exe, &[Opcode::GetGlobal]);
+    // Replacing the property is observed inside the original function too.
     assert_eq!(
         num("function f(n) { return n === 0 ? 0 : 1 + f(n - 1); }
              const orig = f;
@@ -1276,9 +1281,9 @@ fn top_level_function_declarations_are_var_scoped() {
         num("function p() { return p; } function p() { return 8; } p()"),
         8.0
     );
-    // A single declaration still refers to itself without a capture.
+    // A single declaration reads the global property without a capture.
     let single = exe("function q(n) { return n === 0 ? 0 : q(n - 1); } var q; q(2)");
-    uses(&single, &[Opcode::CurrentFunction]);
+    uses(&single, &[Opcode::GetGlobal]);
     assert!(!all_opcodes(&single).contains(&Opcode::NewCell));
     // In a block, a function declaration is lexical: it cannot share a
     // name with a `var` there, and does not replace the outer binding.
@@ -1525,8 +1530,8 @@ fn arrows_capture_this_lexically() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
     assert_eq!(
-        compile_err("const f = () => this;"),
-        (SyntaxErrorKind::Unsupported, 1, 17)
+        eval("const f = () => this; f() === globalThis"),
+        ValueView::Bool(true)
     );
     assert_eq!(
         failure("function make() { return () => this; } const a = make(); new a();").kind(),
@@ -1754,8 +1759,8 @@ fn default_parameters() {
         ValueView::Bool(true)
     );
     assert_eq!(
-        compile_err("let F = (a = this) => a;"),
-        (SyntaxErrorKind::Unsupported, 1, 14)
+        eval("let F = (a = this) => a; F() === globalThis"),
+        ValueView::Bool(true)
     );
     // An object literal default with an escaped reserved-word key.
     assert_eq!(
@@ -2154,4 +2159,68 @@ fn forwarded_calls_wait_and_resume_on_another_thread() {
     // The dependency is ready after the first wait: 41, 42, 43.
     assert_eq!(waits, 1);
     assert_eq!(result, ValueView::Number(41.0 + 42_000.0 + 43_000_000.0));
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn published_functions_resolve_the_receiving_tasks_globals() {
+    let rt = Runtime::new();
+    let producer = rt
+        .spawn(&exe("var a = 1; function read() { return a; } read"), &[])
+        .unwrap();
+    let RunOutcome::Complete(read) = producer.run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&read)
+        .expect("global references capture no task-owned object");
+    drop(producer);
+    rt.collect().unwrap();
+    for n in [7.0, 9.0] {
+        let arg = rt.root(Primitive::Number(n));
+        let consumer =
+            compile_function("function consume(read, n) { globalThis.a = n; return read(); }")
+                .unwrap();
+        let RunOutcome::Complete(value) =
+            rt.spawn(&consumer, &[&read, &arg]).unwrap().run().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(value.view(), ValueView::Number(n));
+    }
+    let RunOutcome::Complete(arrow) = rt.spawn(&exe("() => this"), &[]).unwrap().run().unwrap()
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        rt.publish(&arrow),
+        Err(PublishError::NotShareable { .. })
+    ));
+}
+
+#[test]
+fn global_bindings_survive_yields_collection_and_migration() {
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe("var a = {n: 1}; function inc() { a.n++; return a.n; } let i = 0; while (i < 3) { inc(); i++; } a.n"), &[]).unwrap();
+    let mut host = PlusThousand::default();
+    let mut yields = 0;
+    loop {
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| task.run_with(Budget::instructions(1), &mut host))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(4.0));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(yields > 30);
 }

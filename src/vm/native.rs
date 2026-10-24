@@ -530,6 +530,12 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
         | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
         | ForInNext | NewArguments | Method(..) | DefineGetter(_) | DefineSetter(_) => false,
+        GetGlobalObject
+        | GetGlobal(_)
+        | GetGlobalOrUndefined(_)
+        | PutGlobal(_)
+        | DeclareGlobalVar(_)
+        | DeclareGlobalFunction(_) => false,
     }
 }
 

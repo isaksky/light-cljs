@@ -93,6 +93,12 @@
 //! | `Method`        | 0x66 | u16 function index | obj c1 … cn → obj f    | allocate a non-constructor closure with immutable home object `obj` |
 //! | `DefineGetter`  | 0x67 | u16 name index | obj f → obj | define/merge an enumerable configurable getter |
 //! | `DefineSetter`  | 0x68 | u16 name index | obj f → obj | define/merge an enumerable configurable setter |
+//! | `GetGlobalObject` | 0x69 | – | → obj | the task-owned global object (script `this`) |
+//! | `GetGlobal` | 0x6A | u16 name constant | → v | current global property; missing is ReferenceError |
+//! | `GetGlobalOrUndefined` | 0x6B | u16 name constant | → v | global lookup permitting a missing property (`typeof`) |
+//! | `PutGlobal` | 0x6C | u16 name constant | v → v | assign existing global property, respecting strictness |
+//! | `DeclareGlobalVar` | 0x6D | u16 name constant | – | create a non-configurable global var unless already own |
+//! | `DeclareGlobalFunction` | 0x6E | u16 name constant | – | validate a global function declaration and prepare its property |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -363,8 +369,9 @@
 //! a built-in global name of the runtime's realm (`crate::realm`), building
 //! the realm on first use, so it may allocate and is a poll point. Its
 //! operand is checked at load time against the built-in global table. The
-//! compiler emits it for a free name that is a built-in global, after every
-//! lexical scope and instead of the ReferenceError.
+//! source compiler now uses `GetGlobal` instead (clj-quickjs-104), so it
+//! observes writable task-local global bindings. This instruction remains
+//! available for hand-assembled bytecode that needs the original intrinsic.
 //!
 //! Opcode `0x53`, `CallMethod` (clj-quickjs-117), is `Call` with a receiver
 //! below the callee: the compiler emits it for a call whose callee is a
@@ -545,6 +552,12 @@ pub enum Opcode {
     Method = 0x66,
     DefineGetter = 0x67,
     DefineSetter = 0x68,
+    GetGlobalObject = 0x69,
+    GetGlobal = 0x6A,
+    GetGlobalOrUndefined = 0x6B,
+    PutGlobal = 0x6C,
+    DeclareGlobalVar = 0x6D,
+    DeclareGlobalFunction = 0x6E,
 }
 
 /// Operand encoding of an opcode.
@@ -704,6 +717,12 @@ impl Opcode {
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
+            0x69 => GetGlobalObject,
+            0x6A => GetGlobal,
+            0x6B => GetGlobalOrUndefined,
+            0x6C => PutGlobal,
+            0x6D => DeclareGlobalVar,
+            0x6E => DeclareGlobalFunction,
             _ => return None,
         })
     }
@@ -816,6 +835,12 @@ impl Opcode {
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
+            GetGlobalObject => "get_global_object",
+            GetGlobal => "get_global",
+            GetGlobalOrUndefined => "get_global_or_undefined",
+            PutGlobal => "put_global",
+            DeclareGlobalVar => "declare_global_var",
+            DeclareGlobalFunction => "declare_global_function",
         }
     }
 
@@ -832,7 +857,14 @@ impl Opcode {
             Call | CallMethod | Construct => OperandKind::ArgCount,
             GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
-            GetField | PutField | DefineField | DefineGetter | DefineSetter => OperandKind::Name,
+            GetGlobal
+            | GetGlobalOrUndefined
+            | PutGlobal
+            | DeclareGlobalVar
+            | DeclareGlobalFunction
+            | GetField
+            | PutField
+            | DefineField | DefineGetter | DefineSetter => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
@@ -843,6 +875,7 @@ impl Opcode {
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
             | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
+            GetGlobalObject => OperandKind::None,
         }
     }
 }
@@ -999,6 +1032,12 @@ pub(crate) enum Instr {
     Method(u16, u16),
     DefineGetter(u16),
     DefineSetter(u16),
+    GetGlobalObject,
+    GetGlobal(u16),
+    GetGlobalOrUndefined(u16),
+    PutGlobal(u16),
+    DeclareGlobalVar(u16),
+    DeclareGlobalFunction(u16),
 }
 
 impl Instr {
@@ -1108,6 +1147,12 @@ impl Instr {
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
+            Instr::GetGlobalObject => Opcode::GetGlobalObject,
+            Instr::GetGlobal(_) => Opcode::GetGlobal,
+            Instr::GetGlobalOrUndefined(_) => Opcode::GetGlobalOrUndefined,
+            Instr::PutGlobal(_) => Opcode::PutGlobal,
+            Instr::DeclareGlobalVar(_) => Opcode::DeclareGlobalVar,
+            Instr::DeclareGlobalFunction(_) => Opcode::DeclareGlobalFunction,
         }
     }
 
@@ -1119,7 +1164,10 @@ impl Instr {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
             | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
             | NewObjectLiteral | GetThis | NewArray | NewArguments => (0, 1),
+            GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
+            PutGlobal(_) => (1, 1),
+            DeclareGlobalVar(_) | DeclareGlobalFunction(_) => (0, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div

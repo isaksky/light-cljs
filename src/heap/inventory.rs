@@ -78,11 +78,14 @@ enum Holder {
     BoundFunction,
     /// A concise method's immutable home-object reference.
     MethodHomeObject,
+
+    /// The task's mutable global object, independent of operand/local slots.
+    TaskGlobalObject,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 25] = [
+const HOLDERS: [Holder; 26] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -108,6 +111,7 @@ const HOLDERS: [Holder; 25] = [
     Holder::FunctionProperties,
     Holder::BoundFunction,
     Holder::MethodHomeObject,
+    Holder::TaskGlobalObject,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -167,6 +171,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             TransientBuilder,
             ObjectProperty,
             ArrayElement,
+            TaskGlobalObject,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -179,7 +184,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
-        ObjectKind::PlainObject => &[PersistentHandle, ObjectProperty],
+        ObjectKind::PlainObject => &[PersistentHandle, ObjectProperty, TaskGlobalObject],
         ObjectKind::Native => &[NativePayloadEdges],
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
             &[PersistentCollectionEdges, DependencyOutcome]
@@ -221,6 +226,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::TaskGlobalObject => public(
+            "task_global_object_retains_and_reclaims",
+            "finished_task_releases_global_object",
+        ),
         Holder::BoundFunction => public("bound_function_retains", "bound_function_reclaims"),
         Holder::PersistentHandle => {
             public("persistent_handle_retains", "persistent_handle_reclaims")

@@ -1095,6 +1095,11 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::DefineField
             | Opcode::GetBuiltinGlobal
             | Opcode::CallMethod
+            | Opcode::GetGlobal
+            | Opcode::GetGlobalOrUndefined
+            | Opcode::PutGlobal
+            | Opcode::DeclareGlobalVar
+            | Opcode::DeclareGlobalFunction
             | Opcode::Construct => 2,
             _ => 0,
         };
@@ -3962,7 +3967,7 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
         let e = compile_script("t", src).unwrap_err();
         (e.kind, e.line, e.column)
     };
-    use SyntaxErrorKind::{Invalid, Unsupported};
+    use SyntaxErrorKind::Invalid;
     assert_eq!(compile_err("let a;\nlet a;"), (Invalid, 2, 5));
     assert_eq!(compile_err("const a = 1, a = 2;"), (Invalid, 1, 14));
     assert_eq!(
@@ -3983,11 +3988,7 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
         (Invalid, 1, 28)
     );
 
-    // Valid syntax that cannot execute yet is rejected where it starts.
-    // (Functions and calls execute since clj-quickjs-21, property reads
-    // since clj-quickjs-114, method calls since clj-quickjs-117; assigning
-    // a built-in global waits for the global object, clj-quickjs-104.)
-    assert_eq!(compile_err("let o = 1;\nObject = o;"), (Unsupported, 2, 1));
+    assert_eq!(num("let o = 1;\nObject = o;"), 1.0);
     // Syntax errors pass through from the parser.
     assert_eq!(compile_err("let if = 1;").0, SyntaxErrorKind::ReservedWord);
 }
@@ -7394,7 +7395,7 @@ fn object_intrinsics() {
     for op in [
         Opcode::NewObjectLiteral,
         Opcode::CallMethod,
-        Opcode::GetBuiltinGlobal,
+        Opcode::GetGlobal,
     ] {
         assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
     }
@@ -7459,12 +7460,7 @@ fn object_intrinsics_reject_what_they_do_not_support() {
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains(needle), "{src}: {message}");
     }
-    // Assigning a built-in global waits for the global object.
-    for src in ["Object = 1;", "Object += 1;", "Object++;"] {
-        let e = compile_script("test", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-        assert!(e.message.contains("`Object`"), "{src}: {e}");
-    }
+    assert_eq!(num("Object = 1; Object += 1; Object++; Object"), 3.0);
     assert_eq!(num("let Object = 1; Object = 2; Object"), 2.0);
 }
 
@@ -11021,4 +11017,84 @@ fn string_index_reads_allocate_no_wrappers() {
         other => panic!("expected Complete, got {other:?}"),
     }
     assert_eq!(rt.heap_stats().objects, before);
+}
+
+/// The data-property sequence adapts QuickJS `test_global_var_opt`,
+/// research/quickjs/tests/test_language.js at 7d1c13c5d8f8. Other rows are
+/// synthetic fixtures, not light-cljs output. QuickJS's license:
+///
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a
+/// copy of this software and associated documentation files (the "Software"),
+/// to deal in the Software without restriction, including without limitation
+/// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+/// and/or sell copies of the Software, and to permit persons to whom the
+/// Software is furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included
+/// in all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+/// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+/// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+/// DEALINGS IN THE SOFTWARE.
+#[test]
+fn global_object_bindings() {
+    // Synthetic fixtures, not light-cljs output. Accessors require -120.
+    for src in [
+        "globalThis === this",
+        "var a = 1; globalThis.a === 1",
+        "function g() {} globalThis.g === g",
+        "let b = 1; globalThis.b === undefined",
+        "var a = 1; function f() { a = a + 1; return a; } f() === 2 && globalThis.a === 2",
+        "var a; Object.getOwnPropertyDescriptor(globalThis, 'a').configurable === false",
+        "function f() {} Object.getOwnPropertyDescriptor(globalThis, 'f').configurable === false",
+        "Object.defineProperty(globalThis, 'x', {value: 1, writable: true, configurable: true}); function f() { return x; } f() === 1 && (globalThis.x = 2) === 2 && f() === 2",
+        "Object.defineProperty(globalThis, 'x', {value: 1}); typeof x === 'number' && typeof missing === 'undefined'",
+        "Object = 3; Object === 3 && globalThis.Object === 3",
+        "var g = 1; function f() { return g; } globalThis.f() === 1",
+        "globalThis === (() => this)()",
+        "let original = this; globalThis = 7; this === original",
+        "var Object; typeof Object === 'function'",
+        "function f() { return f; } let original = f; globalThis.f = 3; original() === 3",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(failure("missing").kind(), VmErrorKind::ReferenceError);
+    assert_eq!(failure("missing = 1").kind(), VmErrorKind::ReferenceError);
+    assert_eq!(
+        failure("Object.defineProperty(globalThis, 'gvar1', {value: 1}); gvar1 = 2").kind(),
+        VmErrorKind::TypeError
+    );
+    let sloppy = compile_script_with("globals", "Object.defineProperty(globalThis, 'gvar1', {value: 0, writable: true, configurable: true}); gvar1 = 1; Object.defineProperty(globalThis, 'gvar1', {writable: false}); gvar1 = 2; let ok = gvar1 === 1; Object.defineProperty(globalThis, 'gvar1', {value: 4, writable: true, configurable: true}); ok && gvar1 === 4 && (gvar1 = 6) === 6", ScriptOptions { strict: false }).unwrap();
+    assert!(
+        matches!(run(&sloppy, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+}
+
+#[test]
+fn global_bytecode_round_trip_and_name_validation() {
+    let program = exe("var a = 1; function f() { return a; } globalThis.a++; typeof missing; f()");
+    let reloaded = Executable::load(program.to_spec()).unwrap();
+    assert!(
+        matches!(run(&reloaded, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Number(2.0))
+    );
+    for op in [
+        Opcode::GetGlobal,
+        Opcode::GetGlobalOrUndefined,
+        Opcode::PutGlobal,
+        Opcode::DeclareGlobalVar,
+        Opcode::DeclareGlobalFunction,
+    ] {
+        let mut spec = program.to_spec();
+        spec.code = vec![op as u8, 0, 0, Opcode::Return as u8];
+        spec.constants = vec![Primitive::Number(1.0)];
+        assert_eq!(
+            Executable::load(spec).unwrap_err().kind,
+            ValidationErrorKind::NameNotString { index: 0 }
+        );
+    }
 }

@@ -188,6 +188,8 @@ pub(crate) enum Raised {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    /// Mutable global state belongs to the task, independently of workers.
+    pub(crate) global_object: Option<ObjectId>,
     /// The frame the task started in.
     entry: Frame,
     /// Frames called from the entry frame, innermost last.
@@ -239,6 +241,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            global_object: None,
             entry: Frame {
                 code: Arc::clone(code),
                 callee: None,
@@ -820,6 +823,9 @@ impl VmState {
 /// traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        if let Some(id) = self.global_object {
+            visit(id);
+        }
         self.stack.iter().for_each(|v| v.trace(visit));
         for frame in std::iter::once(&self.entry).chain(&self.calls) {
             if let Some(id) = frame.callee {

@@ -87,11 +87,6 @@ pub(super) struct Parser<'a> {
     /// ([`Self::set_strict`]).
     strict: bool,
     in_function: bool,
-    /// `this` is an expression here (clj-quickjs-116): inside the parameters
-    /// or body of a non-arrow function, including nested arrows whose
-    /// `this` is lexical (clj-quickjs-98). Script-level arrows still reject
-    /// it until the global object exists (clj-quickjs-104).
-    this_allowed: bool,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
     in_loop: bool,
@@ -145,7 +140,6 @@ impl<'a> Parser<'a> {
             depth: 0,
             strict,
             in_function: false,
-            this_allowed: false,
             in_loop: false,
             in_switch: false,
             labels: Vec::new(),
@@ -1218,7 +1212,6 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
-        let outer_this = std::mem::replace(&mut self.this_allowed, true);
         let (name, (params, defaults)) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -1228,7 +1221,6 @@ impl<'a> Parser<'a> {
         let (body, strict) =
             self.parse_function_body(name.as_ref(), &params, simple, self.strict)?;
         self.in_function = outer;
-        self.this_allowed = outer_this;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
         self.labels = outer_labels;
@@ -1900,7 +1892,6 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let outer_strict = self.strict;
-        let outer_this = std::mem::replace(&mut self.this_allowed, true);
         let (params, defaults) = self.parse_formal_parameters()?;
         let outer_function = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -1909,7 +1900,6 @@ impl<'a> Parser<'a> {
         let simple = defaults.iter().all(Option::is_none);
         let (body, strict) = self.parse_function_body(None, &params, simple, outer_strict)?;
         self.in_function = outer_function;
-        self.this_allowed = outer_this;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
         self.labels = outer_labels;
@@ -2445,7 +2435,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::True) => ExprKind::Bool(true),
             TokenKind::Keyword(Keyword::False) => ExprKind::Bool(false),
             TokenKind::Keyword(Keyword::Null) => ExprKind::Null,
-            TokenKind::Keyword(Keyword::This) if self.this_allowed => ExprKind::This,
+            TokenKind::Keyword(Keyword::This) => ExprKind::This,
             TokenKind::Keyword(Keyword::Function) => {
                 let function = self.parse_function(false)?;
                 let span = function.span;

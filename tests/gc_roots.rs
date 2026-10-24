@@ -869,6 +869,11 @@ fn realm_intrinsics_retain() {
             run_to_end(&task).downgrade()
         })
         .collect();
+    // Each completed task created its own global binding overlay (-104).
+    // Reclaim those objects and their self-cycles; the intrinsic values
+    // reached through them must survive independently.
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len());
+    assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
     // clj-quickjs-118, `defineProperty` and `getOwnPropertyDescriptor`, clj-quickjs-119,
@@ -1688,4 +1693,33 @@ fn array_length_truncation_reclaims_elements() {
         complete_requests(&rt, &task);
         assert_eq!(run_to_end(&task).view(), ValueView::Bool(true));
     }
+}
+
+/// The global object and its cycle are reachable only from VmState, after
+/// the assignment operands and argument have been discarded.
+#[test]
+fn task_global_object_retains_and_reclaims() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        &format!("function f(o) {{ globalThis.saved = o; o = 0; {SPIN} return 0; }}"),
+    );
+    run_prologue(&task);
+    let held = Held::new(vec![weak], move || drop(task));
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn finished_task_releases_global_object() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        &format!("function f(o) {{ globalThis.saved = o; o = 0; {SPIN} return 0; }}"),
+    );
+    run_prologue(&task);
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    assert_eq!(run_to_end(&task).view(), ValueView::Number(0.0));
+    assert_reclaimed(&rt, Held::new(vec![weak], || {}).keeping(task));
 }

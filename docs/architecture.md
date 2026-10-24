@@ -196,6 +196,7 @@ public API cannot reach.
 | published task result | `PersistentHandle` | `task_result_retains` | `task_result_reclaims` |
 | running frames (run parked at a VM safepoint) | `TaskFrame`, reported by the runner | `running_frame_retains` | `running_frame_reclaims` |
 | suspended (yielded) frames | `TaskFrame`, task root source | `suspended_frame_retains` | `suspended_frame_reclaims` |
+| task global object and its properties | `TaskFrame` (`PlainObject`) | `task_global_object_retains_and_reclaims` | `finished_task_releases_global_object` |
 | frames suspended at a pending `__rt.need` | `TaskFrame` | `pending_need_frame_retains` | `pending_need_frame_reclaims` |
 | executor ready queue | `TaskFrame` (queued task) | `ready_queue_retains` | `ready_queue_reclaims` |
 | executor parked set | `TaskFrame` (parked task) | `executor_parked_task_retains` | `executor_parked_task_reclaims` |
@@ -430,12 +431,9 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `typeof` (clj-quickjs-69) is the opcode `typeof` (`0x4E`), which reads
   the heap only to tell a function object (`"function"`) from every other
   object kind (`"object"`; the mapping of every value kind is in
-  `src/vm/instr.rs`). Its operand is a reference when it is a name: with
-  no global object, a name that resolves to no binding is known
-  statically, so the compiler emits `undefined` (then `typeof`) instead of
-  `throw_error`; once a global object exists that name must be looked up
-  at run time. A binding in its temporal dead zone is read as usual, so it
-  still throws.
+  `src/vm/instr.rs`). Its operand is a reference when it is a name: `get_global_or_undefined`
+  looks up an otherwise free name at run time (clj-quickjs-104). A binding
+  in its temporal dead zone is read as usual, so it still throws.
   `void x` (clj-quickjs-133) needs no opcode of its own: the operand's
   code, then `pop` and `undefined` (QuickJS emits `OP_drop`,
   `OP_undefined`). Its operand is an ordinary expression, so an unbound
@@ -518,8 +516,8 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   Strict code reads the slot as is; sloppy code fails with
   `UnsupportedOperand` for a non-object receiver (the global object is
   clj-quickjs-104, primitive wrappers clj-quickjs-72). The compiler emits
-  `get_this` for `this` in a non-arrow function; the parser still rejects
-  it at the script top level and in arrows (clj-quickjs-104, -98).
+  `get_this` for `this` in a non-arrow function. Script-level `this` uses
+  `get_global_object` (clj-quickjs-104); arrows capture either by value (-98).
 - **`new` (clj-quickjs-71).** `construct n` (`0x5E`) is `call n` for a
   constructor: the callee must be a function object whose code is an
   ordinary function (`ExecutableSpec::constructor`; arrows, built-ins and
@@ -658,7 +656,7 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   value; `var x;` emits nothing. The `var` statement checks the scopes
   between it and the body for a lexical binding of its name (an early
   error), skipping a catch parameter (Annex B). Script-level `var`s are
-  script bindings until the global object (clj-quickjs-104) exists. A
+  global object properties (clj-quickjs-104), rather than frame locals. A
   `var` head of a `for` or `for`-`in` statement (clj-quickjs-89)
   contributes its names to the same body-wide set and lowers like a `var`
   statement (`var_declarators`; a for-in head is assigned each key) inside
@@ -1632,8 +1630,8 @@ moment (a leaf lock, never taken by the collector).
 - **Publication.** Intrinsics never change once installed, so they are
   `Shareability::Persistent` (`classify`: `Builtin`, and `Plain` when
   intrinsic) and known shareable from creation. A closure that reads
-  `Object` captures nothing (the name compiles to `get_builtin_global 0`,
-  resolved through the running task's runtime); one that captured
+  `Object` captures nothing (the name compiles to `get_global`,
+  resolved through the running task's global object, clj-quickjs-104); one that captured
   `Object` or `Object.prototype` by value still publishes. Objects that
   inherit from `Object.prototype` stay task-owned: an edge from a
   task-owned object to an intrinsic is allowed, the reverse never exists.
@@ -1645,9 +1643,9 @@ moment (a leaf lock, never taken by the collector).
 - **Names.** A free identifier that is a built-in global (`Global`:
   `Object` today) resolves after every lexical scope and before the
   `ReferenceError` (`frontend::lower`, `Access::Global`), so `let Object`
-  shadows it. `typeof Object` is `"function"`. Assigning one is a
-  compile-time `Unsupported` error until the global object makes these
-  its properties (clj-quickjs-104).
+  shadows it. `typeof Object` is initially `"function"`. These are writable global-object
+  properties (clj-quickjs-104); replacing a binding leaves the shared
+  intrinsic itself unchanged.
 - **Calls.** `Call` and `CallMethod` accept a built-in function: it runs to
   completion inside the instruction (a poll point; it may allocate, as
   `Object()` does, and its result replaces the operands at once), and so
@@ -2700,7 +2698,7 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `test_closure3` of `research/quickjs/tests/test_closure.js`, revision
   7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
   upstream's `var`s are kept since clj-quickjs-94 (`let`/`const` before),
-  but script-level ones are script bindings, not global object properties;
+  script-level ones are now global object properties (clj-quickjs-104);
   the added `failed` flag is a `let`; `log` appends two decimal digits per value to a
   number instead of concatenating strings; the `{ set, get }` object is a
   vector made with `__rt.vector` and read with `__rt.nth`; failure flags
@@ -2994,12 +2992,12 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `typeof null` and `typeof unknown_var` rows of `test_op2` (line 195) of
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
   Modified: `assert(actual, expected, msg)` is a Rust assertion on the
-  expression's value; `typeof Object` waits for a global `Object`. The
+  expression's value; `typeof Object` now reads its global binding. The
   notice is on `identifiers_are_not_normalized`, which also runs the
   `typeof õ` case of `test_unicode_ident`. `research/quickjs/quickjs.c`
   `js_operator_typeof`, `OP_typeof`, `js_parse_unary` and
   `OP_get_var_undef` were consulted only, for semantics: here an
-  unresolvable operand is decided statically (there is no global object)
+  unresolvable operand uses a run-time lookup (clj-quickjs-104)
   and `type_of` in `src/vm/dispatch.rs` classifies this runtime's value
   kinds. No code was copied.
 - `tests/js_source.rs` `strings_are_code_unit_sequences` (clj-quickjs-141):
@@ -3389,9 +3387,9 @@ on `loose_equality_with_a_boolean_left_operand` in the same file.
 
 ## Arrow receiver captures (clj-quickjs-98)
 
-The parser preserves `this_allowed` through arrows, including parameter
-expressions, and resets it at ordinary-function boundaries. Script-level
-arrows retain the script's rejection until the global object exists.
+The parser accepts `this` in scripts, functions and arrows, including
+parameter defaults (clj-quickjs-104). An ordinary function has its own
+receiver; script-level arrows capture the global object.
 `lower::Place::This` loads an ordinary frame's receiver with `get_this`.
 `Lowerer::resolve_this` adds one value capture to each intervening arrow,
 reusing it for repeated reads and nested closures. Both lowering passes
@@ -3774,3 +3772,94 @@ including conversion getters, fallback methods and throws that wait with
 collection and migration at every yield.
 GC inventory tests include the namespace and all six functions. Math
 constants and other methods are outside this pellet.
+
+## Task-owned global objects (clj-quickjs-104)
+
+Contract: `realm::new_global_object`, `realm::declare_global`,
+`VmState::global_object`, and the global instructions in `vm::instr` and
+`vm::dispatch`. This complements the shared immutable intrinsics above.
+
+**Decision.** Each task lazily creates one ordinary mutable global object,
+owned by its task ID and inheriting from the shared `Object.prototype`.
+The task retains it across budgeted runs, calls, waits and worker migration;
+it is released with VM state at completion or cancellation. It is never
+worker-local or implicitly shared between tasks. The same immutable code
+can run in multiple tasks with separate globals. Currently each task runs
+one script (or entry function); admitting further scripts and eval into an
+existing declarative environment is deferred.
+
+`globalThis` is initially a writable, non-enumerable, configurable own
+property referring to the object. Script top-level `this` reads the object
+itself, including after replacing that property. Each built-in in
+`realm::Global::ALL` is installed as a writable, non-enumerable, configurable
+own property whose initial value is the shared intrinsic; replacing the
+binding does not mutate the intrinsic. `undefined`, `NaN` and `Infinity`
+are fixed own properties (source still reserves those identifiers).
+
+Script `var` and function declarations are global object bindings.
+Instantiation runs before body statements, creating non-configurable,
+enumerable, writable own properties; a `var` reuses an existing own
+property without changing its descriptor or value. A function declaration
+checks restricted properties before any closure is created, then installs
+its closure. The compiler rejects conflicts with that script's lexical
+bindings. A function declaration against a non-configurable property that
+is not writable and enumerable raises a catchable run-time `SyntaxError`.
+Script `let` and `const` retain the existing lexical frame/cell machinery
+and never become global object properties.
+
+Unbound identifiers and references to script object bindings use
+`get_global`, `get_global_or_undefined` (`typeof`) and `put_global`.
+Every access walks current properties; no global value is cached in code,
+locals, captures or a function's self-reference. Descriptor replacement,
+read-only strict writes and ignored sloppy writes use the existing
+property implementation. Missing reads and writes raise `ReferenceError`;
+sloppy implicit creation and identifier deletion remain clj-quickjs-105.
+`get_builtin_global` remains available to hand-assembled code, but source
+identifiers no longer use it.
+
+**Publication consequences.** A closure that reads a global captures no
+mutable realm state, and can be published if its other captures permit it.
+When called in another task it reads that receiving task's globals, never
+the producer's. A lexical capture retains its existing value/cell rules:
+a cell remains unpublishable. A captured global object (including a
+script-level arrow's lexical `this`) is an ordinary task-owned object, so
+transitive publication rejects it. This is intentional task-relative
+execution rather than a shared JavaScript global environment.
+
+**Alternatives.** An explicitly concurrent global reference could preserve
+one mutable environment across tasks, but would require defined atomic
+property/descriptor operations and a callback protocol that never runs
+JavaScript under its synchronization. Nothing currently requires that
+sharing, so it would add synchronization and semantics without a client.
+Capturing the producer global object in every closure would preserve its
+environment but prevent publishing any global-reading function; silently
+sharing it would violate `design.md`. Duplicating all intrinsics per task
+would lose their shared identities and add allocations; the mutable binding
+overlay preserves both task isolation and shared immutable intrinsics.
+
+**Collection and verification.** `Trace for VmState` reports the global
+object even when no operand or local holds it. Ordinary-object tracing
+covers property values, keys, the prototype and the `globalThis` cycle;
+there is no new heap kind, root category or publication exemption.
+`tests/gc_roots.rs` checks retention and reclamation after dropping or
+finishing a task. `tests/js_functions.rs` checks receiving-task lookup,
+publication rejection for a captured global, and one-instruction runs with
+collection and migration between every slice. `tests/js_source.rs`
+`global_object_bindings` checks source semantics and data descriptors.
+
+**Remaining prerequisite.** The object model does not yet store accessors
+(clj-quickjs-120). The accessor/getter/setter rows of this pellet's acceptance
+cannot run until that prerequisite lands; they must use resumable VM/native
+frames, as required for every JavaScript callback. Sloppy non-object `this`
+substitution remains the existing clj-quickjs-116 gap. This implementation
+therefore completes the global object/data-property portion of -104 only.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c`,
+`JS_CheckDefineGlobalVar`, `OP_get_var`, `OP_put_var`, and
+`research/quickjs/tests/test_language.js`, `test_global_var_opt`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The data-property sequence in
+`tests/js_source.rs::global_object_bindings` adapts the upstream sequence:
+`Object.defineProperty` creates the initial configurable property instead
+of indirect eval; Rust assertions check script completion values; accessor
+and delete groups are deferred. The test carries the QuickJS MIT notice.
+No upstream implementation code is copied.

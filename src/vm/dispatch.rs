@@ -168,6 +168,7 @@ pub(crate) enum Fault {
     },
     /// An invalid array length (clj-quickjs-154).
     RangeError(String),
+    SyntaxError(String),
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -627,11 +628,19 @@ fn not_a_constructor(v: &Value, what: &str) -> Fault {
     Fault::TypeError(format!("{what} is not a constructor"))
 }
 
-/// The running frame's `this` for `GetThis`. Strict code sees the receiver
-/// as passed. Sloppy code would see the global object for an `undefined` or
-/// `null` receiver and ToObject of a primitive one; neither exists in this
-/// runtime yet, so anything but an object fails the task explicitly rather
-/// than producing a wrong `this`.
+/// Lazily materialize and root the global object before returning it.
+fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
+    if let Some(id) = state.global_object {
+        return Ok(Value::Object(id));
+    }
+    let id = realm::new_global_object(heap, state.diag.task)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    state.global_object = Some(id);
+    Ok(Value::Object(id))
+}
+
+/// The receiver of an ordinary function. Sloppy non-object substitution
+/// remains explicitly unsupported; script `this` uses `GetGlobalObject`.
 fn this_value(state: &VmState) -> Result<Value, Fault> {
     let frame = state.top();
     match &frame.this {
@@ -732,6 +741,7 @@ fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
 /// The error kind and message of a fault that is not an exception value.
 fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
     match fault {
+        Fault::SyntaxError(m) => (VmErrorKind::SyntaxError, m),
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
         Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
@@ -781,6 +791,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
 fn catchable(kind: VmErrorKind) -> bool {
     match kind {
         VmErrorKind::ReferenceError
+        | VmErrorKind::SyntaxError
         | VmErrorKind::RangeError
         | VmErrorKind::TypeError
         | VmErrorKind::StackOverflow
@@ -1427,6 +1438,59 @@ pub(crate) fn step(
             let this = this_value(state)?;
             state.push(this);
         }
+        Instr::GetGlobalObject => {
+            let global = global_object(state, heap)?;
+            state.push(global);
+        }
+        Instr::GetGlobal(i) | Instr::GetGlobalOrUndefined(i) => {
+            let name = name_constant(code, i)?;
+            let global = global_object(state, heap)?;
+            let found = property::read(
+                heap,
+                state.diag.task,
+                &global,
+                &property::Key::from_name(&name),
+            )?;
+            if found.is_none() && !matches!(instr, Instr::GetGlobalOrUndefined(_)) {
+                return Err(Fault::Throw(ThrowKind::Unresolvable));
+            }
+            native::read_result(state, found, global)?;
+        }
+        Instr::PutGlobal(i) => {
+            let name = name_constant(code, i)?;
+            let global = global_object(state, heap)?;
+            if !property::has_property(
+                heap,
+                state.diag.task,
+                &global,
+                &property::Key::from_name(&name),
+            )? {
+                // Implicit sloppy globals belong to clj-quickjs-105.
+                return Err(Fault::Throw(ThrowKind::Unresolvable));
+            }
+            let value = state.pop()?;
+            let setter = property::prepare_put(
+                heap,
+                state.diag.task,
+                &global,
+                &property::Key::from_name(&name),
+                value.clone(),
+                code.strict,
+            )?;
+            native::write_result(state, setter, global, value)?;
+        }
+        Instr::DeclareGlobalVar(i) | Instr::DeclareGlobalFunction(i) => {
+            let name = name_constant(code, i)?;
+            let Value::Object(id) = global_object(state, heap)? else {
+                return Err(Fault::Internal("missing global object"));
+            };
+            realm::declare_global(
+                heap,
+                id,
+                &name,
+                matches!(instr, Instr::DeclareGlobalFunction(_)),
+            )?;
+        }
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
             // (a poll point); its objects are roots from then on.
@@ -1452,7 +1516,9 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally
         | Instr::Construct(_) => true,
         // Builds the realm on first use (`crate::realm`).
-        Instr::GetBuiltinGlobal(_) => true,
+        Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
+        | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_)
+        | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) => true,
         // On a function object these may allocate its property record and
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).

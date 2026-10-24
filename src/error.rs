@@ -98,6 +98,8 @@ pub enum VmErrorKind {
     /// existing immutable VM error objects; a RangeError constructor is
     /// still deferred to the error built-ins.
     RangeError,
+    /// A global declaration clashes with a restricted global property.
+    SyntaxError,
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

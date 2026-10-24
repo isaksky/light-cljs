@@ -2096,7 +2096,7 @@ fn functions() {
 
 #[test]
 fn this_expressions() {
-    use SyntaxErrorKind::{Invalid, Unsupported};
+    use SyntaxErrorKind::Invalid;
     // clj-quickjs-116: `this` is a primary expression inside non-arrow
     // functions, declarations and expressions alike, nested blocks,
     // default parameters and functions nested in arrows included.
@@ -2120,11 +2120,10 @@ fn this_expressions() {
         ast("() => function () { return this; }"),
         "(arrow () => (function - () (return this)))"
     );
-    // Script-level arrows inherit the unsupported global `this`.
-    rejects_with("this;", Unsupported, 1, 1, "`this`");
-    rejects_with("x = this.y;", Unsupported, 1, 5, "`this`");
-    rejects_with("() => this", Unsupported, 1, 7, "`this`");
-    rejects_with("(a = this) => a", Unsupported, 1, 6, "`this`");
+    assert_eq!(ast("this;"), "this");
+    assert_eq!(ast("x = this.y;"), "(= x (. this y))");
+    assert_eq!(ast("() => this"), "(arrow () => this)");
+    assert_eq!(ast("(a = this) => a"), "(arrow (a=this) => a)");
     assert_eq!(
         ast("function f() { return () => this; }"),
         "(function f () (return (arrow () => this)))"
@@ -2138,7 +2137,7 @@ fn this_expressions() {
         "(function f () (return (arrow (a=this) => (arrow () => a))))"
     );
     // After an arrow or function ends, the enclosing context applies again.
-    rejects_with("function f() {} this;", Unsupported, 1, 17, "`this`");
+    assert_eq!(ast("function f() {} this;"), "(function f ()) this");
     assert_eq!(
         ast("function f() { let g = () => 1; return this; }"),
         "(function f () (let (g (arrow () => 1))) (return this))"
@@ -2508,8 +2507,6 @@ fn arrow_functions_and_asi() {
     rejects("arguments => 1", ReservedWord, 1, 1);
     rejects("undefined => 1", ReservedWord, 1, 1);
     rejects("yield => 1", ReservedWord, 1, 1);
-    // Script-level arrows inherit the unsupported global `this` (clj-quickjs-104).
-    rejects_with("() => this", Unsupported, 1, 7, "`this`");
     parse_script("() => { return arguments; }").unwrap();
     rejects("arguments = 1", ReservedWord, 1, 1);
     rejects("arguments++", ReservedWord, 1, 1);
@@ -3445,7 +3442,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
-        ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
         ("x.y &&= 1;", 1, 5, "&&="),
         ("x = [...a];", 1, 6, "spread elements"),

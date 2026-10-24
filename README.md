@@ -1673,8 +1673,8 @@ Supported (`cargo test --lib frontend::tests::var_statements`,
 
 Deferred:
 
-- Script-level `var`s and function declarations are bindings of the
-  script, not properties of a global object (clj-quickjs-104).
+- Script-level `var`s and function declarations use the task-owned global
+  object (clj-quickjs-104, below).
   `var` in a `for` head runs since clj-quickjs-89 (below).
 
 ### Ordinary objects and named properties (clj-quickjs-114)
@@ -1835,8 +1835,8 @@ Deferred:
 
 - Writing any property of a built-in object throws a catchable
   `TypeError` (built-ins are shared and immutable; listed in
-  `docs/grammar.md`, "Explicit gaps"); assigning `Object` is a compile-time
-  `Unsupported` error until the global object (clj-quickjs-104).
+  `docs/grammar.md`, "Explicit gaps"). The `Object` global binding itself
+  is writable (clj-quickjs-104).
 - (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
   (built-in constructors; `new` on ordinary functions is clj-quickjs-71), wrapper
   objects for `Object(1)` and primitive receivers (clj-quickjs-72),
@@ -1876,9 +1876,8 @@ Supported (`cargo test --test js_source method_calls_bind_this`,
 
 Deferred:
 
-- `this` at the script top level, including arrows without an enclosing
-  non-arrow function (the global object, clj-quickjs-104): `Unsupported`
-  compile errors. Arrows nested in functions capture `this` (clj-quickjs-98).
+- Script-level `this` and arrows that capture it use the global object
+  (clj-quickjs-104, below).
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
@@ -2411,8 +2410,8 @@ Supported (`cargo test --test js_functions arrows_capture_this`,
   their own `this`; `new` on an arrow remains a catchable TypeError.
 - The capture uses no binding cell. Publication checks its value normally:
   shareable receivers permit publication, task-owned object receivers do not.
-- Script-level arrows still reject `this` until the global object exists
-  (clj-quickjs-104). Sloppy receiver substitution retains its existing gap.
+- Script-level arrows capture the global object (clj-quickjs-104).
+  Sloppy receiver substitution retains its existing gap.
 
 ### String length and index properties (clj-quickjs-142)
 
@@ -2508,3 +2507,24 @@ argument before handling Infinity/NaN and uses budgeted scaled compensated
 summation for extreme magnitudes. `Math.floor(-0.5)` is -1;
 `Math.ceil(-0.5)` preserves negative zero. Math constants and other methods
 remain deferred. Run `cargo test --test js_source math_`.
+
+### Global object bindings (clj-quickjs-104, data-property portion)
+
+Supported (`cargo test --test js_source global_object_bindings`,
+`cargo test --test js_functions global_`, `cargo test --test gc_roots global_object`):
+
+- Each task has a mutable global object with `globalThis`, script-level
+  `this`, and writable bindings to the shared immutable built-ins.
+- Script `var` and function declarations create non-configurable global
+  properties at entry. `let` and `const` remain lexical.
+- Global identifiers use current properties at every read/write, including
+  redefined data descriptors and strict/sloppy read-only writes.
+- A published function reads its receiving task's globals. Capturing the
+  global object itself prevents publication; lexical cells remain task-owned.
+- The object and its properties survive yields, collections and migration,
+  and are reclaimed after task VM state is released.
+
+Deferred: accessor globals await clj-quickjs-120, so this pellet's full
+acceptance is unfinished; implicit globals/identifier deletion (-105),
+indirect eval (-106), multiple scripts in one task, and sloppy `this`
+substitution keep their existing gaps.

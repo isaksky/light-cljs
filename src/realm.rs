@@ -107,13 +107,11 @@
 //!
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
-//! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102), and `Array` (clj-quickjs-155). The compiler emits `get_builtin_global i` for such a
-//! name; `isNaN` and `isFinite` use the same path (clj-quickjs-147).
-//! `parseInt` and `parseFloat` also resolve here (clj-quickjs-148).
-//! The ordinary `Math` namespace resolves here too (clj-quickjs-152).
-//! When the global object exists (clj-quickjs-104) these become its
-//! properties; until then assigning one is a compile-time `Unsupported`
-//! error.
+//! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect`
+//! (clj-quickjs-102), `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `Math`, and `Array` (clj-quickjs-155). They initialize writable
+//! properties of each task's mutable global object (clj-quickjs-104,
+//! [`new_global_object`]). Source references always look up those properties;
+//! `get_builtin_global` remains an instruction for hand-assembled code.
 
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -188,6 +186,7 @@ impl Global {
     }
 
     /// The built-in global named `name`, if any.
+    #[cfg(test)]
     pub(crate) fn from_name(name: &str) -> Option<Global> {
         Global::ALL.into_iter().find(|g| g.name() == name)
     }
@@ -383,6 +382,80 @@ pub(crate) fn intrinsics(heap: &Heap) -> Option<&Intrinsics> {
     let built = build(heap)?;
     heap.mark_shareable(&built.all);
     Some(realm.intrinsics.get_or_init(|| built))
+}
+
+/// A task's mutable global object. Intrinsics stay shared and immutable;
+/// their global bindings are ordinary writable properties of this object.
+/// The caller is a registered mutator and must install the result in traced
+/// task state before the next safepoint.
+pub(crate) fn new_global_object(heap: &Heap, task: crate::ids::TaskId) -> Option<ObjectId> {
+    let intrinsics = intrinsics(heap)?;
+    let mut object = OrdinaryObject::with_prototype(task, intrinsics.object_prototype);
+    for global in Global::ALL {
+        let key = heap.keys().intern(&JsString::from(global.name()))?;
+        object.define_with(key, intrinsics.global(global), PropertyFlags::METHOD);
+    }
+    for (name, value) in [
+        ("undefined", Value::Undefined),
+        ("NaN", Value::Number(f64::NAN)),
+        ("Infinity", Value::Number(f64::INFINITY)),
+    ] {
+        let key = heap.keys().intern(&JsString::from(name))?;
+        object.define_with(key, value, PropertyFlags::FIXED);
+    }
+    let key = heap.keys().intern(&JsString::from("globalThis"))?;
+    let id = heap.alloc(HeapObject::Plain(object))?;
+    heap.with_object_mut(id, |object| {
+        if let HeapObject::Plain(object) = object {
+            object.define_with(key, Value::Object(id), PropertyFlags::METHOD);
+        }
+    })?;
+    Some(id)
+}
+
+/// GlobalDeclarationInstantiation for a script's object bindings. Lexical
+/// redeclarations are checked by the compiler; there is one script per task.
+pub(crate) fn declare_global(
+    heap: &Heap,
+    id: ObjectId,
+    name: &JsString,
+    function: bool,
+) -> Result<(), crate::vm::dispatch::Fault> {
+    use crate::vm::dispatch::Fault;
+    let key = heap
+        .keys()
+        .intern(name)
+        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+    heap.with_object_mut(id, |object| {
+        let HeapObject::Plain(object) = object else {
+            return Err(Fault::Internal("global object is not ordinary"));
+        };
+        if let Some(prior) = object.get_own(key) {
+            if !function {
+                return Ok(());
+            }
+            if !prior.flags.configurable && (!prior.flags.writable || !prior.flags.enumerable) {
+                return Err(Fault::SyntaxError(format!(
+                    "cannot declare global function '{name}'"
+                )));
+            }
+            if !prior.flags.configurable {
+                return Ok(());
+            }
+        }
+        let flags = PropertyFlags {
+            writable: true,
+            enumerable: true,
+            configurable: false,
+        };
+        if !object.define_with(key, Value::Undefined, flags) {
+            return Err(Fault::SyntaxError(format!(
+                "cannot declare global '{name}'"
+            )));
+        }
+        Ok(())
+    })
+    .ok_or(Fault::Internal("global object was collected"))?
 }
 
 /// Allocate and connect the intrinsics (module docs, table).
@@ -803,6 +876,54 @@ impl Build<'_> {
 mod tests {
     use super::*;
     use crate::value::share::{Shareability, classify};
+
+    #[test]
+    fn global_declarations_validate_and_preserve_properties() {
+        use crate::ids::TaskId;
+        use crate::vm::dispatch::Fault;
+        let heap = Heap::default();
+        let id = new_global_object(&heap, TaskId::from_raw(1)).unwrap();
+        let name = JsString::from("locked");
+        let key = heap.keys().intern(&name).unwrap();
+        heap.with_object_mut(id, |object| {
+            let HeapObject::Plain(object) = object else {
+                panic!()
+            };
+            object.define_with(key, Value::Number(7.0), PropertyFlags::FIXED);
+        })
+        .unwrap();
+        assert!(declare_global(&heap, id, &name, false).is_ok());
+        assert!(matches!(
+            declare_global(&heap, id, &name, true),
+            Err(Fault::SyntaxError(_))
+        ));
+        heap.read(id, |object| {
+            let HeapObject::Plain(object) = object else {
+                panic!()
+            };
+            let property = object.get_own(key).unwrap();
+            assert_eq!(property.value, Value::Number(7.0));
+            assert_eq!(property.flags, PropertyFlags::FIXED);
+        })
+        .unwrap();
+        let name = JsString::from("Object");
+        assert!(declare_global(&heap, id, &name, true).is_ok());
+        let key = heap.keys().lookup(&name).unwrap();
+        heap.with_object_mut(id, |object| {
+            let HeapObject::Plain(object) = object else {
+                panic!()
+            };
+            let property = object.get_own(key).unwrap();
+            assert!(property.flags.writable && property.flags.enumerable);
+            assert!(!property.flags.configurable);
+            object.prevent_extensions();
+        })
+        .unwrap();
+        assert!(matches!(
+            declare_global(&heap, id, &JsString::from("absent"), false),
+            Err(Fault::SyntaxError(_))
+        ));
+    }
 
     #[test]
     fn the_realm_is_built_once_and_its_objects_are_shareable() {

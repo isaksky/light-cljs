@@ -497,6 +497,13 @@ impl Executable {
                 Opcode::ForInStart => Instr::ForInStart,
                 Opcode::ForInNext => Instr::ForInNext,
                 Opcode::NewArguments => Instr::NewArguments,
+
+                Opcode::GetGlobalObject => Instr::GetGlobalObject,
+                Opcode::GetGlobal => Instr::GetGlobal(operand as u16),
+                Opcode::GetGlobalOrUndefined => Instr::GetGlobalOrUndefined(operand as u16),
+                Opcode::PutGlobal => Instr::PutGlobal(operand as u16),
+                Opcode::DeclareGlobalVar => Instr::DeclareGlobalVar(operand as u16),
+                Opcode::DeclareGlobalFunction => Instr::DeclareGlobalFunction(operand as u16),
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -622,6 +629,11 @@ impl Executable {
                 | Instr::Construct(v)
                 | Instr::GetBuiltinGlobal(v)
                 | Instr::GetCapture(v)
+                | Instr::GetGlobal(v)
+                | Instr::GetGlobalOrUndefined(v)
+                | Instr::PutGlobal(v)
+                | Instr::DeclareGlobalVar(v)
+                | Instr::DeclareGlobalFunction(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)
                 | Instr::DefineField(v)
