@@ -866,25 +866,30 @@ fn corrupted_compiled_bytecode_is_rejected_by_the_validator() {
 #[test]
 fn deep_expressions_compile_within_a_small_stack() {
     // Near the parser's nesting budget: 60 nested parentheses and chains of
-    // 240 additions and 240 comma operators. Compiling recurses once per tree
+    // 240 additions, 240 comma operators and 240 (right-associative)
+    // exponentiations. Compiling recurses once per tree
     // level, so it must fit the same 2 MiB thread stack the parser is tested
     // with.
     let nested = format!("{}1{}", "(".repeat(60), ")".repeat(60));
     let chain = vec!["1"; 241].join(" + ");
     let commas = vec!["1"; 241].join(", ");
+    let powers = vec!["1"; 241].join(" ** ");
     let handle = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
             let a = compile_script("nested", &nested).map(|_| ());
             let b = compile_script("chain", &chain).map(|_| ());
             let c = compile_script("commas", &commas).map(|_| ());
-            (a, b, c)
+            let d = compile_script("powers", &powers).map(|_| ());
+            (a, b, c, d)
         })
         .unwrap();
-    let (a, b, c) = handle.join().unwrap();
+    let (a, b, c, d) = handle.join().unwrap();
     a.unwrap();
     b.unwrap();
     c.unwrap();
+    d.unwrap();
+    assert_eq!(num(&vec!["1"; 241].join(" ** ")), 1.0);
     assert_eq!(num(&vec!["1"; 241].join(" + ")), 241.0);
     assert_eq!(
         num(&(1..=241)

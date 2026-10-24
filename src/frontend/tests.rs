@@ -1355,6 +1355,7 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
             "}".repeat(n)
         ),
         format!("x = 1{};", " + 1".repeat(n)),
+        format!("x = 1{};", " ** 1".repeat(n)),
         format!("x = f{};", "()".repeat(n)),
         format!("x = a{};", ".b".repeat(n)),
         format!("x = {}1;", "a = ".repeat(n)),
@@ -1411,6 +1412,10 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("while", |n| format!("{}x;", "while (1) ".repeat(n))),
         ("unary", |n| format!("x = {}1;", "!".repeat(n))),
         ("binary", |n| format!("x = 1{};", " + 1".repeat(n))),
+        ("exponent", |n| format!("x = 1{};", " ** 1".repeat(n))),
+        ("exponent of unary", |n| {
+            format!("x = {}1{};", "2 ** -(".repeat(n), ")".repeat(n))
+        }),
         ("comma", |n| format!("x = 1{};", ", 1".repeat(n))),
         ("nested commas", |n| {
             format!("x = {}1{};", "(a, ".repeat(n), ")".repeat(n))
