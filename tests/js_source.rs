@@ -3498,6 +3498,58 @@ fn number_to_fixed() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Bound leaf StringToNumber before
+/// it can flatten or scan direct strings or results of observable ToPrimitive.
+#[test]
+fn number_fixed_digit_conversion_is_bounded() {
+    for (expression, calls) in [
+        ("text", 0),
+        ("{valueOf() {calls++; return text;}}", 1),
+        (
+            "{valueOf() {calls++; return {};}, toString() {calls++; return text;}}",
+            2,
+        ),
+    ] {
+        for length in [4096, 4097, 1 << 20] {
+            let oversized = length > 4096;
+            let code = compile_function(&format!(
+                "function fixed(text) {{ let calls = 0; try {{ let result = (1).toFixed({expression}); return {} && result === '1' && calls === {calls}; }} catch(e) {{ return {oversized} && e instanceof RangeError && e.message.indexOf('toFixed digit conversion limit of 4096') >= 0 && calls === {calls}; }} }}",
+                !oversized
+            )).unwrap();
+            let rt = Runtime::new();
+            let text = "0".repeat(length);
+            let root = rt.root(Primitive::String(text.as_str().into()));
+            let task = rt.spawn(&code, &[&root]).unwrap();
+            drop(root);
+            let mut complete = false;
+            for _ in 0..500 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(
+                            value.view(),
+                            ValueView::Bool(true),
+                            "{expression}, {length}"
+                        );
+                        complete = true;
+                        break;
+                    }
+                    other => panic!("{expression}, {length}: {other:?}"),
+                }
+            }
+            assert!(
+                complete,
+                "instruction bound exceeded: {expression}, {length}"
+            );
+        }
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Decimal-digit coercion survives
 /// waits, collection, one-instruction budgets and migration without replay.
 #[test]

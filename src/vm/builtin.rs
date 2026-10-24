@@ -1353,6 +1353,16 @@ pub(crate) fn to_radix(radix: &Value) -> Result<u32, Fault> {
 }
 
 pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Fault> {
+    // Bound StringToNumber before it flattens or scans, including a string
+    // produced by resumable ToPrimitive. Generic budgeted parsing is -265.
+    const MAX_DIGIT_CONVERSION_UNITS: usize = 4096;
+    if let Value::String(text) = digits
+        && text.len() > MAX_DIGIT_CONVERSION_UNITS
+    {
+        return Err(Fault::RangeError(format!(
+            "toFixed digit conversion limit of {MAX_DIGIT_CONVERSION_UNITS} UTF-16 units exceeded"
+        )));
+    }
     let digits = to_number(digits)?;
     // ToIntegerOrInfinity maps NaN to zero and truncates finite fractions.
     let digits = if digits.is_nan() { 0.0 } else { digits.trunc() };

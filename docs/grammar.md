@@ -925,6 +925,8 @@ count with ToIntegerOrInfinity (missing/undefined/NaN becomes zero), checks
 0..100 before handling nonfinite numbers, and throws catchable RangeError
 outside that range. Other receivers throw TypeError before digit coercion.
 Object digit counts use resumable ToNumber, including getters and callbacks.
+As a resource policy, digit-count strings exceeding 4096 UTF-16 units throw
+RangeError before flattening or parsing, including strings returned by callbacks.
 Finite magnitudes below 1e21 round the exact binary64 value to the requested
 decimal places, choosing the larger magnitude on ties and padding zeros.
 Negative values rounded to zero keep `-`; negative zero itself prints without

@@ -1085,7 +1085,8 @@ fn realm_intrinsics_retain() {
     // Generators add one prototype and its next built-in (-243).
     // Array.prototype.sort adds one built-in function (-208).
     // Collator adds one prototype and five built-in functions (-218).
-    assert_eq!(rt.heap_usage().objects.builtin, 218);
+    // Number.prototype.toFixed adds one built-in function (-150).
+    assert_eq!(rt.heap_usage().objects.builtin, 219);
     assert_eq!(rt.heap_usage().objects.plain, 41);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

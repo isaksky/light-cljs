@@ -6401,3 +6401,7 @@ then performs ToIntegerOrInfinity and the 0..100 check before formatting.
 Object counts run through `native::ConvertTarget::NumberToFixed`; the saved
 f64 and traced conversion operands survive yields, dependency waits, GC and
 migration. The realm method has length 1 and ordinary method flags.
+Digit-count strings are limited to 4096 UTF-16 units before leaf StringToNumber
+can scan or flatten them, including strings produced by resumable callbacks.
+Oversized strings throw RangeError after receiver validation and ToPrimitive;
+generic budgeted numeric conversion remains clj-quickjs-265.
