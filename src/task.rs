@@ -494,6 +494,14 @@ impl RootSource for TaskInner {
 }
 
 impl TaskInner {
+    fn report_suspended_async(&self, vm: &VmState) {
+        *self.suspended_async.lock().unwrap() = vm
+            .suspended_async
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect();
+    }
+
     /// Deliver a wake for `handle`'s execution (module docs).
     fn deliver(self: &Arc<Self>, handle: WakeHandle) -> Wake {
         if handle.runtime() != self.deps.runtime || handle.task() != self.id {
@@ -1234,13 +1242,7 @@ impl RunGuard<'_> {
                         }
                         continue;
                     }
-                    *task.suspended_async.lock().unwrap() = self
-                        .vm()
-                        .expect("live activation")
-                        .suspended_async
-                        .iter()
-                        .map(|(_, name)| name.clone())
-                        .collect();
+                    task.report_suspended_async(self.vm().expect("live activation"));
                     break Exit::Return(
                         self.vm()
                             .expect("live activation")

@@ -1333,6 +1333,23 @@ pub(crate) fn step(
     host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
+    // Calls need no conversions. Keep their Rust stack independent of the
+    // large temporary area of the other instruction arms, including when
+    // async bookkeeping adds storage to the enclosing run frame.
+    match instr {
+        Instr::Call(argc) => call(state, heap, argc, false),
+        Instr::CallMethod(argc) => call(state, heap, argc, true),
+        _ => step_instruction(state, code, heap, host, instr),
+    }
+}
+
+fn step_instruction(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
     if native::start_conversion(state, instr)? {
         return Ok(Flow::Next);
     }
