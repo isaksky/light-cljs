@@ -114,7 +114,7 @@ fn function_constructor() {
 /// later arguments while ToString waits; generated code waits in VM frames.
 #[test]
 fn function_constructor_waits_collects_and_migrates() {
-    let src = "let order = ''; let p = {toString() { order += 'p'; __rt.need(111, 1); return 'x'; }}; let b = {toString() { order += 'b'; return 'return x + __rt.need(111, 2)'; }}; Function(p, b)(3) === 7 && order === 'pb'";
+    let src = "let order = ''; Function({toString() { order += 'p'; __rt.need(111, 1); return 'x'; }}, {toString() { order += 'b'; return 'return x + __rt.need(111, 2)'; }})(3) === 7 && order === 'pb'";
     let rt = Runtime::new();
     let mut task = rt.spawn(&exe(src), &[]).unwrap();
     let mut waits = 0;
@@ -161,7 +161,7 @@ fn function_constructor_waits_collects_and_migrates() {
 fn function_constructor_source_limits_and_small_stacks() {
     for units in [16_358, 16_359] {
         // The wrapper occupies 26 UTF-16 units. Count astral source by units,
-        // and flatten a rope assembled by JavaScript.
+        // and flatten the generated wrapper/body rope.
         let body = format!("/*😀*/{}", " ".repeat(units - 6));
         let rt = Runtime::new();
         let text = rt.root(Primitive::String(body.as_str().into()));
