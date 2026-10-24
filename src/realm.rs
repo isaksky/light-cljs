@@ -1034,7 +1034,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     }
 
 
-
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
