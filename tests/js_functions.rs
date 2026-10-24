@@ -660,3 +660,68 @@ impl Host for EchoHost {
         Ok(call.arg)
     }
 }
+
+#[test]
+fn captured_assignment_expressions_return_the_assigned_value() {
+    // A cell assigned in its own frame (the script) and through a closure:
+    // the assignment expression's value is the assigned value, and the cell
+    // holds it.
+    let src = "let x = 0;
+               function set(v) { return x = v; }
+               const r = set(42);
+               const s = (x = 7);
+               r * 1000 + s * 10 + x";
+    uses(&exe(src), &[Opcode::CellSet]);
+    assert_eq!(num(src), 42_077.0);
+    // A captured parameter assigned inside a nested closure.
+    assert_eq!(
+        num(
+            "function f(p) { const g = function () { return p = p + 1; }; return g() * 10 + p; } f(4)"
+        ),
+        55.0
+    );
+}
+
+#[test]
+fn loop_iterations_allocate_distinct_captured_cells() {
+    // Each iteration's `j` is a separate mutable cell; reusing one cell
+    // would make the result 203.
+    let src = "let i = 0;
+               let first, last;
+               while (i < 2) {
+                 let j = i;
+                 const bump = function () { j = j + 1; return j; };
+                 if (i === 0) { first = bump; }
+                 last = bump;
+                 i = i + 1;
+               }
+               first() * 100 + last()";
+    uses(&exe(src), &[Opcode::NewCell, Opcode::CellSet]);
+    assert_eq!(num(src), 102.0);
+}
+
+#[test]
+fn intrinsic_arguments_evaluate_left_to_right() {
+    // A counted constructor.
+    assert_eq!(
+        num("let n = 0; const v = __rt.vector(n = 1, n = 2);
+             __rt.nth(v, 0) * 100 + __rt.nth(v, 1) * 10 + n"),
+        122.0
+    );
+    // Key/value pairs.
+    assert_eq!(
+        num(
+            "let n = 0; const m = __rt.map(n = 1, n * 10, n = 2, n * 20);
+             __rt.get(m, 1) + __rt.get(m, 2) + n"
+        ),
+        52.0
+    );
+    // A fixed-arity operation: the collection operand is evaluated first.
+    assert_eq!(
+        num("let log = 0;
+             function note(d, v) { log = log * 10 + d; return v; }
+             __rt.assoc(note(1, __rt.vector(0)), note(2, 0), note(3, 9));
+             log"),
+        123.0
+    );
+}

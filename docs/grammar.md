@@ -243,9 +243,10 @@ Gaps specific to execution:
 
 - **No string values**, so `+` and the relational operators lower to
   numeric operations; they must change when strings arrive.
-- **No objects from source.** Operators applied to objects (reachable only
-  through hand-built bytecode today) fail with `UnsupportedOperand` where
-  JavaScript would call ToPrimitive.
+- **No ToPrimitive on objects.** Source can now create function objects and
+  (through `__rt`) collections and builders; arithmetic and relational
+  operators applied to them fail with `UnsupportedOperand` where JavaScript
+  would call ToPrimitive (`===`/`==` compare them by identity).
 - **Temporal dead zone: static within a function, dynamic across
   closures.** The subset has no `break`, `continue`, labels or exceptions,
   so within the function that declares a binding, whether it is
