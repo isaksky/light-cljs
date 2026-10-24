@@ -169,3 +169,55 @@ fn stack_property_attributes_follow_error_ownership() {
         assert_eq!(value.view(), ValueView::Bool(true), "{source}");
     }
 }
+
+#[test]
+fn stack_preserves_utf16_function_names() {
+    assert_eq!(
+        run(
+            r"const o = {'\ud800': () => Error().stack}; o['\ud800']()[7] === '\ud800' ? 'ok' : 'corrupt';"
+        ),
+        "ok"
+    );
+}
+
+#[test]
+fn constructor_stacks_survive_callback_waits() {
+    // Both the message conversion (including its method getter) and the
+    // accessor cause suspend before the constructor can install its stack.
+    let source = "function make() {\n  return Error({get toString() { __rt.need(1, 1); return function() { __rt.need(2, 1); return 'message'; }; }},\n    {get cause() { __rt.need(3, 1); return 42; }});\n}\nmake().stack;";
+    let rt = Runtime::new();
+    let exe = compile_script("stack-test.js", source).unwrap();
+    let mut task = rt.spawn(&exe, &[]).unwrap();
+    for expected in 1..=3 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task.run().unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let requests = task.take_producer_requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(
+            request.key().dependency(),
+            clj_quickjs::DependencyId::new(expected)
+        );
+        let ready = rt.root(Primitive::Undefined);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let stack = std::thread::spawn(move || string(task.run().unwrap()))
+        .join()
+        .unwrap();
+    assert_eq!(
+        stack,
+        "    at make (stack-test.js:2:15)\n    at <anonymous> (stack-test.js:5:5)\n"
+    );
+}

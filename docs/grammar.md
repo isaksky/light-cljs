@@ -2580,7 +2580,8 @@ example, the `*` invoking `valueOf`, or `.` invoking a getter/setter).
 Each line is `    at name (filename:line:column)` followed by a newline;
 there is no message/header line. Names come from the compiled function name
 (including inferred names), with `<anonymous>` for an empty name; capture
-never reads user-defined `name` properties or calls getters. Every function
+preserves arbitrary UTF-16 name code units, and never reads user-defined
+`name` properties or calls getters. Every function
 in a compiled script uses the name passed to `compile_script` as filename.
 Lines and columns use the existing source-location convention described in
 Errors above. Hand-assembled bytecode has the executable name and omits

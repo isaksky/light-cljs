@@ -763,8 +763,7 @@ impl VmState {
     /// This reads immutable code metadata only: no getters, heap edges, or
     /// worker/Rust-stack state. The resulting string survives frame teardown.
     pub(crate) fn error_stack(&self, pc: usize) -> JsString {
-        use std::fmt::Write;
-        let mut stack = String::new();
+        let mut stack = Vec::new();
         for (index, frame) in std::iter::once(&self.entry)
             .chain(&self.calls)
             .rev()
@@ -777,19 +776,23 @@ impl VmState {
                 frame.pc.saturating_sub(1)
             };
             let code = &frame.code;
-            let name = if code.function_name.is_empty() {
-                "<anonymous>".to_string()
+            stack.extend("    at ".encode_utf16());
+            if code.function_name.is_empty() {
+                stack.extend("<anonymous>".encode_utf16());
             } else {
-                code.function_name.to_string_lossy()
-            };
-            let file = code.debug.as_ref().map_or(&*code.name, |d| &*d.filename);
-            let _ = write!(stack, "    at {name} ({file}");
-            if let Some(source) = code.location(at) {
-                let _ = write!(stack, ":{}:{}", source.line, source.column);
+                // Inferred names may contain arbitrary UTF-16, including
+                // lone surrogates. Preserve them without a Rust str round trip.
+                stack.extend_from_slice(code.function_name.code_units());
             }
-            stack.push_str(")\n");
+            let file = code.debug.as_ref().map_or(&*code.name, |d| &*d.filename);
+            stack.extend(" (".encode_utf16());
+            stack.extend(file.encode_utf16());
+            if let Some(source) = code.location(at) {
+                stack.extend(format!(":{}:{}", source.line, source.column).encode_utf16());
+            }
+            stack.extend(")\n".encode_utf16());
         }
-        JsString::from(stack.as_str())
+        JsString::from_code_units(stack).expect("error stack exceeds maximum string length")
     }
 
     /// A failure at instruction `pc` of the running frame, with the call
