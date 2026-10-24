@@ -3761,8 +3761,8 @@ example; ceil(-0.5) and floor(-0) preserve negative zero.
 and converts one argument per native step while finding the largest
 absolute value. Only after all conversions succeed does it transition to
 `MathHypot`: Infinity returns +Infinity even with NaN inputs; otherwise
-each budgeted step adds one squared argument divided by the largest
-magnitude, with Kahan compensation. The final result rescales the square
+each budgeted step normalizes one argument by the largest magnitude and
+adds its square with Kahan compensation. The final result rescales the square
 root. Zero terms are skipped, giving +0 for empty/all-zero inputs, while
 NaN terms propagate. Scaling keeps finite squares/sums in range even for
 extreme/subnormal input magnitudes. Initial argument-vector copying is

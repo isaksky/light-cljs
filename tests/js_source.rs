@@ -95,6 +95,52 @@ fn math_coercion() {
     );
 }
 
+/// Synthetic fixture, not light-cljs output. The wait excludes array setup
+/// from the measured budget: either unbudgeted numeric pass loses half the
+/// required yields even though the final numerical result would still pass.
+#[test]
+fn math_hypot_primitive_work_is_budgeted() {
+    const COUNT: usize = 4096;
+    const SLICE: usize = 64;
+    let rt = Runtime::new();
+    let script = exe(&format!(
+        "let a = []; for (let i = 0; i < {COUNT}; i++) {{ a.push(1); }} \
+         __rt.need(152, 1); Math.hypot.apply(null, a)"
+    ));
+    let mut task = rt.spawn(&script, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = rt.root(Primitive::Number(0.0));
+    task = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&ready))
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    let mut yields = 0;
+    for _ in 0..4 * COUNT / SLICE {
+        match task
+            .run_with(Budget::instructions(SLICE as u64), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(64.0));
+                assert!(
+                    yields >= 2 * COUNT / SLICE,
+                    "both ToNumber and scaled summation must consume budget: {yields} yields"
+                );
+                return;
+            }
+            other => panic!("primitive hypot: {other:?}"),
+        }
+    }
+    panic!("primitive hypot exceeded its instruction bound");
+}
+
 /// Synthetic fixtures, not light-cljs output. Conversion receivers and
 /// unconverted arguments stay rooted while callbacks wait or migrate.
 #[test]

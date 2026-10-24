@@ -1070,8 +1070,9 @@ fn array_element_reclaims() {
     let rt = Runtime::new();
     let held = array_element(&rt);
     assert_retained(&rt, &held);
-    // The argument and the three arrays go together; the realm's six
-    // prototypes (`Object`, `Array`, `Number`, `String`) and `Reflect` stay.
+    // The argument and the three arrays go together; the realm's four
+    // prototypes (`Object`, `Array`, `Number`, `String`), `Reflect` and
+    // `Math` stay.
     let Held {
         weak,
         release,
