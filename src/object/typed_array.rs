@@ -189,8 +189,8 @@ pub(crate) fn to_index(value: &Value) -> Result<usize, Fault> {
         .map_err(|_| Fault::RangeError("typed array index exceeds platform limit".into()))
 }
 
-/// Arguments have completed resumable ToIndex conversion. Non-buffer object
-/// construction (iterables, array-like objects and copies) is a separate feature.
+/// Arguments have completed resumable ToIndex conversion. Object sources are
+/// collected/copied by the typed-array native continuation.
 pub(crate) fn constructor(
     heap: &Heap,
     task: TaskId,
@@ -265,7 +265,7 @@ pub(crate) fn numeric_key(key: &Key) -> Option<f64> {
 }
 
 impl View {
-    fn is_detached(self, heap: &Heap) -> Result<bool, Fault> {
+    pub(crate) fn is_detached(self, heap: &Heap) -> Result<bool, Fault> {
         heap.read(self.buffer, |o| match o {
             HeapObject::ArrayBuffer(b) => Ok(b.detached),
             _ => Err(Fault::Internal("typed array buffer changed kind")),
@@ -279,6 +279,34 @@ impl View {
         } else {
             self.length
         })
+    }
+
+    /// Preserve the exact representation on same-type copies, including NaN
+    /// payloads. Each call touches at most eight bytes; snapshots live in the
+    /// budgeted native frame, never in an unbounded heap-lock closure.
+    pub(crate) fn raw(self, heap: &Heap, index: usize) -> Result<[u8; 8], Fault> {
+        let at = self.offset + index * self.kind.size();
+        heap.read(self.buffer, |o| match o {
+            HeapObject::ArrayBuffer(b) if !b.detached => {
+                let mut bytes = [0; 8];
+                bytes[..self.kind.size()].copy_from_slice(&b.bytes[at..at + self.kind.size()]);
+                Ok(bytes)
+            }
+            _ => Err(Fault::TypeError("ArrayBuffer is detached".into())),
+        })
+        .unwrap_or(Err(Fault::Internal("typed array buffer was reclaimed")))
+    }
+
+    pub(crate) fn set_raw(self, heap: &Heap, index: usize, bytes: [u8; 8]) -> Result<(), Fault> {
+        let at = self.offset + index * self.kind.size();
+        heap.with_object_mut(self.buffer, |o| match o {
+            HeapObject::ArrayBuffer(b) if !b.detached => {
+                b.bytes[at..at + self.kind.size()].copy_from_slice(&bytes[..self.kind.size()]);
+                Ok(())
+            }
+            _ => Err(Fault::TypeError("ArrayBuffer is detached".into())),
+        })
+        .unwrap_or(Err(Fault::Internal("typed array buffer was reclaimed")))
     }
 
     fn position(self, n: f64) -> Option<usize> {

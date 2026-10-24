@@ -4980,7 +4980,8 @@ receiver and original RHS (assignment result); a callback may detach the
 buffer, wait or erase the caller's binding without retaining a Rust stack or
 losing the only buffer edge. ArrayBuffer's fallible 16 MiB allocation limit
 applies to newly allocated view backing stores. Resizable and
-BigInt views, copy/iterable constructors and typed-array methods are deferred.
+BigInt views and other typed-array methods remain deferred; source construction
+and set/fill/join/toString are described under clj-quickjs-168 below.
 
 Own-key reflection and `for`-`in` share a detached-aware element snapshot;
 the iterator rechecks each descriptor before visiting it. Inherited writes
@@ -5254,3 +5255,30 @@ writer. Invalid original times return NaN without writing the slot, except
 that the full-year setter uses the epoch as its base. This preserves callback
 slot mutations where required while normal completion overwrites them using
 the original snapshot. No new heap kind or host effect is introduced.
+
+## Typed-array native continuations (clj-quickjs-168)
+
+`NativeState::TypedArray` holds construction, set and fill stages in
+`src/vm/native/typed_array.rs`. Source/target objects, iterator, cached next
+method, iterator result, collected values and pending arguments are traced
+through `NativeFrame`. No Rust stack or heap borrow survives a callback.
+All element loops visit at most one element per native step, within the
+256-step bound used by other natives; each native step consumes instruction
+budget. Numeric allocation retains ArrayBuffer's existing fallible 16 MiB
+bound; iterable collection rejects more elements than fit in that bound.
+
+Typed-array sources bypass iterator lookup. Copies snapshot one element per
+step before any target writes, handling shared buffers with different element
+widths. Same-type snapshots retain up to eight raw bytes per element so NaN
+payloads survive; cross-type copies read Numbers and convert to the target
+representation. Iterable construction gathers values before conversion;
+array-like construction and set interleave indexed reads and conversion.
+Fill caches its converted Number and clamps start/end against the initial
+internal length, rechecking detachment after conversions.
+
+Typed-array join validates its receiver and seeds the existing `ArrayJoin`
+continuation with the internal length, bypassing shadowing `length` properties.
+Element reads and final `StringBuild` copying are budgeted. The shared
+prototype references Array.prototype.toString's existing function object and
+appends three method functions to the realm's intrinsic allocation sequence.
+Other typed-array methods and BigInt/resizable/shared views remain deferred.

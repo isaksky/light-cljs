@@ -804,6 +804,23 @@ fn typed_array_constructor_validation_and_metadata() {
 fn typed_array_coercion_survives_waits_gc_and_migration() {
     // Synthetic fixtures, not light-cljs output.
     for source in [
+        "let s = {get length() { __rt.need(166,1); return 2; },0:7,1:8}; new Uint8Array(s).join() === '7,8'",
+        "let s = {length:{valueOf() { __rt.need(166,1); return 1; }},get 0() {return {valueOf() {return 7;}};}}; new Uint8Array(s).join() === '7'",
+        "let a = new Uint8Array({length:1,get 0() { __rt.need(166,1); return {valueOf() {return 7;}};}}); a.join() === '7'",
+        "let a = new Uint8Array([{valueOf() { __rt.need(166,1); return 7; }}]); a.join() === '7'",
+        "let s = {}; Object.defineProperty(s,Symbol.iterator,{get() { s=null; __rt.need(166,1); return function () {let n=0; return {get next() {return function () {n++;return {done:n>1,value:7};};}};}; }}); new Uint8Array(s).join() === '7'",
+        "let s = {}; s[Symbol.iterator] = function () {let n=0; return {get next() { __rt.need(166,1); return function () {n++;return {done:n>1,value:7};};}};}; new Uint8Array(s).join() === '7'",
+        "let s = {}; s[Symbol.iterator] = function () {let n=0; return {next() {n++; if(n===1) __rt.need(166,1); return {done:n>1,value:7};}};}; new Uint8Array(s).join() === '7'",
+        "let s = {}; s[Symbol.iterator] = function () {let n=0; return {next() {n++; return {get done() {if(n===1) __rt.need(166,1); return n>1;},value:7};}};}; new Uint8Array(s).join() === '7'",
+        "let s = {}; s[Symbol.iterator] = function () {let n=0; return {next() {n++; return {done:n>1,get value() { __rt.need(166,1); return 7;}};}};}; new Uint8Array(s).join() === '7'",
+        "let a = new Uint8Array(1); a.set({get length() { __rt.need(166,1); return 1;},0:7}); a.join() === '7'",
+        "let a = new Uint8Array(1); a.set({length:1,get 0() { __rt.need(166,1); return 7;}}); a.join() === '7'",
+        "let a = new Uint8Array(1); a.set([{valueOf() { __rt.need(166,1); return 7; }}]); a.join() === '7'",
+        "let a = new Uint8Array(2); a.set([7],{valueOf() { __rt.need(166,1); return 1; }}); a.join() === '0,7'",
+        "let a = new Uint8Array(2); a.fill({valueOf() { __rt.need(166,1); return 7; }}); a.join() === '7,7'",
+        "let a = new Uint8Array(2); a.fill(7,{valueOf() { __rt.need(166,1); return 1; }}); a.join() === '0,7'",
+        "let a = new Uint8Array(2); a.fill(7,0,{valueOf() { __rt.need(166,1); return 1; }}); a.join() === '7,0'",
+        "let a = new Uint8Array([7,8]); a.join({toString() {a=null; __rt.need(166,1); return '-';}}) === '7-8'",
         "let a = new Float16Array(1); a[0] = {valueOf() { __rt.need(166, 1); return 0.1; }}; a[0] === 0.0999755859375",
         "let a = new Float32Array(1); a[0] = {valueOf() { __rt.need(166, 1); return 0.1; }}; a[0] === 0.10000000149011612",
         "let a = new Float64Array(1); a[0] = {valueOf() { __rt.need(166, 1); return -0; }}; 1 / a[0] === -Infinity",
@@ -16491,4 +16508,213 @@ fn date_utc_fields_waits_collects_and_migrates() {
     }
     assert!(complete);
     assert_eq!(waited, 6);
+}
+
+// Adapted assertions from QuickJS tests/test_builtin.js::test_typed_array,
+// revision 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+// Synthetic fixture, not light-cljs output.
+// QuickJS Javascript Engine
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+#[test]
+fn typed_array_methods() {
+    assert_eq!(
+        eval(
+            r#"
+        let a = new Uint8Array(4);
+        for (let i = 0; i < a.length; i++) a[i] = i;
+        let ok = a.join(",") === "0,1,2,3";
+        a = new Uint8ClampedArray(4);
+        a[0] = -100; a[1] = 1.5; a[2] = 0.5; a[3] = 1233.5;
+        ok = ok && a.toString() === "0,2,0,255";
+        let buffer = new ArrayBuffer(16);
+        new Uint32Array(buffer, 12, 1)[0] = -1;
+        new Uint16Array(buffer, 2)[0] = -1;
+        new Float32Array(buffer, 8, 1)[0] = 1;
+        ok = ok && new Uint8Array(buffer).toString() === "0,0,255,255,0,0,0,0,0,0,128,63,255,255,255,255";
+        a = new Uint8Array([1, 2, 3, 4]);
+        ok = ok && a.toString() === "1,2,3,4";
+        a.set([10, 11], 2);
+        ok = ok && a.toString() === "1,2,10,11";
+        let caught = false;
+        try { a.set([1, 2, 3], 3); } catch (e) { caught = e instanceof RangeError; }
+        ok = ok && caught && a.toString() === "1,2,10,11";
+        a.fill(42);
+        ok && a[0] === 42 && Uint8Array.prototype.toString === Array.prototype.toString &&
+        new Uint8Array(new Int8Array([-1])).toString() === "255"
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn typed_array_from_iterable() {
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(
+        eval(
+            r#"
+        let source = {};
+        source[Symbol.iterator] = function () {
+            let i = 0;
+            return {next() { i++; return {done: i > 3, value: i}; }};
+        };
+        new Uint8Array(source).toString() === '1,2,3' &&
+        new Uint8Array({length: 2, 0: 7, 1: 8}).toString() === '7,8'
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn typed_array_methods_budget() {
+    // Synthetic fixture, not light-cljs output.
+    for source in [
+        "new Uint8Array(100000).join(',').length === 199999",
+        "let a = new Uint8Array(100000); a.fill(42); a[99999] === 42",
+        "let a = new Uint8Array(100000); let b = new Uint8Array(100000); b.fill(17); a.set(b); a[99999] === 17",
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..20000 {
+            match task
+                .run_with(Budget::instructions(100), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    if yields == 1 {
+                        rt.collect().unwrap();
+                    }
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete && yields > 0, "{source}: {yields} yields");
+    }
+}
+
+#[test]
+fn typed_array_method_edges() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let a = new Uint8Array([1,2,3,4]); a.set(new Uint8Array(a.buffer, 0, 3), 1); a.join() === '1,1,2,3'",
+        "let a = new Uint8Array([1,2,3,4]); a.set(new Uint8Array(a.buffer, 1, 3)); a.join() === '2,3,4,4'",
+        "let b = new ArrayBuffer(8); let a = new Uint8Array(b); a.set([1,2,3,4]); new Uint16Array(b).set(new Uint8Array(b,0,4)); a.join() === '1,0,2,0,3,0,4,0'",
+        "let a = new Uint8Array([1,2,3]); let n = 0; let r = a.fill({valueOf() { n++; return 257; }}, -2, Infinity); r === a && n === 1 && a.join() === '1,1,1'",
+        "let a = new Uint8Array([1,2,3]); a.fill(9,-Infinity,-1); a.join() === '9,9,3'",
+        "let a = new Uint8Array([1,2,3]); a.fill(9,2,1); a.set([8],1.9); a.join() === '1,8,3'",
+        "let a = new Uint8Array(3); a.set('257'); a.join() === '2,5,7'",
+        "let a = new Uint8Array([7,8]); Object.defineProperty(a,'length',{value:0}); a.join() === '7,8'",
+        "let a = new Uint8Array([7,8]); a.join({toString() { a.buffer.transfer(); return '-'; }}) === '-'",
+        "let a = new Uint8Array([7,8]); a.join = function () { return 'custom'; }; a.toString() === 'custom'",
+        "let a = new Uint8Array([7,8]); a[Symbol.iterator] = function () { throw 42; }; new Uint8Array(a).join() === '7,8'",
+        "let log = ''; let s = {length:2,get 0() {log+='a'; return {valueOf() {log+='b'; return 7; }};},get 1() {log+='c'; return 8;}}; new Uint8Array(s).join() === '7,8' && log === 'abc'",
+        "let log = ''; let s = {}; s[Symbol.iterator] = function () { let i = 0; return { next() {log += 'n'; i++; return {done:i>2,value:{valueOf() {log+='v'; return i;}}};}}; }; new Uint8Array(s).join() === '3,3' && log === 'nnnvv'",
+        "let a = new Uint8Array(1); let n = 0; let caught = false; try { a.set({get length() { n++; return 0; }}, Infinity); } catch(e) {caught = e instanceof RangeError;} caught && n === 1",
+        "let a = new Uint8Array([1]); let caught = false; try { a.set({length:2,get 0() {throw 42;}}); } catch(e) {caught = e instanceof RangeError;} caught && a[0] === 1",
+        "let a = new Uint8Array(2); let b = a.buffer; a.set({length:2,get 0() {b.transfer(); return 7;},get 1() {return 8;}}); a[0] === undefined",
+        "let a = new Uint8Array([1,2]); let n = 0; try { a.set({length:2,0:7,get 1() {throw 42;}}); } catch(e) {n=e;} a.join() === '7,2' && n === 42",
+        "Uint8Array.prototype.set.length === 1 && Uint8Array.prototype.fill.length === 1 && Uint8Array.prototype.join.length === 1 && Uint8Array.prototype.join !== Array.prototype.join",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for (source, kind) in [
+        ("Uint8Array.prototype.set.call([],[])", "TypeError"),
+        ("Uint8Array.prototype.fill.call([],1)", "TypeError"),
+        ("Uint8Array.prototype.join.call([])", "TypeError"),
+        (
+            "let a=new Uint8Array(1); a.buffer.transfer(); a.set([])",
+            "TypeError",
+        ),
+        (
+            "let a=new Uint8Array(1); a.buffer.transfer(); a.fill(1)",
+            "TypeError",
+        ),
+        (
+            "let a=new Uint8Array(1); a.buffer.transfer(); a.join()",
+            "TypeError",
+        ),
+        (
+            "let a=new Uint8Array(1); a.fill({valueOf() {a.buffer.transfer(); return 1;}})",
+            "TypeError",
+        ),
+        (
+            "let a=new Uint8Array(1); a.set([], {valueOf() {a.buffer.transfer(); return 0;}})",
+            "TypeError",
+        ),
+        (
+            "let a=new Uint8Array(1); a.buffer.transfer(); new Uint8Array(a)",
+            "TypeError",
+        ),
+        (
+            "let s={}; s[Symbol.iterator]=1; new Uint8Array(s)",
+            "TypeError",
+        ),
+        (
+            "let s={}; s[Symbol.iterator]=function () {return 1;}; new Uint8Array(s)",
+            "TypeError",
+        ),
+        (
+            "let s={}; s[Symbol.iterator]=function () {return {next() {return 1;}};}; new Uint8Array(s)",
+            "TypeError",
+        ),
+        ("new Uint8Array([1n])", "TypeError"),
+        ("new Uint8Array(1).set([1n])", "TypeError"),
+        ("new Uint8Array(1).fill(1n)", "TypeError"),
+        ("new Uint8Array(1).set(null)", "TypeError"),
+        ("new Uint8Array(1).set([], -1)", "RangeError"),
+    ] {
+        let source = format!(
+            "let caught=false; try {{{source};}} catch(e) {{caught=e instanceof {kind};}} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn typed_array_copy_preserves_nan_payloads() {
+    // Synthetic fixture, not light-cljs output. Number conversion canonicalizes
+    // NaNs, while same-element-type constructor/set must copy their raw bits.
+    for (kind, words) in [
+        ("Float16Array", "[0x7c01,0xfe02]"),
+        ("Float32Array", "[0x0001,0x7f80,0x1234,0xffc0]"),
+        ("Float64Array", "[0x0001,0,0,0x7ff0,0x1234,0,0,0xfff8]"),
+    ] {
+        let source = format!(
+            r#"
+            let words = new Uint16Array({words});
+            let a = new {kind}(words.buffer);
+            let copy = new {kind}(a);
+            let setCopy = new {kind}(a.length);
+            setCopy.set(a);
+            new Uint16Array(copy.buffer).join() === words.join() &&
+            new Uint16Array(setCopy.buffer).join() === words.join()
+        "#
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
 }

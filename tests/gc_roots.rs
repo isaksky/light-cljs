@@ -950,6 +950,9 @@ fn realm_intrinsics_retain() {
         "Math.sqrt",
         "Math.log2",
         "Array.prototype.join",
+        "Uint8Array.prototype.set",
+        "Uint8Array.prototype.fill",
+        "Uint8Array.prototype.join",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
         "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
         "TypeError",
@@ -1045,7 +1048,8 @@ fn realm_intrinsics_retain() {
     // RegExp adds one prototype and fourteen built-ins (-188).
     // BigInt adds one constructor function and one prototype (-201).
     // UTC field access adds fifteen Date methods (-181).
-    assert_eq!(rt.heap_usage().objects.builtin, 158);
+    // Typed-array set/fill/join append three built-ins (-168).
+    assert_eq!(rt.heap_usage().objects.builtin, 161);
     assert_eq!(rt.heap_usage().objects.plain, 33);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

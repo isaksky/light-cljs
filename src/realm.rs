@@ -965,6 +965,26 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         bigint,
         PropertyFlags::METHOD,
     )?;
+    // Append methods after the existing intrinsic allocation sequence. Share
+    // Array.prototype.toString's actual function object.
+    let shared = heap.read(typed_array_prototypes[0], |o| match o {
+        HeapObject::Plain(o) => o.prototype(),
+        _ => None,
+    })??;
+    let key = heap.keys().intern(&JsString::from("toString"))?;
+    let to_string = heap.read(array_prototype, |o| match o {
+        HeapObject::Plain(o) => o.get_own(key).map(|p| p.value.clone()),
+        _ => None,
+    })??;
+    b.add_value(shared, "toString", to_string, PropertyFlags::METHOD)?;
+    for method in [
+        Builtin::TypedArraySet,
+        Builtin::TypedArrayFill,
+        Builtin::TypedArrayJoin,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(shared, method.name(), function, PropertyFlags::METHOD)?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1645,7 +1665,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 191); // Includes BigInt and fifteen Date UTC field methods (-181).
+        assert_eq!(first.all.len(), 194); // Includes typed-array set/fill/join (-168).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

@@ -311,6 +311,10 @@ pub(crate) enum Builtin {
 
     DateGetUtcField(u8),
     DateSetUtcField(u8),
+
+    TypedArraySet,
+    TypedArrayFill,
+    TypedArrayJoin,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -354,6 +358,10 @@ impl Builtin {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Builtin::BigInt => "BigInt",
+
+            Builtin::TypedArraySet => "set",
+            Builtin::TypedArrayFill => "fill",
+            Builtin::TypedArrayJoin => "join",
             Builtin::IntlLocale => "Locale",
             Builtin::IntlGetCanonicalLocales => "getCanonicalLocales",
             Builtin::IntlLocaleToString => "toString",
@@ -482,6 +490,10 @@ impl Builtin {
     pub(crate) fn length(self) -> u32 {
         match self {
             Builtin::BigInt => 1,
+
+            Builtin::TypedArraySet => 1,
+            Builtin::TypedArrayFill => 1,
+            Builtin::TypedArrayJoin => 1,
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
@@ -605,6 +617,9 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
+            Fault::Internal("typed array method requires a resumable frame"),
+        ),
         Builtin::IntlLocale => Err(Fault::TypeError("Intl.Locale requires new".into())),
         Builtin::IntlGetCanonicalLocales => {
             Err(Fault::Internal("locale lists require a resumable frame"))

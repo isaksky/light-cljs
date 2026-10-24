@@ -215,6 +215,7 @@ use std::marker::PhantomData;
 mod intl;
 pub(crate) mod regexp;
 mod string_raw;
+mod typed_array;
 
 use super::builtin;
 use super::dispatch::{self, Callee, Fault, Flow, dependency_id, describe, result_kind};
@@ -484,6 +485,7 @@ enum NativeState {
         parser: Option<Box<super::json::Parser>>,
     },
     JsonStringify(Box<super::json::Stringifier>),
+    TypedArray(Box<typed_array::TypedArray>),
 }
 
 #[derive(Debug)]
@@ -648,6 +650,7 @@ pub(crate) struct NativeFrame {
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
+            NativeState::TypedArray(array) => array.trace(visit),
             NativeState::StringSplit { out, .. } => out.trace(visit),
             NativeState::JsonStringify(stringifier) => stringifier.trace(visit),
             NativeState::Json {
@@ -946,6 +949,16 @@ pub(crate) fn start_builtin(
         push_native(state, parser)?;
         return Ok(true);
     }
+    if let Builtin::IntegerTypedArray(kind) = which
+        && construct
+        && let Some(source @ Value::Object(_)) = args.first()
+        && !crate::object::typed_array::is_buffer(heap, source)
+    {
+        let native = typed_array::TypedArray::constructor(kind, source.clone());
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::TypedArray(Box::new(native)))?;
+        return Ok(true);
+    }
     if (which == Builtin::IntlLocale && construct)
         || (which == Builtin::IntlGetCanonicalLocales && !construct)
     {
@@ -985,6 +998,26 @@ pub(crate) fn start_builtin(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::TypedArraySet | Builtin::TypedArrayFill => {
+                Some(NativeState::TypedArray(Box::new(
+                    typed_array::TypedArray::method(heap, state.diag.task, which, this, args)?,
+                )))
+            }
+            Builtin::TypedArrayJoin => {
+                let view = typed_array::receiver(heap, state.diag.task, this)?;
+                if view.is_detached(heap)? {
+                    return Err(Fault::TypeError("ArrayBuffer is detached".into()));
+                }
+                Some(NativeState::Join(Box::new(ArrayJoin {
+                    this: this.clone(),
+                    separator: arg(0),
+                    stage: JoinStage::Separator,
+                    len: view.length as u64,
+                    next: 0,
+                    parts: vec![],
+                    units: 0,
+                })))
+            }
             Builtin::JsonStringify => {
                 if !matches!(arg(1), Value::Undefined) {
                     return Err(Fault::TypeError(
@@ -1080,12 +1113,6 @@ pub(crate) fn start_builtin(
             let from_buffer = crate::object::typed_array::is_buffer(heap, &first);
             if from_buffer {
                 crate::object::array_buffer::receiver(heap, state.diag.task, &first)?;
-            }
-            if matches!(first, Value::Object(_)) && !from_buffer {
-                return Err(Fault::Unsupported(
-                    "typed array iterable, array-like and copy construction is not supported"
-                        .into(),
-                ));
             }
             let mut operands = vec![first];
             if from_buffer {
@@ -1887,6 +1914,7 @@ impl NativeState {
                     Ok(Action::Return(value))
                 }
             }
+            NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
@@ -2843,6 +2871,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. }, _) => Action::Unwind,
             (
                 NativeState::Reduce { .. }
+                | NativeState::TypedArray(_)
                 | NativeState::Error(_)
                 | NativeState::RegExp(_)
                 | NativeState::PropertyCall { .. }

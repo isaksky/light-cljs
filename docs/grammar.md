@@ -3371,9 +3371,9 @@ In-range element descriptors are writable/enumerable/configurable data
 properties, but deletion and attribute restrictions fail. A nonempty view
 cannot be frozen (preventing extensions still succeeds).
 
-Explicit gaps: BigInt typed arrays, iterable/array-like/copy
-construction, typed-array methods, resizable buffers and subclass/species
-construction remain deferred. Unsupported object construction fails explicitly.
+Explicit gaps: BigInt typed arrays, other typed-array methods, resizable
+buffers and subclass/species construction remain deferred. Source construction
+and set/fill/join/toString are described under clj-quickjs-168 below.
 
 ### BigInt bitwise and shift operators (clj-quickjs-200)
 
@@ -3474,9 +3474,9 @@ are preserved, overflow becomes signed infinity, and stores select a positive
 quiet NaN representation. Loads widen exactly to Number. The backing bytes
 are little-endian; all existing exotic operations and detachment rules apply.
 
-Explicit gaps: `Math.f16round`, BigInt views, iterable/array-like/copy
-construction, typed-array methods, resizable buffers and subclass/species
-construction remain deferred.
+Explicit gaps: `Math.f16round`, BigInt views, other typed-array methods,
+resizable buffers and subclass/species construction remain deferred. Source
+construction and set/fill/join/toString are described under clj-quickjs-168 below.
 
 ### RegExp object execution (clj-quickjs-188)
 
@@ -3570,3 +3570,30 @@ instruction yields, collection and worker migration preserve pending receivers,
 arguments and the original numeric time. Foreign-task access remains rejected.
 Explicit gaps: local-time field access, parsing, host input, other formats
 and `toJSON` remain separate pellets.
+
+## Typed-array sources and methods (clj-quickjs-168)
+
+Execution: all Number typed-array constructors accept typed-array sources,
+object iterables using `Symbol.iterator`, and array-like objects using
+`length` and indexed reads. Typed-array sources take precedence over their
+iterator property. Iterable values are collected before element conversion;
+array-like values are read and converted one at a time. Symbol assignment
+and `Object.defineProperty` can define iterator methods/getters even though
+computed object-literal keys remain unsupported.
+
+`set(source, offset = 0)` uses array-like or typed-array sources, truncates
+offset toward zero, and throws RangeError before writing if the source will
+not fit. Typed-array sources are snapshotted for overlapping views.
+`fill(value, start = 0, end = length)` converts value once, clamps relative
+indices, and returns its receiver. `set` returns undefined. Both use internal
+view lengths. `join(separator = ',')` reads the internal length and converts
+the separator resumably; elements detached during separator conversion become
+empty strings. Initially detached receivers throw TypeError. `toString` is
+the same function object as `Array.prototype.toString`, including dynamic
+`this.join` lookup. Getters, iterator calls and conversions remain resumable;
+long element loops and string copying yield to the instruction budget.
+
+Explicit gaps: BigInt views, resizable/shared buffers, species/subclassing,
+and other typed-array methods (including built-in iterator methods) remain
+deferred. Allocation and iterable collection are bounded by the existing
+16 MiB backing-buffer limit per view; infinite iterables hit that limit.

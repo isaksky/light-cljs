@@ -562,3 +562,16 @@ timestamp/ISO row from `research/quickjs/tests/test_builtin.js::test_date`
 synthetic, not light-cljs output. `research/quickjs/quickjs.c::get_date_field`,
 `set_date_field` and `set_date_fields` were semantic references at that revision;
 the table-driven Rust methods and continuation extension were written afresh.
+
+## Typed-array sources and methods (clj-quickjs-168)
+
+`tests/js_source.rs::typed_array_methods` adapts the join, clamped toString,
+shared-buffer layout, array construction, set and fill rows in
+`research/quickjs/tests/test_builtin.js::test_typed_array`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS MIT copyright and permission notice is retained beside that test;
+see `research/quickjs/LICENSE`. Fixtures are synthetic, not light-cljs output.
+`js_typed_array_constructor`, `js_typed_array_set_internal`,
+`js_typed_array_fill` and `js_typed_array_join` in `research/quickjs/quickjs.c`
+at that revision were semantic references. The Rust continuation and tests
+for overlap, resumability and edge cases were written afresh.
