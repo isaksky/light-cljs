@@ -55,7 +55,19 @@ pub(crate) fn make_day(year: f64, month: f64, date: f64) -> f64 {
         return f64::NAN;
     }
     let month = month.trunc();
-    let year = year.trunc() + (month / 12.0).floor();
+    // MakeDay floors the mathematical quotient before converting to Number.
+    // Floating-point division can round up across that integer boundary.
+    const I64_LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    let whole_years = if (-I64_LIMIT..I64_LIMIT).contains(&month) {
+        (month as i64).div_euclid(12) as f64
+    } else {
+        // Here the quotient's f64 spacing U is at least 128. In units of U,
+        // its fractional part is 0, 1/3 or 2/3 (division by 12 removes only
+        // powers of two and a factor of 3). Each rounding midpoint is at least
+        // U/6 > 1 away, so flooring cannot change the rounded Number value.
+        month / 12.0
+    };
+    let year = year.trunc() + whole_years;
     if !year.is_finite() {
         return f64::NAN;
     }
@@ -164,6 +176,115 @@ pub(crate) fn set_time(heap: &Heap, task: TaskId, this: &Value, time: f64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn make_day_huge_months() {
+        // Synthetic regressions: adjacent representable months must balance
+        // using the mathematical quotient, before converting it to Number.
+        for (year, month, balanced_year, balanced_month, expected) in [
+            (
+                -6004799503160663.0,
+                72057594037927936.0,
+                -2.0,
+                4.0,
+                -62219923200000.0,
+            ),
+            (
+                -6004799503160663.0,
+                72057594037927952.0,
+                -1.0,
+                8.0,
+                -62177760000000.0,
+            ),
+            (
+                -6004799503160663.0,
+                72057594037927968.0,
+                1.0,
+                0.0,
+                -62135596800000.0,
+            ),
+            (
+                6004799503160663.0,
+                -72057594037927936.0,
+                1.0,
+                8.0,
+                -62114601600000.0,
+            ),
+            (
+                6004799503160663.0,
+                -72057594037927952.0,
+                0.0,
+                4.0,
+                -62156764800000.0,
+            ),
+            (
+                6004799503160663.0,
+                -72057594037927968.0,
+                -1.0,
+                0.0,
+                -62198755200000.0,
+            ),
+            (
+                -768614336404564608.0,
+                9223372036854774784.0,
+                0.0,
+                4.0,
+                -62156764800000.0,
+            ),
+            (
+                -768614336404564608.0,
+                9223372036854775808.0,
+                0.0,
+                8.0,
+                -62146137600000.0,
+            ),
+            (
+                768614336404564608.0,
+                -9223372036854774784.0,
+                0.0,
+                8.0,
+                -62146137600000.0,
+            ),
+            (
+                768614336404564608.0,
+                -9223372036854775808.0,
+                0.0,
+                4.0,
+                -62156764800000.0,
+            ),
+            (
+                -768614336404564864.0,
+                9223372036854777856.0,
+                0.0,
+                4.0,
+                -62156764800000.0,
+            ),
+            (
+                768614336404564864.0,
+                -9223372036854777856.0,
+                0.0,
+                8.0,
+                -62146137600000.0,
+            ),
+        ] {
+            let day = make_day(year, month, 1.0);
+            assert_eq!(
+                day,
+                make_day(balanced_year, balanced_month, 1.0),
+                "{year}, {month}"
+            );
+            assert_eq!(time_clip(make_date(day, 0.0)), expected, "{year}, {month}");
+        }
+        for exponent in [53, 63, 127, 900, 1020] {
+            let year = 2.0_f64.powi(exponent);
+            for sign in [-1.0, 1.0] {
+                assert_eq!(
+                    make_day(-sign * year, sign * 12.0 * year, 1.0),
+                    make_day(0.0, 0.0, 1.0)
+                );
+            }
+        }
+    }
 
     // Date.UTC rows adapted from QuickJS tests/test_builtin.js::test_date,
     // revision 7d1c13c5d8f8. Copyright (c) 2017-2021 Fabrice Bellard
