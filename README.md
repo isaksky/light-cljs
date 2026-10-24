@@ -464,7 +464,7 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
-- `this`, `arguments`, `new`, rest/default parameters, function properties
+- `this`, `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), function properties
   (`length`, `name`), and native or host-function callees.
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
 
@@ -632,7 +632,7 @@ Deferred:
 
 - Property access (`f.call`, methods, objects), `this`, (string values:
   clj-quickjs-65 below)
-  `arguments`, `new`, default/rest parameters, generators. (Arrow
+  `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), generators. (Arrow
   functions: clj-quickjs-53 below.)
 - (A function declaration repeating a parameter or another declaration at
   the top level of a script or function body runs since clj-quickjs-94,
@@ -1187,7 +1187,7 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest, default and destructuring parameters; `this`,
+- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100, below); `this`,
   `arguments`, `new.target` and `super` (rejected inside arrows as
   everywhere else).
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
@@ -1678,3 +1678,27 @@ Deferred:
   stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
   (clj-quickjs-110); strict reserved words and duplicate parameters stay
   rejected in sloppy code.
+
+### Default parameter values (clj-quickjs-100)
+
+Supported (`cargo test --lib frontend::tests::default_parameters`,
+`cargo test --test js_functions default_parameters`):
+
+- `function f(a, b = expr) {}`, function expressions and arrows
+  (`(a, b = 1, c) => a + c`). A default runs on entry, left to right, only
+  when its argument is `undefined` (missing or passed).
+- Parameters have a temporal dead zone: a default sees earlier parameters,
+  the enclosing scopes and the function's own name; itself or a later
+  parameter is a ReferenceError. Closures in defaults capture parameters
+  by value or cell under the existing rule.
+- With a default, the parameters have their own scope: the body's
+  `let`/`const`/`var`/function declarations are invisible to defaults; a
+  body `var` repeating a parameter is a separate binding starting with its
+  value. A body `let`/`const` repeating a parameter, duplicate parameter
+  names and a `"use strict"` directive in the body are `Invalid`.
+
+Deferred:
+
+- `this`, the `arguments` object and `eval` in defaults (clj-quickjs-71,
+  -97, -106/-109; rejected as everywhere); function `length`/`name`
+  (clj-quickjs-101).

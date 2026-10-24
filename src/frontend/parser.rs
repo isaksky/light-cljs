@@ -19,6 +19,10 @@ use super::{MAX_NESTING, Span, SyntaxError, SyntaxErrorKind};
 
 type PResult<T> = Result<T, SyntaxError>;
 
+/// A formal parameter list: the names, and per name its default value, if
+/// any.
+type Params = (Vec<Ident>, Vec<Option<Expr>>);
+
 /// Nesting-budget cost of each construct, per nesting level. Weighted by the
 /// measured Rust stack each one uses, so that the whole [`MAX_NESTING`]
 /// budget fits a 2 MiB thread stack even in an unoptimized build (checked
@@ -994,12 +998,13 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
-        let (name, params) = self.parse_function_head(declaration)?;
+        let (name, (params, defaults)) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
-        let (body, strict) = self.parse_function_body(name.as_ref(), &params)?;
+        let simple = defaults.iter().all(Option::is_none);
+        let (body, strict) = self.parse_function_body(name.as_ref(), &params, simple)?;
         self.in_function = outer;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
@@ -1009,6 +1014,7 @@ impl<'a> Parser<'a> {
             FunctionKind::Ordinary,
             name,
             params,
+            defaults,
             body,
             self.span_from(start),
             strict,
@@ -1021,11 +1027,15 @@ impl<'a> Parser<'a> {
     /// statements are a directive prologue ([`Self::directive`], with the
     /// function's `name` and `params` for its retroactive check). Returns
     /// the body and whether the function is strict; the enclosing mode is
-    /// restored after it.
+    /// restored after it. Unless the parameter list is `simple` (it has a
+    /// default value, clj-quickjs-100), a `"use strict"` directive is an
+    /// early error, strict code or not (ECMAScript FunctionBody static
+    /// semantics; QuickJS `js_parse_function_check_names`).
     fn parse_function_body(
         &mut self,
         name: Option<&Ident>,
         params: &[Ident],
+        simple: bool,
     ) -> PResult<(Vec<Stmt>, bool)> {
         let saved = self.depth;
         let outer_strict = self.strict;
@@ -1038,6 +1048,9 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected("`}`"));
             }
             let stmt = self.parse_statement_list_item()?;
+            if prologue && !simple {
+                self.reject_use_strict(&stmt)?;
+            }
             prologue = prologue && self.directive(&stmt, name, params)?;
             body.push(stmt);
         }
@@ -1047,9 +1060,30 @@ impl<'a> Parser<'a> {
         Ok((body, strict))
     }
 
+    /// Reject `stmt`, a statement of the directive prologue of a function
+    /// with a default parameter value, if it is a `"use strict"` directive
+    /// (exact source text, as for [`Self::directive`]).
+    #[inline(never)]
+    fn reject_use_strict(&self, stmt: &Stmt) -> PResult<()> {
+        if let StmtKind::Expr(Expr {
+            kind: ExprKind::String(_),
+            span,
+            ..
+        }) = &stmt.kind
+            && USE_STRICT.contains(&span.text(self.src))
+        {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                *span,
+                "a \"use strict\" directive is not allowed in a function with default parameter values",
+            ));
+        }
+        Ok(())
+    }
+
     /// `function` Name? `(` Params `)`, up to the body.
     #[inline(never)]
-    fn parse_function_head(&mut self, declaration: bool) -> PResult<(Option<Ident>, Vec<Ident>)> {
+    fn parse_function_head(&mut self, declaration: bool) -> PResult<(Option<Ident>, Params)> {
         let start = self.advance()?.span.start;
         if self.is_punct(Punct::Star) {
             return Err(self.unsupported(self.span_from(start), "generator functions are"));
@@ -1063,20 +1097,21 @@ impl<'a> Parser<'a> {
         Ok((name, params))
     }
 
-    /// `(` [ BindingIdentifier { `,` BindingIdentifier } [ `,` ] ] `)`:
-    /// distinct plain identifiers (strict mode and arrows; the subset also
-    /// rejects duplicates in sloppy functions, `docs/grammar.md`).
-    fn parse_formal_parameters(&mut self) -> PResult<Vec<Ident>> {
+    /// `(` [ Param { `,` Param } [ `,` ] ] `)` with Param =
+    /// BindingIdentifier [ `=` AssignmentExpression ] (a default value,
+    /// clj-quickjs-100): distinct plain identifiers (strict mode, arrows and
+    /// lists with a default; the subset also rejects duplicates in sloppy
+    /// functions, `docs/grammar.md`), each with its default, if any.
+    #[inline(never)]
+    fn parse_formal_parameters(&mut self) -> PResult<Params> {
         self.expect_punct(Punct::LParen)?;
         let mut params: Vec<Ident> = Vec::new();
+        let mut defaults: Vec<Option<Expr>> = Vec::new();
         while !self.is_punct(Punct::RParen) {
             if self.is_punct(Punct::Ellipsis) {
                 return Err(self.unsupported(self.tok.span, "rest parameters are"));
             }
             let param = self.parse_binding_identifier("a parameter name")?;
-            if self.is_punct(Punct::Assign) {
-                return Err(self.unsupported(self.tok.span, "default parameter values are"));
-            }
             if params.iter().any(|p| p.name == param.name) {
                 return Err(self.error(
                     SyntaxErrorKind::Invalid,
@@ -1085,12 +1120,17 @@ impl<'a> Parser<'a> {
                 ));
             }
             params.push(param);
+            defaults.push(if self.eat_punct(Punct::Assign)? {
+                Some(self.parse_assignment()?)
+            } else {
+                None
+            });
             if !self.eat_punct(Punct::Comma)? {
                 break;
             }
         }
         self.expect_punct(Punct::RParen)?;
-        Ok(params)
+        Ok((params, defaults))
     }
 
     /// ArrowFunction: ArrowParameters [no LineTerminator here] `=>`
@@ -1103,10 +1143,13 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
-        let params = if self.is_punct(Punct::LParen) {
+        let (params, defaults) = if self.is_punct(Punct::LParen) {
             self.parse_formal_parameters()?
         } else {
-            vec![self.parse_binding_identifier("a parameter name")?]
+            (
+                vec![self.parse_binding_identifier("a parameter name")?],
+                vec![None],
+            )
         };
         if !self.is_punct(Punct::Arrow) {
             return Err(self.unexpected("`=>`"));
@@ -1120,7 +1163,8 @@ impl<'a> Parser<'a> {
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
             let outer_switch = std::mem::replace(&mut self.in_switch, false);
             let outer_labels = std::mem::take(&mut self.labels);
-            let (body, strict) = self.parse_function_body(None, &params)?;
+            let simple = defaults.iter().all(Option::is_none);
+            let (body, strict) = self.parse_function_body(None, &params, simple)?;
             self.in_function = outer;
             self.in_loop = outer_loop;
             self.in_switch = outer_switch;
@@ -1136,7 +1180,15 @@ impl<'a> Parser<'a> {
             (FunctionKind::ConciseArrow, vec![body], self.strict)
         };
         self.depth = saved;
-        let function = Function::new(kind, None, params, body, self.span_from(start), strict);
+        let function = Function::new(
+            kind,
+            None,
+            params,
+            defaults,
+            body,
+            self.span_from(start),
+            strict,
+        );
         self.check_height(function.height)?;
         let span = function.span;
         self.expr(ExprKind::Function(Box::new(function)), span)
@@ -1904,13 +1956,22 @@ impl<'a> Parser<'a> {
 
     /// With the current token `(`, the `=>` token following the matching
     /// `)`, if any. Lookahead only; a lexical error ends the search (the
-    /// normal parse then reports it at its position).
+    /// normal parse then reports it at its position). A token after `{` or
+    /// `,` is lexed as a possible property name, so a reserved word written
+    /// with escapes as an object literal key in a default parameter value
+    /// (`(a = {if: 1}) => a`, clj-quickjs-100) does not end the search;
+    /// the normal parse checks every such token in its real position.
     fn arrow_after_parens(&self) -> Option<Token> {
         let mut lexer = self.lexer.clone();
         let mut open = 1usize;
         while open > 0 {
             match lexer.next_token().ok()?.kind {
-                TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => open += 1,
+                TokenKind::Punct(Punct::LBrace) => {
+                    open += 1;
+                    lexer.expect_property_name();
+                }
+                TokenKind::Punct(Punct::Comma) => lexer.expect_property_name(),
+                TokenKind::Punct(Punct::LParen | Punct::LBracket) => open += 1,
                 TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => open -= 1,
                 TokenKind::Eof => return None,
                 _ => {}

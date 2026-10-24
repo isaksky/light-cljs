@@ -583,21 +583,38 @@ fn deeply_nested_functions_compile_within_a_small_stack() {
         "(function () { return ".repeat(20),
         "; })()".repeat(20)
     );
+    // Called function expressions nested in default values
+    // (clj-quickjs-100), as deep as the parser allows, the innermost
+    // default reading the outermost parameter.
+    let defaults = |n: usize| {
+        format!(
+            "(function (x = 5) {{ return {}x{}; }})()",
+            "(function (a = ".repeat(n),
+            ") { return a; })()".repeat(n)
+        )
+    };
     let handle = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
             let a = compile_script("decls", &decls);
             let b = compile_script("exprs", &exprs);
-            (a, b)
+            let c = (1..100)
+                .map(|n| (n, compile_script("defaults", &defaults(n))))
+                .take_while(|(_, c)| !matches!(c, Err(e) if e.kind == SyntaxErrorKind::TooDeep))
+                .last()
+                .unwrap();
+            (a, b, c)
         })
         .unwrap();
-    let (a, b) = handle.join().unwrap();
+    let (a, b, (depth, c)) = handle.join().unwrap();
     let run = |exe: Executable| match Runtime::new().spawn(&exe, &[]).unwrap().run().unwrap() {
         RunOutcome::Complete(v) => v.view(),
         other => panic!("{other:?}"),
     };
     assert_eq!(run(a.unwrap()), ValueView::Number(7.0));
     assert_eq!(run(b.unwrap()), ValueView::Number(9.0));
+    assert!(depth >= 15, "only {depth} nested defaults");
+    assert_eq!(run(c.unwrap()), ValueView::Number(5.0));
 }
 
 #[test]
@@ -893,4 +910,248 @@ fn arrow_function_values() {
         compile_err("const f = (a) => arguments;"),
         (SyntaxErrorKind::Unsupported, 1, 18)
     );
+}
+
+/// Default parameter values (clj-quickjs-100). Two cases are adapted from
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8:
+/// the arrow `(a, b = 1, c) => ...` of `test_function_length` (line 445),
+/// called instead of asking its `length` (clj-quickjs-101), and
+/// `f = function f(a = f) { return a; }; f() === f` of
+/// `test_argument_scope` (line 453), as a `const` binding a differently
+/// named expression and as a declaration. Its `arguments`, `this` and
+/// `eval` cases wait for clj-quickjs-97, -71 and -109; see
+/// `docs/architecture.md`, "QuickJS references and provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn default_parameters() {
+    // A default runs when its argument is missing or `undefined`, and only
+    // then (clj-quickjs-100).
+    let f = "function f(a, b = 2) { return b; }\n";
+    assert_eq!(num(&format!("{f}f(1)")), 2.0);
+    assert_eq!(num(&format!("{f}f(1, undefined)")), 2.0);
+    assert_eq!(eval(&format!("{f}f(1, null)")), ValueView::Null);
+    assert_eq!(num(&format!("{f}f(1, 0)")), 0.0);
+    // Defaults see earlier parameters and run left to right.
+    assert_eq!(num("function f(a, b = a + 1) { return b; } f(1)"), 2.0);
+    assert_eq!(
+        num("let log = 0;
+             function f(a = (log = log * 10 + 1), b = (log = log * 10 + 2)) {}
+             f(); f(5); log"),
+        122.0
+    );
+    // A later parameter (or the parameter itself) is in its temporal dead
+    // zone: a ReferenceError at the reference, only if the default runs.
+    let (kind, message, line, column) = failure_at("function f(a = b, b) {}\nf()");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::ReferenceError,
+            "cannot access 'b' before initialization",
+            1,
+            16
+        )
+    );
+    assert_eq!(
+        failure_at("function f(a = a) {}\nf()").0,
+        VmErrorKind::ReferenceError
+    );
+    assert_eq!(num("function f(a = b, b) { return a; } f(1, 2)"), 1.0);
+    // Defaults see the function's own name and the enclosing scopes.
+    assert_eq!(
+        eval("const g = function h(a = h) { return a; }; g() === g"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("function f(a = f) { return a; } f() === f"),
+        ValueView::Bool(true)
+    );
+    // ... but not the body's declarations, which have their own scope.
+    assert_eq!(
+        num("const x = 1; function f(a = () => x) { let x = 2; return a(); } f()"),
+        1.0
+    );
+    assert_eq!(
+        num("const x = 1; function f(a = () => x) { var x = 2; return a(); } f()"),
+        1.0
+    );
+    // Closures in defaults capture the parameter bindings: they observe
+    // later assignments by the body, and a closure that runs before its
+    // parameter is initialized fails at run time.
+    assert_eq!(
+        num("function f(a, g = () => a) { a = 2; return g(); } f(1)"),
+        2.0
+    );
+    assert_eq!(
+        num("function f(g = () => b, b) { return g(); } f(undefined, 5)"),
+        5.0
+    );
+    let (kind, _, line, column) = failure_at("function f(g = () => b, b = g()) {}\nf()");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 22));
+    // A body `var` that repeats a parameter is a separate binding that
+    // starts with the parameter's value; closures in defaults keep the
+    // parameter.
+    assert_eq!(
+        num("function f(a = 1, g = () => a) {
+               var a; const r = a; a = 3;
+               return r * 100 + a * 10 + g();
+             }
+             f()"),
+        131.0
+    );
+    // A body `var` that repeats no parameter starts `undefined`, even in a
+    // local the parameter scope used for scratch.
+    assert_eq!(
+        eval("function f(g = () => b, b) { var x; return x; } f(undefined, 7)"),
+        ValueView::Undefined
+    );
+    // A body function declaration may repeat a parameter, and wins.
+    assert_eq!(
+        eval("function f(a = 1) { function a() {} return typeof a === \"function\"; } f()"),
+        ValueView::Bool(true)
+    );
+    // A body `let`/`const` may not.
+    assert_eq!(
+        compile_err("function f(a = 1) { let a; }"),
+        (SyntaxErrorKind::Invalid, 1, 25)
+    );
+    assert_eq!(
+        compile_err("function f(a, b = 1) { const a = 2; }"),
+        (SyntaxErrorKind::Invalid, 1, 30)
+    );
+    // The `docs/grammar.md` example.
+    assert_eq!(
+        eval(
+            "const x = 1;
+             function f(a, b = a + 1, g = () => x) { var x = 2; return b * 10 + g(); }
+             f(1) === 21 && f(1, undefined) === 21 && f(1, 5) === 51 && ((a = 1, c) => a + c)(undefined, 2) === 3;"
+        ),
+        ValueView::Bool(true)
+    );
+    // Arrow functions, with parameters after a default.
+    assert_eq!(num("((a, b = 1, c) => a + c)(1, 2, 3)"), 4.0);
+    assert_eq!(num("((a = 1) => a)()"), 1.0);
+    assert_eq!(num("const k = (a, b = () => a) => b; k(9)()"), 9.0);
+    // The entry function of `compile_function`.
+    let rt = Runtime::new();
+    let entry = compile_function("function f(a, b = a * 2) { return b; }").unwrap();
+    let three = rt.root(Primitive::Number(3.0));
+    let task = rt.spawn(&entry, &[&three]).unwrap();
+    match task.run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(6.0)),
+        other => panic!("{other:?}"),
+    }
+    // `arguments` (clj-quickjs-97) and `this`/`new` (clj-quickjs-71) are
+    // not in the subset yet, in defaults as elsewhere.
+    assert_eq!(
+        compile_err("function f(a, b = arguments[0]) { return b; }"),
+        (SyntaxErrorKind::Unsupported, 1, 19)
+    );
+    assert_eq!(
+        compile_err("function F(a = this) {}"),
+        (SyntaxErrorKind::Unsupported, 1, 16)
+    );
+    // An object literal default with an escaped reserved-word key.
+    assert_eq!(
+        num("const f = (a = {\\u0069f: 1, b: 2}) => a.if + a.b; f()"),
+        3.0
+    );
+    // A `"use strict"` directive in a function with a default.
+    assert_eq!(
+        compile_err("function f(a = 1) {\n  \"use strict\";\n}"),
+        (SyntaxErrorKind::Invalid, 2, 3)
+    );
+}
+
+#[test]
+fn default_parameter_closures_follow_publication_rules() {
+    let rt = Runtime::new();
+    let apply = compile_function("function apply(f) { return f(); }").unwrap();
+    let completion = |src: &str| {
+        let task = rt.spawn(&exe(src), &[]).unwrap();
+        let RunOutcome::Complete(v) = task.run().unwrap() else {
+            panic!("{src:?}")
+        };
+        v
+    };
+    // A closure over an earlier, never-assigned parameter captures its
+    // value: shareable, and callable from another task.
+    let g = completion("const k = (a, b = () => a) => b; k(9)");
+    rt.publish(&g).expect("a value capture is shareable");
+    let other = rt.spawn(&apply, &[&g]).unwrap();
+    let RunOutcome::Complete(v) = other.run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(9.0));
+    // A closure over a later parameter, or over an assigned one, holds a
+    // task-owned cell.
+    for src in [
+        "function f(g = () => b, b) { return g; } f(undefined, 1)",
+        "function f(a, g = () => a) { a = 2; return g; } f(1)",
+    ] {
+        let g = completion(src);
+        let err = rt.publish(&g).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishError::NotShareable {
+                    found: "binding cell",
+                    ..
+                }
+            ),
+            "{src}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn default_parameters_resume_across_yields_collection_and_threads() {
+    // One instruction per run, each run on a new thread, a collection at
+    // every yield: the uninitialized parameter cell, the argument moved to
+    // a scratch local and the effect in a default all survive, and the
+    // effect runs exactly once.
+    let src = "function f(v, g = () => w, n = __rt.effect(7, __rt.count(v)), w = __rt.conj(v, n)) {
+                 return __rt.count(g()) * 10000 + __rt.nth(g(), __rt.count(g()) - 1);
+               }
+               f(__rt.vector(1, 2)) + f(__rt.vector(1), undefined, 5, __rt.vector(3, 4, 9)) * 100000";
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut host = PlusThousand::default();
+    let mut yields = 0;
+    let result = loop {
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| task.run_with(Budget::instructions(1), &mut host))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("{other:?}"),
+        }
+    };
+    // 3 elements ending in 1002, then 3 elements ending in 9.
+    assert_eq!(result, ValueView::Number(3000931002.0));
+    assert_eq!(host.calls, [2.0]);
+    assert!(yields > 50, "only {yields} yields");
 }

@@ -156,7 +156,16 @@ fn binary_name(op: BinaryOp) -> &'static str {
 }
 
 fn render_function(f: &Function) -> String {
-    let params: Vec<&str> = f.params.iter().map(|p| p.name.as_str()).collect();
+    // A parameter with a default renders as `name=default`.
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .zip(&f.defaults)
+        .map(|(p, d)| match d {
+            Some(d) => format!("{}={}", p.name, render_expr(d)),
+            None => p.name.clone(),
+        })
+        .collect();
     let mut out = match f.kind {
         FunctionKind::Ordinary => format!(
             "(function {} ({})",
@@ -1401,6 +1410,81 @@ fn functions() {
 }
 
 #[test]
+fn default_parameters() {
+    use SyntaxErrorKind::{Invalid, UnexpectedToken};
+    // clj-quickjs-100: `name = AssignmentExpression`, in function
+    // declarations, expressions and arrow parameter lists.
+    assert_eq!(ast("function f(a, b = 1) {}"), "(function f (a b=1))");
+    assert_eq!(ast("function f(a, b = a) {}"), "(function f (a b=a))");
+    assert_eq!(ast("(a = 1) => a"), "(arrow (a=1) => a)");
+    assert_eq!(ast("(a, b = 1, c,) => {}"), "(arrow (a b=1 c))");
+    assert_eq!(
+        ast("x = function (a = 1, b = a ? 2 : 3) {};"),
+        "(= x (function - (a=1 b=(? a 2 3))))"
+    );
+    // A default is an AssignmentExpression: an arrow (even one with its
+    // own defaults), an assignment, but not the comma operator.
+    assert_eq!(
+        ast("function f(g = (a = 1) => a, h = x = 2) {}"),
+        "(function f (g=(arrow (a=1) => a) h=(= x 2)))"
+    );
+    assert_eq!(
+        ast("((a = (b = 1) => b) => a)"),
+        "(arrow (a=(arrow (b=1) => b)) => a)"
+    );
+    // Its span is its own.
+    let src = "function f(a, b = a + 1) {}";
+    let script = parse_script(src).unwrap();
+    let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+        panic!("{script:?}")
+    };
+    assert!(f.defaults[0].is_none());
+    assert_eq!(f.defaults[1].as_ref().unwrap().span.text(src), "a + 1");
+    // Duplicate names are an early error with or without a default.
+    rejects_with(
+        "function f(a = 1, a) {}",
+        Invalid,
+        1,
+        19,
+        "duplicate parameter",
+    );
+    rejects_with("(a, b = 1, b) => 1", Invalid, 1, 12, "duplicate parameter");
+    rejects("function f(a =) {}", UnexpectedToken, 1, 15);
+    rejects("function f(a = 1, 2) {}", UnexpectedToken, 1, 19);
+    rejects("function f(a = (1, 2) {}", UnexpectedToken, 1, 23);
+    // An object literal key spelled as an escaped reserved word does not
+    // hide the arrow from the cover-grammar lookahead.
+    assert_eq!(
+        ast("(a = {\\u0069f: 1, \\u0069n: 2}) => a"),
+        "(arrow (a=(object (if 1) (in 2))) => a)"
+    );
+    // A `"use strict"` directive is an early error in a function with a
+    // default, strict or sloppy, ...
+    for src in [
+        "function f(a = 1) { \"use strict\"; }",
+        "x = function (a, b = 1) { 'use strict'; };",
+        "(a = 1) => { \"use strict\"; }",
+        "function f(a = 1) { \"other\"; \"use strict\"; }",
+    ] {
+        let e = err(src);
+        assert_eq!(e.kind, Invalid, "{src}: {e}");
+        assert_eq!(e.span.text(src).trim_matches(['"', '\'']), "use strict");
+        sloppy_rejects(src, Invalid, e.line, e.column);
+    }
+    // ... but not an escaped one, a parenthesized one, one after the
+    // prologue, or one in a nested function without defaults.
+    for src in [
+        "function f(a = 1) { \"use\\x20strict\"; }",
+        "function f(a = 1) { (\"use strict\"); }",
+        "function f(a = 1) { 1; \"use strict\"; }",
+        "function f(a = 1) { function g() { \"use strict\"; } }",
+    ] {
+        ast(src);
+        sloppy_script(src);
+    }
+}
+
+#[test]
 fn nested_blocks_and_control_flow() {
     assert_eq!(
         ast("{ { let x = 1; { const y = x; } } }"),
@@ -1634,7 +1718,6 @@ fn arrow_functions_and_asi() {
     rejects("((a)) => 1", UnexpectedToken, 1, 2);
     rejects("(a b) => 1", UnexpectedToken, 1, 4);
     rejects_with("(...a) => 1", Unsupported, 1, 2, "rest parameters");
-    rejects_with("(a = 1) => 1", Unsupported, 1, 4, "default parameter");
     rejects_with("([a]) => 1", Unsupported, 1, 2, "destructuring");
     rejects_with("({ a }) => 1", Unsupported, 1, 2, "destructuring");
     rejects("(eval) => 1", ReservedWord, 1, 2);
@@ -2293,7 +2376,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("a[0];", 1, 2, "computed member"),
         ("f(...a);", 1, 3, "spread"),
         ("function f(...a) {}", 1, 12, "rest"),
-        ("function f(a = 1) {}", 1, 14, "default parameter"),
         ("let [a] = b;", 1, 5, "destructuring"),
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
@@ -2365,6 +2447,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
             "function () { return ".repeat(n),
             "}".repeat(n)
         ),
+        format!("x = {}1{};", "function (a = ".repeat(n), ") {}".repeat(n)),
+        format!("x = {}1{};", "(a = ".repeat(n), ") => a".repeat(n)),
         format!("x = 1{};", " + 1".repeat(n)),
         format!("x = 1{};", " ** 1".repeat(n)),
         format!("x = f{};", "()".repeat(n)),
@@ -2475,6 +2559,12 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("block arrows", |n| {
             format!("x = {}1{};", "() => { return ".repeat(n), "}".repeat(n))
+        }),
+        ("defaults", |n| {
+            format!("x = {}1{};", "function (a = ".repeat(n), ") {}".repeat(n))
+        }),
+        ("arrow defaults", |n| {
+            format!("x = {}1{};", "(a = ".repeat(n), ") => a".repeat(n))
         }),
         ("mixed", |n| {
             format!("x = {}1{};", "a + -(".repeat(n), ")".repeat(n))

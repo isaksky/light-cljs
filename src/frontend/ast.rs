@@ -263,6 +263,10 @@ pub struct Function {
     pub name: Option<Ident>,
     /// Plain identifier parameters with distinct names.
     pub params: Vec<Ident>,
+    /// One entry per parameter: its default value (`b = expr`,
+    /// clj-quickjs-100), if it has one. A function with any default has a
+    /// non-simple parameter list ([`Function::has_defaults`]).
+    pub defaults: Vec<Option<Expr>>,
     pub body: Vec<Stmt>,
     /// From the `function` keyword (for an arrow function, its first
     /// token) to the end of the body.
@@ -276,24 +280,35 @@ pub struct Function {
 }
 
 impl Function {
+    /// `defaults` has one entry per parameter.
     pub(crate) fn new(
         kind: FunctionKind,
         name: Option<Ident>,
         params: Vec<Ident>,
+        defaults: Vec<Option<Expr>>,
         body: Vec<Stmt>,
         span: Span,
         strict: bool,
     ) -> Function {
-        let height = max_height(&body) + 1;
+        debug_assert_eq!(params.len(), defaults.len());
+        let defaults_height = defaults.iter().flatten().map(|e| e.height).max();
+        let height = max_height(&body).max(defaults_height.unwrap_or(0)) + 1;
         Function {
             kind,
             name,
             params,
+            defaults,
             body,
             span,
             height,
             strict,
         }
+    }
+
+    /// Some parameter has a default value: the parameter list is not
+    /// simple, so the parameters have their own scope (`super::lower`).
+    pub(crate) fn has_defaults(&self) -> bool {
+        self.defaults.iter().any(Option::is_some)
     }
 }
 

@@ -616,8 +616,8 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   JavaScript source executed by this VM; no C engine is involved.
 - **Deferred.** Method calls and function properties (so no `f.call`;
   string values run since clj-quickjs-65, object literals and named
-  properties since clj-quickjs-114); `this`, `arguments`, `new`, default/rest
-  parameters (var-scoped redeclaration by function declarations runs since
+  properties since clj-quickjs-114); `this`, `arguments`, `new`, rest
+  parameters (defaults: clj-quickjs-100) (var-scoped redeclaration by function declarations runs since
   clj-quickjs-94); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
 
@@ -1859,3 +1859,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `JS_SetPropertyInternal`, `add_property` and the `OP_object`,
   `OP_get_field`, `OP_put_field` and `OP_define_field` cases were consulted
   only, for semantics. No code was copied.
+- `tests/js_functions.rs` `default_parameters` (clj-quickjs-100): the arrow
+  `(a, b = 1, c) => {}` of `test_function_length` (line 445) and the
+  strict `f = function f(a = f) { return a; }; f() === f` case of
+  `test_argument_scope` (line 453) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: the arrow is called (`a + c`) instead of asking its `length`
+  (clj-quickjs-101); the `arguments`, `this` and `eval` cases wait for
+  clj-quickjs-97, -71 and -109. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_parse_function_decl2`
+  (`has_parameter_expressions`: an argument scope of `let`-like
+  parameters, each default under `OP_get_arg`/`OP_strict_eq undefined`)
+  was consulted only. No code was copied.

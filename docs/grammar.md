@@ -113,8 +113,9 @@ VariableStatement   = "var" Declarator { "," Declarator } ";"
 Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
 FunctionDeclaration = "function" BindingIdentifier FunctionRest
 FunctionExpression  = "function" [ BindingIdentifier ] FunctionRest
-FunctionRest        = "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
-                      FunctionBody
+FunctionRest        = FormalParameters FunctionBody
+FormalParameters    = "(" [ FormalParameter { "," FormalParameter } [ "," ] ] ")"
+FormalParameter     = BindingIdentifier [ "=" AssignmentExpression ]   (* default value *)
 FunctionBody        = "{" { Directive } { StatementListItem } "}"
 
 Expression            = AssignmentExpression { "," AssignmentExpression }
@@ -124,8 +125,7 @@ AssignmentExpression  = ConditionalExpression | ArrowFunction
 AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
                       | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
 ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
-ArrowParameters       = BindingIdentifier
-                      | "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
+ArrowParameters       = BindingIdentifier | FormalParameters
 ConciseBody           = FunctionBody | AssignmentExpression
 ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
 LogicalOr             = LogicalAnd { "||" LogicalAnd }
@@ -220,8 +220,17 @@ Notes on the grammar:
   (`if (x) var y = 1;`). Its names are bindings of the enclosing function
   or script, wherever the statement is (see "Execution"); `var` in a `for`
   head is not supported yet.
-- Function parameter names must be distinct (strict mode; the subset
-  requires it in sloppy functions too).
+- Function parameter names must be distinct (strict mode, and in
+  ECMAScript any list with a default value; the subset requires it in
+  sloppy functions too).
+- Default parameter values (clj-quickjs-100): a parameter may be followed
+  by `=` and an AssignmentExpression, in function declarations,
+  expressions and arrow parameter lists (`(a, b = 1, c) => a + c`), and
+  parameters without one may follow it. The default is an
+  AssignmentExpression, so a `,` ends it; it may itself be an arrow
+  function with defaults (`(a = (b = 1) => b) => a`). A `"use strict"`
+  directive in the body of a function or arrow with a default is an early
+  error (`Invalid`, at the directive), in strict and sloppy code alike.
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
   otherwise the parentheses are a parenthesized expression, where `(a, b)`
@@ -304,7 +313,7 @@ Every form below is rejected where it starts. Error kinds:
 | `var` as a `for` head, for-in and for-of loops, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
-| rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
+| rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` (also in an object literal) | Unsupported |
 | in object literals: computed keys `{[k]: v}`, methods `{m() {}}`, getters and setters, `async` and generator methods, `__proto__: v` (it sets the prototype) | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
@@ -401,6 +410,12 @@ checks left to later stages:
   stay reserved, duplicate parameter names stay `Invalid`, a function
   declaration as a labelled or `if` body stays `Invalid`, and function
   declarations in blocks stay lexical (no Annex B hoisting).
+- **Default parameter values lack what the subset lacks elsewhere**
+  (clj-quickjs-100): `this` and a function's own `arguments` object are
+  rejected in a default as anywhere (clj-quickjs-71, -97), and so is
+  `eval` (clj-quickjs-106, -109); an anonymous function as a default gets
+  no inferred `name`, and a function's `length` (the parameters before the
+  first default) does not exist yet (clj-quickjs-101).
 
 ## Directive prologues and strictness
 
@@ -428,6 +443,11 @@ Directive"; QuickJS `js_parse_directives` and
 - **Arrow functions** inherit the strictness of the code around them and
   may also have their own directive in a block body (`(eval) => {
   "use strict"; }` is `ReservedWord`).
+- A function or arrow with a **default parameter value** (clj-quickjs-100)
+  cannot have a `"use strict"` directive (exact source text, as above):
+  it is `Invalid` at the directive, even in code that is already strict
+  (ECMAScript FunctionBody early errors; QuickJS
+  `js_parse_function_check_names`).
 - Directives stay **ordinary expression statements**: they evaluate to
   their string, so a script that is only `"use strict";` completes with
   `"use strict"`.
@@ -472,6 +492,10 @@ function f(eval) {}
 
 ```js sloppy-reject ReservedWord 1:2
 (eval) => { "use strict"; }
+```
+
+```js reject Invalid 1:21
+function f(a = 1) { "use strict"; }
 ```
 
 ## Execution
@@ -539,6 +563,7 @@ Executed, with JavaScript semantics:
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing arguments are `undefined`, extra ones are ignored; falling off the end returns `undefined`; no `this`, `arguments` or `new` |
+| `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | a function's own name (`compile_function`, or a declaration never assigned) | the running function object (`current_function`), so self-recursion captures nothing |
@@ -580,17 +605,33 @@ typeof (() => 1) === "function" && typeof __rt.vector() === "object" && typeof "
 typeof a ** 2;
 ```
 
+Default parameter values run only for `undefined` arguments, left to
+right, and do not see the body's declarations (clj-quickjs-100); the
+script below evaluates to `true`:
+
+```js accept
+const x = 1;
+function f(a, b = a + 1, g = () => x) { var x = 2; return b * 10 + g(); }
+f(1) === 21 && f(1, undefined) === 21 && f(1, 5) === 51 && ((a = 1, c) => a + c)(undefined, 2) === 3;
+```
+
+A body `let`/`const` cannot repeat a parameter, with or without defaults:
+
+```js compile-reject Invalid 1:25
+function f(a = 1) { let a; }
+```
+
 Errors:
 
 | Situation | When | Reported as |
 |-----------|------|-------------|
-| A name declared twice in one block, script, function body or `switch` case block (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block), other than the var-scoped repetitions above | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
+| A name declared twice in one block, script, function body or `switch` case block (including a `let`/`const` that repeats a parameter, also with default values, and a function declaration that clashes with a `let`/`const` or repeats one in a block), other than the var-scoped repetitions above | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A `var` whose name a `let`, `const` or block-level function declaration binds in the same body (`let a; var a;`) or in a block enclosing the `var` within the same function (`{ let a; { var a; } }`), or a `for` head binding of an enclosing loop | compile time | `SyntaxError`, kind `Invalid`, at the `var`'s name |
 | A method call `o.f(...)` (other than `__rt.name(...)`), and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object, so sloppy code fails the same way until clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
-| Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
+| Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, a parameter in its own or an earlier parameter's default value, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
 | Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it (also in sloppy code until clj-quickjs-96) | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
@@ -751,10 +792,12 @@ Gaps specific to execution:
   `VmErrorKind::ForeignBinding`). So a function meant to be shared should
   capture only `const`s and never-assigned parameters that are initialized
   before it is created (a function expression after the `const`, not a
-  hoisted declaration).
+  hoisted declaration). A closure in a default parameter value that
+  captures its own or a later parameter (`function f(g = () => b, b)`)
+  holds a cell (clj-quickjs-100).
 - **Functions have no properties.** No `length`, `name`, `prototype`,
-  `call`/`apply`/`bind`, `this`, `arguments`, `new`, default or rest
-  parameters, getters or generators.
+  `call`/`apply`/`bind`, `this`, `arguments`, `new`, rest parameters,
+  getters or generators.
 
 ## Reserved intrinsic binding
 
@@ -1315,6 +1358,12 @@ reuses the function's one variable of that name and is an error inside a
 lexical declaration's scope, except a catch parameter's) and
 `instantiate_hoisted_definitions` (function declarations of the body
 assigned at entry, so the last of the same name wins).
+For default parameter values (clj-quickjs-100): `js_parse_function_decl2`
+(`has_parameter_expressions`: a scope of its own for the parameters, a
+default evaluated when `OP_get_arg` is `undefined`, the body's `var`s
+initialized from parameters of the same name); two cases of
+`test_function_length` and `test_argument_scope` of `test_language.js` are
+adapted in `tests/js_functions.rs` `default_parameters` with the notice.
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks`, and
 `test_try_catch1`–`test_try_catch8` with their upstream strings and

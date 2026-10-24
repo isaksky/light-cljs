@@ -40,6 +40,17 @@
 //! down by the parent when it creates the closure (`get_local`,
 //! `get_capture` or `current_function`, then `function i`).
 //!
+//! **Default parameter values** (clj-quickjs-100). A function with a
+//! default has a scope of its own for its parameters, outside the body's
+//! (`Lowerer::parameter_scope`): the parameters are initialized there left
+//! to right, each in its temporal dead zone until its turn, so the static
+//! decision above applies to them, and a default runs only when its
+//! argument is `undefined`. The body's declarations are a second scope
+//! that the defaults cannot see; a body `var` repeating a parameter is a
+//! new binding that starts with the parameter's value
+//! (`Lowerer::init_body_var`), and a body `let`/`const` repeating one is an
+//! early error (`Lowerer::check_not_parameter`).
+//!
 //! **Representation of captured bindings.** A binding that no closure
 //! captures is a plain local. A captured binding is copied into the closure
 //! (by value) when that is unobservable: it is never assigned after its
@@ -200,7 +211,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         };
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
-        lower.statement_list(&function.body, &function.params, true)?;
+        lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
         lower.out().op(Opcode::Return, end);
@@ -421,6 +432,10 @@ struct FnCtx {
     /// The label set of the loop about to be lowered (`L1: L2: while ...`),
     /// taken by [`Lowerer::push_loop`].
     loop_labels: Vec<String>,
+    /// The index in `scopes` of the function body's scope: 1 when the
+    /// parameters have their own scope (some parameter has a default,
+    /// [`Lowerer::parameter_scope`]), otherwise 0.
+    var_scope: usize,
 }
 
 /// A construct of the running function that a `break` or `continue` inside
@@ -559,6 +574,7 @@ impl<'s> Lowerer<'s> {
             child_count: 0,
             exits: Vec::new(),
             loop_labels: Vec::new(),
+            var_scope: 0,
         });
     }
 
@@ -769,6 +785,10 @@ impl<'s> Lowerer<'s> {
         // the others start uninitialized.
         for name in declared {
             let b = self.local(name)?;
+            if top_level && b.kind == BindingKind::Var && self.cur().var_scope > 0 {
+                self.init_body_var(name, b);
+                continue;
+            }
             if b.repr != Repr::Cell {
                 continue;
             }
@@ -879,6 +899,9 @@ impl<'s> Lowerer<'s> {
                 format!("'{}' is already declared as {what}", name.name),
             ));
         }
+        if top_level && matches!(kind, BindingKind::Let | BindingKind::Const) {
+            self.check_not_parameter(name)?;
+        }
         let ctx = self.cur();
         if ctx.next_slot >= MAX_LOCALS {
             return Err(self.error(
@@ -916,7 +939,7 @@ impl<'s> Lowerer<'s> {
     /// Catch Blocks", as in QuickJS's `define_var`): an initializer assigns
     /// the catch parameter, the innermost binding of that name.
     fn check_var_not_shadowed(&self, name: &Ident) -> Result<(), SyntaxError> {
-        let blocks = self.cur().scopes.iter().skip(1);
+        let blocks = self.cur().scopes.iter().skip(self.cur().var_scope + 1);
         let lexical = blocks
             .filter_map(|scope| scope.get(&name.name))
             .any(|b| b.kind != BindingKind::Param);
@@ -1268,6 +1291,142 @@ impl<'s> Lowerer<'s> {
 
     // ----- functions -----
 
+    /// Lower the parameters and body of `f`, the function just entered.
+    /// With a simple parameter list, the parameters are bindings of the
+    /// body's scope. With a default value (clj-quickjs-100) they have their
+    /// own scope around the body's ([`Self::parameter_scope`]), as in
+    /// ECMAScript FunctionDeclarationInstantiation and QuickJS
+    /// `js_parse_function_decl2` (`has_parameter_expressions`).
+    fn function_body(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        if !f.has_defaults() {
+            return self.statement_list(&f.body, &f.params, true);
+        }
+        self.parameter_scope(f)?;
+        self.cur_mut().var_scope = 1;
+        self.statement_list(&f.body, &[], true)?;
+        self.cur_mut().var_scope = 0;
+        self.exit_scope(0);
+        Ok(())
+    }
+
+    /// Enter the parameter scope of `f`, which has a default value, and
+    /// initialize its parameters left to right. Each parameter is in its
+    /// temporal dead zone until its turn, so a default sees the parameters
+    /// before it (and the enclosing scopes and the function's own name), but
+    /// not itself, the ones after it or the body's declarations. A default
+    /// runs only when its argument is `undefined`:
+    ///
+    /// ```text
+    /// get_local src; undefined; strict_eq; jump_if_false skip
+    /// <default>; set_local src
+    /// skip:
+    /// ```
+    ///
+    /// `src` is the parameter's own local (the argument), except for a
+    /// parameter kept in a cell: its cell is created uninitialized on entry,
+    /// before any default runs (a closure in an earlier default may capture
+    /// it), after its argument is moved to a scratch local, and initialized
+    /// from that local in its turn (`cell_init`), which is then cleared.
+    #[inline(never)]
+    fn parameter_scope(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        self.cur_mut().scopes.push(Scope::new());
+        for (i, p) in f.params.iter().enumerate() {
+            self.declare(p, BindingKind::Param, false, false)?;
+            let binding = self
+                .cur_mut()
+                .scopes
+                .last_mut()
+                .and_then(|scope| scope.get_mut(&p.name));
+            match binding {
+                Some(b) if usize::from(b.slot) == i => b.initialized = false,
+                _ => return Err(self.internal(p.span, "parameter is not in its argument slot")),
+            }
+        }
+        let mut sources = Vec::with_capacity(f.params.len());
+        for p in &f.params {
+            let b = self.local(p)?;
+            if b.repr == Repr::Cell {
+                let stash = self.temp(p.span)?;
+                self.out().op_u16(Opcode::GetLocal, b.slot, p.span);
+                self.out().op_u16(Opcode::SetLocal, stash, p.span);
+                self.out().op(Opcode::NewCell, p.span);
+                self.out().op_u16(Opcode::SetLocal, b.slot, p.span);
+                sources.push(stash);
+            } else {
+                sources.push(b.slot);
+            }
+        }
+        for ((p, default), src) in f.params.iter().zip(&f.defaults).zip(sources) {
+            if let Some(default) = default {
+                let skip = self.out().label();
+                self.out().op_u16(Opcode::GetLocal, src, p.span);
+                self.out().op(Opcode::Undefined, p.span);
+                self.out().op(Opcode::StrictEq, p.span);
+                self.out().branch(Opcode::JumpIfFalse, skip, p.span);
+                self.expr(default)?;
+                self.out().op_u16(Opcode::SetLocal, src, default.span);
+                self.out().bind(skip);
+            }
+            let b = self.initialize(p)?;
+            if b.repr == Repr::Cell {
+                self.out().op_u16(Opcode::GetLocal, b.slot, p.span);
+                self.out().op_u16(Opcode::GetLocal, src, p.span);
+                self.out().op(Opcode::CellInit, p.span);
+                // The scratch local would otherwise keep the value alive
+                // (frames are traced whole) after the parameter changes.
+                self.out().op(Opcode::Undefined, p.span);
+                self.out().op_u16(Opcode::SetLocal, src, p.span);
+            }
+        }
+        // The scratch locals are free again: the body's bindings reuse them
+        // (`init_body_var`).
+        self.cur_mut().next_slot = f.params.len();
+        Ok(())
+    }
+
+    /// Initialize the body `var` binding `b` of a function with a parameter
+    /// scope: from the parameter of the same name, if there is one, else to
+    /// `undefined` (ECMAScript FunctionDeclarationInstantiation, step 28).
+    /// Unlike in other functions, its local may hold a leftover scratch
+    /// value of the parameter scope, so even a plain local is set.
+    #[inline(never)]
+    fn init_body_var(&mut self, name: &Ident, b: Binding) {
+        let param = self.cur().scopes[0].get(&name.name).copied();
+        let span = name.span;
+        if b.repr == Repr::Cell {
+            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::Dup, span);
+        }
+        match param {
+            Some(p) => {
+                self.out().op_u16(Opcode::GetLocal, p.slot, span);
+                if p.repr == Repr::Cell {
+                    self.out().op(Opcode::CellGet, span);
+                }
+            }
+            None => self.out().op(Opcode::Undefined, span),
+        }
+        if b.repr == Repr::Cell {
+            self.out().op(Opcode::CellInit, span);
+        }
+        self.out().op_u16(Opcode::SetLocal, b.slot, span);
+    }
+
+    /// Reject a `let`/`const` at the top of a function body that repeats a
+    /// parameter in the parameter scope (an early error; without a parameter
+    /// scope the body's scope reports it as a redeclaration).
+    fn check_not_parameter(&self, name: &Ident) -> Result<(), SyntaxError> {
+        let ctx = self.cur();
+        if ctx.var_scope > 0 && ctx.scopes[0].contains_key(&name.name) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                name.span,
+                format!("'{}' is already declared as a parameter", name.name),
+            ));
+        }
+        Ok(())
+    }
+
     /// Lower `f` as a child function of the running one and emit the code
     /// that creates its closure (pushing one function object).
     fn closure(
@@ -1280,7 +1439,7 @@ impl<'s> Lowerer<'s> {
         }
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().own_arguments = f.kind == FunctionKind::Ordinary;
-        self.statement_list(&f.body, &f.params, true)?;
+        self.function_body(f)?;
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
         self.out().op(Opcode::Return, end);
