@@ -3,7 +3,7 @@
 //! task's inbox. Publication never runs JavaScript or wakes dependency waits.
 use std::sync::Weak;
 
-use super::builtin::{Builtin, BuiltinFunction, NativeErrorKind};
+use super::builtin::{Builtin, BuiltinFunction};
 use super::dispatch::{self, Fault};
 use super::native::{Action, Input};
 use super::property::{self, Key, Read};
@@ -171,25 +171,14 @@ fn settle(
 }
 /// Hook for clj-quickjs-249: rejection without handler / handler attached.
 fn rejection_tracking(_promise: ObjectId, _handled: bool) {}
-fn type_error(heap: &Heap, task: TaskId, message: &str) -> Result<Value, Fault> {
-    let proto = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
-        .native_error_prototype(NativeErrorKind::Type);
-    let mut object = OrdinaryObject::with_prototype(task, proto).with_error_data();
-    let key = heap
-        .keys()
-        .intern(&JsString::from("message"))
-        .ok_or(Fault::OutOfMemory("key table exhausted"))?;
-    object.define_with(
-        key,
-        Value::String(JsString::from(message)),
-        PropertyFlags::METHOD,
-    );
-    Ok(Value::Object(alloc(heap, HeapObject::Plain(object))?))
-}
 
 #[derive(Debug)]
 pub(crate) enum PromiseState {
+    RejectTypeError {
+        promise: ObjectId,
+        message: &'static str,
+        called: bool,
+    },
     Return(Value),
     Static {
         promise: ObjectId,
@@ -227,6 +216,7 @@ pub(crate) enum PromiseState {
 impl Trace for PromiseState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match self {
+            Self::RejectTypeError { promise, .. } => visit(*promise),
             Self::Return(value) => value.trace(visit),
             Self::Static {
                 promise,
@@ -289,6 +279,28 @@ impl PromiseState {
         input: Input,
     ) -> Result<Action, Fault> {
         match self {
+            Self::RejectTypeError {
+                promise,
+                message,
+                called,
+            } => {
+                if !*called {
+                    *called = true;
+                    let callee = crate::realm::intrinsics(heap)
+                        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                        .global(crate::realm::Global::TypeError);
+                    return Ok(Action::Call {
+                        callee,
+                        this: Value::Undefined,
+                        args: vec![Value::String(JsString::from(*message))],
+                    });
+                }
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("missing TypeError result"));
+                };
+                settle(heap, task, *promise, true, value)?;
+                Ok(Action::Return(Value::Undefined))
+            }
             Self::Return(value) => Ok(Action::Return(value.clone())),
             Self::Static {
                 promise,
@@ -343,8 +355,12 @@ impl PromiseState {
                 stage,
             } => {
                 if *value == Value::Object(*promise) {
-                    let error = type_error(heap, task, "promise cannot resolve itself")?;
-                    settle(heap, task, *promise, true, error)?;
+                    *self = Self::RejectTypeError {
+                        promise: *promise,
+                        message: "promise cannot resolve itself",
+                        called: false,
+                    };
+                    return Ok(Action::Continue);
                 } else if *stage == 0 && matches!(value, Value::Object(_)) {
                     *stage = 1;
                     match property::read(heap, task, value, &Key::Name(JsString::from("then")))? {
@@ -394,9 +410,12 @@ impl PromiseState {
                     .flatten()
                     .ok_or(Fault::Internal("reaction source is pending"))?;
                 if result.owner.is_some_and(|owner| owner != task) {
-                    let error = type_error(heap, task, "promise result belongs to another task")?;
-                    settle(heap, task, reaction.derived, true, error)?;
-                    return Ok(Action::Return(Value::Undefined));
+                    *self = Self::RejectTypeError {
+                        promise: reaction.derived,
+                        message: "promise result belongs to another task",
+                        called: false,
+                    };
+                    return Ok(Action::Continue);
                 }
                 let handler = if result.rejected {
                     &reaction.rejected

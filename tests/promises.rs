@@ -268,7 +268,7 @@ fn promise_cancellation_releases_queued_jobs_and_runs_finally() {
 fn promise_resolution_identity_throwers_and_getters() {
     let (result, effects) = run(r#"
         let resolve; const p = new Promise(r => { resolve = r; });
-        resolve(p); p.catch(e => __rt.effect(0, e instanceof TypeError));
+        resolve(p); p.catch(e => __rt.effect(0, e instanceof TypeError && typeof e.stack === "string"));
         Promise.resolve(2).then(5).then(x => __rt.effect(0, x));
         Promise.reject(3).then(null, 7).catch(x => __rt.effect(0, x));
         new Promise((r, j) => { r(4); throw 5; }).then(x => __rt.effect(0, x));
@@ -323,7 +323,7 @@ fn promises_and_resolvers_are_shareable_with_task_local_results_guarded() {
     rt.publish(&promise).unwrap();
     let consumer = function(
         &rt,
-        "function consume(p) { p.then(x => __rt.effect(0, 'bad')).catch(e => __rt.effect(0, e instanceof TypeError)); return 42; }",
+        "function consume(p) { p.then(x => __rt.effect(0, 'bad')).catch(e => __rt.effect(0, e instanceof TypeError && typeof e.stack === 'string')); return 42; }",
         &[promise],
     );
     let mut host = Effects::default();

@@ -5435,6 +5435,8 @@ yields, waits, collection and migration. No Rust callback stack survives.
 `Promise.reject` creates a new Promise. Non-thenable results fulfill; callable
 thenables explicitly fail UnsupportedOperand until clj-quickjs-247. Promise
 subclass capabilities/species and mutable own properties are explicit gaps.
+Self-resolution and inaccessible foreign results reject with errors built by
+the intrinsic TypeError constructor, including its ordinary `stack` property.
 The two internal rejection-tracking transitions are reserved for -249;
 quiescence reporting and its fixed-size list are not implemented here.
 
