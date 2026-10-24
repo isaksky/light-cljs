@@ -691,7 +691,7 @@ enum Exit {
         cont: usize,
         labels: Vec<String>,
     },
-    /// A for-of loop owns a finally handler. Only its own continue keeps it.
+    /// A for-in/of loop owns a finally handler. Only its own continue keeps it.
     IteratorLoop {
         brk: usize,
         cont: usize,
@@ -3765,21 +3765,26 @@ impl<'s> Lowerer<'s> {
     /// ```text
     ///        <var initializer>; <assign k>; pop  (non-strict Annex B head)
     ///        <object>; for_in_start; set_local it
+    ///        push_finally cleanup
     /// start: new_cell; dup; set_local k      (a lexical binding kept in a cell)
     ///        get_local it; for_in_next; jump_if_false done
     ///        <assign the key to the head>
     ///        <body>
     ///        jump start
     /// done:  pop                             (the key; and the fresh cell)
-    /// end:   undefined; set_local it
+    ///        pop_finally
+    /// cleanup: undefined; set_local it; end_finally
+    /// end:
     /// ```
     ///
     /// The enumerator (`crate::vm::keys::ForInIterator`) lives in the
     /// scratch local `it` of the running frame, so it is traced with the
     /// frame and survives any yield, wait or migration inside the loop, and
     /// the operand stack is empty at `start` and in the body: `continue`
-    /// jumps to `start` and `break` to `end` with nothing to pop
-    /// ([`Self::jump`]). `end` drops the enumerator.
+    /// jumps to `start` with nothing to pop ([`Self::jump`]). The generated
+    /// finally clears `it` on exhaustion, exceptions, returns and jumps out
+    /// of the loop; only a continue targeting this loop keeps its handler
+    /// and enumerator. A break runs cleanup before jumping to `end`.
     ///
     /// A lexical head's binding is declared in a scope around the whole
     /// loop. `object` is evaluated in that scope with the binding in its
@@ -3834,7 +3839,9 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::SetLocal, it, object.span);
         let start = self.out().label();
         let done = self.out().label();
+        let cleanup = self.out().label();
         let end = self.out().label();
+        self.out().branch(Opcode::PushFinally, cleanup, span);
         self.out().bind(start);
         if let Some(slot) = cell {
             let out = self.out();
@@ -3868,7 +3875,12 @@ impl<'s> Lowerer<'s> {
             }
             ForInHead::Member(target) => self.for_member_store(target)?,
         }
-        self.push_loop(end, start);
+        let labels = std::mem::take(&mut self.cur_mut().loop_labels);
+        self.cur_mut().exits.push(Exit::IteratorLoop {
+            brk: end,
+            cont: start,
+            labels,
+        });
         self.statement(body)?;
         self.cur_mut().exits.pop();
         self.out().branch(Opcode::Jump, start, span);
@@ -3877,9 +3889,12 @@ impl<'s> Lowerer<'s> {
         if cell.is_some() {
             self.out().op(Opcode::Pop, span);
         }
-        self.out().bind(end);
+        self.out().op(Opcode::PopFinally, span);
+        self.out().bind(cleanup);
         self.out().op(Opcode::Undefined, span);
         self.out().op_u16(Opcode::SetLocal, it, span);
+        self.out().op(Opcode::EndFinally, span);
+        self.out().bind(end);
         let ctx = self.cur_mut();
         ctx.scopes.pop();
         ctx.next_slot = saved_slot;

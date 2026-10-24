@@ -1876,6 +1876,74 @@ fn for_in_enumerator_survives_budget_yields_and_collections() {
     assert_stale(&rt, std::slice::from_ref(&weak));
 }
 
+/// Synthetic fixtures, not light-cljs output. An abandoned enumerator must
+/// release its object even while its frame remains alive at a dependency wait.
+#[test]
+fn for_in_abrupt_exit_releases_enumerator() {
+    for (case, source) in [
+        (
+            "caught exception",
+            "function f(o) { try { for (let k in {a: o}) { o = 0; __rt.need(9, 1); throw 1; } } \
+             catch (e) { if (e !== 1) throw e; } __rt.need(10, 1); return true; }",
+        ),
+        (
+            "outer labelled break",
+            "function f(o) { out: { for (const k in {a: o}) { o = 0; __rt.need(9, 1); break out; } } \
+             __rt.need(10, 1); return true; }",
+        ),
+        (
+            "outer labelled continue",
+            "function f(o) { let n = 0; out: while (n < 1) { n++; \
+             for (let k in {a: o}) { o = 0; __rt.need(9, 1); continue out; } } \
+             __rt.need(10, 1); return n === 1; }",
+        ),
+        (
+            "own break",
+            "function f(o) { for (let k in {a: o}) { o = 0; __rt.need(9, 1); break; } \
+             __rt.need(10, 1); return true; }",
+        ),
+        (
+            "own continue then exhaustion",
+            "function f(o) { let s = ''; loop: for (let k in {a: o, b: 0}) { o = 0; \
+             if (k === 'a') { __rt.need(9, 1); continue loop; } s += k; } \
+             __rt.need(10, 1); return s === 'b'; }",
+        ),
+        (
+            "return through outer finally",
+            "function f(o) { try { for (let k in {a: o}) { o = 0; __rt.need(9, 1); return true; } } \
+             finally { __rt.need(10, 1); } }",
+        ),
+        (
+            "throwing member target",
+            "function f(o) { const target = { set k(v) { o = 0; __rt.need(9, 1); throw 1; } }; \
+             try { for (target.k in {a: o}) {} } catch (e) { if (e !== 1) throw e; } \
+             __rt.need(10, 1); return true; }",
+        ),
+    ] {
+        let rt = Runtime::new();
+        let (task, weak) = spawn_holding(&rt, source);
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 9)),
+            "{case}: did not suspend inside the loop"
+        );
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+        complete_requests(&rt, &task);
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 10)),
+            "{case}: did not suspend after leaving the loop"
+        );
+        rt.request_collection().unwrap();
+        assert!(
+            !weak.is_live(),
+            "{case}: abandoned enumerator kept its object"
+        );
+        assert_stale(&rt, std::slice::from_ref(&weak));
+        complete_requests(&rt, &task);
+        assert_eq!(run_to_end(&task).view(), ValueView::Bool(true), "{case}");
+    }
+}
+
 /// A `for`-`in` body (clj-quickjs-85) waiting on `__rt.need` with the
 /// enumerated object reachable only from the enumerator, and closures over
 /// two iterations' bindings live: the task survives collections, resumes
