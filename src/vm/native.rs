@@ -1311,6 +1311,17 @@ pub(crate) fn start_builtin(
             return Ok(true);
         }
     }
+    if (which == Builtin::IntlDurationFormat && construct)
+        || (!construct
+            && matches!(
+                which,
+                Builtin::IntlDurationFormatFormat
+                    | Builtin::IntlDurationFormatToParts
+                    | Builtin::IntlDurationFormatSupportedLocales
+            ))
+    {
+        return duration_format::start(heap, state, which, this, args, popped).map(|()| true);
+    }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
 }
 
@@ -1440,20 +1451,6 @@ fn start_builtin_slow(
         let native = display_names::State::new(which, this, args, heap, state.diag.task)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::DisplayNames(Box::new(native)))?;
-        return Ok(true);
-    }
-    if (which == Builtin::IntlDurationFormat && construct)
-        || (!construct
-            && matches!(
-                which,
-                Builtin::IntlDurationFormatFormat
-                    | Builtin::IntlDurationFormatToParts
-                    | Builtin::IntlDurationFormatSupportedLocales
-            ))
-    {
-        let native = duration_format::State::new(which, this, args, heap, state.diag.task)?;
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::DurationFormat(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlRelativeTimeFormat && construct)
@@ -2823,6 +2820,7 @@ impl NativeState {
             // conversion helpers. Keep the unrelated native arms' stack
             // storage out of spread execution on 64 KiB workers.
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            NativeState::DurationFormat(format) => format.step(heap, task, input),
             _ => self.step_other(heap, task, jobs, input, host),
         }
     }
@@ -2917,7 +2915,9 @@ impl NativeState {
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
             NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),
             NativeState::DisplayNames(names) => names.step(heap, task, input),
-            NativeState::DurationFormat(format) => format.step(heap, task, input),
+            NativeState::DurationFormat(_) => {
+                unreachable!("DurationFormat dispatched before other native arms")
+            }
             NativeState::Collator(collator) => collator.step(heap, task, input),
             NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
             NativeState::ListFormat(format) => format.step(heap, task, input),

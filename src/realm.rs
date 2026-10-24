@@ -1122,21 +1122,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
 
-    let intl = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
-    b.all.push(intl);
-    let tag = crate::value::symbol::well_known("toStringTag");
-    let tag_key = heap.keys().intern_symbol(&tag)?;
-    heap.with_object_mut(intl, |object| match object {
-        HeapObject::Plain(o) => o.define_with(
-            tag_key,
-            Value::String(JsString::from("Intl")),
-            PropertyFlags::FUNCTION_INFO,
-        ),
-        _ => false,
-    })?
-    .then_some(())?;
+    let intl = intl_namespace(&mut b, object_prototype)?;
     let intl_locale_prototype = intl_locale_intrinsics(&mut b, object_prototype, intl)?;
     let (typed_array_prototypes, typed_array_constructors) =
         typed_array_intrinsics(&mut b, object_prototype)?;
@@ -2525,6 +2511,29 @@ fn intl_display_names_intrinsics(
     })?
     .then_some(())?;
     Some(prototype)
+}
+
+// Keep ordinary-object allocation temporaries out of the large realm builder
+// so first-use Intl initialization fits on 64 KiB migrating workers.
+#[inline(never)]
+fn intl_namespace(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
+    let heap = b.heap;
+    let intl = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(intl);
+    let tag = crate::value::symbol::well_known("toStringTag");
+    let tag_key = heap.keys().intern_symbol(&tag)?;
+    heap.with_object_mut(intl, |object| match object {
+        HeapObject::Plain(o) => o.define_with(
+            tag_key,
+            Value::String(JsString::from("Intl")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(intl)
 }
 
 fn intl_duration_format_intrinsics(

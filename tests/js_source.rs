@@ -25445,14 +25445,17 @@ fn intl_duration_format_wait_collect_and_migrate() {
     let mut task = rt.spawn(&exe(source), &[]).unwrap();
     let mut waited = 0;
     for _ in 0..4000 {
-        let (next, outcome) = std::thread::spawn(move || {
-            let outcome = task
-                .run_with(Budget::instructions(1), &mut NoEffects)
-                .unwrap();
-            (task, outcome)
-        })
-        .join()
-        .unwrap();
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
         task = next;
         match outcome {
             RunOutcome::Yielded => {
@@ -25578,4 +25581,94 @@ fn intl_duration_format_long_numeric_strings_are_budgeted() {
         }
     }
     panic!("DurationFormat numeric scan did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Fractions remain exact even
+/// where adding them as binary64 values would erase them entirely.
+#[test]
+fn intl_duration_format_subsecond_precision() {
+    for (options, duration, expected, unit, fraction) in [
+        (
+            "{nanoseconds:'numeric'}",
+            "{microseconds:1,nanoseconds:234}",
+            "1.234 microsecond",
+            "microsecond",
+            "234",
+        ),
+        (
+            "{nanoseconds:'numeric'}",
+            "{microseconds:-1,nanoseconds:-234}",
+            "-1.234 microsecond",
+            "microsecond",
+            "234",
+        ),
+        (
+            "{nanoseconds:'numeric'}",
+            "{microseconds:1,nanoseconds:1234}",
+            "2.234 microsecond",
+            "microsecond",
+            "234",
+        ),
+        (
+            "{microseconds:'numeric'}",
+            "{milliseconds:1,microseconds:234,nanoseconds:567}",
+            "1.234567 millisecond",
+            "millisecond",
+            "234567",
+        ),
+        (
+            "{microseconds:'numeric'}",
+            "{milliseconds:-1,microseconds:-234,nanoseconds:-567}",
+            "-1.234567 millisecond",
+            "millisecond",
+            "234567",
+        ),
+        (
+            "{style:'digital'}",
+            "{seconds:9007199254740991,nanoseconds:1}",
+            "0:00:9007199254740991.000000001",
+            "second",
+            "000000001",
+        ),
+        (
+            "{style:'digital'}",
+            "{seconds:-9007199254740991,nanoseconds:-1}",
+            "-0:00:9007199254740991.000000001",
+            "second",
+            "000000001",
+        ),
+        (
+            "{microseconds:'numeric'}",
+            "{milliseconds:9007199254740992,microseconds:1}",
+            "9,007,199,254,740,992.001 millisecond",
+            "millisecond",
+            "001",
+        ),
+        (
+            "{microseconds:'numeric'}",
+            "{milliseconds:-9007199254740992,microseconds:-1}",
+            "-9,007,199,254,740,992.001 millisecond",
+            "millisecond",
+            "001",
+        ),
+        (
+            "{nanoseconds:'numeric'}",
+            "{microseconds:9007199254740992,nanoseconds:1}",
+            "9,007,199,254,740,992.001 microsecond",
+            "microsecond",
+            "001",
+        ),
+        (
+            "{nanoseconds:'numeric'}",
+            "{microseconds:-9007199254740992,nanoseconds:-1}",
+            "-9,007,199,254,740,992.001 microsecond",
+            "microsecond",
+            "001",
+        ),
+    ] {
+        let source = format!(
+            "let f=new Intl.DurationFormat('en',{options});let d={duration};let p=f.formatToParts(d);let text='';let fractions=0;let decimals=0;let ok=true;for(let i=0;i<p.length;i++){{text+=p[i].value;if(p[i].type==='fraction'){{fractions++;ok=ok && p[i].value==='{fraction}' && p[i].unit==='{unit}';}}if(p[i].type==='decimal'){{decimals++;ok=ok && p[i].value==='.' && p[i].unit==='{unit}';}}}}ok && fractions===1 && decimals===1 && text==='{expected}' && f.format(d)==='{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
 }

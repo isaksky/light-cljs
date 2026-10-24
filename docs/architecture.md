@@ -7809,6 +7809,10 @@ slots with no heap edges. Append-only builtin/realm additions install its
 constructor and prototype. Publication remains task-owned even after freezing.
 The native continuation traces locale-reader state, options and the source
 record; option getters and numeric ToPrimitive calls run through VM frames.
+Locale-reader, slot and scanner storage is boxed in the saved continuation.
+Constructor entry and DurationFormat steps bypass unrelated large dispatch
+frames; Intl namespace allocation is outlined from the realm builder. Tests
+exercise cold initialization, duration getters and coercions on 64 KiB workers.
 The source is read alphabetically once. Numeric strings use StringToNumber's
 budgeted flatten/trim/grammar-validation stages and the bounded NumberParse
 accumulator, so neither rope flattening nor long digit scans block a step.

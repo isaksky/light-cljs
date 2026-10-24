@@ -12,6 +12,22 @@ use crate::{
     value::string::StringToNumber,
 };
 
+// Keep this constructor's saved record/scanner storage out of every unrelated
+// builtin's entry frame, including eval on 64 KiB migrating workers.
+#[inline(never)]
+pub(super) fn start(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<(), Fault> {
+    let native = State::new(which, this, args, heap, state.diag.task)?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::DurationFormat(Box::new(native)))
+}
+
 #[derive(Debug)]
 enum Stage {
     List,
@@ -31,7 +47,7 @@ enum Stage {
 }
 #[derive(Debug)]
 pub(super) struct State {
-    list: Option<intl::Intl>,
+    list: Option<Box<intl::Intl>>,
     locales: Value,
     options: Value,
     source: Value,
@@ -40,11 +56,11 @@ pub(super) struct State {
     parts: bool,
     option: usize,
     numbering: Option<String>,
-    slots: Option<DurationFormat>,
+    slots: Option<Box<DurationFormat>>,
     field: usize,
     any: bool,
     values: [f64; 10],
-    scanner: Option<StringToNumber>,
+    scanner: Option<Box<StringToNumber>>,
     scanning_option: bool,
 }
 impl Trace for State {
@@ -73,7 +89,10 @@ impl State {
             list: if formatting {
                 None
             } else {
-                Some(intl::Intl::new(std::slice::from_ref(&source), false)?)
+                Some(Box::new(intl::Intl::new(
+                    std::slice::from_ref(&source),
+                    false,
+                )?))
             },
             locales: Value::Undefined,
             options: args.get(1).cloned().unwrap_or(Value::Undefined),
@@ -88,7 +107,7 @@ impl State {
             option: 0,
             numbering: None,
             slots: if formatting {
-                Some(duration_format::record(heap, task, this)?)
+                Some(Box::new(duration_format::record(heap, task, this)?))
             } else {
                 None
             },
@@ -120,7 +139,7 @@ impl State {
             }
             slots.digits.numbering = system;
         }
-        self.slots = Some(slots);
+        self.slots = Some(Box::new(slots));
     }
     fn option_name(&self) -> &'static str {
         match self.option {
@@ -225,9 +244,9 @@ impl State {
     }
     fn primitive(&mut self, value: Value) -> Result<Action, Fault> {
         if let Value::String(text) = value {
-            self.scanner = Some(
+            self.scanner = Some(Box::new(
                 StringToNumber::new(text).ok_or(Fault::OutOfMemory("duration numeric string"))?,
-            );
+            ));
             self.stage = Stage::Scan;
             Ok(Action::Continue)
         } else {
@@ -324,7 +343,7 @@ impl State {
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_duration_format_prototype;
                 let object = OrdinaryObject::with_prototype(task, proto)
-                    .with_duration_format(self.slots.take().unwrap());
+                    .with_duration_format(*self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)
                     .map(Action::Return)

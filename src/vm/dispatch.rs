@@ -1935,12 +1935,13 @@ pub(crate) fn step(
     host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
-    // Calls need no conversions. Keep their Rust stack independent of the
-    // large temporary area of the other instruction arms, including when
+    // Calls and construction need no conversions. Keep their Rust stack
+    // independent of the large temporary area of the other instruction arms, including when
     // async bookkeeping adds storage to the enclosing run frame.
     match instr {
         Instr::Call(argc) => call(state, heap, argc, false),
         Instr::CallMethod(argc) => call(state, heap, argc, true),
+        Instr::Construct(argc) => construct(state, heap, argc),
         _ => step_instruction(state, code, heap, host, instr),
     }
 }
