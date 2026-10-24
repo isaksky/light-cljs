@@ -893,10 +893,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 32);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 33);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 32);
+    assert_eq!(rt.heap_usage().objects.plain, 33);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1043,8 +1043,9 @@ fn realm_intrinsics_retain() {
     // Floating-point typed arrays add three constructors and prototypes (-167).
     // Date ISO formatting adds one built-in method (-180).
     // RegExp adds one prototype and fourteen built-ins (-188).
-    assert_eq!(rt.heap_usage().objects.builtin, 142);
-    assert_eq!(rt.heap_usage().objects.plain, 32);
+    // BigInt adds one constructor function and one prototype (-201).
+    assert_eq!(rt.heap_usage().objects.builtin, 143);
+    assert_eq!(rt.heap_usage().objects.plain, 33);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1250,11 +1251,11 @@ fn function_properties_reclaim() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 32, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 33, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (32, 0));
+    assert_eq!((usage.plain, usage.function), (33, 0));
 }
 
 #[test]
@@ -1264,7 +1265,7 @@ fn array_element_reclaims() {
     assert_retained(&rt, &held);
     // The argument and the three arrays go together; the realm's
     // prototypes (`Object`, `Array`, `Number`, `String`, `Error`, seven
-    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Date`, `RegExp` and the eleven
+    // NativeErrors, `Map`, `ArrayBuffer`, `Intl.Locale`, `Date`, `RegExp`, `BigInt` and the eleven
     // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
     let Held {
         weak,
@@ -1272,11 +1273,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 32, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 33, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (32, 0));
+    assert_eq!((usage.plain, usage.array), (33, 0));
 }
 
 #[test]
