@@ -1866,8 +1866,8 @@ Supported (`cargo test --test js_source tagged_template`,
   passed unchanged, left to right. Chaining and member access on results execute.
 - The tag receives frozen cooked and raw arrays, with a non-enumerable immutable
   `raw` property. Invalid escapes produce undefined cooked entries. The same site
-  reuses one object within a task, across function calls and closures; sites and
-  tasks have distinct objects. Template arrays and closures capturing them publish.
+  reuses one object throughout a realm, across function calls, closures and tasks;
+  different sites have distinct objects. Arrays and closures capturing them publish.
 - `String.raw(callSite, ...subs)` reads `raw` and its ToLength length once, then
   interleaves ToString of raw entries and available substitutions. Getters and
   coercion resume across yields, waits, collection and migration; copying is budgeted.

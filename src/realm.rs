@@ -110,6 +110,12 @@
 //! survive collections with no task running and are never reclaimed while
 //! the runtime lives.
 //!
+//! A separate template-site registry roots immutable arrays under the same
+//! category. Its short metadata lock covers lookup and first installation;
+//! no JavaScript or safepoint runs under it. GC releases that lock before
+//! taking the object table, matching template creation's lock order. Entries
+//! retain immutable code identity and arrays until realm teardown.
+//!
 //! # Built-in global names
 //!
 //! [`Global`] lists the names a free identifier resolves to after every
@@ -120,7 +126,7 @@
 //! [`new_global_object`]). Source references always look up those properties;
 //! `get_builtin_global` remains an instruction for hand-assembled code.
 
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, ObjectId};
@@ -130,6 +136,9 @@ use crate::object::{
 };
 use crate::value::{JsString, Value};
 use crate::vm::builtin::{Builtin, BuiltinFunction, NativeErrorKind};
+use crate::vm::executable::Code;
+
+type TemplateSites = std::collections::HashMap<(usize, usize), (Arc<Code>, ObjectId)>;
 
 /// A built-in global name (the `get_builtin_global` operand). Append-only:
 /// the operand values are part of the instruction format.
@@ -237,6 +246,10 @@ impl Global {
 /// The realm's intrinsic objects. See the module docs.
 #[derive(Debug)]
 pub(crate) struct Intrinsics {
+    /// Template sites in this realm. Code is retained to prevent address
+    /// reuse; arrays are Intrinsic roots, independent of task lifetimes.
+    /// The leaf lock covers lookup/first allocation/installation only.
+    pub(crate) templates: Mutex<TemplateSites>,
     /// `Object.prototype`.
     pub(crate) object_prototype: ObjectId,
     /// The `Object` constructor.
@@ -389,7 +402,15 @@ impl Trace for Intrinsics {
         // The views copy property values of these objects, which are
         // intrinsics (listed here) or primitives, so they need no report of
         // their own (`realm_views_hold_only_intrinsics` checks it).
-        self.all.iter().copied().for_each(visit);
+        self.all.iter().copied().for_each(&mut *visit);
+        for (_, id) in self
+            .templates
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
+            visit(*id);
+        }
     }
 }
 
@@ -793,6 +814,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        templates: Mutex::new(std::collections::HashMap::new()),
         object_prototype,
         object,
         array_prototype,

@@ -81,11 +81,13 @@ enum Holder {
 
     /// The task's mutable global object, independent of operand/local slots.
     TaskGlobalObject,
+    /// Per-realm template-site arrays, independent of tasks and closures.
+    TemplateCache,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 26] = [
+const HOLDERS: [Holder; 27] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -112,6 +114,7 @@ const HOLDERS: [Holder; 26] = [
     Holder::BoundFunction,
     Holder::MethodHomeObject,
     Holder::TaskGlobalObject,
+    Holder::TemplateCache,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -175,7 +178,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
-        RootCategory::Intrinsic => &[Intrinsic],
+        RootCategory::Intrinsic => &[Intrinsic, TemplateCache],
     }
 }
 
@@ -226,6 +229,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::TemplateCache => Coverage {
+            retains: (Inventory, "template_cache_retains_and_reclaims"),
+            reclaims: (Inventory, "template_cache_retains_and_reclaims"),
+        },
         Holder::TaskGlobalObject => public(
             "task_global_object_retains_and_reclaims",
             "finished_task_releases_global_object",
@@ -680,4 +687,47 @@ fn crate_internal_holders_retain_while_other_workers_allocate_and_collect() {
     let mut ids = native_ids;
     ids.push(constant);
     assert_stale(&heap, &ids);
+}
+
+/// Synthetic source fixture; only the realm cache retains the arrays after
+/// VM state and executable handles are gone. Release the realm to reclaim.
+#[test]
+fn template_cache_retains_and_reclaims() {
+    use crate::vm::dispatch::{Exit, execute};
+    use crate::vm::frames::{DiagnosticContext, VmLimits, VmState};
+    let mut heap = Heap::default();
+    let code = crate::frontend::compile_script("cache", "(s => s)`x`").unwrap();
+    let diag = DiagnosticContext {
+        task: crate::ids::TaskId::from_raw(1),
+        world: crate::ids::WorldId::INITIAL,
+    };
+    let mut state = VmState::new(&code.0, &[], diag, VmLimits::DEFAULT);
+    let Exit::Return(Value::Object(cooked)) =
+        execute(&mut state, &heap, &mut crate::host::NoHost, None)
+    else {
+        panic!("template evaluation failed");
+    };
+    let raw_key = heap
+        .keys()
+        .lookup(&crate::value::JsString::from("raw"))
+        .unwrap();
+    let raw = heap
+        .read(cooked, |o| {
+            let HeapObject::Array(a) = o else {
+                panic!("not array");
+            };
+            let Value::Object(raw) = a.object().get_own(raw_key).unwrap().value else {
+                panic!("not object");
+            };
+            raw
+        })
+        .unwrap();
+    drop((state, code));
+    heap.request_collection().unwrap();
+    assert!(heap.is_live(cooked) && heap.is_live(raw));
+    let snapshot = heap.root_snapshot().unwrap();
+    assert!(snapshot.contains(&(RootCategory::Intrinsic, cooked)));
+    drop(heap.realm_mut().take());
+    heap.request_collection().unwrap();
+    assert_stale(&Arc::new(heap), &[cooked, raw]);
 }

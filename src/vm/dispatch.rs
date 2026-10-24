@@ -936,12 +936,20 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     let code = Arc::clone(&state.top().code);
     let pc = state.top().pc.saturating_sub(1);
     let key = (Arc::as_ptr(&code) as usize, pc);
-    if let Some((_, id)) = state.templates.get(&key) {
-        return state.replace(2 * n, Value::Object(*id));
+    let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    // No JS or safepoint runs under this leaf metadata lock. Serializing
+    // first installation gives concurrent tasks exactly one site object.
+    // GC traces this lock before taking the object table lock.
+    let mut templates = realm
+        .templates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, id)) = templates.get(&key) {
+        let id = *id;
+        drop(templates);
+        return state.replace(2 * n, Value::Object(id));
     }
-    let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-        .array_prototype;
+    let prototype = realm.array_prototype;
     let mut cooked = crate::object::array::ArrayObject::template(prototype);
     let mut raw = crate::object::array::ArrayObject::template(prototype);
     let operands = state.operands();
@@ -975,9 +983,10 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     let id = heap
         .alloc(HeapObject::Array(Box::new(cooked)))
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-    // No safepoint inside this leaf operation. Cache roots the cooked array
-    // and its raw edge before any collection can run.
-    state.templates.insert(key, (code, id));
+    // The realm roots the cooked array and its raw edge before any
+    // collection can run; shared executable code has no heap edges.
+    templates.insert(key, (code, id));
+    drop(templates);
     state.replace(2 * n, Value::Object(id))
 }
 

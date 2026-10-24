@@ -99,7 +99,7 @@
 //! | `PutGlobal` | 0x6C | u16 name constant | v → v | assign global property; sloppy code creates missing names, strict code throws ReferenceError |
 //! | `DeclareGlobalVar` | 0x6D | u16 name constant | – | create a non-configurable global var unless already own |
 //! | `DeclareGlobalFunction` | 0x6E | u16 name constant | – | validate a global function declaration and prepare its property |
-//! | `TemplateObject` | 0x6F | u16 part count n | cooked/raw pairs (2*n) → array | frozen, persistent per-task/site template object (clj-quickjs-58); cooked must be String/undefined and raw String; code stays primitive-only |
+//! | `TemplateObject` | 0x6F | u16 part count n | cooked/raw pairs (2*n) → array | frozen, persistent per-realm/site template object (clj-quickjs-58); cooked must be String/undefined and raw String; code stays primitive-only |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -559,7 +559,7 @@ pub enum Opcode {
     PutGlobal = 0x6C,
     DeclareGlobalVar = 0x6D,
     DeclareGlobalFunction = 0x6E,
-    /// Pop `2*n` interleaved cooked/raw primitives, push the per-task/site
+    /// Pop `2*n` interleaved cooked/raw primitives, push the per-realm/site
     /// persistent frozen template array (clj-quickjs-58).
     TemplateObject = 0x6F,
 }

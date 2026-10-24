@@ -213,6 +213,7 @@ public API cannot reach.
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
 | ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
+| realm template-site cache | `Intrinsic` (`Array`, cooked → raw) | `template_cache_retains_and_reclaims` *(lib)* | `template_cache_retains_and_reclaims` *(lib)* |
 | array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
 | function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
 | bound function target, bound receiver, bound arguments and immutable metadata (clj-quickjs-103) | `PersistentHandle` (`BoundFunction` → target closure / receiver / arguments / metadata) | `bound_function_retains` | `bound_function_reclaims` |
@@ -4138,13 +4139,20 @@ the tag reference with the ordinary member-call receiver rule, pushes
 interleaved cooked/raw primitive constants, emits TemplateObject (0x6F, u16
 part count), then substitutions unchanged and Call/CallMethod.
 
-A task is the executable instance for template identity. VmState caches by
-retained Arc<Code> identity and instruction index; retaining code prevents
-address reuse, and different closures of the same code share a site in that
-task. Cache entries are TaskFrame roots, traced even after a frame returns,
-and disappear on task teardown. Code remains immutable primitive-only Arc
-storage, usable by every task and runtime; no heap edges or mutable caches
-are attached to code. Distinct tasks intentionally get distinct site objects.
+A realm caches template objects by retained Arc<Code> identity and instruction
+index; retaining code prevents address reuse. Calls through different closures
+and published closures in other tasks reuse the same site's object. Entries
+are Intrinsic roots until realm teardown, even after all tasks and executable
+handles are dropped. Shared code remains immutable primitive-only Arc storage,
+usable in other runtimes with independent realm caches; no heap edges or
+mutable caches are attached to code.
+
+A short metadata mutex serializes lookup and first allocation/installation.
+No JavaScript, native callbacks or safepoints run under it. The collector traces
+the cache and releases its lock before taking the object-table lock, matching
+the mutator's cache-to-object lock order. This serializes only template lookup
+and creation, not interpreter execution. The cache retains code and its template
+arrays for the realm lifetime; it does not retain closures or task state.
 
 TemplateObject validates primitive part types even for hand-loaded code,
 constructs arrays only on the first evaluation, freezes both before exposing

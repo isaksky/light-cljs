@@ -236,12 +236,13 @@ fn tagged_templates_raw_copy_is_budgeted() {
     assert!(complete && yields > 32);
 }
 
-/// Synthetic fixture: caches are task-owned roots; their immutable arrays
+/// Synthetic fixture: caches are realm roots; their immutable arrays
 /// publish across tasks, while shared code does not carry heap/cache state.
 #[test]
-fn tagged_templates_publish_and_cache_per_task() {
+fn tagged_templates_publish_and_cache_per_realm() {
     let rt = Runtime::new();
     let code = exe("function tag(s) { return s; } tag`x${1}y`");
+    let code = Executable::load(code.to_spec()).unwrap();
     let producer = rt.spawn(&code, &[]).unwrap();
     let RunOutcome::Complete(first) = producer.run().unwrap() else {
         panic!("producer");
@@ -257,7 +258,12 @@ fn tagged_templates_publish_and_cache_per_task() {
     let RunOutcome::Complete(second) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
         panic!("second");
     };
-    rt.scope(|s| assert!(!s.same_object(s.local(&first).unwrap(), s.local(&second).unwrap())));
+    rt.scope(|s| assert!(s.same_object(s.local(&first).unwrap(), s.local(&second).unwrap())));
+    let other = Runtime::new();
+    let RunOutcome::Complete(foreign) = other.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("other realm");
+    };
+    assert!(!first.same_object(&foreign));
     // A closure that captures the array can be published with its code.
     let code = exe("const s = (function(s) { return s; })`x`; () => s.raw[0]");
     let RunOutcome::Complete(closure) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
@@ -269,6 +275,101 @@ fn tagged_templates_publish_and_cache_per_task() {
         panic!("call");
     };
     assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+/// Synthetic fixture: published code preserves the site's identity across tasks.
+#[test]
+fn tagged_templates_published_site_identity() {
+    let rt = Runtime::new();
+    let code = exe("const site = () => (s => s)`x`; const first = site(); () => site() === first");
+    let RunOutcome::Complete(closure) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("producer");
+    };
+    rt.publish(&closure).unwrap();
+    rt.collect().unwrap();
+    let call = compile_function("function call(f) { return f(); }").unwrap();
+    let RunOutcome::Complete(result) = rt.spawn(&call, &[&closure]).unwrap().run().unwrap() else {
+        panic!("consumer");
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+/// Synthetic fixture: bounded start gates coordinate two first evaluations.
+#[test]
+fn tagged_templates_concurrent_first_install() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let timeout = Duration::from_secs(30);
+    let rt = Runtime::new();
+    let code = exe("(s => s)`shared`");
+    let mut gates = Vec::new();
+    let mut workers = Vec::new();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    for _ in 0..2 {
+        let task = rt.spawn(&code, &[]).unwrap();
+        let (gate_tx, gate_rx) = mpsc::channel();
+        let ready = ready_tx.clone();
+        let result = result_tx.clone();
+        gates.push(gate_tx);
+        workers.push(std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            gate_rx.recv_timeout(timeout).unwrap();
+            let RunOutcome::Complete(value) = task.run().unwrap() else {
+                panic!("worker");
+            };
+            result.send(value).unwrap();
+        }));
+    }
+    for _ in 0..2 {
+        ready_rx.recv_timeout(timeout).unwrap();
+    }
+    for gate in gates {
+        gate.send(()).unwrap();
+    }
+    let first = result_rx.recv_timeout(timeout).unwrap();
+    let second = result_rx.recv_timeout(timeout).unwrap();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    rt.collect().unwrap();
+    assert!(first.same_object(&second));
+}
+
+/// Early VM tests consume arrays created by source: literal append opcodes
+/// must not bypass descriptors and mutate published template arrays.
+#[test]
+fn tagged_templates_reject_literal_append() {
+    let rt = Runtime::new();
+    for source in ["(s => s)`x`", "(s => s.raw)`x`"] {
+        let RunOutcome::Complete(array) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("producer");
+        };
+        rt.publish(&array).unwrap();
+        for op in [Opcode::AppendElement, Opcode::AppendHole] {
+            let mut asm = clj_quickjs::Assembler::new();
+            asm.get_local(0);
+            if op == Opcode::AppendElement {
+                asm.op(Opcode::NewArray);
+            }
+            asm.op(op).op(Opcode::Return);
+            let code = asm.finish("append", 1, 1).unwrap();
+            let RunOutcome::Failed(error) = rt.spawn(&code, &[&array]).unwrap().run().unwrap()
+            else {
+                panic!("append accepted {op:?}");
+            };
+            assert_eq!(error.kind(), VmErrorKind::TypeError);
+            rt.collect().unwrap();
+            rt.publish(&array).unwrap();
+            let check = compile_function("function check(a) { return a.length === 1 && a[0] === 'x' && !('1' in a) && Object.isFrozen(a); }").unwrap();
+            let RunOutcome::Complete(result) = rt.spawn(&check, &[&array]).unwrap().run().unwrap()
+            else {
+                panic!("probe");
+            };
+            assert_eq!(result.view(), ValueView::Bool(true));
+        }
+    }
 }
 
 /// Synthetic fixture: each getter/conversion runs once through waits,
