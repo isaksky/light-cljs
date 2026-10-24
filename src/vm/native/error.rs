@@ -207,27 +207,42 @@ impl crate::vm::frames::VmState {
         error: Value,
         suppressed: Value,
     ) -> Result<Value, Fault> {
-        let intrinsics = crate::realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-        let prototype = intrinsics.native_error_prototype(NativeErrorKind::Suppressed);
-        let mut object =
-            OrdinaryObject::with_prototype(self.diag.task, prototype).with_error_data();
-        let stack = self.error_stack(self.top().pc.saturating_sub(1));
-        for (name, value) in [
-            ("error", error),
-            ("suppressed", suppressed),
-            ("stack", Value::String(stack)),
-        ] {
-            let key = heap
-                .keys()
-                .intern(&JsString::from(name))
-                .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
-            object.define_with(key, value, PropertyFlags::METHOD);
-        }
-        heap.alloc(HeapObject::Plain(object))
-            .map(Value::Object)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        suppressed_error(
+            heap,
+            self.diag.task,
+            error,
+            suppressed,
+            self.error_stack(self.top().pc.saturating_sub(1)),
+        )
     }
+}
+
+/// Intrinsic allocation shared by bytecode and resumable disposal loops.
+pub(super) fn suppressed_error(
+    heap: &Heap,
+    task: TaskId,
+    error: Value,
+    suppressed: Value,
+    stack: JsString,
+) -> Result<Value, Fault> {
+    let intrinsics =
+        crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let prototype = intrinsics.native_error_prototype(NativeErrorKind::Suppressed);
+    let mut object = OrdinaryObject::with_prototype(task, prototype).with_error_data();
+    for (name, value) in [
+        ("error", error),
+        ("suppressed", suppressed),
+        ("stack", Value::String(stack)),
+    ] {
+        let key = heap
+            .keys()
+            .intern(&JsString::from(name))
+            .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+        object.define_with(key, value, PropertyFlags::METHOD);
+    }
+    heap.alloc(HeapObject::Plain(object))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn result(input: Input) -> Result<Value, Fault> {

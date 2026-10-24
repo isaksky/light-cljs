@@ -1159,65 +1159,22 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::PopFinally, span);
         self.out().bind(cleanup);
         *self.cur_mut().exits.last_mut().unwrap() = Exit::FinallyBody;
-        let has_error = self.temp(span)?;
-        let error = self.temp(span)?;
-        let caught_error = self.temp(span)?;
-        let changed = self.temp(span)?;
-        self.out().op(Opcode::PendingThrow, span);
-        self.out().op_u16(Opcode::SetLocal, has_error, span);
-        self.out().op(Opcode::PendingException, span);
-        self.out().op_u16(Opcode::SetLocal, error, span);
-        self.constant(Primitive::Bool(false), span)?;
-        self.out().op_u16(Opcode::SetLocal, changed, span);
         let resources = self.cur().using_resources[saved_resources..].to_vec();
-        for (_, value, method) in resources.into_iter().rev() {
-            let skip = self.out().label();
-            let caught = self.out().label();
-            let first_error = self.out().label();
-            let store_error = self.out().label();
-            self.out().op_u16(Opcode::GetLocal, method, span);
-            self.out().branch(Opcode::JumpIfFalse, skip, span);
-            self.out().branch(Opcode::PushCatch, caught, span);
-            self.out().op_u16(Opcode::GetLocal, value, span);
-            self.out().op_u16(Opcode::GetLocal, method, span);
-            self.out().op_u16(Opcode::CallMethod, 0, span);
-            self.out().op(Opcode::Pop, span);
-            self.out().op(Opcode::PopCatch, span);
-            self.out().branch(Opcode::Jump, skip, span);
-            self.out().bind(caught);
-            self.out().op_u16(Opcode::SetLocal, caught_error, span);
-            self.out().op_u16(Opcode::GetLocal, has_error, span);
-            self.out().branch(Opcode::JumpIfFalse, first_error, span);
-            self.out().op_u16(Opcode::GetLocal, caught_error, span);
-            self.out().op_u16(Opcode::GetLocal, error, span);
-            self.out().op(Opcode::SuppressedError, span);
-            self.out().branch(Opcode::Jump, store_error, span);
-            self.out().bind(first_error);
-            self.out().op_u16(Opcode::GetLocal, caught_error, span);
-            self.out().bind(store_error);
-            self.out().op_u16(Opcode::SetLocal, error, span);
-            self.constant(Primitive::Bool(true), span)?;
-            self.out().op(Opcode::Dup, span);
-            self.out().op_u16(Opcode::SetLocal, has_error, span);
-            self.out().op_u16(Opcode::SetLocal, changed, span);
-            self.out().bind(skip);
+        for (_, value, method) in &resources {
+            self.out().op_u16(Opcode::GetLocal, *value, span);
+            self.out().op_u16(Opcode::GetLocal, *method, span);
             self.out().op(Opcode::Undefined, span);
-            self.out().op_u16(Opcode::SetLocal, method, span);
+            self.out().op_u16(Opcode::SetLocal, *value, span);
             self.out().op(Opcode::Undefined, span);
-            self.out().op_u16(Opcode::SetLocal, value, span);
+            self.out().op_u16(Opcode::SetLocal, *method, span);
         }
-        let end = self.out().label();
-        // A throw across a pending Cancel terminates ordinary finally
-        // cleanup. Disposal must instead discard its errors and continue
-        // cancellation through every enclosing resource scope.
+        self.out().op(Opcode::PendingThrow, span);
+        self.out().op(Opcode::PendingException, span);
         self.out().op(Opcode::PendingCancel, span);
-        self.out().op(Opcode::Not, span);
-        self.out().branch(Opcode::JumpIfFalse, end, span);
-        self.out().op_u16(Opcode::GetLocal, changed, span);
-        self.out().branch(Opcode::JumpIfFalse, end, span);
-        self.out().op_u16(Opcode::GetLocal, error, span);
-        self.out().op(Opcode::Throw, span);
-        self.out().bind(end);
+        let count = u16::try_from(resources.len())
+            .map_err(|_| self.internal(span, "too many using resources"))?;
+        self.out().op_u16(Opcode::UsingDispose, count, span);
+        self.out().op(Opcode::Pop, span);
         self.out().op(Opcode::EndFinally, span);
         self.cur_mut().exits.pop();
         self.cur_mut().using_resources.truncate(saved_resources);

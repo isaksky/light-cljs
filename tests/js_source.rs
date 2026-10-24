@@ -3,6 +3,35 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+/// Synthetic fixtures, not light-cljs output. Intrinsic move cases follow
+/// QuickJS test_language.js::test_using (MIT notice reproduced below).
+#[test]
+fn disposable_stack() {
+    for source in [
+        "let saved = DisposableStack, n = 0; let ds = new saved(); ds.use({[Symbol.dispose]() { n++; }}); globalThis.DisposableStack = class Other {}; let moved = ds.move(); let ok = Object.getPrototypeOf(moved) === saved.prototype && ds.disposed && !moved.disposed; moved.dispose(); moved.dispose(); let ds2 = new saved(); ds2.defer(() => n++); delete globalThis.DisposableStack; let moved2 = ds2.move(); moved2.dispose(); ok && Object.getPrototypeOf(moved2) === saved.prototype && n === 2",
+        "let caught; try { DisposableStack(); } catch(e) { caught = e; } caught instanceof TypeError",
+        "let s = new DisposableStack(), log = ''; let r = {[Symbol.dispose]() { if (this === r && arguments.length === 0) log += 'u'; }}; let ok = !s.disposed && s.use(r) === r && s.use(null) === null && s.use(undefined) === undefined; ok = ok && s.adopt(42, function(v) { if (this === undefined && v === 42 && arguments.length === 1) log += 'a'; }) === 42; ok = ok && s.defer(function() { if (this === undefined && arguments.length === 0) log += 'd'; }) === undefined; s.dispose(); s.dispose(); ok && s.disposed && log === 'dau'",
+        "let s = new DisposableStack(), n = 0; s.dispose(); for (let f of [() => s.use(null), () => s.adopt(0, null), () => s.defer(null), () => s.move()]) { try { f(); } catch(e) { if (e instanceof ReferenceError) n++; } } n === 4",
+        "let s = new DisposableStack(), n = 0; for (let f of [() => s.use(42), () => s.use({}), () => s.adopt(1, null), () => s.defer({})]) { try { f(); } catch(e) { if (e instanceof TypeError) n++; } } n === 4 && !s.disposed",
+        "let s = new DisposableStack(), caught; s.defer(() => { throw 1; }); s.defer(() => { throw 2; }); try { s.dispose(); } catch(e) { caught = e; } caught instanceof SuppressedError && caught.error === 1 && caught.suppressed === 2 && s.disposed",
+        "let s = new DisposableStack(), caught; s.defer(() => { throw undefined; }); s.defer(() => { throw undefined; }); try { s.dispose(); } catch(e) { caught = e; } caught instanceof SuppressedError && caught.error === undefined && caught.suppressed === undefined",
+        "let s = new DisposableStack(); s[Symbol.dispose] === s.dispose && s[Symbol.toStringTag] === 'DisposableStack' && DisposableStack.length === 0 && s.use.length === 1 && s.adopt.length === 2 && s.defer.length === 1 && s.dispose.length === 0 && s.move.length === 0",
+        "let n = 0; { using s = new DisposableStack(); s.defer(() => n++); } n === 1",
+        "let s = new DisposableStack(), n = 0; s.defer(() => { s.dispose(); if (s.disposed) n++; }); s.dispose(); n === 1",
+        "class S extends DisposableStack {} let s = new S(); s instanceof S && s instanceof DisposableStack && Object.getPrototypeOf(s.move()) === DisposableStack.prototype",
+        "let s = new DisposableStack(), n = 0; let r = {get [Symbol.dispose]() { n++; return function() { n += 10; }; }}; s.use(r); Object.defineProperty(r, Symbol.dispose, {value: () => { throw 99; }}); s.dispose(); n === 11",
+        "let n = 0; for (let name of ['use', 'adopt', 'defer', 'dispose', 'move']) { try { DisposableStack.prototype[name].call({}); } catch(e) { if(e instanceof TypeError) n++; } } try { Object.getOwnPropertyDescriptor(DisposableStack.prototype, 'disposed').get.call({}); } catch(e) { if(e instanceof TypeError) n++; } n === 6",
+        "let s = new DisposableStack(), sentinel = {}, caught; try { s.use({get [Symbol.dispose]() { throw sentinel; }}); } catch(e) { caught = e; } caught === sentinel && !s.disposed",
+        "let s = new DisposableStack(), n = 0; Object.defineProperty(s, 'constructor', {get() { throw 99; }}); s.x = 42; s.defer(() => n++); let moved = s.move(); s.x === 42 && moved.x === undefined && (moved.dispose(), n === 1)",
+        "let s = new DisposableStack(), n = 0; let value = {get [Symbol.dispose]() { s.dispose(); return () => n++; }}; s.use(value); s.dispose(); s.disposed && n === 0",
+        "let s = new DisposableStack(), n = 0, caught; s.defer(() => n++); s.defer(BigInt); try { s.dispose(); } catch(e) { caught = e; } caught instanceof TypeError && n === 1",
+        "let s = new DisposableStack(), saved = SuppressedError, caught; SuppressedError = () => { throw 99; }; s.defer(() => { throw 1; }); s.defer(() => { throw 2; }); try { s.dispose(); } catch(e) { caught = e; } caught instanceof saved && caught.error === 1 && caught.suppressed === 2",
+        "let p = DisposableStack.prototype, d = Object.getOwnPropertyDescriptor(p, 'disposed'), m = Object.getOwnPropertyDescriptor(p, 'dispose'), t = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable && m.writable && !m.enumerable && m.configurable && !t.writable && !t.enumerable && t.configurable",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Validation, snapshotting and
 /// suppression scenarios follow QuickJS test_language.js::test_using (MIT
 /// notice already reproduced in this file); control-flow cases are original.

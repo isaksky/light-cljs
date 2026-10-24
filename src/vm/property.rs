@@ -437,6 +437,7 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
         HeapObject::FinalizationRegistry(m) => {
             readable(m.object()).map(|()| Visit::Store(m.object()))
         }
+        HeapObject::DisposableStack(m) => readable(m.object()).map(|()| Visit::Store(m.object())),
         HeapObject::ArrayBuffer(b) => readable(&b.object).map(|()| Visit::Store(&b.object)),
         HeapObject::TypedArray(a) => readable(&a.object).map(|()| Visit::Store(&a.object)),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
@@ -852,6 +853,10 @@ fn store(
             check_write(m.object(), task)?;
             named(m.object_mut())
         }
+        HeapObject::DisposableStack(m) => {
+            check_write(m.object(), task)?;
+            named(m.object_mut())
+        }
         HeapObject::ArrayBuffer(b) => {
             check_write(&b.object, task)?;
             named(&mut b.object)
@@ -1049,6 +1054,9 @@ pub(crate) fn prepare_put(
                 chain_key.is_some_and(|k| m.object_mut().add(k, value)),
             )),
             (HeapObject::FinalizationRegistry(m), _) => Ok(added(
+                chain_key.is_some_and(|k| m.object_mut().add(k, value)),
+            )),
+            (HeapObject::DisposableStack(m), _) => Ok(added(
                 chain_key.is_some_and(|k| m.object_mut().add(k, value)),
             )),
 
@@ -1527,6 +1535,10 @@ pub(crate) fn define_own_property(
             check_write(m.object(), task)?;
             named(m.object_mut())
         }
+        HeapObject::DisposableStack(m) => {
+            check_write(m.object(), task)?;
+            named(m.object_mut())
+        }
         HeapObject::ArrayBuffer(b) => {
             check_write(&b.object, task)?;
             named(&mut b.object)
@@ -1810,6 +1822,10 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             Ok(named(m.object_mut()))
         }
         HeapObject::FinalizationRegistry(m) => {
+            check_write(m.object(), task)?;
+            Ok(named(m.object_mut()))
+        }
+        HeapObject::DisposableStack(m) => {
             check_write(m.object(), task)?;
             Ok(named(m.object_mut()))
         }

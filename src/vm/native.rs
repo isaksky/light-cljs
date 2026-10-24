@@ -481,6 +481,7 @@ enum ConvertTarget {
 #[derive(Debug)]
 enum NativeState {
     Dispose(dispose::State),
+    Disposal(Box<dispose::Stack>),
     MathSumPrecise(Box<sum_precise::State>),
     Async(super::asynchronous::Boundary),
     Eval(Box<eval::State>),
@@ -854,6 +855,7 @@ impl Trace for NativeFrame {
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Dispose(dispose) => dispose.trace(visit),
+            NativeState::Disposal(disposal) => disposal.trace(visit),
             NativeState::Generator { id, failed } => {
                 visit((*id).into());
                 failed.iter().for_each(|e| e.value.trace(visit));
@@ -973,7 +975,7 @@ impl Trace for NativeFrame {
 pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
-        Reduce | NeedAll | GetIterator | UsingCheck => true,
+        Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) => true,
         PendingException | SuppressedError | PendingCancel => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
@@ -1713,6 +1715,16 @@ fn start_builtin_slow(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::DisposableStackUse | Builtin::DisposableStackDispose => {
+                Some(NativeState::Disposal(Box::new(dispose::Stack::method(
+                    heap,
+                    state.diag.task,
+                    which,
+                    this,
+                    args,
+                    state.error_stack(state.top().pc.saturating_sub(1)),
+                )?)))
+            }
             Builtin::MapForEach => Some(NativeState::Iterator(Box::new(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
@@ -2344,6 +2356,34 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
+        Instr::UsingDispose(count) => {
+            use crate::object::disposable_stack::{Hint, Resource};
+            let count = usize::from(count);
+            let popped = 2 * count + 3;
+            let values = dispatch::top_operands(state, popped)?;
+            let resources = values[..2 * count]
+                .chunks_exact(2)
+                .map(|pair| Resource {
+                    value: pair[0].clone(),
+                    method: pair[1].clone(),
+                    hint: Hint::Sync,
+                })
+                .collect();
+            let error = values[2 * count]
+                .truthy()
+                .then(|| values[2 * count + 1].clone());
+            let cancelling = values[2 * count + 2].truthy();
+            let run = dispose::Run::new(
+                resources,
+                error,
+                cancelling,
+                state.error_stack(state.top().pc.saturating_sub(1)),
+            );
+            (
+                popped,
+                NativeState::Disposal(Box::new(dispose::Stack::Run(run))),
+            )
+        }
         Instr::UsingCheck => (
             1,
             NativeState::Dispose(dispose::State::new(operands::<1>(state)?[0].clone())),
@@ -2719,6 +2759,7 @@ pub(crate) fn catch(
     let frame = natives.get_mut(index).ok_or("native catch frame missing")?;
     match &mut frame.state {
         NativeState::Async(a) => a.failed = Some(exception.value),
+        NativeState::Disposal(disposal) if disposal.catches() => disposal.failed(exception),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
         NativeState::ListFormat(format) if format.catches() => format.failed(exception),
@@ -2919,6 +2960,7 @@ impl NativeState {
     fn catches(&self) -> bool {
         match self {
             Self::Async(_) => true,
+            Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
             Self::ListFormat(format) => format.catches(),
@@ -2944,6 +2986,7 @@ impl NativeState {
             // storage out of spread execution on 64 KiB workers.
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
             NativeState::Dispose(dispose) => dispose.step(heap, task, input),
+            NativeState::Disposal(disposal) => disposal.step(heap, task, input),
             NativeState::DurationFormat(format) => format.step(heap, task, input),
             _ => self.step_other(heap, task, jobs, input, host),
         }
@@ -3027,7 +3070,7 @@ impl NativeState {
                 }
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
-            NativeState::Iterator(_) | NativeState::Dispose(_) => {
+            NativeState::Iterator(_) | NativeState::Dispose(_) | NativeState::Disposal(_) => {
                 unreachable!("iterator dispatched before other native arms")
             }
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
@@ -4220,6 +4263,7 @@ impl NativeState {
                 | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)
                 | NativeState::Dispose(_)
+                | NativeState::Disposal(_)
                 | NativeState::Generator { .. }
                 | NativeState::Async(_)
                 | NativeState::TypedArray(_)
@@ -4315,6 +4359,21 @@ pub(crate) fn assert_no_borrow(operation: &'static str) {
 /// Early VM tests (hand-assembled bytecode, not JavaScript source support)
 /// of the leaf/resumable split; the embedding-level tests, from source, are
 /// in `tests/native_fold.rs`.
+pub(crate) fn start_disposable_stack_constructor(
+    state: &mut VmState,
+    target: Value,
+    popped: usize,
+) -> Result<(), Fault> {
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(
+        state,
+        NativeState::Disposal(Box::new(dispose::Stack::Construct {
+            target,
+            reading: false,
+        })),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

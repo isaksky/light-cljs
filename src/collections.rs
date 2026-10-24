@@ -269,6 +269,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::WeakMap(_) => "WeakMap",
         HeapObject::WeakRef(_) => "WeakRef",
         HeapObject::FinalizationRegistry(_) => "FinalizationRegistry",
+        HeapObject::DisposableStack(_) => "DisposableStack",
 
         HeapObject::ArrayBuffer(_) => "ArrayBuffer",
         HeapObject::TypedArray(_) => "typed array",

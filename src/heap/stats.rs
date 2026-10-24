@@ -70,6 +70,7 @@ pub struct ObjectCounts {
     pub weak_ref: usize,
     pub finalization_registry: usize,
     pub module_namespace: usize,
+    pub disposable_stack: usize,
 }
 
 impl ObjectCounts {
@@ -99,6 +100,7 @@ impl ObjectCounts {
             + self.weak_ref
             + self.finalization_registry
             + self.module_namespace
+            + self.disposable_stack
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -119,6 +121,7 @@ impl ObjectCounts {
             HeapObject::WeakMap(_) => &mut self.weak_map,
             HeapObject::WeakRef(_) => &mut self.weak_ref,
             HeapObject::FinalizationRegistry(_) => &mut self.finalization_registry,
+            HeapObject::DisposableStack(_) => &mut self.disposable_stack,
 
             HeapObject::ArrayBuffer(_) => &mut self.array_buffer,
             HeapObject::TypedArray(_) => &mut self.typed_array,

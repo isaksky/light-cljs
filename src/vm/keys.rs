@@ -319,6 +319,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                 ..Raw::default()
             })
         }
+        HeapObject::DisposableStack(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
         HeapObject::ArrayBuffer(b) => {
             readable(b.object.owner())?;
             Ok(Raw {

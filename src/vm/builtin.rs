@@ -436,6 +436,14 @@ pub(crate) enum Builtin {
     IntlDurationFormatToParts,
     IntlDurationFormatResolvedOptions,
     IntlDurationFormatSupportedLocales,
+
+    DisposableStack,
+    DisposableStackUse,
+    DisposableStackAdopt,
+    DisposableStackDefer,
+    DisposableStackDispose,
+    DisposableStackMove,
+    DisposableStackDisposed,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -671,6 +679,13 @@ impl Builtin {
             Builtin::WeakMapHas => "has",
             Builtin::WeakMapDelete => "delete",
             Builtin::WeakRef => "WeakRef",
+            Builtin::DisposableStack => "DisposableStack",
+            Builtin::DisposableStackUse => "use",
+            Builtin::DisposableStackAdopt => "adopt",
+            Builtin::DisposableStackDefer => "defer",
+            Builtin::DisposableStackDispose => "dispose",
+            Builtin::DisposableStackMove => "move",
+            Builtin::DisposableStackDisposed => "get disposed",
             Builtin::WeakRefDeref => "deref",
             Builtin::FinalizationRegistry => "FinalizationRegistry",
             Builtin::FinalizationRegistryRegister => "register",
@@ -873,6 +888,12 @@ impl Builtin {
             | Builtin::MapForEach => 1,
             Builtin::MapSet | Builtin::WeakMapSet => 2,
             Builtin::WeakRef => 1,
+            Builtin::DisposableStack
+            | Builtin::DisposableStackDispose
+            | Builtin::DisposableStackMove
+            | Builtin::DisposableStackDisposed => 0,
+            Builtin::DisposableStackUse | Builtin::DisposableStackDefer => 1,
+            Builtin::DisposableStackAdopt => 2,
             Builtin::WeakRefDeref => 0,
             Builtin::FinalizationRegistry | Builtin::FinalizationRegistryUnregister => 1,
             Builtin::FinalizationRegistryRegister => 2,
@@ -1135,6 +1156,16 @@ pub(crate) fn call(
         Builtin::Map => Err(Fault::TypeError("Map requires new".to_string())),
         Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
         Builtin::WeakRef => Err(Fault::TypeError("WeakRef requires new".into())),
+        Builtin::DisposableStack => Err(Fault::TypeError("DisposableStack requires new".into())),
+        Builtin::DisposableStackUse | Builtin::DisposableStackDispose => Err(Fault::Internal(
+            "DisposableStack requires a native continuation",
+        )),
+        Builtin::DisposableStackAdopt
+        | Builtin::DisposableStackDefer
+        | Builtin::DisposableStackMove
+        | Builtin::DisposableStackDisposed => {
+            disposable_stack_method(heap, task, which, this, args)
+        }
         Builtin::WeakRefDeref => Err(Fault::Internal("WeakRef.deref requires task kept objects")),
         Builtin::FinalizationRegistry => {
             Err(Fault::TypeError("FinalizationRegistry requires new".into()))
@@ -2146,7 +2177,8 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::JsMap(_)
                 | HeapObject::WeakMap(_)
                 | HeapObject::WeakRef(_)
-                | HeapObject::FinalizationRegistry(_) => Ok("Object"),
+                | HeapObject::FinalizationRegistry(_)
+                | HeapObject::DisposableStack(_) => Ok("Object"),
                 HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
@@ -2392,6 +2424,49 @@ fn finalization_registry_operation(
     .unwrap_or(Err(Fault::Internal(
         "FinalizationRegistry receiver was reclaimed",
     )))
+}
+
+fn disposable_stack_method(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    use crate::object::disposable_stack::{self as stack, Hint, Resource};
+    let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
+    if which == Builtin::DisposableStackDisposed {
+        return stack::access(heap, task, this, false, |s| Value::Bool(s.disposed));
+    }
+    stack::access(heap, task, this, true, |_| ())?;
+    if which == Builtin::DisposableStackMove {
+        let prototype = realm::intrinsics(heap)
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+            .disposable_stack_prototype;
+        let mut moved = stack::DisposableStack::new(task, prototype);
+        moved.resources = stack::access(heap, task, this, true, |s| {
+            s.disposed = true;
+            std::mem::take(&mut s.resources)
+        })?;
+        return heap
+            .alloc(HeapObject::DisposableStack(Box::new(moved)))
+            .map(Value::Object)
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"));
+    }
+    let (value, method, hint, result) = match which {
+        Builtin::DisposableStackAdopt => (arg(0), arg(1), Hint::Adopt, arg(0)),
+        Builtin::DisposableStackDefer => (Value::Undefined, arg(0), Hint::Defer, Value::Undefined),
+        _ => return Err(Fault::Internal("invalid DisposableStack method")),
+    };
+    stack::callable(heap, &method)?;
+    stack::access(heap, task, this, true, |s| {
+        s.resources.push(Resource {
+            value,
+            method,
+            hint,
+        })
+    })?;
+    Ok(result)
 }
 
 #[cfg(test)]

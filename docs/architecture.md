@@ -8294,3 +8294,43 @@ adapts the super row in `research/quickjs/tests/test_closure.js`,
 new tests are synthetic fixtures, not light-cljs output. QuickJS's `OP_get_super`
 and `js_method_set_home_object` in `research/quickjs/quickjs.c` are semantic
 references; the Rust capture and eval transport follows this runtime's design.
+
+## DisposableStack (clj-quickjs-239)
+
+The append-only `HeapObject::DisposableStack` holds an ordinary property store,
+its owning task, a disposed flag and resource records (value, method, sync/adopt/
+defer hint). Instances remain `TaskOwned` even when empty, disposed or frozen;
+publication rejects them with kind `DisposableStack`, the owner and the path
+through the enclosing value (for example `value[0]` in a persistent vector).
+No callback runs under the object-table lock. GC traces the prototype, ordinary
+properties and both value/method edges in each resource record. Root inventory:
+`DisposableStackResources` is a PersistentHandle holder, mapped to the new kind;
+`disposable_stack_resources_retain_and_reclaim` verifies all those edges and
+reclamation when the holder is dropped. The native-frame holder also covers
+resources and pending errors after ownership transfers into a running disposer.
+
+The shared immutable realm adds the constructor, unbranded prototype, five
+methods and disposed getter. `[Symbol.dispose]` aliases the dispose function
+object, and the prototype's `[Symbol.toStringTag]` is `DisposableStack`.
+Construction requires new; its native continuation reads new.target.prototype
+resumably, falling back to the intrinsic prototype, including derived classes.
+Move allocates directly with that intrinsic prototype and transfers the resource
+vector, marking the source disposed. It never reads the global binding or any
+constructor property. Instance ordinary properties stay with the source.
+
+Use shares AddDisposableResource with using declarations: it snapshots and
+validates Symbol.dispose through a traced getter continuation before appending.
+Nullish values are returned without recording. Adopt and defer validate callable
+callbacks without invoking them. Dispose marks the stack disposed and transfers
+its records into `native::dispose::Run` before calling anything, making re-entrant
+dispose a no-op. The same loop runs the `using_dispose` instruction for lexical
+scopes. It pops one resource per step, calls methods with the resource receiver,
+adopt callbacks with undefined receiver and one argument, and defer callbacks
+with undefined receiver and no arguments. All calls are ordinary resumable VM
+frames: budget yields, dependency waits, GC and migration preserve progress and
+never replay effects. Native catch handlers retain each new error; the next step
+combines it with the previous error via the intrinsic SuppressedError helper.
+An Option distinguishes no error from thrown undefined. After all resources,
+a changed error overrides the pending completion, except during cancellation
+cleanup where errors are discarded so outer scopes can continue unwinding.
+AsyncDisposableStack remains separate (clj-quickjs-241).

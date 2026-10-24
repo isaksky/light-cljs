@@ -115,6 +115,9 @@ pub(crate) fn get_prototype_of(
             HeapObject::FinalizationRegistry(m) => {
                 readable(m.object(), task).map(|()| Some(m.object().prototype()))
             }
+            HeapObject::DisposableStack(m) => {
+                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+            }
             HeapObject::ArrayBuffer(b) => {
                 readable(&b.object, task).map(|()| Some(b.object.prototype()))
             }
@@ -173,6 +176,7 @@ pub(crate) fn set_prototype_of(
         HeapObject::WeakMap(m) => writable(m.object()),
         HeapObject::WeakRef(m) => writable(m.object()),
         HeapObject::FinalizationRegistry(m) => writable(m.object()),
+        HeapObject::DisposableStack(m) => writable(m.object()),
 
         HeapObject::ArrayBuffer(b) => writable(&b.object),
         HeapObject::Generator(g) => writable(&g.object),
@@ -210,6 +214,10 @@ pub(crate) fn set_prototype_of(
             Ok(())
         }
         HeapObject::FinalizationRegistry(m) => {
+            m.object_mut().set_prototype(proto);
+            Ok(())
+        }
+        HeapObject::DisposableStack(m) => {
             m.object_mut().set_prototype(proto);
             Ok(())
         }
@@ -270,6 +278,9 @@ fn check_chain(
                     readable(m.object(), task).map(|()| m.object().prototype())
                 }
                 HeapObject::FinalizationRegistry(m) => {
+                    readable(m.object(), task).map(|()| m.object().prototype())
+                }
+                HeapObject::DisposableStack(m) => {
                     readable(m.object(), task).map(|()| m.object().prototype())
                 }
 

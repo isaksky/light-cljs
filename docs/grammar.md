@@ -6130,3 +6130,51 @@ const a = () => super.x;
 ```js reject Invalid 1:22
 const a = (x = () => super.x) => x;
 ```
+
+### Execution: DisposableStack (clj-quickjs-239)
+
+Built-ins: `DisposableStack` requires `new` and supports derived classes through
+new.target.prototype. Instances expose `use(value)`, `adopt(value, onDispose)`,
+`defer(onDispose)`, `dispose()`, `move()` and the read-only `disposed` accessor.
+`use` returns its resource and snapshots Symbol.dispose once; null/undefined are
+returned without recording. Adopt returns its value; defer returns undefined.
+Dispose marks the stack disposed before calling resources in reverse registration
+order. Method resources receive their value as this and no arguments, adopt
+callbacks receive undefined as this and the adopted value as their sole argument,
+and defer callbacks receive undefined as this and no arguments. Sloppy callbacks
+apply the ordinary global-this conversion. Callbacks and dispose-method getters
+can wait, yield, survive collection and migrate between workers without replay.
+Second disposal is a no-op returning undefined. `[Symbol.dispose]` is the same
+function object as dispose. The prototype's `[Symbol.toStringTag]` is
+`DisposableStack`; general Object.prototype.toString tag consumption remains a gap.
+Move transfers resources into a fresh stack with the intrinsic prototype and
+marks the original disposed. Replacing/deleting the global or changing an
+instance's constructor never redirects move.
+
+Exceptions: all methods and the disposed getter require a branded receiver
+(TypeError otherwise). Use/adopt/defer/move throw ReferenceError on a disposed
+stack. Use rejects primitives, missing disposal methods and non-callable disposal
+methods with TypeError; adopt/defer reject non-callable callbacks with TypeError.
+Callback errors do not stop disposal: each later error becomes the error field
+of an intrinsic SuppressedError whose suppressed field holds the previous error.
+The final error is thrown after all callbacks. `using s = new DisposableStack()`
+disposes its registered resources at scope exit through the shared disposal loop.
+Publication rejects these task-owned objects even after disposal or freezing.
+Syntax and rejected forms are unchanged. Explicit gaps: await using and
+AsyncDisposableStack remain clj-quickjs-240/-241; intrinsics remain immutable.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let s = new DisposableStack(), log = '';
+s.defer(() => { log += 'a'; });
+s.adopt(42, v => { log += v; });
+s.dispose(); s.disposed && log === '42a';
+s[Symbol.dispose] === s.dispose;
+```
+
+```js accept
+let n = 0;
+{ using s = new DisposableStack(); s.defer(() => n++); }
+n === 1;
+```

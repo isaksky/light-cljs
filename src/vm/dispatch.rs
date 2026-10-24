@@ -180,6 +180,7 @@ pub(crate) enum Fault {
     },
     /// The result would exceed QuickJS's maximum UTF-16 string length.
     StringTooLong,
+    ReferenceError(String),
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -416,6 +417,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::WeakMap(_)
                 | HeapObject::WeakRef(_)
                 | HeapObject::FinalizationRegistry(_)
+                | HeapObject::DisposableStack(_)
                 | HeapObject::ArrayBuffer(_)
                 | HeapObject::TypedArray(_)
                 | HeapObject::Promise(_)
@@ -814,13 +816,18 @@ fn construct_target(
     if super_call && !is_constructor(heap, &f, max_hops)? {
         return Err(not_a_constructor(state, &f, f.type_name()));
     }
-    if super_call && matches!(callee(heap, &f)?, Callee::Builtin(which) if which != Builtin::Object)
+    if super_call
+        && matches!(callee(heap, &f)?, Callee::Builtin(which) if !matches!(which, Builtin::Object | Builtin::DisposableStack))
     {
         return Err(Fault::Unsupported(
             "subclass construction of this built-in is not supported".into(),
         ));
     }
     let (id, code) = match callee(heap, &f) {
+        Ok(Callee::Builtin(Builtin::DisposableStack)) => {
+            super::native::start_disposable_stack_constructor(state, new_target, argc + 1)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(Builtin::Object)) if super_call => {
             let object = allocate_receiver(heap, task, &new_target)?;
             state.replace(argc + 1, object)?;
@@ -1013,7 +1020,7 @@ fn checked_this(value: &Value, strict: bool) -> Result<Value, Fault> {
 }
 
 /// The top `n` operands of the running frame, oldest first.
-fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
+pub(super) fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault> {
     let operands = state.operands();
     operands
         .len()
@@ -1296,6 +1303,7 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                         | Builtin::WeakMap
                         | Builtin::WeakRef
                         | Builtin::FinalizationRegistry
+                        | Builtin::DisposableStack
                         | Builtin::Number
                         | Builtin::String
                         | Builtin::Date
@@ -1805,6 +1813,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
             ),
         ),
         Fault::TypeError(m) => (VmErrorKind::TypeError, m),
+        Fault::ReferenceError(m) => (VmErrorKind::ReferenceError, m),
         Fault::ForeignObject { owner, caller } => {
             let owner_name = match owner {
                 Some(task) => task.to_string(),
@@ -2403,7 +2412,9 @@ fn step_instruction(
             let value = state.suppressed_error(heap, error.clone(), suppressed.clone())?;
             state.replace(2, value)?;
         }
-        Instr::UsingCheck => return Err(Fault::Internal("using_check is resumable")),
+        Instr::UsingCheck | Instr::UsingDispose(_) => {
+            return Err(Fault::Internal("using_check is resumable"));
+        }
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
         Instr::ForInNext => {
             let iterator = state.pop()?;
@@ -3067,6 +3078,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::PendingException
         | Instr::PendingCancel
         | Instr::UsingCheck
+        | Instr::UsingDispose(_)
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.

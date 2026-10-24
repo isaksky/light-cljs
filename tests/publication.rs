@@ -1421,3 +1421,22 @@ fn finalization_registries_are_task_owned_at_publication_boundaries() {
         assert_eq!((found, owner), ("FinalizationRegistry", Some(task.id())));
     }
 }
+
+#[test]
+fn disposable_stacks_are_task_owned_at_publication_boundaries() {
+    let rt = Runtime::new();
+    for source in [
+        "__rt.vector(new DisposableStack())",
+        "__rt.vector(Object.freeze(new DisposableStack()))",
+        "let s = new DisposableStack(); s.dispose(); __rt.vector(s)",
+        "let s = new DisposableStack(); __rt.vector(s.move())",
+    ] {
+        let task = rt
+            .spawn(&compile_script("stack-publication", source).unwrap(), &[])
+            .unwrap();
+        let value = complete(task.run().unwrap());
+        let (path, found, owner) = not_shareable(rt.publish(&value).unwrap_err());
+        assert_eq!(path, [PathStep::Index(0)]);
+        assert_eq!((found, owner), ("DisposableStack", Some(task.id())));
+    }
+}

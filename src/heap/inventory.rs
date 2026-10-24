@@ -109,11 +109,12 @@ enum Holder {
     SegmenterSlots,
     ModuleEnvironment,
     ModuleNamespaceEdges,
+    DisposableStackResources,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 49] = [
+const HOLDERS: [Holder; 50] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -163,6 +164,7 @@ const HOLDERS: [Holder; 49] = [
     Holder::SegmenterSlots,
     Holder::ModuleEnvironment,
     Holder::ModuleNamespaceEdges,
+    Holder::DisposableStackResources,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -179,7 +181,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 24] = [
+const KINDS: [ObjectKind; 25] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -204,6 +206,7 @@ const KINDS: [ObjectKind; 24] = [
     ObjectKind::WeakRef,
     ObjectKind::FinalizationRegistry,
     ObjectKind::ModuleNamespace,
+    ObjectKind::DisposableStack,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -235,6 +238,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             WeakRefProperties,
             FinalizationRegistryEdges,
             ModuleNamespaceEdges,
+            DisposableStackResources,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -303,6 +307,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::WeakMap => &[WeakMapEntries],
         ObjectKind::WeakRef => &[WeakRefProperties],
         ObjectKind::FinalizationRegistry => &[FinalizationRegistryEdges],
+        ObjectKind::DisposableStack => &[DisposableStackResources],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -341,6 +346,10 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::ModuleNamespaceEdges => Coverage {
             retains: (Namespaces, "namespace_cells_retain_and_reclaim"),
             reclaims: (Namespaces, "namespace_cells_retain_and_reclaim"),
+        },
+        Holder::DisposableStackResources => Coverage {
+            retains: (Inventory, "disposable_stack_resources_retain_and_reclaim"),
+            reclaims: (Inventory, "disposable_stack_resources_retain_and_reclaim"),
         },
         Holder::ModuleEnvironment => Coverage {
             retains: (Modules, "module_linker_cells_retain_and_reclaim"),
@@ -1012,7 +1021,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 323); // Includes DurationFormat (-225) and SuppressedError (-234).
+    assert_eq!(ids.len(), 331); // Includes DisposableStack (-239).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
@@ -1188,4 +1197,37 @@ fn template_cache_retains_and_reclaims() {
     drop(heap.realm_mut().take());
     heap.request_collection().unwrap();
     assert_stale(&Arc::new(heap), &[cooked, raw]);
+}
+
+#[test]
+fn disposable_stack_resources_retain_and_reclaim() {
+    use crate::object::disposable_stack::{DisposableStack, Hint, Resource};
+    let heap = Arc::new(Heap::default());
+    let task = crate::ids::TaskId::from_raw(1);
+    let prototype = heap.alloc(HeapObject::host_object()).unwrap();
+    let value = heap.alloc(HeapObject::host_object()).unwrap();
+    let method = heap.alloc(HeapObject::host_object()).unwrap();
+    let property = heap.alloc(HeapObject::host_object()).unwrap();
+    let mut stack = DisposableStack::new(task, prototype);
+    stack.resources.push(Resource {
+        value: Value::Object(value),
+        method: Value::Object(method),
+        hint: Hint::Sync,
+    });
+    let key = heap
+        .keys()
+        .intern(&crate::value::JsString::from("saved"))
+        .unwrap();
+    stack.object_mut().add(key, Value::Object(property));
+    let holder = heap
+        .alloc(HeapObject::DisposableStack(Box::new(stack)))
+        .unwrap();
+    let root = Rooted::new(&heap, Value::Object(holder));
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 0);
+    for id in [holder, prototype, value, method, property] {
+        assert!(heap.is_live(id));
+    }
+    drop(root);
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 5);
+    assert_stale(&heap, &[holder, prototype, value, method, property]);
 }

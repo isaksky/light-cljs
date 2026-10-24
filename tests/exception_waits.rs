@@ -162,6 +162,56 @@ fn a_wait_inside_a_dispose_method_resumes_disposal() {
 }
 
 #[test]
+fn disposable_stack_callback_waits_and_resumes() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let s = new DisposableStack();
+        s.adopt({n: 1}, v => __rt.effect(1, v.n));
+        s.defer(() => { __rt.effect(1, 2); __rt.need(5, 3); __rt.effect(1, 3); });
+        s.dispose();
+        s.dispose();
+        s.disposed ? 42 : 0;
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    assert_eq!(log.0, [2.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [2.0, 3.0, 1.0]);
+}
+
+#[test]
+fn disposable_stack_use_getter_waits_and_resumes() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let s = new DisposableStack();
+        s.use({n: 42, get [Symbol.dispose]() {
+            __rt.effect(1, 1); __rt.need(5, 3);
+            return function() { __rt.effect(1, this.n); };
+        }});
+        s.dispose(); 42;
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    assert_eq!(log.0, [1.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [1.0, 42.0]);
+}
+
+#[test]
 fn cancellation_disposes_using_resources() {
     let rt = Runtime::new();
     let task = spawn(

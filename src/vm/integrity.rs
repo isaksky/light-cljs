@@ -142,6 +142,9 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         HeapObject::FinalizationRegistry(m) => {
             readable(m.object().owner()).map(|()| has_level(m.object(), level))
         }
+        HeapObject::DisposableStack(m) => {
+            readable(m.object().owner()).map(|()| has_level(m.object(), level))
+        }
         HeapObject::ArrayBuffer(b) => {
             readable(b.object.owner()).map(|()| has_level(&b.object, level))
         }
@@ -253,6 +256,14 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             Ok(())
         }
         HeapObject::FinalizationRegistry(m) => {
+            writable(m.object().owner())?;
+            match level {
+                Level::NonExtensible => m.object_mut().prevent_extensions(),
+                Level::Frozen => m.object_mut().freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::DisposableStack(m) => {
             writable(m.object().owner())?;
             match level {
                 Level::NonExtensible => m.object_mut().prevent_extensions(),

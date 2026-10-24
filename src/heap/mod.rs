@@ -162,6 +162,7 @@ pub(crate) enum ObjectKind {
     WeakRef,
     FinalizationRegistry,
     ModuleNamespace,
+    DisposableStack,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -245,6 +246,7 @@ pub(crate) enum HeapObject {
     WeakRef(Box<crate::object::weak_ref::WeakRefObject>),
     FinalizationRegistry(Box<crate::object::finalization_registry::FinalizationRegistryObject>),
     ModuleNamespace(Box<crate::module::namespace::Namespace>),
+    DisposableStack(Box<crate::object::disposable_stack::DisposableStack>),
 }
 
 impl HeapObject {
@@ -272,6 +274,7 @@ impl HeapObject {
             HeapObject::WeakMap(_) => ObjectKind::WeakMap,
             HeapObject::WeakRef(_) => ObjectKind::WeakRef,
             HeapObject::FinalizationRegistry(_) => ObjectKind::FinalizationRegistry,
+            HeapObject::DisposableStack(_) => ObjectKind::DisposableStack,
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
             HeapObject::ArrayBuffer(_) => ObjectKind::ArrayBuffer,
             HeapObject::TypedArray(_) => ObjectKind::TypedArray,
@@ -303,6 +306,7 @@ impl Trace for HeapObject {
             HeapObject::WeakMap(m) => m.trace(visit),
             HeapObject::WeakRef(m) => m.trace(visit),
             HeapObject::FinalizationRegistry(m) => m.trace(visit),
+            HeapObject::DisposableStack(m) => m.trace(visit),
             HeapObject::BoundFunction(f) => f.trace(visit),
             HeapObject::ArrayBuffer(b) => b.trace(visit),
             HeapObject::TypedArray(a) => a.trace(visit),
@@ -334,6 +338,7 @@ impl Trace for HeapObject {
             HeapObject::WeakMap(m) => m.trace_conditional(visit),
             HeapObject::WeakRef(m) => m.trace_conditional(visit),
             HeapObject::FinalizationRegistry(m) => m.trace_conditional(visit),
+            HeapObject::DisposableStack(m) => m.trace_conditional(visit),
             HeapObject::ArrayBuffer(b) => b.trace_conditional(visit),
             HeapObject::TypedArray(a) => a.trace_conditional(visit),
             HeapObject::Promise(p) => p.trace_conditional(visit),
