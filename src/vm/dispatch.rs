@@ -1922,10 +1922,14 @@ pub(crate) fn raise_failure(
     error: VmError,
     cause: Value,
 ) -> Option<Exit> {
-    raise_failure_with_input(state, heap, error, cause, None)
+    raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
+        state, heap, error, cause, None,
+    )
 }
 
-fn raise_failure_with_input(
+// Production uses MAX_STRING_LEN; a smaller limit tests error-message overflow
+// through the same raise path without constructing gigabyte property names.
+fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     state: &mut VmState,
     heap: &Heap,
     error: VmError,
@@ -1972,7 +1976,22 @@ fn raise_failure_with_input(
         } else {
             &error.message
         };
-        define("message", Value::String(JsString::from(message)))?;
+        // Diagnostic text can exceed the limit even when its property name
+        // fits. Check UTF-16 length before allocating the conversion buffer.
+        let len = message
+            .encode_utf16()
+            .take(MESSAGE_LIMIT.saturating_add(1))
+            .count();
+        if len > MESSAGE_LIMIT {
+            return Err("error message too long");
+        }
+        let mut units = Vec::new();
+        units
+            .try_reserve_exact(len)
+            .map_err(|_| "error message allocation failed")?;
+        units.extend(message.encode_utf16());
+        let message = JsString::from_owned_code_units(units).ok_or("error message too long")?;
+        define("message", Value::String(message))?;
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
@@ -3281,7 +3300,13 @@ pub(crate) fn execute_budgeted(
                 };
                 let (kind, message) = fault_error(fault, &code, pc);
                 let error = state.failure(kind, message, pc);
-                raise_failure_with_input(state, heap, error, Value::Undefined, input)
+                raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
+                    state,
+                    heap,
+                    error,
+                    Value::Undefined,
+                    input,
+                )
             }
         };
         match raised {
@@ -3351,6 +3376,87 @@ mod tests {
             world: WorldId::INITIAL,
         };
         VmState::new(&code.0, &[], diag, VmLimits::DEFAULT)
+    }
+
+    #[test]
+    fn engine_error_message_overflow_is_uncatchable() {
+        const LIMIT: usize = 64;
+        let overhead = "cannot read property '' of null".encode_utf16().count();
+        for (character, width) in [("x", 1), ("é", 1), ("😀", 2)] {
+            for message_len in [LIMIT, LIMIT + 1, LIMIT + overhead] {
+                let key = format!("{character}{}", "x".repeat(message_len - overhead - width));
+                assert!(key.encode_utf16().count() <= LIMIT);
+                // Synthetic fixture, not light-cljs output. Execute up to the
+                // failing access, then raise its real fault at a reduced limit.
+                let source = format!("try {{ null['{key}']; }} catch (e) {{ e; }}");
+                let exe = crate::frontend::compile_script("message-limit.js", &source).unwrap();
+                let heap = Heap::default();
+                let mut s = state(&exe, 1);
+                for _ in 0..exe.0.instrs.len() {
+                    if matches!(exe.0.instrs[s.top().pc], Instr::GetElem) {
+                        break;
+                    }
+                    assert!(matches!(
+                        execute(&mut s, &heap, &mut NoHost, Some(1)),
+                        Exit::Yield
+                    ));
+                }
+                let pc = s.top().pc;
+                assert!(matches!(exe.0.instrs[pc], Instr::GetElem));
+                assert!(s.has_handlers());
+                s.top_mut().pc += 1;
+                let Err(fault) = instruction_step(Instr::GetElem)(
+                    &mut s,
+                    &exe.0,
+                    &heap,
+                    &mut NoHost,
+                    Instr::GetElem,
+                ) else {
+                    panic!("null property access must fail");
+                };
+                let (kind, message) = fault_error(fault, &exe.0, pc);
+                assert_eq!(kind, VmErrorKind::TypeError);
+                assert_eq!(message.encode_utf16().count(), message_len);
+                let original = s.failure(kind, message.clone(), pc);
+                realm::intrinsics(&heap).unwrap();
+                let before = heap.stats().objects;
+                let exit = raise_failure_with_input::<LIMIT>(
+                    &mut s,
+                    &heap,
+                    original.clone(),
+                    Value::Undefined,
+                    None,
+                );
+                if message_len > LIMIT {
+                    let Some(Exit::Fail(error)) = exit else {
+                        panic!("oversized engine message must fail without entering catch");
+                    };
+                    assert_eq!(error.kind, VmErrorKind::OutOfMemory);
+                    assert_eq!(error.message, "error message too long");
+                    assert_eq!(error.diagnostic, original.diagnostic);
+                    assert!(s.has_handlers());
+                    assert_eq!(s.top().pc, pc + 1);
+                    assert_eq!(heap.stats().objects, before);
+                } else {
+                    assert!(exit.is_none(), "message at the limit must be caught");
+                    let Exit::Return(value) = execute(&mut s, &heap, &mut NoHost, None) else {
+                        panic!("catch must return the Error instance");
+                    };
+                    assert_eq!(error_object(&heap, &value).unwrap().0, original);
+                    assert_eq!(
+                        property::get_field(
+                            &heap,
+                            TaskId::from_raw(1),
+                            &value,
+                            &JsString::from("message"),
+                        )
+                        .ok()
+                        .unwrap(),
+                        Value::String(JsString::from(message.as_str()))
+                    );
+                }
+            }
+        }
     }
 
     /// Early VM test: hand-loaded code cannot put mutable edges or invalid

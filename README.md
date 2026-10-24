@@ -881,6 +881,10 @@ and `instanceof` support. Failed dependencies expose the published value as
 and original cause survive property changes and rethrow. Like constructed
 Errors, engine errors cannot be published, including through closure captures.
 
+Engine error messages that exceed the UTF-16 string length limit fail with
+uncatchable `OutOfMemory`, including when a permitted property name plus its
+diagnostic text exceeds the limit (clj-quickjs-268).
+
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
 `cargo run --example e2e` runs the success scenario of `docs/design.md` §13
