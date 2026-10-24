@@ -20,9 +20,14 @@ pub(crate) struct NumberFormat {
     pub max_fraction: usize,
     pub significant: Option<(usize, usize)>,
     pub rounding: &'static str,
+    pub numbering: &'static str,
 }
 impl NumberFormat {
     pub fn new(locale: String, data: &'static LocaleData) -> Self {
+        let numbering = super::tag::LanguageTag::parse(&locale)
+            .ok()
+            .and_then(|tag| tag.keywords.get("nu").and_then(|nu| numbering_system(nu)))
+            .unwrap_or("latn");
         Self {
             locale,
             data,
@@ -32,6 +37,7 @@ impl NumberFormat {
             max_fraction: 3,
             significant: None,
             rounding: "halfExpand",
+            numbering,
         }
     }
     pub fn format(&self, value: &Value) -> Result<Value, Fault> {
@@ -122,6 +128,29 @@ impl NumberFormat {
         } else {
             body
         };
+        let index = numbers::intl_all_numbering_systems
+            .iter()
+            .position(|bytes| {
+                bytes.and_then(|pool| super::pool_string(pool, 0)) == Some(self.numbering)
+            })
+            .expect("resolved numbering system");
+        let base = numbers::nf_digit_base[index];
+        let result: String = result
+            .chars()
+            .map(|c| {
+                if !c.is_ascii_digit() {
+                    return c;
+                }
+                let digit = c as u32 - '0' as u32;
+                if self.numbering == "hanidec" {
+                    char::from_u32(numbers::hanidec_cps[digit as usize]).unwrap()
+                } else if base != 0 {
+                    char::from_u32(base + digit).unwrap()
+                } else {
+                    c
+                } // QuickJS algorithmic systems retain Latin digits here.
+            })
+            .collect();
         Ok(Value::String(JsString::from(result.as_str())))
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
@@ -139,7 +168,10 @@ impl NumberFormat {
                 "locale",
                 Value::String(JsString::from(self.locale.as_str())),
             ),
-            ("numberingSystem", Value::String(JsString::from("latn"))),
+            (
+                "numberingSystem",
+                Value::String(JsString::from(self.numbering)),
+            ),
             ("style", Value::String(JsString::from("decimal"))),
             (
                 "minimumIntegerDigits",
@@ -185,6 +217,13 @@ impl NumberFormat {
         }
         Ok(value)
     }
+}
+
+pub(crate) fn numbering_system(name: &str) -> Option<&'static str> {
+    numbers::intl_all_numbering_systems
+        .iter()
+        .filter_map(|pool| super::pool_string((*pool)?, 0))
+        .find(|&system| system == name)
 }
 
 pub(crate) fn record(heap: &Heap, task: TaskId, value: &Value) -> Result<NumberFormat, Fault> {

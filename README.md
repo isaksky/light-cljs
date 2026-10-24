@@ -3122,11 +3122,15 @@ Options and argument coercions can wait, yield, collect and migrate. The host
 supplies the default locale once per constructor; absent a host it is en-US.
 
 Deferred: percent/currency styles (clj-quickjs-214), other styles and notations
-(explicit RangeError), non-Latin numbering systems (well-formed unsupported
-requests fall back to latn), parts/range methods, ChainNumberFormat's legacy
+(explicit RangeError), parts/range methods, ChainNumberFormat's legacy
 fallback receiver, and general Object.prototype.toString tag consumption.
 Both localeMatcher values currently use lookup over the policy's test locales.
 Decimal string input is bounded to 100,000 coefficient characters and exponent
 magnitude 10,000 (RangeError beyond those limits).
+
+Numbering-system options and `nu` extensions use the pinned QuickJS names and
+digit mappings, including Arabic-Indic, fullwidth, Han decimal and non-BMP
+digits. Unknown well-formed systems fall back; the default stays Latin even for
+ar. Algorithmic systems retain Latin digits in this decimal path, as QuickJS does.
 
 Check: `cargo test --test js_source intl_number_format -- --test-threads=3`.

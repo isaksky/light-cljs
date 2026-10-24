@@ -652,6 +652,8 @@ constructor, bound getter, resolvedOptions) and decimal rows in
 `research/quickjs/tests/test_intl.js::test_numberFormat`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The Rust implementation is written afresh and consumes the already attributed
-pinned locale tables without changing generated data. The decimal integration
-examples adapt the upstream test expectations and retain the QuickJS MIT notice
+pinned locale tables. Numbering-system names and digit mappings are extracted
+from `research/quickjs/intl/intl.c` through the existing exporter, with complete
+C/Rust equality verification, repeatability, edge cases and pinned input hashes.
+The decimal integration examples adapt the upstream test expectations and retain the QuickJS MIT notice
 beside the test. No C engine, ICU, new dataset or crate dependency is used.

@@ -97,6 +97,29 @@ for my $source (@sources) {
         push @decl_order, $name;
     }
 }
+# Numbering-system data lives beside service code, not in locale-data.c.
+# Extract only these pinned declarations; compile their original initializers
+# with the same C exporter, never link or execute the Intl implementation.
+my $intl = strip_comments(read_file("$root/intl/intl.c"));
+my @number_declarations;
+for my $name (qw(intl_all_numbering_systems nf_digit_base hanidec_cps)) {
+    $intl =~ /((?:static\s+)?const\s+(?:char\s*\*|uint32_t)\s*\b\Q$name\E\s*\[[^\]]*\]\s*=\s*(\{[^{}]*\})\s*;)/s
+        or die "missing numbering-system declaration: $name\n";
+    my ($declaration, $initializer) = ($1, $2);
+    push @number_declarations, $declaration;
+    my $values = node($initializer);
+    if ($name eq 'nf_digit_base') {
+        # Designated indices are evaluated by C; emit_array reads every C slot,
+        # including the unspecified zero entries for algorithmic systems.
+        for my $item (@$values) {
+            $item =~ /^\[NS_[A-Z0-9_]+\]\s*=\s*0x[0-9A-Fa-f]+$/
+                or die "unsupported digit-base initializer: $item\n";
+        }
+        $values = [('0') x scalar(@{$decls{intl_all_numbering_systems}{value}})];
+    }
+    $decls{$name} = {type => $name eq 'intl_all_numbering_systems' ? 'char*' : 'uint32_t', array => 1, value => $values};
+    push @decl_order, $name;
+}
 my %numbers = (uint8_t=>'u8', uint16_t=>'u16', uint32_t=>'u32',
     int32_t=>'i32', int64_t=>'i64', int=>'i32', unsigned=>'u32');
 sub rust_type {
@@ -142,6 +165,9 @@ static void bytes(const void *p, size_t n) {
     }
     fputs("\"", stdout);
 }
+C
+print $c join("\n", @number_declarations), "\n";
+print $c <<'C';
 int main(int argc, char **argv) {
     wire = argc == 2 && strcmp(argv[1], "--wire") == 0;
 C

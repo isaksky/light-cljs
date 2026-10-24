@@ -35,7 +35,7 @@ my %compact = map { $_ => 1 } ($rows =~ /Some\((locale_compact_arr_\d+)\)/g);
 my %modules;
 for my $name (@order) {
     my $module;
-    if ($name =~ /^(?:NumberSymbols|NumberPatterns|CompactDecimalPattern|currency_|locale_currency_|decimal_|group_|plusSign_|minusSign_|percentSign_|infinity_|nan_|pattern_|intl_supported_currenc)/) {
+    if ($name =~ /^(?:NumberSymbols|NumberPatterns|CompactDecimalPattern|currency_|locale_currency_|decimal_|group_|plusSign_|minusSign_|percentSign_|infinity_|nan_|pattern_|intl_supported_currenc|intl_all_numbering_systems|nf_digit_base|hanidec_cps)/) {
         $module = 'numbers';
     } elsif ($name =~ /^locale_compact_arr_/) {
         next unless $compact{$name}; $module = 'numbers';

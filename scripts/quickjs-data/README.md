@@ -187,3 +187,14 @@ semantics tests run with `cargo test --test date_host -- --test-threads=3`.
 The 59 transition-bearing zones and 36 aliases are supported; the 598-name
 inventory alone never grants offset coverage. First/last offsets extend beyond
 the recorded transitions without future-rule extrapolation.
+
+### NumberFormat digit mappings (clj-quickjs-213)
+
+`intl/intl.c` is an additional pinned input. The exporter extracts only
+`intl_all_numbering_systems`, `nf_digit_base` and `hanidec_cps`, compiles their
+original initializers alongside the existing data exporter, and compares every
+C/Rust value through the existing wire format. Designated digit-base indices
+are evaluated by C, including zero entries for algorithmic systems. No Intl
+service code is linked or executed. The repacker includes the three immutable
+statics in `numbers.rs`. Verification includes numbering indices, non-BMP digit
+blocks, algorithmic zero slots and Han decimal digits.

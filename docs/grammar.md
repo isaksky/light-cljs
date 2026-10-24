@@ -3819,8 +3819,8 @@ digits (0..100), significant digits (1..21), and all nine rounding modes
 throw catchable RangeErrors; invalid receivers and Symbol numbers throw TypeError.
 
 Explicit gaps: percent/currency (clj-quickjs-214), other styles and nonstandard
-notations throw RangeError. Only latn numbering is available; well-formed other
-systems fall back to latn. Both matchers use lookup over the policy's test locales.
+notations throw RangeError. Numbering-system options and nu extensions use the pinned QuickJS digit mappings;
+unknown well-formed systems fall back to the selected system. Both matchers use lookup over the policy's test locales.
 Parts/range methods, ChainNumberFormat legacy receivers and general
 Object.prototype.toString tag consumption remain deferred. Decimal coefficient
 input over 100,000 characters or exponent magnitude over 10,000 throws RangeError.

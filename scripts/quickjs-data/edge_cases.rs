@@ -57,3 +57,18 @@ fn reference_lengths_and_packed_fields_agree() {
     assert_eq!(case_conv_table1.len(), 378);
     assert_eq!(case_conv_table1.len(), case_conv_table2.len());
 }
+
+#[test]
+fn numbering_system_indices_and_digits_agree() {
+    assert_eq!(intl_all_numbering_systems.len(), nf_digit_base.len());
+    let index = |name: &[u8]| intl_all_numbering_systems.iter().position(|&n| n == Some(name)).unwrap();
+    assert_eq!(nf_digit_base[index(b"latn\0")], 0x30);
+    assert_eq!(nf_digit_base[index(b"arab\0")], 0x660);
+    assert_eq!(nf_digit_base[index(b"mathbold\0")], 0x1d7ce);
+    assert_eq!(nf_digit_base[index(b"roman\0")], 0);
+    assert_eq!(nf_digit_base[index(b"hanidec\0")], 0);
+    assert_eq!(hanidec_cps, &[0x3007, 0x4e00, 0x4e8c, 0x4e09, 0x56db, 0x4e94, 0x516d, 0x4e03, 0x516b, 0x4e5d]);
+    for &base in nf_digit_base.iter().filter(|&&base| base != 0) {
+        for digit in 0..10 { assert!(char::from_u32(base + digit).is_some()); }
+    }
+}

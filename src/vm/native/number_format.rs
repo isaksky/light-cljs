@@ -150,7 +150,18 @@ impl State {
             let text = dispatch::to_js_string(&value)?.to_string_lossy();
             match name {
                 "localeMatcher" if ["lookup", "best fit"].contains(&text.as_str()) => {}
-                "numberingSystem" if crate::intl::tag::unicode_type(&text) => {} // only latn is supported; well-formed others fall back
+                "numberingSystem" if crate::intl::tag::unicode_type(&text) => {
+                    if let Some(system) = number_format::numbering_system(&text) {
+                        let slots = self.slots.as_mut().unwrap();
+                        if system != slots.numbering {
+                            let mut tag = crate::intl::tag::LanguageTag::parse(&slots.locale)
+                                .expect("resolved locale");
+                            tag.keywords.remove("nu");
+                            slots.locale = tag.to_string();
+                        }
+                        slots.numbering = system;
+                    }
+                }
                 "style" if text == "decimal" => {}
                 "notation" if text == "standard" => {}
                 "roundingMode" => {
@@ -336,16 +347,21 @@ impl State {
 }
 
 /// Lookup is limited to the policy's test locales, including their children.
-/// Unsupported Unicode numbering systems fall back to Latin and are omitted
-/// from the resolved locale, matching the pinned QuickJS service policy.
+/// Unsupported numbering systems fall back to Latin. Only the relevant nu
+/// extension participates in NumberFormat locale resolution.
 fn supported_locale(tag: &str) -> Option<(String, &'static crate::intl::LocaleData)> {
     let parsed = crate::intl::tag::LanguageTag::parse(tag).ok()?;
     let mut base = parsed.base_name();
     loop {
         if crate::intl::LOCALES.contains(&base.as_str()) {
             let data = crate::intl::lookup(&base)?;
-            if parsed.keywords.get("nu").is_some_and(|nu| nu == "latn") {
-                base.push_str("-u-nu-latn");
+            if let Some(system) = parsed
+                .keywords
+                .get("nu")
+                .and_then(|nu| number_format::numbering_system(nu))
+            {
+                base.push_str("-u-nu-");
+                base.push_str(system);
             }
             return Some((base, data));
         }

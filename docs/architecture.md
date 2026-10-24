@@ -5563,9 +5563,13 @@ native ToPrimitive-with-number-hint action preserves String and BigInt results
 instead of converting them through binary64. The trampoline reads the guarded
 host default locale only when requested locales cannot resolve, then captures
 it in the instance. No callback or host input retains a Rust stack over a wait.
-The service supports the policy's locale set with lookup for both matchers;
-latn is the available numbering system, including the `nu-latn` extension.
-Other well-formed numbering systems fall back to latn.
+The service supports the policy's locale set with lookup for both matchers.
+Numbering-system names and digit mappings are imported from pinned QuickJS
+`intl/intl.c` through the existing C/Rust verification pipeline. Unicode nu
+extensions and explicit options resolve together; unknown well-formed systems
+fall back to the selected system. Default digits remain Latin, including ar.
+Algorithmic systems with no decimal digit mapping retain Latin digits, as
+QuickJS does.
 
 NumberFormat instances are ordinary task-owned objects. Their private record
 owns strings and static locale-data references; a separate cached bound-function
@@ -5584,11 +5588,12 @@ Coefficient digits and point position support all nine rounding modes, including
 carry, significant digit padding and negative zero. BigInts and decimal strings
 bypass f64. Symbols/group sizes come from the existing pinned locale tables;
 auto groups four-digit Spanish numbers as QuickJS does, while min2 requires a
-two-digit leading group. Generated data is unchanged. Input coefficients and
-exponents have explicit resource bounds (100,000 characters and magnitude
+two-digit leading group. The digit data extends the existing generated number
+tables; locale records remain unchanged. Input coefficients and exponents have
+explicit resource bounds (100,000 characters and magnitude
 10,000); oversized inputs throw RangeError. No dependencies or OS locale access.
 
-Percent/currency styles, nonstandard notations, other numbering systems,
+Percent/currency styles and nonstandard notations,
 formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
 Non-decimal styles and nonstandard notations throw RangeError. General
 Object.prototype.toString tag consumption remains the existing explicit gap.

@@ -17588,3 +17588,21 @@ fn intl_number_format_host_default_and_ownership() {
     }
     rt.collect().unwrap();
 }
+
+/// Synthetic fixtures, not light-cljs output. Number systems use the pinned
+/// QuickJS digit mapping while keeping each locale's separators and symbols.
+#[test]
+fn intl_number_format_numbering_systems() {
+    for source in [
+        "let n=new Intl.NumberFormat('en-u-nu-arab'); n.format(1234.5) === '١,٢٣٤.٥' && n.resolvedOptions().numberingSystem === 'arab' && n.resolvedOptions().locale === 'en-u-nu-arab'",
+        "let n=new Intl.NumberFormat('en-u-nu-arab',{numberingSystem:'latn'}); n.format(1234) === '1,234' && n.resolvedOptions().locale === 'en' && n.resolvedOptions().numberingSystem === 'latn'",
+        "let n=new Intl.NumberFormat('de',{numberingSystem:'fullwide'}); n.format(-1234.5) === '-１.２３４,５' && n.resolvedOptions().numberingSystem === 'fullwide'",
+        "new Intl.NumberFormat('en',{numberingSystem:'hanidec'}).format(1234567890) === '一,二三四,五六七,八九〇'",
+        "new Intl.NumberFormat('en',{numberingSystem:'arabext'}).format(1234.5) === '۱,۲۳۴.۵'",
+        "new Intl.NumberFormat('en',{numberingSystem:'mathbold',useGrouping:false}).format(12n) === '𝟏𝟐'",
+        "let n=new Intl.NumberFormat('en-u-nu-arab',{numberingSystem:'notreal'}); n.format(123) === '١٢٣' && n.resolvedOptions().numberingSystem === 'arab'",
+        "let n=new Intl.NumberFormat('en',{numberingSystem:'roman'}); n.format(1234) === '1,234' && n.resolvedOptions().numberingSystem === 'roman'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}

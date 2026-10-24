@@ -9,11 +9,12 @@ a0aed883c00fcd0ccb82892793c2699789d10b14900ce3ff316c894da690327a  temporal/timez
 7fb4fbeffc7bc3e12c837ce602cd9f5a7e9e2b06a9bba95e23d61cdb8b6bc409  libunicode-table.h
 d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647  cutils.h
 09d208759171634a5b1e60aa314fd00da5d088ac28621b7ae4682ba2fb103415  quickjs.h
-c1c131252e3d9a4d739437c808dfdddeaa3ac1c807cf38d898af875e81785fcb  export.pl
+0606525b61db637ef2052d5e45e2732e1ba89e3125db30ab4bdf25f0d8681068  intl/intl.c
+7e28ebf3d37b4b893e9fa01084d92df60540c11f072ae4bc4ef9618a915212f9  export.pl
 9ac1f1efb5674b238191314a6b0023a695f4bc91dd73ffe9c136120c21c337d8  generate.sh
-49bca3bae3af0bad127d183237ae77deab6ffbd7c6a2f4b4fa73044c5c02b48a  inputs.sha256
+b7f1c73204ec51258fb50357ceba97f2fbc19b323325f9cf07c90da99a2d5d5b  inputs.sha256
 gcc (GCC) 15.3.0
 rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)
 perl 5.42.3
 Repack: service modules, 14 locale records and referenced compact arrays; shared pools unchanged.
-54d36c71291bb9d3211646d5994ece259bd36294a78bb6314a0d902ce21f1f83  scripts/quickjs-data/repack-intl.pl
+2f7b517d0507b4cc3b3286f05764a14d34798db6e0cfbe958bd9bf552bdb4ddd  scripts/quickjs-data/repack-intl.pl
