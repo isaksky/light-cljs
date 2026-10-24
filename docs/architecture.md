@@ -3229,3 +3229,32 @@ collecting between yields. No JavaScript callback runs inside the leaf:
 object-valued length conversion and primitive wrapper receivers fail
 explicitly. Future ToPrimitive/getter support must enter resumable native
 frames before invoking JavaScript, as for the other built-ins.
+
+## Resumable object conversion (clj-quickjs-70)
+
+`native::start_conversion` intercepts object operands of ToNumber,
+ToNumberPair, Plus, Compare*, LooseEq, ToString and computed property
+operations (GetElem, PutElem, ToPropertyKey, In and Delete). Primitives
+keep the existing leaf path. Object equality and nullish comparisons do
+not convert; property operations reject an invalid base first.
+
+A Convert native frame owns the original instruction, its operands, the
+operand index, hint and next method index. A step looks up valueOf or
+toString and returns a Call action with the original receiver and no
+arguments. The existing trampoline resolves forwarding built-ins and
+enters a task-owned callback frame. A primitive return replaces that
+operand; an object return advances to the other method, looked up only
+then so callback mutations are visible. Left conversion finishes before
+right conversion starts. With no primitive result the native raises a
+catchable TypeError. Absent Function.prototype methods continue along the chain for
+conversion; explicit reads continue reporting their unsupported status.
+
+After conversion a Resume action restores the converted operands, drops
+the native frame and executes the original leaf instruction. This calls
+one instruction handler, never the interpreter loop; no Rust stack survives
+a yield or wait. Every callback and native step consumes budget and uses
+the existing safepoints. NativeFrame::trace visits all operands, including
+the unvisited right operand and unrelated property values. Exceptions and
+cancellation use the same unwind/discard path as reduce and needAll.
+Symbols, wrappers and resumable conversions inside leaf built-ins remain
+with their own pellets.

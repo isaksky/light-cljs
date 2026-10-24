@@ -906,3 +906,126 @@ fn a_constructor_resumes_with_its_new_object_after_a_wait_and_migration() {
     assert_eq!(*effects.lock().unwrap(), [(w0, 1.0), (w1, 2.0)]);
     exec.shutdown(TIMEOUT).unwrap();
 }
+
+/// Synthetic fixture, not light-cljs output. The right object is reachable
+/// only through the pending conversion while the left callback waits.
+#[test]
+fn to_primitive_waits_yields_collects_and_migrates_without_replay() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "conversion",
+        r#"
+        ({valueOf: function () {
+            __rt.effect(2, 1);
+            return __rt.need(5, 3);
+        }}) - ({n: 4, valueOf: function () {
+            __rt.effect(2, 2);
+            this.n = __rt.need(6, 2);
+            return {};
+        }, toString: function () {
+            __rt.effect(2, 3);
+            return this.n;
+        }})
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let mut yields = 0;
+    loop {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                yields += 1;
+                assert!(yields < 200);
+                rt.collect().unwrap();
+            }
+            outcome => {
+                assert_eq!(waiting(outcome), key(&rt, NUMBER));
+                break;
+            }
+        }
+    }
+    assert_eq!(host.reports, [1.0]);
+    rt.collect().unwrap();
+    let request = one_request(&task, key(&rt, NUMBER));
+    let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+    rt.collect().unwrap();
+    let worker_rt = rt.clone();
+    let (outcome, mut host) = thread::spawn(move || {
+        for _ in 0..200 {
+            let outcome = resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap();
+            if matches!(outcome, RunOutcome::Yielded) {
+                worker_rt.collect().unwrap();
+            } else {
+                return (outcome, host);
+            }
+        }
+        panic!("conversion did not finish within 200 instructions");
+    })
+    .join()
+    .unwrap();
+    assert_eq!(waiting(outcome), key(&rt, CALLABLE));
+    assert_eq!(
+        host.reports,
+        [1.0, 2.0],
+        "the left conversion finished once"
+    );
+    rt.collect().unwrap();
+    let request = one_request(&task, key(&rt, CALLABLE));
+    let resumed = only_runnable(publish_number(&rt, &request, 4.0));
+    let (outcome, host) = thread::spawn(move || {
+        for _ in 0..200 {
+            let outcome = resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap();
+            if matches!(outcome, RunOutcome::Yielded) {
+                rt.collect().unwrap();
+            } else {
+                return (outcome, host);
+            }
+        }
+        panic!("conversion did not finish within 200 instructions");
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(outcome), 6.0);
+    assert_eq!(host.reports, [1.0, 2.0, 3.0]);
+    assert!(yields > 10);
+}
+
+/// A pending property-key conversion must trace both the base and the
+/// value to be assigned, not merely its method receiver.
+#[test]
+fn to_primitive_property_key_wait_preserves_assignment_operands() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "key",
+        r#"
+        let o = {};
+        o[{toString: function () {
+            __rt.effect(2, 1);
+            __rt.need(5, 3);
+            return 'x';
+        }}] = {n: 7};
+        o.x.n;
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    assert_eq!(waiting(run(&task, &mut host)), key(&rt, NUMBER));
+    assert_eq!(host.reports, [1.0]);
+    rt.collect().unwrap();
+    let request = one_request(&task, key(&rt, NUMBER));
+    let resumed = only_runnable(publish_number(&rt, &request, 0.0));
+    let (outcome, host) = thread::spawn(move || {
+        rt.collect().unwrap();
+        (run(&resumed, &mut host), host)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(outcome), 7.0);
+    assert_eq!(host.reports, [1.0]);
+}

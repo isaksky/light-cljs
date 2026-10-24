@@ -98,8 +98,8 @@
 //! Opcodes `0x21`–`0x2A` are what the source compiler
 //! ([`crate::frontend::compile_script`]) needs beyond the core set.
 //! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
-//! or 1 and strings by StringToNumber (clj-quickjs-67); an object operand
-//! fails with `UnsupportedOperand` (ToPrimitive on objects is deferred).
+//! or 1 and strings by StringToNumber (clj-quickjs-67); objects first use
+//! resumable ToPrimitive with hint number (clj-quickjs-70).
 //! `ToNumberPair` converts both operands the same way; the compiler emits it
 //! before a number-only comparison only when the other operand of `<`, `>`,
 //! `<=` or `>=` is statically a number, so two strings never reach it there
@@ -108,8 +108,8 @@
 //! undefined`, objects compare by identity, two strings by content, a
 //! number, boolean or string against another of those compares as numbers
 //! (booleans as 0 or 1, strings by StringToNumber), and comparing an object
-//! with a primitive other than `null`/`undefined` fails with
-//! `UnsupportedOperand`. `StrictEq` compares strings
+//! with a primitive other than `null`/`undefined` uses resumable
+//! ToPrimitive with hint default. `StrictEq` compares strings
 //! by content too. `ThrowError` always
 //! raises the error named by its [`ThrowKind`] operand
 //! ([`VmErrorKind::ReferenceError`](crate::VmErrorKind::ReferenceError) or
@@ -227,8 +227,8 @@
 //! (immutable storage outside the heap, `crate::value::JsString`; a result
 //! longer than 2^30 - 1 code units fails with `OutOfMemory`); otherwise two
 //! numbers add and other primitive pairs add their ToNumber values. Any
-//! object operand fails with `UnsupportedOperand` (ToPrimitive is
-//! deferred), and a string is never converted with ToNumber. It allocates
+//! object operand first uses resumable ToPrimitive with hint default,
+//! and a string is never converted with ToNumber. It allocates
 //! no heap object, so it is not a poll point. The compiler emits it for
 //! every `+` whose operands are not both statically numbers; `Add` stays
 //! number-only.
@@ -243,9 +243,9 @@
 //! with ToNumber (strings by StringToNumber) and compares as numbers, where
 //! a NaN makes all four false. `CompareGt` is IsLessThan with the operands
 //! swapped; `CompareLe` and `CompareGe` negate `CompareGt` and `CompareLt`
-//! except that NaN still gives false. An object operand fails with
-//! `UnsupportedOperand` before any conversion (ToPrimitive with hint number
-//! is clj-quickjs-70). They allocate nothing, so they are not poll points.
+//! except that NaN still gives false. Objects first use resumable
+//! ToPrimitive with hint number, left before right (before any swap).
+//! Conversion steps are poll points; the primitive path allocates nothing.
 //! The compiler emits them when neither operand is statically a number;
 //! with a static number on either side two strings are impossible, so it
 //! keeps `ToNumber`/`ToNumberPair` and the number-only `Lt`, `Gt`, `Le`, `Ge`.
@@ -314,8 +314,8 @@
 //!
 //! Opcode `0x62`, `In` (clj-quickjs-74; QuickJS `OP_in`, `js_operator_in`):
 //! `k o → bool`, JavaScript `k in o`. `o` must be an object, else a
-//! catchable `TypeError`; then ToPropertyKey(k) (an object `k` needs
-//! ToPrimitive and is `UnsupportedOperand`, as for `GetElem`) and
+//! catchable `TypeError`; then ToPropertyKey(k) (an object `k` uses
+//! resumable ToPrimitive with hint string, as for `GetElem`) and
 //! HasProperty: an own or inherited property, whatever its value
 //! (`crate::vm::property::has_property`); a function's lazy `prototype`
 //! is reported without being created. Continuing from a function to
@@ -365,8 +365,8 @@
 //! Opcode `0x55`, `ToString`, is JavaScript ToString (clj-quickjs-57;
 //! ECMAScript ToString, QuickJS `JS_ToStringInternal`): a string stays the
 //! same string, `undefined`, `null` and booleans give their names, and a
-//! number its Number::toString in radix 10. An object operand fails with
-//! `UnsupportedOperand` (ToPrimitive with hint string is clj-quickjs-70).
+//! number its Number::toString in radix 10. Objects first use resumable
+//! ToPrimitive with hint string (clj-quickjs-70).
 //! The compiler emits it after each substitution of a template literal,
 //! before the `Plus` that appends it, so the conversion is ToString rather
 //! than the default-hint ToPrimitive of `+`. The string lives outside the

@@ -122,8 +122,9 @@
 //! `GetElem`/`PutElem` runs, so for a write after the right-hand side: a
 //! string is the key as is; a number is its Number::toString (`1` and `"1"`
 //! name the same property, `-0` is `"0"`, `1.5` is `"1.5"`); `true`,
-//! `false`, `null` and `undefined` are their ToString. An object key needs
-//! ToPrimitive (clj-quickjs-70) and fails with `UnsupportedOperand`. A key
+//! `false`, `null` and `undefined` are their ToString. The VM converts
+//! object keys with resumable ToPrimitive and hint string before calling
+//! these primitive-key helpers (clj-quickjs-70). A key
 //! that is an array index ([`crate::object::array::array_index`]) is
 //! carried as the integer, so `a[1]` on an array never builds a string; an
 //! ordinary object (or the chain behind a hole) looks it up by its
@@ -448,7 +449,7 @@ pub(crate) fn find(
     base: &Value,
     key: &Key,
 ) -> Result<Option<Value>, Fault> {
-    lookup(heap, task, base, key, false)
+    lookup(heap, task, base, key, false, false)
 }
 
 /// HasProperty(`base`, `key`) for the running task `task` (QuickJS
@@ -463,14 +464,14 @@ pub(crate) fn has_property(
     base: &Value,
     key: &Key,
 ) -> Result<bool, Fault> {
-    lookup(heap, task, base, key, true).map(|found| found.is_some())
+    lookup(heap, task, base, key, true, false).map(|found| found.is_some())
 }
 
 /// `key in base` (`In`, clj-quickjs-74; QuickJS `OP_in`,
 /// `js_operator_in`): a `base` that is not an object is a catchable
 /// `TypeError`, checked before the key is converted; then
-/// ToPropertyKey(`key`) ([`to_property_key`]: an object key needs
-/// ToPrimitive and is `UnsupportedOperand`) and [`has_property`]. Heap
+/// ToPropertyKey(`key`) ([`to_property_key`], after resumable
+/// object conversion in the VM) and [`has_property`]. Heap
 /// kinds without JavaScript properties (module docs) have none, so the
 /// answer is false; an error object is `UnsupportedOperand`.
 pub(crate) fn in_operator(
@@ -507,6 +508,7 @@ fn lookup(
     base: &Value,
     key: &Key,
     has: bool,
+    conversion: bool,
 ) -> Result<Option<Value>, Fault> {
     // A primitive base reads through its wrapper's prototype without
     // allocating a wrapper (module docs, "Primitive bases"); `receiver` is
@@ -545,7 +547,12 @@ fn lookup(
             }
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(property.value.clone())),
-                None if view.function_prototype && function::lacks_inherited(key) => {
+                None if view.function_prototype
+                    && function::lacks_inherited(key)
+                    && !conversion =>
+                {
+                    // Explicit reads report the missing Function method.
+                    // Conversion uses whatever its prototype chain provides.
                     return Err(function_prototype_miss(key, Access::Read));
                 }
                 None => match view.prototype {
@@ -584,11 +591,19 @@ fn lookup(
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(None),
             Lookup::NeedsName => interned = Some(heap.keys().lookup(&key.to_name())),
-            Lookup::Function => match if has {
-                function::probe(heap, task, id, key)?
+            Lookup::Function => match if conversion {
+                // Conversion asks only for valueOf/toString, never for
+                // lazy own metadata such as prototype, length or name.
+                let next = match function::property_record(heap, id)? {
+                    Some(record) => record,
+                    None => function::function_prototype(heap)?,
+                };
+                Ok(FunctionRead::Continue(next))
+            } else if has {
+                function::probe(heap, task, id, key)
             } else {
-                function::read(heap, task, id, key)?
-            } {
+                function::read(heap, task, id, key)
+            }? {
                 FunctionRead::Found(v) => return Ok(Some(v)),
                 FunctionRead::Continue(next) => {
                     id = next;
@@ -612,6 +627,17 @@ pub(crate) fn get_field(
     name: &JsString,
 ) -> Result<Value, Fault> {
     get(heap, task, base, &Key::from_name(name))
+}
+
+/// A conversion method, skipping absent Function.prototype methods.
+pub(crate) fn conversion_method(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    name: &JsString,
+) -> Result<Value, Fault> {
+    lookup(heap, task, base, &Key::from_name(name), false, true)
+        .map(|v| v.unwrap_or(Value::Undefined))
 }
 
 /// What the receiver's part of a write did.

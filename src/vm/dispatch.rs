@@ -239,8 +239,8 @@ fn exponentiate(x: f64, y: f64) -> f64 {
 
 /// JavaScript ToNumber for primitives: NaN for `undefined`, 0 for `null`, 0
 /// or 1 for booleans, and StringToNumber ([`string_to_number`]) for a
-/// string. Objects need ToPrimitive, which is deferred, so they are rejected
-/// explicitly.
+/// string. VM instructions first convert objects through native::Convert;
+/// leaf built-ins must reject object arguments until they become resumable.
 pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
     match v {
         Value::Undefined => Ok(f64::NAN),
@@ -257,7 +257,7 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
 /// JavaScript ToString for primitives (QuickJS `JS_ToStringInternal`):
 /// `"undefined"`, `"null"`, `"true"` / `"false"`, Number::toString in radix
 /// 10 ([`number_to_string`]), and a string itself (the same body). Objects
-/// need ToPrimitive (clj-quickjs-70), so they are rejected explicitly.
+/// are converted with hint string by native::Convert before this helper.
 fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
@@ -266,27 +266,21 @@ fn to_js_string(v: &Value) -> Result<JsString, Fault> {
         Value::Bool(b) => JsString::from(if *b { "true" } else { "false" }),
         Value::Number(x) => JsString::from(number_to_string(*x).as_str()),
         Value::Object(_) => {
-            return Err(Fault::Unsupported(
-                "converting an object to a string (ToPrimitive) is not supported".to_string(),
-            ));
+            return Err(Fault::Internal("object reached primitive ToString"));
         }
     })
 }
 
 /// JavaScript binary `+` (ApplyStringOrNumericBinaryOperator for `+`, QuickJS
 /// `js_add_slow`) on primitives: when either operand is a string, the
-/// ToString of both concatenate; otherwise the ToNumber of both add. Objects
-/// need ToPrimitive first (clj-quickjs-70), which is deferred, so an object
-/// operand is rejected explicitly before any conversion, whatever the other
-/// operand is.
+/// ToString of both concatenate; otherwise the ToNumber of both add.
+/// native::Convert handles objects with hint default before this helper.
 fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
-        (Value::Object(_), _) | (_, Value::Object(_)) => Err(Fault::Unsupported(format!(
-            "plus of {} and {} needs ToPrimitive, which is not supported",
-            a.type_name(),
-            b.type_name()
-        ))),
+        (Value::Object(_), _) | (_, Value::Object(_)) => {
+            Err(Fault::Internal("object reached primitive plus"))
+        }
         (Value::String(_), _) | (_, Value::String(_)) => to_js_string(a)?
             .concat(&to_js_string(b)?)
             .map(Value::String)
@@ -299,19 +293,12 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
 /// `None` stands for its `undefined` result, a NaN operand. Two strings
 /// compare lexicographically by UTF-16 code units (QuickJS
 /// `js_string_compare`), a proper prefix being smaller; any other pair
-/// compares the ToNumber of both. Objects need ToPrimitive with hint number
-/// first (clj-quickjs-70), which is deferred, so an object operand is
-/// rejected explicitly before any conversion. For primitives the order of
-/// the two conversions is unobservable, so the LeftFirst flag is not needed.
-fn is_less_than(opcode: Opcode, x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
+/// compares the ToNumber of both. native::Convert has already converted
+/// objects in source order with hint number, before operands are swapped.
+fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
     Ok(match (x, y) {
         (Value::Object(_), _) | (_, Value::Object(_)) => {
-            return Err(Fault::Unsupported(format!(
-                "{} of {} and {} needs ToPrimitive, which is not supported",
-                opcode.name(),
-                x.type_name(),
-                y.type_name()
-            )));
+            return Err(Fault::Internal("object reached primitive comparison"));
         }
         (Value::String(s), Value::String(t)) => Some(s < t),
         _ => {
@@ -360,8 +347,8 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
 /// string, compare as numbers: the boolean converts to 0 or 1 and the string
 /// by StringToNumber, so `"1" == true` and `" 1 " == 1` hold, and a string
 /// that is not numeric equals no number (its value is NaN). An object
-/// compared with a primitive needs ToPrimitive, which is deferred, so that
-/// case is rejected explicitly.
+/// compared with a non-nullish primitive has already passed through
+/// native::Convert with hint default.
 fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
     Ok(match (a, b) {
@@ -375,11 +362,7 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
             to_number(a)? == to_number(b)?
         }
         (Object(_), _) | (_, Object(_)) => {
-            return Err(Fault::Unsupported(format!(
-                "loose_eq between {} and {} needs ToPrimitive, which is not supported",
-                a.type_name(),
-                b.type_name()
-            )));
+            return Err(Fault::Internal("unconverted object reached loose equality"));
         }
     })
 }
@@ -857,13 +840,16 @@ pub(crate) fn raise_failure(
 }
 
 /// Execute one instruction of `code`, the running frame's code.
-fn step(
+pub(crate) fn step(
     state: &mut VmState,
     code: &Code,
     heap: &Heap,
     host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
+    if native::start_conversion(state, instr)? {
+        return Ok(Flow::Next);
+    }
     if native::is_resumable(instr) {
         // A resumable native: its frame is pushed and its first step runs
         // next (`crate::vm::native`). `pc` was advanced past the instruction.
@@ -969,14 +955,13 @@ fn step(
         Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe => {
             let b = state.pop()?;
             let a = state.pop()?;
-            let opcode = instr.opcode();
             // IsLessThan gives true, false or undefined (a NaN operand);
             // undefined makes every relational operator false.
             state.push(Value::Bool(match instr {
-                Instr::CompareLt => is_less_than(opcode, &a, &b)? == Some(true),
-                Instr::CompareGt => is_less_than(opcode, &b, &a)? == Some(true),
-                Instr::CompareLe => is_less_than(opcode, &b, &a)? == Some(false),
-                _ => is_less_than(opcode, &a, &b)? == Some(false),
+                Instr::CompareLt => is_less_than(&a, &b)? == Some(true),
+                Instr::CompareGt => is_less_than(&b, &a)? == Some(true),
+                Instr::CompareLe => is_less_than(&b, &a)? == Some(false),
+                _ => is_less_than(&a, &b)? == Some(false),
             }));
         }
         Instr::Typeof => {
@@ -1505,7 +1490,7 @@ pub(crate) fn execute(
                 // Every step is a poll point: the native's values are in its
                 // frame.
                 heap.safepoint(state);
-                (pc, native::step(state, heap))
+                (pc, native::step(state, heap, host))
             }
             None => {
                 let pc = state.top().pc;

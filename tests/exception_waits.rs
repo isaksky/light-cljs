@@ -1224,3 +1224,62 @@ fn the_executor_cancels_a_task_parked_in_finally() {
     assert_eq!(task.status(), TaskStatus::Cancelled);
     exec.shutdown(TIMEOUT).unwrap();
 }
+
+#[test]
+fn to_primitive_dependency_failure_unwinds_to_the_operator_handler() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let result = 0;
+        try {
+            ({valueOf: function () {
+                try { return __rt.need(5, 3); }
+                finally { __rt.effect(1, 1); }
+            }}) * 2;
+        } catch (e) { result = 7; }
+        finally { __rt.effect(1, 2); }
+        result + 1;
+    "#,
+    );
+    let mut log = Log::default();
+    assert_eq!(waiting(run(&task, &mut log)), key(&rt, A));
+    rt.collect().unwrap();
+    let error = rt.root(Primitive::String("conversion failed".into()));
+    let resumed = fail(&rt, &task, &error);
+    let (outcome, log) = run_elsewhere(resumed, log);
+    assert_eq!(number(outcome), 8.0);
+    assert_eq!(log.0, [1.0, 2.0]);
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_usage().objects.function, 0);
+}
+
+#[test]
+fn cancelling_to_primitive_runs_finally_and_discards_the_conversion() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        try {
+            ({valueOf: function () {
+                try { return __rt.need(5, 3); }
+                finally { __rt.effect(1, 1); }
+            }, toString: function () { __rt.effect(1, 99); return '1'; }}) + 2;
+        } catch (e) { __rt.effect(1, 98); }
+        finally { __rt.effect(1, 2); }
+        __rt.effect(1, 97);
+    "#,
+    );
+    let mut log = Log::default();
+    assert_eq!(waiting(run(&task, &mut log)), key(&rt, A));
+    rt.collect().unwrap();
+    let resumed = cancel_parked(&task);
+    let (outcome, log) = run_elsewhere(resumed, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [1.0, 2.0]);
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_usage().objects.function, 0);
+    assert!(
+        matches!(rt.cell_status(key(&rt, A)), CellStatus::Pending { ref waiters, .. } if waiters.is_empty())
+    );
+}

@@ -26,3 +26,12 @@ QuickJS MIT copyright and permission notice is retained with the test
 for this runtime, not light-cljs output. `js_array_push` in
 `research/quickjs/quickjs.c` at that revision was read as a semantic
 reference; the Rust implementation was written afresh.
+
+## OrdinaryToPrimitive (clj-quickjs-70)
+
+`research/quickjs/quickjs.c`, `JS_ToPrimitiveFree`, `js_add_slow`,
+`js_binary_arith_slow`, `js_relational_slow`, `js_eq_slow`,
+`js_object_valueOf` and `js_object_toString`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), were read
+as semantic references. The Rust continuation and synthetic source tests
+were written afresh; no C implementation or upstream test text was copied.

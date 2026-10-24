@@ -354,8 +354,7 @@ Deferred:
   `Unsupported`. (Functions, calls, closures and the reserved intrinsic
   binding compile since clj-quickjs-21, string values since clj-quickjs-65,
   below.)
-- (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
-  `UnsupportedOperand` (objects cannot come from source yet).
+- Object operand conversion is supported since clj-quickjs-70 (below).
 - The logical assignment operators (rejected by the parser). (`var`:
   clj-quickjs-94; update: clj-quickjs-64; compound assignment: clj-quickjs-84; unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
@@ -1250,9 +1249,7 @@ Supported (`cargo test --lib frontend::tests::bitwise_and_shift_precedence`,
 Deferred:
 
 - (Compound assignment `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`:
-  clj-quickjs-84, below.) Object operands wait for ToPrimitive (they fail
-  with `UnsupportedOperand`; string operands convert since
-  clj-quickjs-67).
+  clj-quickjs-84, below.) Object operands convert since clj-quickjs-70; strings since clj-quickjs-67.
 
 ### Unlabelled `break` and `continue` (clj-quickjs-78)
 
@@ -1293,8 +1290,7 @@ Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
 Deferred:
 
 - (`**=`: clj-quickjs-84, below.) Object
-  operands wait for ToPrimitive (they fail with `UnsupportedOperand`;
-  string operands convert since clj-quickjs-67). BigInt is outside the
+  operands convert since clj-quickjs-70; strings since clj-quickjs-67. BigInt is outside the
   subset.
 
 ### `break` and `continue` through finally blocks (clj-quickjs-79)
@@ -1335,8 +1331,7 @@ Supported (`cargo test --lib frontend::tests::update_expressions`,
 
 Deferred:
 
-- (`++`/`--` on properties: clj-quickjs-76, below.) Object operands wait for ToPrimitive (they fail with
-  `UnsupportedOperand`). (Compound assignment: clj-quickjs-84, below.)
+- (`++`/`--` on properties: clj-quickjs-76, below.) Object operands convert since clj-quickjs-70. (Compound assignment: clj-quickjs-84, below.)
 
 ### `++`/`--` on properties (clj-quickjs-76)
 
@@ -1357,8 +1352,7 @@ Supported (`cargo test --lib frontend::tests::update_expressions`,
 
 Deferred:
 
-- A property value or key that is an object waits for ToPrimitive
-  (`UnsupportedOperand`). (Compound assignment on properties:
+- Object property values and keys convert since clj-quickjs-70. (Compound assignment on properties:
   clj-quickjs-260, below.)
 
 ### `do`-`while` loops (clj-quickjs-80)
@@ -1455,8 +1449,7 @@ Supported (`cargo test --test js_source string_values`,
 
 Deferred:
 
-- Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
-  an object operand (ToPrimitive, clj-quickjs-70). (Strings convert to
+- Object operands convert with ToPrimitive since clj-quickjs-70. (Strings convert to
   numbers since clj-quickjs-67 and compare relationally by code units since
   clj-quickjs-68, below; `typeof` is clj-quickjs-69; untagged templates
   are clj-quickjs-57.) No `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
@@ -1486,7 +1479,7 @@ Supported (`cargo test --test js_source strings_`,
 
 Deferred:
 
-- Object operands wait for ToPrimitive (clj-quickjs-70).
+- Object operands convert since clj-quickjs-70.
 
 ### Relational comparison of strings (clj-quickjs-68)
 
@@ -1505,8 +1498,7 @@ Supported (`cargo test --test js_source strings_compare_by_code_units`):
 
 Deferred:
 
-- An object operand fails with `UnsupportedOperand` until ToPrimitive with
-  hint number (clj-quickjs-70).
+- Object operands convert with hint number since clj-quickjs-70.
 
 ### Labelled statements (clj-quickjs-82)
 
@@ -1617,8 +1609,7 @@ Supported (`cargo test --lib frontend::tests::compound_assignment`,
 Deferred:
 
 - Logical assignment on properties (`o.p &&= v`) stays `Unsupported`; a
-  property value, operand or key that is an object waits for ToPrimitive
-  (`UnsupportedOperand`). Assignment chains deeper than about 190
+  property value, operand or key that is an object converts since clj-quickjs-70. Assignment chains deeper than about 190
   levels can overflow a 2 MiB debug stack before the nesting limit
   (clj-quickjs-262).
 
@@ -1732,8 +1723,7 @@ Supported (`cargo test --lib frontend::tests::computed_member_access`,
 
 Deferred:
 
-- Object keys (ToPrimitive, clj-quickjs-70) and symbol keys
-  (clj-quickjs-127) fail explicitly; boolean bases and a string's own
+- Symbol keys (clj-quickjs-127) fail explicitly; boolean bases and a string's own
   indices fail with `UnsupportedOperand` (clj-quickjs-39, -142; numbers
   and strings otherwise read through their prototypes since
   clj-quickjs-73); optional chaining.
@@ -1869,8 +1859,8 @@ Supported (`cargo test --lib frontend::tests::template_literals`,
 
 Deferred:
 
-- Tagged templates and `String.raw` (clj-quickjs-58; `` f`x` `` is `Unsupported`); an object
-  substitution fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70).
+- Tagged templates and `String.raw` (clj-quickjs-58; `` f`x` `` is `Unsupported`). Object
+  substitutions convert with hint string since clj-quickjs-70.
 
 ### `this` in method calls (clj-quickjs-116)
 
@@ -1926,7 +1916,7 @@ Deferred:
   The `Array` global exposes `Array.prototype`; its `toString` and
   constructor still fail when called. Assigning `length` supports
   ArraySetLength (clj-quickjs-154). Spread elements and array destructuring
-  (`Unsupported`); object keys in `o[k]` (ToPrimitive, clj-quickjs-70).
+  (`Unsupported`); object keys convert since clj-quickjs-70.
   `__rt.vector` values stay persistent vectors, not arrays.
 
 ### `Object.defineProperty`, `Object.getOwnPropertyDescriptor` and data property attributes (clj-quickjs-119)
@@ -2159,7 +2149,7 @@ Supported (`cargo test --test js_source in_operator`,
 
 Deferred:
 
-- An object key needs ToPrimitive (clj-quickjs-70); names `Function.prototype` does not have yet
+- Names `Function.prototype` does not have yet
   (`toString`; `call`/`apply`/`bind` are supported) and error objects' properties (clj-quickjs-230) fail
   with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
 
@@ -2343,3 +2333,28 @@ Deferred: primitive receiver wrappers and object-valued length conversion
 fail explicitly; array construction and other array methods retain their
 existing gaps. The for-in adaptation clj-quickjs-264 also needs array
 string conversion and stays deferred.
+
+### Object operands and OrdinaryToPrimitive (clj-quickjs-70)
+
+Supported (`cargo test --test js_source objects_convert_with_to_primitive`,
+`cargo test --test js_source object_conversions_cover_hints_operators_and_property_keys`,
+`cargo test --test need to_primitive`, `cargo test --test exception_waits to_primitive`):
+
+- Object operands in arithmetic, relational, bitwise, unary, update and
+  loose equality operators call `valueOf` then `toString`; templates and
+  computed property keys reverse that order. Each callable method receives
+  the original object as `this` and no arguments. The first primitive wins;
+  otherwise a catchable TypeError is thrown. Left conversion finishes first.
+- Ordinary objects inherit defaults: `({}) == '[object Object]'` is true,
+  `'' + {}` is `'[object Object]'`, and a numeric conversion gives NaN.
+  Two objects compare by identity; equality with null/undefined never converts.
+- Task-owned native continuations preserve conversion state across budget
+  yields, `__rt.need` waits, GC and migration. Exceptions propagate and
+  cancellation runs finally blocks without restarting a conversion.
+
+Deferred: Symbol.toPrimitive and wrappers; Function.prototype.toString and
+Array.prototype.join. Functions use the available Object.prototype default (`"[object Function]"`);
+runtime collections with no conversion methods throw TypeError. Leaf built-ins
+still reject object conversion arguments (for example descriptor keys,
+array lengths and apply's argument-list length); these require their own
+resumable built-in paths.

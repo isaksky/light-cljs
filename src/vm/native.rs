@@ -4,7 +4,7 @@
 //! # Leaf and resumable natives
 //!
 //! A native operation is Rust code the VM runs on behalf of an instruction.
-//! There are two kinds, and an instruction is exactly one of them:
+//! There are two kinds; coercing instructions choose their path from their operands:
 //!
 //! * **Leaf natives** cannot call JavaScript and cannot demand a
 //!   dependency: the collection, builder and atom intrinsics
@@ -14,12 +14,14 @@
 //!   continuation object exists. That is the fast path, and it stays one.
 //! * **Resumable natives** may call JavaScript callbacks and demand
 //!   dependencies, so the task may yield, suspend, be collected around and
-//!   migrate to another thread in the middle of one. They are `Reduce`
-//!   (`__rt.reduce`) and `NeedAll` (`__rt.needAll`). Their instruction only
+//!   migrate to another thread in the middle of one. They include `Reduce`
+//!   (`__rt.reduce`), `NeedAll` (`__rt.needAll`) and object operand
+//!   conversion (`start_conversion`). Their instruction only
 //!   validates and pops its operands into a [`NativeFrame`] pushed on the
 //!   task's VM state; the loop then drives that frame one *step* at a time.
 //!
-//! [`is_resumable`] is the exhaustive classification.
+//! [`is_resumable`] classifies unconditional native instructions;
+//! [`start_conversion`] selects the object slow path of coercing instructions.
 //!
 //! # The protocol
 //!
@@ -34,7 +36,7 @@
 //!
 //! Actions:
 //!
-//! * `Call { callee, args }`: invoke a JavaScript function. The trampoline
+//! * `Call { callee, this, args }`: invoke a JavaScript function. The trampoline
 //!   (the dispatch loop) pushes the callee and arguments in the native's
 //!   operand area and enters a new task-owned VM frame for it, exactly as a
 //!   `Call` instruction does; the loop then runs the callback's
@@ -42,7 +44,7 @@
 //!   operand area and the loop resumes the native with `CallResult`. A
 //!   built-in function callee (`crate::vm::builtin`, clj-quickjs-117) runs
 //!   to completion instead and its result is delivered the same way, with
-//!   `this` undefined; a forwarding built-in (`Reflect.apply`,
+//!   the supplied `this` (undefined for reduce); a forwarding built-in (`Reflect.apply`,
 //!   clj-quickjs-102) is first followed to the call it makes
 //!   (`crate::vm::dispatch::resolve`), whose frame then delivers the result.
 //! * `Need { dependency, kind }`: demand result `kind` of `dependency` in
@@ -55,6 +57,8 @@
 //! * `Return(v)`: the operation is complete. The frame is popped and `v` is
 //!   pushed onto the calling frame's operands, as the instruction's result;
 //!   the calling frame continues after the instruction.
+//! * `Resume { instr, operands }`: conversion is complete. Pop the native,
+//!   restore the converted operands and execute the original leaf instruction.
 //!
 //! Failures are delivered too (clj-quickjs-28, "Errors" below): when an
 //! exception unwinds through a pending native, the native receives
@@ -62,7 +66,7 @@
 //! callback caught it), `Failure::Dependency` (the dependency it demanded
 //! failed or was cancelled: the producer's failure) or `Failure::Step` (its own
 //! step failed), and answers with the action `Unwind`: release the frame
-//! and let the exception go on to the handler below it. Neither current
+//! and let the exception go on to the handler below it. No current
 //! native recovers from a failure; any other answer is refused as an
 //! internal error, so a native can never resume after its frame was
 //! partially unwound.
@@ -211,8 +215,10 @@ use super::instr::Instr;
 use crate::collections as coll;
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, ObjectId};
-use crate::ids::{DependencyId, ResultKind};
-use crate::value::Value;
+use crate::host::Host;
+use crate::ids::{DependencyId, ResultKind, TaskId};
+use crate::value::{JsString, Value};
+use crate::vm::property;
 
 /// What a native frame is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,7 +257,14 @@ enum Failure {
 #[derive(Debug)]
 enum Action {
     /// Call `callee` with these arguments in a new VM frame.
-    Call { callee: Value, args: [Value; 2] },
+    Call {
+        callee: Value,
+        this: Value,
+        args: Vec<Value>,
+    },
+    /// Run the original instruction with its converted operands. This is
+    /// one leaf instruction, never interpreter re-entry.
+    Resume { instr: Instr, operands: Vec<Value> },
     /// Read a dependency in the task's world, suspending if it is pending.
     Need {
         dependency: DependencyId,
@@ -262,6 +275,15 @@ enum Action {
     /// The answer to a [`Failure`]: release the frame and let the exception
     /// unwind on to the handler below it. Never the result of a step.
     Unwind,
+}
+
+/// ToPrimitive's preferred primitive type. Number and default share the
+/// ordinary method order; they remain distinct for future exotic methods.
+#[derive(Clone, Copy, Debug)]
+enum Hint {
+    Default,
+    Number,
+    String,
 }
 
 /// The operation-specific state of a native frame.
@@ -288,6 +310,17 @@ enum NativeState {
         /// The element whose dependency is demanded, or the next to demand.
         next: usize,
         len: usize,
+    },
+    /// OrdinaryToPrimitive, left to right, before completing `instr`.
+    /// The original receiver stays in `operands[next]` until its method
+    /// returns a primitive; completed operands are never converted again.
+    Convert {
+        instr: Instr,
+        operands: Vec<Value>,
+        next: usize,
+        end: usize,
+        hint: Hint,
+        method: usize,
     },
 }
 
@@ -317,6 +350,11 @@ impl Trace for NativeFrame {
             NativeState::NeedAll { defs, out, .. } => {
                 defs.trace(visit);
                 out.trace(visit);
+            }
+            NativeState::Convert { operands, .. } => {
+                for v in operands {
+                    v.trace(visit);
+                }
             }
         }
     }
@@ -353,6 +391,84 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
         .checked_sub(N)
         .map(|at| std::array::from_fn(|i| ops[at + i].clone()))
         .ok_or(Fault::Internal("operand stack underflow"))
+}
+
+/// Start a continuation only when an instruction actually needs to
+/// convert an object. Primitive operands retain their single-step path.
+/// Property operations retain their base checks before observable key
+/// conversion; equality never converts two objects or a nullish pair.
+pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool, Fault> {
+    use Instr::*;
+    let (count, first, end, hint) = match instr {
+        ToNumber => (1, 0, 1, Hint::Number),
+        ToString => (1, 0, 1, Hint::String),
+        Plus => (2, 0, 2, Hint::Default),
+        ToNumberPair | CompareLt | CompareGt | CompareLe | CompareGe => (2, 0, 2, Hint::Number),
+        LooseEq => {
+            let [a, b] = operands::<2>(state)?;
+            if matches!(a, Value::Undefined | Value::Null)
+                || matches!(b, Value::Undefined | Value::Null)
+                || matches!((&a, &b), (Value::Object(_), Value::Object(_)))
+            {
+                return Ok(false);
+            }
+            (2, 0, 2, Hint::Default)
+        }
+        GetElem | ToPropertyKey | Delete | PutElem => {
+            let count = if matches!(instr, PutElem) { 3 } else { 2 };
+            let ops = state.operands();
+            let base = ops
+                .get(
+                    ops.len()
+                        .checked_sub(count)
+                        .ok_or(Fault::Internal("operand stack underflow"))?,
+                )
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            if matches!(base, Value::Undefined | Value::Null) {
+                return Ok(false);
+            }
+            (count, 1, 2, Hint::String)
+        }
+        In => {
+            let [_, base] = operands::<2>(state)?;
+            if !matches!(base, Value::Object(_)) {
+                return Ok(false);
+            }
+            (2, 0, 1, Hint::String)
+        }
+        _ => return Ok(false),
+    };
+    let ops = state.operands();
+    let at = ops
+        .len()
+        .checked_sub(count)
+        .ok_or(Fault::Internal("operand stack underflow"))?;
+    if !ops[at + first..at + end]
+        .iter()
+        .any(|v| matches!(v, Value::Object(_)))
+    {
+        return Ok(false);
+    }
+    let operands = ops[at..].to_vec();
+    for _ in 0..count {
+        state.pop()?;
+    }
+    assert_no_borrow("starting a conversion frame (growing native storage)");
+    state.natives.push(NativeFrame {
+        depth: state.depth(),
+        base: state.stack_len(),
+        pc: state.top().pc.saturating_sub(1),
+        awaiting: Awaiting::Nothing,
+        state: NativeState::Convert {
+            instr,
+            operands,
+            next: first,
+            end,
+            hint,
+            method: 0,
+        },
+    });
+    Ok(true)
 }
 
 /// Execute the starting instruction `instr` at `pc` of the running frame:
@@ -437,7 +553,10 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Unwind => {
                 natives.pop();
             }
-            Action::Call { .. } | Action::Need { .. } | Action::Return(_) => {
+            Action::Call { .. }
+            | Action::Need { .. }
+            | Action::Return(_)
+            | Action::Resume { .. } => {
                 return Err("a native frame did not unwind from a failure");
             }
         }
@@ -465,7 +584,7 @@ pub(crate) fn running(state: &VmState) -> Option<usize> {
 
 /// Run one step of the running native frame and apply its action (module
 /// docs, "The protocol").
-pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Result<Flow, Fault> {
     let depth = state.depth();
     let frame = state
         .natives
@@ -495,19 +614,15 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
     frame.awaiting = Awaiting::Nothing;
     let action = {
         let _borrow = scoped_borrow();
-        frame.state.step(heap, input)?
+        frame.state.step(heap, state.diag.task, input)?
     };
     state.truncate_operands(base)?;
     match action {
-        Action::Call { callee, args } => {
+        Action::Call { callee, this, args } => {
             // A forwarding built-in callback (`Reflect.apply`) is followed
             // to the call it makes (`dispatch::resolve`).
             let (max_args, max_hops) = state.forward_limits(state.stack_len());
-            let call = builtin::Forward {
-                callee,
-                this: Value::Undefined,
-                args: args.to_vec(),
-            };
+            let call = builtin::Forward { callee, this, args };
             let task = state.diag.task;
             let (id, code, call) = match dispatch::resolve(heap, task, call, max_args, max_hops)? {
                 (Callee::Bound(_), _) => return Err(Fault::Internal("unresolved bound function")),
@@ -538,6 +653,14 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
             state.push(v);
             Ok(Flow::Next)
         }
+        Action::Resume { instr, operands } => {
+            state.natives.pop();
+            for v in operands {
+                state.push(v);
+            }
+            let code = std::sync::Arc::clone(&state.top().code);
+            dispatch::step(state, &code, heap, host, instr)
+        }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
 }
@@ -554,7 +677,7 @@ fn set_awaiting(state: &mut VmState, awaiting: Awaiting) -> Result<(), Fault> {
 impl NativeState {
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
-    fn step(&mut self, heap: &Heap, input: Input) -> Result<Action, Fault> {
+    fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
             NativeState::Reduce {
                 f,
@@ -579,7 +702,8 @@ impl NativeState {
                 let x = coll::nth(heap, vec.clone(), *next)?;
                 Ok(Action::Call {
                     callee: f.clone(),
-                    args: [acc.clone(), x],
+                    this: Value::Undefined,
+                    args: vec![acc.clone(), x],
                 })
             }
             NativeState::NeedAll {
@@ -614,6 +738,65 @@ impl NativeState {
                     kind: *kind,
                 })
             }
+            NativeState::Convert {
+                instr,
+                operands,
+                next,
+                end,
+                hint,
+                method,
+            } => {
+                match input {
+                    Input::Start => {}
+                    Input::CallResult(v) => {
+                        if !matches!(v, Value::Object(_)) {
+                            operands[*next] = v;
+                            *next += 1;
+                            *method = 0;
+                        }
+                    }
+                    Input::Dependency(_) => {
+                        return Err(Fault::Internal("conversion received a dependency"));
+                    }
+                }
+                while *next < *end {
+                    let receiver = &operands[*next];
+                    if !matches!(receiver, Value::Object(_)) {
+                        *next += 1;
+                        continue;
+                    }
+                    while *method < 2 {
+                        let names = if matches!(hint, Hint::String) {
+                            ["toString", "valueOf"]
+                        } else {
+                            ["valueOf", "toString"]
+                        };
+                        let name = JsString::from(names[*method]);
+                        *method += 1;
+                        // Lookup the second method only after the first has
+                        // returned an object: its callback may change it.
+                        let callee = property::conversion_method(heap, task, receiver, &name)?;
+                        match dispatch::callee(heap, &callee) {
+                            Ok(_) => {
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: receiver.clone(),
+                                    args: vec![],
+                                });
+                            }
+                            Err(Fault::NotCallable(_)) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    return Err(Fault::TypeError(
+                        "cannot convert object to primitive value".to_string(),
+                    ));
+                }
+                Ok(Action::Resume {
+                    instr: *instr,
+                    operands: operands.clone(),
+                })
+            }
         }
     }
 
@@ -626,7 +809,9 @@ impl NativeState {
     fn fail(&mut self, failure: Failure) -> Action {
         match (self, failure) {
             (
-                NativeState::Reduce { .. } | NativeState::NeedAll { .. },
+                NativeState::Reduce { .. }
+                | NativeState::NeedAll { .. }
+                | NativeState::Convert { .. },
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }

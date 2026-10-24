@@ -2703,10 +2703,9 @@ fn unknown_names_fail_with_reference_errors_at_their_position() {
 /// frame's call site), references at the identifier. The scripts adapt
 /// cases of `test_line_column_numbers` (line 1118) of
 /// `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8, where
-/// `@` marks the expected position. Modified: with no objects or
-/// ToPrimitive yet, a function value stands in for `poisoned_number` (the
-/// operator fails with `UnsupportedOperand` instead of the `valueOf`
-/// throwing), `null` is called through a binding, and the caller-frame
+/// `@` marks the expected position. Modified: a methodless object
+/// stands in for `poisoned_number` (conversion throws TypeError),
+/// `null` is called through a binding, and the caller-frame
 /// case calls a script function instead of `Error`. The other scripts are
 /// written for this project.
 ///
@@ -2730,25 +2729,16 @@ fn unknown_names_fail_with_reference_errors_at_their_position() {
 #[test]
 fn runtime_error_positions_follow_operator_tokens() {
     // Binary operators: at the operator, not the start of the expression.
-    let (kind, _, line, column) = failure_at("let f = function(){};\n  1 + 2 * f;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 9)
-    );
-    let (kind, _, line, column) = failure_at("let f = function(){};\n  1 + 2 ** f;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 9)
-    );
-    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f < 2");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 5)
-    );
+    let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  1 + 2 * f;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 9));
+    let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  1 + 2 ** f;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 9));
+    let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  f < 2");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 5));
     // Unary and update operators (unchanged): at the operator.
-    let (_, _, line, column) = failure_at("let f = () => 1;\n  2 * - f");
+    let (_, _, line, column) = failure_at("let f = Object.create(null);\n  2 * - f");
     assert_eq!((line, column), (2, 7));
-    let (_, _, line, column) = failure_at("let f = () => 1;\n  2 * f ++");
+    let (_, _, line, column) = failure_at("let f = Object.create(null);\n  2 * f ++");
     assert_eq!((line, column), (2, 9));
     // Calls: at the `(`.
     let (kind, message, line, column) = failure_at("let n = null;\n 1 + n ( 1234 );");
@@ -3056,17 +3046,9 @@ fn string_values() {
     let (kind, message, ..) = failure_at(r#""s"()"#);
     assert_eq!(kind, VmErrorKind::TypeError);
     assert_eq!(message, "string is not a function");
-    // An object operand of `+` waits for ToPrimitive (clj-quickjs-70):
-    // rejected, never converted. (Mixed `+` concatenates:
-    // `addition_concatenates_strings`; other operators convert strings with
-    // StringToNumber: `strings_convert_with_string_to_number`.)
-    for src in [r#""a" + (() => 1)"#, r#"(() => 1) + 1"#] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
-    }
+    // Functions convert using the available Object.prototype defaults.
+    assert_eq!(string("'a' + (() => 1)"), "a[object Function]");
+    assert_eq!(string("(() => 1) + 1"), "[object Function]1");
     // An uncaught thrown string is reported with its text.
     let e = failure(r#"throw "boom""#);
     assert_eq!(e.kind(), VmErrorKind::Thrown);
@@ -3362,12 +3344,10 @@ fn strings_compare_by_code_units() {
         ops.contains(&Opcode::Lt) && !ops.contains(&Opcode::CompareLt),
         "{ops:?}"
     );
-    // An object operand still needs ToPrimitive (clj-quickjs-70).
-    let (kind, message, line, _) = failure_at("let o = function () {};\n'a' < o");
-    assert_eq!((kind, line), (VmErrorKind::UnsupportedOperand, 2));
+    // Functions use the available Object.prototype default, which is nonnumeric.
     assert_eq!(
-        message,
-        "compare_lt of string and object needs ToPrimitive, which is not supported"
+        eval("let o = function () {}; 'a' < o"),
+        ValueView::Bool(false)
     );
 }
 
@@ -4015,15 +3995,10 @@ fn template_literal_values() {
     // A template is a string value like any other.
     assert_eq!(eval("`ab` === 'ab'"), ValueView::Bool(true));
     assert_eq!(num("`2` * `${3}`"), 6.0);
-    // An object substitution needs ToPrimitive (clj-quickjs-70): it fails
-    // at the substitution, before the next substitution runs (that one
-    // would throw).
+    // Object ToString completes before the next substitution throws.
     let (kind, _, line, column) =
         failure_at("let o = {};\nfunction g() { throw 'later'; }\n`a${o}${g()}`");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 3, 5)
-    );
+    assert_eq!((kind, line, column), (VmErrorKind::Thrown, 2, 16));
     // The conversion is ToString, an instruction of its own.
     assert!(opcodes(&exe("let b = 1; `a${b}`")).contains(&Opcode::ToString));
 }
@@ -4221,18 +4196,14 @@ fn bitwise_operators_follow_to_int32() {
         num("let x = 0; let y = (x = 6) & (x = 3); y * 10 + x"),
         23.0
     );
-    // Objects need ToPrimitive, which is deferred.
+    // Objects without conversion methods throw a catchable TypeError.
     for src in [
         "__rt.vector() | 0",
         "1 << __rt.vector()",
         "~__rt.vector()",
-        "~(() => 1)",
+        "~Object.create(null)",
     ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
     }
 
     // Each operator is one VM instruction, with no ToNumber for number
@@ -4357,13 +4328,13 @@ fn exponent_operator() {
         num("const sq = (x) => x ** 2; let b = 2; sq(b ** b ** b) / 2 ** -1"),
         512.0
     );
-    // Objects need ToPrimitive, which is deferred.
-    for src in ["__rt.vector() ** 2", "2 ** __rt.vector()", "(() => 1) ** 0"] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
+    // Objects without conversion methods throw a catchable TypeError.
+    for src in [
+        "__rt.vector() ** 2",
+        "2 ** __rt.vector()",
+        "Object.create(null) ** 0",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
     }
     // One VM instruction, with no ToNumber for number operands.
     let ops = opcodes(&exe("(2 ** -1) ** (1 ** ~2)"));
@@ -4478,18 +4449,11 @@ fn update_expressions_on_bindings() {
         (VmErrorKind::ReferenceError, "nope is not defined", 1, 1)
     );
     assert_eq!(failure("--nope").kind(), VmErrorKind::ReferenceError);
-    // Objects need ToPrimitive, which is deferred; the failure is at the
-    // operator token.
-    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f ++;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 5)
-    );
+    // A conversion failure is at the operator token.
+    let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  f ++;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 5));
     let (kind, _, line, column) = failure_at("let v = __rt.vector();\n--v;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 1)
-    );
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 1));
 
     // No new opcode: ToNumber, then add or sub, then the binding's store.
     let ops = opcodes(&exe("let a = 1; a++; --a"));
@@ -4621,13 +4585,10 @@ fn update_expressions_on_properties() {
         )),
         11.0
     );
-    // An object value needs ToPrimitive (deferred, clj-quickjs-70); the
-    // conversion fails at the operator token.
-    let (kind, _, line, column) = failure_at("let o = {p: {}};\no.p ++;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 5)
-    );
+    // The default object string becomes NaN in a numeric update.
+    assert!(num("let o = {p: {}}; o.p++; o.p").is_nan());
+    let (kind, _, line, column) = failure_at("let o = {p: Object.create(null)};\no.p ++;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 5));
     // Intrinsics of the reserved binding stay compile errors.
     for src in ["__rt.count++;", "--__rt.count;", "__rt.count.x++;"] {
         let e = compile_script("t", src).unwrap_err();
@@ -4806,18 +4767,16 @@ fn compound_assignment_on_properties() {
         ValueView::Bool(true)
     );
 
-    // An object value needs ToPrimitive (deferred, clj-quickjs-70); the
-    // operator fails at the `op=` token.
-    let (kind, _, line, column) = failure_at("let o = {p: {}};\no.p *= 2;");
+    assert!(num("let o = {p: {}}; o.p *= 2; o.p").is_nan());
     assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 5)
+        string("let o = {p: 1}; o['p'] += {}; o.p"),
+        "1[object Object]"
     );
-    let (kind, _, line, column) = failure_at("let o = {p: 1};\no['p'] += {};");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 8)
-    );
+    // Failed conversions still name the `op=` token.
+    let (kind, _, line, column) = failure_at("let o = {p: Object.create(null)};\no.p *= 2;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 5));
+    let (kind, _, line, column) = failure_at("let o = {p: 1};\no['p'] += Object.create(null);");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 8));
     // Intrinsics of the reserved binding stay compile errors.
     for src in ["__rt.count += 1;", "__rt.count -= 1;", "__rt[0] += 1;"] {
         let e = compile_script("t", src).unwrap_err();
@@ -4966,16 +4925,10 @@ fn compound_assignment_on_bindings() {
         VmErrorKind::Thrown
     );
     // A failing operator is reported at the `op=` token.
-    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f -= 1;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 5)
-    );
+    let (kind, _, line, column) = failure_at("let f = Object.create(null);\n  f -= 1;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 5));
     let (kind, _, line, column) = failure_at("let v = __rt.vector();\nv += 1;");
-    assert_eq!(
-        (kind, line, column),
-        (VmErrorKind::UnsupportedOperand, 2, 3)
-    );
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 3));
     // The reserved intrinsic binding cannot be assigned.
     let e = compile_script("t", "__rt += 1;").unwrap_err();
     assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{e}");
@@ -5732,12 +5685,11 @@ fn in_operator() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
-    // Not supported yet, explicitly: an object key needs ToPrimitive
-    // (clj-quickjs-70); a name Function.prototype does not have yet
+    assert_eq!(eval("({}) in {}"), ValueView::Bool(false));
+    // Not supported yet: a name Function.prototype does not have yet
     // (clj-quickjs-103 and later); an error object's properties
     // (clj-quickjs-230).
     for src in [
-        "({}) in {}",
         "function f() {} 'toString' in f",
         "let e; try { nope; } catch (x) { e = x; } 'message' in e",
     ] {
@@ -6269,20 +6221,10 @@ fn computed_member_access() {
         "2fg"
     );
 
-    // Explicitly unsupported, never a wrong value: an object key needs
-    // ToPrimitive (clj-quickjs-70), also in `++`/`--` (clj-quickjs-76) and
-    // compound assignment (clj-quickjs-260).
-    for src in [
-        "let o = {};\no[{}];",
-        "let o = {};\no[o] = 1;",
-        "let o = {};\no[o]++;",
-        "let o = {};\no[o] += 1;",
-    ] {
-        let (kind, message, line, _) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains("ToPrimitive"), "{src}: {message}");
-        assert_eq!(line, 2, "{src}");
-    }
+    assert_eq!(eval("let o = {}; o[{}];"), ValueView::Undefined);
+    assert_eq!(num("let o = {}; o[o] = 1; o['[object Object]']"), 1.0);
+    assert!(num("let o = {}; o[o]++; o['[object Object]']").is_nan());
+    assert!(num("let o = {}; o[o] += 1; o['[object Object]']").is_nan());
 }
 
 /// Function own properties and the lazy `prototype` object
@@ -6632,18 +6574,12 @@ fn array_literals() {
             4
         )
     );
-    // Setting length truncates (clj-quickjs-154); object keys still need
-    // ToPrimitive (clj-quickjs-70).
+    // Setting length truncates; an ordinary object key converts to a name.
     assert_eq!(num("let a = [1];\na.length = 0; a.length"), 0.0);
-    for (src, needle) in [
-        ("let a = [1];\na[[]];", "ToPrimitive"),
-        ("let a = [1];\na[{}] = 1;", "ToPrimitive"),
-    ] {
-        let (kind, message, line, _) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains(needle), "{src}: {message}");
-        assert_eq!(line, 2, "{src}");
-    }
+    assert_eq!(num("let a = [1]; a[{}] = 1; a['[object Object]']"), 1.0);
+    let (kind, message, line, _) = failure_at("let a = [1];\na[[]];");
+    assert_eq!((kind, line), (VmErrorKind::UnsupportedOperand, 2));
+    assert!(message.contains("Array.prototype.toString"));
     // The prototype chain: Array.prototype, then Object.prototype. Its
     // push is supported; toString and the constructor fail
     // explicitly rather than answer as Object's would.
@@ -9035,4 +8971,163 @@ fn array_push_rejects_foreign_arrays() {
             }
         );
     }
+}
+
+/// Synthetic fixtures, not light-cljs output: OrdinaryToPrimitive calls
+/// methods through the VM with their object as receiver.
+#[test]
+fn objects_convert_with_to_primitive() {
+    for src in [
+        "({}) != 'abc'",
+        "({}) == '[object Object]'",
+        "({valueOf: function () { return 1; }}) == 1",
+        "1 < ({valueOf: function () { return 2; }})",
+        "let o = {}; o == o",
+        "let o = {valueOf: function () { throw 1; }}; o != null && o != undefined && o != {}",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(string("'' + {}"), "[object Object]");
+    assert_eq!(num("({valueOf: function () { return 2; }}) * 3"), 6.0);
+    assert_eq!(string("({valueOf: function () { return 2; }}) + 'x'"), "2x");
+    assert_eq!(
+        string(
+            "({toString: function () { return 's'; }, valueOf: function () { return {}; }}) + ''"
+        ),
+        "s"
+    );
+    assert_eq!(
+        num(
+            "let n = 0; let a = {valueOf: function () { n = n * 10 + 1; return 8; }}; let b = {valueOf: function () { n = n * 10 + 2; return 3; }}; let r = a - b; n * 10 + r"
+        ),
+        125.0
+    );
+    assert_eq!(
+        num("let o = {x: 7, valueOf: function () { return this.x; }}; +o"),
+        7.0
+    );
+    assert_eq!(
+        string("let o = {valueOf: 1, toString: function () { return 's'; }}; '' + o"),
+        "s"
+    );
+    assert_eq!(
+        num(
+            "let o = {valueOf: function () { return {}; }, toString: function () { return {}; }}; let caught = 0; try { o + 1; } catch (e) { caught = 1; } caught"
+        ),
+        1.0
+    );
+    let e = failure(
+        "({valueOf: function () { return {}; }, toString: function () { return {}; }}) + 1",
+    );
+    assert_eq!(e.kind(), VmErrorKind::TypeError);
+    assert_eq!(e.message(), "cannot convert object to primitive value");
+    assert_eq!(
+        string("try { ({valueOf: function () { throw 'boom'; }}) + 1; } catch (e) { e; }"),
+        "boom"
+    );
+    assert_eq!(
+        failure("Object.create(null) + 1").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        num("function f() {} f.valueOf = function () { return 3; }; f * 2"),
+        6.0
+    );
+    assert_eq!(string("function f() {} `${f}`"), "[object Function]");
+    assert_eq!(
+        string("({valueOf: Object.prototype.toString}) + ''"),
+        "[object Object]"
+    );
+    assert_eq!(
+        num(
+            "({valueOf: function () { return __rt.reduce(function (a, b) { return a + b; }, 0, __rt.vector(1, 2, 3)); }}) * 2"
+        ),
+        12.0
+    );
+    assert_eq!(
+        num(
+            "let n = 0; let b = {valueOf: function () { n++; return 2; }}; try { ({valueOf: function () { throw 1; }}) - b; } catch (e) {} n"
+        ),
+        0.0
+    );
+    assert_eq!(
+        num(
+            "let proto = {valueOf: function (arg) { if (arg === undefined) { return this.n; } return 99; }}; let o = Object.create(proto); o.n = 4; o * 2"
+        ),
+        8.0
+    );
+}
+
+#[test]
+fn object_conversions_cover_hints_operators_and_property_keys() {
+    for (expr, expected) in [
+        ("o - 1", 2.0),
+        ("o / 2", 1.5),
+        ("o % 2", 1.0),
+        ("o ** 2", 9.0),
+        ("o & 1", 1.0),
+        ("o | 8", 11.0),
+        ("o ^ 1", 2.0),
+        ("o << 1", 6.0),
+        ("o >> 1", 1.0),
+        ("o >>> 1", 1.0),
+        ("~o", -4.0),
+        ("-o", -3.0),
+        ("+o", 3.0),
+        ("o++", 3.0),
+        ("++o", 4.0),
+        ("--o", 2.0),
+    ] {
+        assert_eq!(
+            num(&format!(
+                "let o = {{valueOf: function () {{ return 3; }}}}; {expr}"
+            )),
+            expected,
+            "{expr}"
+        );
+    }
+    for op in ["<", ">", "<=", ">="] {
+        assert_eq!(
+            num(&format!(
+                "let n = 0; let a = {{valueOf: function () {{ n = n * 10 + 1; return 1; }}}}; let b = {{valueOf: function () {{ n = n * 10 + 2; return 2; }}}}; a {op} b; n"
+            )),
+            12.0
+        );
+    }
+    assert_eq!(
+        string(
+            "let n = ''; let o = {toString: function () { n = n + 's'; return 'key'; }, valueOf: function () { n = n + 'v'; return 2; }}; let r = `${o}`; r + n"
+        ),
+        "keys"
+    );
+    assert_eq!(
+        string(
+            "let n = ''; let o = {toString: function () { n = n + 's'; return {}; }, valueOf: function () { n = n + 'v'; return 2; }}; `${o}` + n"
+        ),
+        "2sv"
+    );
+    assert_eq!(
+        num(
+            "let n = 0; let k = {toString: function () { n++; return 'x'; }}; let o = {x: 2}; o[k]++; o[k] += 3; let r = o[k]; n * 10 + r"
+        ),
+        36.0
+    );
+    assert_eq!(
+        eval(
+            "let k = {toString: function () { return 'x'; }}; let o = {}; o[k] = 7; k in o && o.x === 7 && delete o[k] && !(k in o)"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        num(
+            "let n = 0; let k = {toString: function () { n++; throw 1; }}; try { null[k]; } catch (e) {} try { k in 1; } catch (e) {} try { delete undefined[k]; } catch (e) {} n"
+        ),
+        0.0
+    );
+    assert_eq!(
+        string(
+            "let n = ''; let o = {valueOf: function () { n = n + 'v'; this.toString = function () { n = n + 's'; return 'ok'; }; return {}; }}; let r = '' + o; r + n"
+        ),
+        "okvs"
+    );
 }
