@@ -3503,6 +3503,6 @@ Eval is unavailable; the upstream raw NUL case uses constructor/raw literal.
 ```js accept
 let r = /(b+)c/g; let m = r.exec('abbbbbc'); m[1] === 'bbbbb' && m.index === 1;
 new RegExp('a/b').source === 'a\\/b';
-let r = /a/y; r.lastIndex = 1; r.test('ba') && r.lastIndex === 2;
+r = /a/y; r.lastIndex = 1; r.test('ba') && r.lastIndex === 2;
 try { /a/u; } catch (e) { e instanceof SyntaxError; }
 ```

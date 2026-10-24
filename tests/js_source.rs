@@ -15859,6 +15859,7 @@ fn regexp_flags_errors_and_internal_state() {
     }
     for src in [
         "let caught = false; try {'a'.split(/a/);} catch(e){caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0;} caught",
+        r"let r = /(b+)c/g; let m = r.exec('abbbbbc'); let a = m[1] === 'bbbbb' && m.index === 1; let b = new RegExp('a/b').source === 'a\\/b'; r = /a/y; r.lastIndex = 1; let c = r.test('ba') && r.lastIndex === 2; let d = false; try {/a/u;} catch(e) {d = e instanceof SyntaxError;} a && b && c && d",
         "let r = /a/g; RegExp(r) === r && new RegExp(r) !== r && new RegExp(r).flags === 'g' && RegExp(r, 'm').flags === 'm'",
         "let r = /a/g; let d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); d.value === 0 && d.writable && !d.enumerable && !d.configurable && r instanceof RegExp && r.constructor === RegExp",
         "RegExp.prototype.source === '(?:)' && RegExp.prototype.flags === '' && RegExp.prototype.global === undefined && RegExp.prototype.toString() === '/(?:)/'",
@@ -15967,5 +15968,68 @@ fn regexp_coercions_wait_yield_collect_and_migrate() {
         }
         assert!(done, "instruction bound: {source}");
         assert_eq!(waits, 1);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Compilation exhaustion must
+/// remain catchable, including cached failures after bytecode serialization.
+#[test]
+fn regexp_compilation_limit_is_catchable() {
+    let pattern = "a".repeat(clj_quickjs::regexp::matcher::MAX_MATCH_STEPS);
+    for constructor in ["RegExp", "new RegExp"] {
+        let code = compile_function(&format!(
+            "function f(pattern) {{ let caught = false; try {{ {constructor}(pattern); }} catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} return caught; }}"
+        )).unwrap();
+        let result = run(&code, &[Primitive::String(pattern.as_str().into())]);
+        assert!(
+            matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{constructor}"
+        );
+    }
+    let source = format!(
+        "let caught = false; try {{ /{pattern}/; }} catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} caught"
+    );
+    let literal = exe(&source);
+    let reloaded = Executable::load(literal.to_spec()).unwrap();
+    for code in [literal, reloaded] {
+        assert!(
+            matches!(run(&code, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Object's tag depends on the
+/// internal RegExp slot, independently of an object's prototype chain.
+#[test]
+fn regexp_object_tag_and_brand() {
+    assert_eq!(
+        eval(
+            r#"
+        let literal = /a/; let constructed = new RegExp('a');
+        let tag = Object.prototype.toString;
+        let before = tag.call(literal) === '[object RegExp]' &&
+                     tag.call(constructed) === '[object RegExp]';
+        Object.setPrototypeOf(literal, null);
+        before && tag.call(literal) === '[object RegExp]' &&
+        tag.call(RegExp.prototype) === '[object Object]' &&
+        tag.call(Object.create(RegExp.prototype)) === '[object Object]'
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. RegExp split dispatch is
+/// deferred and must fail explicitly for every supported creation form.
+#[test]
+fn string_split_rejects_regexp_separators() {
+    for separator in ["/,/", "RegExp(',')", "new RegExp(',')"] {
+        assert_eq!(
+            eval(&format!(
+                "let caught = false; try {{ 'a,b'.split({separator}); }} catch(e) {{ caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0; }} caught"
+            )),
+            ValueView::Bool(true),
+            "{separator}"
+        );
     }
 }
