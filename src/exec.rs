@@ -21,9 +21,18 @@
 //!   ([`Task::try_begin_run`]) *before* dispatch and the claim is returned
 //!   when the run ends: on yield, park, or a terminal outcome. The claim is
 //!   the task's atomic state word, so a task never runs on two workers at
-//!   once; a claim that fails (the task is running, parked or finished, for
-//!   example because an embedder enqueued it twice) drops that queue entry
-//!   and is recorded ([`EventKind::NotDispatched`]).
+//!   once. The executor also never dispatches one task twice at once: a
+//!   queue entry for a task whose previous dispatch has not finished
+//!   recording and routing its outcome is ineligible until it has, so the
+//!   record shows each run's release before the next run's dispatch. A
+//!   claim that fails is recorded ([`EventKind::NotDispatched`]) and routed
+//!   by the task's state: still runnable (a diagnostic reader held the task
+//!   body for an instant) is requeued ([`EnqueueReason::Retried`]), parked
+//!   is kept with the parked tasks, and running elsewhere (an embedder's own
+//!   run) or finished drops the entry.
+//! * **One runtime.** An executor serves the [`Runtime`] it was started
+//!   for; task ids are only unique within a runtime. Tasks of another
+//!   runtime are handed back ([`ForeignTasks`]) at every entry point.
 //! * **Waiting occupies no worker.** A run that parks ends
 //!   ([`RunOutcome::Waiting`]); the worker moves on. The executor keeps the
 //!   parked task's handle (dependency cells hold only weak references) until
@@ -56,17 +65,19 @@
 //! returned, with how the run ended; [`OutcomeKind::Completed`] is useful
 //! work finished), and refused claims. [`Executor::wait_for`] blocks with a
 //! bound until a predicate over the events holds, so tests synchronize on
-//! transitions instead of sleeping.
+//! transitions instead of sleeping. The predicate runs on a snapshot with
+//! no executor lock held, so it may call the executor.
 //!
 //! # Locks
 //!
-//! Two short mutexes: the scheduling state (queue, parked set, last worker
-//! per task) and the record (events, terminal outcomes). The record is the
-//! innermost lock: it may be taken while the scheduling lock is held (so an
-//! enqueue is recorded before any worker can dispatch it), never the other
-//! way round. Neither is held while a task runs or suspends, while the
-//! driver, a host or the placement hook runs, or while a wake or
-//! cancellation is delivered. An idle worker waits on the scheduling
+//! Two short mutexes: the scheduling state (queue, parked set, dispatches
+//! in flight, last worker per task) and the record (events, terminal
+//! outcomes). The record is the innermost lock: it may be taken while the
+//! scheduling lock is held (so an enqueue is recorded before any worker can
+//! dispatch it), never the other way round. Neither is held while a task
+//! runs or suspends, while the driver, a host, the placement hook or a
+//! [`Executor::wait_for`] predicate runs, or while a wake or cancellation
+//! is delivered. An idle worker waits on the scheduling
 //! condition variable with no task claimed. There is no lock around VM
 //! execution: two workers execute instructions at the same time.
 //!
@@ -86,14 +97,20 @@
 //! [`RunOutcome::Cancelled`]. Dropping an executor begins shutdown and
 //! detaches its workers.
 //!
-//! Collection while workers run is not integrated yet (pellet
-//! clj-quickjs-25): [`Runtime::collect`](crate::Runtime::collect) refuses
-//! while any worker holds a run guard.
+//! # Collection
+//!
+//! The executor takes no part in collection. By the safepoint contract
+//! ([`crate::heap::gc`]), [`Runtime::request_collection`] needs no executor
+//! cooperation: each run reaches the VM's safepoints, and an idle worker
+//! holds no heap access; a leaf host effect that blocks (as the tests'
+//! gates do) delays a request until it returns. Testing that under the
+//! executor, and recording collections with its events, is pellet
+//! clj-quickjs-25.
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -103,7 +120,24 @@ use std::time::{Duration, Instant};
 use crate::dep::Wakeups;
 use crate::host::{Host, NoHost};
 use crate::ids::{DependencyKey, TaskId};
+use crate::runtime::Runtime;
 use crate::task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStatus};
+
+/// Tasks of another runtime than the executor's, handed back unscheduled.
+#[derive(Debug)]
+pub struct ForeignTasks(pub Vec<Task>);
+
+impl fmt::Display for ForeignTasks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} task(s) belong to another runtime than the executor's",
+            self.0.len()
+        )
+    }
+}
+
+impl std::error::Error for ForeignTasks {}
 
 /// Index of one executor worker thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -146,6 +180,9 @@ pub enum EnqueueReason {
     Woken,
     /// Its cancellation made it runnable ([`Executor::cancel`]).
     Cancelled,
+    /// A claim failed while the task stayed runnable (module docs,
+    /// "Ownership per run").
+    Retried,
 }
 
 /// Input to the placement hook ([`ExecutorConfig::placement`]).
@@ -311,13 +348,15 @@ impl ExecutorConfig {
         self
     }
 
-    /// Start the worker threads.
-    pub fn start(self) -> std::io::Result<Executor> {
+    /// Start the worker threads, serving tasks of `runtime`.
+    pub fn start(self, runtime: &Runtime) -> std::io::Result<Executor> {
         let workers = self.workers;
         let shared = Arc::new(Shared {
+            runtime: runtime.runtime_id(),
             sched: Mutex::new(Sched {
                 queue: VecDeque::new(),
                 parked: HashMap::new(),
+                in_flight: HashSet::new(),
                 last_worker: HashMap::new(),
                 running: vec![None; workers],
                 stopping: false,
@@ -371,6 +410,10 @@ struct Sched {
     /// still parked, checked under this lock, so a wake that won the race
     /// (its enqueue takes this lock too) never leaves a stale entry.
     parked: HashMap<TaskId, Task>,
+    /// Tasks taken by a worker whose dispatch has not finished routing its
+    /// outcome; their queue entries are ineligible meanwhile.
+    in_flight: HashSet<TaskId>,
+    /// The worker that last acquired each task's claim.
     last_worker: HashMap<TaskId, WorkerId>,
     /// The task each worker is dispatching, by worker index.
     running: Vec<Option<TaskId>>,
@@ -385,6 +428,8 @@ struct Record {
 }
 
 struct Shared {
+    /// Identity of the runtime whose tasks this executor serves.
+    runtime: u64,
     sched: Mutex<Sched>,
     /// Signalled when the queue gains an entry or shutdown begins.
     ready: Condvar,
@@ -469,13 +514,18 @@ impl Shared {
             if sched.stopping {
                 return None;
             }
-            let eligible = sched.queue.iter().position(|e| match e.placement {
-                Placement::Any => true,
-                Placement::Worker(w) => w == worker,
+            let in_flight = &sched.in_flight;
+            let eligible = sched.queue.iter().position(|e| {
+                let placed = match e.placement {
+                    Placement::Any => true,
+                    Placement::Worker(w) => w == worker,
+                };
+                placed && !in_flight.contains(&e.task.id())
             });
             if let Some(entry) = eligible.and_then(|i| sched.queue.remove(i)) {
-                sched.running[worker.0] = Some(entry.task.id());
-                sched.last_worker.insert(entry.task.id(), worker);
+                let id = entry.task.id();
+                sched.running[worker.0] = Some(id);
+                sched.in_flight.insert(id);
                 return Some(entry.task);
             }
             sched = self
@@ -492,10 +542,13 @@ impl Shared {
             Ok(guard) => guard,
             Err(e) => {
                 self.record(Some(worker), Some(id), EventKind::NotDispatched(e));
+                // The match borrows `task` for the guard; a handle clone is cheap.
+                self.route_refused(task.clone());
                 return;
             }
         };
         let execution = guard.wake_handle().execution();
+        self.lock_sched().last_worker.insert(id, worker);
         self.record(Some(worker), Some(id), EventKind::Dispatched { execution });
         let mut cx = RunContext {
             worker,
@@ -545,6 +598,26 @@ impl Shared {
         }
     }
 
+    /// Route a task whose claim was refused, by its state now (module docs,
+    /// "Ownership per run"). This executor never dispatches a task twice at
+    /// once, so the refusal came from a diagnostic reader's momentary body
+    /// lock, an embedder's own run, a park, or the end of the task.
+    fn route_refused(&self, task: Task) {
+        match task.status() {
+            // Requeued: its entry stays ineligible until this dispatch ends.
+            TaskStatus::Ready => self.enqueue(task, EnqueueReason::Retried),
+            TaskStatus::Waiting => {
+                let mut sched = self.lock_sched();
+                // Rechecked under the lock a waking enqueue takes.
+                if task.status() == TaskStatus::Waiting {
+                    sched.parked.insert(task.id(), task);
+                }
+            }
+            // Running elsewhere: its runner routes it. Finished: nothing to do.
+            TaskStatus::Running | TaskStatus::Finished | TaskStatus::Cancelled => {}
+        }
+    }
+
     /// Block until `ready(record)` holds or `timeout` passes.
     fn wait_record<T>(
         &self,
@@ -578,7 +651,11 @@ struct WorkerExit<'a> {
 
 impl Drop for WorkerExit<'_> {
     fn drop(&mut self) {
-        self.shared.lock_sched().running[self.worker.0] = None;
+        let mut sched = self.shared.lock_sched();
+        if let Some(id) = sched.running[self.worker.0].take() {
+            sched.in_flight.remove(&id);
+        }
+        drop(sched);
         let mut record = self.shared.lock_record();
         record.live_workers -= 1;
         Shared::push_event(
@@ -603,8 +680,14 @@ fn worker_main(shared: &Shared, worker: WorkerId) {
     );
     let mut host = (shared.config.host)(worker);
     while let Some(task) = shared.next_task(worker) {
+        let id = task.id();
         shared.dispatch(worker, task, &mut *host);
-        shared.lock_sched().running[worker.0] = None;
+        let mut sched = shared.lock_sched();
+        sched.running[worker.0] = None;
+        sched.in_flight.remove(&id);
+        drop(sched);
+        // A queued entry of this task may have become eligible.
+        shared.ready.notify_all();
     }
 }
 
@@ -648,9 +731,10 @@ pub struct ShutdownTimeout {
 }
 
 impl Executor {
-    /// Start an executor with [`ExecutorConfig::new`] settings.
-    pub fn start() -> std::io::Result<Executor> {
-        ExecutorConfig::new().start()
+    /// Start an executor with [`ExecutorConfig::new`] settings, serving tasks
+    /// of `runtime`.
+    pub fn start(runtime: &Runtime) -> std::io::Result<Executor> {
+        ExecutorConfig::new().start(runtime)
     }
 
     /// The number of workers.
@@ -658,44 +742,67 @@ impl Executor {
         self.shared.config.workers
     }
 
-    /// Enqueue a runnable task with the placement hook's decision.
-    pub fn submit(&self, task: Task) {
-        self.shared.enqueue(task, EnqueueReason::Submitted);
+    fn check_own(&self, task: Task) -> Result<Task, ForeignTasks> {
+        if task.runtime_id() == self.shared.runtime {
+            Ok(task)
+        } else {
+            Err(ForeignTasks(vec![task]))
+        }
     }
 
-    /// Enqueue a runnable task on `placement`, bypassing the hook.
-    pub fn submit_with(&self, task: Task, placement: Placement) {
+    /// Enqueue a runnable task with the placement hook's decision. A task
+    /// of another runtime is handed back.
+    pub fn submit(&self, task: Task) -> Result<(), ForeignTasks> {
+        let task = self.check_own(task)?;
+        self.shared.enqueue(task, EnqueueReason::Submitted);
+        Ok(())
+    }
+
+    /// Enqueue a runnable task on `placement`, bypassing the hook. A task of
+    /// another runtime is handed back.
+    pub fn submit_with(&self, task: Task, placement: Placement) -> Result<(), ForeignTasks> {
+        let task = self.check_own(task)?;
         self.shared
             .enqueue_at(task, EnqueueReason::Submitted, placement);
+        Ok(())
     }
 
     /// Enqueue the tasks a completion made runnable (normally the result of
     /// [`Runtime::complete`](crate::Runtime::complete) or
     /// [`Runtime::cancel_cell`](crate::Runtime::cancel_cell)); returns how
     /// many. Remembered wakes need nothing (their run requeues itself) and
-    /// stale ones are ignored.
-    pub fn wake(&self, wakeups: Wakeups) -> usize {
+    /// stale ones are ignored. If any task belongs to another runtime,
+    /// nothing is enqueued and every runnable task is handed back.
+    pub fn wake(&self, wakeups: Wakeups) -> Result<usize, ForeignTasks> {
         let runnable = wakeups.into_runnable();
+        if runnable
+            .iter()
+            .any(|t| t.runtime_id() != self.shared.runtime)
+        {
+            return Err(ForeignTasks(runnable));
+        }
         let n = runnable.len();
         for task in runnable {
             self.shared.enqueue(task, EnqueueReason::Woken);
         }
-        n
+        Ok(n)
     }
 
     /// Request `task`'s cancellation ([`Task::cancel`]). If the task was
     /// parked it is now runnable and is enqueued, so its own run performs
     /// terminal cleanup and ends [`RunOutcome::Cancelled`]; returns `true`
     /// then. Otherwise (`false`) the current or next run observes the
-    /// request, or the task had already finished or been cancelled.
-    pub fn cancel(&self, task: &Task) -> bool {
-        match task.cancel() {
+    /// request, or the task had already finished or been cancelled. A task
+    /// of another runtime is handed back uncancelled.
+    pub fn cancel(&self, task: &Task) -> Result<bool, ForeignTasks> {
+        let task = self.check_own(task.clone())?;
+        Ok(match task.cancel() {
             Cancel::Runnable(task) => {
                 self.shared.enqueue(task, EnqueueReason::Cancelled);
                 true
             }
             Cancel::Requested | Cancel::AlreadyRequested | Cancel::Finished => false,
-        }
+        })
     }
 
     /// A snapshot of the event record.
@@ -704,10 +811,34 @@ impl Executor {
     }
 
     /// Wait until `ready(events)` holds; `false` if `timeout` passes first.
+    /// `ready` sees a snapshot taken whenever the record has grown, and runs
+    /// with no executor lock held, so it may call the executor.
     pub fn wait_for(&self, timeout: Duration, mut ready: impl FnMut(&[Event]) -> bool) -> bool {
-        self.shared
-            .wait_record(timeout, |record| ready(&record.events).then_some(()))
-            .is_some()
+        let deadline = Instant::now() + timeout;
+        let mut seen = None;
+        loop {
+            let snapshot = {
+                let mut record = self.shared.lock_record();
+                // Events are only appended: a new length is a new state.
+                while seen == Some(record.events.len()) {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    record = self
+                        .shared
+                        .recorded
+                        .wait_timeout(record, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                record.events.clone()
+            };
+            seen = Some(snapshot.len());
+            if ready(&snapshot) {
+                return true;
+            }
+        }
     }
 
     /// Wait for `task`'s terminal outcome (`Complete`, `Failed` or

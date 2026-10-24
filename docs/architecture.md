@@ -789,6 +789,9 @@ Design: `design.md` §§8, 10, 15.
   and the task's last worker (for example: woken tasks go to another
   worker); the event record (dispatch, release, enqueue, worker start with
   OS thread id) is what tests wait on, with bounded waits, never sleeps.
+  Predicates run on a snapshot with no executor lock held. A task is never
+  dispatched again before its previous dispatch has recorded its release
+  (an in-flight set), so the record is a faithful order of ownership.
 - **Cancellation and shutdown.** `Executor::cancel` enqueues a parked task
   its cancellation made runnable; the task's own run cleans up. Shutdown
   stops dispatch, waits a bounded time for in-flight runs (bounded by the
@@ -799,9 +802,12 @@ Design: `design.md` §§8, 10, 15.
   worker its own `JSRuntime` and `js_worker_postMessage` serializes
   messages between them; here all workers share one runtime and heap and
   pass tasks, not copies of values.
-- **Deferred.** Collection integrated with running workers
-  (clj-quickjs-25); the VM-level need (clj-quickjs-23) that will let the
-  default driver park on its own.
+- **One runtime.** Task ids restart in every runtime, so an executor is
+  started for one runtime and hands back tasks of others (`ForeignTasks`).
+- **Deferred.** Recording collections with executor events and the
+  executor root-inventory tests (clj-quickjs-25; by the safepoint contract `request_collection`
+  needs no executor cooperation, untested under the executor yet); the VM-level need (clj-quickjs-23)
+  that will let the default driver park on its own.
 
 ## QuickJS references and provenance
 

@@ -326,10 +326,13 @@ fn two_workers_execute_vm_instructions_at_the_same_time() {
     let hosts = Hosts::default();
     let a = effect_task(&rt, MEET, 1.0);
     let b = effect_task(&rt, MEET, 2.0);
-    let exec = ExecutorConfig::new().host(hosts.factory()).start().unwrap();
+    let exec = ExecutorConfig::new()
+        .host(hosts.factory())
+        .start(&rt)
+        .unwrap();
     assert_eq!(exec.workers(), 2);
-    exec.submit(a.clone());
-    exec.submit(b.clone());
+    exec.submit(a.clone()).unwrap();
+    exec.submit(b.clone()).unwrap();
     assert_eq!(complete_number(exec.take_outcome(a.id(), TIMEOUT)), 1.0);
     assert_eq!(complete_number(exec.take_outcome(b.id(), TIMEOUT)), 2.0);
 
@@ -387,10 +390,12 @@ fn parked_consumers_resume_on_another_worker_without_replaying_effects() {
             (EnqueueReason::Yielded, Some(last)) => Placement::Worker(last),
             _ => Placement::Any,
         })
-        .start()
+        .start(&rt)
         .unwrap();
-    exec.submit_with(c1.clone(), Placement::Worker(w(0)));
-    exec.submit_with(c2.clone(), Placement::Worker(w(0)));
+    exec.submit_with(c1.clone(), Placement::Worker(w(0)))
+        .unwrap();
+    exec.submit_with(c2.clone(), Placement::Worker(w(0)))
+        .unwrap();
     assert!(
         exec.wait_for(TIMEOUT, |ev| parked(ev, c1.id()) && parked(ev, c2.id())),
         "{:#?}",
@@ -400,7 +405,7 @@ fn parked_consumers_resume_on_another_worker_without_replaying_effects() {
     assert_eq!(c2.status(), TaskStatus::Waiting);
 
     // Useful work while both consumers wait.
-    exec.submit(unrelated.clone());
+    exec.submit(unrelated.clone()).unwrap();
     let done = exec.take_outcome(unrelated.id(), TIMEOUT);
     assert_eq!(complete_number(done), WORK_RESULT);
     assert_eq!(c1.status(), TaskStatus::Waiting);
@@ -410,7 +415,7 @@ fn parked_consumers_resume_on_another_worker_without_replaying_effects() {
     let wakeups = rt
         .complete(key, producer.producer(), Completion::Ready(&value))
         .unwrap();
-    assert_eq!(exec.wake(wakeups), 2);
+    assert_eq!(exec.wake(wakeups).unwrap(), 2);
     for (c, arg) in [(&c1, 1.0), (&c2, 2.0)] {
         assert_eq!(
             complete_number(exec.take_outcome(c.id(), TIMEOUT)),
@@ -485,25 +490,25 @@ fn cancellation_of_parked_and_running_tasks_is_observed_by_their_own_runs() {
         .budget(Budget::instructions(50))
         .host(hosts.factory())
         .driver(consumer_driver([c1.id(), c2.id()].into()))
-        .start()
+        .start(&rt)
         .unwrap();
-    exec.submit(c1.clone());
-    exec.submit(c2.clone());
+    exec.submit(c1.clone()).unwrap();
+    exec.submit(c2.clone()).unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| parked(ev, c1.id()) && parked(ev, c2.id())));
-    exec.submit(endless.clone());
+    exec.submit(endless.clone()).unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| { releases(ev, endless.id()).len() >= 2 }));
 
     // Parked: the cancellation makes it runnable and the executor enqueues it.
-    assert!(exec.cancel(&c1));
+    assert!(exec.cancel(&c1).unwrap());
     assert!(matches!(
         exec.take_outcome(c1.id(), TIMEOUT),
         Some(RunOutcome::Cancelled)
     ));
     assert_eq!(c1.status(), TaskStatus::Cancelled);
-    assert!(!exec.cancel(&c1), "already finished");
+    assert!(!exec.cancel(&c1).unwrap(), "already finished");
 
     // Running (or queued between runs): observed at a budget boundary.
-    assert!(!exec.cancel(&endless));
+    assert!(!exec.cancel(&endless).unwrap());
     assert!(matches!(
         exec.take_outcome(endless.id(), TIMEOUT),
         Some(RunOutcome::Cancelled)
@@ -516,7 +521,7 @@ fn cancellation_of_parked_and_running_tasks_is_observed_by_their_own_runs() {
         .complete(key, producer.producer(), Completion::Ready(&value))
         .unwrap();
     assert_eq!(wakeups.task_ids(), [c2.id()]);
-    assert_eq!(exec.wake(wakeups), 1);
+    assert_eq!(exec.wake(wakeups).unwrap(), 1);
     assert_eq!(complete_number(exec.take_outcome(c2.id(), TIMEOUT)), 102.0);
 
     let events = exec.events();
@@ -562,16 +567,17 @@ fn shutdown_returns_pending_and_parked_tasks_to_the_embedder() {
     let exec = ExecutorConfig::new()
         .host(hosts.factory())
         .driver(consumer_driver([c.id()].into()))
-        .start()
+        .start(&rt)
         .unwrap();
-    exec.submit(c.clone());
+    exec.submit(c.clone()).unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| parked(ev, c.id())));
     for (i, gate) in gates.iter().enumerate() {
-        exec.submit_with(gate.clone(), Placement::Worker(w(i)));
+        exec.submit_with(gate.clone(), Placement::Worker(w(i)))
+            .unwrap();
     }
     assert!(exec.wait_for(TIMEOUT, |ev| gates.iter().all(|g| dispatched(ev, g.id()))));
     for t in &queued {
-        exec.submit(t.clone());
+        exec.submit(t.clone()).unwrap();
     }
     exec.begin_shutdown();
     hosts.gate.open();
@@ -636,11 +642,11 @@ fn shutdown_times_out_while_a_worker_is_busy_and_can_be_retried() {
         .workers(1)
         .budget(Budget::instructions(50))
         .host(hosts.factory())
-        .start()
+        .start(&rt)
         .unwrap();
-    exec.submit(gate.clone());
+    exec.submit(gate.clone()).unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| dispatched(ev, gate.id())));
-    exec.submit(endless.clone());
+    exec.submit(endless.clone()).unwrap();
 
     let timeout = exec.shutdown(Duration::from_millis(50)).unwrap_err();
     assert_eq!(timeout.busy, [(w(0), gate.id())]);
@@ -661,9 +667,9 @@ fn an_endless_task_in_flight_is_returned_at_shutdown() {
     let endless = spin(&rt);
     let exec = ExecutorConfig::new()
         .budget(Budget::instructions(50))
-        .start()
+        .start(&rt)
         .unwrap();
-    exec.submit(endless.clone());
+    exec.submit(endless.clone()).unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| !releases(ev, endless.id()).is_empty()));
     let down = exec.shutdown(TIMEOUT).unwrap();
     let pending: Vec<TaskId> = down.pending.iter().map(Task::id).collect();
@@ -718,4 +724,180 @@ fn manual_embedding_needs_no_executor() {
     let args: Vec<f64> = effects.iter().map(|e| e.arg).collect();
     assert_eq!(args, [3.0, 103.0]);
     assert_ne!(effects[0].thread, effects[1].thread);
+}
+
+/// Task ids restart at 1 in every runtime, so an executor serves only the
+/// runtime it was started for: a task of another runtime, even one with a
+/// colliding id, is handed back at submit, wake and cancel, untouched.
+#[test]
+fn foreign_runtime_tasks_are_handed_back_untouched() {
+    let rt = Runtime::new();
+    let other = Runtime::new();
+    let own = work(&rt);
+    let foreign = work(&other);
+    assert_eq!(own.id(), foreign.id(), "ids collide across runtimes");
+    let exec = ExecutorConfig::new().start(&rt).unwrap();
+
+    let back = exec.submit(foreign.clone()).unwrap_err();
+    assert_eq!(back.0.len(), 1);
+    assert!(exec.submit_with(foreign.clone(), Placement::Any).is_err());
+    assert!(exec.cancel(&foreign).is_err());
+    assert!(!foreign.cancel_requested());
+    exec.submit(own.clone()).unwrap();
+    assert_eq!(
+        complete_number(exec.take_outcome(own.id(), TIMEOUT)),
+        WORK_RESULT
+    );
+
+    // A parked task of the other runtime: its wakeups are handed back.
+    let key = DependencyKey::new(other.world(), DEF, KIND);
+    let producer = other.claim(key).unwrap();
+    let parked = work(&other);
+    let mut guard = parked.try_begin_run().unwrap();
+    assert!(matches!(guard.need(DEF, KIND), Ok(Need::Waiting { .. })));
+    assert!(matches!(guard.park(), RunOutcome::Waiting(_)));
+    let value = other.root(Primitive::Number(0.0));
+    let wakeups = other
+        .complete(key, producer.producer(), Completion::Ready(&value))
+        .unwrap();
+    let back = exec.wake(wakeups).unwrap_err();
+    let ids: Vec<TaskId> = back.0.iter().map(Task::id).collect();
+    assert_eq!(ids, [parked.id()]);
+
+    let down = exec.shutdown(TIMEOUT).unwrap();
+    assert!(down.pending.is_empty() && down.parked.is_empty());
+    // Nothing of the other runtime was enqueued (its parked task's id
+    // collides with no task of this runtime).
+    assert!(down.events.iter().all(|e| e.task != Some(parked.id())));
+    // The handed-back tasks still run by hand in their own runtime.
+    assert_eq!(complete_number(Some(foreign.run().unwrap())), WORK_RESULT);
+    assert_eq!(complete_number(Some(back.0[0].run().unwrap())), WORK_RESULT);
+}
+
+/// A `wait_for` predicate runs with no executor lock held, so it may query
+/// the executor and submit work.
+#[test]
+fn a_wait_predicate_may_call_the_executor() {
+    let rt = Runtime::new();
+    let task = work(&rt);
+    let exec = ExecutorConfig::new().workers(1).start(&rt).unwrap();
+    assert!(exec.wait_for(TIMEOUT, |_| !exec.events().is_empty()));
+    let mut submitted = false;
+    let done = exec.wait_for(TIMEOUT, |events| {
+        if !submitted {
+            exec.submit(task.clone()).unwrap();
+            submitted = true;
+        }
+        releases(events, task.id()).contains(&OutcomeKind::Completed)
+    });
+    assert!(done, "{:#?}", exec.events());
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// The wake of a park can arrive before the parking dispatch has recorded
+/// its release (here the driver is held right after the park). The woken
+/// entry stays ineligible until that dispatch has finished, so the record
+/// shows the release before the next dispatch even with an idle worker
+/// ready to take it.
+#[test]
+fn a_wake_during_the_parking_release_waits_for_it() {
+    let rt = Runtime::new();
+    let key = DependencyKey::new(rt.world(), DEF, KIND);
+    let producer = rt.claim(key).unwrap();
+    let hosts = Hosts::default();
+    let c = consumer(&rt, 4.0);
+    let (parked_latch, release_latch) = (Arc::new(Latch::default()), Arc::new(Latch::default()));
+    let (parked_signal, release_wait) = (Arc::clone(&parked_latch), Arc::clone(&release_latch));
+    let exec = ExecutorConfig::new()
+        .host(hosts.factory())
+        .driver(move |mut guard: RunGuard<'_>, cx: &mut RunContext<'_>| {
+            match guard.need(DEF, KIND) {
+                Ok(Need::Waiting { .. }) => {
+                    let outcome = guard.park();
+                    parked_signal.open();
+                    assert!(release_wait.wait(), "release latch never opened");
+                    outcome
+                }
+                Ok(Need::Ready(_)) => guard.run_with(cx.budget, &mut *cx.host),
+                other => panic!("unexpected need result {other:?}"),
+            }
+        })
+        .start(&rt)
+        .unwrap();
+    exec.submit_with(c.clone(), Placement::Worker(w(0)))
+        .unwrap();
+    assert!(parked_latch.wait());
+    assert_eq!(c.status(), TaskStatus::Waiting);
+    let value = rt.root(Primitive::Number(0.0));
+    let wakeups = rt
+        .complete(key, producer.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert_eq!(exec.wake(wakeups).unwrap(), 1);
+    // Probe while the parking dispatch is held: worker 1 is idle and the
+    // task is runnable, yet its entry must not be dispatched. (This cannot
+    // fail when the executor is correct; the bound only limits how long a
+    // regression has to show itself.)
+    let early = exec.wait_for(Duration::from_millis(200), |ev| {
+        dispatches(ev, c.id()).len() > 1
+    });
+    assert!(!early, "{:#?}", exec.events());
+    release_latch.open();
+    assert_eq!(complete_number(exec.take_outcome(c.id(), TIMEOUT)), 104.0);
+
+    let events = exec.events();
+    assert_single_owner(&events);
+    assert_eq!(
+        releases(&events, c.id()),
+        [OutcomeKind::Waiting(key), OutcomeKind::Completed]
+    );
+    let waiting = position(&events, c.id(), |k| {
+        *k == EventKind::Released(OutcomeKind::Waiting(key))
+    })
+    .unwrap();
+    let resumed = position(&events, c.id(), |k| {
+        *k == EventKind::Dispatched { execution: 2 }
+    })
+    .unwrap();
+    assert!(waiting < resumed, "{events:#?}");
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// A driver that panics while holding a run guard poisons that task only:
+/// the worker records `Panicked`, keeps running other tasks, and shuts down.
+#[test]
+fn a_panicking_driver_does_not_stop_its_worker() {
+    let rt = Runtime::new();
+    let doomed = work(&rt);
+    let healthy = work(&rt);
+    let doomed_id = doomed.id();
+    let exec = ExecutorConfig::new()
+        .workers(1)
+        .driver(move |guard: RunGuard<'_>, cx: &mut RunContext<'_>| {
+            if guard.task_id() == doomed_id {
+                panic!("driver panic for the test (expected)");
+            }
+            guard.run_with(cx.budget, &mut *cx.host)
+        })
+        .start(&rt)
+        .unwrap();
+    exec.submit(doomed.clone()).unwrap();
+    assert!(exec.wait_for(TIMEOUT, |ev| {
+        position(ev, doomed.id(), |k| *k == EventKind::Panicked).is_some()
+    }));
+    assert_eq!(doomed.status(), TaskStatus::Finished, "poisoned");
+    exec.submit(healthy.clone()).unwrap();
+    assert_eq!(
+        complete_number(exec.take_outcome(healthy.id(), TIMEOUT)),
+        WORK_RESULT
+    );
+    let down = exec.shutdown(TIMEOUT).unwrap();
+    assert_single_owner(&down.events);
+    assert!(down.pending.is_empty() && down.outcomes.is_empty());
+    let workers: HashSet<Option<WorkerId>> = down
+        .events
+        .iter()
+        .filter(|e| e.task.is_some() && matches!(e.kind, EventKind::Dispatched { .. }))
+        .map(|e| e.worker)
+        .collect();
+    assert_eq!(workers, HashSet::from([Some(w(0))]));
 }

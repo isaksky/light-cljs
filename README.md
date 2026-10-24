@@ -668,7 +668,12 @@ Supported:
   dispatch and the claim is returned on yield, park or a terminal outcome,
   so a task never runs on two workers. No lock is held while a task runs
   or suspends; two workers execute instructions at the same time (proved
-  by a rendezvous inside host effects).
+  by a rendezvous inside host effects). The executor never dispatches a
+  task again before the previous dispatch has recorded its release; a
+  refused claim is requeued if the task is still runnable (`Retried`) or
+  kept if parked. An executor serves the runtime it was started for
+  (`ExecutorConfig::start(&runtime)`); tasks of another runtime are handed
+  back (`ForeignTasks`) by `submit`, `wake` and `cancel`.
 - Waiting tasks occupy no worker: a parked task is kept by the executor
   and re-enqueued by `Executor::wake(wakeups)` (from
   `Runtime::complete`), then runs on any eligible worker, continuing at its
@@ -687,8 +692,12 @@ Supported:
 
 Deferred:
 
-- Collection while workers run (clj-quickjs-25): `Runtime::collect` still
-  refuses while any worker holds a run guard; idle workers hold none.
+- Collection integrated with the executor (clj-quickjs-25):
+  by the safepoint contract `Runtime::request_collection` needs no
+  executor cooperation (runs reach VM safepoints; idle workers hold no heap
+  access), but that is not tested under the executor yet, collections are
+  not recorded with executor events, and a blocking host effect delays a
+  request.
 - A VM-level need (clj-quickjs-23): until then a driver issues needs
   through the run guard and parks. Work stealing, priorities, fairness
   beyond FIFO, and bounding the event record are not implemented.

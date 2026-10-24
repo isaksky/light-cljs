@@ -488,6 +488,11 @@ impl Task {
         self.0.id
     }
 
+    /// Process-unique identity of the runtime this task belongs to.
+    pub(crate) fn runtime_id(&self) -> u64 {
+        self.0.deps.runtime
+    }
+
     /// The world/version this task executes in.
     pub fn world(&self) -> WorldId {
         self.0.world
@@ -633,6 +638,14 @@ impl Task {
     /// instructions, sending leaf host effects to `host`.
     pub fn run_with(&self, budget: Budget, host: &mut dyn Host) -> Result<RunOutcome, RunError> {
         Ok(self.try_begin_run()?.run_with(budget, host))
+    }
+
+    /// Hold the task body's lock until the returned guard drops, as a
+    /// diagnostic reader does for an instant: claims meanwhile fail with
+    /// `AlreadyRunning` and leave the task runnable. Test helper.
+    #[cfg(test)]
+    pub(crate) fn hold_body(&self) -> impl Sized + '_ {
+        self.0.body.lock().unwrap()
     }
 
     /// The saved instruction position (index of the next instruction) and the

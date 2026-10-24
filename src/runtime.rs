@@ -68,6 +68,12 @@ impl Runtime {
         self.0.world
     }
 
+    /// Process-unique identity of this runtime (task ids are only unique
+    /// within one runtime).
+    pub(crate) fn runtime_id(&self) -> u64 {
+        self.0.deps.runtime
+    }
+
     /// Allocate a new world/version identity, distinct from every other world
     /// of this runtime. Dependency cells of different worlds are distinct, so
     /// a result published in one never satisfies a need in another.

@@ -76,12 +76,14 @@ fn a_task_keeps_its_builder_across_workers_and_other_tasks_are_rejected() {
             }
             _ => Placement::Any,
         })
-        .start()
+        .start(&rt)
         .unwrap();
     let (w0, w1) = (WorkerId::new(0), WorkerId::new(1));
-    exec.submit_with(gated.clone(), Placement::Worker(w1));
+    exec.submit_with(gated.clone(), Placement::Worker(w1))
+        .unwrap();
     assert!(exec.wait_for(TIMEOUT, |ev| dispatched(ev, gated.id())));
-    exec.submit_with(owner.clone(), Placement::Worker(w0));
+    exec.submit_with(owner.clone(), Placement::Worker(w0))
+        .unwrap();
     let yielded_to_w1 = |ev: &[Event]| {
         ev.iter().any(|e| {
             e.task == Some(owner.id())
@@ -114,7 +116,8 @@ fn a_task_keeps_its_builder_across_workers_and_other_tasks_are_rejected() {
         let intruder = rt
             .spawn(&asm.finish("intruder", 1, 1).unwrap(), &[&handle])
             .unwrap();
-        exec.submit_with(intruder.clone(), Placement::Worker(w0));
+        exec.submit_with(intruder.clone(), Placement::Worker(w0))
+            .unwrap();
         let err = match exec.take_outcome(intruder.id(), TIMEOUT) {
             Some(RunOutcome::Failed(e)) => e,
             other => panic!("expected Failed, got {other:?}"),
@@ -154,6 +157,54 @@ fn a_task_keeps_its_builder_across_workers_and_other_tasks_are_rejected() {
             (Some(w0), EventKind::Dispatched { execution: 1 }),
             (Some(w1), EventKind::Dispatched { execution: 2 }),
         ]
+    );
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
+/// A claim refused while a diagnostic reader holds the task body (the task
+/// stays runnable) neither loses the task nor counts as a run: the task is
+/// requeued as `Retried`, the placement hook still sees no last worker, and
+/// it completes once the body is released.
+#[test]
+fn a_transiently_refused_claim_is_retried_without_moving_the_last_worker() {
+    use Opcode::*;
+    let rt = Runtime::new();
+    let mut asm = Assembler::new();
+    asm.constant(Primitive::Number(4.0)).op(Return);
+    let task = rt.spawn(&asm.finish("four", 0, 0).unwrap(), &[]).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let exec = ExecutorConfig::new()
+        .placement(move |r| {
+            seen.lock().unwrap().push(*r);
+            Placement::Worker(WorkerId::new(1))
+        })
+        .start(&rt)
+        .unwrap();
+    let held = task.hold_body();
+    exec.submit(task.clone()).unwrap();
+    let refused = |ev: &[Event]| {
+        ev.iter().any(|e| {
+            e.task == Some(task.id())
+                && e.kind == EventKind::NotDispatched(RunError::AlreadyRunning)
+        })
+    };
+    assert!(exec.wait_for(TIMEOUT, refused), "{:#?}", exec.events());
+    drop(held);
+    match exec.take_outcome(task.id(), TIMEOUT) {
+        Some(RunOutcome::Complete(v)) => assert_eq!(v.view(), ValueView::Number(4.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests[0].reason, EnqueueReason::Submitted);
+    let retried: Vec<&DispatchRequest> = requests
+        .iter()
+        .filter(|r| r.reason == EnqueueReason::Retried)
+        .collect();
+    assert!(!retried.is_empty());
+    assert!(
+        retried.iter().all(|r| r.last_worker.is_none()),
+        "{retried:?}"
     );
     exec.shutdown(TIMEOUT).unwrap();
 }
