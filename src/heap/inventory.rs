@@ -74,11 +74,13 @@ enum Holder {
     /// A function object's own-property record and its values (the lazy
     /// `prototype` object among them).
     FunctionProperties,
+    /// A bound callable's target, receiver, arguments and metadata.
+    BoundFunction,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 23] = [
+const HOLDERS: [Holder; 24] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -102,6 +104,7 @@ const HOLDERS: [Holder; 23] = [
     Holder::Intrinsic,
     Holder::ArrayElement,
     Holder::FunctionProperties,
+    Holder::BoundFunction,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -117,7 +120,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 11] = [
+const KINDS: [ObjectKind; 12] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -129,6 +132,7 @@ const KINDS: [ObjectKind; 11] = [
     ObjectKind::Atom,
     ObjectKind::Builtin,
     ObjectKind::Array,
+    ObjectKind::BoundFunction,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -145,6 +149,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             PersistentCollectionEdges,
             NativePayloadEdges,
             FunctionProperties,
+            BoundFunction,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -181,6 +186,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Atom => &[AtomCurrent],
         ObjectKind::Builtin => &[Intrinsic],
         ObjectKind::Array => &[ArrayElement],
+        ObjectKind::BoundFunction => &[BoundFunction],
     }
 }
 
@@ -206,6 +212,7 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::BoundFunction => public("bound_function_retains", "bound_function_reclaims"),
         Holder::PersistentHandle => {
             public("persistent_handle_retains", "persistent_handle_reclaims")
         }

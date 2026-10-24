@@ -47,6 +47,8 @@ pub struct ObjectCounts {
     pub builtin: usize,
     /// Array objects (array literals).
     pub array: usize,
+    /// Bound function objects.
+    pub bound_function: usize,
 }
 
 impl ObjectCounts {
@@ -63,6 +65,7 @@ impl ObjectCounts {
             + self.atom
             + self.builtin
             + self.array
+            + self.bound_function
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -74,6 +77,7 @@ impl ObjectCounts {
             HeapObject::Occurrence(_) => &mut self.occurrence,
             HeapObject::Builder(_) => &mut self.builder,
             HeapObject::Function(_) => &mut self.function,
+            HeapObject::BoundFunction(_) => &mut self.bound_function,
             HeapObject::Cell(_) => &mut self.cell,
             HeapObject::Atom(_) => &mut self.atom,
             HeapObject::Builtin(_) => &mut self.builtin,

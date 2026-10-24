@@ -39,7 +39,7 @@
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
-//! | `Function.prototype` (clj-quickjs-102) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`; `bind`, `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
+//! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
 //! | `Reflect` (clj-quickjs-102) | ordinary object, prototype `Object.prototype` | `apply` |
@@ -210,7 +210,7 @@ pub(crate) struct Intrinsics {
 pub(crate) struct IntrinsicView {
     id: ObjectId,
     /// `Function.prototype`, which lacks some of its standard properties
-    /// (`bind`, `toString`, ...): a lookup that reaches it without finding
+    /// (`toString`, ...): a lookup that reaches it without finding
     /// one of those fails instead of continuing at `Object.prototype`
     /// ([`crate::vm::function::lacks_inherited`]).
     pub(crate) function_prototype: bool,
@@ -410,6 +410,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     // (`Function.prototype.constructor`, clj-quickjs-102).
     let call = b.function(Builtin::FunctionPrototypeCall, &[])?;
     let apply = b.function(Builtin::FunctionPrototypeApply, &[])?;
+    let bind = b.function(Builtin::FunctionPrototypeBind, &[])?;
+    b.add(function_prototype, "bind", bind, PropertyFlags::METHOD)?;
     let function = b.function(
         Builtin::Function,
         &[("prototype", function_prototype, PropertyFlags::FIXED)],

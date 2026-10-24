@@ -127,7 +127,9 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
             Err(error_object())
         }
-        HeapObject::Function(_) => Err(Fault::Internal("a function reached the integrity read")),
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
+            Err(Fault::Internal("a function reached the integrity read"))
+        }
         // No properties and not extensible.
         _ => Ok(true),
     })
@@ -184,7 +186,9 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
         HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
             Err(error_object())
         }
-        HeapObject::Function(_) => Err(Fault::Internal("a function reached the integrity change")),
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
+            Err(Fault::Internal("a function reached the integrity change"))
+        }
         // Already frozen: no properties and not extensible.
         _ => Ok(()),
     })
@@ -192,8 +196,10 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
 }
 
 fn is_function(heap: &Heap, id: ObjectId) -> bool {
-    heap.read(id, |o| matches!(o, HeapObject::Function(_)))
-        .unwrap_or(false)
+    heap.read(id, |o| {
+        matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+    })
+    .unwrap_or(false)
 }
 
 /// The integrity store of `id` if it is a function object.

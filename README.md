@@ -1891,8 +1891,6 @@ Deferred:
 
 - `this` at the script top level (the global object, clj-quickjs-104) and
   an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
-- `bind` (clj-quickjs-103). (`new`: clj-quickjs-71; `o[k]()` passes `o`
-  as `this` since clj-quickjs-118; `call`/`apply` since clj-quickjs-102.)
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
@@ -1981,8 +1979,8 @@ Supported (`cargo test --test js_source function_own_properties`,
 
 Deferred:
 
-- `length`/`name` (clj-quickjs-101) and `Function.prototype`'s
-  `bind`/`toString` (clj-quickjs-103 and later): those names fail
+- Ordinary function `length`/`name` (clj-quickjs-101) and `Function.prototype`'s
+  `toString`: those names fail
   with `UnsupportedOperand`, also in `Object.defineProperty` /
   `getOwnPropertyDescriptor` (which otherwise work on functions, through
   the record). `Object.setPrototypeOf(f, p)` with a `p` other than
@@ -2308,7 +2306,24 @@ record in `docs/architecture.md`, "Forwarding calls"):
 
 Deferred:
 
-- `Function(...)`/`new Function` (clj-quickjs-111: `UnsupportedOperand`/`TypeError`), `bind`
-  (clj-quickjs-103), `toString`, `arguments`/`caller` (their names fail with
+- `Function(...)`/`new Function` (clj-quickjs-111: `UnsupportedOperand`/`TypeError`),
+  `toString`, `arguments`/`caller` (their names fail with
   `UnsupportedOperand`), the other `Reflect` functions, changing a function's prototype, and the
   sloppy-mode `this` substitution of a callee (an explicit `UnsupportedOperand`, as for `this`).
+
+### Bound functions (clj-quickjs-103)
+
+Supported (`cargo test --test js_functions`, `cargo test --test gc_roots`):
+`Function.prototype.bind` creates a traced callable with a fixed receiver and
+prepended arguments. Repeated binding composes; `call`, `apply`, native
+callbacks, construction and `instanceof` follow the bound target. Callees may
+wait, yield, be collected around and resume on another worker. Bound functions
+have `length` and `name`, ordinary own-property operations, and no initial own
+`prototype`. They publish across tasks when their target, receiver and arguments
+are shareable and no mutable property record has been added. Bound arguments
+and forwarding hops obey the VM's stack and depth limits.
+
+Deferred to clj-quickjs-101: general ordinary-function metadata (binding uses
+code's parameter count and diagnostic name until then, including the existing
+gaps for default arity and inferred/anonymous names). `new.target` syntax
+remains clj-quickjs-99.

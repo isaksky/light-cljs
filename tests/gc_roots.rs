@@ -376,6 +376,49 @@ fn function_properties(rt: &Runtime) -> Held {
     Held::new(weak, move || drop(function))
 }
 
+/// Each bound operand is the only path to an object: target closure,
+/// bound receiver, and bound argument. The immutable metadata is traced too.
+fn bound_function(rt: &Runtime) -> Held {
+    let maker = compile(
+        "function make(o) { const receiver = {}; const arg = {}; const target = function target(a) { return __rt.vector(o, this, a); }; return __rt.vector(target.bind(receiver, arg), target, receiver, arg); }",
+    );
+    let object = rt.scope(|s| {
+        let o = s.new_object();
+        s.persist(o)
+    });
+    let weak_object = object.downgrade();
+    let task = rt.spawn(&maker, &[&object]).unwrap();
+    let result = run_to_end(&task);
+    let (bound, mut weak) = rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        let bound = s.nth(result, 0).unwrap();
+        let weak = (1..4)
+            .map(|i| {
+                let value = s.nth(result, i).unwrap();
+                s.downgrade(value)
+            })
+            .collect::<Vec<_>>();
+        (s.persist(bound), weak)
+    });
+    drop((task, result, object));
+    weak.extend([weak_object, bound.downgrade()]);
+    Held::new(weak, move || drop(bound))
+}
+
+#[test]
+fn bound_function_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &bound_function(&rt));
+}
+
+#[test]
+fn bound_function_reclaims() {
+    let rt = Runtime::new();
+    let held = bound_function(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
 /// A pending `return` completion of a running `finally` block (handler
 /// stack). The argument is overwritten, so only the completion holds it.
 fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
@@ -759,7 +802,7 @@ fn realm_intrinsics_retain() {
     // `String`, their prototypes and their `toString` and `valueOf`,
     // clj-quickjs-73, and `Function.prototype` with `call` and `apply`,
     // `Function`, `Reflect` and `Reflect.apply`, clj-quickjs-102.)
-    assert_eq!(rt.heap_usage().objects.builtin, 28);
+    assert_eq!(rt.heap_usage().objects.builtin, 29);
     assert_eq!(rt.heap_usage().objects.plain, 5);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
@@ -1185,6 +1228,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         object_property(&rt),
         array_element(&rt),
         function_properties(&rt),
+        bound_function(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),
         handler_completion(&rt, finally_return_across_wait),

@@ -853,6 +853,7 @@ Executed, with JavaScript semantics:
 | `(1).toString()`, `"abc".valueOf()`, `n.x` on a number or string (clj-quickjs-73) | a property read on a number or string primitive (`n.x`, `s[k]`, `1..toString`) looks the key up as on its wrapper object, which is not allocated (ECMAScript GetValue; QuickJS `JS_GetPrototypePrimitive`): from `Number.prototype` / `String.prototype` along its chain to `Object.prototype`, else `undefined` (`(1).x`, `"abc"[3]`); `(1).toString === Number.prototype.toString`, `(1).constructor === Number`, `(1).__proto__ === Number.prototype`. A method call passes the primitive itself as `this` (`docs/architecture.md`, "Primitive bases"). `Number.prototype.toString(radix)` gives Number::toString of a number receiver (`(19686109595169230000).toString()` is `"19686109595169230000"`, `(-0).toString()` `"0"`, `(1e21).toString()` `"1e+21"`) with `radix` absent, `undefined` or 10; `Number.prototype.valueOf()` the number; `String.prototype.toString()` / `.valueOf()` the string; `Number.prototype` and `String.prototype` themselves count as `0` and `""` (`String.prototype.length` is 0); any other receiver (`let f = (1).toString; f()`) throws a catchable `TypeError`. `Number` and `String` are built-in globals carrying the prototypes. Fail with `UnsupportedOperand`: a string's own `length` and indices below it (clj-quickjs-142), boolean bases (`Boolean.prototype`, clj-quickjs-39), another radix and the other `Number.prototype`/`String.prototype` methods (clj-quickjs-39; absent methods read `undefined`, so calling one is a `TypeError`), calling `Number(v)` / `String(v)` (clj-quickjs-72; `new Number(v)` is the catchable `TypeError` of `new Object()`). Writes: see `o.name = v` |
 | `f.call(t, a, b)`, `f.apply(t, list)` (clj-quickjs-102) | `Function.prototype.call` / `apply` (QuickJS `js_function_call`, `js_function_apply`), inherited by every function: call the receiver `f` with `this` `t` (`undefined` when absent) and the arguments `a, b`, or the elements of `list`: none for `undefined`/`null`, otherwise CreateListFromArrayLike (an array or any object: its `length` through ToLength, then its indices `0 .. length - 1` read with the prototype chain, so holes read inherited values; a `length` that is an object fails with `UnsupportedOperand`, ToPrimitive). A strict callee sees `t` as is; a sloppy one only when `t` is an object (else `UnsupportedOperand`, as for `this`). The call replaces the `call`/`apply` call in the same instruction (a tail call): a function object runs in a new task-owned frame, which may yield, wait on `__rt.need`, be collected around and migrate, and its result is the call's; a built-in runs to completion. A receiver that is not callable (`Function.prototype.call.call(1)`, `const c = f.call; c()`) and a `list` that is neither an object nor `undefined`/`null` (`f.apply(t, 1)`) are catchable `TypeError`s; an argument list longer than the remaining value-stack room, or more forwarding hops than the call-depth limit (`call` of `call` of ..., or `apply` through an array that holds itself), is a catchable `StackOverflow` |
 | `Reflect.apply(f, t, list)` (clj-quickjs-102) | `f.apply(t, list)` without reading `f.apply` (QuickJS `js_reflect_apply`): `f` must be callable and `list` must be an object (`Reflect.apply(f, t)` and `Reflect.apply(f, t, undefined)` are catchable `TypeError`s) |
+| `f.bind(t, a, b)` (clj-quickjs-103) | creates a bound function holding callable `f`, receiver `t` and arguments `a, b`; calls prepend those arguments and use `t`. Binding again preserves the first receiver. `new` unwraps bound targets, ignores bound receivers, and constructs the ordinary target; `instanceof` likewise uses the target. Calls, constructors and native callbacks enter task-owned frames that may suspend and migrate. Non-callable receivers throw `TypeError`; argument expansion and forwarding hops obey VM stack/depth limits. Bound functions have configurable, non-enumerable, read-only `length` (target length minus bound arguments, at least zero) and `name` (`"bound "` plus target name), and no initial own `prototype`. Their operands and metadata are traced; publication succeeds exactly when the target, receiver and arguments are shareable and no mutable own-property record has been added. No new EBNF forms are needed: these are existing method calls, property reads and `new` expressions |
 | `Function.prototype`, `Function` (clj-quickjs-102) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` are not supported yet (clj-quickjs-111): the call fails with `UnsupportedOperand`, `new` with a `TypeError` |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
@@ -987,12 +988,20 @@ function self() { return this; } self.call(7) === 7 && self.apply(8) === 8 && se
 let r = false; try { Reflect.apply(function () {}, null, undefined); } catch (e) { r = true; } r;
 ```
 
-`Function.prototype`'s other methods and `length`/`name` do not exist
-yet, so their names fail explicitly (`UnsupportedOperand` at run time):
+Bound functions (clj-quickjs-103) use the existing call and constructor grammar:
 
 ```js accept
-(function () {}).bind;
+function f(a, b) { return this + a + b; } const g = f.bind(1, 2); g(3) === 6 && g.length === 1 && g.name === 'bound f';
+function C(x) { this.x = x; } const B = C.bind(null, 7); const o = new B(); o.x === 7 && o instanceof B && o instanceof C;
+let r = false; try { Function.prototype.bind.call(1); } catch (e) { r = true; } r;
 ```
+
+The other missing methods (`toString`, `arguments`, `caller`) and ordinary
+functions' own `length`/`name` still fail explicitly (`UnsupportedOperand`).
+Until clj-quickjs-101 supplies general metadata, binding an ordinary function
+uses its code's parameter count and diagnostic name, with any explicitly
+defined own `length`/`name` taking precedence. Default-parameter arity and
+inferred/anonymous names therefore retain that pellet's metadata gap.
 
 A body `let`/`const` cannot repeat a parameter, with or without defaults:
 
@@ -1181,8 +1190,8 @@ Gaps specific to execution:
   holds a cell (clj-quickjs-100).
 - **Function properties are partial** (clj-quickjs-125). Functions take
   own properties, a lazy `prototype` and `Function.prototype`'s `call`
-  and `apply` (clj-quickjs-102), but no `length`, `name`
-  (clj-quickjs-101), `bind` (clj-quickjs-103) or `toString`: those names
+  and `apply` (clj-quickjs-102), and `bind` (clj-quickjs-103), but ordinary
+  functions have no `length`, `name` (clj-quickjs-101) or `toString`: those names
   fail with `UnsupportedOperand`. A
   function with own properties (or a read `prototype`) cannot be
   published, and a published function cannot get any (`TypeError`) or

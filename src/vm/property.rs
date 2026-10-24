@@ -18,7 +18,7 @@
 //! | ordinary object created by the embedder (no owner) | as above | `ForeignObject` failure |
 //! | ordinary object or array owned by another task | `ForeignObject` failure | `ForeignObject` failure |
 //! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
-//! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`bind`, `toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
+//! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
 //! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; `length`, `name` and the names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
@@ -568,7 +568,9 @@ fn lookup(
                     _ if key.is_length() => Ok(Lookup::Found(Value::Number(f64::from(a.length())))),
                     Key::Name(_) => read_store(a.object(), interned),
                 },
-                Visit::Other(HeapObject::Function(_)) => Ok(Lookup::Function),
+                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                    Ok(Lookup::Function)
+                }
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
                     None => Ok(Lookup::Next(None)),
@@ -659,7 +661,7 @@ fn store(
     match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable(key)),
         HeapObject::Builtin(_) => Err(immutable(key)),
-        HeapObject::Function(_) => Ok(Stored::Function),
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(Stored::Function),
         HeapObject::Plain(o) => {
             check_write(o, task)?;
             named(o)
@@ -904,7 +906,9 @@ fn check_inherited(
                 // A function as a prototype (`Object.create(f)`,
                 // clj-quickjs-121): its own properties are in its record
                 // (clj-quickjs-125).
-                Visit::Other(HeapObject::Function(_)) => Ok(Walk::Function),
+                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                    Ok(Walk::Function)
+                }
                 // Another kind as a prototype: one without JavaScript
                 // properties ends the walk; an error object, whose
                 // properties are not supported yet, fails as for a read.
@@ -970,7 +974,9 @@ fn reaches_proto_accessor(
             .read(id, |object| match visit(object, task)? {
                 Visit::Store(o) => Ok(own_or_next(o)),
                 Visit::Array(a) => Ok(own_or_next(a.object())),
-                Visit::Other(HeapObject::Function(_)) => Ok(Walk::Function),
+                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                    Ok(Walk::Function)
+                }
                 Visit::Other(_) => Ok(Walk::Next(None)),
             })
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
@@ -1089,7 +1095,7 @@ pub(crate) fn define_own_property(
                 Key::Name(_) => named(a.object_mut()),
             }
         }
-        HeapObject::Function(_) => unsupported("a function"),
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => unsupported("a function"),
         HeapObject::Native(payload) if (&**payload as &dyn std::any::Any).is::<ErrorObject>() => {
             unsupported("an error object")
         }
@@ -1181,8 +1187,10 @@ pub(crate) fn get_own_property(
 /// True for a function object, whose properties live in a separate record
 /// (`crate::vm::function`).
 fn is_function(heap: &Heap, id: ObjectId) -> bool {
-    heap.read(id, |o| matches!(o, HeapObject::Function(_)))
-        .unwrap_or(false)
+    heap.read(id, |o| {
+        matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+    })
+    .unwrap_or(false)
 }
 
 /// `delete base[key]` for the running task `task` (`Delete`,
@@ -1396,7 +1404,7 @@ mod tests {
                     read(&object, "length").is_ok_and(|v| v == Value::Number(1.0)),
                     read(&object, "prototype").is_ok_and(|v| v.same_object(&prototype)),
                     read(&object, "call").is_ok_and(|v| matches!(v, Value::Object(_))),
-                    matches!(read(&object, "bind"), Err(Fault::Unsupported(_))),
+                    read(&object, "bind").is_ok_and(|v| matches!(v, Value::Object(_))),
                     check_inherited(
                         &heap,
                         task,

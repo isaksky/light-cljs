@@ -214,6 +214,7 @@ public API cannot reach.
 | realm intrinsics (`Object.prototype`, built-in functions and their properties) | `Intrinsic` (`PlainObject`, `Builtin`) | `realm_intrinsics_retain` | `realm_intrinsics_reclaim_with_their_heap` *(lib)* |
 | array elements | `TaskFrame` (`Array` → `Array` → argument) | `array_element_retains` | `array_element_reclaims` |
 | function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
+| bound function target, bound receiver, bound arguments and immutable metadata (clj-quickjs-103) | `PersistentHandle` (`BoundFunction` → target closure / receiver / arguments / metadata) | `bound_function_retains` | `bound_function_reclaims` |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -3165,3 +3166,29 @@ constructor is introduced. `tests/js_source.rs` covers both entry paths,
 and `array_length_truncation_reclaims_elements` in `tests/gc_roots.rs`
 verifies collection of dense and sparse element values while a suspended
 frame keeps their array alive.
+
+## Bound functions (clj-quickjs-103)
+
+`HeapObject::BoundFunction` appends a callable kind with immutable target,
+receiver and arguments. `dispatch::resolve` follows bound targets and the
+existing forwarding built-ins iteratively, prepending arguments and preserving
+bound receivers, before entering the target's task-owned frame. Construction
+unwraps bound targets under the same argument and hop limits, then uses the
+ordinary constructor path. `instanceof` unwraps to the target's prototype.
+No JavaScript call retains a Rust frame across suspension.
+
+Initial `length` and `name` live in an immutable internal property store,
+traced through the bound object, so metadata reads and reflection do not
+prevent publication. The first property change copies this store into the
+same task-owned record used by ordinary functions. Publication traverses the
+bound operands and rejects mutable records, including records attached during
+a publication walk; installing a record and marking shareable exclude each
+other under the object-table lock. General ordinary-function metadata and
+`new.target` syntax remain with clj-quickjs-101 and clj-quickjs-99.
+
+Semantic references, independently implemented rather than copied:
+`research/quickjs/quickjs.c`, `js_function_bind`, `js_call_bound_function`,
+`JS_OrdinaryIsInstanceOf`, and `research/quickjs/tests/test_builtin.js`,
+`test_function`, at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The added source tests are synthetic fixtures, not adapted upstream text or
+light-cljs output.

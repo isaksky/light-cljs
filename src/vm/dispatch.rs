@@ -335,7 +335,9 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::String(_) => "string",
         Value::Object(id) => heap
             .read(*id, |object| match object {
-                HeapObject::Function(_) | HeapObject::Builtin(_) => "function",
+                HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
+                    "function"
+                }
                 HeapObject::Plain(_)
                 | HeapObject::Native(_)
                 | HeapObject::Vector(_)
@@ -416,6 +418,8 @@ pub(crate) enum Callee {
     /// A built-in function: Rust code run inside the call instruction
     /// (`crate::vm::builtin`).
     Builtin(Builtin),
+    /// A bound target, resolved iteratively before entering a VM frame.
+    Bound(builtin::Forward),
 }
 
 /// The callee of a `Call`/`CallMethod` (or of a native's callback): what it
@@ -427,6 +431,11 @@ pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
     heap.read(id, |object| match object {
         HeapObject::Function(f) => Ok(Callee::Code(id, Arc::clone(&f.code))),
         HeapObject::Builtin(f) => Ok(Callee::Builtin(f.which)),
+        HeapObject::BoundFunction(f) => Ok(Callee::Bound(builtin::Forward {
+            callee: f.target.clone(),
+            this: f.this.clone(),
+            args: f.args.to_vec(),
+        })),
         other => Err(Fault::NotCallable(object_name(other))),
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
@@ -450,41 +459,35 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
         return Err(Fault::Internal("operand stack underflow"));
     };
     let popped = argc + 1 + usize::from(method);
-    match callee(heap, f)? {
-        Callee::Code(id, code) => {
-            if method {
-                state.remove_operand(argc + 1)?;
-            }
-            state.enter(code, id, this, argc)?;
+    if let Callee::Code(id, code) = callee(heap, f)? {
+        if method {
+            state.remove_operand(argc + 1)?;
+        }
+        state.enter(code, id, this, argc)?;
+        return Ok(Flow::FrameChanged);
+    }
+    let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
+    let forward = builtin::Forward {
+        callee: f.clone(),
+        this,
+        args: args.to_vec(),
+    };
+    match resolve(heap, task, forward, max_args, max_hops)? {
+        (Callee::Code(id, code), forward) => {
+            let keep = state.stack_len() - popped;
+            state.truncate_operands(keep)?;
+            let argc = forward.args.len();
+            state.push(forward.callee);
+            forward.args.into_iter().for_each(|a| state.push(a));
+            state.enter(code, id, forward.this, argc)?;
             Ok(Flow::FrameChanged)
         }
-        Callee::Builtin(which) => {
-            let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
-            let Some(forward) = builtin::forward(heap, task, which, &this, args, max_args)? else {
-                let result = builtin::call(heap, task, which, &this, args)?;
-                state.replace(popped, result)?;
-                return Ok(Flow::Next);
-            };
-            // The forwarded call replaces this one's operands (a tail
-            // call): its values are in Rust locals only within this
-            // instruction, where no safepoint falls.
-            match resolve(heap, task, forward, max_args, max_hops)? {
-                (Callee::Code(id, code), forward) => {
-                    let keep = state.stack_len() - popped;
-                    state.truncate_operands(keep)?;
-                    let argc = forward.args.len();
-                    state.push(forward.callee);
-                    forward.args.into_iter().for_each(|a| state.push(a));
-                    state.enter(code, id, forward.this, argc)?;
-                    Ok(Flow::FrameChanged)
-                }
-                (Callee::Builtin(which), forward) => {
-                    let result = builtin::call(heap, task, which, &forward.this, &forward.args)?;
-                    state.replace(popped, result)?;
-                    Ok(Flow::Next)
-                }
-            }
+        (Callee::Builtin(which), forward) => {
+            let result = builtin::call(heap, task, which, &forward.this, &forward.args)?;
+            state.replace(popped, result)?;
+            Ok(Flow::Next)
         }
+        (Callee::Bound(_), _) => Err(Fault::Internal("unresolved bound function")),
     }
 }
 
@@ -502,11 +505,23 @@ pub(crate) fn resolve(
     max_args: usize,
     max_hops: usize,
 ) -> Result<(Callee, builtin::Forward), Fault> {
-    for _ in 0..max_hops {
+    for hops in 0..=max_hops {
         match callee(heap, &forward.callee)? {
+            Callee::Bound(mut bound) => {
+                if hops == max_hops {
+                    break;
+                }
+                prepend_args(&mut bound.args, forward.args, max_args)?;
+                forward = bound;
+            }
             Callee::Builtin(which) => {
                 match builtin::forward(heap, task, which, &forward.this, &forward.args, max_args)? {
-                    Some(next) => forward = next,
+                    Some(next) => {
+                        if hops == max_hops {
+                            break;
+                        }
+                        forward = next;
+                    }
                     None => return Ok((Callee::Builtin(which), forward)),
                 }
             }
@@ -516,6 +531,14 @@ pub(crate) fn resolve(
     Err(Fault::StackOverflow(format!(
         "maximum call depth of {max_hops} frames exceeded by forwarding calls"
     )))
+}
+
+fn prepend_args(bound: &mut Vec<Value>, args: Vec<Value>, max_args: usize) -> Result<(), Fault> {
+    if args.len() > max_args.saturating_sub(bound.len()) || bound.len() > max_args {
+        return Err(Fault::StackOverflow("too many bound arguments".to_string()));
+    }
+    bound.extend(args);
+    Ok(())
 }
 
 /// `Construct argc` (clj-quickjs-71; ECMAScript EvaluateNew steps 7-8,
@@ -529,10 +552,24 @@ pub(crate) fn resolve(
 fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault> {
     let argc = usize::from(argc);
     let task = state.diag.task;
-    let [f, ..] = top_operands(state, argc + 1)? else {
+    let [f, args @ ..] = top_operands(state, argc + 1)? else {
         return Err(Fault::Internal("operand stack underflow"));
     };
-    let f = f.clone();
+    let mut f = f.clone();
+    let mut args = args.to_vec();
+    let (max_args, max_hops) = state.forward_limits(state.stack_len() - argc - 1);
+    let mut hops = 0;
+    while let Ok(Callee::Bound(mut bound)) = callee(heap, &f) {
+        if hops >= max_hops {
+            return Err(Fault::StackOverflow(
+                "maximum bound constructor depth exceeded".to_string(),
+            ));
+        }
+        hops += 1;
+        prepend_args(&mut bound.args, args, max_args)?;
+        args = bound.args;
+        f = bound.callee;
+    }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
         Ok(_) => return Err(not_a_constructor(&f, "function")),
@@ -556,6 +593,11 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             task, prototype,
         )))
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let keep = state.stack_len() - argc - 1;
+    state.truncate_operands(keep)?;
+    let argc = args.len();
+    state.push(f);
+    args.into_iter().for_each(|a| state.push(a));
     state.enter(code, id, Value::Object(object), argc)?;
     state.top_mut().construct = true;
     Ok(Flow::FrameChanged)

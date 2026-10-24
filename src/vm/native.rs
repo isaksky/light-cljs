@@ -510,6 +510,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
             };
             let task = state.diag.task;
             let (id, code, call) = match dispatch::resolve(heap, task, call, max_args, max_hops)? {
+                (Callee::Bound(_), _) => return Err(Fault::Internal("unresolved bound function")),
                 (Callee::Code(id, code), call) => (id, code, call),
                 (Callee::Builtin(which), call) => {
                     // Runs to completion (`crate::vm::builtin`); no safepoint

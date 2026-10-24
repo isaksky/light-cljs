@@ -221,7 +221,9 @@ pub(crate) fn own_property_keys(
 /// keys would be its unstored `length` and `name`).
 fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
     let function = heap
-        .read(target, |o| matches!(o, HeapObject::Function(_)))
+        .read(target, |o| {
+            matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+        })
         .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
     if function {
         function::property_record(heap, target)
@@ -274,7 +276,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             }
             Ok(Raw::default())
         }
-        HeapObject::Function(_) => Err(Fault::Internal(
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Internal(
             "a function's keys are read from its property record",
         )),
         HeapObject::Vector(_)
@@ -532,7 +534,7 @@ fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId
     }
     let fixed = heap
         .read(id, |object| match object {
-            HeapObject::Function(_) | HeapObject::Builtin(_) => true,
+            HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => true,
             HeapObject::Native(payload) => (&**payload as &dyn std::any::Any).is::<ErrorObject>(),
             _ => false,
         })

@@ -111,10 +111,10 @@
 //!   be changed yet (`crate::vm::prototype`). A name of
 //!   [`FUNCTION_PROTOTYPE_NAMES`] (`length` / `name`, which are every
 //!   function's own properties, clj-quickjs-101, and the standard
-//!   `Function.prototype` methods that do not exist yet: `bind`,
+//!   `Function.prototype` methods that do not exist yet:
 //!   `toString`, ...) fails with `UnsupportedOperand` unless the function
 //!   has it as its own; any other name continues at `Function.prototype`
-//!   (`call`, `apply`, `constructor`) and then `Object.prototype`, so `f.x`
+//!   (`call`, `apply`, `bind`, `constructor`) and then `Object.prototype`, so `f.x`
 //!   is `undefined` until assigned.
 //! * **Ownership.** Only the creating task ([`FunctionObject::owner`])
 //!   writes a function's properties or creates its `prototype`; another
@@ -185,6 +185,103 @@ impl Trace for FunctionObject {
     }
 }
 
+/// A bound callable has immutable call operands and initial metadata. Own
+/// property changes use the same optional, task-owned record as closures.
+#[derive(Debug)]
+pub(crate) struct BoundFunction {
+    pub(crate) target: Value,
+    pub(crate) this: Value,
+    pub(crate) args: Box<[Value]>,
+    pub(crate) owner: TaskId,
+    pub(crate) metadata: ObjectId,
+    pub(crate) properties: Option<ObjectId>,
+}
+
+impl Trace for BoundFunction {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.target.trace(visit);
+        self.this.trace(visit);
+        self.args.trace(visit);
+        visit(self.metadata);
+        if let Some(properties) = self.properties {
+            visit(properties);
+        }
+    }
+}
+
+/// Bind uses own length (or zero) and the target name. Until ordinary
+/// function metadata lands (clj-quickjs-101), code supplies those defaults.
+pub(crate) fn bind(
+    heap: &Heap,
+    task: TaskId,
+    target: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    crate::vm::dispatch::callee(heap, target)?;
+    let Value::Object(id) = *target else {
+        unreachable!()
+    };
+    let defaults = heap
+        .read(id, |o| match o {
+            HeapObject::Function(f) => Some((
+                f64::from(f.code.params),
+                JsString::from(f.code.name.as_ref()),
+                f.properties,
+            )),
+            _ => None,
+        })
+        .flatten();
+    let metadata = |name: &str| -> Result<Value, Fault> {
+        if let Some((length, ref function_name, record)) = defaults {
+            if let Some(record) = record
+                && let Some(value) = record_own(heap, task, record, name)?
+            {
+                return Ok(value);
+            }
+            return Ok(if name == "length" {
+                Value::Number(length)
+            } else {
+                Value::String(function_name.clone())
+            });
+        }
+        crate::vm::property::get_field(heap, task, target, &JsString::from(name))
+    };
+    let length = match metadata("length")? {
+        Value::Number(n) if !n.is_nan() => {
+            (n.trunc() - args.len().saturating_sub(1) as f64).max(0.0)
+        }
+        _ => 0.0,
+    };
+    let name = match metadata("name")? {
+        Value::String(name) => JsString::from("bound ")
+            .concat(&name)
+            .ok_or_else(exhausted)?,
+        _ => JsString::from("bound "),
+    };
+    let mut store = OrdinaryObject::intrinsic(Some(function_prototype(heap)?));
+    store.define_with(
+        intern(heap, "length")?,
+        Value::Number(length),
+        PropertyFlags::FUNCTION_INFO,
+    );
+    store.define_with(
+        intern(heap, "name")?,
+        Value::String(name),
+        PropertyFlags::FUNCTION_INFO,
+    );
+    let metadata = heap.alloc(HeapObject::Plain(store)).ok_or_else(exhausted)?;
+    heap.alloc(HeapObject::BoundFunction(BoundFunction {
+        target: target.clone(),
+        this: args.first().cloned().unwrap_or(Value::Undefined),
+        args: args.get(1..).unwrap_or(&[]).into(),
+        owner: task,
+        metadata,
+        properties: None,
+    }))
+    .map(Value::Object)
+    .ok_or_else(exhausted)
+}
+
 /// The standard properties of `Function.prototype` (ECMAScript §20.2.3)
 /// that do not exist yet, plus `length` and `name`, which every function
 /// has as its own (clj-quickjs-101). Until they exist, reading or writing
@@ -194,8 +291,8 @@ impl Trace for FunctionObject {
 /// without finding one ([`lacks_inherited`]). `call`, `apply` and
 /// `constructor` are real properties of `Function.prototype`
 /// (clj-quickjs-102).
-pub(crate) const FUNCTION_PROTOTYPE_NAMES: [&str; 6] =
-    ["length", "name", "bind", "toString", "arguments", "caller"];
+pub(crate) const FUNCTION_PROTOTYPE_NAMES: [&str; 5] =
+    ["length", "name", "toString", "arguments", "caller"];
 
 /// True when `key` names a property `Function.prototype` should have but
 /// does not yet (see [`FUNCTION_PROTOTYPE_NAMES`]): a lookup that reaches
@@ -229,6 +326,7 @@ struct Info {
     constructor: bool,
     /// Known shareable: published, so its properties are immutable.
     shared: bool,
+    defaults: Option<ObjectId>,
 }
 
 fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
@@ -238,6 +336,14 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
             record: f.properties,
             constructor: f.code.constructor,
             shared: known,
+            defaults: None,
+        }),
+        HeapObject::BoundFunction(f) => Ok(Info {
+            owner: f.owner,
+            record: f.properties,
+            constructor: false,
+            shared: known,
+            defaults: Some(f.metadata),
         }),
         _ => Err(Fault::Internal("not a function object")),
     })
@@ -248,7 +354,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
 /// The function's property record, if it has one (own-key enumeration,
 /// `crate::vm::keys`, clj-quickjs-123).
 pub(crate) fn property_record(heap: &Heap, function: ObjectId) -> Result<Option<ObjectId>, Fault> {
-    info(heap, function).map(|info| info.record)
+    info(heap, function).map(|info| info.record.or(info.defaults))
 }
 
 /// Where a `delete` of a function's property applies
@@ -285,6 +391,13 @@ pub(crate) fn delete_target(
             caller: task,
         });
     }
+    if let Some(defaults) = info.defaults
+        && info.record.is_none()
+        && matches!(key, Key::Name(name) if record_own(heap, task, defaults, &name.to_string())?.is_some())
+    {
+        let record = writable_record(heap, task, function, &info, &Change::Write(key))?;
+        return Ok(FunctionDelete::Record(record));
+    }
     match special(key) {
         Some("prototype") if info.constructor => return Ok(FunctionDelete::NonConfigurable),
         Some(name @ ("length" | "name")) => {
@@ -292,7 +405,7 @@ pub(crate) fn delete_target(
                 Some(record) => record_own(heap, task, record, name)?.is_some(),
                 None => false,
             };
-            if !own {
+            if !own && info.defaults.is_none() {
                 return Err(unsupported_inherited(name, "delete"));
             }
         }
@@ -404,6 +517,11 @@ fn read_or_probe(
     probe: bool,
 ) -> Result<FunctionRead, Fault> {
     let info = info(heap, function)?;
+    if info.defaults.is_some() {
+        return Ok(FunctionRead::Continue(
+            info.record.or(info.defaults).unwrap(),
+        ));
+    }
     if let Some(name) = special(key) {
         if let Some(record) = info.record
             && let Some(value) = record_own(heap, task, record, name)?
@@ -471,6 +589,9 @@ pub(crate) fn own_store(
     key: &Key,
 ) -> Result<Option<ObjectId>, Fault> {
     let info = info(heap, function)?;
+    if info.defaults.is_some() {
+        return Ok(info.record.or(info.defaults));
+    }
     match special(key) {
         Some(name @ ("length" | "name")) => {
             let own = match info.record {
@@ -568,7 +689,7 @@ fn change_target(
             Some(record) => record_own(heap, task, record, name)?.is_some(),
             None => false,
         };
-        if !own {
+        if !own && info.defaults.is_none() {
             return Err(unsupported_inherited(name, "set"));
         }
     }
@@ -641,19 +762,37 @@ fn writable_record(
     }
     // Allocated, then attached in the same instruction (no safepoint
     // between): reachable from the function, which the frame holds.
-    let fresh = OrdinaryObject::with_prototype(task, function_prototype(heap)?);
+    let mut fresh = OrdinaryObject::with_prototype(task, function_prototype(heap)?);
+    if let Some(defaults) = info.defaults {
+        let properties = heap
+            .read(defaults, |o| match o {
+                HeapObject::Plain(o) => o
+                    .properties()
+                    .map(|(k, p)| (k, p.clone()))
+                    .collect::<Vec<_>>(),
+                _ => unreachable!(),
+            })
+            .ok_or(Fault::Internal("bound metadata was reclaimed"))?;
+        for (key, property) in properties {
+            fresh.define_with(key, property.value, property.flags);
+        }
+    }
     let fresh = heap.alloc(HeapObject::Plain(fresh)).ok_or_else(exhausted)?;
-    heap.with_object_mut_known(function, |object, known| match object {
-        HeapObject::Function(f) => match f.properties {
+    heap.with_object_mut_known(function, |object, known| {
+        let properties = match object {
+            HeapObject::Function(f) => &mut f.properties,
+            HeapObject::BoundFunction(f) => &mut f.properties,
+            _ => return Err(Fault::Internal("not a function object")),
+        };
+        match *properties {
             Some(record) => Ok(record),
             // A check proved it shareable since `info` was read.
             None if known => Err(change.on_shared()),
             None => {
-                f.properties = Some(fresh);
+                *properties = Some(fresh);
                 Ok(fresh)
             }
-        },
-        _ => Err(Fault::Internal("not a function object")),
+        }
     })
     .unwrap_or(Err(Fault::Internal("function object was reclaimed")))
 }

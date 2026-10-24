@@ -6127,9 +6127,7 @@ fn object_intrinsics_reject_what_they_do_not_support() {
         ("Object(1)", "wrapper object"),
         ("Object('s')", "wrapper object"),
         ("Object(true)", "wrapper object"),
-        ("Object.bind", "Function.prototype"),
         ("Object.is.toString()", "Function.prototype"),
-        ("Object.prototype.toString.bind", "Function.prototype"),
     ] {
         let (kind, message, ..) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
@@ -6371,27 +6369,34 @@ fn function_own_properties() {
     ] {
         assert_eq!(eval(src), t, "{src}");
     }
-    // Function.prototype's other methods (clj-quickjs-103 and later) and
+    // Function.prototype's other methods and
     // `length`/`name` (clj-quickjs-101) do not exist yet: their names fail
     // explicitly, not with a wrong `undefined`, and the failure is not
     // catchable.
     for src in [
-        "let f = function () {};\nf.bind;",
         "let f = function () {};\nf.toString();",
         "let f = function () {};\nf.length;",
         "let f = function f() {};\nf.name;",
         "let f = function () {};\nf.caller;",
         "let f = function () {};\nf.length = 1;",
-        "let f = () => 1;\nf.bind;",
-        "let r; try {\n(function () {}).bind; } catch (e) { r = 1; } r",
-        "let g = Object.is;\ng.bind;",
-        "let p = Function.prototype;\np.bind;",
         "let o = Object.create(function () {});\no.toString;",
     ] {
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains("Function.prototype"), "{src}: {message}");
         assert_eq!(line, 2, "{src}");
+    }
+    // `bind` is now inherited on all callable kinds (clj-quickjs-103).
+    for src in [
+        "typeof Object.bind === 'function'",
+        "typeof Object.prototype.toString.bind === 'function'",
+        "let f = function () {}; f.bind === Function.prototype.bind",
+        "let f = () => 1; f.bind === Function.prototype.bind",
+        "let r = true; try { r = typeof (function () {}).bind === 'function'; } catch (e) { r = false; } r",
+        "let g = Object.is; g.bind === Function.prototype.bind",
+        "let p = Function.prototype; typeof p.bind === 'function'",
+    ] {
+        assert_eq!(eval(src), t, "{src}");
     }
 
     // Attributes (with clj-quickjs-119). The upstream `g` rows: a
@@ -7437,16 +7442,8 @@ fn prototype_reflection() {
         "read-only property 'prototype'",
     );
     truth("Object.create(function () {}).call === Function.prototype.call");
-    fails(
-        "Object.create(function () {}).bind",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
-    );
-    fails(
-        "let o = Object.create(function () {}); o.bind = 1;",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
-    );
+    truth("Object.create(function () {}).bind === Function.prototype.bind");
+    truth("let o = Object.create(function () {}); o.bind = 1; o.bind === 1");
     // A function's `__proto__` is its [[Prototype]], Function.prototype
     // (clj-quickjs-102); changing it is not supported yet.
     truth("let f = function () {}; f.__proto__ === Function.prototype");

@@ -119,7 +119,7 @@ pub(crate) fn get_prototype_of(
             }
             // Fixed: `Function.prototype` (clj-quickjs-102), read below,
             // outside the object lock, since it may build the realm.
-            HeapObject::Function(_) => Ok(None),
+            HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(None),
             HeapObject::Builtin(f) => Ok(Some(f.properties.prototype())),
             other if is_error_object(other) => unsupported("an error object", "Error.prototype"),
             _ => Ok(Some(None)),
@@ -167,7 +167,7 @@ pub(crate) fn set_prototype_of(
         HeapObject::Builtin(_) => immutable(),
         // A function's prototype lives in its property record, which
         // stands for it; changing it is not supported yet.
-        HeapObject::Function(_) => Err(Fault::Unsupported(
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Unsupported(
             "changing the prototype of a function is not supported".to_string(),
         )),
         // Error objects failed in `get_prototype_of`.
@@ -357,8 +357,8 @@ pub(crate) fn set_literal_proto(
 /// object (`Symbol.hasInstance` is not consulted: symbols do not exist yet)
 /// and callable; a primitive `v` is not an instance of anything; otherwise
 /// `target.prototype` must be an object and the answer is whether it is on
-/// `v`'s prototype chain, compared by identity. There are no bound
-/// functions yet, so no target forwards to another.
+/// `v`'s prototype chain, compared by identity. Bound functions delegate
+/// to their targets, including when their own `prototype` is assigned.
 ///
 /// The walk only reads: each step is `[[GetPrototypeOf]]`
 /// ([`get_prototype_of`]), so its owner rules and its unsupported kinds
@@ -372,6 +372,11 @@ pub(crate) fn instance_of(
     v: &Value,
     target: &Value,
 ) -> Result<bool, Fault> {
+    let mut target = target.clone();
+    while let Ok(dispatch::Callee::Bound(bound)) = dispatch::callee(heap, &target) {
+        target = bound.callee;
+    }
+    let target = &target;
     let invalid = || Fault::TypeError("invalid 'instanceof' right operand".to_string());
     if !matches!(target, Value::Object(_)) {
         return Err(invalid());

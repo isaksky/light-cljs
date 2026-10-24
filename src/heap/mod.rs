@@ -83,7 +83,7 @@ use crate::realm::Realm;
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
 use crate::vm::builtin::BuiltinFunction;
-use crate::vm::function::{BindingCell, FunctionObject};
+use crate::vm::function::{BindingCell, BoundFunction, FunctionObject};
 
 /// Stable identity of a heap object: slot index plus the slot's generation
 /// at allocation time. Crate-private: see the module docs.
@@ -146,6 +146,8 @@ pub(crate) enum ObjectKind {
     /// element storage and an automatic `length` beside the properties of
     /// an ordinary object.
     Array,
+    /// A callable with immutable bound target, receiver and arguments.
+    BoundFunction,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -209,6 +211,8 @@ pub(crate) enum HeapObject {
     /// (`crate::object::array`). Boxed: its element storage would otherwise
     /// enlarge every heap object.
     Array(Box<ArrayObject>),
+    /// A bound callable (`crate::vm::function`, clj-quickjs-103).
+    BoundFunction(BoundFunction),
 }
 
 impl HeapObject {
@@ -232,6 +236,7 @@ impl HeapObject {
             HeapObject::Atom(_) => ObjectKind::Atom,
             HeapObject::Builtin(_) => ObjectKind::Builtin,
             HeapObject::Array(_) => ObjectKind::Array,
+            HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
         }
     }
 }
@@ -250,6 +255,7 @@ impl Trace for HeapObject {
             HeapObject::Atom(a) => a.trace(visit),
             HeapObject::Builtin(f) => f.trace(visit),
             HeapObject::Array(a) => a.trace(visit),
+            HeapObject::BoundFunction(f) => f.trace(visit),
         }
     }
 }

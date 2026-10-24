@@ -192,6 +192,8 @@ pub(crate) enum Builtin {
     /// `Function.prototype.constructor`; fails when called until the
     /// Function constructor exists (clj-quickjs-111).
     Function,
+    /// `Function.prototype.bind` (clj-quickjs-103).
+    FunctionPrototypeBind,
 }
 
 impl Builtin {
@@ -223,6 +225,7 @@ impl Builtin {
             Builtin::FunctionPrototypeCall => "call",
             Builtin::FunctionPrototypeApply | Builtin::ReflectApply => "apply",
             Builtin::Function => "Function",
+            Builtin::FunctionPrototypeBind => "bind",
         }
     }
 
@@ -251,6 +254,7 @@ impl Builtin {
             Builtin::FunctionPrototypeCall | Builtin::Function => 1,
             Builtin::FunctionPrototypeApply => 2,
             Builtin::ReflectApply => 3,
+            Builtin::FunctionPrototypeBind => 1,
         }
     }
 }
@@ -326,6 +330,7 @@ pub(crate) fn call(
         Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
         Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
         Builtin::FunctionPrototype => Ok(Value::Undefined),
+        Builtin::FunctionPrototypeBind => crate::vm::function::bind(heap, task, this, args),
         Builtin::Function => Err(Fault::Unsupported(
             "the Function constructor is not supported".to_string(),
         )),
@@ -414,7 +419,6 @@ fn describe_receiver(v: &Value) -> &'static str {
 /// The call a forwarding built-in (`Function.prototype.call`,
 /// `Function.prototype.apply`, `Reflect.apply`) makes in its place (module
 /// docs, "Forwarding built-ins").
-#[derive(Debug)]
 pub(crate) struct Forward {
     pub(crate) callee: Value,
     pub(crate) this: Value,
@@ -542,7 +546,9 @@ fn to_string_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
         Value::String(_) => unsupported("a string"),
         Value::Object(id) => heap
             .read(*id, |object| match object {
-                HeapObject::Function(_) | HeapObject::Builtin(_) => Ok("Function"),
+                HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
+                    Ok("Function")
+                }
                 HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(payload) => {
                     let any: &dyn std::any::Any = &**payload;

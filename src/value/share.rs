@@ -192,7 +192,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         }
         HeapObject::Builder(_) => Shareability::TaskOwned,
         // Code and captured values are fixed at creation (`crate::vm::function`).
-        HeapObject::Function(_) => Shareability::Persistent,
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => Shareability::Persistent,
         HeapObject::Cell(_) => Shareability::TaskOwned,
         // Every operation that installs a value checks it first (`crate::atom`).
         HeapObject::Atom(_) => Shareability::ConcurrentReference,
@@ -214,6 +214,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
         | HeapObject::Function(_)
+        | HeapObject::BoundFunction(_)
         | HeapObject::Atom(_)
         | HeapObject::Builtin(_) => None,
     }
@@ -439,6 +440,14 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
                 captures: func.captures.clone(),
                 properties: func.properties,
             },
+            HeapObject::BoundFunction(func) => Children::Function {
+                captures: std::iter::once(func.target.clone())
+                    .chain(std::iter::once(func.this.clone()))
+                    .chain(func.args.iter().cloned())
+                    .chain(std::iter::once(Value::Object(func.metadata)))
+                    .collect(),
+                properties: func.properties,
+            },
             other => {
                 let mut edges = Vec::new();
                 crate::heap::gc::Trace::trace(other, &mut |id| edges.push(id));
@@ -469,8 +478,11 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     // record at most once, so this ends.
     loop {
         let proven = walk(heap, root, expanded)?;
-        let gained_properties =
-            |o: &HeapObject| matches!(o, HeapObject::Function(f) if f.properties.is_some());
+        let gained_properties = |o: &HeapObject| match o {
+            HeapObject::Function(f) => f.properties.is_some(),
+            HeapObject::BoundFunction(f) => f.properties.is_some(),
+            _ => false,
+        };
         if heap.mark_shareable_unless(&proven, gained_properties) {
             return Ok(());
         }
@@ -962,8 +974,11 @@ mod tests {
         });
         assert_eq!(attached, Some(true));
         // ... so the walk's result is not marked, and the check rejects.
-        let gained =
-            |o: &HeapObject| matches!(o, HeapObject::Function(f) if f.properties.is_some());
+        let gained = |o: &HeapObject| match o {
+            HeapObject::Function(f) => f.properties.is_some(),
+            HeapObject::BoundFunction(f) => f.properties.is_some(),
+            _ => false,
+        };
         assert!(!heap.mark_shareable_unless(&proven, gained));
         assert!(!known(&heap, &f) && !known(&heap, &holder));
         let (path, found) = match check(&heap, &holder) {

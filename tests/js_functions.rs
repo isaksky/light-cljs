@@ -49,6 +49,180 @@ fn eval(src: &str) -> ValueView {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn bound_functions() {
+    assert_eq!(
+        num(
+            "function f(a,b) { return __rt.vector(this,a,b); } const g=f.bind(1,2); const v=g(3); __rt.nth(v,0)*100+__rt.nth(v,1)*10+__rt.nth(v,2);"
+        ),
+        123.0
+    );
+    assert_eq!(
+        eval(
+            "function f(a,b) {} const g=f.bind(1,2); g.length===1 && g.name==='bound f' && g.bind(2).name==='bound bound f';"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        num("function C(a) { this.x=a; } const B=C.bind(null,1); new B().x;"),
+        1.0
+    );
+    assert_eq!(
+        num("function f(a,b) { return this*100+a*10+b; } f.bind(1).bind(2,3)(4);"),
+        134.0
+    );
+    assert_eq!(
+        failure("Function.prototype.bind.call(1);").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        eval(
+            "function C(a) { this.x=a; } const B=C.bind(null,7).bind(null); const o=new B(); o.x===7 && o instanceof B && o instanceof C && B.prototype===undefined && typeof B==='function';"
+        ),
+        ValueView::Bool(true)
+    );
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &exe("const n=4; const g=(function f(a,b) { return n+a+b; }).bind(null,3); Object.getOwnPropertyDescriptor(g,'length'); Object.getOwnPropertyNames(g); g;"),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(bound) = task.run().unwrap() else {
+        panic!()
+    };
+    drop(task);
+    rt.publish(&bound).unwrap();
+    rt.collect().unwrap();
+    let call = compile_function(
+        "function call(f) { if (f.name !== 'bound f' || f.length !== 1) return -1; return f(2); }",
+    )
+    .unwrap();
+    let RunOutcome::Complete(v) = rt.spawn(&call, &[&bound]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(9.0));
+    for src in [
+        "let n=0; (function () { n=n+1; return n; }).bind(null);",
+        "(function () {}).bind({});",
+        "(function () {}).bind(null, {});",
+        "const g=(function () {}).bind(); g.x=1; g;",
+    ] {
+        let RunOutcome::Complete(f) = rt.spawn(&exe(src), &[]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert!(
+            matches!(rt.publish(&f), Err(PublishError::NotShareable { .. })),
+            "{src}"
+        );
+    }
+}
+
+#[test]
+fn bound_function_properties_and_native_callbacks() {
+    for src in [
+        "function f(a,b) {} const g=f.bind(null,1,2,3); const d=Object.getOwnPropertyDescriptor(g,'length'); g.length===0 && !d.writable && !d.enumerable && d.configurable && Object.getOwnPropertyNames(g)[0]==='length' && Object.getOwnPropertyNames(g)[1]==='name';",
+        "function f() {} const g=f.bind(); let r=false; try { g.name='x'; } catch(e) { r=true; } r && g.name==='bound f' && delete g.name && g.name==='';",
+        "function f() {} const g=f.bind(); Object.defineProperty(g,'name',{value:'x'}); g.name==='x' && g.bind().name==='bound x';",
+        "const f=(function() {}).bind(); Object.defineProperty(f,'length',{value:4.8}); Object.defineProperty(f,'name',{value:7}); const g=f.bind(null,1); g.length===3 && g.name==='bound ' && Object.getPrototypeOf(g)===Function.prototype;",
+        "Object.is.bind(null,1)(1) && Object.prototype.toString.call(Object.is.bind())==='[object Function]';",
+        "function f(k, acc, x) { return k+acc+x; } __rt.reduce(f.bind(null,10),0,__rt.vector(1,2))===23;",
+        "function f(a,b) { return this+a+b; } const g=f.bind(1,2); g.call(7,3)===6 && g.apply(8,[3])===6 && Reflect.apply(g,9,[3])===6;",
+        "function f() { return this; } f.bind()()===undefined;",
+        "function C(x) { this.x=x; } const receiver={x:0}; const B=C.bind(receiver,7); const o=new B(); receiver.x===0 && o.x===7;",
+        "function C() { return {x:9}; } (new (C.bind(null))()).x===9;",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("new ((a)=>a).bind(null,1)();").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+#[test]
+fn bound_calls_and_constructors_suspend_and_migrate() {
+    for (src, expected_value) in [
+        (
+            "function f(a) { return __rt.need(5,3)*this.k+a; } f.bind({k:10},2)();",
+            42.0,
+        ),
+        (
+            "function C(a) { this.x=__rt.need(5,3)+a; } const B=C.bind({x:0},2); (new B()).x;",
+            6.0,
+        ),
+        (
+            "function f(k,acc,x) { return __rt.need(5,3)+k+acc+x; } __rt.reduce(f.bind(null,10),0,__rt.vector(1,2));",
+            31.0,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(src), &[]).unwrap();
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let requests = task.take_producer_requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        let value = rt.root(Primitive::Number(4.0));
+        let mut tasks = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap()
+            .into_runnable();
+        assert_eq!(tasks.len(), 1);
+        let task = tasks.pop().unwrap();
+        let RunOutcome::Complete(v) = std::thread::spawn(move || task.run().unwrap())
+            .join()
+            .unwrap()
+        else {
+            panic!("{src}")
+        };
+        assert_eq!(v.view(), ValueView::Number(expected_value));
+    }
+}
+
+#[test]
+fn bound_argument_and_hop_limits() {
+    let rt = Runtime::with_limits(VmLimits {
+        max_call_depth: 2,
+        max_stack_values: 100,
+    });
+    let task = rt
+        .spawn(&exe("function f(x) { return x; } f.bind(null,7)();"), &[])
+        .unwrap();
+    let RunOutcome::Complete(value) = task.run().unwrap() else {
+        panic!("one bound hop must fit")
+    };
+    assert_eq!(value.view(), ValueView::Number(7.0));
+    for src in [
+        "function main() { function f() {} return f.bind(null,1,2,3,4).bind(null,5,6,7,8)(); }",
+        "function main() { function C() {} const B=C.bind(null,1,2,3,4).bind(null,5,6,7,8); return new B(); }",
+    ] {
+        let rt = Runtime::with_limits(VmLimits {
+            max_call_depth: 100,
+            max_stack_values: 8,
+        });
+        let task = rt.spawn(&compile_function(src).unwrap(), &[]).unwrap();
+        assert!(
+            matches!(task.run().unwrap(),RunOutcome::Failed(e) if e.kind()==VmErrorKind::StackOverflow),
+            "{src}"
+        );
+    }
+    let rt = Runtime::with_limits(VmLimits {
+        max_call_depth: 3,
+        max_stack_values: 100,
+    });
+    let task = rt
+        .spawn(
+            &exe("function f() {} let g=f; for(let i=0;i<10;i++) { g=g.bind(); } g();"),
+            &[],
+        )
+        .unwrap();
+    assert!(
+        matches!(task.run().unwrap(),RunOutcome::Failed(e) if e.kind()==VmErrorKind::StackOverflow)
+    );
+}
+
 fn num(src: &str) -> f64 {
     match eval(src) {
         ValueView::Number(n) => n,
