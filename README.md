@@ -47,7 +47,8 @@ cargo test --lib task::cancel_tests # hook-forced cancellation in every handoff 
 cargo test --test safepoints      # safepoints: collection requests during runs and scopes
 cargo test --lib heap::gc::       # rendezvous root snapshot with running tasks
 cargo test --test executor        # two-worker executor: overlap, migration, cancellation, shutdown
-cargo test --lib exec::           # builder ownership across workers
+cargo test --lib exec::           # builder ownership across workers, executor root snapshot
+cargo test --test executor_gc     # collection under the executor: workers, native scopes, parked roots
 cargo test --test need            # __rt.need: suspend at the need, resume without replay
 cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo fmt --all -- --check
@@ -157,7 +158,7 @@ Deferred:
 - `collect` never waits: it refuses with `CollectError::MutatorActive`
   while another thread is in heap access and not at a safepoint. Waiting
   collection while tasks run is `Runtime::request_collection`
-  (clj-quickjs-17, below). Executor integration is clj-quickjs-25;
+  (clj-quickjs-17, below), integrated with the executor in clj-quickjs-25;
   per-root-kind coverage is clj-quickjs-31.
 - No automatic collection trigger (allocation never collects), no
   generational, concurrent or compacting collection, and no worker-local
@@ -691,12 +692,8 @@ Supported:
 
 Deferred:
 
-- Collection integrated with the executor (clj-quickjs-25):
-  by the safepoint contract `Runtime::request_collection` needs no
-  executor cooperation (runs reach VM safepoints; idle workers hold no heap
-  access), but that is not tested under the executor yet, collections are
-  not recorded with executor events, and a blocking host effect delays a
-  request.
+- A blocking leaf host effect delays a collection request until it
+  returns (see clj-quickjs-25 below).
 - Producer requests claimed by VM `need` instructions (clj-quickjs-23) are
   kept in the task (`Task::take_producer_requests`); the executor does not
   collect them, so its drivers still issue needs through the run guard and
@@ -761,3 +758,38 @@ Deferred:
   clj-quickjs-23) and cycle detection in `exec::Executor`, which has no
   producer bindings (the graph would sit under one leaf lock; ordering
   rules are in the module docs).
+
+### Collection under the executor (clj-quickjs-25)
+
+Supported (`src/exec.rs` module docs, "Collection"; tests in
+`tests/executor_gc.rs` and `cargo test --lib exec::`, early VM tests with
+hand-assembled bytecode):
+
+- Every executor worker registers as a collection participant for its
+  lifetime (`Runtime::register_thread`). Registration is not heap access:
+  a worker waiting on the ready queue is idle and never delays a
+  collection; it enters heap access only through a run guard, or a scope
+  of a native job.
+- Native jobs (`Executor::submit_native`) run host code on a worker,
+  outside any run, in queue order with tasks. A scope held there is a no-GC
+  access scope: it delays a collection until it closes or is released.
+- `Executor::schedule_collection(placement)` has a worker request a
+  collection; any thread may still call `Runtime::request_collection`.
+  Running tasks stop at VM safepoints with their frames reported.
+- Roots: queued, parked (held only by the executor) and in-flight tasks
+  are traced through their saved frames, running tasks through the frames
+  their run reported, completed cells through their results. The collector
+  takes no executor lock; workers never hold the scheduling or record lock
+  while they enter heap access or request a collection.
+- Collection events: `Runtime::observe_collections` gives every
+  `CollectionReport` (requester, each other registered or accessing thread
+  with its `MutatorState`: `Safepoint`, `Released`, `Idle`, `Requesting`;
+  stats) to observers; the executor records it as `EventKind::Collected`
+  with workers named. `Event` and `EventKind` are now `Clone`, not `Copy`.
+
+Deferred:
+
+- An automatic collection trigger (no allocation threshold requests one),
+  worker-local allocation buffers, and releasing a run's heap access
+  around a long leaf host effect: a host effect that blocks still delays
+  a request until it returns.

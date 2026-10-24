@@ -97,15 +97,53 @@
 //! [`RunOutcome::Cancelled`]. Dropping an executor begins shutdown and
 //! detaches its workers.
 //!
+//! # Native jobs
+//!
+//! [`Executor::submit_native`] queues native work next to tasks: a worker
+//! takes it in queue order (with the same placement rules) and calls it on
+//! its own thread, outside any run and with no executor lock held. Native
+//! heap access inside a job goes through [`Runtime::scope`], the no-GC
+//! access scope of the safepoint contract.
+//!
 //! # Collection
 //!
-//! The executor takes no part in collection. By the safepoint contract
-//! ([`crate::heap::gc`]), [`Runtime::request_collection`] needs no executor
-//! cooperation: each run reaches the VM's safepoints, and an idle worker
-//! holds no heap access; a leaf host effect that blocks (as the tests'
-//! gates do) delays a request until it returns. Testing that under the
-//! executor, and recording collections with its events, is pellet
-//! clj-quickjs-25.
+//! Workers and the collector cooperate through the safepoint contract of
+//! [`crate::heap::gc`]; any thread may request a collection
+//! ([`Runtime::request_collection`]), and [`Executor::schedule_collection`]
+//! has a worker request one.
+//!
+//! * **Workers are registered.** Each worker holds a
+//!   [`ThreadRegistration`](crate::ThreadRegistration) for its lifetime, so
+//!   every collection names it and how it stopped
+//!   ([`MutatorState`]). The registration is not heap access: a worker
+//!   enters heap access only through a run guard (dispatch), or a scope or
+//!   atom operation of a native job.
+//! * **Running tasks** stop at the VM's safepoints with their frames
+//!   reported ([`MutatorState::Safepoint`]). A leaf host effect runs inside
+//!   its run's heap access, so one that blocks (as the tests' gates do)
+//!   delays a request until it returns.
+//! * **Native scopes** held by a job delay a request until the job closes
+//!   or releases them ([`MutatorState::Released`]).
+//! * **Idle workers never delay a collection.** A worker waiting for the
+//!   ready queue, or routing an outcome, holds no heap access
+//!   ([`MutatorState::Idle`]). One that takes a task while a request is
+//!   pending waits in [`Task::try_begin_run`] (entering heap access) with no
+//!   executor lock held, and runs the task after the collection.
+//! * **Roots.** Every task handle is a root source
+//!   (a `RootSource`, [`crate::heap::gc`]): queued, parked (kept by the
+//!   executor; cells hold weak references), and in-flight tasks are traced
+//!   through their saved frames, and a running task through the frames its
+//!   run reported at the safepoint. Completed dependency cells report their
+//!   results, and the executor's terminal outcomes are [`Rooted`](crate::Rooted)
+//!   handles. The collector takes none of the executor's locks, and no
+//!   worker holds the scheduling or record lock while it enters heap access
+//!   or requests a collection, so the rendezvous never waits on them.
+//! * **Events.** The executor observes its runtime's collections
+//!   ([`Runtime::observe_collections`]) and records each as
+//!   [`EventKind::Collected`]: the requesting worker (if any), every
+//!   participant with its [`MutatorState`], and the [`CollectStats`]
+//!   (reclaimed count). It is recorded by the collecting thread after the
+//!   rendezvous ended, so events of runs that resumed may precede it.
 
 #[cfg(test)]
 mod tests;
@@ -118,6 +156,7 @@ use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use crate::dep::Wakeups;
+use crate::heap::{CollectStats, CollectionObserver, CollectionReport, MutatorState};
 use crate::host::{Host, NoHost};
 use crate::ids::{DependencyKey, TaskId};
 use crate::runtime::Runtime;
@@ -224,9 +263,10 @@ impl OutcomeKind {
 }
 
 /// What happened (module docs, "Events").
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventKind {
-    /// A worker thread started.
+    /// A worker thread started and registered as a collection participant
+    /// (module docs, "Collection").
     WorkerStarted { thread: ThreadId },
     /// The task entered the ready queue.
     Enqueued {
@@ -246,10 +286,79 @@ pub enum EventKind {
     Panicked,
     /// A worker thread exited.
     WorkerStopped,
+    /// A native job entered the ready queue ([`Executor::submit_native`]).
+    NativeEnqueued { job: JobId, placement: Placement },
+    /// The worker took the native job and started it, holding no run guard
+    /// and no executor lock.
+    NativeStarted { job: JobId },
+    /// The native job returned, or panicked (the worker continues).
+    NativeFinished { job: JobId, panicked: bool },
+    /// A collection of the executor's runtime completed, whichever thread
+    /// requested it (module docs, "Collection"). The event's `worker` is the
+    /// requester when that is one of this executor's workers.
+    Collected(CollectionEvent),
+}
+
+/// Identity of a native job ([`Executor::submit_native`]), unique within
+/// one executor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct JobId(u64);
+
+impl fmt::Display for JobId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "job {}", self.0)
+    }
+}
+
+/// One thread that took part in a recorded collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Participant {
+    /// The executor worker running on `thread`, if it is one.
+    pub worker: Option<WorkerId>,
+    pub thread: ThreadId,
+    /// How the thread was stopped while the collection ran.
+    pub state: MutatorState,
+}
+
+/// A collection as recorded in [`EventKind::Collected`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionEvent {
+    /// The runtime's collection count after this one (1 for the first).
+    pub number: u64,
+    /// The worker that requested (and ran) the collection, or `None` for a
+    /// thread that is not one of this executor's workers.
+    pub requester: Option<WorkerId>,
+    pub requester_thread: ThreadId,
+    /// The requester waited for a rendezvous
+    /// ([`Runtime::request_collection`]) rather than finding every thread
+    /// already stopped.
+    pub waited: bool,
+    /// Every other registered or heap-accessing thread: this executor's
+    /// workers first (by index), then other threads.
+    pub participants: Vec<Participant>,
+    pub stats: CollectStats,
+}
+
+impl CollectionEvent {
+    /// How `worker` was stopped, if it took part.
+    pub fn state_of(&self, worker: WorkerId) -> Option<MutatorState> {
+        self.participants
+            .iter()
+            .find(|p| p.worker == Some(worker))
+            .map(|p| p.state)
+    }
+
+    /// How `thread` was stopped, if it took part.
+    pub fn state_of_thread(&self, thread: ThreadId) -> Option<MutatorState> {
+        self.participants
+            .iter()
+            .find(|p| p.thread == thread)
+            .map(|p| p.state)
+    }
 }
 
 /// One recorded transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
     /// Position in the record, from 0.
     pub seq: usize,
@@ -353,12 +462,15 @@ impl ExecutorConfig {
         let workers = self.workers;
         let shared = Arc::new(Shared {
             runtime: runtime.runtime_id(),
+            rt: runtime.clone(),
             sched: Mutex::new(Sched {
                 queue: VecDeque::new(),
                 parked: HashMap::new(),
                 in_flight: HashSet::new(),
                 last_worker: HashMap::new(),
                 running: vec![None; workers],
+                running_native: vec![None; workers],
+                next_job: 0,
                 stopping: false,
             }),
             ready: Condvar::new(),
@@ -366,10 +478,15 @@ impl ExecutorConfig {
                 events: Vec::new(),
                 outcomes: HashMap::new(),
                 live_workers: workers,
+                worker_threads: HashMap::new(),
             }),
             recorded: Condvar::new(),
             config: self,
         });
+        // Weak: the runtime does not keep the executor alive.
+        let observer: Arc<dyn CollectionObserver> = shared.clone();
+        runtime.observe_collections(Arc::downgrade(&observer));
+        drop(observer);
         let mut handles = Vec::with_capacity(workers);
         for index in 0..workers {
             let worker_shared = Arc::clone(&shared);
@@ -397,9 +514,29 @@ impl ExecutorConfig {
     }
 }
 
+/// A native job's work ([`Executor::submit_native`]).
+type NativeFn = Box<dyn FnOnce(WorkerId) + Send>;
+
+/// What a ready-queue entry asks a worker to do.
+enum Job {
+    /// Dispatch a task.
+    Run(Task),
+    /// Run native code on the worker, outside any run.
+    Native(JobId, NativeFn),
+}
+
 struct Entry {
-    task: Task,
+    job: Job,
     placement: Placement,
+}
+
+impl Entry {
+    fn task_id(&self) -> Option<TaskId> {
+        match &self.job {
+            Job::Run(task) => Some(task.id()),
+            Job::Native(..) => None,
+        }
+    }
 }
 
 /// Scheduling state, behind `Shared::sched`.
@@ -417,6 +554,10 @@ struct Sched {
     last_worker: HashMap<TaskId, WorkerId>,
     /// The task each worker is dispatching, by worker index.
     running: Vec<Option<TaskId>>,
+    /// The native job each worker is running, by worker index.
+    running_native: Vec<Option<JobId>>,
+    /// The next native job's id.
+    next_job: u64,
     stopping: bool,
 }
 
@@ -425,11 +566,16 @@ struct Record {
     events: Vec<Event>,
     outcomes: HashMap<TaskId, RunOutcome>,
     live_workers: usize,
+    /// Each started worker's OS thread, to name workers in collection
+    /// reports.
+    worker_threads: HashMap<ThreadId, WorkerId>,
 }
 
 struct Shared {
     /// Identity of the runtime whose tasks this executor serves.
     runtime: u64,
+    /// That runtime: workers register with it and native jobs may use it.
+    rt: Runtime,
     sched: Mutex<Sched>,
     /// Signalled when the queue gains an entry or shutdown begins.
     ready: Condvar,
@@ -499,7 +645,10 @@ impl Shared {
         };
         let mut sched = self.lock_sched();
         sched.parked.remove(&id);
-        sched.queue.push_back(Entry { task, placement });
+        sched.queue.push_back(Entry {
+            job: Job::Run(task),
+            placement,
+        });
         // Recorded under the scheduling lock, so no worker can dispatch the
         // entry before its enqueue is in the record.
         self.record(None, Some(id), EventKind::Enqueued { reason, placement });
@@ -507,8 +656,29 @@ impl Shared {
         self.ready.notify_all();
     }
 
-    /// Wait for an eligible entry; `None` once shutdown has begun.
-    fn next_task(&self, worker: WorkerId) -> Option<Task> {
+    fn enqueue_native(&self, f: NativeFn, placement: Placement) -> JobId {
+        let placement = match placement {
+            Placement::Worker(w) if w.0 >= self.config.workers => Placement::Any,
+            placement => placement,
+        };
+        let mut sched = self.lock_sched();
+        let job = JobId(sched.next_job);
+        sched.next_job += 1;
+        sched.queue.push_back(Entry {
+            job: Job::Native(job, f),
+            placement,
+        });
+        self.record(None, None, EventKind::NativeEnqueued { job, placement });
+        drop(sched);
+        self.ready.notify_all();
+        job
+    }
+
+    /// Wait for an eligible entry; `None` once shutdown has begun. The
+    /// scheduling lock is released before the job starts: a worker never
+    /// holds it while it enters heap access (which may wait for a pending
+    /// collection) or runs anything.
+    fn next_job(&self, worker: WorkerId) -> Option<Job> {
         let mut sched = self.lock_sched();
         loop {
             if sched.stopping {
@@ -520,13 +690,18 @@ impl Shared {
                     Placement::Any => true,
                     Placement::Worker(w) => w == worker,
                 };
-                placed && !in_flight.contains(&e.task.id())
+                placed && e.task_id().is_none_or(|id| !in_flight.contains(&id))
             });
             if let Some(entry) = eligible.and_then(|i| sched.queue.remove(i)) {
-                let id = entry.task.id();
-                sched.running[worker.0] = Some(id);
-                sched.in_flight.insert(id);
-                return Some(entry.task);
+                match &entry.job {
+                    Job::Run(task) => {
+                        let id = task.id();
+                        sched.running[worker.0] = Some(id);
+                        sched.in_flight.insert(id);
+                    }
+                    Job::Native(job, _) => sched.running_native[worker.0] = Some(*job),
+                }
+                return Some(entry.job);
             }
             sched = self
                 .ready
@@ -655,6 +830,7 @@ impl Drop for WorkerExit<'_> {
         if let Some(id) = sched.running[self.worker.0].take() {
             sched.in_flight.remove(&id);
         }
+        sched.running_native[self.worker.0] = None;
         drop(sched);
         let mut record = self.shared.lock_record();
         record.live_workers -= 1;
@@ -671,23 +847,74 @@ impl Drop for WorkerExit<'_> {
 
 fn worker_main(shared: &Shared, worker: WorkerId) {
     let _exit = WorkerExit { shared, worker };
-    shared.record(
-        Some(worker),
-        None,
-        EventKind::WorkerStarted {
-            thread: thread::current().id(),
-        },
-    );
+    let thread = thread::current().id();
+    // Named before it registers, so every collection report naming the
+    // thread maps it to this worker.
+    shared.lock_record().worker_threads.insert(thread, worker);
+    // A collection participant for the worker's lifetime (dropped before
+    // `_exit` records the stop). It is not heap access: while the worker
+    // waits for the ready queue, or routes an outcome, it is idle and
+    // stopped; it enters heap access only through a run guard, or a scope
+    // or atom operation of a native job (module docs, "Collection").
+    let _registration = shared.rt.register_thread();
+    shared.record(Some(worker), None, EventKind::WorkerStarted { thread });
     let mut host = (shared.config.host)(worker);
-    while let Some(task) = shared.next_task(worker) {
-        let id = task.id();
-        shared.dispatch(worker, task, &mut *host);
-        let mut sched = shared.lock_sched();
-        sched.running[worker.0] = None;
-        sched.in_flight.remove(&id);
-        drop(sched);
-        // A queued entry of this task may have become eligible.
-        shared.ready.notify_all();
+    while let Some(job) = shared.next_job(worker) {
+        match job {
+            Job::Run(task) => {
+                let id = task.id();
+                shared.dispatch(worker, task, &mut *host);
+                let mut sched = shared.lock_sched();
+                sched.running[worker.0] = None;
+                sched.in_flight.remove(&id);
+                drop(sched);
+                // A queued entry of this task may have become eligible.
+                shared.ready.notify_all();
+            }
+            Job::Native(job, f) => {
+                shared.record(Some(worker), None, EventKind::NativeStarted { job });
+                // No executor lock is held while native code runs.
+                let panicked = panic::catch_unwind(AssertUnwindSafe(|| f(worker))).is_err();
+                shared.lock_sched().running_native[worker.0] = None;
+                shared.record(
+                    Some(worker),
+                    None,
+                    EventKind::NativeFinished { job, panicked },
+                );
+            }
+        }
+    }
+}
+
+impl CollectionObserver for Shared {
+    /// Record the collection (module docs, "Collection"). Runs on the
+    /// collecting thread after the rendezvous, holding only the record lock.
+    fn collected(&self, report: &CollectionReport) {
+        let mut record = self.lock_record();
+        let worker_of = |thread: &ThreadId| record.worker_threads.get(thread).copied();
+        let mut participants: Vec<Participant> = report
+            .participants
+            .iter()
+            .map(|&(thread, state)| Participant {
+                worker: worker_of(&thread),
+                thread,
+                state,
+            })
+            .collect();
+        // Workers by index, then other threads (in report order).
+        participants.sort_by_key(|p| p.worker.map_or(usize::MAX, WorkerId::index));
+        let requester = worker_of(&report.requester);
+        let event = CollectionEvent {
+            number: report.number,
+            requester,
+            requester_thread: report.requester,
+            waited: report.waited,
+            participants,
+            stats: report.stats,
+        };
+        Shared::push_event(&mut record, requester, None, EventKind::Collected(event));
+        drop(record);
+        self.recorded.notify_all();
     }
 }
 
@@ -715,6 +942,8 @@ pub struct Shutdown {
     /// completion still makes them runnable (through its
     /// [`Wakeups`]), for the embedder to run.
     pub parked: Vec<Task>,
+    /// Queued native jobs that never started; they were dropped unrun.
+    pub dropped_native: Vec<JobId>,
     /// Terminal outcomes not yet taken with [`Executor::take_outcome`].
     pub outcomes: HashMap<TaskId, RunOutcome>,
     /// The full event record.
@@ -726,6 +955,8 @@ pub struct Shutdown {
 pub struct ShutdownTimeout {
     /// Each busy worker and the task it is dispatching.
     pub busy: Vec<(WorkerId, TaskId)>,
+    /// Each worker busy with a native job, and the job.
+    pub busy_native: Vec<(WorkerId, JobId)>,
     /// The executor, still stopping: call [`Executor::shutdown`] again.
     pub executor: Executor,
 }
@@ -805,6 +1036,42 @@ impl Executor {
         })
     }
 
+    /// Enqueue native work: an eligible worker takes it from the ready
+    /// queue in order with tasks and calls `f(worker)` on its thread, outside
+    /// any run, with no executor lock held. Recorded as
+    /// [`EventKind::NativeEnqueued`], [`EventKind::NativeStarted`] and
+    /// [`EventKind::NativeFinished`]; a panic is caught and recorded.
+    ///
+    /// Native heap access goes through [`Runtime::scope`]: a scope is a
+    /// no-GC access scope, so a job that keeps one open delays every
+    /// collection until it closes or releases it
+    /// ([`Scope::released`](crate::Scope::released),
+    /// [`Scope::safepoint`](crate::Scope::safepoint)). The job may also
+    /// request a collection ([`Executor::schedule_collection`]). It must not
+    /// run a task, and while it runs the worker dispatches nothing else.
+    pub fn submit_native(
+        &self,
+        placement: Placement,
+        f: impl FnOnce(WorkerId) + Send + 'static,
+    ) -> JobId {
+        self.shared.enqueue_native(Box::new(f), placement)
+    }
+
+    /// Enqueue a native job that requests a collection
+    /// ([`Runtime::request_collection`]) from the worker that takes it: the
+    /// worker holds no run guard, so the request cannot fail, and it blocks
+    /// that worker until every other mutator has stopped (module docs,
+    /// "Collection"). The collection is recorded as
+    /// [`EventKind::Collected`] with that worker as requester.
+    pub fn schedule_collection(&self, placement: Placement) -> JobId {
+        let rt = self.shared.rt.clone();
+        self.submit_native(placement, move |_| {
+            // Cannot fail: a native job's thread holds no run guard or atom
+            // operation. The observer records the collection.
+            let _ = rt.request_collection();
+        })
+    }
+
     /// A snapshot of the event record.
     pub fn events(&self) -> Vec<Event> {
         self.shared.lock_record().events.clone()
@@ -865,16 +1132,23 @@ impl Executor {
             .shared
             .wait_record(timeout, |record| (record.live_workers == 0).then_some(()));
         if stopped.is_none() {
-            let busy = self
-                .shared
-                .lock_sched()
+            let sched = self.shared.lock_sched();
+            let busy = sched
                 .running
                 .iter()
                 .enumerate()
                 .filter_map(|(i, t)| t.map(|t| (WorkerId(i), t)))
                 .collect();
+            let busy_native = sched
+                .running_native
+                .iter()
+                .enumerate()
+                .filter_map(|(i, j)| j.map(|j| (WorkerId(i), j)))
+                .collect();
+            drop(sched);
             return Err(ShutdownTimeout {
                 busy,
+                busy_native,
                 executor: self,
             });
         }
@@ -884,7 +1158,7 @@ impl Executor {
             let _ = handle.join();
         }
         let mut sched = self.shared.lock_sched();
-        let pending: Vec<Task> = sched.queue.drain(..).map(|e| e.task).collect();
+        let queue: Vec<Entry> = sched.queue.drain(..).collect();
         let parked = sched
             .parked
             .drain()
@@ -892,10 +1166,20 @@ impl Executor {
             .filter(|t| t.status() == TaskStatus::Waiting)
             .collect();
         drop(sched);
+        // Unrun native jobs are dropped here, with no executor lock held.
+        let mut pending = Vec::new();
+        let mut dropped_native = Vec::new();
+        for entry in queue {
+            match entry.job {
+                Job::Run(task) => pending.push(task),
+                Job::Native(job, _) => dropped_native.push(job),
+            }
+        }
         let mut record = self.shared.lock_record();
         Ok(Shutdown {
             pending,
             parked,
+            dropped_native,
             outcomes: std::mem::take(&mut record.outcomes),
             events: record.events.clone(),
         })

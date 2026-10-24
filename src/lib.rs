@@ -92,7 +92,8 @@ pub use dep::{
 pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use exec::{Executor, ExecutorConfig, Placement, WorkerId};
 pub use heap::{
-    CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
+    CollectError, CollectStats, CollectionObserver, CollectionReport, HandleError, HeapStats,
+    Local, MutatorState, Rooted, Scope, ThreadRegistration, WeakHandle,
 };
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};

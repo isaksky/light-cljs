@@ -61,7 +61,10 @@ use std::fmt;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 
-pub use gc::{CollectError, CollectStats};
+pub use gc::{
+    CollectError, CollectStats, CollectionObserver, CollectionReport, MutatorState,
+    ThreadRegistration,
+};
 use gc::{GcState, RootSource, SourceRegistry, Trace};
 pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
@@ -374,6 +377,9 @@ pub(crate) struct Heap {
     sources: Mutex<SourceRegistry>,
     /// The object table.
     objects: Mutex<ObjectTable>,
+    /// Collection observers ([`gc::CollectionObserver`]). A leaf lock: never
+    /// held with another heap lock or while an observer runs.
+    observers: Mutex<Vec<Weak<dyn gc::CollectionObserver>>>,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is

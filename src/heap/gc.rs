@@ -41,6 +41,16 @@
 //! several (a scope, then a run, then an atom operation inside the run). A
 //! thread that holds none never delays a collection, however long it runs.
 //!
+//! A thread may also be **registered** ([`ThreadRegistration`], held by
+//! executor workers for their lifetime). Registration is not heap access and
+//! never delays a collection; it makes the thread a named participant of
+//! every collection, reported as [`MutatorState::Idle`] while it holds no
+//! access. Every completed collection produces a [`CollectionReport`]
+//! (requester, each other known thread with its [`MutatorState`], stats),
+//! given to the registered [`CollectionObserver`]s on the collecting thread
+//! after the rendezvous ends and every heap lock is released (the
+//! `observers` lock is a leaf, released before observers run).
+//!
 //! # Safepoints and the collection rendezvous
 //!
 //! A thread is **stopped** when it is outside heap access, or at a
@@ -237,6 +247,12 @@ struct ThreadAccess {
     parked: Option<Vec<ObjectId>>,
     /// The thread is blocked in its own collection request.
     requesting: bool,
+    /// Thread registrations ([`ThreadRegistration`]): the thread is a named
+    /// participant of every collection. Not heap access.
+    registered: u32,
+    /// Scope releases in progress ([`Heap::release_scopes`]). Not heap
+    /// access; kept so collection reports can say how the thread stopped.
+    releasing: u32,
 }
 
 impl ThreadAccess {
@@ -246,6 +262,22 @@ impl ThreadAccess {
 
     fn stopped(&self) -> bool {
         !self.in_access() || self.parked.is_some() || self.requesting
+    }
+
+    /// How this stopped thread took part in a collection; `None` for an
+    /// entry that names nothing reportable (unregistered and only entering).
+    fn stop_state(&self) -> Option<MutatorState> {
+        if self.requesting {
+            Some(MutatorState::Requesting)
+        } else if self.parked.is_some() {
+            Some(MutatorState::Safepoint)
+        } else if self.releasing > 0 {
+            Some(MutatorState::Released)
+        } else if self.registered > 0 {
+            Some(MutatorState::Idle)
+        } else {
+            None
+        }
     }
 
     fn count(&mut self, access: Access) -> &mut u32 {
@@ -277,11 +309,13 @@ pub(crate) struct GcState {
 impl GcState {
     /// Drop `me`'s entry if it no longer records anything.
     fn forget_if_idle(&mut self, me: ThreadId) {
-        if self
-            .threads
-            .get(&me)
-            .is_some_and(|t| !t.in_access() && t.parked.is_none() && !t.requesting)
-        {
+        if self.threads.get(&me).is_some_and(|t| {
+            !t.in_access()
+                && t.parked.is_none()
+                && !t.requesting
+                && t.registered == 0
+                && t.releasing == 0
+        }) {
             self.threads.remove(&me);
         }
     }
@@ -346,6 +380,77 @@ impl Drop for MutatorToken<'_> {
             self.heap.gc_changed.notify_all();
         }
     }
+}
+
+/// A thread's registration as a mutator participant for the registration's
+/// lifetime ([`Runtime::register_thread`](crate::Runtime::register_thread)):
+/// every collection report names the thread and how it was stopped. It is
+/// not heap access and never delays a collection by itself: while the thread
+/// holds no run guard, scope or native operation it is idle, and stopped.
+/// Not `Send`: it describes what its thread is doing.
+#[derive(Debug)]
+pub struct ThreadRegistration<'h> {
+    heap: &'h Heap,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl Drop for ThreadRegistration<'_> {
+    fn drop(&mut self) {
+        let me = thread::current().id();
+        let mut gc = lock(&self.heap.gc);
+        if let Some(entry) = gc.threads.get_mut(&me) {
+            entry.registered -= 1;
+        }
+        gc.forget_if_idle(me);
+    }
+}
+
+/// How a thread other than the collecting one was stopped when a collection
+/// ran (module docs, "Safepoints and the collection rendezvous").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MutatorState {
+    /// Its run was parked at a VM safepoint, with its frames reported.
+    Safepoint,
+    /// Its scopes were released ([`Scope::released`](crate::Scope::released),
+    /// [`Scope::safepoint`](crate::Scope::safepoint)); it held no other heap
+    /// access.
+    Released,
+    /// A registered thread ([`ThreadRegistration`]) outside heap access: an
+    /// idle executor worker, or one between runs or waiting to enter.
+    Idle,
+    /// Blocked in its own collection request (several were pending).
+    Requesting,
+}
+
+/// What one completed collection did and who took part, given to
+/// [`CollectionObserver`]s.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionReport {
+    /// Collections completed so far, this one included (1 for the first).
+    pub number: u64,
+    /// The collecting thread.
+    pub requester: ThreadId,
+    /// True if it requested a rendezvous and waited
+    /// ([`Runtime::request_collection`](crate::Runtime::request_collection));
+    /// false if every other thread was already stopped.
+    pub waited: bool,
+    /// Every other thread the collector's registry knew of, with how it was
+    /// stopped, in no particular order: threads in heap access (all stopped
+    /// at a safepoint, released, or requesting) and registered threads.
+    /// Unregistered threads outside heap access are not listed.
+    pub participants: Vec<(ThreadId, MutatorState)>,
+    pub stats: CollectStats,
+}
+
+/// Told about every completed collection
+/// ([`Runtime::observe_collections`](crate::Runtime::observe_collections)).
+pub trait CollectionObserver: Send + Sync {
+    /// Called on the collecting thread after the collection, once the
+    /// rendezvous has ended and no heap lock is held: other threads may
+    /// already be running again, and reports of concurrent collections may
+    /// arrive out of order (see [`CollectionReport::number`]). It must not
+    /// block on another mutator; it may take its own locks.
+    fn collected(&self, report: &CollectionReport);
 }
 
 /// What a completed collection did.
@@ -421,6 +526,24 @@ impl Drop for Stopped<'_> {
 }
 
 impl Heap {
+    /// Register the current thread as a collection participant
+    /// ([`ThreadRegistration`]). Never waits: it is not heap access.
+    pub(crate) fn register_thread(&self) -> ThreadRegistration<'_> {
+        let me = thread::current().id();
+        lock(&self.gc).threads.entry(me).or_default().registered += 1;
+        ThreadRegistration {
+            heap: self,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    /// Tell `observer` about every later collection while it is alive.
+    pub(crate) fn observe_collections(&self, observer: Weak<dyn CollectionObserver>) {
+        let mut observers = lock(&self.observers);
+        observers.retain(|o| o.strong_count() > 0);
+        observers.push(observer);
+    }
+
     /// Register the current thread as a mutator of kind `access` (module
     /// docs). Entering heap access waits until a pending collection
     /// request has been served; a nested registration does not wait.
@@ -512,17 +635,18 @@ impl Heap {
             fn drop(&mut self) {
                 let gc = lock(&self.heap.gc);
                 let mut gc = self.heap.wait_to_enter(gc, self.me);
-                gc.threads.entry(self.me).or_default().scopes += self.scopes;
+                let entry = gc.threads.entry(self.me).or_default();
+                entry.scopes += self.scopes;
+                entry.releasing -= 1;
+                gc.forget_if_idle(self.me);
             }
         }
         let me = thread::current().id();
         let scopes = {
             let mut gc = lock(&self.gc);
-            let scopes = gc
-                .threads
-                .get_mut(&me)
-                .map_or(0, |t| std::mem::take(&mut t.scopes));
-            gc.forget_if_idle(me);
+            let entry = gc.threads.entry(me).or_default();
+            let scopes = std::mem::take(&mut entry.scopes);
+            entry.releasing += 1;
             if gc.pending > 0 {
                 self.gc_changed.notify_all();
             }
@@ -641,11 +765,39 @@ impl Heap {
             reclaimed: garbage.len(),
         };
         world.gc.collections += 1;
+        let me = world.me;
+        let report = CollectionReport {
+            number: world.gc.collections,
+            requester: me,
+            waited: world.requested,
+            participants: world
+                .gc
+                .threads
+                .iter()
+                .filter(|&(&id, _)| id != me)
+                .filter_map(|(&id, t)| Some((id, t.stop_state()?)))
+                .collect(),
+            stats,
+        };
         drop((objects, scopes, roots, world));
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, sources));
+        self.notify_observers(&report);
         stats
+    }
+
+    /// Give `report` to the live observers, with no heap lock held (the
+    /// `observers` lock is released before any observer runs).
+    fn notify_observers(&self, report: &CollectionReport) {
+        let observers: Vec<Arc<dyn CollectionObserver>> = {
+            let mut observers = lock(&self.observers);
+            observers.retain(|o| o.strong_count() > 0);
+            observers.iter().filter_map(Weak::upgrade).collect()
+        };
+        for observer in observers {
+            observer.collected(report);
+        }
     }
 
     /// The current roots with their categories (tests and diagnostics),
@@ -1106,8 +1258,19 @@ mod tests {
             }
         };
 
+        #[derive(Default)]
+        struct Reports(std::sync::Mutex<Vec<CollectionReport>>);
+        impl CollectionObserver for Reports {
+            fn collected(&self, report: &CollectionReport) {
+                self.0.lock().unwrap().push(report.clone());
+            }
+        }
+
         let rt = Runtime::new();
         let heap = rt.heap();
+        let observer = Arc::new(Reports::default());
+        let weak: Weak<dyn CollectionObserver> = Arc::downgrade(&observer) as _;
+        rt.observe_collections(weak);
         let stop = Arc::new(AtomicBool::new(false));
         let arg = rt.scope(|s| {
             let o = s.new_object();
@@ -1158,6 +1321,31 @@ mod tests {
         assert_eq!(rt.heap_stats().collections, 2);
         assert!(!rt.collection_requested());
         assert_eq!(lock(&heap.gc).pending, 0);
+        // The first collection saw the other requester blocked in its own
+        // request, the run parked at a safepoint, and this thread released.
+        let mut reports = observer.0.lock().unwrap().clone();
+        reports.sort_by_key(|r| r.number);
+        assert_eq!(reports.len(), 2);
+        let first = &reports[0];
+        assert!(first.waited);
+        let mut states: Vec<MutatorState> = first.participants.iter().map(|p| p.1).collect();
+        states.sort_by_key(|s| *s as u8);
+        assert_eq!(
+            states,
+            [
+                MutatorState::Safepoint,
+                MutatorState::Released,
+                MutatorState::Requesting
+            ],
+            "{first:#?}"
+        );
+        let me = thread::current().id();
+        assert!(first.participants.contains(&(me, MutatorState::Released)));
+        assert!(
+            first
+                .participants
+                .contains(&(runner.thread().id(), MutatorState::Safepoint))
+        );
         // The parked run resumes and finishes with its frame's object.
         stop.store(true, Ordering::Release);
         let result = runner.join().unwrap();

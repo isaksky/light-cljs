@@ -175,7 +175,7 @@ safepoints"). This replaces QuickJS's one-thread-per-runtime rule
 - **Deferred:** automatic collection triggers, worker-local allocation
   buffers, releasing access around long leaf host effects (a request waits
   for an effect to return), and parking a thread that holds two run guards.
-  Worker integration is clj-quickjs-25.
+  Worker integration: clj-quickjs-25 (below).
 
 ## Persistent collections (clj-quickjs-3)
 
@@ -861,10 +861,44 @@ Design: `design.md` §§8, 10, 15.
   pass tasks, not copies of values.
 - **One runtime.** Task ids restart in every runtime, so an executor is
   started for one runtime and hands back tasks of others (`ForeignTasks`).
-- **Deferred.** Recording collections with executor events and the
-  executor root-inventory tests (clj-quickjs-25; by the safepoint contract `request_collection`
-  needs no executor cooperation, untested under the executor yet); the VM-level need (clj-quickjs-23)
-  that will let the default driver park on its own.
+- **Deferred.** The VM-level need (clj-quickjs-23) that will let the
+  default driver park on its own.
+
+## Collection under the executor (clj-quickjs-25)
+
+`src/exec.rs` (module docs, "Native jobs" and "Collection") on top of the
+safepoint contract in `src/heap/gc.rs`. Design: `design.md` §11, §13
+item 7, §15 ("collection with suspended frames and native references").
+
+- **Registered workers, not a held lock.** Each worker holds a
+  `ThreadRegistration` for its lifetime: the collector's registry knows
+  it, and every collection report says how it was stopped. Registration is
+  not heap access, so a worker waiting on the ready queue, or routing an
+  outcome, is idle and stopped; it enters heap access only through a run
+  guard (VM safepoints) or a native job's scope (no-GC access, delays a
+  request until closed or released). A worker that takes a task while a
+  request is pending waits in `try_begin_run` with no executor lock held.
+- **Roots without an executor root source.** A task handle is itself a
+  root source, so the executor's queue, parked set and in-flight locals
+  root their tasks' saved frames simply by holding handles; a running
+  task's frames come from its run's safepoint report; completed cells root
+  their results; terminal outcomes are `Rooted`. The collector never takes
+  an executor lock, and no worker holds one while entering heap access or
+  requesting, so the rendezvous cannot wait on scheduling state.
+- **Native jobs and worker-requested collections.**
+  `Executor::submit_native` runs host code on a worker outside any run;
+  `Executor::schedule_collection` is such a job requesting a collection.
+- **Events.** `Runtime::observe_collections` delivers a
+  `CollectionReport` (requester thread, participants with their
+  `MutatorState`, stats) on the collecting thread after the rendezvous,
+  with no heap lock held; the executor records it as `Collected`, naming
+  workers. Events of resumed runs may precede it.
+- **Contrast.** `research/quickjs/doc/quickjs.texi` ("Runtime and
+  contexts", revision 7d1c13c5d8f8) forbids using one runtime from several
+  threads; here several workers share one heap and the registry plus
+  rendezvous decide when a collection may run.
+- **Deferred.** Automatic collection triggers, worker-local allocation
+  buffers, and releasing a run's access around a long leaf host effect.
 
 ## QuickJS references and provenance
 

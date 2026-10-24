@@ -7,14 +7,17 @@
 //! of one runtime run in parallel and share only the heap's short metadata
 //! locks.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
 use crate::dep::{
     self, CellStatus, ClaimError, CompleteError, Completion, DependencyTable, ProducerRequest,
     Wakeups,
 };
-use crate::heap::{CollectError, CollectStats, HandleError, Heap, HeapStats, Rooted, Scope};
+use crate::heap::{
+    CollectError, CollectStats, CollectionObserver, HandleError, Heap, HeapStats, Rooted, Scope,
+    ThreadRegistration,
+};
 use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
 use crate::task::Task;
 use crate::value::share::{self, PublishError};
@@ -260,6 +263,25 @@ impl Runtime {
     /// it); see [`crate::heap::gc`].
     pub fn request_collection(&self) -> Result<CollectStats, CollectError> {
         self.0.heap.request_collection()
+    }
+
+    /// Register the calling thread as a collection participant until the
+    /// returned registration drops: every [`CollectionReport`](crate::CollectionReport) names it and
+    /// says how it was stopped. Executor workers hold one for their lifetime.
+    /// It is not heap access and never delays a collection by itself: a
+    /// registered thread holding no run guard, scope or atom operation is
+    /// idle and stopped (an idle worker blocked on its ready queue never
+    /// holds up a request). Never waits.
+    pub fn register_thread(&self) -> ThreadRegistration<'_> {
+        self.0.heap.register_thread()
+    }
+
+    /// Give every later collection's [`CollectionReport`](crate::CollectionReport) to `observer`
+    /// while it is alive (see [`CollectionObserver::collected`] for when and
+    /// where it runs). Executors use it to record collections with their
+    /// own events.
+    pub fn observe_collections(&self, observer: Weak<dyn CollectionObserver>) {
+        self.0.heap.observe_collections(observer);
     }
 
     /// True while a collection request is pending ([`Runtime::request_collection`]):

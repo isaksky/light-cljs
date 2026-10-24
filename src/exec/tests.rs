@@ -208,3 +208,149 @@ fn a_transiently_refused_claim_is_retried_without_moving_the_last_worker() {
     );
     exec.shutdown(TIMEOUT).unwrap();
 }
+
+/// Answers "continue" to every effect until `stop` is set, after opening
+/// `entered`.
+#[derive(Clone, Default)]
+struct Spin {
+    entered: Gate,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Spin {
+    fn wait_entered(&self) -> bool {
+        let open = self.entered.0.0.lock().unwrap();
+        let cv = &self.entered.0.1;
+        *cv.wait_timeout_while(open, TIMEOUT, |o| !*o).unwrap().0
+    }
+}
+
+impl Host for Spin {
+    fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+        self.entered.open();
+        let stop = self.stop.load(std::sync::atomic::Ordering::Acquire);
+        Ok(Primitive::Bool(!stop))
+    }
+}
+
+/// The rendezvous root snapshot under the executor (`docs/design.md` §11):
+/// a task running on worker 0 (its frames reported by its runner, parked at
+/// a VM safepoint), a task queued behind it, a task parked on a dependency
+/// (held only by the executor) and a completed cell's result are each roots,
+/// and nothing else is: no root comes from the executor's own state or a
+/// Rust local.
+#[test]
+fn root_snapshot_has_running_queued_and_parked_tasks_and_cell_results() {
+    use crate::heap::gc::RootCategory;
+    use crate::value::Value;
+    use crate::{Completion, DependencyId, DependencyKey, Need, ResultKind};
+    use Opcode::*;
+    let rt = Runtime::new();
+    let heap = rt.heap();
+    let (def, kind) = (DependencyId::new(1), ResultKind::new(1));
+    let key = DependencyKey::new(rt.world(), def, kind);
+    let producer = rt.claim(key).unwrap();
+    let object_id = |r: &Rooted| match r.value_in(heap).unwrap() {
+        Value::Object(id) => id,
+        other => panic!("expected an object, got {other:?}"),
+    };
+    let new_object = || {
+        rt.scope(|s| {
+            let o = s.new_object();
+            s.persist(o)
+        })
+    };
+    // `function(kept) { while (spin()); return kept; }`
+    let mut asm = Assembler::new();
+    let (top, done) = (asm.label(), asm.label());
+    asm.bind(top);
+    asm.constant(Primitive::Null).host_effect(0);
+    asm.jump_if_false(done).jump(top);
+    asm.bind(done);
+    asm.get_local(0).op(Return);
+    let spinner = asm.finish("spinner", 1, 1).unwrap();
+    // `function(kept) { return kept; }`
+    let mut asm = Assembler::new();
+    asm.get_local(0).op(Return);
+    let identity = asm.finish("identity", 1, 1).unwrap();
+
+    let (running, queued, parked) = (new_object(), new_object(), new_object());
+    let published = rt.scope(|s| {
+        let v = s.new_vector(&[]).unwrap();
+        s.persist(v)
+    });
+    let mut expected = vec![
+        (RootCategory::TaskFrame, object_id(&running)),
+        (RootCategory::TaskFrame, object_id(&queued)),
+        (RootCategory::TaskFrame, object_id(&parked)),
+        (RootCategory::DependencyOutcome, object_id(&published)),
+    ];
+    expected.sort_by_key(|&(_, id)| id);
+    let spin_task = rt.spawn(&spinner, &[&running]).unwrap();
+    let queued_task = rt.spawn(&identity, &[&queued]).unwrap();
+    let park_task = rt.spawn(&identity, &[&parked]).unwrap();
+    let (spin_id, queued_id, park_id) = (spin_task.id(), queued_task.id(), park_task.id());
+    let pkey = DependencyKey::new(rt.world(), DependencyId::new(2), kind);
+    let pproducer = rt.claim(pkey).unwrap();
+    let wakeups = rt
+        .complete(pkey, pproducer.producer(), Completion::Ready(&published))
+        .unwrap();
+    assert!(wakeups.task_ids().is_empty());
+    drop((running, queued, parked, published));
+
+    let spin = Spin::default();
+    let host = spin.clone();
+    let exec = ExecutorConfig::new()
+        .host(move |_| Box::new(host.clone()))
+        .driver(move |mut guard, cx| {
+            if guard.task_id() == spin_id {
+                guard.run_with(Budget::UNLIMITED, &mut *cx.host)
+            } else if guard.task_id() == park_id {
+                match guard.need(def, kind) {
+                    Ok(Need::Waiting { produce: None, .. }) => guard.park(),
+                    Ok(Need::Ready(_)) => guard.run_with(cx.budget, &mut *cx.host),
+                    other => panic!("unexpected need result {other:?}"),
+                }
+            } else {
+                guard.run_with(cx.budget, &mut *cx.host)
+            }
+        })
+        .start(&rt)
+        .unwrap();
+    exec.submit(park_task).unwrap();
+    let parked_now = |ev: &[Event]| {
+        ev.iter().any(|e| {
+            e.task == Some(park_id)
+                && matches!(e.kind, EventKind::Released(OutcomeKind::Waiting(_)))
+        })
+    };
+    assert!(exec.wait_for(TIMEOUT, parked_now), "{:#?}", exec.events());
+    exec.submit_with(spin_task, Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    assert!(spin.wait_entered(), "the spinner never ran");
+    exec.submit_with(queued_task, Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+
+    let mut snapshot = heap.root_snapshot_at(true).unwrap();
+    snapshot.sort_by_key(|&(_, id)| id);
+    snapshot.dedup();
+    assert_eq!(snapshot, expected);
+
+    spin.stop.store(true, std::sync::atomic::Ordering::Release);
+    for id in [spin_id, queued_id] {
+        assert!(matches!(
+            exec.take_outcome(id, TIMEOUT),
+            Some(RunOutcome::Complete(_))
+        ));
+    }
+    let value = rt.root(Primitive::Number(1.0));
+    let wakeups = rt
+        .complete(key, producer.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert_eq!(exec.wake(wakeups).unwrap(), 1);
+    assert!(matches!(
+        exec.take_outcome(park_id, TIMEOUT),
+        Some(RunOutcome::Complete(_))
+    ));
+    exec.shutdown(TIMEOUT).unwrap();
+}
