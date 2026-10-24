@@ -389,7 +389,6 @@ pub(crate) struct Intrinsics {
     pub(crate) promise_prototype: ObjectId,
     promise: ObjectId,
 
-
     pub(crate) intl_number_format_prototype: ObjectId,
     pub(crate) intl_number_format_bound: ObjectId,
 }
@@ -1032,7 +1031,6 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(which, &[])?;
         b.add(target, name, function, PropertyFlags::METHOD)?;
     }
-
 
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
