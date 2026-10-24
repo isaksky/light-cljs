@@ -439,7 +439,7 @@ impl Parser<'_> {
             span: self.advance()?.span,
         };
         let value = if self.is_keyword(Keyword::Function) || self.at_async_function() {
-            DefaultExport::Function(self.parse_function(false)?)
+            DefaultExport::Function(self.parse_function(false, None)?)
         } else if self.is_keyword(Keyword::Class) {
             let expr = self.parse_class(false)?;
             let ExprKind::Class(class) = expr.kind else {

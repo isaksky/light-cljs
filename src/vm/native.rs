@@ -290,6 +290,7 @@ enum Failure {
 pub(crate) enum Action {
     /// Enter newly compiled eval code after releasing the native borrow.
     Eval(super::executable::Executable, Vec<Value>),
+    DynamicFunction(super::executable::Executable),
     SimTimer {
         callback: Value,
         delay: f64,
@@ -485,6 +486,7 @@ enum NativeState {
     MathSumPrecise(Box<sum_precise::State>),
     Async(super::asynchronous::Boundary),
     Eval(Box<eval::State>),
+    DynamicFunction(Box<eval::DynamicFunction>),
     ArrayFrom(Box<array_from::State>),
     DateParse {
         parser: Box<super::date::Parser>,
@@ -850,6 +852,7 @@ impl Trace for NativeFrame {
         match &self.state {
             NativeState::Async(a) => a.trace(visit),
             NativeState::Eval(eval) => eval.trace(visit),
+            NativeState::DynamicFunction(function) => function.trace(visit),
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
@@ -1349,6 +1352,12 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::Function {
+        let native = eval::DynamicFunction::new(args);
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::DynamicFunction(Box::new(native)))?;
+        return Ok(true);
+    }
     if which == Builtin::Eval && !construct {
         let value = args.first().cloned().unwrap_or(Value::Undefined);
         let native = if let Value::String(text) = value {
@@ -2470,6 +2479,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SuspendAsync(_)
             | Action::ResumeAsync { .. }
             | Action::Eval(..)
+            | Action::DynamicFunction(..)
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::Call { .. }
@@ -2564,6 +2574,8 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         // entering the large general native dispatcher on small VM workers.
         if let NativeState::Eval(eval) = &mut frame.state {
             eval.step()?
+        } else if let NativeState::DynamicFunction(function) = &mut frame.state {
+            function.step(input)?
         } else if let NativeState::Instanceof { value, target } = &frame.state {
             step_instanceof(heap, state.diag.task, value, target, input)?
         } else {
@@ -2586,6 +2598,13 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         } => {
             state.natives.pop();
             super::asynchronous::resume(heap, state, id, rejected, value)
+        }
+        Action::DynamicFunction(executable) => {
+            state.natives.pop();
+            let function =
+                dispatch::new_function(heap, executable.0, Box::new([]), state.diag.task, None)?;
+            state.push(function);
+            Ok(Flow::Next)
         }
         Action::Eval(executable, captures) => {
             state.natives.pop();
@@ -3003,6 +3022,7 @@ impl NativeState {
         match self {
             NativeState::Async(a) => a.step(heap, input),
             NativeState::Eval(eval) => eval.step(),
+            NativeState::DynamicFunction(function) => function.step(input),
             NativeState::Generator { id, failed } => {
                 if let Some(error) = failed.take() {
                     super::generator::complete(heap, *id);
@@ -4257,6 +4277,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
+                | NativeState::DynamicFunction(_)
                 | NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
                 | NativeState::MathSumPrecise(_)

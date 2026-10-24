@@ -38,7 +38,7 @@ and accessor properties (clj-quickjs-119/-120), and with `Object.getPrototypeOf`
 `Object.isFrozen` for extensibility (clj-quickjs-122), and with `Object.keys`
 and `Object.getOwnPropertyNames` for own-key enumeration (clj-quickjs-123).
 `Function.prototype` with `call` and `apply`, and the built-in globals
-`Function` (a stub constructor) and `Reflect` with `Reflect.apply`
+`Function` (dynamic compilation, clj-quickjs-111) and `Reflect` with `Reflect.apply`
 (clj-quickjs-102), call a function with an explicit receiver.
 `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
 execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`,
@@ -823,8 +823,8 @@ checks left to later stages:
   fails with `UnsupportedOperand` when evaluated instead of giving a
   wrong value.
 - **`Function.prototype` is partial** (clj-quickjs-102): it has
-  `length`, `name`, `constructor` (the `Function` stub, whose call fails
-  with `UnsupportedOperand` until clj-quickjs-111), `call` and `apply`.
+  `length`, `name`, `constructor` (the dynamic `Function` constructor,
+  clj-quickjs-111), `call` and `apply`.
   Its other standard methods (`bind`, clj-quickjs-103; `toString`) and
   `arguments`/`caller` are missing: a lookup that reaches
   `Function.prototype` without finding one (`Object.bind`,
@@ -1352,7 +1352,7 @@ Executed, with JavaScript semantics:
 | `f.call(t, a, b)`, `f.apply(t, list)` (clj-quickjs-102) | `Function.prototype.call` / `apply` (QuickJS `js_function_call`, `js_function_apply`), inherited by every function: call the receiver `f` with `this` `t` (`undefined` when absent) and the arguments `a, b`, or the elements of `list`: none for `undefined`/`null`, otherwise CreateListFromArrayLike (an array or any object: its `length` through ToLength, then its indices `0 .. length - 1` read with the prototype chain, so holes read inherited values; a `length` that is an object fails with `UnsupportedOperand`, ToPrimitive). A strict callee sees `t` as is; a sloppy one only when `t` is an object (else `UnsupportedOperand`, as for `this`). The call replaces the `call`/`apply` call in the same instruction (a tail call): a function object runs in a new task-owned frame, which may yield, wait on `__rt.need`, be collected around and migrate, and its result is the call's; a built-in runs to completion. A receiver that is not callable (`Function.prototype.call.call(1)`, `const c = f.call; c()`) and a `list` that is neither an object nor `undefined`/`null` (`f.apply(t, 1)`) are catchable `TypeError`s; an argument list longer than the remaining value-stack room, or more forwarding hops than the call-depth limit (`call` of `call` of ..., or `apply` through an array that holds itself), is a catchable `StackOverflow` |
 | `Reflect.apply(f, t, list)` (clj-quickjs-102) | `f.apply(t, list)` without reading `f.apply` (QuickJS `js_reflect_apply`): `f` must be callable and `list` must be an object (`Reflect.apply(f, t)` and `Reflect.apply(f, t, undefined)` are catchable `TypeError`s) |
 | `f.bind(t, a, b)` (clj-quickjs-103) | creates a bound function holding callable `f`, receiver `t` and arguments `a, b`; calls prepend those arguments and use `t`. Binding again preserves the first receiver. `new` unwraps bound targets, ignores bound receivers, and constructs the ordinary target; `instanceof` likewise uses the target. Calls, constructors and native callbacks enter task-owned frames that may suspend and migrate. Non-callable receivers throw `TypeError`; argument expansion and forwarding hops obey VM stack/depth limits. Bound functions have configurable, non-enumerable, read-only `length` (target length minus bound arguments, at least zero) and `name` (`"bound "` plus target name), and no initial own `prototype`. Their operands and metadata are traced; publication succeeds exactly when the target, receiver and arguments are shareable and no mutable own-property record has been added. No new EBNF forms are needed: these are existing method calls, property reads and `new` expressions |
-| `Function.prototype`, `Function` (clj-quickjs-102) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` are not supported yet (clj-quickjs-111): the call fails with `UnsupportedOperand`, `new` with a `TypeError` |
+| `Function.prototype`, `Function` (clj-quickjs-102/-111) | `Function.prototype` is a built-in function that accepts any arguments and returns `undefined`, the prototype of every function and built-in function, inheriting from `Object.prototype`; `Function.prototype.constructor === Function`. `Function(...)` and `new Function(...)` compile parameter/body strings into an ordinary global-scope function; see "Function constructor" below. |
 | `return` (in any function) | returns from that function |
 | closures | a function sees the bindings of every enclosing scope, including after they are assigned and after the enclosing call returned; each execution of a block (each loop iteration) makes new bindings |
 | `Number(v)`, `String(v)`, `new Number(v)`, `new String(v)` (clj-quickjs-72) | called: ToNumeric with BigInt rounded to binary64 (clj-quickjs-203) / ToString of the argument; no argument gives 0 / `""`, while an explicit `undefined` gives NaN / `"undefined"`. Constructed: a distinct task-owned ordinary object with `[[NumberData]]` / `[[StringData]]`, inheriting from `Number.prototype` / `String.prototype`. Their `valueOf()` / `toString()` accept their respective wrappers or primitives; a prototype lookalike without the internal slot throws a catchable TypeError. The prototypes themselves hold +0 / `""`. `typeof` a wrapper is `"object"`, strict equality uses identity, and `instanceof` follows its prototype. Own ordinary properties work as on literals, and publication rejects wrappers as task-owned. Object arguments use resumable ToPrimitive with number hint for Number and string hint for String. Wrapper equality, addition and other coercing operators call observable valueOf/toString methods through the VM; conversion callbacks may yield, wait, be collected around and migrate. A String wrapper exposes virtual own `length` and code-unit indices (clj-quickjs-142), as described above. Other keys use ordinary storage. Boolean wrappers are deferred; Number predicates and constants are described below (clj-quickjs-147). |
@@ -4724,7 +4724,7 @@ never exposed to JavaScript or re-iterated when the call starts.
 Rejected forms: object spread, rest parameters and a standalone
 `(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
 intrinsics require statically supplied arguments and reject spread with
-`Unsupported`. Dynamic Function construction retains its explicit rejection.
+`Unsupported`. Dynamic Function construction supports ordinary and spread calls.
 Direct and indirect eval support ordinary and spread calls.
 
 Synthetic fixtures, not light-cljs output:
@@ -6251,4 +6251,57 @@ s[Symbol.dispose] === s.dispose;
 let n = 0;
 { using s = new DisposableStack(); s.defer(() => n++); }
 n === 1;
+```
+
+### Function constructor (clj-quickjs-111)
+
+EBNF is unchanged: `Function(p1, ..., body)` uses Call syntax and
+`new Function(p1, ..., body)` uses NewExpression syntax. Execution converts
+arguments with ToString, left to right (including observable methods with
+string hint); Symbols throw TypeError. With no arguments the body is empty.
+The last argument is the body, and earlier arguments are comma-separated
+parameter source fragments. The generated source is
+`function anonymous(` + parameters + `\n) {\n` + body + `\n}`.
+
+The parameter list and body have separate parse boundaries: neither may
+close its generated delimiter early, and a comment/string cannot cross from
+parameters to body. Malformed source and early errors throw catchable
+SyntaxError. The resulting function is sloppy unless its body has a
+`"use strict"` directive, regardless of the caller's mode. It sees the task's
+global object and global declarative bindings, with no caller captures.
+Its name is `"anonymous"` (without a lexical binding of that name); its
+length follows the ordinary parameter/default rules. It inherits from
+`Function.prototype`, has an ordinary lazy `prototype`, and is constructible.
+
+Conversion and source preparation are budgeted native continuations, rooted
+through GC and resumable across waits and worker migration. Compilation
+reuses eval's temporary 2 MiB compiler stack and 16,384 UTF-16-unit source
+cap, including the 26-unit generated wrapper (RangeError above the cap).
+Generated code executes through ordinary task-owned VM frames. Diagnostics
+use the generated function's source map; compile errors include `<Function>`.
+
+Rejected forms: malformed parameter/body source, strict-mode restricted
+parameter names, strict directives with non-simple parameters, and `super`
+without a method context throw SyntaxError. Unsupported source forms retain
+the frontend's existing limits. Explicit gaps: GeneratorFunction and
+AsyncFunction constructors, Function.prototype.toString, and alternate
+new.target/subclass allocation remain deferred. Sloppy receiver substitution
+retains the existing explicit UnsupportedOperand limit. Object argument
+conversion uses the shared OrdinaryToPrimitive path; general object
+Symbol.toPrimitive dispatch remains deferred to clj-quickjs-128.
+
+Synthetic fixtures, not light-cljs output. Each script evaluates to true:
+
+```js accept
+new Function('a', 'b', 'return a + b')(2, 3) === 5;
+Function('return 7')() === 7;
+Function('eval', 'return eval(1, 2)')((a, b) => a + b) === 3;
+Function('a', 'b', '').length === 2 && Function().name === 'anonymous';
+let caught = false; try { Function('a){', ''); } catch(e) { caught = e instanceof SyntaxError; } caught;
+```
+
+Malformed outer JavaScript still fails during compilation:
+
+```js reject UnexpectedEnd 1:14
+new Function(
 ```

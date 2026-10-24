@@ -880,6 +880,7 @@ fn construct_target(
         }
         Ok(Callee::Builtin(
             which @ (Builtin::Number
+            | Builtin::Function
             | Builtin::String
             | Builtin::Error
             | Builtin::NativeError(_)

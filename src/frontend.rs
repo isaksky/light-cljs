@@ -283,6 +283,35 @@ pub(crate) fn compile_eval(name: &str, source: &str) -> Result<Executable, Synta
     lower::lower_eval(name, source, &script)
 }
 
+/// Compile Function's isolated parameter/body source with no caller scope or
+/// lexical self binding for the display name `anonymous`.
+pub(crate) fn compile_dynamic_function(
+    source: &str,
+    parameter_units: usize,
+) -> Result<Executable, SyntaxError> {
+    let mut units = 0;
+    let parameter_end = source
+        .char_indices()
+        .find_map(|(byte, ch)| {
+            if units == parameter_units {
+                Some(byte)
+            } else {
+                units += ch.len_utf16();
+                None
+            }
+        })
+        .ok_or_else(|| {
+            SyntaxError::new(
+                source,
+                SyntaxErrorKind::Internal,
+                Span::new(0, 0),
+                "missing dynamic function boundary",
+            )
+        })?;
+    let function = parser::Parser::new(source, false).parse_dynamic_function(parameter_end)?;
+    lower::lower_dynamic_function(source, &function)
+}
+
 pub(crate) fn compile_direct_eval(
     name: &str,
     source: &str,

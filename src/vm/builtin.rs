@@ -89,7 +89,7 @@
 
 //! | `parseInt`, `parseFloat` (clj-quickjs-148) | resumable ToString and, for parseInt, ToInt32(radix); bounded prefix scanning in native::NumberParse; `Number` exposes the same functions |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
-//! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
+//! | `Function(...)`, `new Function(...)` (clj-quickjs-111) | resumable ToString of parameter/body arguments, then isolated global-scope compilation; returns an ordinary function named `anonymous` |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
 //! | `f.apply(t, list)` (clj-quickjs-102) | forwards: calls `f` with `this` `t` and no arguments for an `undefined`/`null` `list`, else CreateListFromArrayLike(`list`): `length` through ToLength, then `list[0 .. length]`; a non-callable `f` or a primitive `list`: catchable `TypeError`; an object `length`: resumable ToPrimitive; a list longer than the value-stack room left: `StackOverflow` (QuickJS: a RangeError) |
 //! | `Reflect.apply(f, t, list)` (clj-quickjs-102) | forwards: `f.apply(t, list)` without reading `f.apply`, except that `list` must be an object (`undefined` is a catchable `TypeError`) |
@@ -186,9 +186,8 @@ pub(crate) enum Builtin {
     /// `Reflect.apply` (QuickJS `js_reflect_apply`; clj-quickjs-102): a
     /// forwarding built-in.
     ReflectApply,
-    /// `Function` (clj-quickjs-102): the global name and
-    /// `Function.prototype.constructor`; fails when called until the
-    /// Function constructor exists (clj-quickjs-111).
+    /// `Function` (clj-quickjs-111): callable and constructible dynamic
+    /// compilation, also `Function.prototype.constructor`.
     Function,
     /// `Function.prototype.bind` (clj-quickjs-103).
     FunctionPrototypeBind,
@@ -1241,8 +1240,8 @@ pub(crate) fn call(
         Builtin::FunctionPrototypeBind => Err(Fault::Internal(
             "bind must run through the native trampoline",
         )),
-        Builtin::Function => Err(Fault::Unsupported(
-            "the Function constructor is not supported".to_string(),
+        Builtin::Function => Err(Fault::Internal(
+            "Function must run through the native trampoline",
         )),
         // Every call site resolves these with `forward` first.
         Builtin::FunctionPrototypeCall

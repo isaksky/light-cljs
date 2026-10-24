@@ -288,6 +288,21 @@ fn lower_script_kind(
 }
 
 pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Executable, SyntaxError> {
+    lower_function_kind(source, function, true)
+}
+
+pub(crate) fn lower_dynamic_function(
+    source: &str,
+    function: &Function,
+) -> Result<Executable, SyntaxError> {
+    lower_function_kind(source, function, false)
+}
+
+fn lower_function_kind(
+    source: &str,
+    function: &Function,
+    bind_name: bool,
+) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
         if function.params.len() > MAX_LOCALS {
@@ -297,7 +312,7 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
                 "too many parameters",
             ));
         }
-        let self_name = match &function.name {
+        let self_name = match function.name.as_ref().filter(|_| bind_name) {
             Some(name) => {
                 lower.check_not_reserved(name)?;
                 Some((name.name.clone(), SelfKind::Entry))

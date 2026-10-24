@@ -808,7 +808,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_function_declaration(&mut self) -> PResult<Stmt> {
         let start = self.tok.span.start;
-        let function = self.parse_function(true)?;
+        let function = self.parse_function(true, None)?;
         self.bounded(Stmt::new(
             StmtKind::FunctionDecl(function),
             self.span_from(start),
@@ -1902,10 +1902,33 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// Dynamic source must consume the inserted delimiters, rather than ones
+    /// supplied by the parameter/body strings. This preserves their separate
+    /// parse goals even when a comment or string tries to cross the boundary.
+    pub(super) fn parse_dynamic_function(mut self, parameter_end: usize) -> PResult<Function> {
+        self.advance()?;
+        let function = self.parse_function(true, Some(parameter_end))?;
+        if self.tok.kind != TokenKind::Eof || self.prev_end != self.src.len() {
+            return Err(self.unexpected("end of dynamic function"));
+        }
+        if let Some(error) = self
+            .object_cover_errors
+            .into_iter()
+            .min_by_key(|e| e.span.start)
+        {
+            return Err(error);
+        }
+        Ok(function)
+    }
+
     /// Function declaration or expression, from the `function` keyword:
     /// `function` Name? `(` Params `)` `{` FunctionBody `}`.
     #[inline(never)]
-    fn parse_function(&mut self, declaration: bool) -> PResult<Function> {
+    fn parse_function(
+        &mut self,
+        declaration: bool,
+        parameter_end: Option<usize>,
+    ) -> PResult<Function> {
         let outer_initializer = std::mem::replace(&mut self.class_initializer, false);
         let outer_super = std::mem::replace(&mut self.super_call, false);
         let outer_property = std::mem::replace(&mut self.super_property, false);
@@ -1925,6 +1948,13 @@ impl<'a> Parser<'a> {
         );
         let outer_new_target = std::mem::replace(&mut self.new_target_allowed, true);
         let (name, (params, defaults)) = self.parse_function_head(declaration)?;
+        if parameter_end.is_some_and(|end| self.prev_end != end) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "invalid dynamic function parameter boundary",
+            ));
+        }
         let generator = self.suspension.generator;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -3754,7 +3784,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::This) => ExprKind::This,
             TokenKind::Keyword(Keyword::Class) => return self.parse_class(false),
             TokenKind::Keyword(Keyword::Function) => {
-                let function = self.parse_function(false)?;
+                let function = self.parse_function(false, None)?;
                 let span = function.span;
                 return self.expr(ExprKind::Function(Box::new(function)), span);
             }
@@ -3813,7 +3843,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_identifier_reference(&mut self) -> PResult<Expr> {
         if self.at_async_function() {
-            let function = self.parse_function(false)?;
+            let function = self.parse_function(false, None)?;
             let span = function.span;
             return self.expr(ExprKind::Function(Box::new(function)), span);
         }

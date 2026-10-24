@@ -1853,8 +1853,8 @@ moment (a leaf lock, never taken by the collector).
   inherit from it). Its standard names that do not exist yet (`bind`,
   `toString`, `arguments`, `caller`) fail with `UnsupportedOperand` when a
   lookup reaches it without finding them, instead of reading
-  `Object.prototype`'s or `undefined`. `Function` is a stub constructor
-  (failing when called, clj-quickjs-111) and `Reflect` an intrinsic
+  `Object.prototype`'s or `undefined`. `Function` compiles dynamic functions
+  in the global scope (clj-quickjs-111) and `Reflect` is an intrinsic
   ordinary object with `apply`.
 - The realm's objects (twenty-seven since clj-quickjs-73, thirty-three since clj-quickjs-102) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
@@ -8403,3 +8403,21 @@ An Option distinguishes no error from thrown undefined. After all resources,
 a changed error overrides the pending completion, except during cancellation
 cleanup where errors are discarded so outer scopes can continue unwinding.
 AsyncDisposableStack remains separate (clj-quickjs-241).
+
+### Dynamic Function compilation (clj-quickjs-111)
+
+`native::eval::DynamicFunction` saves argument values in a traced native
+continuation and requests ToString through the VM trampoline, one argument
+at a time. It builds bounded rope source and delegates flattening, UTF-16
+validation and the temporary 2 MiB compiler thread to eval's existing State.
+The parser verifies that the generated parameter-closing token and final
+body-closing token are consumed at their expected offsets, preserving the
+separate parse goals and rejecting delimiter/comment injection. Lowering
+creates ordinary function code without a lexical `anonymous` self binding
+or caller captures. The completion allocates a normal FunctionObject;
+calling it uses ordinary VM frames, GC tracing and publication rules.
+
+QuickJS references and provenance: semantic reference only,
+`research/quickjs/quickjs.c`, `js_function_constructor`, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Tests are original synthetic
+fixtures; no upstream source or test text was copied.

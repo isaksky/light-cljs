@@ -49,6 +49,170 @@ fn eval(src: &str) -> ValueView {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn function_constructor() {
+    for (src, expected) in [
+        ("new Function('a', 'b', 'return a + b;')(2, 3)", 5.0),
+        ("Function('return 7')()", 7.0),
+        (
+            "new Function('eval', 'return eval(1, 2)')((a, b) => a + b)",
+            3.0,
+        ),
+        ("new Function('a', 'b', '').length", 2.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    assert_eq!(
+        failure("function f() { const k = 1; return new Function('return k')(); } f()").kind(),
+        VmErrorKind::ReferenceError
+    );
+    for src in [
+        "new Function('a', 'b', '').name === 'anonymous'",
+        "Function.prototype.constructor === Function && Object.getPrototypeOf(Function()) === Function.prototype",
+        "Function()() === undefined",
+        "const k = 8; function f() { const k = 1; return Function('return k')(); } f() === 8",
+        "Function('return typeof anonymous')() === 'undefined'",
+        "Function('a = 2', 'b', 'return a + b')(undefined, 3) === 5 && Function('a = 2', '').length === 0",
+        "Function('eval', 'return eval(...[1, 2])')((a, b) => a + b) === 3",
+        "Function(123)() === undefined",
+        "const F = Function('x', 'this.x = x'); new F(4).x === 4",
+        "Function('return new.target')() === undefined",
+        "const F = Function('return new.target'); new F() === F",
+        "Function('\"use strict\"; return this').call(7) === 7",
+        "Function('a,b', 'return a+b')(2,3) === 5 && Function('{x}', 'return x')({x:4}) === 4",
+        "Function('a // comment', 'return a')(3) === 3",
+        "Function('return 3 // comment')() === 3",
+        "let order = ''; const p = {toString() { order += 'p'; return 'x'; }}; const b = {toString() { order += 'b'; return 'return x'; }, valueOf() { throw 9; }}; Function(p, b)(4) === 4 && order === 'pb'",
+        "let order = ''; const p = {toString() { order += 'p'; throw 9; }}; const b = {toString() { order += 'b'; return ''; }}; try { Function(p, b); } catch(e) { if (e !== 9) throw e; } order === 'p'",
+        "let caught = false; try { Function(Symbol()); } catch(e) { caught = e instanceof TypeError; } caught",
+        "Function('/* 😀 */ a', 'return a')(4) === 4",
+        "Function('return (0, eval)(\"3\")')() === 3",
+        "Function('return (() => 4)')()() === 4",
+        "let caught = false; try { Function('\\ud800'); } catch(e) { caught = e instanceof SyntaxError; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for args in [
+        "'('",
+        "'a){', ''",
+        "'a', '} return 1; {'",
+        "'a /*', '*/ return 1'",
+        "'a) { /*', '*/ }'",
+        "'eval', '\"use strict\"; return eval'",
+        "'a = 1', '\"use strict\"; return a'",
+        "'return super.x'",
+    ] {
+        let src = format!(
+            "let caught = false; try {{ new Function({args}); }} catch(e) {{ caught = e instanceof SyntaxError; }} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The pending constructor roots
+/// later arguments while ToString waits; generated code waits in VM frames.
+#[test]
+fn function_constructor_waits_collects_and_migrates() {
+    let src = "let order = ''; let p = {toString() { order += 'p'; __rt.need(111, 1); return 'x'; }}; let b = {toString() { order += 'b'; return 'return x + __rt.need(111, 2)'; }}; Function(p, b)(3) === 7 && order === 'pb'";
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut PlusThousand::default())
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 2);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(4.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waits, 2);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("bounded Function constructor completion");
+}
+
+#[test]
+fn function_constructor_source_limits_and_small_stacks() {
+    for units in [16_358, 16_359] {
+        // The wrapper occupies 26 UTF-16 units. Count astral source by units,
+        // and flatten a rope assembled by JavaScript.
+        let body = format!("/*😀*/{}", " ".repeat(units - 6));
+        let rt = Runtime::new();
+        let text = rt.root(Primitive::String(body.as_str().into()));
+        let caller = compile_function("function caller(body) { try { return typeof Function(body + '') === 'function'; } catch(e) { return e instanceof RangeError ? 2 : 0; } }").unwrap();
+        let task = rt.spawn(&caller, &[&text]).unwrap();
+        let outcome = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("constructor limit failed")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            outcome,
+            if units == 16_358 {
+                ValueView::Bool(true)
+            } else {
+                ValueView::Number(2.0)
+            }
+        );
+    }
+    // Compilation, error cleanup, and nested dynamic compilation must also
+    // remain on the dedicated compiler stack.
+    for body in [
+        format!("return {}2{}", "(".repeat(40), ")".repeat(40)),
+        format!("return {}2{}", "(".repeat(256), ")".repeat(256)),
+        "return Function('return 2')()".to_owned(),
+    ] {
+        let rt = Runtime::new();
+        let text = rt.root(Primitive::String(body.as_str().into()));
+        let caller = compile_function("function caller(body) { try { return Function(body)(); } catch(e) { if (e instanceof SyntaxError) return 2; throw e; } }").unwrap();
+        let task = rt.spawn(&caller, &[&text]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("constructor stack failed")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Number(2.0));
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output; the upstream row is attributed
 /// and licensed in fixtures/js/quickjs_super_arrow.js.
 #[test]
@@ -2229,15 +2393,6 @@ fn call_apply_and_reflect_apply() {
     // undefined, like any callback: `call` of `undefined` is a TypeError.
     assert_eq!(
         failure("__rt.reduce(Function.prototype.call, 0, __rt.vector(1));").kind(),
-        VmErrorKind::TypeError
-    );
-    // The Function constructor is a stub (clj-quickjs-111).
-    assert_eq!(
-        failure("Function('return 1');").kind(),
-        VmErrorKind::UnsupportedOperand
-    );
-    assert_eq!(
-        failure("new Function('return 1');").kind(),
         VmErrorKind::TypeError
     );
     // A sloppy callee's `this` substitution (global object, wrappers) is a

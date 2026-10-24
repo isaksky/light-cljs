@@ -166,8 +166,7 @@ pub(crate) enum Global {
     /// `String`, the String constructor (clj-quickjs-73: it carries
     /// `String.prototype`, callable and constructible).
     String = 2,
-    /// `Function` (clj-quickjs-102): a stub constructor that fails when
-    /// called (clj-quickjs-111), reachable for `Function.prototype`.
+    /// `Function`: dynamic global-scope compilation (clj-quickjs-111).
     Function = 3,
     /// `Reflect` (clj-quickjs-102): an ordinary object with `apply`.
     Reflect = 4,
@@ -355,7 +354,7 @@ pub(crate) struct Intrinsics {
     /// `Function.prototype`, the prototype of every function object and
     /// built-in function (clj-quickjs-102).
     pub(crate) function_prototype: ObjectId,
-    /// The `Function` stub constructor (clj-quickjs-102).
+    /// The `Function` constructor (clj-quickjs-111).
     function: ObjectId,
     /// The `Reflect` object (clj-quickjs-102).
     reflect: ObjectId,
@@ -853,7 +852,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         return None;
     }
 
-    // `Function.prototype.call` and `apply`, and the `Function` stub
+    // `Function.prototype.call` and `apply`, and the `Function` constructor
     // (`Function.prototype.constructor`, clj-quickjs-102).
     let call = b.function(Builtin::FunctionPrototypeCall, &[])?;
     let apply = b.function(Builtin::FunctionPrototypeApply, &[])?;

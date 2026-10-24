@@ -4057,3 +4057,17 @@ yield, wait, collect and migrate. Direct eval in parameter expressions remains
 deferred (-109).
 
 Verify with `cargo test --test js_functions super_`.
+
+### Function constructor (clj-quickjs-111)
+
+`Function(...parameters, body)` and `new Function(...parameters, body)`
+convert their arguments to strings and compile an ordinary function named
+`anonymous` in the task's global scope. Caller closures and strictness do
+not carry over; a body directive can enable strict mode. Parameter and body
+boundaries are checked independently, with catchable SyntaxErrors. Runtime
+compilation shares eval's 16,384-unit source cap (including the generated
+wrapper) and 2 MiB compiler stack; coercion callbacks and generated calls may
+wait, yield, survive GC and migrate between workers. GeneratorFunction,
+AsyncFunction, Function.prototype.toString and subclass allocation are deferred.
+
+Verify with `cargo test --test js_functions function_constructor`.
