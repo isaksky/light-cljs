@@ -10,8 +10,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::dep::{
+    self, CellStatus, ClaimError, CompleteError, Completion, DependencyTable, ProducerRequest,
+};
 use crate::heap::{CollectError, CollectStats, HandleError, Heap, HeapStats, Rooted, Scope};
-use crate::ids::{TaskId, WorldId};
+use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
 use crate::task::Task;
 use crate::value::share::{self, PublishError};
 use crate::value::{Primitive, Value};
@@ -23,6 +26,8 @@ struct RuntimeShared {
     heap: Arc<Heap>,
     next_task: AtomicU64,
     world: WorldId,
+    next_world: AtomicU64,
+    deps: Arc<DependencyTable>,
 }
 
 /// Shared runtime: heap plus execution machinery. See the module docs.
@@ -37,16 +42,27 @@ impl Default for Runtime {
 
 impl Runtime {
     pub fn new() -> Runtime {
+        let heap = Arc::new(Heap::default());
         Runtime(Arc::new(RuntimeShared {
-            heap: Arc::new(Heap::default()),
+            deps: Arc::new(DependencyTable::new(Arc::clone(&heap))),
+            heap,
             next_task: AtomicU64::new(1),
             world: WorldId::INITIAL,
+            next_world: AtomicU64::new(1),
         }))
     }
 
-    /// The world new tasks run in. Only the initial world exists in this slice.
+    /// The initial world: where [`Runtime::spawn`] runs tasks.
     pub fn world(&self) -> WorldId {
         self.0.world
+    }
+
+    /// Allocate a new world/version identity, distinct from every other world
+    /// of this runtime. Dependency cells of different worlds are distinct, so
+    /// a result published in one never satisfies a need in another.
+    pub fn new_world(&self) -> WorldId {
+        // Relaxed: the counter only needs uniqueness, not ordering.
+        WorldId::from_raw(self.0.next_world.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Open a scope for host access to heap values. [`Local`](crate::Local)
@@ -96,24 +112,73 @@ impl Runtime {
     /// another with [`Runtime::publish`] first. (Task-owned builders stay
     /// protected regardless: only their owning task's run can use them.)
     pub fn spawn(&self, executable: &Executable, args: &[&Rooted]) -> Result<Task, HandleError> {
+        self.spawn_in(self.0.world, executable, args)
+    }
+
+    /// [`Runtime::spawn`] in world `world`: the task's needs read the
+    /// dependency cells of that world (`docs/design.md` §7). `world` should
+    /// come from [`Runtime::world`] or [`Runtime::new_world`] of this runtime.
+    pub fn spawn_in(
+        &self,
+        world: WorldId,
+        executable: &Executable,
+        args: &[&Rooted],
+    ) -> Result<Task, HandleError> {
         let args = args
             .iter()
             .map(|a| a.value_in(&self.0.heap))
             .collect::<Result<Vec<Value>, _>>()?;
         // Relaxed: the counter only needs uniqueness, not ordering with other memory.
         let id = TaskId::from_raw(self.0.next_task.fetch_add(1, Ordering::Relaxed));
-        let diag = DiagnosticContext {
-            task: id,
-            world: self.0.world,
-        };
+        let diag = DiagnosticContext { task: id, world };
         let vm = VmState::new(&executable.0, &args, diag);
         Ok(Task::new(
             id,
-            self.0.world,
+            world,
             executable.clone(),
             Arc::clone(&self.0.heap),
+            Arc::clone(&self.0.deps),
             vm,
         ))
+    }
+
+    /// Claim the single producer of `key`'s cell without subscribing to it,
+    /// creating the cell if needed: for a host that produces a result before
+    /// (or regardless of whether) any task needs it. Fails if the cell is
+    /// already claimed (by a claim or by the first need) or complete. See
+    /// [`crate::dep`].
+    pub fn claim(&self, key: DependencyKey) -> Result<ProducerRequest, ClaimError> {
+        self.0.deps.claim(key)
+    }
+
+    /// Complete `key`'s cell with its one terminal outcome, as its claimed
+    /// `producer`, and return the wake handles of every task waiting on it,
+    /// in subscription order. The caller enqueues them; nothing is run
+    /// inline (`docs/design.md` §8).
+    ///
+    /// A `Ready` value or `Failed` error must pass the publication check
+    /// ([`Runtime::publish`]); it is not copied, so every reader sees the
+    /// same identities, and it stays alive while the cell exists even after
+    /// the caller drops its handle. Rejected, with the cell left pending and
+    /// its waiters kept: a value reaching task-owned mutation
+    /// ([`CompleteError::NotShareable`]), a `producer` that is not the cell's
+    /// claimed producer, including one claimed for another world or result
+    /// kind ([`CompleteError::NotProducer`]), a handle of another runtime, or
+    /// a cell that is already complete ([`CompleteError::AlreadyComplete`]:
+    /// outcomes are never replaced or reset).
+    pub fn complete(
+        &self,
+        key: DependencyKey,
+        producer: ProducerId,
+        completion: Completion<'_>,
+    ) -> Result<Vec<TaskId>, CompleteError> {
+        dep::complete(&self.0.deps, key, producer, completion)
+    }
+
+    /// A snapshot of `key`'s cell: absent, pending (producer and waiters),
+    /// or its terminal outcome with values rooted for the caller.
+    pub fn cell_status(&self, key: DependencyKey) -> CellStatus {
+        self.0.deps.status(key)
     }
 
     /// The shared heap (crate tests).

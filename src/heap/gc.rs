@@ -12,7 +12,7 @@
 //!   holds values the collector must treat as roots. Sources register a
 //!   `Weak` with [`Heap::register_source`](super::Heap::register_source) and
 //!   are traced at every collection while alive; dropping the owner
-//!   unregisters it. Tasks are root sources today; dependency results, atom
+//!   unregisters it. Tasks and dependency cells are root sources today; atom
 //!   contents, closure environments and pending native states plug in the
 //!   same way (or become heap objects reachable from such a source).
 //! * [`RootCategory`] names every root source kind; each root is reported
@@ -71,6 +71,9 @@ pub(crate) enum RootCategory {
     TaskFrame,
     /// Constants of the executable a live task runs.
     ExecutableConstant,
+    /// The `Ready` value or `Failed` error of a completed dependency cell
+    /// (`crate::dep`), while the cell exists.
+    DependencyOutcome,
 }
 
 /// Report every heap reference held by `self`.

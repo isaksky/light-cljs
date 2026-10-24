@@ -18,6 +18,10 @@
 //!   [`PublishError`] naming the path (`value::share`).
 //! * [`RunOutcome`]: `Complete(value)`, `Failed(error)`, `Yielded` (budget used
 //!   up; run again to continue), and the reserved `Waiting(key)`.
+//! * Dependency cells ([`dep`]): [`RunGuard::need`] reads or subscribes to the
+//!   single-assignment cell of a [`DependencyKey`] (world, definition, result
+//!   kind); [`Runtime::complete`] publishes its outcome and returns the wake
+//!   handles to enqueue.
 //!
 //! See `docs/architecture.md` for the boundaries and continuation shape.
 //!
@@ -30,11 +34,12 @@
 //! | [`vm`] | instruction format, executable validation, task-owned frames, dispatch, test assembler |
 //! | [`heap`] | object storage and identity, roots and scoped handles ([`heap::roots`]), tracing contract ([`heap::gc`]) |
 //! | `value` | raw VM values (crate-private), root-free views, and publication rules (`value::share`) |
-//! | `ids` | private task/world/dependency identifiers |
+//! | `ids` | opaque task, world, definition, result-kind, dependency-key and producer identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
 //! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
 //! | [`frontend`] | JavaScript subset lexer, parser and AST with positioned diagnostics (`docs/grammar.md`) |
+//! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
 //!
 //! The module list is append-only per pellet.
 //!
@@ -47,6 +52,7 @@
 //! (cooperative safepoints are deferred; see [`heap::gc`]).
 
 pub mod collections;
+pub mod dep;
 mod error;
 pub mod frontend;
 pub mod heap;
@@ -58,12 +64,16 @@ mod value;
 pub mod vm;
 
 pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
+pub use dep::{
+    CellStatus, ClaimError, CompleteError, Completion, DependencyLog, Need, NeedError,
+    ProducerRequest,
+};
 pub use error::{Diagnostic, VmError, VmErrorKind};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
 };
 pub use host::{Host, HostCall};
-pub use ids::{DependencyId, TaskId, WaitKey, WorldId};
+pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WorldId};
 pub use runtime::Runtime;
 pub use task::{Budget, RunError, RunGuard, RunOutcome, Task, TaskStatus};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};

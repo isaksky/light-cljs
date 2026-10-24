@@ -23,11 +23,12 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
+use crate::dep::{self, DependencyLog, DependencyTable, Need, NeedError};
 use crate::error::{VmError, VmErrorKind};
 use crate::heap::gc::{MutatorToken, RootCategory, RootSource, Trace};
 use crate::heap::{Heap, ObjectId, Rooted};
 use crate::host::{Host, NoHost};
-use crate::ids::{TaskId, WaitKey, WorldId};
+use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WorldId};
 #[cfg(test)]
 use crate::value::Value;
 use crate::vm::Executable;
@@ -43,8 +44,9 @@ pub enum RunOutcome {
     /// The task failed at run time.
     Failed(VmError),
     /// Reserved: the task is suspended waiting on a dependency. Not produced
-    /// by this slice (dependency cells are pellet clj-quickjs-6 and later).
-    Waiting(WaitKey),
+    /// yet: dependency cells exist ([`RunGuard::need`]), the VM operation
+    /// that suspends on one is pellet clj-quickjs-23.
+    Waiting(DependencyKey),
     /// The task used up its execution [`Budget`] before finishing. Its
     /// instruction position, operands and locals are saved in the task; the
     /// next run (on any thread) continues at the saved instruction.
@@ -131,6 +133,11 @@ struct TaskInner {
     world: WorldId,
     executable: Executable,
     heap: Arc<Heap>,
+    /// The runtime's dependency cells.
+    deps: Arc<DependencyTable>,
+    /// Written only by the holder of the run guard; outlives the VM state.
+    /// Holds keys only, so it is not a root.
+    log: Mutex<DependencyLog>,
     body: Mutex<TaskBody>,
 }
 
@@ -175,6 +182,7 @@ impl Task {
         world: WorldId,
         executable: Executable,
         heap: Arc<Heap>,
+        deps: Arc<DependencyTable>,
         vm: VmState,
     ) -> Task {
         let inner = Arc::new(TaskInner {
@@ -182,6 +190,8 @@ impl Task {
             world,
             executable,
             heap,
+            deps,
+            log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(vm)),
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
@@ -201,6 +211,16 @@ impl Task {
     /// The shared code this task runs.
     pub fn executable(&self) -> &Executable {
         &self.0.executable
+    }
+
+    /// A snapshot of the task's dependency log: recorded edges (every key it
+    /// has needed, ready reads included) and its unresolved wait, if any.
+    pub fn dependency_log(&self) -> DependencyLog {
+        self.0
+            .log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Current status. A snapshot: it may change as soon as it is returned.
@@ -286,6 +306,27 @@ impl RunGuard<'_> {
     /// The task being run.
     pub fn task_id(&self) -> TaskId {
         self.task.id
+    }
+
+    /// Read or subscribe to the result `kind` of `dependency` in this task's
+    /// world: the native protocol behind `__rt.need` (`docs/design.md` §7;
+    /// the VM instruction for it is pellet clj-quickjs-23).
+    ///
+    /// Records the dependency in the task's log in every case. Returns the
+    /// shared value ([`Need::Ready`]) or published error ([`Need::Failed`])
+    /// when the cell is complete, or [`Need::Cancelled`]. Otherwise registers
+    /// this task's ID as a wake handle and returns [`Need::Waiting`], carrying
+    /// the cell's producer request if this call was the first to ask for it;
+    /// the caller hands that to its scheduler. Checking the cell and
+    /// registering happen in one critical section, so no completion can fall
+    /// between them; see [`crate::dep`] for the lock and ordering contract.
+    /// Needing the same key again after it completes resolves the wait.
+    ///
+    /// Fails with [`NeedError::AlreadyWaiting`], changing nothing, if the
+    /// task's unresolved wait is on a different key.
+    pub fn need(&mut self, dependency: DependencyId, kind: ResultKind) -> Result<Need, NeedError> {
+        let key = DependencyKey::new(self.task.world, dependency, kind);
+        dep::need(&self.task.deps, &self.task.log, self.task.id, key)
     }
 
     /// Execute until the task returns or fails, then release the guard.
