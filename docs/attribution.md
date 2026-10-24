@@ -1,5 +1,19 @@
 # Attribution
 
+## Generator and async syntax (clj-quickjs-54)
+
+`src/frontend/tests.rs::generator_and_async_syntax` adapts the two function
+bodies in `test_parse_semicolon` and the two async arrow ASI cases in
+`test_parse_arrow_function`, from `research/quickjs/tests/test_language.js`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The bodies use `let` instead of `var` and assert parsing plus explicit
+compilation rejection, since execution is deferred. The QuickJS MIT
+copyright and permission notice is retained with that test; see
+`research/quickjs/LICENSE`. Other new fixtures are synthetic, not light-cljs
+output. `js_parse_unary`, `js_parse_assign_expr2` and
+`js_parse_function_decl2` in `research/quickjs/quickjs.c` at that revision
+were semantic references; the Rust implementation was written afresh.
+
 ## Regular expression literal parsing (clj-quickjs-55)
 
 `src/frontend/tests.rs::regexp_literals` adapts the two default assignments

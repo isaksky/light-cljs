@@ -3,8 +3,8 @@
 //! Every node carries the [`Span`] of the source text it was parsed from.
 //! Parentheses are not represented: a parenthesized expression is its inner
 //! expression, with a span that covers the parentheses. The tree only
-//! contains supported forms; the parser rejects everything else before
-//! building a node.
+//! contains parsed forms; lowering explicitly rejects syntax whose execution
+//! is deferred, including generator and async functions.
 //!
 //! Every [`Stmt`], [`Function`] and [`Expr`] records its `height` (nodes on
 //! the longest path down to a leaf, itself included). The parser rejects
@@ -289,6 +289,9 @@ pub struct Declarator {
 pub struct Function {
     /// The syntax that produced it.
     pub kind: FunctionKind,
+    /// Syntax-only until resumable generator/async execution is implemented.
+    pub generator: bool,
+    pub asynchronous: bool,
     /// Always present for a declaration; optional for an expression;
     /// `None` for an arrow function.
     pub name: Option<Ident>,
@@ -326,6 +329,8 @@ impl Function {
         let height = max_height(&body).max(defaults_height.unwrap_or(0)) + 1;
         Function {
             kind,
+            generator: false,
+            asynchronous: false,
             name,
             params,
             defaults,
@@ -384,6 +389,8 @@ impl Expr {
             | ExprKind::Identifier(_)
             | ExprKind::Update { .. } => 0,
             ExprKind::Unary { operand, .. } | ExprKind::Delete { operand, .. } => operand.height,
+            ExprKind::Await(operand) => operand.height,
+            ExprKind::Yield { value, .. } => value.as_ref().map_or(0, |e| e.height),
             ExprKind::Binary { left, right, .. } | ExprKind::Logical { left, right, .. } => {
                 left.height.max(right.height)
             }
@@ -436,6 +443,13 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    /// Assignment-expression precedence; an absent operand yields undefined.
+    Yield {
+        value: Option<Box<Expr>>,
+        delegate: bool,
+    },
+    /// Unary-expression precedence, only in async bodies.
+    Await(Box<Expr>),
     /// A numeric literal, or `NaN` / `Infinity` (which the subset reserves).
     Number(f64),
     /// A string literal's cooked value (UTF-16 code units).

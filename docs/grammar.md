@@ -89,7 +89,8 @@ non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
   `NaN` and `Infinity`: they parse as literals and cannot be declared,
   used as parameters, or assigned. (In JavaScript they are non-writable
   globals, so this only forbids shadowing.) It also reserves `await` and
-  `yield` everywhere.
+  `yield` as identifiers everywhere; they are operators in async and
+  generator bodies, respectively (syntax only, clj-quickjs-54).
 
 ## Lexical grammar
 
@@ -145,21 +146,23 @@ ExpressionStatement = Expression ";"     (* not starting with "{" or "function" 
 LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
 VariableStatement   = "var" Declarator { "," Declarator } ";"
 Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
-FunctionDeclaration = "function" BindingIdentifier FunctionRest
-FunctionExpression  = "function" [ BindingIdentifier ] FunctionRest
+FunctionDeclaration = [ "async" [no LineTerminator here] ] "function" [ "*" ] BindingIdentifier FunctionRest
+FunctionExpression  = [ "async" [no LineTerminator here] ] "function" [ "*" ] [ BindingIdentifier ] FunctionRest
 FunctionRest        = FormalParameters FunctionBody
 FormalParameters    = "(" [ FormalParameter { "," FormalParameter } [ "," ] ] ")"
 FormalParameter     = BindingIdentifier [ "=" AssignmentExpression ]   (* default value *)
 FunctionBody        = "{" { Directive } { StatementListItem } "}"
 
 Expression            = AssignmentExpression { "," AssignmentExpression }
-AssignmentExpression  = ConditionalExpression | ArrowFunction
+AssignmentExpression  = ConditionalExpression | ArrowFunction | YieldExpression
                       | Identifier AssignOperator AssignmentExpression
                       | Call "." IdentifierName "=" AssignmentExpression
                       | Call "[" Expression "]" "=" AssignmentExpression
 AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
                       | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
-ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
+ArrowFunction         = [ "async" [no LineTerminator here] ] ArrowParameters [no LineTerminator here] "=>" ConciseBody
+YieldExpression       = "yield" [ [no LineTerminator here] [ "*" ] AssignmentExpression ]
+                        (* generator bodies only; "*" requires an operand *)
 ArrowParameters       = BindingIdentifier | FormalParameters
 ConciseBody           = FunctionBody | AssignmentExpression
 ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
@@ -175,6 +178,7 @@ Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
 Exponentiation        = Unary | Update "**" Exponentiation
 Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" | "delete" ) Unary | Update
+                      | "await" Unary   (* async bodies only *)
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
 Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral }
@@ -191,6 +195,8 @@ TemplateLiteral       = NoSubstitutionTemplate
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
                       | PropertyName FormalParameters FunctionBody
+                      | [ "async" [no LineTerminator here] ] "*" PropertyName FormalParameters FunctionBody
+                      | "async" [no LineTerminator here] PropertyName FormalParameters FunctionBody
                       | "get" PropertyName "(" ")" FunctionBody
                       | "set" PropertyName "(" BindingIdentifier [ "=" AssignmentExpression ] ")" FunctionBody
 PropertyName          = IdentifierName | String | Number
@@ -286,8 +292,25 @@ Notes on the grammar:
   without parentheses: `1 + x => x`, `f(a) => a` and `() => {}()` are
   syntax errors, `(() => 1)()` is a call. Its body is a function body block
   (where `return` is allowed) or an AssignmentExpression, the value it
-  returns. `async` arrows remain unsupported; `async => async` is an arrow
+  returns. `async` arrows parse (execution is deferred); `async => async` is an arrow
   with a parameter named `async`.
+- Generator and async syntax (clj-quickjs-54): `function*`, `async function`,
+  `async function*`, `async x => ...`, `async (x) => ...`, and object methods
+  `*m() {}`, `async m() {}`, `async *m() {}` parse to function ASTs recording
+  generator/async flags. `async` is an unescaped contextual keyword and has no
+  line terminator before `function`, the arrow parameters or a method name.
+  `yield`, `yield value` and `yield* value` have assignment precedence in
+  generator bodies; a line terminator after `yield` ends its operand, so
+  `yield\n1` is two statements. `await value` has unary precedence in async
+  bodies. Neither operator may occur in that function's parameter defaults.
+  Nested ordinary functions and non-async arrows start fresh operator contexts;
+  `await` in a non-async arrow nested in async code is rejected. Both words
+  remain reserved as identifiers, including in sloppy code, as before.
+  Yield operands and concise async arrow bodies preserve `[~In]` in a for
+  initializer; function bodies and parameter defaults clear it as usual.
+  Compilation rejects every generator/async function with `Unsupported` at
+  that function's first token, even if never called. Generator objects,
+  suspension, delegation and promises remain deferred to clj-quickjs-243..-248.
 - The comma operator (clj-quickjs-61) appears only where the grammar has
   Expression: expression statements, parentheses, `if`/`while`/`do`-`while` tests,
   the parts of a `for` head (other than a declaration list) and
@@ -403,10 +426,10 @@ are still covered by the computed-key rejection below.
 |------|------|
 | for-of loops (`var` heads included), a property as a for-in target (`for (a.b in o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
-| `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
+| execution of parsed async functions/arrows/methods and generators (including `yield`/`await`) | Unsupported at the function during compilation |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
-| in object literals: computed keys `{[k]: v}` (clj-quickjs-233), `async` and generator methods | Unsupported |
+| in object literals: computed keys `{[k]: v}` (clj-quickjs-233) | Unsupported |
 | BigInt, numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
 | `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
@@ -914,7 +937,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v`. In sloppy code an unresolvable name creates a writable, enumerable, configurable global property (clj-quickjs-105); strict code throws ReferenceError. Ordinary property Set rules apply, including inherited setters and ignored sloppy writes on a non-extensible global object |
 | `delete x`, `delete (x)` (clj-quickjs-105) | sloppy code only: an unresolvable name gives `true`; a global object binding deletes the own property if configurable (`true`), otherwise stays (`false`, including new script `var`/function globals and the fixed `undefined`/`NaN`/`Infinity` properties). Inherited properties stay and give `true`. A declarative binding (lexical, parameter, local `var`, function self-name, captured binding) gives `false` without reading it, including in its temporal dead zone. Getters never run. Lowered to `get_global_object`, a name constant and `delete`, or constant `false` for a declarative binding; failures are reported at `delete` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
-| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super`, computed keys, async and generator methods remain deferred. |
+| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super` and computed keys remain deferred; async and generator methods parse but their execution is deferred (clj-quickjs-54). |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property, else the one it inherits from `Function.prototype` (clj-quickjs-102: `call`, `apply`, `constructor`) and then `Object.prototype`, and fails with `UnsupportedOperand` for a standard `Function.prototype` name that does not exist yet (`bind`, `toString`, `arguments`, `caller`); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; a function object (clj-quickjs-125, `docs/architecture.md`, "Function own properties") gives its own property, else `prototype` of a `function` declaration or expression: an object created on first read (owned by the task, inheriting from `Object.prototype`, with `constructor` the function) and the same object afterwards (an arrow has none: `undefined`); `length` and `name` are initial own metadata (clj-quickjs-101); a missing `Function.prototype` name (`bind`, `toString`, `arguments`, `caller`) fail with `UnsupportedOperand`, any other name continues at `Function.prototype` (`f.call`, `f.apply`, `f.constructor === Function`, clj-quickjs-102) and then `Object.prototype`; a published function's `prototype` cannot be created (`UnsupportedOperand`); a number or string reads through `Number.prototype` / `String.prototype` (clj-quickjs-73, see `(1).toString()` below); a string's own `length` and code-unit indices are read before its prototype (clj-quickjs-142); caught engine-raised error objects and booleans fail with `UnsupportedOperand` until their properties exist (clj-quickjs-230, -39); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a function object gets the property in its task-owned property record (clj-quickjs-125), so it can no longer be published; a function that was published is shared and immutable (a catchable `TypeError`), one created by another task fails with `ForeignObject`; initial `length` and `name` reject writes as read-only, and a missing `Function.prototype` name fails with `UnsupportedOperand` unless the function has it as its own; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; a number, string or boolean base (clj-quickjs-73) takes no property: a catchable `TypeError` ("cannot create property 'x' on a number", "cannot assign to read-only property '0' of a string") in strict code, nothing in sloppy code, and `__proto__` runs the setter, which ignores a primitive; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
@@ -1911,7 +1934,7 @@ throw /x/;
 class Point {}
 ```
 
-```js reject Unsupported 2:1
+```js compile-reject Unsupported 2:1
 let x = 1;
 async function f() {}
 ```
@@ -2150,6 +2173,81 @@ let x = 1;
 #!/usr/bin/env qjs
 ```
 
+## Generator and async syntax examples (clj-quickjs-54)
+
+These synthetic fixtures parse, but compilation rejects their deferred execution.
+
+```js compile-reject Unsupported 1:1
+function* g() { yield 1; yield* xs; }
+```
+
+```js compile-reject Unsupported 1:1
+async function f() { await 1; }
+```
+
+```js compile-reject Unsupported 1:1
+async function* g() { yield await 1; }
+```
+
+```js compile-reject Unsupported 1:9
+let g = function* () { yield; };
+```
+
+```js compile-reject Unsupported 1:9
+let f = async function () { await 1; };
+```
+
+```js compile-reject Unsupported 1:1
+async x => await x
+```
+
+```js compile-reject Unsupported 1:1
+async (x) => { return await x; }
+```
+
+```js compile-reject Unsupported 1:3
+({*m() { yield 1; }})
+```
+
+```js compile-reject Unsupported 1:3
+({async m() { await 1; }})
+```
+
+```js compile-reject Unsupported 1:3
+({async *m() { yield await 1; }})
+```
+
+```js accept
+async
+x => x
+```
+
+```js compile-reject Unsupported 1:1
+function* g() { yield
+1 }
+```
+
+```js reject ReservedWord 1:1
+yield 1;
+```
+
+```js reject Unsupported 1:1
+await 1;
+```
+
+```js reject Invalid 1:17
+function* g(x = yield 1) {}
+```
+
+```js reject Invalid 1:22
+async function f(x = await 1) {}
+```
+
+```js reject UnexpectedToken 2:1
+async (x)
+=> x
+```
+
 ## References
 
 Structure consulted (no code adapted): `research/quickjs/quickjs.c` at
@@ -2157,7 +2255,7 @@ revision 7d1c13c5d8f8 (`VERSION` 2026-06-04): `next_token`,
 `js_parse_expr_binary`, `js_parse_assign_expr`, `js_parse_statement`,
 `js_parse_expect_semi`; and the ASI cases of `test_parse_semicolon` in
 `research/quickjs/tests/test_language.js` (its `yield`/`await` cases
-are outside the subset). For arrow functions (clj-quickjs-53):
+are adapted in `generator_and_async_syntax`, syntax only). For arrow functions (clj-quickjs-53):
 `js_parse_skip_parens_token` (deciding that a parenthesized list is an
 arrow's parameters by what follows its `)`), `js_parse_assign_expr2`
 (arrows only at the start of an AssignmentExpression) and
@@ -2165,7 +2263,7 @@ arrow's parameters by what follows its `)`), `js_parse_assign_expr2`
 `test_parse_arrow_function` cases of `test_language.js` (adapted in
 `frontend::tests::arrow_functions_and_asi` and
 `tests/js_functions.rs` `arrow_function_values`, with the QuickJS notice;
-its `async` arrow cases are outside the subset). For functions and closures (clj-quickjs-21):
+its `async` arrow cases are adapted in `generator_and_async_syntax`). For functions and closures (clj-quickjs-21):
 `js_parse_function_decl` (function name and self-binding scoping),
 `get_closure_var` / `add_closure_var` (resolving a name through enclosing
 functions and threading it down as captured variables) and

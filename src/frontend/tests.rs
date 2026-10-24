@@ -1,7 +1,7 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start`, three scripts in
-//! `arrow_functions_and_asi`, one in `break_and_continue`, two in
+//! `arrow_functions_and_asi` and four in `generator_and_async_syntax`, one in `break_and_continue`, two in
 //! `labelled_statements`, the assignments in `regexp_literals`, and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
 //! notice), the keys and shorthands of `object_literals`, the `${a, b}`
@@ -25,6 +25,15 @@ use super::{
 
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::Yield { value, delegate } => match value {
+            Some(value) => format!(
+                "({} {})",
+                if *delegate { "yield*" } else { "yield" },
+                render_expr(value)
+            ),
+            None => "(yield)".into(),
+        },
+        ExprKind::Await(value) => format!("(await {})", render_expr(value)),
         ExprKind::RegExp { pattern, flags } => format!("/{pattern}/{flags}"),
         ExprKind::Number(n) => format!("{n}"),
         ExprKind::String(s) => format!("{s:?}"),
@@ -1629,8 +1638,12 @@ fn object_literals() {
     rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
     rejects_with("({[k]: 1});", Unsupported, 1, 3, "computed property names");
     rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
-    rejects_with("({async m() {}});", Unsupported, 1, 3, "async methods");
-    rejects_with("({*g() {}});", Unsupported, 1, 3, "generator methods");
+    for src in ["({async m() {}});", "({*g() {}});"] {
+        parse_script(src).unwrap();
+        let e = compile_script("method", src).unwrap_err();
+        assert_eq!(e.kind, Unsupported);
+        assert_eq!(e.span.start, 2);
+    }
     // `__proto__: value` sets the prototype (clj-quickjs-121): only one per
     // literal, whether written as a name or a string.
     rejects_with(
@@ -2528,9 +2541,15 @@ fn arrow_functions_and_asi() {
     // the arrow.
     rejects("() => return", UnexpectedToken, 1, 7);
     rejects("() => {}\nreturn 1;", Invalid, 2, 1);
-    // Async arrows stay unsupported.
-    rejects_with("async () => {}\n() => {}", Unsupported, 1, 1, "async arrow");
-    rejects_with("async x => {}\n() => {}", Unsupported, 1, 1, "async arrow");
+    // Async arrows parse; execution is deferred (clj-quickjs-54).
+    assert_eq!(
+        parse_script("async () => {}\n() => {}").unwrap().body.len(),
+        2
+    );
+    assert_eq!(
+        parse_script("async x => {}\n() => {}").unwrap().body.len(),
+        2
+    );
 }
 
 #[test]
@@ -3612,11 +3631,7 @@ fn rejects_unsupported_syntax_with_positions() {
     let cases: &[(&str, u32, u32, &str)] = &[
         ("class A {}", 1, 1, "classes"),
         ("x = class {};", 1, 5, "classes"),
-        ("async function f() {}", 1, 1, "async functions"),
-        ("x = async x => x;", 1, 5, "async arrow"),
-        ("x = async (y) => y;", 1, 5, "arrow"),
         ("await x;", 1, 1, "await"),
-        ("function* g() {}", 1, 1, "generator"),
         ("for (x of y) {}", 1, 1, "for`-`of"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("with (o) {}", 1, 1, "with"),
@@ -3642,6 +3657,196 @@ fn rejects_unsupported_syntax_with_positions() {
 }
 
 // ----- negative: JavaScript early errors and grammar mismatches ---------------
+
+#[test]
+fn generator_and_async_syntax() {
+    // Adapted from QuickJS tests/test_language.js, test_parse_semicolon and
+    // test_parse_arrow_function, revision 7d1c13c5d8f8. `var` becomes `let`.
+    // Copyright (c) 2017-2021 Fabrice Bellard
+    // Copyright (c) 2017-2021 Charlie Gordon
+    // Permission is hereby granted, free of charge, to any person obtaining a copy
+    // of this software and associated documentation files (the "Software"), to deal
+    // in the Software without restriction, including without limitation the rights
+    // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    // copies of the Software, and to permit persons to whom the Software is
+    // furnished to do so, subject to the following conditions:
+    // The above copyright notice and this permission notice shall be included in
+    // all copies or substantial portions of the Software.
+    // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    // THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+    // THE SOFTWARE.
+    for (head, operator) in [("function *f()", "yield"), ("async function g()", "await")] {
+        let src = format!(
+            "{head} {{ function func() {{}} {operator} 1; let h = x => x + 1\n{operator} 2; }}"
+        );
+        let script = parse_script(&src).unwrap();
+        let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+            panic!()
+        };
+        assert_eq!(f.body.len(), 4);
+        assert_eq!(render_stmt(&f.body[1]), format!("({operator} 1)"));
+        assert!(matches!(f.body[2].kind, StmtKind::Lexical(_)));
+        assert_eq!(render_stmt(&f.body[3]), format!("({operator} 2)"));
+        let e = compile_script("syntax", &src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
+        assert_eq!(e.span.start, 0);
+    }
+    for src in ["async () => {}\n() => {}", "async x => {}\n() => {}"] {
+        assert_eq!(parse_script(src).unwrap().body.len(), 2);
+        let e = compile_script("syntax", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
+        assert_eq!(e.span.start, 0);
+    }
+    assert_eq!(parse_script("async\nx => x").unwrap().body.len(), 2);
+    let script = parse_script("function* g() { yield\n1 }").unwrap();
+    let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+        panic!()
+    };
+    assert_eq!(f.body.len(), 2);
+    assert_eq!(render_stmt(&f.body[0]), "(yield)");
+    assert_eq!(render_stmt(&f.body[1]), "1");
+    let e = compile_script("syntax", "function* g() { yield\n1 }").unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
+    assert_eq!(e.span.start, 0);
+    assert!(parse_script("yield 1").is_err());
+    assert!(parse_script("await 1").is_err());
+}
+
+#[test]
+fn generator_async_context_and_precedence() {
+    // Synthetic fixtures, not light-cljs output.
+    let src = "function* g() { yield a = 1, 2; yield* a ? b : c; (yield 1) + 2; yield yield 3; }";
+    let script = parse_script(src).unwrap();
+    let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+        panic!()
+    };
+    assert!(f.generator && !f.asynchronous);
+    let body: Vec<_> = f.body.iter().map(render_stmt).collect();
+    assert_eq!(
+        body,
+        [
+            "(, (yield (= a 1)) 2)",
+            "(yield* (? a b c))",
+            "(+ (yield 1) 2)",
+            "(yield (yield 3))"
+        ]
+    );
+    let script =
+        parse_script("async function f() { await a + b; await (a + b); typeof await f(); }")
+            .unwrap();
+    let StmtKind::FunctionDecl(f) = &script.body[0].kind else {
+        panic!()
+    };
+    assert!(!f.generator && f.asynchronous);
+    assert_eq!(
+        f.body.iter().map(render_stmt).collect::<Vec<_>>(),
+        [
+            "(+ (await a) b)",
+            "(await (+ a b))",
+            "(typeof (await (call f)))"
+        ]
+    );
+
+    for (src, start, generator, asynchronous) in [
+        ("function* g() { yield; yield *\nxs; }", 0, true, false),
+        ("let g = function* () { yield 1; };", 8, true, false),
+        ("let g = async function () { await 1; };", 8, false, true),
+        ("async function* g() { yield await 1; }", 0, true, true),
+        ("async x => await x", 0, false, true),
+        ("async (x = 1) => { return await x; }", 0, false, true),
+        ("({*m() { yield 1; }})", 2, true, false),
+        ("({async m() { await 1; }})", 2, false, true),
+        ("({async *m() { yield await 1; }})", 2, true, true),
+        (r"({*\u0069f() { yield 1; }})", 2, true, false),
+        (r"({async \u0069f() { await 1; }})", 2, false, true),
+    ] {
+        let script = parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        let f = match &script.body[0].kind {
+            StmtKind::FunctionDecl(f) => f,
+            StmtKind::Lexical(d) => match &d.declarators[0].init.as_ref().unwrap().kind {
+                ExprKind::Function(f) => f,
+                _ => panic!(),
+            },
+            StmtKind::Expr(e) => match &e.kind {
+                ExprKind::Function(f) => f,
+                ExprKind::Object(p) => match &p[0].value.kind {
+                    ExprKind::Function(f) => f,
+                    _ => panic!(),
+                },
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(
+            (f.generator, f.asynchronous),
+            (generator, asynchronous),
+            "{src}"
+        );
+        let e = compile_script("syntax", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
+        assert_eq!(e.span.start, start, "{src}: {e}");
+        assert!(
+            e.message
+                .contains(if generator { "generator" } else { "async" })
+        );
+    }
+    for src in [
+        "function* g(x = yield 1) {}",
+        "async function f(x = await 1) {}",
+        "async (x = await 1) => x",
+        "async function f() { () => await 1; }",
+        "async function f() { () => { await 1; }; }",
+        "function* g() { () => yield 1; }",
+        "function* g() { function f() { yield 1; } }",
+        "async function f() { function g() { await 1; } }",
+        "function* g() { let yield; }",
+        "async function f() { let await; }",
+        "function* g(yield) {}",
+        "async function f(await) {}",
+        "async await => 1",
+        "async\n(x) => x",
+        "async x\n=> x",
+        "async (x)\n=> x",
+        "async/*\n*/(x) => x",
+        "({async\nm() {}})",
+        r"as\u0079nc x => x",
+        r"as\u0079nc (x) => x",
+        "({async get m() {}})",
+        "({*m: 1})",
+        "function* g() { yield*; }",
+        "function* g() { yield\n*1; }",
+        "function* g() { 1 + yield 2; }",
+        "async function f() { await 1 ** 2; }",
+        "if (true) async function f() {}",
+        "function* g() { for (yield x in y) {} }",
+    ] {
+        assert!(parse_script(src).is_err(), "must reject {src}");
+    }
+    for src in [
+        "async\nfunction f() {}",
+        "async\nx => x",
+        "async/*\n*/x => x",
+        "async => async",
+        "async(x)",
+        "({async() {}, async: 1})",
+        "function* g() { for (yield (x in y);;) {} }",
+        "for (let f = function* () { yield x in y; };;) {}",
+        "async function f(x = async () => await 1) {}",
+        "function* g(x = function* () { yield 1; }) {}",
+        "async function f() { (() => 1); await 2; }",
+        "function* g() { (() => 1); yield 2; }",
+        "({async m() {}, n() { return 1; }})",
+        "async (x = function* () { yield /[)]/; }) => x",
+        "(x = async function () { await /[)]/; }) => x",
+        "async (x = async function* () { function* g() {} /[)]/.test(''); yield await 1; }) => x",
+    ] {
+        parse_script(src).unwrap_or_else(|e| panic!("must parse {src}: {e}"));
+    }
+}
 
 #[test]
 fn rejects_early_errors_and_misplaced_tokens() {
@@ -3756,6 +3961,84 @@ fn mixed_expression_depth_is_bounded() {
 #[test]
 fn nesting_at_the_limit_fits_a_2_mib_stack() {
     type Make = fn(usize) -> String;
+    let syntax_makers: &[(&str, Make)] = &[
+        ("generator declarations", |n| {
+            format!("{}{}", "function* f() {".repeat(n), "}".repeat(n))
+        }),
+        ("async declarations", |n| {
+            format!("{}{}", "async function f() {".repeat(n), "}".repeat(n))
+        }),
+        ("async generator expressions", |n| {
+            format!(
+                "x = {}1{};",
+                "async function* () { yield ".repeat(n),
+                "}".repeat(n)
+            )
+        }),
+        ("generator expressions", |n| {
+            format!(
+                "x = {}1{};",
+                "function* () { yield ".repeat(n),
+                "}".repeat(n)
+            )
+        }),
+        ("async expressions", |n| {
+            format!(
+                "x = {}1{};",
+                "async function () { return ".repeat(n),
+                "}".repeat(n)
+            )
+        }),
+        ("async concise arrows", |n| {
+            format!("x = {}1;", "async a => ".repeat(n))
+        }),
+        ("async block arrows", |n| {
+            format!(
+                "x = {}1{};",
+                "async () => { return ".repeat(n),
+                "}".repeat(n)
+            )
+        }),
+        ("async defaults", |n| {
+            format!("x = {}1{};", "async (a = ".repeat(n), ") => a".repeat(n))
+        }),
+        ("generator defaults", |n| {
+            format!("x = {}1{};", "function* (a = ".repeat(n), ") {}".repeat(n))
+        }),
+        ("generator methods", |n| {
+            format!("x = {}1{};", "{*m() { yield ".repeat(n), "}}".repeat(n))
+        }),
+        ("async methods", |n| {
+            format!(
+                "x = {}1{};",
+                "{async m() { return ".repeat(n),
+                "}}".repeat(n)
+            )
+        }),
+        ("async generator methods", |n| {
+            format!(
+                "x = {}1{};",
+                "{async *m() { yield await ".repeat(n),
+                "}}".repeat(n)
+            )
+        }),
+        ("yield chains", |n| {
+            format!("function* f() {{ {}1; }}", "yield ".repeat(n))
+        }),
+        ("yield delegate chains", |n| {
+            format!("function* f() {{ {}1; }}", "yield* ".repeat(n))
+        }),
+        ("await chains", |n| {
+            format!("async function f() {{ {}1; }}", "await ".repeat(n))
+        }),
+        ("mixed yield and await", |n| {
+            format!(
+                "async function* f() {{ {}1{}; }}",
+                "yield await (".repeat(n),
+                ")".repeat(n)
+            )
+        }),
+    ];
     let makers: &[(&str, Make)] = &[
         ("parens", |n| {
             format!("x = {}1{};", "(".repeat(n), ")".repeat(n))
@@ -3917,6 +4200,26 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
     std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
+            // These functions parse at every accepted depth, but compilation
+            // must reject execution explicitly at the enclosing function.
+            for (name, make) in syntax_makers {
+                let mut deepest = 0;
+                for n in 1..=MAX_NESTING {
+                    let src = make(n);
+                    match parse_script(&src) {
+                        Ok(_) => {
+                            deepest = n;
+                            let e = compile_script(name, &src).unwrap_err();
+                            assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{name}: {e}");
+                        }
+                        Err(e) if e.kind == SyntaxErrorKind::TooDeep => break,
+                        Err(e) => panic!("{name} at depth {n}: {e}"),
+                    }
+                }
+                // Mixed method/yield/await constructs charge up to twelve
+                // units per level (object + function + body + operators).
+                assert!(deepest >= MAX_NESTING / 12, "{name}: only {deepest} levels");
+            }
             for (name, make) in makers {
                 let mut deepest = 0;
                 for n in 1..=MAX_NESTING {

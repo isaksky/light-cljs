@@ -1515,6 +1515,17 @@ impl<'s> Lowerer<'s> {
     /// ECMAScript FunctionDeclarationInstantiation and QuickJS
     /// `js_parse_function_decl2` (`has_parameter_expressions`).
     fn function_body(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        if f.generator || f.asynchronous {
+            return Err(self.error(
+                SyntaxErrorKind::Unsupported,
+                f.span,
+                if f.generator {
+                    "generator functions cannot be executed yet"
+                } else {
+                    "async functions cannot be executed yet"
+                },
+            ));
+        }
         if !f.has_defaults() {
             return self.statement_list(&f.body, &f.params, true);
         }
@@ -2881,6 +2892,11 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.compound_assign_property(*op, target, value, *op_span),
             ExprKind::Function(f) => self.function_expr(f),
+            ExprKind::Yield { .. } | ExprKind::Await(_) => Err(self.error(
+                SyntaxErrorKind::Unsupported,
+                e.span,
+                "yield/await cannot be executed yet",
+            )),
             ExprKind::Sequence { left, right } => self.sequence(left, right, span),
             ExprKind::Delete { operand, op_span } => self.delete(operand, *op_span),
         }

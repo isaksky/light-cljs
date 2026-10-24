@@ -87,6 +87,7 @@ pub(super) struct Parser<'a> {
     /// ([`Self::set_strict`]).
     strict: bool,
     in_function: bool,
+    suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
     in_loop: bool,
@@ -123,6 +124,14 @@ struct LabelEntry {
     iteration: bool,
 }
 
+/// Function-local operator and formal-parameter grammar context.
+#[derive(Clone, Copy, Default)]
+struct SuspensionContext {
+    generator: bool,
+    asynchronous: bool,
+    parameters: bool,
+}
+
 impl<'a> Parser<'a> {
     /// A parser of `src` whose top level is strict-mode code if `strict`.
     pub(super) fn new(src: &'a str, strict: bool) -> Parser<'a> {
@@ -140,6 +149,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             strict,
             in_function: false,
+            suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
             labels: Vec::new(),
@@ -454,18 +464,24 @@ impl<'a> Parser<'a> {
 
     /// StatementListItem: a declaration or a statement.
     fn parse_statement_list_item(&mut self) -> PResult<Stmt> {
+        if self.at_async_function() {
+            return self.parse_function_declaration();
+        }
         match self.tok.kind {
-            TokenKind::Keyword(Keyword::Function) => {
-                let start = self.tok.span.start;
-                let function = self.parse_function(true)?;
-                self.bounded(Stmt::new(
-                    StmtKind::FunctionDecl(function),
-                    self.span_from(start),
-                ))
-            }
+            TokenKind::Keyword(Keyword::Function) => self.parse_function_declaration(),
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => self.parse_lexical_decl(),
             _ => self.parse_statement(),
         }
+    }
+
+    #[inline(never)]
+    fn parse_function_declaration(&mut self) -> PResult<Stmt> {
+        let start = self.tok.span.start;
+        let function = self.parse_function(true)?;
+        self.bounded(Stmt::new(
+            StmtKind::FunctionDecl(function),
+            self.span_from(start),
+        ))
     }
 
     /// Statement (single-statement position: `if`/`while`/`do`/`for` bodies).
@@ -504,6 +520,10 @@ impl<'a> Parser<'a> {
     fn statement_start_error(&self) -> Option<SyntaxError> {
         let span = self.tok.span;
         match &self.tok.kind {
+            TokenKind::Identifier(_) if self.at_async_function() => Some(self.error(
+                SyntaxErrorKind::Invalid, span,
+                "an async function declaration requires a statement list",
+            )),
             TokenKind::Keyword(Keyword::Function) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
@@ -1208,11 +1228,24 @@ impl<'a> Parser<'a> {
 
     /// Function declaration or expression, from the `function` keyword:
     /// `function` Name? `(` Params `)` `{` FunctionBody `}`.
+    #[inline(never)]
     fn parse_function(&mut self, declaration: bool) -> PResult<Function> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
+        let asynchronous = self.at_async_function();
+        if asynchronous {
+            self.advance()?;
+        }
+        let outer_suspension = std::mem::replace(
+            &mut self.suspension,
+            SuspensionContext {
+                asynchronous,
+                ..SuspensionContext::default()
+            },
+        );
         let (name, (params, defaults)) = self.parse_function_head(declaration)?;
+        let generator = self.suspension.generator;
         let outer = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
@@ -1225,7 +1258,8 @@ impl<'a> Parser<'a> {
         self.in_switch = outer_switch;
         self.labels = outer_labels;
         self.depth = saved;
-        let function = Function::new(
+        self.suspension = outer_suspension;
+        let mut function = Function::new(
             FunctionKind::Ordinary,
             name,
             params,
@@ -1234,6 +1268,8 @@ impl<'a> Parser<'a> {
             self.span_from(start),
             strict,
         );
+        function.generator = generator;
+        function.asynchronous = asynchronous;
         self.check_height(function.height)?;
         Ok(function)
     }
@@ -1303,10 +1339,8 @@ impl<'a> Parser<'a> {
     /// `function` Name? `(` Params `)`, up to the body.
     #[inline(never)]
     fn parse_function_head(&mut self, declaration: bool) -> PResult<(Option<Ident>, Params)> {
-        let start = self.advance()?.span.start;
-        if self.is_punct(Punct::Star) {
-            return Err(self.unsupported(self.span_from(start), "generator functions are"));
-        }
+        self.advance()?;
+        self.suspension.generator = self.eat_punct(Punct::Star)?;
         let name = if declaration || !self.is_punct(Punct::LParen) {
             Some(self.parse_binding_identifier("a function name")?)
         } else {
@@ -1323,6 +1357,7 @@ impl<'a> Parser<'a> {
     /// functions, `docs/grammar.md`), each with its default, if any.
     #[inline(never)]
     fn parse_formal_parameters(&mut self) -> PResult<Params> {
+        let parameters = std::mem::replace(&mut self.suspension.parameters, true);
         self.expect_punct(Punct::LParen)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
         let mut params: Vec<Ident> = Vec::new();
@@ -1351,6 +1386,7 @@ impl<'a> Parser<'a> {
         }
         self.no_in = no_in;
         self.expect_punct(Punct::RParen)?;
+        self.suspension.parameters = parameters;
         Ok((params, defaults))
     }
 
@@ -1364,6 +1400,12 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
+        let asynchronous = self.at_async_arrow();
+        let outer_suspension = self.suspension;
+        if asynchronous {
+            self.advance()?;
+            self.suspension.asynchronous = true;
+        }
         let (params, defaults) = if self.is_punct(Punct::LParen) {
             self.parse_formal_parameters()?
         } else {
@@ -1379,6 +1421,10 @@ impl<'a> Parser<'a> {
             return Err(self.misplaced_arrow(&self.tok));
         }
         self.advance()?;
+        self.suspension = SuspensionContext {
+            asynchronous,
+            ..SuspensionContext::default()
+        };
         let (kind, body, strict) = if self.is_punct(Punct::LBrace) {
             let outer = std::mem::replace(&mut self.in_function, true);
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -1401,7 +1447,8 @@ impl<'a> Parser<'a> {
             (FunctionKind::ConciseArrow, vec![body], self.strict)
         };
         self.depth = saved;
-        let function = Function::new(
+        self.suspension = outer_suspension;
+        let mut function = Function::new(
             kind,
             None,
             params,
@@ -1410,6 +1457,7 @@ impl<'a> Parser<'a> {
             self.span_from(start),
             strict,
         );
+        function.asynchronous = asynchronous;
         self.check_height(function.height)?;
         let span = function.span;
         self.expr(ExprKind::Function(Box::new(function)), span)
@@ -1421,11 +1469,45 @@ impl<'a> Parser<'a> {
     /// never an expression). Lookahead only.
     #[inline(never)]
     fn at_arrow(&self) -> bool {
+        if self.at_async_arrow() {
+            return true;
+        }
         match &self.tok.kind {
             TokenKind::Identifier(_) => self
                 .peek_next()
                 .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Arrow)),
             TokenKind::Punct(Punct::LParen) => self.arrow_after_parens().is_some(),
+            _ => false,
+        }
+    }
+
+    /// Contextual `async` must be unescaped and followed on the same line.
+    #[inline(never)]
+    fn at_async_function(&self) -> bool {
+        self.tok.span.text(self.src) == "async"
+            && self.peek_next().is_some_and(|t| {
+                !t.newline_before && t.kind == TokenKind::Keyword(Keyword::Function)
+            })
+    }
+
+    #[inline(never)]
+    fn at_async_arrow(&self) -> bool {
+        if self.tok.span.text(self.src) != "async" {
+            return false;
+        }
+        let mut lexer = self.lexer.clone();
+        let Ok(next) = lexer.next_token() else {
+            return false;
+        };
+        if next.newline_before {
+            return false;
+        }
+        match next.kind {
+            TokenKind::Identifier(_) => lexer
+                .next_token()
+                .ok()
+                .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Arrow)),
+            TokenKind::Punct(Punct::LParen) => Self::arrow_after_parens_from(lexer).is_some(),
             _ => false,
         }
     }
@@ -1464,6 +1546,9 @@ impl<'a> Parser<'a> {
     fn parse_assignment(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         self.deeper(cost::ASSIGNMENT)?;
+        if self.suspension.generator && self.is_keyword(Keyword::Yield) {
+            return self.parse_yield(saved);
+        }
         if self.at_arrow() {
             let arrow = self.parse_arrow_function()?;
             self.depth = saved;
@@ -1492,7 +1577,7 @@ impl<'a> Parser<'a> {
             );
         }
         if !self.is_punct(Punct::Assign) {
-            if let Some(error) = self.assignment_operator_error(&left) {
+            if let Some(error) = self.assignment_operator_error() {
                 return Err(error);
             }
             self.depth = saved;
@@ -1518,6 +1603,48 @@ impl<'a> Parser<'a> {
             },
             span,
         )
+    }
+
+    #[inline(never)]
+    fn parse_yield(&mut self, saved: usize) -> PResult<Expr> {
+        self.check_suspension_parameter()?;
+        let span = self.advance()?.span;
+        let delegate = !self.tok.newline_before && self.eat_punct(Punct::Star)?;
+        let value = if !delegate
+            && (self.tok.newline_before
+                || matches!(
+                    self.tok.kind,
+                    TokenKind::Eof
+                        | TokenKind::Punct(
+                            Punct::Semicolon
+                                | Punct::RBrace
+                                | Punct::RParen
+                                | Punct::RBracket
+                                | Punct::Comma
+                                | Punct::Colon
+                        )
+                )) {
+            None
+        } else {
+            Some(Box::new(self.parse_assignment()?))
+        };
+        self.depth = saved;
+        self.expr(
+            ExprKind::Yield { value, delegate },
+            span.to(Span::new(span.end, self.prev_end)),
+        )
+    }
+
+    #[inline(never)]
+    fn check_suspension_parameter(&self) -> PResult<()> {
+        if self.suspension.parameters {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "yield/await expressions are not allowed in this function's parameters",
+            ));
+        }
+        Ok(())
     }
 
     /// `o.p op= v` or `o[k] op= v` (clj-quickjs-260), with the current
@@ -1547,15 +1674,12 @@ impl<'a> Parser<'a> {
 
     /// Rejects logical assignment and an arrow after an expression.
     #[inline(never)]
-    fn assignment_operator_error(&self, left: &Expr) -> Option<SyntaxError> {
+    fn assignment_operator_error(&self) -> Option<SyntaxError> {
         match &self.tok.kind {
             TokenKind::Punct(p) if is_logical_assign(*p) => Some(self.unsupported(
                 self.tok.span,
                 &format!("logical assignment `{}` is", p.as_str()),
             )),
-            TokenKind::Punct(Punct::Arrow) if is_async_call(left) => {
-                Some(self.unsupported(left.span.to(self.tok.span), "async arrow functions are"))
-            }
             TokenKind::Punct(Punct::Arrow) => Some(self.misplaced_arrow(&self.tok)),
             _ => None,
         }
@@ -1763,13 +1887,16 @@ impl<'a> Parser<'a> {
     /// same literal (`proto_seen`) is an early error.
     fn parse_property_definition(&mut self, proto_seen: &mut bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
+        let (generator, asynchronous) = self.parse_method_prefix()?;
         // An accessor's following token is an IdentifierName: even an
         // escaped reserved word is valid here. Probe in the same lexer
         // mode that consuming that name will use.
         let next = self.peek_property_name();
         let accessor = match &self.tok.kind {
             TokenKind::Identifier(word)
-                if (word == "get" || word == "set")
+                if !generator
+                    && !asynchronous
+                    && (word == "get" || word == "set")
                     && next.as_ref().is_some_and(|t| {
                         matches!(
                             t.kind,
@@ -1801,7 +1928,7 @@ impl<'a> Parser<'a> {
         {
             return Err(error);
         }
-        if accessor.is_none() && ends_shorthand {
+        if !generator && !asynchronous && accessor.is_none() && ends_shorthand {
             // `{x}` is `{x: x}`: an identifier reference, with the same rules
             // as anywhere else (`undefined`, `eval`, ...).
             let TokenKind::Identifier(name) = &self.tok.kind else {
@@ -1836,7 +1963,7 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         if self.is_punct(Punct::LParen) {
-            let mut function = self.parse_object_method(span.start)?;
+            let mut function = self.parse_object_method(span.start, generator, asynchronous)?;
             if let Some(kind) = accessor {
                 let arity = usize::from(kind == FunctionKind::Setter);
                 if function.params.len() != arity {
@@ -1858,6 +1985,9 @@ impl<'a> Parser<'a> {
                 value,
                 shorthand: false,
             });
+        }
+        if generator || asynchronous {
+            return Err(self.unexpected("`(` after a method name"));
         }
         if accessor.is_some() {
             return Err(self.unexpected("`(` after an accessor name"));
@@ -1888,10 +2018,23 @@ impl<'a> Parser<'a> {
     /// A concise method after its literal key. Keep function parsing out of
     /// the object-literal dispatcher to bound native stack use.
     #[inline(never)]
-    fn parse_object_method(&mut self, start: usize) -> PResult<Function> {
+    fn parse_object_method(
+        &mut self,
+        start: usize,
+        generator: bool,
+        asynchronous: bool,
+    ) -> PResult<Function> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let outer_strict = self.strict;
+        let outer_suspension = std::mem::replace(
+            &mut self.suspension,
+            SuspensionContext {
+                generator,
+                asynchronous,
+                parameters: false,
+            },
+        );
         let (params, defaults) = self.parse_formal_parameters()?;
         let outer_function = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
@@ -1904,7 +2047,8 @@ impl<'a> Parser<'a> {
         self.in_switch = outer_switch;
         self.labels = outer_labels;
         self.depth = saved;
-        let function = Function::new(
+        self.suspension = outer_suspension;
+        let mut function = Function::new(
             FunctionKind::Method,
             None,
             params,
@@ -1913,8 +2057,36 @@ impl<'a> Parser<'a> {
             self.span_from(start),
             strict,
         );
+        function.generator = generator;
+        function.asynchronous = asynchronous;
         self.check_height(function.height)?;
         Ok(function)
+    }
+
+    #[inline(never)]
+    fn parse_method_prefix(&mut self) -> PResult<(bool, bool)> {
+        let asynchronous = self.tok.span.text(self.src) == "async"
+            && self.peek_property_name().is_some_and(|t| {
+                !t.newline_before
+                    && matches!(
+                        t.kind,
+                        TokenKind::Identifier(_)
+                            | TokenKind::Keyword(_)
+                            | TokenKind::String(_)
+                            | TokenKind::Number(_)
+                            | TokenKind::Punct(Punct::Star | Punct::LBracket)
+                    )
+            });
+        if asynchronous {
+            self.lexer.expect_property_name();
+            self.advance()?;
+        }
+        let generator = self.is_punct(Punct::Star);
+        if generator {
+            self.lexer.expect_property_name();
+            self.advance()?;
+        }
+        Ok((generator, asynchronous))
     }
 
     /// The error of a property definition that starts at the current token
@@ -1928,16 +2100,6 @@ impl<'a> Parser<'a> {
         ends_shorthand: bool,
     ) -> Option<SyntaxError> {
         let span = self.tok.span;
-        let starts_name = |t: &Token| {
-            matches!(
-                t.kind,
-                TokenKind::Identifier(_)
-                    | TokenKind::Keyword(_)
-                    | TokenKind::String(_)
-                    | TokenKind::Number(_)
-                    | TokenKind::Punct(Punct::LBracket | Punct::Star)
-            )
-        };
         let next_is = |p: Punct| next.is_some_and(|t| t.kind == TokenKind::Punct(p));
         match &self.tok.kind {
             TokenKind::Punct(Punct::LBracket) => {
@@ -1945,12 +2107,6 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Punct(Punct::Ellipsis) => {
                 Some(self.unsupported(span, "spread properties are"))
-            }
-            TokenKind::Punct(Punct::Star) => Some(self.unsupported(span, "generator methods are")),
-            TokenKind::Identifier(word)
-                if word == "async" && next.is_some_and(|t| !t.newline_before && starts_name(t)) =>
-            {
-                Some(self.unsupported(span, "async methods are"))
             }
             TokenKind::Identifier(_) if next_is(Punct::Assign) => Some(self.error(
                 SyntaxErrorKind::Invalid,
@@ -2116,6 +2272,10 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Typeof) => Prefix::Unary(UnaryOp::Typeof),
             TokenKind::Keyword(Keyword::Void) => Prefix::Unary(UnaryOp::Void),
             TokenKind::Keyword(Keyword::Delete) => Prefix::Delete,
+            TokenKind::Keyword(Keyword::Await) if self.suspension.asynchronous => {
+                self.check_suspension_parameter()?;
+                Prefix::Await
+            }
             TokenKind::Punct(Punct::PlusPlus) => Prefix::Update(UpdateOp::Inc),
             TokenKind::Punct(Punct::MinusMinus) => Prefix::Update(UpdateOp::Dec),
             _ => {
@@ -2128,12 +2288,10 @@ impl<'a> Parser<'a> {
         let op_span = self.advance()?.span;
         let mut operand = self.parse_unary()?;
         self.depth = saved;
-        let op = match op {
-            Prefix::Unary(op) => Some(op),
-            Prefix::Delete => None,
-            Prefix::Update(op) => return self.update(op, true, operand, op_span),
-        };
-        if op.is_none() {
+        if let Prefix::Update(op) = op {
+            return self.update(op, true, operand, op_span);
+        }
+        if matches!(op, Prefix::Delete) {
             self.check_delete_operand(&mut operand, op_span)?;
         }
         if self.is_punct(Punct::StarStar) {
@@ -2146,8 +2304,10 @@ impl<'a> Parser<'a> {
         let span = op_span.to(operand.span);
         let operand = Box::new(operand);
         let kind = match op {
-            Some(op) => ExprKind::Unary { op, operand },
-            None => ExprKind::Delete { operand, op_span },
+            Prefix::Unary(op) => ExprKind::Unary { op, operand },
+            Prefix::Delete => ExprKind::Delete { operand, op_span },
+            Prefix::Await => ExprKind::Await(operand),
+            Prefix::Update(_) => unreachable!(),
         };
         self.expr(kind, span)
     }
@@ -2480,11 +2640,16 @@ impl<'a> Parser<'a> {
     }
 
     /// An identifier in expression position, including the reserved
-    /// constants and the `async` / arrow rejections. `arguments` is an
+    /// constants and contextual async function expressions. `arguments` is an
     /// ordinary reference in either mode. `eval` remains unsupported in
     /// strict code, and must resolve to a declared binding in sloppy code.
     #[inline(never)]
     fn parse_identifier_reference(&mut self) -> PResult<Expr> {
+        if self.at_async_function() {
+            let function = self.parse_function(false)?;
+            let span = function.span;
+            return self.expr(ExprKind::Function(Box::new(function)), span);
+        }
         let span = self.tok.span;
         let TokenKind::Identifier(name) = &self.tok.kind else {
             return Err(self.unexpected("an identifier"));
@@ -2497,18 +2662,6 @@ impl<'a> Parser<'a> {
             "NaN" => ExprKind::Number(f64::NAN),
             "Infinity" => ExprKind::Number(f64::INFINITY),
             "eval" if self.strict => return Err(self.unsupported(span, "`eval` is")),
-            "async" => {
-                let next = self.peek_next().filter(|t| !t.newline_before);
-                match next.map(|t| t.kind) {
-                    Some(TokenKind::Keyword(Keyword::Function)) => {
-                        return Err(self.unsupported(span, "async functions are"));
-                    }
-                    Some(TokenKind::Identifier(_)) => {
-                        return Err(self.unsupported(span, "async arrow functions are"));
-                    }
-                    _ => ExprKind::Identifier(name.clone()),
-                }
-            }
             _ => ExprKind::Identifier(name.clone()),
         };
         self.advance()?;
@@ -2580,7 +2733,11 @@ impl<'a> Parser<'a> {
     /// (`(a = {if: 1}) => a`, clj-quickjs-100) does not end the search;
     /// the normal parse checks every such token in its real position.
     fn arrow_after_parens(&self) -> Option<Token> {
-        let mut lexer = self.lexer.clone();
+        Self::arrow_after_parens_from(self.lexer.clone())
+    }
+
+    #[inline(never)]
+    fn arrow_after_parens_from(mut lexer: Lexer<'a>) -> Option<Token> {
         let mut open = 1usize;
         // Cover-grammar lookahead uses the previous token to choose the
         // regexp goal. The real parser chooses by its grammar production.
@@ -2757,14 +2914,9 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// True for `async(...)`: before `=>` it is an async arrow function's head.
-fn is_async_call(e: &Expr) -> bool {
-    matches!(&e.kind, ExprKind::Call { callee, .. }
-        if matches!(&callee.kind, ExprKind::Identifier(name) if name == "async"))
-}
-
 /// A prefix operator: a UnaryExpression operator or `++`/`--`.
 enum Prefix {
+    Await,
     Unary(UnaryOp),
     Update(UpdateOp),
     /// `delete` (clj-quickjs-124), whose node keeps its token.
