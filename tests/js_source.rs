@@ -42,6 +42,11 @@ fn base_classes() {
         "class C { constructor() { return {x: 9}; } } new C().x === 9",
         "class C { constructor() { this.x = 7; return 3; } } new C().x === 7",
         "{ class C {} } typeof C === 'undefined'",
+        "let o = {['C']: class {}}; o.C.name === 'C'",
+        "let s = Symbol('C'); let o = {[s]: class {}}; o[s].name === '[C]'",
+        "let o = {['C']: class Inner { static self() { return Inner; } }}; o.C.name === 'Inner' && o.C.self() === o.C",
+        "let o = {['C']: class { static name() { return 7; } }}; o.C.name() === 7 && o.C.name.name === 'name'",
+        "let o = {['C']: class { static get name() { return 'override'; } }}; o.C.name === 'override'",
         "class C { get y() { return 12; } } typeof Object.getOwnPropertyDescriptor(C.prototype, 'y').get === 'function' && new C().y === 12",
         "class C { a() {} \\u0069f() { return 7; } } new C().if() === 7",
         "function* g() { let D = class C { [yield 'key']() { return C; } }; return D; } let it = g(); let a = it.next(); let C = it.next('m').value; a.value === 'key' && new C().m() === C",
@@ -188,6 +193,84 @@ fn base_classes_wait_collect_and_migrate() {
         }
         assert!(complete && waits == 1, "{source}");
     }
+}
+
+/// Synthetic fixture. Awaited class keys retain construction roots; async
+/// instance/static methods retain receivers and immutable inner names.
+#[test]
+fn base_classes_async_execution() {
+    #[derive(Default)]
+    struct Effects(Vec<Primitive>);
+    impl Host for Effects {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    let source = r#"
+        (async () => {
+            let C = class Inner {
+                constructor() { this.x = 7; }
+                [await Promise.resolve('m')]() { return Inner; }
+                [await Promise.resolve(__rt.need(136, 2))]() { return Inner; }
+                async instance() {
+                    await Promise.resolve(0);
+                    __rt.need(136, 3);
+                    let immutable = false;
+                    try { Inner = 1; } catch(e) { immutable = e instanceof TypeError; }
+                    return immutable && this.x === 7 && this.m() === Inner;
+                }
+                static async check() {
+                    await Promise.resolve(0);
+                    __rt.need(136, 4);
+                    let immutable = false;
+                    try { Inner = 1; } catch(e) { immutable = e instanceof TypeError; }
+                    return immutable && this === Inner;
+                }
+            };
+            let c = new C();
+            return c.m() === C && c[7]() === C && await c.instance() && await C.check();
+        })().then(value => __rt.effect(0, value));
+    "#;
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut host = Effects::default();
+    let mut waits = 0;
+    let mut complete = false;
+    for _ in 0..5000 {
+        let (next, next_host, outcome) = std::thread::spawn(move || {
+            let outcome = task.run_with(Budget::instructions(5), &mut host).unwrap();
+            (task, host, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        host = next_host;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 3);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(7.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(_) => {
+                assert_eq!(host.0, vec![Primitive::Bool(true)]);
+                assert!(task.suspended_async_activations().is_empty());
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete && waits == 3);
 }
 
 // The generator rejection row adapts test_language.js::test_constructor.

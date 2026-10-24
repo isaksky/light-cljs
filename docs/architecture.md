@@ -7250,3 +7250,10 @@ Computed keys execute inline in their enclosing activation, so `yield` and
 lowering temporarily applies class strictness; appended `PutGlobalStrict`,
 `PutFieldStrict`, `PutElemStrict` and `DeleteStrict` bytecodes enforce strict
 runtime writes/deletion there without changing the surrounding function's mode.
+
+For an anonymous class used as a computed object-property value, lowering passes
+the converted key's local into class construction. It sets the constructor name
+before defining class elements, preserving explicit class names and later static
+`name` methods/accessors. Async class tests await both property names and method
+bodies, forcing collection and migration while the class's saved construction
+state, receiver and inner-name captures remain live.

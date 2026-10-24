@@ -325,6 +325,12 @@ enum BindingKind {
     Var,
 }
 
+/// NamedEvaluation supplies a literal name or an already converted key.
+enum ClassName {
+    Known(JsString),
+    Computed(u16),
+}
+
 /// Where a binding's value lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Repr {
@@ -3941,7 +3947,13 @@ impl<'s> Lowerer<'s> {
         let key_slot = self.temp(span)?;
         let value_slot = self.temp(span)?;
         self.out().op_u16(Opcode::SetLocal, key_slot, span);
-        self.expr(&property.value)?;
+        if let ExprKind::Class(c) = &property.value.kind
+            && c.name.is_none()
+        {
+            self.class_expr(c, Some(ClassName::Computed(key_slot)))?;
+        } else {
+            self.expr(&property.value)?;
+        }
         self.out().op_u16(Opcode::SetLocal, value_slot, span);
         self.out().op_u16(Opcode::GetLocal, key_slot, span);
         self.out().op_u16(Opcode::GetLocal, value_slot, span);
@@ -4466,7 +4478,7 @@ impl<'s> Lowerer<'s> {
     #[inline(always)]
     fn named_expr(&mut self, e: &Expr, name: JsString) -> Result<(), SyntaxError> {
         if let ExprKind::Class(c) = &e.kind {
-            return self.class_expr(c, Some(name));
+            return self.class_expr(c, Some(ClassName::Known(name)));
         }
         if let ExprKind::Function(f) = &e.kind
             && f.name.is_none()
@@ -4480,7 +4492,11 @@ impl<'s> Lowerer<'s> {
     /// Class names have an independent immutable cell. Keep it uninitialized
     /// through computed-key evaluation, then initialize it after all methods.
     #[inline(never)]
-    fn class_expr(&mut self, class: &Class, inferred: Option<JsString>) -> Result<(), SyntaxError> {
+    fn class_expr(
+        &mut self,
+        class: &Class,
+        inferred: Option<ClassName>,
+    ) -> Result<(), SyntaxError> {
         let span = class.span;
         let outer_strict = self.cur().strict;
         let outer_expression = self.cur().strict_expression;
@@ -4504,15 +4520,30 @@ impl<'s> Lowerer<'s> {
         let proto = self.temp(span)?;
         let key = self.temp(span)?;
         let value = self.temp(span)?;
+        let computed = match &inferred {
+            Some(ClassName::Computed(slot)) => Some(*slot),
+            _ => None,
+        };
         let name = class
             .name
             .as_ref()
             .map(|n| JsString::from(n.name.as_str()))
-            .or(inferred)
+            .or(match inferred {
+                Some(ClassName::Known(name)) => Some(name),
+                _ => None,
+            })
             .unwrap_or_else(|| JsString::from(""));
         self.closure(&class.constructor, None, Some(name))?;
-        self.out().op(Opcode::Dup, span);
         self.out().op_u16(Opcode::SetLocal, ctor, span);
+        if let Some(key) = computed {
+            self.out().op_u16(Opcode::GetLocal, key, span);
+            self.out().op_u16(Opcode::GetLocal, ctor, span);
+            let prefix = self.name_index("", span)?;
+            self.out().op_u16(Opcode::SetComputedName, prefix, span);
+            self.out().op(Opcode::Pop, span);
+            self.out().op(Opcode::Pop, span);
+        }
+        self.out().op_u16(Opcode::GetLocal, ctor, span);
         let prototype = self.name_index("prototype", span)?;
         self.out().op_u16(Opcode::GetField, prototype, span);
         self.out().op_u16(Opcode::SetLocal, proto, span);

@@ -5087,6 +5087,8 @@ A named class also has an independent immutable inner name binding, captured by
 its constructor and methods. Computed keys execute in order while this inner
 binding remains uninitialized. The binding is initialized after all elements.
 Constructors require `new`, including through call/apply/bind and spread calls.
+Anonymous expressions infer their constructor name from a binding or object
+property key before member definitions, preserving later static `name` overrides.
 A constructor's `prototype` is non-writable, non-enumerable and non-configurable;
 its prototype's `constructor` is writable, non-enumerable and configurable.
 Methods and accessors are non-enumerable and configurable; methods are writable.
