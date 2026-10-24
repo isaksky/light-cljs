@@ -5977,8 +5977,8 @@ __rt.effect(0, counter.n);
 export * as sameCounter from './counter.js';
 ```
 
-Namespaces and closures capturing them are task-owned and cannot be published,
-even when the namespace is empty and frozen. Each fresh task gets fresh
+Namespaces are task-owned and cannot be published, even when empty and frozen.
+Publication also rejects closures capturing them. Each fresh task gets fresh
 instances and namespaces. The cyclic TDZ integration fixture still fails
 explicitly at the cyclic-linking boundary pending clj-quickjs-255; internal
 source execution tests exercise catchable namespace TDZ reads independently.
