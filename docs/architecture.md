@@ -3482,8 +3482,9 @@ immutable leaf buffers outside the heap.
 `FunctionKind::Method` distinguishes `{m() {}}` from `{m: function () {}}`.
 The parser accepts identifier names (reserved words included), strings and
 numbers as keys; `get()`, `set()`, `async()` and `static()` are method names.
-Methods are strict in this subset, own their receiver and unmapped arguments,
-and support ordinary parameters, defaults and closures. Arrows nested inside
+Methods inherit the surrounding strictness or become strict through a body
+`"use strict"` directive (clj-quickjs-266), own their receiver and unmapped
+arguments, and support ordinary parameters, defaults and closures. Arrows nested inside
 methods capture the method's receiver. Methods have no lexical self-name;
 NamedEvaluation supplies the property's string key as function metadata.
 Constructor capability is separate from owning arguments: methods have neither
