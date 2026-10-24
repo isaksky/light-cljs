@@ -3489,8 +3489,9 @@ allocates the closure with the literal below its captured values as its
 `FunctionObject::home_object`, preserving the literal on the operand stack for
 `define_field`. That field defines the usual writable, enumerable, configurable
 data property. A `__proto__() {}` method is a data property, including beside
-a `__proto__: value` prototype setter. Computed keys, accessors, async/generator
-methods and `super` remain deferred.
+a `__proto__: value` prototype setter. Computed keys, accessors, async methods
+and `super` remain deferred in this slice. Generator methods execute through
+detachable activations (clj-quickjs-243 below).
 
 The home-object reference is immutable from allocation, separate from captures
 and the optional property record chosen by clj-quickjs-125. Function objects

@@ -632,9 +632,9 @@ Deferred:
 
 - Property access (`f.call`, methods, objects), `this` (clj-quickjs-116
   below), (string values: clj-quickjs-65 below)
-  `arguments`, rest parameters (defaults: clj-quickjs-100, below), generators (`new`:
+  `arguments`, rest parameters (defaults: clj-quickjs-100, below) (`new`:
   clj-quickjs-71, below). (Arrow
-  functions: clj-quickjs-53 below.)
+  functions: clj-quickjs-53 below; generators: clj-quickjs-243 below.)
 - (A function declaration repeating a parameter or another declaration at
   the top level of a script or function body runs since clj-quickjs-94,
   below.)
@@ -2468,8 +2468,8 @@ name from the key, and own `this` and unmapped `arguments`. They are strict in
 this subset, have no own `prototype`, and `new o.m()` throws TypeError.
 An immutable home-object reference retains the defining literal and prevents
 publication of the method through its task-owned home object. GC traces and
-reclaims method/literal cycles. Computed keys, async/generator
-methods and `super` remain deferred.
+reclaims method/literal cycles. Computed keys, async methods and `super` remain
+deferred. Generator methods execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
 `cargo test --test js_source object_literal_methods -- --exact`,
@@ -2501,7 +2501,8 @@ Getters/setters, descriptor-field reads, conversion-method lookup,
 length/index operations run through traced native continuations and ordinary
 VM frames. They can yield, wait, migrate and unwind on cancellation; apply
 and push also support object-valued lengths through resumable ToPrimitive.
-Computed literal keys, super and async/generator methods remain deferred.
+Computed literal keys, super and async methods remain deferred. Generator methods
+execute through detachable activations (clj-quickjs-243).
 
 Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
 `cargo test --test js_source accessor`, `cargo test --test need getter_waits_on_dependency_and_resumes -- --exact`,

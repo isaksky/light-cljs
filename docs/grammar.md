@@ -1542,7 +1542,8 @@ Gaps specific to execution:
   function with a property record (or a read `prototype`) cannot be
   published, and a published function cannot get any (`TypeError`) or
   create its `prototype` (`UnsupportedOperand`), so `new` on it fails too. No
-  rest parameters or generators. Arrows capture their enclosing
+  rest parameters. Generators execute through detachable activations
+  (clj-quickjs-243). Arrows capture their enclosing
   non-arrow function's receiver, or the script global object.
 
 ### Accessor execution (clj-quickjs-120)
