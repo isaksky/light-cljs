@@ -5259,6 +5259,8 @@ return checks.
 Inherited statics include getters/setters and names such as `toString`, `caller`
 and `arguments`; a bound derived constructor retains its target's internal
 prototype and inherited statics when adding own properties.
+For-in visits enumerable inherited static properties through constructor and
+bound-constructor prototype links; non-enumerable own names still shadow them.
 
 Rejected forms: `super()` outside a derived constructor or its arrows, and
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and

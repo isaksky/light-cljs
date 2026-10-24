@@ -101,9 +101,11 @@
 //!   enumerable, its keys would be named from the view under the key
 //!   table's leaf lock, still not the object table's.) The view includes
 //!   the non-enumerable `__proto__` accessor;
-//! - after a function or built-in function: its prototype is
+//! - after a built-in function: its prototype is
 //!   `Function.prototype` (clj-quickjs-102), an immutable intrinsic with no
 //!   enumerable property on its chain, so nothing above could be visited.
+//!   Ordinary and bound functions follow their actual prototype links,
+//!   including superclass constructors and their enumerable static properties.
 //!   Error instances use the ordinary object walk, including their keys.
 //!
 //! Prototype links never lead to another task's object
@@ -653,20 +655,15 @@ fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKe
 
 /// The next object of the walk after `id` (module docs, "Prototype
 /// chain"): its `[[GetPrototypeOf]]`, except that the walk ends at a
-/// function, whose prototype (`Function.prototype`) is an immutable
-/// intrinsic with no enumerable
-/// property on its chain.
+/// built-in function, whose prototype (`Function.prototype`) is an immutable
+/// intrinsic with no enumerable property on its chain. Ordinary and bound
+/// functions may inherit from superclass constructors.
 fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(if view.builtin { None } else { view.prototype });
     }
     let fixed = heap
-        .read(id, |object| {
-            matches!(
-                object,
-                HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_)
-            )
-        })
+        .read(id, |object| matches!(object, HeapObject::Builtin(_)))
         .ok_or(Fault::Internal("prototype was reclaimed"))?;
     if fixed {
         return Ok(None);

@@ -7360,8 +7360,10 @@ Function-property reads and writes walk the constructor's actual prototype
 chain before rejecting still-missing Function.prototype names such as toString,
 caller and arguments. Bound-function metadata retains the target's internal
 prototype, and materializing an own-property record preserves that link. This
-retains inherited statics through reflection, calls, writes and conversion;
-the existing metadata/record prototype edges are traced by GC. Tests suspend in
+retains inherited statics through reflection, calls, writes and conversion.
+For-in follows constructor prototype links, including bound constructors,
+while retaining non-enumerable shadowing and the realm-intrinsic shortcut.
+The existing metadata/record prototype edges are traced by GC. Tests suspend in
 inherited static getters and setters, collect and migrate, and verify that their
 receiver and resulting state belong to the derived constructor.
 

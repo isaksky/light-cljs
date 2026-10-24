@@ -1170,6 +1170,7 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                         | Builtin::IntlDateTimeFormat
                         | Builtin::IntlListFormat
                         | Builtin::IntlRelativeTimeFormat
+                        | Builtin::IntlSegmenter
                 ));
             }
             Err(Fault::NotCallable(_)) => return Ok(false),

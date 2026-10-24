@@ -191,10 +191,25 @@ fn derived_classes_bound_static_inheritance() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: enumerate constructor inheritance
+/// with ordinary non-enumerable shadowing, including bound constructors.
+#[test]
+fn derived_classes_enumerate_inherited_statics() {
+    for source in [
+        "class C {} C.x = 1; class D extends C {} let keys = ''; for (let k in D) keys += k; keys === 'x'",
+        "class C {} C.x = 1; class D extends C {} class E extends D {} let Bound = E.bind(null); let keys = ''; for (let k in Bound) keys += k; keys === 'x'",
+        "class C {} C.x = 1; C.y = 2; class D extends C { static x() {} } let keys = ''; for (let k in D) keys += k; keys === 'y'",
+        "class C {} C.x = 1; C.y = 2; class D extends C {} let Bound = D.bind(null); Object.defineProperty(Bound, 'x', {value:3}); let keys = ''; for (let k in Bound) keys += k; keys === 'y'",
+        "class C {} C.x = 1; class D extends C {} D.y = 2; let keys = ''; for (let k in D) keys += k; keys === 'yx'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Native allocation beyond Object remains an explicit scoped gap.
 #[test]
 fn derived_classes_builtin_parent_gaps() {
-    for parent in ["Array", "Error", "Date", "Promise"] {
+    for parent in ["Array", "Error", "Date", "Promise", "Intl.Segmenter"] {
         assert_eq!(
             eval(&format!(
                 "class D extends {parent} {{}} Object.getPrototypeOf(D) === {parent} && Object.getPrototypeOf(D.prototype) === {parent}.prototype"
