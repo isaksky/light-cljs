@@ -3167,7 +3167,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("x = {}1{};", "f(".repeat(n), ")".repeat(n))
         }),
         ("conditional", |n| format!("x = {}1;", "a ? b : ".repeat(n))),
-        ("assignment", |n| format!("x = {}1;", "a = ".repeat(n))),
+        ("assignment", |n| format!("{}1;", "a = ".repeat(n))),
         ("function decls", |n| {
             format!("{}{}", "function f() {".repeat(n), "}".repeat(n))
         }),
@@ -3204,7 +3204,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("x = {}1{};", "{a: 1, b: x.y = ".repeat(n), ", c}".repeat(n))
         }),
         ("property assignments", |n| {
-            format!("x = {}1;", "a.b = ".repeat(n))
+            format!("{}1;", "a.b = ".repeat(n))
         }),
         ("templates", |n| {
             format!("x = {}1{};", "`${".repeat(n), "}`".repeat(n))
@@ -3220,7 +3220,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("x = {}0{};", "a[".repeat(n), "]".repeat(n))
         }),
         ("index assignments", |n| {
-            format!("x = {}1;", "a[0] = ".repeat(n))
+            format!("{}1;", "a[0] = ".repeat(n))
         }),
         ("wrapped member chains", |n| {
             let mut s = "a".to_string();
@@ -3231,19 +3231,19 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         // Right-associative assignment chains (clj-quickjs-262).
         ("compound assignments", |n| {
-            format!("x = {}1;", "a += ".repeat(n))
+            format!("{}1;", "a += ".repeat(n))
         }),
         ("property compound assignments", |n| {
-            format!("x = {}1;", "o.b += ".repeat(n))
+            format!("{}1;", "o.b += ".repeat(n))
         }),
         ("index compound assignments", |n| {
-            format!("x = {}1;", "o[k] -= ".repeat(n))
+            format!("{}1;", "o[k] -= ".repeat(n))
         }),
         ("computed index assignments", |n| {
-            format!("x = {}1;", "o[k] = ".repeat(n))
+            format!("{}1;", "o[k] = ".repeat(n))
         }),
         ("mixed assignments", |n| {
-            format!("x = {}1;", "a = o.b += o[0] = a -= ".repeat(n))
+            format!("{}1;", "a = o.b += o[0] = a -= ".repeat(n))
         }),
         // `new` (clj-quickjs-71).
         ("new chains", |n| format!("x = {}F;", "new ".repeat(n))),
