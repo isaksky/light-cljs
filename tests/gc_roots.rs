@@ -859,6 +859,8 @@ fn realm_intrinsics_retain() {
         "Math.imul",
         "Math.fround",
         "Math.hypot",
+        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get",
+        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -870,9 +872,9 @@ fn realm_intrinsics_retain() {
         })
         .collect();
     // Each completed task created its own global binding overlay (-104).
-    // Reclaim those objects and their self-cycles; the intrinsic values
-    // reached through them must survive independently.
-    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len());
+    // Reclaim those objects, their self-cycles and the two temporary accessor
+    // descriptors; the intrinsic values must survive independently.
+    assert_eq!(rt.request_collection().unwrap().reclaimed, exprs.len() + 2);
     assert_live(&weak);
     // No task, root or scope is left: only the realm holds them.
     // (`Array.prototype` and its `toString` and `constructor` too,
@@ -888,8 +890,9 @@ fn realm_intrinsics_retain() {
     // methods, clj-quickjs-143, and both substring-search methods,
     // clj-quickjs-144, five extraction/combination methods, clj-quickjs-145,
     // six number predicates, clj-quickjs-147, two parsing functions,
-    // clj-quickjs-148, and Math with six numeric methods, clj-quickjs-152.
-    assert_eq!(rt.heap_usage().objects.builtin, 56);
+    // clj-quickjs-148, Math with six numeric methods, clj-quickjs-152,
+    // and the two __proto__ accessors, clj-quickjs-261.
+    assert_eq!(rt.heap_usage().objects.builtin, 58);
     assert_eq!(rt.heap_usage().objects.plain, 6);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
