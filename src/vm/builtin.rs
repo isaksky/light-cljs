@@ -306,7 +306,6 @@ pub(crate) enum Builtin {
     RegExpFlags,
     RegExpFlag(char),
 
-
     /// BigInt conversion is callable, never constructible (clj-quickjs-201).
     BigInt,
 }

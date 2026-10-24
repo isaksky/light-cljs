@@ -247,7 +247,6 @@ impl Global {
         Global::Float32Array,
         Global::Float64Array,
         Global::RegExp,
-
         Global::BigInt,
     ];
 
