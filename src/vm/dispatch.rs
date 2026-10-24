@@ -178,6 +178,18 @@ fn numbers(op: Opcode, a: Value, b: Value) -> Result<(f64, f64), Fault> {
     }
 }
 
+/// JavaScript ToInt32 of a Number: NaN and ±Infinity are 0; otherwise the
+/// value truncated toward zero, modulo 2^32, as a two's-complement 32-bit
+/// integer. ToUint32 is the same bits read as `u32`.
+fn to_int32(x: f64) -> i32 {
+    if !x.is_finite() {
+        return 0;
+    }
+    // `trunc` is an integer and `rem_euclid` of an integer by 2^32 is exact,
+    // so the cast sees an integer in [0, 2^32).
+    x.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
+}
+
 /// JavaScript ToNumber for primitives. Objects need ToPrimitive, which is
 /// deferred, so they are rejected explicitly.
 fn to_number(v: Value) -> Result<f64, Fault> {
@@ -524,6 +536,34 @@ fn step(
                 _ => Value::Bool(x >= y),
             });
         }
+        Instr::BitAnd | Instr::BitOr | Instr::BitXor | Instr::Shl | Instr::Sar | Instr::UShr => {
+            let b = state.pop()?;
+            let a = state.pop()?;
+            let (x, y) = numbers(instr.opcode(), a, b)?;
+            let (i, j) = (to_int32(x), to_int32(y));
+            // Shift counts are ToUint32(y) & 31; masking the bits of
+            // ToInt32(y) gives the same count.
+            let count = (j as u32) & 31;
+            // Every result is an integer in i32 or u32 range, converted
+            // exactly; none is -0.
+            state.push(Value::Number(match instr {
+                Instr::BitAnd => f64::from(i & j),
+                Instr::BitOr => f64::from(i | j),
+                Instr::BitXor => f64::from(i ^ j),
+                Instr::Shl => f64::from(i << count),
+                Instr::Sar => f64::from(i >> count),
+                _ => f64::from((i as u32) >> count),
+            }));
+        }
+        Instr::BitNot => match state.pop()? {
+            Value::Number(x) => state.push(Value::Number(f64::from(!to_int32(x)))),
+            v => {
+                return Err(Fault::Unsupported(format!(
+                    "bit_not supports number operands only, got {}",
+                    v.type_name()
+                )));
+            }
+        },
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -790,6 +830,13 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Le
         | Instr::Ge
         | Instr::LooseEq
+        | Instr::BitAnd
+        | Instr::BitOr
+        | Instr::BitXor
+        | Instr::Shl
+        | Instr::Sar
+        | Instr::UShr
+        | Instr::BitNot
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

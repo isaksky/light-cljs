@@ -83,12 +83,16 @@ ArrowParameters       = BindingIdentifier
 ConciseBody           = "{" { StatementListItem } "}" | AssignmentExpression
 ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
 LogicalOr             = LogicalAnd { "||" LogicalAnd }
-LogicalAnd            = Equality { "&&" Equality }
+LogicalAnd            = BitwiseOr { "&&" BitwiseOr }
+BitwiseOr             = BitwiseXor { "|" BitwiseXor }
+BitwiseXor            = BitwiseAnd { "^" BitwiseAnd }
+BitwiseAnd            = Equality { "&" Equality }
 Equality              = Relational { ( "==" | "!=" | "===" | "!==" ) Relational }
-Relational            = Additive { ( "<" | ">" | "<=" | ">=" ) Additive }
+Relational            = Shift { ( "<" | ">" | "<=" | ">=" ) Shift }
+Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Unary { ( "*" | "/" | "%" ) Unary }
-Unary                 = ( "!" | "-" | "+" ) Unary | Call
+Unary                 = ( "!" | "-" | "+" | "~" ) Unary | Call
 Call                  = Primary { Arguments | "." IdentifierName }
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | "(" Expression ")"
@@ -99,8 +103,9 @@ Literal               = Number | String | "true" | "false" | "null"
 Notes on the grammar:
 
 - Precedence, loosest to tightest: the comma operator, assignment
-  (right-associative), conditional (right-associative), `||`, `&&`,
-  equality, relational, additive, multiplicative, prefix unary,
+  (right-associative), conditional (right-associative), `||`, `&&`, `|`,
+  `^`, `&`, equality, relational, shift (`<<`, `>>`, `>>>`, clj-quickjs-62),
+  additive, multiplicative, prefix unary,
   call/member. All binary operators and the comma operator are
   left-associative. This is ECMAScript's ordering restricted to the
   supported operators.
@@ -175,7 +180,7 @@ Every form below is rejected where it starts. Error kinds:
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
-| `typeof`, `void`, `delete`, `~`, `++`, `--`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `??`, `in`, `instanceof`, compound assignment (`+=`, `&&=`, ...) | Unsupported |
+| `typeof`, `void`, `delete`, `++`, `--`, `**`, `??`, `in`, `instanceof`, compound assignment (`+=`, `&&=`, `\|=`, `<<=`, `>>>=`, ...) | Unsupported |
 | assignment to a property (`a.b = 1`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
@@ -257,6 +262,7 @@ Executed, with JavaScript semantics:
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
 | `+ - * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign |
 | `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false) |
+| `&`, `\|`, `^`, `<<`, `>>`, `>>>` and unary `~` (clj-quickjs-62) | ToNumber of both operands (left first, after both are evaluated), then ToInt32 (NaN and ±Infinity are 0; truncate, wrap modulo 2^32), ToUint32 for the left operand of `>>>`; a shift count is `ToUint32(right) & 31`; the result is a 32-bit integer (unsigned for `>>>`), never `-0` |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
@@ -327,14 +333,16 @@ finally blocks").
 Gaps specific to execution:
 
 - **No string values**, so `+` and the relational operators lower to
-  numeric operations; they must change when strings arrive.
+  numeric operations; they must change when strings arrive. The bitwise
+  and shift operators convert with ToNumber, which for strings is the
+  StringToNumber pellet (clj-quickjs-67).
 - **Error objects are opaque.** A caught ReferenceError, TypeError or
   StackOverflow is an object without properties (`e.message`, `e.name`,
   `instanceof` and the `Error` constructors do not exist yet); it can be
   compared, passed around and rethrown.
 - **No ToPrimitive on objects.** Source can now create function objects and
-  (through `__rt`) collections and builders; arithmetic and relational
-  operators applied to them fail with `UnsupportedOperand` where JavaScript
+  (through `__rt`) collections and builders; arithmetic, relational,
+  bitwise and shift operators applied to them fail with `UnsupportedOperand` where JavaScript
   would call ToPrimitive (`===`/`==` compare them by identity).
 - **Temporal dead zone: static within a function, dynamic across
   closures.** The subset has no `break`, `continue` or labels, and an
@@ -480,6 +488,12 @@ f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1
 ```
 
 ```js accept
+// Bitwise and shift operators (clj-quickjs-62).
+let h = (x << 5) - x + 7 | 0;
+const lo = h & 0xFFFF, hi = h >>> 16, sign = ~h >> 31;
+```
+
+```js accept
 #!/usr/bin/env qjs
 let x = 1;
 ```
@@ -532,6 +546,10 @@ a++;
 
 ```js reject Unsupported 1:2
 a>>>=b
+```
+
+```js reject Unsupported 1:3
+h |= 1;
 ```
 
 ```js reject ReservedWord 1:5
@@ -606,7 +624,13 @@ functions and threading it down as captured variables) and
 `instantiate_hoisted_definitions` (function declarations created on scope
 entry). For hashbang comments (clj-quickjs-49): `skip_shebang`. For the comma operator
 (clj-quickjs-61): `js_parse_expr2` / `js_parse_expr` (each operand but the
-last is evaluated and dropped). For Unicode
+last is evaluated and dropped). For the bitwise and shift operators
+(clj-quickjs-62): `js_parse_expr_binary` (precedence levels),
+`js_binary_logic_slow`, `JS_ToInt32Free`, the `OP_shr` / `OP_sar` cases of
+`JS_CallInternal` and `js_unary_arith_slow` (`~`); the run-time cases are
+adapted from `test_op1` and `test_cvt` of
+`research/quickjs/tests/test_language.js` in `tests/js_source.rs`
+`bitwise_operators_follow_to_int32`, with the notice. For Unicode
 identifiers (clj-quickjs-50): `next_token`'s `lre_js_is_ident_first` /
 `lre_js_is_ident_next` checks and `ident_realloc` (escapes decoded into the
 name, an escaped reserved word never a keyword); the tables here are

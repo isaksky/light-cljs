@@ -1216,3 +1216,25 @@ Deferred:
 - Diagnostics quote a name as written in the source (an escaped name is
   quoted with its escapes), and the identifier tables follow Unicode 16.0
   until regenerated.
+
+### Bitwise and shift operators (clj-quickjs-62)
+
+Supported (`cargo test --lib frontend::tests::bitwise_and_shift_precedence`,
+`cargo test --test js_source bitwise_operators_follow_to_int32`):
+
+- `&`, `|`, `^`, `<<`, `>>`, `>>>` and unary `~` at ECMAScript precedence
+  (`||` < `&&` < `|` < `^` < `&` < equality < relational < shift <
+  additive). Both operands are evaluated, then converted with ToNumber
+  (left first) and ToInt32 (ToUint32 for the left operand of `>>>`); shift
+  counts are `ToUint32(right) & 31`; results are 32-bit integers as doubles
+  (unsigned for `>>>`), never `-0`. Number-only opcodes `bit_and`,
+  `bit_or`, `bit_xor`, `shl`, `sar`, `ushr`, `bit_not` (`0x3F`–`0x45`).
+  Run-time cases adapted from QuickJS `test_op1` / `test_cvt` with the
+  license notice.
+
+Deferred:
+
+- Compound assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`) is still
+  rejected by the parser; string operands wait for StringToNumber
+  (clj-quickjs-67) and object operands for ToPrimitive (they fail with
+  `UnsupportedOperand`).

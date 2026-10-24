@@ -797,6 +797,171 @@ fn comma_operator_evaluates_left_to_right() {
     assert_eq!(eval("(1, 2) === 2 ? true : 0"), ValueView::Bool(true));
 }
 
+/// Bitwise and shift operators and `~` (clj-quickjs-62). The `test_op1`
+/// and numeric `test_cvt` values are adapted from
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (each
+/// `assert(r, v)` as a Rust assertion on the expression's value; the string
+/// operand cases of `test_cvt` wait for StringToNumber); see
+/// `docs/architecture.md`, "QuickJS references and provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn bitwise_operators_follow_to_int32() {
+    // `test_op1`.
+    for (src, expected) in [
+        ("4 << 2", 16.0),
+        ("1 << 0", 1.0),
+        ("1 << 31", -2147483648.0),
+        ("1 << 32", 1.0),
+        ("-4 >> 1", -2.0),
+        ("-4 >>> 1", 2147483646.0),
+        ("1 & 1", 1.0),
+        ("0 | 1", 1.0),
+        ("1 ^ 1", 0.0),
+        ("~1", -2.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    assert_eq!(eval("(1 << 31) < 0"), ValueView::Bool(true));
+    // Numeric groups of `test_cvt`.
+    for (src, expected) in [
+        ("NaN | 0", 0.0),
+        ("Infinity | 0", 0.0),
+        ("(-Infinity) | 0", 0.0),
+        ("(4294967296 * 3 - 4) | 0", -4.0),
+        ("NaN >>> 0", 0.0),
+        ("Infinity >>> 0", 0.0),
+        ("(-Infinity) >>> 0", 0.0),
+        ("(4294967296 * 3 - 4) >>> 0", 4294967292.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    assert_eq!(
+        eval("((4294967296 * 3 - 4) >>> 0) === (4294967296 - 4)"),
+        ValueView::Bool(true)
+    );
+
+    // ToInt32 / ToUint32 edges written for this project.
+    for (src, expected) in [
+        ("2147483648 | 0", -2147483648.0),
+        ("2147483647 | 0", 2147483647.0),
+        ("4294967295 | 0", -1.0),
+        ("-2147483649 | 0", 2147483647.0),
+        ("1e21 | 0", -559939584.0),
+        ("-3.9 | 0", -3.0),
+        ("1 << -1", -2147483648.0),
+        ("1 << 33", 2.0),
+        ("8 >> 4294967297", 4.0),
+        ("1 >>> 32", 1.0),
+        ("-1 >>> 0", 4294967295.0),
+        ("-1 >>> 31", 1.0),
+        ("-1 >> 31", -1.0),
+        ("4294967295 >>> 0", 4294967295.0),
+        ("~~3.7", 3.0),
+        ("~~-3.7", -3.0),
+        ("~NaN", -1.0),
+        ("~Infinity", -1.0),
+        ("~-1", 0.0),
+        ("~2147483647", -2147483648.0),
+        ("6 & 3", 2.0),
+        ("6 | 3", 7.0),
+        ("6 ^ 3", 5.0),
+        ("5.9 & 7.9", 5.0),
+        // ToNumber of the other primitives.
+        ("true | 0", 1.0),
+        ("false | 2", 2.0),
+        ("null >>> 0", 0.0),
+        ("undefined | 0", 0.0),
+        ("~undefined", -1.0),
+        ("~true", -2.0),
+        ("let t = true; t << t", 2.0),
+        // Precedence at run time.
+        ("1 | 2 ^ 3 & 1", 3.0),
+        ("1 << 2 + 1", 8.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    assert_eq!(eval("2 & 1 == 1"), ValueView::Number(0.0));
+    assert_eq!(eval("0 < 1 << 2"), ValueView::Bool(true));
+    // Results are never -0.
+    for src in [
+        "-0 | 0", "-0 & -0", "-0 ^ 0", "-0 << 1", "-0 >> 0", "-0 >>> 0", "-0.5 | 0", "~-1", "~~-0",
+        "-1 & 0",
+    ] {
+        let n = num(src);
+        assert!(n == 0.0 && n.is_sign_positive(), "{src} gave {n}");
+    }
+
+    // Both operands are evaluated, left first, before any conversion.
+    let (kind, message, line, column) = failure_at("nope | 1");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (VmErrorKind::ReferenceError, "nope is not defined", 1, 1)
+    );
+    assert_eq!(failure_at("1 >>> nope").0, VmErrorKind::ReferenceError);
+    assert_eq!(
+        failure_at("__rt.vector() & nope").0,
+        VmErrorKind::ReferenceError
+    );
+    assert_eq!(
+        num("let x = 0; let y = (x = 6) & (x = 3); y * 10 + x"),
+        23.0
+    );
+    // Objects need ToPrimitive, which is deferred.
+    for src in [
+        "__rt.vector() | 0",
+        "1 << __rt.vector()",
+        "~__rt.vector()",
+        "~(() => 1)",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+
+    // Each operator is one VM instruction, with no ToNumber for number
+    // operands.
+    for (src, op) in [
+        ("1 & 2", Opcode::BitAnd),
+        ("1 | 2", Opcode::BitOr),
+        ("1 ^ 2", Opcode::BitXor),
+        ("1 << 2", Opcode::Shl),
+        ("1 >> 2", Opcode::Sar),
+        ("1 >>> 2", Opcode::UShr),
+        ("~1", Opcode::BitNot),
+    ] {
+        let ops = opcodes(&exe(src));
+        assert!(ops.contains(&op), "{src}: {ops:?}");
+        assert!(
+            !ops.contains(&Opcode::ToNumber) && !ops.contains(&Opcode::ToNumberPair),
+            "{src}: {ops:?}"
+        );
+    }
+    assert!(
+        opcodes(&exe("~~(1 | 2) << ~3"))
+            .iter()
+            .all(|op| !matches!(op, Opcode::ToNumber | Opcode::ToNumberPair))
+    );
+}
+
 #[test]
 fn compiler_constant_limit() {
     // 65,536 distinct constants fit the u16 index; the last one is read

@@ -411,6 +411,13 @@ impl Executable {
                 Opcode::EndFinally => Instr::EndFinally,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
+                Opcode::BitAnd => Instr::BitAnd,
+                Opcode::BitOr => Instr::BitOr,
+                Opcode::BitXor => Instr::BitXor,
+                Opcode::Shl => Instr::Shl,
+                Opcode::Sar => Instr::Sar,
+                Opcode::UShr => Instr::UShr,
+                Opcode::BitNot => Instr::BitNot,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.

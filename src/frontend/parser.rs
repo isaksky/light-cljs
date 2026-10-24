@@ -843,28 +843,20 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn reject_unsupported_binary(&self) -> PResult<()> {
         let what = match &self.tok.kind {
-            TokenKind::Punct(
-                p @ (Punct::StarStar
-                | Punct::Amp
-                | Punct::Pipe
-                | Punct::Caret
-                | Punct::Shl
-                | Punct::Shr
-                | Punct::UShr
-                | Punct::Nullish),
-            ) => p.as_str(),
+            TokenKind::Punct(p @ (Punct::StarStar | Punct::Nullish)) => p.as_str(),
             TokenKind::Keyword(k @ (Keyword::In | Keyword::Instanceof)) => k.as_str(),
             _ => return Ok(()),
         };
         Err(self.unsupported(self.tok.span, &format!("the `{what}` operator is")))
     }
 
-    /// UnaryExpression: (`!` | `-` | `+`) UnaryExpression | CallExpression
+    /// UnaryExpression: (`!` | `-` | `+` | `~`) UnaryExpression | CallExpression
     fn parse_unary(&mut self) -> PResult<Expr> {
         let op = match &self.tok.kind {
             TokenKind::Punct(Punct::Bang) => UnaryOp::Not,
             TokenKind::Punct(Punct::Minus) => UnaryOp::Neg,
             TokenKind::Punct(Punct::Plus) => UnaryOp::Plus,
+            TokenKind::Punct(Punct::Tilde) => UnaryOp::BitNot,
             _ => {
                 self.reject_unsupported_prefix()?;
                 return self.parse_call();
@@ -889,7 +881,6 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_prefix(&self) -> PResult<()> {
         let span = self.tok.span;
         match &self.tok.kind {
-            TokenKind::Punct(Punct::Tilde) => Err(self.unsupported(span, "the `~` operator is")),
             TokenKind::Punct(Punct::PlusPlus | Punct::MinusMinus) => {
                 Err(self.unsupported(span, "increment and decrement are"))
             }
@@ -1148,19 +1139,25 @@ fn binary_op(kind: &TokenKind) -> Option<(u8, BinOrLogical)> {
     Some(match p {
         Punct::PipePipe => (1, Logical(LogicalOp::Or)),
         Punct::AmpAmp => (2, Logical(LogicalOp::And)),
-        Punct::Eq => (3, Binary(BinaryOp::LooseEq)),
-        Punct::NotEq => (3, Binary(BinaryOp::LooseNe)),
-        Punct::StrictEq => (3, Binary(BinaryOp::StrictEq)),
-        Punct::StrictNotEq => (3, Binary(BinaryOp::StrictNe)),
-        Punct::Lt => (4, Binary(BinaryOp::Lt)),
-        Punct::Gt => (4, Binary(BinaryOp::Gt)),
-        Punct::Le => (4, Binary(BinaryOp::Le)),
-        Punct::Ge => (4, Binary(BinaryOp::Ge)),
-        Punct::Plus => (5, Binary(BinaryOp::Add)),
-        Punct::Minus => (5, Binary(BinaryOp::Sub)),
-        Punct::Star => (6, Binary(BinaryOp::Mul)),
-        Punct::Slash => (6, Binary(BinaryOp::Div)),
-        Punct::Percent => (6, Binary(BinaryOp::Rem)),
+        Punct::Pipe => (3, Binary(BinaryOp::BitOr)),
+        Punct::Caret => (4, Binary(BinaryOp::BitXor)),
+        Punct::Amp => (5, Binary(BinaryOp::BitAnd)),
+        Punct::Eq => (6, Binary(BinaryOp::LooseEq)),
+        Punct::NotEq => (6, Binary(BinaryOp::LooseNe)),
+        Punct::StrictEq => (6, Binary(BinaryOp::StrictEq)),
+        Punct::StrictNotEq => (6, Binary(BinaryOp::StrictNe)),
+        Punct::Lt => (7, Binary(BinaryOp::Lt)),
+        Punct::Gt => (7, Binary(BinaryOp::Gt)),
+        Punct::Le => (7, Binary(BinaryOp::Le)),
+        Punct::Ge => (7, Binary(BinaryOp::Ge)),
+        Punct::Shl => (8, Binary(BinaryOp::Shl)),
+        Punct::Shr => (8, Binary(BinaryOp::Sar)),
+        Punct::UShr => (8, Binary(BinaryOp::UShr)),
+        Punct::Plus => (9, Binary(BinaryOp::Add)),
+        Punct::Minus => (9, Binary(BinaryOp::Sub)),
+        Punct::Star => (10, Binary(BinaryOp::Mul)),
+        Punct::Slash => (10, Binary(BinaryOp::Div)),
+        Punct::Percent => (10, Binary(BinaryOp::Rem)),
         _ => return None,
     })
 }

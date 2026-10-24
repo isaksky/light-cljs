@@ -306,6 +306,8 @@ pub enum UnaryOp {
     Neg,
     /// `+`
     Plus,
+    /// `~`
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,6 +329,18 @@ pub enum BinaryOp {
     StrictEq,
     /// `!==`
     StrictNe,
+    /// `&`
+    BitAnd,
+    /// `|`
+    BitOr,
+    /// `^`
+    BitXor,
+    /// `<<`
+    Shl,
+    /// `>>`
+    Sar,
+    /// `>>>`
+    UShr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

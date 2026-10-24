@@ -67,6 +67,13 @@
 //! | `EndFinally`    | 0x3C | –                  | –                      | resume the pending completion of the finished finally block |
 //! | `Reduce`        | 0x3D | –                  | f init vec → acc       | resumable native fold: `acc = f(acc, x)` for each element |
 //! | `NeedAll`       | 0x3E | –                  | defs kind → results    | resumable native: a vector of the results of `need` of each definition |
+//! | `BitAnd`        | 0x3F | –                  | a b → `a & b`          | ToInt32 of both, bitwise AND |
+//! | `BitOr`         | 0x40 | –                  | a b → `a \| b`          | ToInt32 of both, bitwise OR |
+//! | `BitXor`        | 0x41 | –                  | a b → `a ^ b`          | ToInt32 of both, bitwise XOR |
+//! | `Shl`           | 0x42 | –                  | a b → `a << b`         | ToInt32(a) shifted left by ToUint32(b) & 31 |
+//! | `Sar`           | 0x43 | –                  | a b → `a >> b`         | ToInt32(a) shifted right, sign-filling |
+//! | `UShr`          | 0x44 | –                  | a b → `a >>> b`        | ToUint32(a) shifted right, zero-filling |
+//! | `BitNot`        | 0x45 | –                  | a → `~a`               | bitwise NOT of ToInt32(a) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -160,13 +167,23 @@
 //! and the whole task may yield or suspend between its steps. The result is
 //! pushed when the continuation returns.
 //!
+//! Opcodes `0x3F`–`0x45` are JavaScript's bitwise and shift operators
+//! (clj-quickjs-62). Like the arithmetic opcodes they take Number operands
+//! only (the compiler applies ToNumber first). Each applies ToInt32 to its
+//! operands (`UShr` applies ToUint32 to its left one): NaN and ±Infinity
+//! become 0, other values are truncated toward zero and wrapped modulo
+//! 2^32. A shift count is `ToUint32(b) & 31`. Results are 32-bit integers
+//! as doubles (unsigned for `UShr`), never `-0`. The names follow QuickJS's
+//! `and`/`or`/`xor`/`shl`/`sar`/`shr`/`not` opcodes
+//! (`research/quickjs/quickjs-opcode.h`); `UShr` is QuickJS's `shr`.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
 //! next byte and are handled in every exhaustive match.
 //!
-//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le` and `Ge`
-//! support Number operands only. Other operand types fail the task with
+//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le`, `Ge` and the
+//! bitwise and shift opcodes support Number operands only. Other operand types fail the task with
 //! [`VmErrorKind::UnsupportedOperand`](crate::VmErrorKind::UnsupportedOperand)
 //! rather than applying JavaScript's coercions; a compiler applies them
 //! explicitly with `ToNumber`/`ToNumberPair`.
@@ -247,6 +264,13 @@ pub enum Opcode {
     EndFinally = 0x3C,
     Reduce = 0x3D,
     NeedAll = 0x3E,
+    BitAnd = 0x3F,
+    BitOr = 0x40,
+    BitXor = 0x41,
+    Shl = 0x42,
+    Sar = 0x43,
+    UShr = 0x44,
+    BitNot = 0x45,
 }
 
 /// Operand encoding of an opcode.
@@ -357,6 +381,13 @@ impl Opcode {
             0x3C => EndFinally,
             0x3D => Reduce,
             0x3E => NeedAll,
+            0x3F => BitAnd,
+            0x40 => BitOr,
+            0x41 => BitXor,
+            0x42 => Shl,
+            0x43 => Sar,
+            0x44 => UShr,
+            0x45 => BitNot,
             _ => return None,
         })
     }
@@ -427,6 +458,13 @@ impl Opcode {
             EndFinally => "end_finally",
             Reduce => "reduce",
             NeedAll => "need_all",
+            BitAnd => "bit_and",
+            BitOr => "bit_or",
+            BitXor => "bit_xor",
+            Shl => "shl",
+            Sar => "sar",
+            UShr => "ushr",
+            BitNot => "bit_not",
         }
     }
 
@@ -447,7 +485,8 @@ impl Opcode {
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
-            | PopFinally | EndFinally | Reduce | NeedAll => OperandKind::None,
+            | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
+            | UShr | BitNot => OperandKind::None,
         }
     }
 }
@@ -554,6 +593,13 @@ pub(crate) enum Instr {
     EndFinally,
     Reduce,
     NeedAll,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Sar,
+    UShr,
+    BitNot,
 }
 
 impl Instr {
@@ -621,6 +667,13 @@ impl Instr {
             Instr::EndFinally => Opcode::EndFinally,
             Instr::Reduce => Opcode::Reduce,
             Instr::NeedAll => Opcode::NeedAll,
+            Instr::BitAnd => Opcode::BitAnd,
+            Instr::BitOr => Opcode::BitOr,
+            Instr::BitXor => Opcode::BitXor,
+            Instr::Shl => Opcode::Shl,
+            Instr::Sar => Opcode::Sar,
+            Instr::UShr => Opcode::UShr,
+            Instr::BitNot => Opcode::BitNot,
         }
     }
 
@@ -635,12 +688,15 @@ impl Instr {
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
-            | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll => (2, 1),
+            | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
+            | Sar | UShr => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
-            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet => (1, 1),
+            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot => {
+                (1, 1)
+            }
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
@@ -664,6 +720,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 62);
+        assert_eq!(assigned, 69);
     }
 }

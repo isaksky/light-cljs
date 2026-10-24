@@ -61,9 +61,11 @@
 //! **Reserved intrinsic binding.** `__rt` resolves to the outermost scope;
 //! see [`super::intrinsics`] for the contract and the table.
 //!
-//! **Numbers.** `+ - * / %` and `< > <= >=` apply JavaScript ToNumber to
+//! **Numbers.** `+ - * / %`, `< > <= >=`, the bitwise and shift operators
+//! `& | ^ << >> >>>` and unary `-`, `+`, `~` apply JavaScript ToNumber to
 //! operands that are not statically numbers (`ToNumber`/`ToNumberPair`)
-//! before the number-only arithmetic instruction; with no string values in
+//! before the number-only arithmetic instruction (which applies ToInt32 /
+//! ToUint32 itself for the bitwise ones); with no string values in
 //! the subset, that is exactly JavaScript's semantics for primitives. When
 //! strings arrive, `+` and the relational operators must lower differently.
 //!
@@ -1266,6 +1268,12 @@ impl<'s> Lowerer<'s> {
                             self.out().op(Opcode::Neg, span);
                         }
                     }
+                    UnaryOp::BitNot => {
+                        if !is_number(operand) {
+                            self.out().op(Opcode::ToNumber, span);
+                        }
+                        self.out().op(Opcode::BitNot, span);
+                    }
                 }
             }
             ExprKind::Binary { op, left, right } => {
@@ -1487,6 +1495,12 @@ impl<'s> Lowerer<'s> {
             BinaryOp::Gt => Opcode::Gt,
             BinaryOp::Le => Opcode::Le,
             BinaryOp::Ge => Opcode::Ge,
+            BinaryOp::BitAnd => Opcode::BitAnd,
+            BinaryOp::BitOr => Opcode::BitOr,
+            BinaryOp::BitXor => Opcode::BitXor,
+            BinaryOp::Shl => Opcode::Shl,
+            BinaryOp::Sar => Opcode::Sar,
+            BinaryOp::UShr => Opcode::UShr,
             BinaryOp::LooseEq | BinaryOp::LooseNe | BinaryOp::StrictEq | BinaryOp::StrictNe => {
                 let (compare, negate) = match op {
                     BinaryOp::LooseEq => (Opcode::LooseEq, false),
@@ -1517,10 +1531,20 @@ impl<'s> Lowerer<'s> {
 fn is_number(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Number(_) => true,
-        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Neg | UnaryOp::Plus),
+        ExprKind::Unary { op, .. } => matches!(op, UnaryOp::Neg | UnaryOp::Plus | UnaryOp::BitNot),
         ExprKind::Binary { op, .. } => matches!(
             op,
-            BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem | BinaryOp::Add | BinaryOp::Sub
+            BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Rem
+                | BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Sar
+                | BinaryOp::UShr
         ),
         ExprKind::Conditional {
             consequent,

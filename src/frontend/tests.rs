@@ -27,6 +27,7 @@ fn render_expr(e: &Expr) -> String {
                 UnaryOp::Not => "!",
                 UnaryOp::Neg => "neg",
                 UnaryOp::Plus => "pos",
+                UnaryOp::BitNot => "~",
             };
             format!("({op} {})", render_expr(operand))
         }
@@ -45,6 +46,12 @@ fn render_expr(e: &Expr) -> String {
                 BinaryOp::LooseNe => "!=",
                 BinaryOp::StrictEq => "===",
                 BinaryOp::StrictNe => "!==",
+                BinaryOp::BitAnd => "&",
+                BinaryOp::BitOr => "|",
+                BinaryOp::BitXor => "^",
+                BinaryOp::Shl => "<<",
+                BinaryOp::Sar => ">>",
+                BinaryOp::UShr => ">>>",
             };
             format!("({op} {} {})", render_expr(left), render_expr(right))
         }
@@ -367,6 +374,43 @@ fn unary_binds_tighter_than_binary_and_looser_than_calls() {
     assert_eq!(ast("!!f(x).y;"), "(! (! (. (call f x) y)))");
     assert_eq!(ast("- -1;"), "(neg (neg 1))");
     assert_eq!(ast("a - -b;"), "(- a (neg b))");
+}
+
+/// Bitwise and shift operators and `~` (clj-quickjs-62), at ECMAScript
+/// precedence: `||` < `&&` < `|` < `^` < `&` < equality < relational <
+/// shift < additive < multiplicative, all left-associative.
+#[test]
+fn bitwise_and_shift_precedence() {
+    assert_eq!(ast("a | b ^ c & d;"), "(| a (^ b (& c d)))");
+    assert_eq!(ast("a & b | c ^ d;"), "(| (& a b) (^ c d))");
+    assert_eq!(ast("a & b == c;"), "(& a (== b c))");
+    assert_eq!(ast("a << b + c;"), "(<< a (+ b c))");
+    assert_eq!(ast("a < b << c;"), "(< a (<< b c))");
+    assert_eq!(ast("a || b | c;"), "(|| a (| b c))");
+    assert_eq!(ast("a && b ^ c;"), "(&& a (^ b c))");
+    assert_eq!(ast("~-a;"), "(~ (neg a))");
+    assert_eq!(ast("-~a;"), "(neg (~ a))");
+    assert_eq!(ast("!~a;"), "(! (~ a))");
+    assert_eq!(ast("~~a * ~b;"), "(* (~ (~ a)) (~ b))");
+    // Left-associative within a level.
+    assert_eq!(ast("a | b | c;"), "(| (| a b) c)");
+    assert_eq!(ast("a ^ b ^ c;"), "(^ (^ a b) c)");
+    assert_eq!(ast("a & b & c;"), "(& (& a b) c)");
+    assert_eq!(ast("a << b >> c >>> d;"), "(>>> (>> (<< a b) c) d)");
+    assert_eq!(ast("a >>> b * c - d;"), "(>>> a (- (* b c) d))");
+    // Compound forms, `**` and `??` stay rejected at the operator.
+    use SyntaxErrorKind::Unsupported;
+    for (src, needle) in [
+        ("a |= 1;", "|="),
+        ("a &= 1;", "&="),
+        ("a ^= 1;", "^="),
+        ("a <<= 1;", "<<="),
+        ("a >>= 1;", ">>="),
+        ("a >>>= 1;", ">>>="),
+    ] {
+        rejects_with(src, Unsupported, 1, 3, needle);
+    }
+    rejects_with("a | b ** c;", Unsupported, 1, 7, "**");
 }
 
 #[test]
@@ -1134,7 +1178,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = typeof y;", 1, 5, "typeof"),
         ("void 0;", 1, 1, "void"),
         ("delete x.y;", 1, 1, "delete"),
-        ("x = ~y;", 1, 5, "~"),
         ("++x;", 1, 1, "increment"),
         ("x = {};", 1, 5, "object literals"),
         ("x = [1];", 1, 5, "array literals"),
@@ -1150,8 +1193,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("a.b = 1;", 1, 1, "assignment to properties"),
         ("x in y;", 1, 3, "in"),
         ("x instanceof y;", 1, 3, "instanceof"),
-        ("a & b | c ^ d;", 1, 3, "&"),
-        ("a << 1;", 1, 3, "<<"),
         ("x = eval;", 1, 5, "eval"),
         ("function f() { return arguments; }", 1, 23, "arguments"),
     ];

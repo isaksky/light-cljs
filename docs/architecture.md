@@ -383,7 +383,11 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   that are not statically numbers, after both operands are evaluated; with no
   string values that is JavaScript's semantics. `loose_eq` is `==` for the
   supported value types; `!=`/`!==` are the equality opcode plus `not`;
-  `&&`/`||`/`?:` are branches.
+  `&&`/`||`/`?:` are branches. The bitwise and shift operators and `~`
+  (clj-quickjs-62) are number-only opcodes `bit_and`, `bit_or`, `bit_xor`,
+  `shl`, `sar`, `ushr`, `bit_not` (`0x3F`–`0x45`) after the same explicit
+  ToNumber; the opcode applies ToInt32 / ToUint32 itself (a pure function
+  of a Number), so the order of conversions JavaScript specifies is kept.
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -1335,3 +1339,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `lre_js_is_ident_next`) and `ident_realloc` were consulted only; the
   identifier tables are generated from perl's Unicode database, not from
   `libunicode-table.h`. No code was copied.
+- `tests/js_source.rs` `bitwise_operators_follow_to_int32` (clj-quickjs-62):
+  the bitwise and shift cases of `test_op1` (line 39) and the numeric cases
+  of `test_cvt` (line 108) of `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
+  Modified: each `assert(r, v)` is a Rust assertion on the expression's
+  value; the string operand cases of `test_cvt` are omitted (they need
+  StringToNumber). The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_parse_expr_binary`,
+  `js_binary_logic_slow`, `JS_ToInt32Free`, the `OP_shr` / `OP_sar` cases
+  of `JS_CallInternal` and `js_unary_arith_slow` were consulted only. No
+  code was copied.
