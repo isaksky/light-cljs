@@ -217,7 +217,6 @@ impl Global {
         Global::Symbol,
         Global::Map,
         Global::ArrayBuffer,
-
         Global::Intl,
     ];
 

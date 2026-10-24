@@ -4704,10 +4704,24 @@ services need not subset further to meet a cap. The release measurement below
 is informational, not an optimization target.
 
 Measured with `CARGO_BUILD_JOBS=3 nix develop --command cargo build --release`
-(Rust 1.95.0, default release settings, this worktree): the CLI executable grew
-from 2,139,280 bytes at base `6aff313` to 2,269,296 bytes with the locale-data
-integration and namespace, a delta of **130,016 bytes**. This is the linked
-whole-change delta, including namespace/host support; unused public tables can
-be discarded by the linker, so it is not the cost of every table being retained
-by future services. The generated source is about 1 MB. No effort is spent on
-binary-size optimization or a retained-all-data benchmark in this stage.
+(Rust 1.95.0, default release settings, same source tree/toolchain for both
+builds, after rebase onto `2e9fb07`). A temporary measurement `src/main.rs`
+passed references to all 66 public statics in the six generated service modules
+to `std::hint::black_box`, forcing their transitive byte pools to stay linked.
+The matching control main made the same 66 calls with `&()` instead. The
+executables measured **1,466,280 bytes retained versus 536,928 bytes control**
+with `stat -c '%s' target/release/clj-quickjs`: a delta of **929,352 bytes**,
+including address-retention code. `nm -C` confirmed linked data symbols from
+all six modules. This isolates the data from unrelated branch/CLI changes and
+does not rely on dead-code-eliminated formatting services. The normal main was
+restored afterwards; no measurement program is shipped.
+
+To reproduce, back up `src/main.rs` inside `target/`, then enumerate each
+`pub static NAME:` in `src/intl/data/{numbers,dates,locale,display_names,
+likely_subtags,preferences}.rs`. Generate a main with
+`use clj_quickjs::intl::data; fn main() { ... }` containing one
+`std::hint::black_box(&data::MODULE::NAME);` per declaration. Build with the
+command above and record the executable's `stat` size; replace the body with
+the same number of `std::hint::black_box(&());` statements, rebuild and compare.
+Restore the original main even if either build fails. The generated source is
+about 1 MB. No binary-size cap or size optimization is imposed at this stage.
