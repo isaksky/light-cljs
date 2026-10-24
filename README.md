@@ -2193,10 +2193,35 @@ Supported (`cargo test --lib frontend::tests::for_in_heads`,
 
 Deferred:
 
-- Inherited properties (clj-quickjs-86), property targets `for (a.b in o)`
-  (clj-quickjs-87, `Unsupported`), array regression tests (clj-quickjs-88),
-  the non-strict `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps
-  (clj-quickjs-91). (`var` heads: clj-quickjs-89, below.)
+- Property targets `for (a.b in o)` (clj-quickjs-87, `Unsupported`), array
+  regression tests (clj-quickjs-88), the non-strict `for (var k = 1 in o)`
+  (clj-quickjs-90), Proxy traps (clj-quickjs-91). (`var` heads:
+  clj-quickjs-89; inherited properties: clj-quickjs-86, both below.)
+
+### `for`-`in` over the prototype chain (clj-quickjs-86)
+
+Supported (`cargo test --test js_source for_in_walks_the_prototype_chain`,
+`cargo test --lib vm::keys::`, `cargo test --test gc_roots for_in`; details
+in `src/vm/keys.rs`, "Prototype chain"):
+
+- After `o`'s own keys, `for (k in o)` visits each prototype's enumerable
+  string keys, nearest first, each prototype snapshotted when the walk
+  reaches it. A name is visited at most once: an own or nearer property of
+  that name, enumerable or not, hides an inherited one (QuickJS
+  `test_for_in`'s second and third groups run from source, adapted, with
+  notice). A prototype key deleted or made non-enumerable before it is
+  reached is skipped; when the chain changes, the walk continues on the
+  prototype it is on.
+- The walk ends at a `null` prototype, at `Object.prototype` and the other
+  realm intrinsics (shared and immutable, with no enumerable properties:
+  decided from the realm's views without taking a lock), and after a
+  function. The enumerator traces the prototype it is on, so a prototype
+  unlinked during the loop survives waits, collections and migration until
+  the walk leaves it.
+
+Deferred: an error object on the chain fails with `UnsupportedOperand` (its
+own keys are clj-quickjs-230); arrays (clj-quickjs-88) and Proxy traps
+(clj-quickjs-91) as above.
 
 ### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
 

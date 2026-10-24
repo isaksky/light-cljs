@@ -59,27 +59,71 @@
 //! # `for`-`in`
 //!
 //! A `for`-`in` loop (clj-quickjs-85) enumerates through a
-//! [`ForInIterator`], after QuickJS's `build_for_in_iterator` and
-//! `js_for_in_next` (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8),
-//! own properties only (the prototype walk is clj-quickjs-86).
-//! `ForInStart` snapshots the operand's own enumerable string keys with
-//! [`own_property_keys`] (an object's, including a function's property
+//! [`ForInIterator`], after QuickJS's `build_for_in_iterator`,
+//! `js_for_in_prepare_prototype_chain_enum` and `js_for_in_next`
+//! (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8).
+//! `ForInStart` snapshots the operand's own string keys, enumerable or not,
+//! in the order above (an object's, including a function's property
 //! record), or a string's indices; `null`, `undefined`, numbers and
 //! booleans (whose wrappers have no enumerable own keys) give none. Each
-//! `ForInNext` re-checks the next key with
-//! [`property::get_own_property`] and skips it unless it is still an own
-//! enumerable property (ECMAScript's informative EnumerateObjectProperties
-//! re-reads the descriptor before each key; QuickJS checks existence only),
-//! so a key deleted before it is reached is not visited; keys added during
-//! the loop are not visited. Scanning past skipped keys is bounded by the
-//! snapshot and allocates nothing.
+//! `ForInNext` takes the next enumerable key of the snapshot, re-checks it
+//! with [`property::get_own_property`] and skips it unless it is still an
+//! own enumerable property of the object it was found on (ECMAScript's
+//! informative EnumerateObjectProperties re-reads the descriptor before
+//! each key; QuickJS checks existence only), so a key deleted before it is
+//! reached is not visited; keys added to an object after its snapshot are
+//! not visited. Scanning past skipped keys is bounded by the snapshot and
+//! allocates nothing.
+//!
+//! # Prototype chain
+//!
+//! When an object's keys are used up (clj-quickjs-86), the walk moves to
+//! its prototype (`[[GetPrototypeOf]]`, `crate::vm::prototype`) and
+//! snapshots that object's own keys the same way, so the chain is read
+//! lazily, one object at a time, when the walk reaches it: a prototype
+//! changed or a key added to a prototype before the walk reaches it counts,
+//! and the walk continues on the prototype it is on (and then that
+//! prototype's own chain) when the operand's chain changes under it. A
+//! prototype key is visited only if no object the walk has left had an own
+//! property of that name in its snapshot, enumerable or not (a
+//! non-enumerable own `x` hides an inherited enumerable `x`; QuickJS keeps
+//! these names as the properties of its enumerator object, this enumerator
+//! in two hash sets, of indices and of names). The walk ends:
+//!
+//! - at a `null` prototype;
+//! - at a realm intrinsic (`Object.prototype`, `Array.prototype`, a built-in
+//!   function) when no intrinsic on its chain has an enumerable property,
+//!   which is always so today. The intrinsics are shared and immutable
+//!   (`crate::realm`), so this is decided from the realm's immutable views
+//!   without any lock, and every walk that reaches `Object.prototype` ends
+//!   there with no lock taken for it. (Were an intrinsic's property
+//!   enumerable, its keys would be named from the view under the key
+//!   table's leaf lock, still not the object table's.) The view of
+//!   `Object.prototype` omits the `__proto__` accessor, which is
+//!   non-enumerable and would hide nothing: nothing is above it;
+//! - after a function or built-in function: its prototype is
+//!   `Function.prototype` (clj-quickjs-102), an immutable intrinsic with no
+//!   enumerable property on its chain, so nothing above could be visited.
+//!   The same holds for an error object and `Error.prototype`, but an error
+//!   object on the chain fails as an operand does (`UnsupportedOperand`:
+//!   its own keys are clj-quickjs-230).
+//!
+//! Prototype links never lead to another task's object
+//! (`crate::vm::prototype`, "Ownership of prototype links"), and chains are
+//! acyclic, so the walk ends.
 //!
 //! The enumerator is a [`HeapObject::Native`] payload: task-owned
-//! (`Shareability::TaskOwned`), traced (its only edge is the enumerated
-//! object), and held only by a scratch local of the loop's frame
-//! (`crate::frontend` lowers the loop), so it lives exactly as long as the
-//! frame needs it, survives yields, waits, collections and migration with
-//! the frame, and is never reachable from JavaScript or published.
+//! (`Shareability::TaskOwned`), traced (its only edge is the object the
+//! walk is on, the operand and then each prototype: a prototype the body
+//! unlinked from the chain stays alive while the walk is on it), and held
+//! only by a scratch local of the loop's frame (`crate::frontend` lowers
+//! the loop), so it lives exactly as long as the frame needs it, survives
+//! yields, waits, collections and migration with the frame, and is never
+//! reachable from JavaScript or published. Each `ForInNext` runs within
+//! one instruction, without a safepoint, so moving along the chain never
+//! leaves an untraced object behind.
+
+use std::collections::HashSet;
 
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
@@ -93,6 +137,7 @@ use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::function;
 use crate::vm::property::{self, Key};
+use crate::vm::prototype;
 
 /// Which own keys [`own_property_keys`] lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,21 +188,14 @@ pub(crate) fn own_property_keys(
     target: ObjectId,
     filter: KeyFilter,
 ) -> Result<Vec<OwnKey>, Fault> {
-    let mut store = target;
     let function = heap
         .read(target, |o| matches!(o, HeapObject::Function(_)))
         .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
-    if function {
-        if filter == KeyFilter::All {
-            return Err(Fault::Unsupported(
-                "the own property names of a function need its own length and name, which are not supported"
-                    .to_string(),
-            ));
-        }
-        match function::property_record(heap, target)? {
-            Some(record) => store = record,
-            None => return Ok(Vec::new()),
-        }
+    if function && filter == KeyFilter::All {
+        return Err(Fault::Unsupported(
+            "the own property names of a function need its own length and name, which are not supported"
+                .to_string(),
+        ));
     } else if filter == KeyFilter::All
         && heap
             .realm()
@@ -169,10 +207,27 @@ pub(crate) fn own_property_keys(
                 .to_string(),
         ));
     }
+    let Some(store) = key_store(heap, target)? else {
+        return Ok(Vec::new());
+    };
     let raw = heap
         .read(store, |object| collect(object, task))
         .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
     Ok(order(heap, raw, filter))
+}
+
+/// The object that holds `target`'s keys: `target` itself, or a function's
+/// property record (`None` for a function without one, whose only own
+/// keys would be its unstored `length` and `name`).
+fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    let function = heap
+        .read(target, |o| matches!(o, HeapObject::Function(_)))
+        .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
+    if function {
+        function::property_record(heap, target)
+    } else {
+        Ok(Some(target))
+    }
 }
 
 /// Collect the keys of one object under the object-table lock (no key-table
@@ -317,21 +372,100 @@ pub(crate) fn object_keys(
         .ok_or_else(exhausted)
 }
 
-/// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85; QuickJS
-/// `JSForInIterator`, `build_for_in_iterator`, `js_for_in_next`): a
-/// snapshot of the object's own enumerable string keys taken when the loop
-/// starts, the position of the next one, and the object. It lives in a
-/// heap object ([`HeapObject::Native`]) held only by a scratch local of the
-/// loop's frame, so it is traced through that frame, survives yields,
-/// waits, collections and migration with it, and is never reachable from
-/// JavaScript (module docs, "`for`-`in`").
+/// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85, -86;
+/// QuickJS `JSForInIterator`, `build_for_in_iterator`,
+/// `js_for_in_prepare_prototype_chain_enum`, `js_for_in_next`): the object
+/// the walk is on (the operand, then each prototype), a snapshot of that
+/// object's own string keys taken when the walk reached it, the position
+/// of the next one, and the names of every object the walk has left. It
+/// lives in a heap object ([`HeapObject::Native`]) held only by a scratch
+/// local of the loop's frame, so it is traced through that frame, survives
+/// yields, waits, collections and migration with it, and is never
+/// reachable from JavaScript (module docs, "`for`-`in`").
 #[derive(Debug)]
 pub(crate) struct ForInIterator {
-    /// The enumerated object; `None` for a primitive operand, whose keys
-    /// never change.
+    /// The object whose keys `keys` lists; `None` for a primitive operand
+    /// (whose keys never change and whose chain is not walked) and once the
+    /// walk has ended.
     object: Option<ObjectId>,
-    keys: Vec<Key>,
+    /// Every own string key of `object`, enumerable or not: a
+    /// non-enumerable key is never visited, but it hides the name further
+    /// up the chain.
+    keys: Vec<OwnKey>,
     next: usize,
+    /// The keys of the objects the walk has left (module docs, "Prototype chain").
+    visited: Visited,
+}
+
+/// A set of property keys (`Key` is a name or an index).
+#[derive(Debug, Default)]
+struct Visited {
+    indices: HashSet<u32>,
+    names: HashSet<JsString>,
+}
+
+impl Visited {
+    fn contains(&self, key: &Key) -> bool {
+        match key {
+            Key::Index(index) => self.indices.contains(index),
+            Key::Name(name) => self.names.contains(name),
+        }
+    }
+
+    fn insert(&mut self, key: Key) {
+        match key {
+            Key::Index(index) => self.indices.insert(index),
+            Key::Name(name) => self.names.insert(name),
+        };
+    }
+}
+
+/// What [`ForInIterator::step`] found.
+enum Step {
+    /// A candidate key of `object` (`None`: of a primitive operand).
+    Key(Option<ObjectId>, Key),
+    /// The keys of this object are used up: continue with its prototype.
+    Exhausted(ObjectId),
+    /// The walk has ended.
+    Done,
+}
+
+impl ForInIterator {
+    fn new(object: Option<ObjectId>, keys: Vec<OwnKey>) -> Self {
+        ForInIterator {
+            object,
+            keys,
+            next: 0,
+            visited: Visited::default(),
+        }
+    }
+
+    /// Advance past the next key that is enumerable in the snapshot and not
+    /// hidden by an object the walk has left. Bounded by the snapshot;
+    /// allocates nothing.
+    fn step(&mut self) -> Step {
+        while let Some(key) = self.keys.get(self.next) {
+            self.next += 1;
+            if key.enumerable && !self.visited.contains(&key.key) {
+                return Step::Key(self.object, key.key.clone());
+            }
+        }
+        match self.object {
+            Some(object) => Step::Exhausted(object),
+            None => Step::Done,
+        }
+    }
+
+    /// Leave the current object for `next` (`None`: the walk has ended),
+    /// whose own keys are `keys`.
+    fn enter(&mut self, next: Option<ObjectId>, keys: Vec<OwnKey>) {
+        let left = std::mem::replace(&mut self.keys, keys);
+        if next.is_some() {
+            left.into_iter().for_each(|k| self.visited.insert(k.key));
+        }
+        self.object = next;
+        self.next = 0;
+    }
 }
 
 impl Trace for ForInIterator {
@@ -348,38 +482,121 @@ impl NativePayload for ForInIterator {
     }
 }
 
+/// The own string keys (enumerable or not) of the object `id` that the
+/// walk has reached, or `None` when nothing from `id` up its chain can be
+/// visited (module docs, "Prototype chain"): `id` is a realm intrinsic and
+/// no intrinsic on its chain has an enumerable property, decided from the
+/// realm's immutable views without any lock.
+fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKey>>, Fault> {
+    if let Some(realm) = heap.realm().get()
+        && let Some(view) = realm.view(id)
+    {
+        // An intrinsic's chain holds only intrinsics; anything else on it
+        // (never the case) is read the general way.
+        let enumerable =
+            std::iter::successors(Some(id), |&p| realm.view(p).and_then(|v| v.prototype)).any(
+                |p| {
+                    realm
+                        .view(p)
+                        .is_none_or(|v| v.own_keys().any(|(_, enumerable)| enumerable))
+                },
+            );
+        if !enumerable {
+            return Ok(None);
+        }
+        // Not the case for any intrinsic yet: name the keys (the key
+        // table's leaf lock), still without the object table.
+        let raw = Raw {
+            named: view.own_keys().collect(),
+            ..Raw::default()
+        };
+        return Ok(Some(order(heap, raw, KeyFilter::All)));
+    }
+    let Some(store) = key_store(heap, id)? else {
+        return Ok(Some(Vec::new()));
+    };
+    let raw = heap
+        .read(store, |object| collect(object, task))
+        .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
+    Ok(Some(order(heap, raw, KeyFilter::All)))
+}
+
+/// The next object of the walk after `id` (module docs, "Prototype
+/// chain"): its `[[GetPrototypeOf]]`, except that the walk ends at a
+/// function or error object, whose prototype (`Function.prototype`,
+/// `Error.prototype`) is an immutable intrinsic with no enumerable
+/// property on its chain.
+fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
+        return Ok(if view.builtin { None } else { view.prototype });
+    }
+    let fixed = heap
+        .read(id, |object| match object {
+            HeapObject::Function(_) | HeapObject::Builtin(_) => true,
+            HeapObject::Native(payload) => (&**payload as &dyn std::any::Any).is::<ErrorObject>(),
+            _ => false,
+        })
+        .ok_or(Fault::Internal("prototype was reclaimed"))?;
+    if fixed {
+        return Ok(None);
+    }
+    prototype::get_prototype_of(heap, task, id)
+}
+
 /// `ForInStart`: the enumerator of `value` for the running task `task`, a
 /// new heap object (module docs, "`for`-`in`").
 pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
-    let (object, keys) = match value {
-        Value::Object(id) => {
-            let keys = own_property_keys(heap, task, *id, KeyFilter::Enumerable)?;
-            (Some(*id), keys.into_iter().map(|k| k.key).collect())
-        }
-        // A String wrapper's own enumerable keys are its indices.
+    let iterator = match value {
+        Value::Object(id) => match walk_keys(heap, task, *id)? {
+            Some(keys) => ForInIterator::new(Some(*id), keys),
+            None => ForInIterator::new(None, Vec::new()),
+        },
+        // A String wrapper's own enumerable keys are its indices; its
+        // prototype has no enumerable properties.
         Value::String(s) => {
             let len = u32::try_from(s.len())
                 .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
-            (None, (0..len).map(Key::Index).collect())
+            let index = |i| OwnKey {
+                key: Key::Index(i),
+                enumerable: true,
+            };
+            ForInIterator::new(None, (0..len).map(index).collect())
         }
         // `null` and `undefined` run no iteration; a Number or Boolean
         // wrapper has no own enumerable keys.
-        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => (None, Vec::new()),
-    };
-    let iterator = ForInIterator {
-        object,
-        keys,
-        next: 0,
+        Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => {
+            ForInIterator::new(None, Vec::new())
+        }
     };
     heap.alloc(HeapObject::Native(Box::new(iterator)))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
 
-/// `ForInNext`: the next key of the enumerator `iterator` that is still an
-/// own enumerable property of its object (a key deleted, or made
-/// non-enumerable, before it is reached is skipped), as a string; `None`
-/// when the keys are exhausted.
+/// Apply `f` to the enumerator `id` under the object lock.
+fn with_iterator<R>(
+    heap: &Heap,
+    id: ObjectId,
+    f: impl FnOnce(&mut ForInIterator) -> R,
+) -> Result<R, Fault> {
+    heap.with_object_mut(id, |o| match o {
+        HeapObject::Native(payload) => {
+            let any: &mut dyn std::any::Any = &mut **payload;
+            any.downcast_mut::<ForInIterator>().map(f)
+        }
+        _ => None,
+    })
+    .flatten()
+    .ok_or(Fault::Internal("for-in enumerator is not an enumerator"))
+}
+
+/// `ForInNext`: the next key of the enumerator `iterator`, as a string;
+/// `None` when the walk has ended. A key is visited when it is enumerable
+/// in its object's snapshot, no object the walk has left had an own
+/// property of that name, and it is still an own enumerable property of
+/// that object (a key deleted, or made non-enumerable, before it is
+/// reached is skipped). The walk moves to the next prototype when an
+/// object's keys are used up (module docs, "Prototype chain").
 pub(crate) fn for_in_next(
     heap: &Heap,
     task: TaskId,
@@ -389,36 +606,33 @@ pub(crate) fn for_in_next(
         return Err(Fault::Internal("for-in enumerator is not an object"));
     };
     loop {
-        // Take the next key under the object lock, then look it up without
-        // it (the lookup takes the lock again).
-        let next = heap
-            .with_object_mut(id, |o| match o {
-                HeapObject::Native(payload) => {
-                    let any: &mut dyn std::any::Any = &mut **payload;
-                    let it = any.downcast_mut::<ForInIterator>()?;
-                    let Some(key) = it.keys.get(it.next).cloned() else {
-                        return Some(None);
-                    };
-                    it.next += 1;
-                    Some(Some((it.object, key)))
+        // Each step takes the enumerator's lock alone; the lookups below
+        // take the object lock again, after it is released.
+        match with_iterator(heap, id, ForInIterator::step)? {
+            Step::Done => return Ok(None),
+            Step::Key(object, key) => {
+                let present = match object {
+                    Some(object) => property::get_own_property(heap, task, object, &key)?
+                        .is_some_and(|p| p.flags.enumerable),
+                    None => true,
+                };
+                if present {
+                    return Ok(Some(match key {
+                        Key::Index(index) => JsString::from(index.to_string().as_str()),
+                        Key::Name(name) => name,
+                    }));
                 }
-                _ => None,
-            })
-            .flatten()
-            .ok_or(Fault::Internal("for-in enumerator is not an enumerator"))?;
-        let Some((object, key)) = next else {
-            return Ok(None);
-        };
-        let present = match object {
-            Some(object) => property::get_own_property(heap, task, object, &key)?
-                .is_some_and(|p| p.flags.enumerable),
-            None => true,
-        };
-        if present {
-            return Ok(Some(match key {
-                Key::Index(index) => JsString::from(index.to_string().as_str()),
-                Key::Name(name) => name,
-            }));
+            }
+            Step::Exhausted(object) => {
+                let (next, keys) = match chain_next(heap, task, object)? {
+                    Some(proto) => match walk_keys(heap, task, proto)? {
+                        Some(keys) => (Some(proto), keys),
+                        None => (None, Vec::new()),
+                    },
+                    None => (None, Vec::new()),
+                };
+                with_iterator(heap, id, |it| it.enter(next, keys))?;
+            }
         }
     }
 }
@@ -520,6 +734,55 @@ mod tests {
         assert!(ok(for_in_next(&heap, task, &s)).is_none());
         let n = ok(for_in_start(&heap, task, &Value::Number(5.0)));
         assert!(ok(for_in_next(&heap, task, &n)).is_none());
+    }
+
+    /// The prototype walk (clj-quickjs-86): the enumerator's only edge is
+    /// the object it is on, the operand and then its prototype (which may
+    /// be reachable from nothing else once the chain changes); an own
+    /// non-enumerable key hides the prototype's; and the walk ends at
+    /// `Object.prototype` without entering it (its chain has no enumerable
+    /// property, read from the realm's lock-free views).
+    #[test]
+    fn for_in_enumerator_walks_and_traces_the_prototype_it_is_on() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let object_prototype = realm::intrinsics(&heap).unwrap().object_prototype;
+        let key = |name: &str| heap.keys().intern(&JsString::from(name)).unwrap();
+        let hidden = crate::object::PropertyFlags {
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        };
+        let mut proto = OrdinaryObject::new(Some(task));
+        proto.set_prototype(Some(object_prototype));
+        assert!(proto.define(key("h"), Value::Null));
+        assert!(proto.define(key("p"), Value::Null));
+        let proto = heap.alloc(HeapObject::Plain(proto)).unwrap();
+        let mut o = OrdinaryObject::new(Some(task));
+        o.set_prototype(Some(proto));
+        assert!(o.define_with(key("h"), Value::Null, hidden));
+        assert!(o.define(key("a"), Value::Null));
+        let o = heap.alloc(HeapObject::Plain(o)).unwrap();
+
+        let it = ok(for_in_start(&heap, task, &Value::Object(o)));
+        let Value::Object(it_id) = it else {
+            panic!("not an object")
+        };
+        let edges = || {
+            let mut edges = Vec::new();
+            heap.read(it_id, |o| o.trace(&mut |e| edges.push(e)))
+                .unwrap();
+            edges
+        };
+        let next = || ok(for_in_next(&heap, task, &it)).map(|s| s.to_string());
+        assert_eq!(edges(), [o]);
+        assert_eq!(next().as_deref(), Some("a"));
+        assert_eq!(edges(), [o]);
+        assert_eq!(next().as_deref(), Some("p"));
+        assert_eq!(edges(), [proto]);
+        assert_eq!(next(), None);
+        assert!(edges().is_empty(), "Object.prototype was entered");
+        assert_eq!(next(), None);
     }
 
     /// Array elements (dense, then sparse) precede `length` and the named

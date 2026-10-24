@@ -1217,14 +1217,15 @@ fn for_in_over_own_properties() {
         "abd2"
     );
     // A function's own enumerable properties; an object's inherited
-    // properties are not visited (the prototype walk is clj-quickjs-86).
+    // enumerable properties are visited too (clj-quickjs-86,
+    // `for_in_walks_the_prototype_chain`).
     assert_eq!(
         string(r#"function f() {} f.x = 1; let s = ""; for (let k in f) s = s + k; s"#),
         "x"
     );
     assert_eq!(
         string(r#"let s = ""; for (let k in Object.create({p: 1})) s = s + k; s + "-""#),
-        "-"
+        "p-"
     );
 
     // Each iteration has its own `let`/`const` binding: closures created
@@ -1324,6 +1325,162 @@ fn for_in_over_own_properties() {
             "let n = 0; for (let i = 0; i < 3; i = i + 1) for (let k in {a: 1, b: 2}) n = n + 1; n"
         ),
         6.0
+    );
+}
+
+/// `for`-`in` walks the prototype chain (clj-quickjs-86). `TEST_FOR_IN_PROTO`
+/// is adapted from the second and third groups of `test_for_in`, in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution). Modified: `let` for
+/// `var`, the keys collected with string `+` instead of `tab.push` and
+/// `tab.toString()`, and the asserted condition is the script's completion
+/// value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn for_in_walks_the_prototype_chain() {
+    const TEST_FOR_IN_PROTO: &str = r#"
+        let i, tab, a, b, ok;
+
+        /* prototype chain test */
+        a = {x:2, y: 2, "1": 3};
+        b = {"4" : 3 };
+        Object.setPrototypeOf(a, b);
+        tab = "";
+        for(i in a) {
+            tab = tab + i + ",";
+        }
+        ok = tab === "1,x,y,4,";
+
+        /* non enumerable properties hide enumerables ones in the
+           prototype chain */
+        a = {y: 2, "1": 3};
+        Object.defineProperty(a, "x", { value: 1 });
+        b = {"x" : 3 };
+        Object.setPrototypeOf(a, b);
+        tab = "";
+        for(i in a) {
+            tab = tab + i + ",";
+        }
+        ok && tab === "1,y,""#;
+    assert_eq!(eval(TEST_FOR_IN_PROTO), ValueView::Bool(true));
+
+    let keys = |src: &str| string(&format!(r#"let s = ""; {src} s"#));
+    // A three-level chain: each object's own keys in OrdinaryOwnPropertyKeys
+    // order, then its prototype's; a name is visited once, at the nearest
+    // level (here with the nearest value), even where a farther level has
+    // it as an index or makes it non-enumerable.
+    assert_eq!(
+        keys(
+            r#"const c = {d: "c", 2: "c", z: "c"};
+               Object.defineProperty(c, "w", {value: "c", enumerable: true});
+               const b = Object.create(c); b.d = "b"; b.y = "b"; b[2] = "b";
+               Object.defineProperty(b, "z", {value: "b", enumerable: false});
+               const a = Object.create(b); a.x = "a"; a.d = "a";
+               for (const k in a) s = s + k + "=" + a[k] + ";";"#
+        ),
+        "x=a;d=a;2=b;y=b;w=c;"
+    );
+    // A non-enumerable property of the middle level hides the top level's
+    // enumerable one; a non-enumerable own property is not visited either.
+    assert_eq!(
+        keys(
+            r#"const top = {h: 1, t: 1};
+               const mid = Object.create(top);
+               Object.defineProperty(mid, "h", {value: 1});
+               const o = Object.create(mid);
+               Object.defineProperty(o, "own", {value: 1});
+               for (const k in o) s = s + k;"#
+        ),
+        "t"
+    );
+    // A prototype key deleted (or made non-enumerable) during the loop
+    // before it is reached is not visited; one deleted after its visit
+    // changes nothing; a key added to a prototype the walk has not reached
+    // yet is visited when it is reached, one added to the object the walk
+    // is on is not.
+    assert_eq!(
+        keys(
+            r#"const p = {q: 1, r: 1, u: 1, v: 1};
+               const o = {a: 1, __proto__: p};
+               for (const k in o) {
+                   if (k === "a") { delete p.r; p.late = 1; }
+                   if (k === "q") { delete p.q; Object.defineProperty(p, "u", {enumerable: false}); p.later = 1; }
+                   s = s + k + ",";
+               }"#
+        ),
+        "a,q,v,late,"
+    );
+    // Deleting an own key does not unhide it: the prototype's key of the
+    // same name stays hidden (the visited names are those of the snapshot).
+    assert_eq!(
+        keys(
+            r#"const o = {a: 1, b: 1, __proto__: {b: 2, c: 2}};
+               for (const k in o) { if (k === "a") delete o.b; s = s + k; }"#
+        ),
+        "ac"
+    );
+    // An object with a `null` prototype enumerates only its own keys; so
+    // does one inheriting only from `Object.prototype` (whose properties are
+    // all non-enumerable).
+    assert_eq!(
+        keys(
+            r#"const o = Object.create(null); o.k = 1; o[0] = 1;
+               for (const k in o) s = s + k; for (const k in {m: 1}) s = s + k;"#
+        ),
+        "0km"
+    );
+    assert_eq!(
+        keys(r#"for (const k in Object.prototype) s = s + k; for (const k in Object) s = s + k;"#),
+        ""
+    );
+    // The chain can change during the loop: the walk continues on the
+    // prototype it is on, and then follows that prototype's own chain.
+    assert_eq!(
+        keys(
+            r#"const top = {t: 1};
+               const p = {p: 1, p2: 1, __proto__: top};
+               const o = {o: 1, __proto__: p};
+               for (const k in o) { if (k === "p") Object.setPrototypeOf(o, null); s = s + k; }"#
+        ),
+        "opp2t"
+    );
+    // A function on the chain contributes its own enumerable properties;
+    // the walk ends there (`Function.prototype` has no enumerable ones).
+    assert_eq!(
+        keys(
+            r#"function f() {} f.fx = 1;
+               const o = Object.create(f); o.own = 1;
+               for (const k in o) s = s + k;"#
+        ),
+        "ownfx"
+    );
+    // Arrays on the chain: elements and named properties; `length` (own,
+    // non-enumerable) hides an inherited enumerable `length`.
+    assert_eq!(
+        keys(
+            r#"const arr = [7, 8]; arr.n = 1;
+               const o = Object.create(arr); o[5] = 1;
+               for (const k in o) s = s + k + ",";
+               const q = Object.create({length: 1, z: 1}); Object.setPrototypeOf(arr, q);
+               for (const k in arr) s = s + k + ",";"#
+        ),
+        "5,0,1,n,0,1,n,z,"
     );
 }
 

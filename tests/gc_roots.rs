@@ -1487,3 +1487,49 @@ fn for_in_wait_survives_collection_and_migration() {
         assert_eq!(s.view(v), ValueView::Bool(true));
     });
 }
+
+/// A `for`-`in` loop walking the prototype chain (clj-quickjs-86) waits on
+/// `__rt.need` while it is on a prototype that the body has unlinked from
+/// the enumerated object (`Object.setPrototypeOf(x, null)`): the prototype,
+/// which holds the argument, is then reachable only from the enumerator.
+/// It survives collections, the task resumes on another thread and visits
+/// the prototype's remaining keys, and once the loop is over the
+/// prototype and the argument are reclaimed.
+#[test]
+fn for_in_prototype_walk_survives_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { let s = ''; \
+         const x = {a: 1, q: 1, __proto__: {p: o, q: 2, r: 1, s: 1}}; \
+         for (const k in x) { \
+           if (k === 'p') { Object.setPrototypeOf(x, null); o = 0; __rt.need(9, 1); } \
+           s = s + k; } \
+         const r = __rt.need(10, 1); \
+         return s === 'aqprs'; }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+    }
+    complete_requests(&rt, &task);
+    let (task, outcome) = thread::spawn(move || {
+        let outcome = task.run().unwrap();
+        (task, outcome)
+    })
+    .join()
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 10)));
+    // The loop is over: its enumerator, the unlinked prototype and the
+    // argument are garbage although the task lives on.
+    rt.request_collection().unwrap();
+    assert_stale(&rt, std::slice::from_ref(&weak));
+    complete_requests(&rt, &task);
+    let result = run_to_end(&task);
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert_eq!(s.view(v), ValueView::Bool(true));
+    });
+}

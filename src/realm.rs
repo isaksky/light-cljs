@@ -195,6 +195,15 @@ impl IntrinsicView {
             .iter()
             .find_map(|(k, p)| (*k == key).then_some(p))
     }
+
+    /// Each own property's key and `enumerable` attribute, in creation
+    /// order (`for`-`in`'s prototype walk, clj-quickjs-86,
+    /// `crate::vm::keys`).
+    pub(crate) fn own_keys(&self) -> impl Iterator<Item = (PropertyKey, bool)> + '_ {
+        self.properties
+            .iter()
+            .map(|(k, p)| (*k, p.flags.enumerable))
+    }
 }
 
 impl Intrinsics {

@@ -2465,8 +2465,21 @@ expression head and for each initializer of a declaration head; a
 name. A `var` head (clj-quickjs-89) names a `var` binding of the function
 (collected by `var_names_in`, so it is hoisted) and is assigned each key
 as an identifier head is; it adds nothing to the loop's own scope.
-Deferred: the prototype-chain walk
-(clj-quickjs-86), property targets (clj-quickjs-87), the non-strict
+The prototype-chain walk (clj-quickjs-86) keeps the same payload: the
+snapshot now holds every own string key with its `enumerable` attribute,
+and when it is used up the enumerator moves to the prototype (lazily, as
+QuickJS `js_for_in_next` does), adding the left object's names to a
+visited set (two `HashSet`s, of indices and of names, compared by
+content) that hides inherited keys; its only edge becomes the object it is
+on. A walk that reaches a realm intrinsic ends there when no intrinsic on
+the chain has an enumerable property (always, today), decided from the
+realm's immutable views (clj-quickjs-117) without the object-table or
+key-table lock, so enumerating `{...}` never contends on
+`Object.prototype`. QuickJS's eager fast-path check of the whole chain
+(`js_for_in_prepare_prototype_chain_enum`) is not copied: it would read
+prototypes before they are reached. Details: `src/vm/keys.rs`, "Prototype
+chain".
+Deferred: property targets (clj-quickjs-87), the non-strict
 `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps (clj-quickjs-91).
 
 ## Primitive bases (clj-quickjs-73)
@@ -2759,6 +2772,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   value; the other groups of `test_for_in` are left to clj-quickjs-86 to
   -90. The test carries the full notice. `js_parse_for_in_of`,
   `build_for_in_iterator`, `js_for_in_start` and `js_for_in_next` in
+  `research/quickjs/quickjs.c` were consulted only. No code was copied.
+- `tests/js_source.rs` `for_in_walks_the_prototype_chain` (clj-quickjs-86):
+  the second and third groups of `test_for_in` (line 77) of
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `let` for `var`,
+  the keys collected with string `+` instead of `tab.push` and
+  `tab.toString()`, and the asserted condition is the script's completion
+  value. The test carries the full notice. `build_for_in_iterator`,
+  `js_for_in_prepare_prototype_chain_enum` and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
 - `tests/js_source.rs` `var_heads_in_for_loops` (clj-quickjs-89): the
   second group of `test_for` (line 61) and the seventh group of
