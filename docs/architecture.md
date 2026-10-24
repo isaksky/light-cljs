@@ -7093,7 +7093,9 @@ is no foreign task allowed to add to another task's kept set.
 
 Tests cover constructor keep-alives over waits, successful deref keep-alives,
 clearing after script/job completion, strong-target variants, symbol targets,
-forwarded/native calls, properties/prototypes and publication. Collection uses
-embedding-driven need waits and Promise jobs while the host collection-point
-and timer facilities of -175 are absent. The timer-specific acceptance case
-remains pending that prerequisite; WeakRef itself adds no substitute globals.
+forwarded/native calls, properties/prototypes and publication. Opt-in `std.gc()`
+collection points trace kept objects without ending the job. Timer callbacks
+start after the preceding job's kept set clears; jobs queued by a timer drain
+before the next timer, each with a fresh kept set. Tests cover object and symbol
+targets at these boundaries and collection during a timer's dependency wait,
+followed by migration. WeakRef itself adds no substitute host globals.

@@ -24,9 +24,8 @@ fn complete(outcome: RunOutcome) -> Rooted {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. Promise reactions exercise
-/// the same job boundary as future host timers (-175). Until that facility
-/// lands, a need wait is the embedding-driven collection point.
+/// Synthetic fixtures, not light-cljs output. A timer collects after the
+/// script's kept-object boundary, with and without an ordinary strong root.
 #[test]
 fn weak_ref_cleared_after_job_and_collection() {
     use clj_quickjs::frontend::compile_script;
@@ -45,27 +44,13 @@ fn weak_ref_cleared_after_job_and_collection() {
         for strong in [false, true] {
             let rt = Runtime::new();
             let source = format!(
-                "let target = {target}; const w = new WeakRef(target); if (!{strong}) target = null; Promise.resolve().then(() => {{ __rt.need(176, 1); __rt.effect(0, w.deref() === undefined); if ({strong} && w.deref() !== target) throw 'lost strong target'; }}); 42"
+                "let target = {target}; const w = new WeakRef(target); if (!{strong}) target = null; os.setTimeout(() => {{ std.gc(); __rt.effect(0, w.deref() === undefined); if ({strong} && w.deref() !== target) throw 'lost strong target'; }}, 0); 42"
             );
             let task = rt
                 .spawn(&compile_script("weak-ref-next-job", &source).unwrap(), &[])
                 .unwrap();
+            task.install_sim_host_bindings().unwrap();
             let mut host = Record::default();
-            assert!(matches!(
-                task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
-                RunOutcome::Waiting(_)
-            ));
-            rt.collect().unwrap();
-            let request = task.take_producer_requests().pop().unwrap();
-            let ready = rt.root(Primitive::Undefined);
-            let wakes = rt
-                .complete(
-                    request.key(),
-                    request.producer(),
-                    clj_quickjs::Completion::Ready(&ready),
-                )
-                .unwrap();
-            assert_eq!(wakes.task_ids(), [task.id()]);
             assert_eq!(
                 complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()).view(),
                 ValueView::Number(42.0)
@@ -111,31 +96,45 @@ fn kept_objects_survive_need_wait() {
 #[test]
 fn weak_ref_deref_keeps_target_until_its_job_ends() {
     use clj_quickjs::frontend::compile_script;
-    for deref in [
-        "w.deref()",
-        "Reflect.apply(WeakRef.prototype.deref, w, [])",
-        "__rt.reduce(w.deref.bind(w), 0, __rt.vector(1))",
-    ] {
-        let rt = Runtime::new();
-        let source = format!(
-            r#"
-            let target = {{}}; let w = new WeakRef(target);
-            Promise.resolve().then(() => {{
-                {deref}; target = null; __rt.need(176, 1);
-                if (typeof w.deref() !== 'object') throw 'lost deref target';
-            }});
-            Promise.resolve().then(() => {{
-                __rt.need(177, 1);
-                if (w.deref() !== undefined) throw 'kept beyond job';
-            }});
+    #[derive(Default)]
+    struct Record(Vec<Primitive>);
+    impl Host for Record {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for (target, kind) in [("{}", "object"), ("Symbol('target')", "symbol")] {
+        for deref in [
+            "w.deref()",
+            "Reflect.apply(WeakRef.prototype.deref, w, [])",
+            "__rt.reduce(w.deref.bind(w), 0, __rt.vector(1))",
+        ] {
+            let rt = Runtime::new();
+            let source = format!(
+                r#"
+            let target = {target}; let w = new WeakRef(target);
+            os.setTimeout(() => {{
+                {deref}; target = null; std.gc();
+                if (typeof w.deref() !== '{kind}') throw 'lost deref target';
+                __rt.need(176, 1);
+                __rt.effect(0, typeof w.deref() === '{kind}');
+                Promise.resolve().then(() => {{
+                    std.gc(); __rt.effect(0, w.deref() === undefined);
+                }});
+            }}, 0);
+            os.setTimeout(() => {{
+                std.gc(); __rt.effect(0, w.deref() === undefined);
+            }}, 0);
             true
         "#
-        );
-        let task = rt
-            .spawn(&compile_script("weak-ref-deref-job", &source).unwrap(), &[])
-            .unwrap();
-        for _ in 0..2 {
-            let outcome = task.run().unwrap();
+            );
+            let task = rt
+                .spawn(&compile_script("weak-ref-deref-job", &source).unwrap(), &[])
+                .unwrap();
+            task.install_sim_host_bindings().unwrap();
+            let mut host = Record::default();
+            let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
             assert!(
                 matches!(outcome, RunOutcome::Waiting(_)),
                 "{deref}: {outcome:?}"
@@ -151,11 +150,46 @@ fn weak_ref_deref_keeps_target_until_its_job_ends() {
                 )
                 .unwrap();
             assert_eq!(wakes.task_ids(), [task.id()]);
+            // Resume the timer on a different worker, in the same job.
+            let outcome = thread::scope(|s| {
+                s.spawn(|| task.run_with(Budget::UNLIMITED, &mut host).unwrap())
+                    .join()
+                    .unwrap()
+            });
+            assert_eq!(complete(outcome).view(), ValueView::Bool(true), "{deref}");
+            assert_eq!(
+                host.0,
+                [
+                    Primitive::Bool(true),
+                    Primitive::Bool(true),
+                    Primitive::Bool(true)
+                ],
+                "{target}: {deref}"
+            );
         }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Collect before the first deref
+/// so the constructor's kept root is the sole strong path to each target.
+#[test]
+fn weak_ref_constructor_keeps_target_at_collection_point() {
+    use clj_quickjs::frontend::compile_script;
+    for (target, kind) in [("{}", "object"), ("Symbol('target')", "symbol")] {
+        let rt = Runtime::new();
+        let source =
+            format!("let w = new WeakRef({target}); std.gc(); typeof w.deref() === '{kind}'");
+        let task = rt
+            .spawn(
+                &compile_script("weak-ref-constructor", &source).unwrap(),
+                &[],
+            )
+            .unwrap();
+        task.install_sim_host_bindings().unwrap();
         assert_eq!(
             complete(task.run().unwrap()).view(),
             ValueView::Bool(true),
-            "{deref}"
+            "{target}"
         );
     }
 }

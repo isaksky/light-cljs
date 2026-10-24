@@ -22862,7 +22862,7 @@ fn weak_ref_deref_within_job() {
             let w1 = new WeakRef(o); let w2 = new WeakRef(o);
             if (w1.deref() !== o || w2.deref() !== o) throw 'identity';
             o = null;
-            __rt.need(176 + i, 1);
+            std.gc();
             if (typeof w1.deref() !== (i === 0 ? 'object' : 'symbol') ||
                 w1.deref() !== w2.deref()) throw 'lost kept target';
         }
@@ -22875,16 +22875,7 @@ fn weak_ref_deref_within_job() {
     )
     .unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
-    for _ in 0..2 {
-        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
-        rt.collect().unwrap();
-        let request = task.take_producer_requests().pop().unwrap();
-        let ready = rt.root(Primitive::Undefined);
-        let wakes = rt
-            .complete(request.key(), request.producer(), Completion::Ready(&ready))
-            .unwrap();
-        assert_eq!(wakes.task_ids(), [task.id()]);
-    }
+    task.install_sim_host_bindings().unwrap();
     let RunOutcome::Complete(result) = task.run().unwrap() else {
         panic!("expected complete")
     };
@@ -22952,4 +22943,3 @@ fn weak_refs_reject_access_from_another_task() {
         );
     }
 }
-

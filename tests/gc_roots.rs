@@ -898,7 +898,7 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 43);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 44);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     assert_eq!(rt.heap_usage().objects.plain, 44);
@@ -1102,7 +1102,7 @@ fn realm_intrinsics_retain() {
     // DateTimeFormat adds one prototype and five built-ins (-215).
     // Indirect eval adds one built-in function (-106).
     // Math.sumPrecise adds one built-in function (-158).
-        // WeakRef adds one prototype and two built-in functions (-176).
+    // WeakRef adds one prototype and two built-in functions (-176).
     assert_eq!(rt.heap_usage().objects.builtin, 235);
     assert_eq!(rt.heap_usage().objects.plain, 44);
     for _ in 0..2 {
@@ -1310,11 +1310,11 @@ fn function_properties_reclaim() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 43, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 44, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (43, 0));
+    assert_eq!((usage.plain, usage.function), (44, 0));
 }
 
 #[test]
@@ -1333,11 +1333,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 43, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 44, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (43, 0));
+    assert_eq!((usage.plain, usage.array), (44, 0));
 }
 
 #[test]

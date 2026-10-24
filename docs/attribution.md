@@ -1036,8 +1036,8 @@ The upstream MIT copyright and permission notice is retained immediately above
 under "JavaScript WeakMap tests" and applies to this adapted fixture as well.
 The post-drop/post-collection expected values intentionally follow ECMA-262:
 targets remain available in the same job, unlike QuickJS's reference-counting
-immediacy. A dependency wait lets the embedding collect before resumption;
-host collection-point/timer integration remains in -175. Other new fixtures
+immediacy. The adapted fixture uses the optional `std.gc()` collection point;
+synthetic timer fixtures exercise collections after job boundaries. Other fixtures
 are synthetic, not light-cljs output. `js_weakref_constructor`,
 `js_weakref_deref`, `js_weakref_is_target` and `js_weakref_proto_funcs` in
 `research/quickjs/quickjs.c` were semantic references only; no C code was ported.

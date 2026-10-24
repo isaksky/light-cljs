@@ -523,10 +523,9 @@ Number `toFixed`, `toExponential` and `toPrecision` are supported
 remain an explicit RangeError resource limit; budgeted generic numeric
 conversion remains deferred (clj-quickjs-265).
 
-WeakRef instances cannot be published across tasks (clj-quickjs-176). Host
-timers and the source-level collection point remain in clj-quickjs-175;
-WeakRef collection tests currently use dependency waits and Promise jobs.
-
+WeakRef instances cannot be published across tasks (clj-quickjs-176).
+The opt-in host timers and collection points are described under simulated
+host facilities (clj-quickjs-175).
 
 Generator `return(value)` and `throw(error)` are deferred.
 `return` and `throw` methods are absent from the generator prototype, so yield*
@@ -4930,6 +4929,7 @@ arguments, automatic collection and Date-clock coupling remain deferred.
 Collection points inside an enclosing heap scope/native operation/additional
 run guard, or reentered from the same collection's observer, fail explicitly.
 WeakRef/FinalizationRegistry semantics remain owned by their separate pellets.
+
 ### Execution: WeakRef (clj-quickjs-176)
 
 `new WeakRef(target)` accepts objects and symbols other than `Symbol.for`
@@ -4945,6 +4945,7 @@ collection can clear targets after their last strong reference and kept-object
 entry disappear. WeakRef instances and ordinary properties remain task-owned.
 
 Explicit gaps: publishing WeakRefs across tasks is deferred, including frozen
-instances. Host timer/collection-point integration awaits -175; Promise-job and
-embedding collection tests cover the available job boundaries. This adds no
-FinalizationRegistry API (-177) or automatic collection trigger.
+instances. With optional simulated host bindings installed, `std.gc()` preserves
+the active job's kept objects, and `os.setTimeout()` starts a later job after
+the kept set clears. This adds no FinalizationRegistry API (-177) or automatic
+collection trigger.

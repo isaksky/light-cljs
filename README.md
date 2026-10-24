@@ -3641,9 +3641,10 @@ subsequent dereferences return `undefined`.
 
 WeakRefs are task-owned, including frozen instances: publication rejects them
 transitively, and another task cannot use their properties or dereference them.
-Cross-task WeakRef publication is deferred, as for WeakMap. Host timers and
-source collection points (-175) remain unavailable; current tests collect at
-need waits in Promise jobs. Timer-specific acceptance remains pending -175.
+Cross-task WeakRef publication is deferred, as for WeakMap. The opt-in host
+bindings (-175) provide `std.gc()` for same-job collections and
+`os.setTimeout()` for collection after a job boundary. Tests also collect
+while a timer callback waits on `__rt.need` and resume it on another worker.
 FinalizationRegistry (-177) continues to use the reusable collector notification
 interface; WeakRefs do not request notifications.
 
