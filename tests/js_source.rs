@@ -19966,8 +19966,8 @@ fn intl_collator_callbacks_wait_collect_and_migrate() {
     panic!("Collator continuation did not finish");
 }
 
-/// Synthetic fixtures, not light-cljs output. Equal long rope inputs force
-/// complete traversal, normalization, key comparison and long numeric scans.
+/// Synthetic fixtures, not light-cljs output. A long rope and an independently
+/// built canonical-equivalent flat input exercise traversal and numeric scans.
 #[test]
 fn intl_collator_long_ropes_are_budgeted() {
     for numeric in [false, true] {
@@ -19985,8 +19985,11 @@ fn intl_collator_long_ropes_are_budgeted() {
         rope = rope
             .concat(&clj_quickjs::JsString::from("2a\u{315}\u{300}"))
             .unwrap();
-        let a = rt.root(Primitive::String(rope.clone()));
-        let b = rt.root(Primitive::String(rope));
+        let flat = format!("x{}2à\u{315}", if numeric { "1" } else { "0" }.repeat(3000));
+        let a = rt.root(Primitive::String(rope));
+        let b = rt.root(Primitive::String(clj_quickjs::JsString::from(
+            flat.as_str(),
+        )));
         let code = compile_function(&format!("function f(a,b){{return new Intl.Collator('en',{{numeric:{numeric}}}).compare(a,b) === 0;}}")).unwrap();
         let mut task = rt.spawn(&code, &[&a, &b]).unwrap();
         let mut yields = 0;
@@ -20016,6 +20019,68 @@ fn intl_collator_long_ropes_are_budgeted() {
             }
         }
         assert!(complete);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Each suffix unit is a separate
+/// rope leaf; flat expectations never read or flatten the rope under test.
+#[test]
+fn intl_collator_rope_utf16_semantics() {
+    let cases: &[(&[u16], &[u16], i32)] = &[
+        // U+1D15E has a canonical decomposition into two supplementary scalars.
+        (&[0xd834, 0xdd5e], &[0xd834, 0xdd57, 0xd834, 0xdd65], 0),
+        (&[0xd83d, 0xde00], &[0xd83d, 0xde00], 0),
+        (&[0xd83d, 0xde00], &[0xd83d, 0xde01], -1),
+        (&[0xd800, 0x61], &[0xd800, 0x61], 0),
+        (&[0xd800, 0x61], &[0xd800, 0x62], -1),
+        (&[0xd800, 0xd83d, 0xde00], &[0xd800, 0xd83d, 0xde00], 0),
+        (&[0xd800], &[0xd800], 0),
+    ];
+    for &(suffix, expected, order) in cases {
+        let rt = Runtime::new();
+        // Exceed the small-concat threshold before appending surrogate leaves.
+        let mut rope = clj_quickjs::JsString::from("x".repeat(40).as_str());
+        for &unit in suffix {
+            rope = rope
+                .concat(&clj_quickjs::JsString::from_code_units(vec![unit]).unwrap())
+                .unwrap();
+        }
+        let mut flat = vec![u16::from(b'x'); 40];
+        flat.extend_from_slice(expected);
+        let a = rt.root(Primitive::String(rope));
+        let b = rt.root(Primitive::String(
+            clj_quickjs::JsString::from_code_units(flat).unwrap(),
+        ));
+        let code = compile_function(&format!(
+            "function f(a,b){{let c=new Intl.Collator('en');return c.compare(a,b) === {order} && c.compare(b,a) === {};}}",
+            -order
+        ))
+        .unwrap();
+        let mut task = rt.spawn(&code, &[&a, &b]).unwrap();
+        let mut completed = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{suffix:x?}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(completed, "rope comparison did not finish: {suffix:x?}");
     }
 }
 
