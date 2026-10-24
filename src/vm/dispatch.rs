@@ -1358,6 +1358,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).
         Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem
+        // Deleting initial metadata creates the property record (clj-quickjs-101).
+        | Instr::Delete
         // Reads `f.prototype` (clj-quickjs-75).
         | Instr::Instanceof
         // Looks the key up through the chain, functions included
@@ -1439,8 +1441,6 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // (clj-quickjs-85).
         | Instr::ForInNext
         | Instr::SetProto
-        // Removes a property: allocates nothing (clj-quickjs-124).
-        | Instr::Delete
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

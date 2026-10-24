@@ -309,8 +309,9 @@
 //! non-configurable own property stays and is a TypeError in strict code,
 //! false in sloppy code (the running code's `Code::strict`). A primitive o
 //! is treated as its wrapper object (a string's indices below its length
-//! and its `length` are non-configurable). It allocates nothing and runs
-//! no JavaScript, so it is not a poll point.
+//! and its `length` are non-configurable). Deleting initial function
+//! metadata allocates its property record and a constructor's prototype
+//! (clj-quickjs-101), so it is a poll point. It runs no JavaScript.
 //!
 //! Opcode `0x62`, `In` (clj-quickjs-74; QuickJS `OP_in`, `js_operator_in`):
 //! `k o → bool`, JavaScript `k in o`. `o` must be an object, else a

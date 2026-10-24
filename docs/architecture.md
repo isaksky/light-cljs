@@ -2416,7 +2416,8 @@ of `crate::vm::property` by kind:
 
 The opcode runs no JavaScript. Deleting initial function metadata can
 allocate its record and prototype (clj-quickjs-101); deleting an absent
-property allocates nothing.
+property allocates nothing. `Delete` polls for collection before execution,
+while its operands are still rooted in the task's VM stack.
 
 **Alternatives.** *`delete_field` and `delete_elem` opcodes* mirroring
 `get_field`/`get_elem`: two registry entries for a rare operator whose

@@ -92,6 +92,31 @@ fn function_length_and_name() {
 }
 
 #[test]
+fn function_metadata_round_trip_preserves_names() {
+    for source in [
+        "const g=(a,b=1,c)=>a; g.name==='g' && g.length===1",
+        "(function(a,b=1,c) {}).name===''",
+        "const o={'\\ud800':()=>0}; o['\\ud800'].name==='\\ud800'",
+    ] {
+        let mut spec = exe(source).to_spec();
+        assert_eq!(spec.functions[0].name(), "anonymous");
+        // Reload the children as well: retaining their existing Code arcs
+        // would never exercise serialization of the independent JS name.
+        spec.functions = spec
+            .functions
+            .into_iter()
+            .map(|f| Executable::load(f.to_spec()).unwrap())
+            .collect();
+        let program = Executable::load(spec).unwrap();
+        let rt = Runtime::new();
+        let RunOutcome::Complete(v) = rt.spawn(&program, &[]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert_eq!(v.view(), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
 fn function_metadata_property_operations() {
     for src in [
         "function f(a,b) {} const d=Object.getOwnPropertyDescriptor(f,'length'); const n=Object.getOwnPropertyDescriptor(f,'name'); d.value===2 && !d.writable && !d.enumerable && d.configurable && n.value==='f' && !n.writable && !n.enumerable && n.configurable && Object.keys(f).length===0",

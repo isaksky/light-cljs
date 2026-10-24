@@ -518,6 +518,42 @@ fn function_property_allocations_poll_for_collection() {
     assert_eq!(result.view(), ValueView::Number(10.0));
 }
 
+/// Deleting initial function metadata creates its property record
+/// (clj-quickjs-101), and must service collection before allocating it.
+/// JavaScript source is a synthetic fixture, not light-cljs output.
+#[test]
+fn delete_function_metadata_allocation_polls_for_collection() {
+    for function in ["function f() {}", "const f=()=>0;"] {
+        for property in ["length", "name"] {
+            let source = format!(
+                "{function} __rt.effect(0,null); delete f.{property}; __rt.effect(1,null);"
+            );
+            let program = clj_quickjs::frontend::compile_script("delete-polls", &source).unwrap();
+            let rt = Runtime::new();
+            let task = rt.spawn(&program, &[]).unwrap();
+            let (at_tx, at_rx) = mpsc::channel();
+            let worker = {
+                let rt = rt.clone();
+                thread::spawn(move || {
+                    let mut host = PollHost {
+                        rt,
+                        at_effect: at_tx,
+                    };
+                    task.run_with(Budget::UNLIMITED, &mut host).unwrap()
+                })
+            };
+            at_rx.recv_timeout(HANDSHAKE).unwrap();
+            let requester = {
+                let rt = rt.clone();
+                thread::spawn(move || rt.request_collection().unwrap())
+            };
+            requester.join().unwrap();
+            let result = complete(worker.join().unwrap());
+            assert_eq!(result.view(), ValueView::Number(1.0), "{source}");
+        }
+    }
+}
+
 /// `instanceof` reads `f.prototype`, which may allocate a function's lazy
 /// prototype object (clj-quickjs-75), so it is a poll point: a collection
 /// requested just before it completes before the next host effect, with no
