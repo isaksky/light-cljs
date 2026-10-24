@@ -294,6 +294,173 @@ fn shortest_digits(x: f64) -> (String, i32) {
     (digits, n)
 }
 
+/// True for a StrWhiteSpaceChar code unit (ECMA-262 StringToNumber):
+/// WhiteSpace (TAB, VT, FF, ZWNBSP U+FEFF and every Unicode `Zs` character:
+/// space, NBSP U+00A0, U+1680, U+2000..=U+200A, U+202F, U+205F, U+3000) or a
+/// LineTerminator (LF, CR, U+2028, U+2029). All of them are BMP characters,
+/// so one code unit decides. (QuickJS tests the same set, the
+/// regular-expression `\s` characters, with `lre_is_space`,
+/// `research/quickjs/libunicode.h`, revision 7d1c13c5d8f8.)
+fn is_str_white_space(u: u16) -> bool {
+    matches!(
+        u,
+        0x09..=0x0D
+            | 0x20
+            | 0xA0
+            | 0x1680
+            | 0x2000..=0x200A
+            | 0x2028
+            | 0x2029
+            | 0x202F
+            | 0x205F
+            | 0x3000
+            | 0xFEFF
+    )
+}
+
+/// JavaScript StringToNumber (ECMA-262 §7.1.4.1.1; QuickJS `js_atof` with
+/// the flags `JS_ToNumberHintFree` passes, `research/quickjs/quickjs.c`,
+/// revision 7d1c13c5d8f8). Leading and trailing StrWhiteSpace is ignored;
+/// what remains must be, in full:
+///
+/// * nothing: `0`;
+/// * `Infinity`, `+Infinity` or `-Infinity` (case-sensitive);
+/// * an unsigned `0x`/`0X`, `0o`/`0O` or `0b`/`0B` integer with at least one
+///   digit, of any length, correctly rounded (round half to even);
+/// * a decimal literal with an optional sign, fraction and exponent: `12`,
+///   `-1.5`, `.5`, `5.`, `1e3`, `-0` (negative zero), correctly rounded.
+///   Leading zeros are decimal (`"010"` is 10, no legacy octal).
+///
+/// Anything else is NaN: numeric separators (`1_000`), a BigInt suffix
+/// (`1n`), a signed radix prefix (`-0x1`), trailing garbage (`12px`),
+/// another spelling of infinity (`infinity`, `inf`), or a non-ASCII digit.
+pub fn string_to_number(s: &JsString) -> f64 {
+    let units = s.code_units();
+    let start = units
+        .iter()
+        .position(|&u| !is_str_white_space(u))
+        .unwrap_or(units.len());
+    let end = units
+        .iter()
+        .rposition(|&u| !is_str_white_space(u))
+        .map_or(start, |i| i + 1);
+    let trimmed = &units[start..end];
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    // Every accepted form is ASCII; anything else is NaN.
+    let Some(text) = trimmed
+        .iter()
+        .map(|&u| u8::try_from(u).ok().filter(u8::is_ascii))
+        .collect::<Option<Vec<u8>>>()
+    else {
+        return f64::NAN;
+    };
+    match text.as_slice() {
+        b"Infinity" | b"+Infinity" => return f64::INFINITY,
+        b"-Infinity" => return f64::NEG_INFINITY,
+        [b'0', b'x' | b'X', digits @ ..] => return radix_integer(digits, 4),
+        [b'0', b'o' | b'O', digits @ ..] => return radix_integer(digits, 3),
+        [b'0', b'b' | b'B', digits @ ..] => return radix_integer(digits, 1),
+        _ => {}
+    }
+    if !is_str_decimal_literal(&text) {
+        return f64::NAN;
+    }
+    // The text is ASCII and matches StrDecimalLiteral without `Infinity`,
+    // a subset of the grammar Rust's correctly rounded `f64` parser
+    // accepts, with the same meaning.
+    std::str::from_utf8(&text)
+        .ok()
+        .and_then(|t| t.parse::<f64>().ok())
+        .unwrap_or(f64::NAN)
+}
+
+/// True when `t` is `[+-]? (D+ ('.' D*)? | '.' D+) ([eE] [+-]? D+)?` with
+/// ASCII decimal digits `D`.
+fn is_str_decimal_literal(t: &[u8]) -> bool {
+    let digits = |t: &[u8]| t.iter().take_while(|b| b.is_ascii_digit()).count();
+    let mut i = usize::from(matches!(t.first(), Some(b'+' | b'-')));
+    let int = digits(&t[i..]);
+    i += int;
+    let mut frac = 0;
+    if t.get(i) == Some(&b'.') {
+        i += 1;
+        frac = digits(&t[i..]);
+        i += frac;
+    }
+    if int + frac == 0 {
+        return false;
+    }
+    if matches!(t.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(t.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let exp = digits(&t[i..]);
+        if exp == 0 {
+            return false;
+        }
+        i += exp;
+    }
+    i == t.len()
+}
+
+/// The value of the unsigned integer whose digits in radix
+/// `2^bits_per_digit` (2, 8 or 16) are `digits`, correctly rounded to the
+/// nearest `f64` (ties to even), or NaN when `digits` is empty or holds a
+/// character that is not a digit of the radix. Any length is accepted;
+/// past 2^1024 the value is Infinity.
+fn radix_integer(digits: &[u8], bits_per_digit: u32) -> f64 {
+    if digits.is_empty() {
+        return f64::NAN;
+    }
+    let radix = 1u32 << bits_per_digit;
+    // The first 64 significant bits, the number of later bits (`dropped`)
+    // and whether any of those was 1 (`sticky`).
+    let mut mant: u64 = 0;
+    let mut dropped: u64 = 0;
+    let mut sticky = false;
+    for &c in digits {
+        let Some(d) = char::from(c).to_digit(radix) else {
+            return f64::NAN;
+        };
+        for k in (0..bits_per_digit).rev() {
+            let bit = u64::from((d >> k) & 1);
+            if mant >> 63 == 0 {
+                mant = (mant << 1) | bit;
+            } else {
+                dropped += 1;
+                sticky |= bit == 1;
+            }
+        }
+    }
+    if mant == 0 {
+        return 0.0;
+    }
+    // Keep the top 53 significant bits of `mant`; the bits below them and
+    // `sticky` round half to even. (Bits are dropped only once `mant` holds
+    // 64 significant bits, so `shift` is 0 only when nothing was dropped.)
+    let shift = 11u32.saturating_sub(mant.leading_zeros());
+    let mut m = mant >> shift;
+    if shift > 0 {
+        let rest = mant & ((1u64 << shift) - 1);
+        let half = 1u64 << (shift - 1);
+        if rest > half || (rest == half && (sticky || m & 1 == 1)) {
+            m += 1;
+        }
+    }
+    // `m <= 2^53` (a carry may reach 2^53 exactly), so it is exact in f64.
+    let exponent = u64::from(shift) + dropped;
+    if exponent > 1023 {
+        return f64::INFINITY;
+    }
+    // 2^exponent, exact for 0 <= exponent <= 1023; the product rounds to
+    // Infinity on overflow and is otherwise exact.
+    let scale = f64::from_bits((exponent + 1023) << 52);
+    m as f64 * scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +533,91 @@ mod tests {
                 .unwrap()
                 .replace('.', "");
             assert_eq!(digits.len(), rust_digits.len(), "{x:e}");
+        }
+    }
+
+    #[test]
+    fn string_to_number_follows_the_string_numeric_literal_grammar() {
+        let n = |s: &str| string_to_number(&JsString::from(s));
+        for (s, expected) in [
+            ("", 0.0),
+            (
+                " \t\n\r\u{0B}\u{0C}\u{A0}\u{FEFF}\u{1680}\u{2000}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}",
+                0.0,
+            ),
+            ("\u{3000}42\u{2029}", 42.0),
+            ("010", 10.0),
+            ("+7", 7.0),
+            ("-.5e1", -5.0),
+            ("1E+2", 100.0),
+            ("1e-2", 0.01),
+            ("0.1", 0.1),
+            ("1e400", f64::INFINITY),
+            ("-1e400", f64::NEG_INFINITY),
+            ("1e-400", 0.0),
+            ("0x0", 0.0),
+            ("0x00000000000000000000000000001", 1.0),
+            ("0xFFFFFFFFFFFFFFFF", 18446744073709551615.0),
+            ("0B101", 5.0),
+            ("0O777", 511.0),
+            // 2^53 + 1 is a tie between 2^53 and 2^53 + 2: even wins.
+            ("0x20000000000001", 9007199254740992.0),
+            // 2^53 + 3 ties up to 2^53 + 4.
+            ("0x20000000000003", 9007199254740996.0),
+        ] {
+            assert_eq!(n(s), expected, "{s:?}");
+        }
+        // Long radix integers round correctly at any length.
+        let zeros = |k: usize| "0".repeat(k);
+        for (s, expected) in [
+            // Just above the 2^53 + 1 tie (times 2^64), a later 1 bit
+            // rounds up.
+            (
+                format!("0x20000000000001{}1", zeros(15)),
+                9007199254740994.0 * 18446744073709551616.0,
+            ),
+            // (2^53 - 1) * 2^971 is the largest finite value.
+            (format!("0xfffffffffffff8{}", zeros(242)), f64::MAX),
+            (format!("0xfffffffffffffb{}", "f".repeat(242)), f64::MAX),
+            // Halfway between it and 2^1024 rounds to even: Infinity.
+            (format!("0xfffffffffffffc{}", zeros(242)), f64::INFINITY),
+            (format!("0x1{}", zeros(256)), f64::INFINITY),
+            (format!("0b1{}", zeros(1023)), 2f64.powi(1023)),
+            (format!("0o1{}", zeros(341)), 2f64.powi(1023)),
+        ] {
+            assert_eq!(n(&s), expected, "{s:?}");
+        }
+        assert!(n("-0").is_sign_negative() && n("-0") == 0.0);
+        assert!(n("0").is_sign_positive());
+        for s in [
+            ".",
+            "+",
+            "-",
+            "e5",
+            "1e",
+            "1e+",
+            "..5",
+            "1.2.3",
+            "0x",
+            "0xg",
+            "0b2",
+            "0o8",
+            "-0x1",
+            "+0x1",
+            "1_000",
+            "1n",
+            "12px",
+            "infinity",
+            "inf",
+            "NaN",
+            "+-1",
+            "1 2",
+            "0x1.8",
+            "\u{FF11}",
+            "Infinityx",
+            "- 1",
+        ] {
+            assert!(n(s).is_nan(), "{s:?} gives {}", n(s));
         }
     }
 

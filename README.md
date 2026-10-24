@@ -1242,9 +1242,9 @@ Supported (`cargo test --lib frontend::tests::bitwise_and_shift_precedence`,
 Deferred:
 
 - Compound assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`) is still
-  rejected by the parser; string operands wait for StringToNumber
-  (clj-quickjs-67) and object operands for ToPrimitive (they fail with
-  `UnsupportedOperand`).
+  rejected by the parser; object operands wait for ToPrimitive (they fail
+  with `UnsupportedOperand`; string operands convert since
+  clj-quickjs-67).
 
 ### Unlabelled `break` and `continue` (clj-quickjs-78)
 
@@ -1284,9 +1284,9 @@ Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
 
 Deferred:
 
-- `**=` is still rejected by the parser (compound assignment); string
-  operands wait for StringToNumber (clj-quickjs-67) and object operands for
-  ToPrimitive (they fail with `UnsupportedOperand`). BigInt is outside the
+- `**=` is still rejected by the parser (compound assignment); object
+  operands wait for ToPrimitive (they fail with `UnsupportedOperand`;
+  string operands convert since clj-quickjs-67). BigInt is outside the
   subset.
 
 ### `break` and `continue` through finally blocks (clj-quickjs-79)
@@ -1418,13 +1418,40 @@ Supported (`cargo test --test js_source string_values`,
 Deferred:
 
 - Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
-  an object operand (ToPrimitive, clj-quickjs-70); arithmetic, bitwise, `**`,
-  `++`/`--` on strings and `==` between a string and a number or boolean
-  (StringToNumber, clj-quickjs-67); relational comparison of strings
-  (clj-quickjs-68). No `typeof`, templates, `length`, indexing or string
-  methods yet (so no `Number.prototype.toString` call, and no radix other
-  than 10, clj-quickjs-149); lone surrogate escapes are still rejected by
-  the lexer (clj-quickjs-141).
+  an object operand (ToPrimitive, clj-quickjs-70); relational comparison of
+  two strings (clj-quickjs-68). (Strings convert to numbers since
+  clj-quickjs-67, below.) No `typeof`, templates, `length`, indexing or
+  string methods yet (so no `Number.prototype.toString` call, and no radix
+  other than 10, clj-quickjs-149); lone surrogate escapes are still rejected
+  by the lexer (clj-quickjs-141).
+
+### StringToNumber and loose equality with strings (clj-quickjs-67)
+
+Supported (`cargo test --test js_source strings_`,
+`cargo test --lib value::string::`):
+
+- ToNumber of a string is StringToNumber (`string_to_number` in
+  `src/value/string.rs`) wherever ToNumber applies: `- * / %`, unary `-`
+  and `+`, `**`, the bitwise and shift operators and `~`, `++`/`--`, and
+  relational comparison when not both operands are strings. Leading and
+  trailing whitespace and line terminators (NBSP, BOM and Unicode `Zs`
+  included) are ignored; `""` is 0; unsigned `0x`/`0o`/`0b` integers of
+  any length round correctly; decimals take a sign, fraction and exponent
+  (`".5"`, `"5."`, `"-0"` is -0, `"010"` is 10); `Infinity` takes a sign;
+  everything else is NaN (`"1_000"`, `"1n"`, `"-0x1"`, `"12px"`,
+  `"infinity"`). `"6" * "7"` is 42, `"0x12345" >>> 0` is 74565.
+- `==`/`!=` between a string and a number compare the number with the
+  string's StringToNumber; a boolean against a string converts to 0 or 1
+  first (`"" == 0`, `" 1 " == 1`, `"1" == true` are true, `"2" == true` and
+  `"abc" == NaN` are false); a string never loosely equals `null` or
+  `undefined`. No new opcode. The string cases of QuickJS `test_eq` and
+  `test_cvt` are adapted with the license notice.
+
+Deferred:
+
+- Relational comparison of two strings fails with `UnsupportedOperand`
+  until code-unit order (clj-quickjs-68); object operands wait for
+  ToPrimitive (clj-quickjs-70).
 
 ### Labelled statements (clj-quickjs-82)
 

@@ -87,13 +87,18 @@
 //! Opcodes `0x21`–`0x2A` are what the source compiler
 //! ([`crate::frontend::compile_script`]) needs beyond the core set.
 //! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
-//! or 1; an object operand fails with `UnsupportedOperand` (ToPrimitive on
-//! objects is deferred), and so does a string (StringToNumber is
-//! clj-quickjs-67). `LooseEq` is JavaScript `==` (IsLooselyEqual) for
-//! the supported value types: `null == undefined`, a boolean compares as its
-//! number, objects compare by identity, two strings by content, and
-//! comparing an object with a number or boolean, or a string with a number
-//! or boolean, fails with `UnsupportedOperand`. `StrictEq` compares strings
+//! or 1 and strings by StringToNumber (clj-quickjs-67); an object operand
+//! fails with `UnsupportedOperand` (ToPrimitive on objects is deferred).
+//! `ToNumberPair` also fails with `UnsupportedOperand` when both operands
+//! are strings and the next instruction is `Lt`, `Gt`, `Le` or `Ge`: the
+//! compiler lowers relational operators that way, and two strings compare
+//! by code units, not as numbers (clj-quickjs-68). `LooseEq` is JavaScript
+//! `==` (IsLooselyEqual) for the supported value types: `null ==
+//! undefined`, objects compare by identity, two strings by content, a
+//! number, boolean or string against another of those compares as numbers
+//! (booleans as 0 or 1, strings by StringToNumber), and comparing an object
+//! with a primitive other than `null`/`undefined` fails with
+//! `UnsupportedOperand`. `StrictEq` compares strings
 //! by content too. `ThrowError` always
 //! raises the error named by its [`ThrowKind`] operand
 //! ([`VmErrorKind::ReferenceError`](crate::VmErrorKind::ReferenceError) or

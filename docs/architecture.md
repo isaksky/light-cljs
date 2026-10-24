@@ -1310,11 +1310,19 @@ Design: `design.md` §§4, 11.
   (plain decimal for `1e-6 <= |x| < 1e21`, else `1e+21` / `1e-7`;
   `"0"` for `-0`). Radix 2..36 is clj-quickjs-149. The compiler emits
   `add` when both operands are statically numbers and `plus` otherwise, so
-  `+` never applies ToNumber to a string. `to_number` on a string fails
-  with `UnsupportedOperand` (StringToNumber is clj-quickjs-67), so `-`,
-  `*`, `<` and the other numeric operators reject strings explicitly.
-  `===` and `==` compare two strings by content; `==` between a string and
-  a number or boolean fails until clj-quickjs-67. Calling a string is a
+  `+` never applies ToNumber to a string. `to_number` on a string is
+  StringToNumber (`string_to_number`, clj-quickjs-67; QuickJS `js_atof`
+  semantics): whitespace-trimmed, unsigned radix-prefixed integers rounded
+  correctly at any length, decimals through Rust's correctly rounded
+  `f64` parser after the text is checked against the StrDecimalLiteral
+  grammar (so Rust's `inf`/`nan` spellings stay NaN), signed `Infinity`,
+  NaN otherwise. `===` and `==` compare two strings by content; `==`
+  between a string and a number or boolean compares numbers (the boolean
+  as 0 or 1). The relational operators still lower to `to_number_pair`
+  and a numeric comparison, which is wrong only for two strings
+  (code-unit order, clj-quickjs-68): until that lowering changes,
+  `to_number_pair` fails with `UnsupportedOperand` when both operands are
+  strings and the next instruction is `lt`/`gt`/`le`/`ge`. Calling a string is a
   TypeError "string is not a function"; an uncaught thrown string reports
   its text.
 - **Tests.** `tests/js_source.rs` `string_values`, `tests/publication.rs`
@@ -1473,8 +1481,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
   of `test_cvt` (line 108) of `research/quickjs/tests/test_language.js`,
   revision 7d1c13c5d8f8, as JavaScript source compiled by this frontend.
   Modified: each `assert(r, v)` is a Rust assertion on the expression's
-  value; the string operand cases of `test_cvt` are omitted (they need
-  StringToNumber). The test carries the full notice.
+  value; the string operand cases of `test_cvt` are in
+  `strings_convert_with_string_to_number` (clj-quickjs-67, below). The
+  test carries the full notice.
   `research/quickjs/quickjs.c` `js_parse_expr_binary`,
   `js_binary_logic_slow`, `JS_ToInt32Free`, the `OP_shr` / `OP_sar` cases
   of `JS_CallInternal` and `js_unary_arith_slow` were consulted only. No
@@ -1592,3 +1601,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   case block; "duplicate default") was consulted only. Unlike QuickJS,
   the discriminant lives in a scratch local rather than on the operand
   stack, and all tests precede the clause bodies. No code was copied.
+- `tests/js_source.rs` `strings_convert_with_string_to_number` and
+  `strings_compare_loosely_with_numbers` (clj-quickjs-67): the four string
+  groups of `test_cvt` (line 108) and the string rows of `test_eq` (line
+  126: `"" == 0`, `"123" == 123`, `"122" != 123`) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: each `assert(cond)` is a Rust assertion on the expression's
+  value. The first test carries the full notice.
+  `research/quickjs/quickjs.c` `js_atof`, `JS_ToNumberHintFree` and
+  `js_eq_slow`, and `research/quickjs/libunicode.h` `lre_is_space`, were
+  consulted only, for semantics; `string_to_number` in
+  `src/value/string.rs` follows ECMA-262 StringToNumber and parses decimals
+  with Rust's correctly rounded `f64` parser. No code was copied.

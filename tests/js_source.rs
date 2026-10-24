@@ -282,7 +282,8 @@ fn truthiness_and_equality_follow_javascript() {
 /// four rows are the `null`/`undefined`/boolean cases of `test_eq` (line
 /// 126) of `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
 /// (each `assert(cond)` as a Rust assertion on the expression's value; the
-/// string and wrapper-object cases wait for string values and ToPrimitive);
+/// string cases are in `strings_compare_loosely_with_numbers` and the
+/// wrapper-object cases wait for ToPrimitive);
 /// see `docs/architecture.md`, "QuickJS references and provenance".
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
@@ -1950,15 +1951,11 @@ fn string_values() {
     let (kind, message, ..) = failure_at(r#""s"()"#);
     assert_eq!(kind, VmErrorKind::TypeError);
     assert_eq!(message, "string is not a function");
-    // Mixed operands wait for StringToNumber (clj-quickjs-67) and an object
-    // operand of `+` for ToPrimitive (clj-quickjs-70): rejected, never
-    // converted. (Mixed `+` concatenates: `addition_concatenates_strings`.)
-    for src in [
-        r#"let a = "a"; a - 1"#,
-        r#""1" == 1"#,
-        r#""a" + (() => 1)"#,
-        r#"(() => 1) + 1"#,
-    ] {
+    // An object operand of `+` waits for ToPrimitive (clj-quickjs-70):
+    // rejected, never converted. (Mixed `+` concatenates:
+    // `addition_concatenates_strings`; other operators convert strings with
+    // StringToNumber: `strings_convert_with_string_to_number`.)
+    for src in [r#""a" + (() => 1)"#, r#"(() => 1) + 1"#] {
         assert_eq!(
             failure(src).kind(),
             VmErrorKind::UnsupportedOperand,
@@ -2053,6 +2050,167 @@ fn addition_concatenates_strings() {
     let (kind, message, ..) = failure_at(r#""x" + nope"#);
     assert_eq!(kind, VmErrorKind::ReferenceError);
     assert_eq!(message, "nope is not defined");
+}
+
+/// Strings convert to numbers with StringToNumber wherever ToNumber applies
+/// (clj-quickjs-67). The four string groups of `test_cvt` (line 108) are
+/// adapted from `research/quickjs/tests/test_language.js`, revision
+/// 7d1c13c5d8f8 (each `assert(cond)` as a Rust assertion on the
+/// expression's value); see `docs/architecture.md`, "QuickJS references and
+/// provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn strings_convert_with_string_to_number() {
+    for (src, expected) in [
+        (r#"+"12345""#, 12345.0),
+        (r#"+"""#, 0.0),
+        (r#"+"  \n12\t""#, 12.0),
+        (r#"+" 1﻿""#, 1.0),
+        // A literal BOM in the source text.
+        ("+\" 1\u{FEFF}\"", 1.0),
+        (r#"+"  　 7 \r""#, 7.0),
+        (r#"+"0x12345""#, 74565.0),
+        (r#"+"0X1f""#, 31.0),
+        (r#"+"0b11""#, 3.0),
+        (r#"+"0o17""#, 15.0),
+        (r#"+"1e3""#, 1000.0),
+        (r#"+".5""#, 0.5),
+        (r#"+"5.""#, 5.0),
+        (r#"+"Infinity""#, f64::INFINITY),
+        (r#"+"+Infinity""#, f64::INFINITY),
+        (r#"+"-Infinity""#, f64::NEG_INFINITY),
+        (r#"+"010""#, 10.0),
+        (r#""6" * "7""#, 42.0),
+        (r#""3" - 1"#, 2.0),
+        (r#"-"2""#, -2.0),
+        (r#""7" / "2""#, 3.5),
+        (r#""7" % "4""#, 3.0),
+        (r#""2" ** "10""#, 1024.0),
+        (r#"~"5""#, -6.0),
+        // `++`/`--` convert first: the binding holds a number afterwards.
+        (r#"let s = "41"; s++; s"#, 42.0),
+        (r#"let s = " 8 "; --s"#, 7.0),
+        // Operands that are not statically known convert at run time.
+        (r#"let f = (a, b) => a * b; f("3", " 4 ")"#, 12.0),
+        // `test_cvt`.
+        (r#""12345" | 0"#, 12345.0),
+        (r#""0x12345" | 0"#, 74565.0),
+        (r#""12345" >>> 0"#, 12345.0),
+        (r#""0x12345" >>> 0"#, 74565.0),
+        (r#""-1" >>> 0"#, 4294967295.0),
+        (r#"1 << "31""#, -2147483648.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    // `test_cvt`, as written there.
+    for src in [
+        r#"("12345" | 0) === 12345"#,
+        r#"("0x12345" | 0) === 0x12345"#,
+        r#"("12345" >>> 0) === 12345"#,
+        r#"("0x12345" >>> 0) === 0x12345"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    let minus_zero = num(r#"+"-0""#);
+    assert!(minus_zero == 0.0 && minus_zero.is_sign_negative());
+    for src in [
+        r#"+"-0x1""#,
+        r#"+"infinity""#,
+        r#"+"1_000""#,
+        r#"+"1n""#,
+        r#"+"12px""#,
+        r#"+"0x""#,
+        r#"+".""#,
+        r#"+"1e""#,
+        r#"+"--1""#,
+        r#""abc" * 1"#,
+        r#"let a = "a"; a - 1"#,
+        r#"let s = "x"; s++"#,
+    ] {
+        assert!(num(src).is_nan(), "{src}");
+    }
+    // Relational comparison converts a string compared with a non-string.
+    for (src, expected) in [
+        (r#""10" < 9"#, false),
+        (r#"9 < "10""#, true),
+        (r#""abc" < 1"#, false),
+        (r#""abc" >= 1"#, false),
+        (r#"let t = true; "0.5" < t"#, true),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
+    // Two strings compare by code units (clj-quickjs-68), never as numbers:
+    // rejected until then.
+    for src in [
+        r#""10" < "9""#,
+        r#"let a = "1", b = "2"; a >= b"#,
+        r#"let f = (a, b) => a > b; f("b", "a")"#,
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+}
+
+/// IsLooselyEqual between strings and numbers or booleans (clj-quickjs-67).
+/// The string rows of `test_eq` (line 126) are adapted from
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (each
+/// `assert(cond)` as a Rust assertion on the expression's value); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The QuickJS
+/// MIT notice is on `strings_convert_with_string_to_number` above.
+#[test]
+fn strings_compare_loosely_with_numbers() {
+    for (src, expected) in [
+        // `test_eq`.
+        (r#""" == 0"#, true),
+        (r#""123" == 123"#, true),
+        (r#""122" != 123"#, true),
+        // A number against a string compares with StringToNumber.
+        (r#"123 == "123""#, true),
+        (r#""abc" == NaN"#, false),
+        (r#""NaN" == NaN"#, false),
+        (r#"" 1 " == 1"#, true),
+        (r#""1e3" == 1000"#, true),
+        (r#""0x10" == 16"#, true),
+        (r#""-0" == 0"#, true),
+        (r#""1" != 1"#, false),
+        // A boolean converts to a number first.
+        (r#""1" == true"#, true),
+        (r#""0" == false"#, true),
+        (r#""2" == true"#, false),
+        (r#"true == "1""#, true),
+        (r#"false == """#, true),
+        (r#"false != " ""#, false),
+        // A string never equals `null` or `undefined`.
+        (r#""" == null"#, false),
+        (r#"undefined == """#, false),
+        (r#""null" == null"#, false),
+        // Two strings still compare by content, not as numbers.
+        (r#""1" == "01""#, false),
+        // Operands that are not statically known compare at run time.
+        (r#"let f = (a, b) => a == b; f("5", 5) && f(5, "5")"#, true),
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
+    }
 }
 
 #[test]
@@ -2316,7 +2474,7 @@ fn comma_operator_evaluates_left_to_right() {
 /// and numeric `test_cvt` values are adapted from
 /// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (each
 /// `assert(r, v)` as a Rust assertion on the expression's value; the string
-/// operand cases of `test_cvt` wait for StringToNumber); see
+/// operand cases of `test_cvt` are in `strings_convert_with_string_to_number`); see
 /// `docs/architecture.md`, "QuickJS references and provenance".
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,

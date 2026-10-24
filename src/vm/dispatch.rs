@@ -77,7 +77,7 @@ use crate::error::{VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
-use crate::value::string::number_to_string;
+use crate::value::string::{number_to_string, string_to_number};
 use crate::value::{JsString, Value};
 use crate::vm::exception::{
     Completion, ErrorObject, Exception, HandlerKind, describe_thrown, error_object,
@@ -204,19 +204,17 @@ fn exponentiate(x: f64, y: f64) -> f64 {
     }
 }
 
-/// JavaScript ToNumber for primitives. Objects need ToPrimitive, which is
-/// deferred, so they are rejected explicitly.
+/// JavaScript ToNumber for primitives: NaN for `undefined`, 0 for `null`, 0
+/// or 1 for booleans, and StringToNumber ([`string_to_number`]) for a
+/// string. Objects need ToPrimitive, which is deferred, so they are rejected
+/// explicitly.
 fn to_number(v: &Value) -> Result<f64, Fault> {
-    match *v {
+    match v {
         Value::Undefined => Ok(f64::NAN),
         Value::Null => Ok(0.0),
-        Value::Bool(b) => Ok(if b { 1.0 } else { 0.0 }),
-        Value::Number(x) => Ok(x),
-        // StringToNumber is a later pellet (clj-quickjs-67): rejected
-        // explicitly rather than guessed.
-        Value::String(_) => Err(Fault::Unsupported(
-            "converting a string to a number (StringToNumber) is not supported yet".to_string(),
-        )),
+        Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        Value::Number(x) => Ok(*x),
+        Value::String(s) => Ok(string_to_number(s)),
         Value::Object(_) => Err(Fault::Unsupported(
             "converting an object to a number (ToPrimitive) is not supported".to_string(),
         )),
@@ -264,11 +262,15 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
     }
 }
 
-/// JavaScript `==` (IsLooselyEqual) for the supported value types. Two
-/// strings compare by content. A string compared with a number or boolean
-/// needs StringToNumber (clj-quickjs-67) and an object compared with a
-/// primitive needs ToPrimitive; both are deferred, so those cases are
-/// rejected explicitly.
+/// JavaScript `==` (IsLooselyEqual, QuickJS `js_eq_slow`) for the supported
+/// value types. `null` and `undefined` equal each other and nothing else;
+/// two values of one type compare strictly (two strings by content). A
+/// string compared with a number, and a boolean compared with a number or
+/// string, compare as numbers: the boolean converts to 0 or 1 and the string
+/// by StringToNumber, so `"1" == true` and `" 1 " == 1` hold, and a string
+/// that is not numeric equals no number (its value is NaN). An object
+/// compared with a primitive needs ToPrimitive, which is deferred, so that
+/// case is rejected explicitly.
 fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
     use Value::*;
     Ok(match (a, b) {
@@ -278,13 +280,8 @@ fn loose_equals(a: &Value, b: &Value) -> Result<bool, Fault> {
         | (Number(_), Number(_))
         | (Bool(_), Bool(_))
         | (String(_), String(_)) => a.strict_equals(b),
-        (Number(_), Bool(_)) | (Bool(_), Number(_)) => to_number(a)? == to_number(b)?,
-        (String(_), Number(_) | Bool(_)) | (Number(_) | Bool(_), String(_)) => {
-            return Err(Fault::Unsupported(format!(
-                "loose_eq between {} and {} needs StringToNumber, which is not supported yet",
-                a.type_name(),
-                b.type_name()
-            )));
+        (Number(_) | Bool(_) | String(_), Number(_) | Bool(_) | String(_)) => {
+            to_number(a)? == to_number(b)?
         }
         (Object(_), _) | (_, Object(_)) => {
             return Err(Fault::Unsupported(format!(
@@ -673,6 +670,21 @@ fn step(
         Instr::ToNumberPair => {
             let b = state.pop()?;
             let a = state.pop()?;
+            // The compiler lowers `<`, `>`, `<=`, `>=` to `to_number_pair`
+            // and a numeric comparison, which is IsLessThan except when
+            // both operands are strings: those compare by code units
+            // (clj-quickjs-68), so they are rejected, never compared as
+            // numbers. `pc` is already past this instruction.
+            if let (Value::String(_), Value::String(_)) = (&a, &b)
+                && matches!(
+                    code.instrs.get(state.top().pc),
+                    Some(Instr::Lt | Instr::Gt | Instr::Le | Instr::Ge)
+                )
+            {
+                return Err(Fault::Unsupported(
+                    "relational comparison of two strings is not supported yet".to_string(),
+                ));
+            }
             let x = to_number(&a)?;
             let y = to_number(&b)?;
             state.push(Value::Number(x));
