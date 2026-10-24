@@ -4,7 +4,9 @@ A Rust-native JavaScript runtime for highly concurrent compile-time execution.
 Requirements: [`docs/design.md`](docs/design.md). Backlog: Pellets (`pl list`).
 
 This is an architectural slice in progress, not a finished JavaScript engine.
-No JavaScript source frontend exists yet.
+A small documented JavaScript subset ([`docs/grammar.md`](docs/grammar.md))
+compiles to VM bytecode and runs: straight-line code, conditionals, loops and
+locals. Functions, calls, strings and closures are not executable yet.
 
 ## Build and test
 
@@ -28,6 +30,8 @@ cargo test --test publication     # publication check: paths, identity, deep/sha
 cargo test --lib value::share::   # categories, known-shareable cache, cycles
 cargo test --test dependency      # dependency cells: need, completion, worlds, GC, races
 cargo test --lib dep::            # cell root category, rejected completion
+cargo test --test js_source       # JavaScript source compiled and executed
+cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowering
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -272,3 +276,47 @@ Deferred:
   atomic ready fast path (clj-quickjs-7); consumer and cell cancellation
   other than a producer completing with `Cancelled`; deadlock reporting;
   invalidation or removal of cells (they live as long as the runtime).
+
+### JavaScript source compilation (clj-quickjs-22)
+
+Supported:
+
+- `frontend::compile_script(name, source)` compiles a script of the
+  documented subset to a validated `Executable`; a task running it completes
+  with the script's completion value. `frontend::compile_function(source)`
+  compiles one function declaration as a task entry point with parameters
+  and `return`. Semantics and errors: "Execution" in
+  [`docs/grammar.md`](docs/grammar.md); design: "Source compilation" in
+  [`docs/architecture.md`](docs/architecture.md).
+- Executed forms: number/boolean/`null`/`undefined`/`NaN`/`Infinity`
+  literals, `let`/`const` with block scoping and shadowing, assignment,
+  `+ - * / %`, unary `- + !`, `< > <= >=`, `== != === !==`, `&& || ?:`,
+  `if`/`else`, `while`, blocks. Number semantics are IEEE doubles (NaN,
+  Infinity, `-0`, rounding past 2^53); ToNumber, ToBoolean, strict and loose
+  equality follow JavaScript for the supported primitive types.
+- Binding resolution: redeclaration is a compile-time `SyntaxError`
+  (`Invalid`); unknown names and use before initialization fail the task
+  with `VmErrorKind::ReferenceError`, and assignment to a `const` with
+  `VmErrorKind::TypeError`, only when that code runs.
+- New opcodes `0x21`–`0x2A` (`div`, `rem`, `neg`, `to_number`,
+  `to_number_pair`, `gt`, `le`, `ge`, `loose_eq`, `throw_error`), validated
+  like every other opcode. Compiled code goes through the same validator as
+  hand-built specs; `Executable::to_spec` re-encodes code, and corrupted
+  compiled bytecode (bad branch target, operand out of range, stack
+  underflow or depth mismatch) is rejected at load.
+- Source positions: every compiled instruction has a `SourceLocation`;
+  failures report it in `Diagnostic::source`, and `Task::source_location`
+  gives the position a ready (for example yielded) task continues at.
+- Fixtures: `tests/fixtures/js/` (synthetic, not light-cljs output, plus
+  adapted QuickJS `test_op1`/`test_while` cases with their license notice).
+
+Deferred:
+
+- String values, calls, property access, function declarations and
+  expressions, closures and the reserved intrinsic bindings (clj-quickjs-21,
+  -20, -4): they parse but are rejected by the compiler as `Unsupported`.
+- `throw`/`try` (clj-quickjs-11): ReferenceError and TypeError failures
+  cannot be caught. Operators on objects need ToPrimitive and fail with
+  `UnsupportedOperand` (objects cannot come from source yet).
+- `for`, `do`-`while`, `break`, `continue`, `switch`, `var`, update and
+  compound assignment operators (rejected by the parser).

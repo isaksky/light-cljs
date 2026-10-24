@@ -480,6 +480,7 @@ mod tests {
             offsets: Box::new([0, 3]),
             instrs: Box::new([Instr::Const(0), Instr::Return]),
             max_stack: 1,
+            debug: None,
         };
         rt.spawn(&Executable(Arc::new(code)), args).unwrap()
     }

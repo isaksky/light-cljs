@@ -2,9 +2,12 @@
 //!
 //! [`Executable::load`] decodes the byte format of [`super::instr`] and
 //! rejects malformed code before any task can run it: unknown opcodes,
-//! truncated operands, out-of-range constant/local indices, branch targets
-//! that are not instruction boundaries, operand-stack underflow, inconsistent
-//! stack depth where control flow merges, and control falling off the end.
+//! truncated operands, out-of-range constant/local indices and `ThrowError`
+//! kinds, branch targets that are not instruction boundaries, operand-stack
+//! underflow, inconsistent stack depth where control flow merges, and control
+//! falling off the end. Code compiled from source
+//! ([`crate::frontend::compile_script`]) passes the same validation; only its
+//! per-instruction source locations are added beside it.
 //! The stack check also computes the maximum operand-stack depth, in the
 //! spirit of QuickJS's `compute_stack_size` (`research/quickjs/quickjs.c`,
 //! revision 7d1c13c5d8f8); the algorithm here is written fresh.
@@ -16,7 +19,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::instr::{Instr, Opcode, OperandKind};
+use super::instr::{Instr, Opcode, OperandKind, ThrowKind};
+use crate::error::SourceLocation;
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::value::{Primitive, Value};
@@ -47,6 +51,32 @@ pub(crate) struct Code {
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
     pub(crate) max_stack: usize,
+    /// Source text and per-instruction source locations, for code compiled
+    /// from JavaScript; `None` for code loaded from an [`ExecutableSpec`].
+    pub(crate) debug: Option<DebugInfo>,
+}
+
+/// Source information of compiled code. Diagnostic only: it never changes
+/// what an instruction does.
+#[derive(Debug)]
+pub(crate) struct DebugInfo {
+    /// The compiled source text (failure messages quote binding names from it).
+    pub(crate) source: Arc<str>,
+    /// One location per instruction, in instruction order.
+    pub(crate) locations: Box<[SourceLocation]>,
+}
+
+impl Code {
+    /// Source location of instruction `index`, if the code has debug info.
+    pub(crate) fn location(&self, index: usize) -> Option<SourceLocation> {
+        self.debug.as_ref()?.locations.get(index).copied()
+    }
+
+    /// The source text `location` covers, if the code has debug info.
+    pub(crate) fn source_text(&self, location: SourceLocation) -> Option<&str> {
+        let source = &self.debug.as_ref()?.source;
+        source.get(location.span.start..location.span.end)
+    }
 }
 
 /// Immutable executable code; a cheap-to-clone shared handle.
@@ -102,6 +132,16 @@ pub enum ValidationErrorKind {
     ConstantPoolTooLarge {
         count: usize,
     },
+    /// A `ThrowError` operand that names no [`ThrowKind`].
+    UnknownThrowKind {
+        code: u16,
+    },
+    /// Compiled code whose source map does not have one location per
+    /// instruction (a compiler bug; never produced by [`Executable::load`]).
+    SourceMapMismatch {
+        instructions: usize,
+        locations: usize,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -126,6 +166,24 @@ fn err(offset: u32, kind: ValidationErrorKind) -> ValidationError {
 impl Executable {
     /// Validate and load code. Never panics on malformed input.
     pub fn load(spec: ExecutableSpec) -> Result<Executable, ValidationError> {
+        Executable::load_with(spec, None)
+    }
+
+    /// Validate and load code compiled from `source`, with one source
+    /// location per instruction. The code passes exactly the same validation
+    /// as [`Executable::load`]; the locations only feed diagnostics.
+    pub(crate) fn load_compiled(
+        spec: ExecutableSpec,
+        source: Arc<str>,
+        locations: Vec<SourceLocation>,
+    ) -> Result<Executable, ValidationError> {
+        Executable::load_with(spec, Some((source, locations)))
+    }
+
+    fn load_with(
+        spec: ExecutableSpec,
+        debug: Option<(Arc<str>, Vec<SourceLocation>)>,
+    ) -> Result<Executable, ValidationError> {
         use ValidationErrorKind::*;
         let ExecutableSpec {
             name,
@@ -171,6 +229,10 @@ impl Executable {
                     let index = operand as u16;
                     let count = constants.len();
                     return Err(err(offset, ConstantOutOfRange { index, count }));
+                }
+                OperandKind::ThrowKind if ThrowKind::from_u16(operand as u16).is_none() => {
+                    let code = operand as u16;
+                    return Err(err(offset, UnknownThrowKind { code }));
                 }
                 OperandKind::Local if operand >= u32::from(locals) => {
                     let index = operand as u16;
@@ -233,10 +295,47 @@ impl Executable {
                 Opcode::BuilderConj => Instr::BuilderConj,
                 Opcode::BuilderAssoc => Instr::BuilderAssoc,
                 Opcode::Freeze => Instr::Freeze,
+                Opcode::Div => Instr::Div,
+                Opcode::Rem => Instr::Rem,
+                Opcode::Neg => Instr::Neg,
+                Opcode::ToNumber => Instr::ToNumber,
+                Opcode::ToNumberPair => Instr::ToNumberPair,
+                Opcode::Gt => Instr::Gt,
+                Opcode::Le => Instr::Le,
+                Opcode::Ge => Instr::Ge,
+                Opcode::LooseEq => Instr::LooseEq,
+                Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
+                    Some(kind) => Instr::ThrowError(kind),
+                    // Pass 1 rejected unknown kinds.
+                    None => {
+                        return Err(err(
+                            offsets[i],
+                            UnknownThrowKind {
+                                code: operand as u16,
+                            },
+                        ));
+                    }
+                },
             });
         }
 
         let max_stack = check_stack(&instrs, &offsets)?;
+        let debug = match debug {
+            Some((_, locations)) if locations.len() != instrs.len() => {
+                return Err(err(
+                    0,
+                    SourceMapMismatch {
+                        instructions: instrs.len(),
+                        locations: locations.len(),
+                    },
+                ));
+            }
+            Some((source, locations)) => Some(DebugInfo {
+                source,
+                locations: locations.into(),
+            }),
+            None => None,
+        };
         Ok(Executable(Arc::new(Code {
             name: name.into(),
             params,
@@ -245,6 +344,7 @@ impl Executable {
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
+            debug,
         })))
     }
 
@@ -261,6 +361,56 @@ impl Executable {
     /// True when both handles share the same loaded code (no copy was made).
     pub fn same_code(a: &Executable, b: &Executable) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// Number of instructions.
+    pub fn instruction_count(&self) -> usize {
+        self.0.instrs.len()
+    }
+
+    /// Source location of instruction `index`, for code compiled from
+    /// JavaScript source; `None` for hand-assembled code or an index out of
+    /// range.
+    pub fn source_location(&self, index: usize) -> Option<SourceLocation> {
+        self.0.location(index)
+    }
+
+    /// The code re-encoded in the byte format, as a spec that
+    /// [`Executable::load`] accepts again. Source locations are not part of
+    /// the byte format and are not included. Loaded code has only primitive
+    /// constants in this slice, so the constant pool is reproduced exactly.
+    pub fn to_spec(&self) -> ExecutableSpec {
+        let code = &self.0;
+        let mut bytes = Vec::new();
+        for &instr in code.instrs.iter() {
+            let opcode = instr.opcode();
+            bytes.push(opcode as u8);
+            let operand = match instr {
+                Instr::Const(v)
+                | Instr::GetLocal(v)
+                | Instr::SetLocal(v)
+                | Instr::HostEffect(v)
+                | Instr::NewVector(v)
+                | Instr::NewMap(v) => u32::from(v),
+                Instr::ThrowError(kind) => u32::from(kind as u16),
+                // Branch targets are instruction indices once loaded.
+                Instr::Jump(t) | Instr::JumpIfFalse(t) => code.offsets[t as usize],
+                _ => 0,
+            };
+            let size = opcode.operand().size();
+            bytes.extend_from_slice(&operand.to_le_bytes()[..size]);
+        }
+        ExecutableSpec {
+            name: code.name.to_string(),
+            params: code.params,
+            locals: code.locals,
+            code: bytes,
+            constants: code
+                .constants
+                .iter()
+                .filter_map(|v| v.to_primitive())
+                .collect(),
+        }
     }
 }
 
@@ -411,6 +561,79 @@ mod tests {
             kind(load(vec![j, 0xFF, 0xFF, 0xFF, 0xFF, UNDEF, RET], vec![], 0)),
             BadBranchTarget { target: u32::MAX }
         );
+    }
+
+    #[test]
+    fn throw_error_kinds_are_validated_and_specs_round_trip() {
+        let t = Opcode::ThrowError as u8;
+        assert_eq!(
+            kind(load(vec![t, 3, 0, RET], vec![], 0)),
+            UnknownThrowKind { code: 3 }
+        );
+        // Every instruction shape survives `to_spec` and reloads identically.
+        let (c, j, jf) = (
+            Opcode::Const as u8,
+            Opcode::Jump as u8,
+            Opcode::JumpIfFalse as u8,
+        );
+        let code = vec![
+            c,
+            0,
+            0,
+            jf,
+            12,
+            0,
+            0,
+            0,
+            t,
+            1,
+            0,
+            Opcode::Pop as u8, // 0..12
+            Opcode::GetLocal as u8,
+            0,
+            0,
+            j,
+            20,
+            0,
+            0,
+            0, // 12..20
+            RET,
+        ];
+        let exe = load(code.clone(), vec![Primitive::Bool(true)], 1).unwrap();
+        let spec = exe.to_spec();
+        assert_eq!(spec.code, code);
+        assert_eq!(spec.constants, vec![Primitive::Bool(true)]);
+        assert_eq!(exe.instruction_count(), 7);
+        let again = Executable::load(spec).unwrap();
+        assert_eq!(again.0.instrs, exe.0.instrs);
+        assert_eq!(exe.source_location(0), None);
+    }
+
+    #[test]
+    fn compiled_code_needs_one_location_per_instruction() {
+        let spec = ExecutableSpec {
+            name: "t".into(),
+            params: 0,
+            locals: 0,
+            code: vec![UNDEF, RET],
+            constants: vec![],
+        };
+        let at = SourceLocation {
+            span: crate::frontend::Span::new(0, 1),
+            line: 1,
+            column: 1,
+        };
+        let e = Executable::load_compiled(spec.clone(), "x".into(), vec![at]).unwrap_err();
+        assert_eq!(
+            e.kind,
+            SourceMapMismatch {
+                instructions: 2,
+                locations: 1
+            }
+        );
+        let exe = Executable::load_compiled(spec, "x".into(), vec![at, at]).unwrap();
+        assert_eq!(exe.source_location(1), Some(at));
+        assert_eq!(exe.source_location(2), None);
     }
 
     #[test]

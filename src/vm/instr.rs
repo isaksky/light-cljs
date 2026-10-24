@@ -37,26 +37,53 @@
 //! | `BuilderConj`   | 0x1E | –                  | b v → b                | append to a vector builder in place |
 //! | `BuilderAssoc`  | 0x1F | –                  | b key v → b            | set an index or key in a builder in place |
 //! | `Freeze`        | 0x20 | –                  | b → coll               | persistent value of a builder; invalidates it |
+//! | `Div`           | 0x21 | –                  | a b → a/b              | number division |
+//! | `Rem`           | 0x22 | –                  | a b → a%b              | number remainder (sign of the dividend) |
+//! | `Neg`           | 0x23 | –                  | a → -a                 | number negation |
+//! | `ToNumber`      | 0x24 | –                  | v → n                  | JavaScript ToNumber of a primitive |
+//! | `ToNumberPair`  | 0x25 | –                  | a b → n m              | ToNumber of both, `a` first |
+//! | `Gt`            | 0x26 | –                  | a b → a>b              | number greater-than |
+//! | `Le`            | 0x27 | –                  | a b → a<=b             | number less-than-or-equal |
+//! | `Ge`            | 0x28 | –                  | a b → a>=b             | number greater-than-or-equal |
+//! | `LooseEq`       | 0x29 | –                  | a b → a==b             | JavaScript `==` |
+//! | `ThrowError`    | 0x2A | u16 [`ThrowKind`]  | → (never returns)      | fail with a static JavaScript error |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
 //! lifecycle) is in [`crate::vm::intrinsics`]. They are VM operations a
 //! compiler may lower known collection calls to, not user-visible globals.
 //!
+//! Opcodes `0x21`–`0x2A` are what the source compiler
+//! ([`crate::frontend::compile_script`]) needs beyond the core set.
+//! `ToNumber` converts `undefined` to NaN, `null` to `+0` and booleans to 0
+//! or 1; an object operand fails with `UnsupportedOperand` (ToPrimitive on
+//! objects is deferred). `LooseEq` is JavaScript `==` (IsLooselyEqual) for
+//! the supported value types: `null == undefined`, a boolean compares as its
+//! number, objects compare by identity, and comparing an object with a
+//! number or boolean fails with `UnsupportedOperand`. `ThrowError` always
+//! fails the task with the [`ThrowKind`] named by its operand
+//! ([`VmErrorKind::ReferenceError`](crate::VmErrorKind::ReferenceError) or
+//! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError)); until
+//! exceptions exist (clj-quickjs-11) it cannot be caught. For stack checking
+//! it counts as pushing one value, so it can stand in for an expression.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
 //! next byte and are handled in every exhaustive match.
 //!
-//! `Add`, `Sub`, `Mul` and `Lt` support Number operands only. Other operand
-//! types fail the task with
+//! `Add`, `Sub`, `Mul`, `Lt`, `Div`, `Rem`, `Neg`, `Gt`, `Le` and `Ge`
+//! support Number operands only. Other operand types fail the task with
 //! [`VmErrorKind::UnsupportedOperand`](crate::VmErrorKind::UnsupportedOperand)
-//! rather than applying JavaScript's coercions, which are deferred.
+//! rather than applying JavaScript's coercions; a compiler applies them
+//! explicitly with `ToNumber`/`ToNumberPair`.
 //!
 //! The local/branch/return families follow the shape of QuickJS's
 //! `get_loc`/`put_loc`, `goto`/`if_false` and `return` opcodes
 //! (`research/quickjs/quickjs-opcode.h`, revision 7d1c13c5d8f8); no QuickJS
-//! code or encoding is reused. The collection intrinsics follow QuickJS's
+//! code or encoding is reused. `ThrowError` plays the role of QuickJS's
+//! `throw_error` (emitted for assignment to a constant and similar statically
+//! known failures). The collection intrinsics follow QuickJS's
 //! practice of dedicated opcodes for known operations (for example
 //! `array_from`, `get_array_el`, `append` in the same file); their semantics
 //! are this project's own collection contract.
@@ -97,6 +124,16 @@ pub enum Opcode {
     BuilderConj = 0x1E,
     BuilderAssoc = 0x1F,
     Freeze = 0x20,
+    Div = 0x21,
+    Rem = 0x22,
+    Neg = 0x23,
+    ToNumber = 0x24,
+    ToNumberPair = 0x25,
+    Gt = 0x26,
+    Le = 0x27,
+    Ge = 0x28,
+    LooseEq = 0x29,
+    ThrowError = 0x2A,
 }
 
 /// Operand encoding of an opcode.
@@ -113,13 +150,19 @@ pub(crate) enum OperandKind {
     HostOp,
     /// u16 element (vector) or entry (map) count of a constructor.
     Count,
+    /// u16 [`ThrowKind`] selector.
+    ThrowKind,
 }
 
 impl OperandKind {
     pub(crate) fn size(self) -> usize {
         match self {
             OperandKind::None => 0,
-            OperandKind::Const | OperandKind::Local | OperandKind::HostOp | OperandKind::Count => 2,
+            OperandKind::Const
+            | OperandKind::Local
+            | OperandKind::HostOp
+            | OperandKind::Count
+            | OperandKind::ThrowKind => 2,
             OperandKind::Target => 4,
         }
     }
@@ -162,6 +205,16 @@ impl Opcode {
             0x1E => BuilderConj,
             0x1F => BuilderAssoc,
             0x20 => Freeze,
+            0x21 => Div,
+            0x22 => Rem,
+            0x23 => Neg,
+            0x24 => ToNumber,
+            0x25 => ToNumberPair,
+            0x26 => Gt,
+            0x27 => Le,
+            0x28 => Ge,
+            0x29 => LooseEq,
+            0x2A => ThrowError,
             _ => return None,
         })
     }
@@ -202,6 +255,16 @@ impl Opcode {
             BuilderConj => "builder_conj",
             BuilderAssoc => "builder_assoc",
             Freeze => "freeze",
+            Div => "div",
+            Rem => "rem",
+            Neg => "neg",
+            ToNumber => "to_number",
+            ToNumberPair => "to_number_pair",
+            Gt => "gt",
+            Le => "le",
+            Ge => "ge",
+            LooseEq => "loose_eq",
+            ThrowError => "throw_error",
         }
     }
 
@@ -213,10 +276,40 @@ impl Opcode {
             Jump | JumpIfFalse => OperandKind::Target,
             HostEffect => OperandKind::HostOp,
             NewVector | NewMap => OperandKind::Count,
+            ThrowError => OperandKind::ThrowKind,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
-            | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze => OperandKind::None,
+            | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
+            | ToNumberPair | Gt | Le | Ge | LooseEq => OperandKind::None,
         }
+    }
+}
+
+/// The statically known JavaScript error a `ThrowError` instruction raises
+/// (its u16 operand). The compiler emits these where JavaScript throws at run
+/// time for a reason known at compile time, so the error still happens only
+/// if and when that code runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u16)]
+pub enum ThrowKind {
+    /// ReferenceError: a reference to a name with no binding (strict mode).
+    Unresolvable = 0,
+    /// ReferenceError: a `let`/`const` binding used or assigned before its
+    /// declaration ran (temporal dead zone).
+    Uninitialized = 1,
+    /// TypeError: assignment to a `const` binding.
+    ConstAssignment = 2,
+}
+
+impl ThrowKind {
+    /// Decode an operand; `None` for unassigned values.
+    pub fn from_u16(code: u16) -> Option<ThrowKind> {
+        Some(match code {
+            0 => ThrowKind::Unresolvable,
+            1 => ThrowKind::Uninitialized,
+            2 => ThrowKind::ConstAssignment,
+            _ => return None,
+        })
     }
 }
 
@@ -257,6 +350,16 @@ pub(crate) enum Instr {
     BuilderConj,
     BuilderAssoc,
     Freeze,
+    Div,
+    Rem,
+    Neg,
+    ToNumber,
+    ToNumberPair,
+    Gt,
+    Le,
+    Ge,
+    LooseEq,
+    ThrowError(ThrowKind),
 }
 
 impl Instr {
@@ -294,6 +397,16 @@ impl Instr {
             Instr::BuilderConj => Opcode::BuilderConj,
             Instr::BuilderAssoc => Opcode::BuilderAssoc,
             Instr::Freeze => Opcode::Freeze,
+            Instr::Div => Opcode::Div,
+            Instr::Rem => Opcode::Rem,
+            Instr::Neg => Opcode::Neg,
+            Instr::ToNumber => Opcode::ToNumber,
+            Instr::ToNumberPair => Opcode::ToNumberPair,
+            Instr::Gt => Opcode::Gt,
+            Instr::Le => Opcode::Le,
+            Instr::Ge => Opcode::Ge,
+            Instr::LooseEq => Opcode::LooseEq,
+            Instr::ThrowError(_) => Opcode::ThrowError,
         }
     }
 
@@ -302,14 +415,15 @@ impl Instr {
     pub(crate) fn stack_effect(self) -> (usize, usize) {
         use Instr::*;
         match self {
-            Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder => {
-                (0, 1)
-            }
+            Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
+            | ThrowError(_) => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return => (1, 0),
             Dup => (1, 2),
-            Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj => (2, 1),
+            Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
+            | Rem | Gt | Le | Ge | LooseEq => (2, 1),
+            ToNumberPair => (2, 2),
             GetOr | Assoc | BuilderAssoc => (3, 1),
-            Not | HostEffect(_) | Count | PopLast | Freeze => (1, 1),
+            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber => (1, 1),
             Jump(_) => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
@@ -331,6 +445,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 32);
+        assert_eq!(assigned, 42);
     }
 }

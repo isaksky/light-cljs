@@ -20,4 +20,4 @@ pub mod intrinsics;
 
 pub use asm::{Assembler, Label};
 pub use executable::{Executable, ExecutableSpec, ValidationError, ValidationErrorKind};
-pub use instr::Opcode;
+pub use instr::{Opcode, ThrowKind};

@@ -5,8 +5,10 @@ are in [`design.md`](design.md); the supported/deferred list and exact commands
 are in the [README](../README.md). This note describes what exists and labels
 planned shapes as planned.
 
-No JavaScript source frontend exists yet. Every program in the tests and the
-example is hand-assembled bytecode (`Assembler`): an early VM test tool, not
+JavaScript source in the documented subset ([`grammar.md`](grammar.md)) is
+parsed and compiled to VM bytecode (`frontend::compile_script`,
+`frontend::compile_function`; see "Source compilation" below). Programs built
+with the `Assembler` are hand-assembled bytecode: an early VM test tool, not
 JavaScript source support.
 
 ## Boundaries
@@ -251,6 +253,52 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
 - **Deferred.** No VM intrinsic exposes the check (the instruction set is
   unchanged), and `spawn` arguments are not checked.
 
+## Source compilation (clj-quickjs-22)
+
+```
+ source ─► parse_script ─► ast::Script ─► lower (resolve + emit) ─► ExecutableSpec
+                                                 │ one SourceLocation per instruction
+                                                 ▼
+                  Executable::load_compiled = the same validation as Executable::load
+```
+
+- **Pipeline** (`src/frontend/lower.rs`): one in-order pass over the syntax
+  tree (at most 256 nodes high, so recursion is bounded) resolves bindings
+  and emits bytes through a private emitter. The output goes through the
+  same validator as any externally built `ExecutableSpec` (operands, branch
+  targets, stack effects, falling off the end); there is no unvalidated path
+  into the VM. `Executable::to_spec` re-encodes loaded code, so tests can
+  corrupt compiled bytecode and check that the validator rejects it.
+- **Bindings.** Every `let`/`const` binding and parameter is a frame local;
+  entering a statement list declares all of its bindings first (sibling
+  blocks reuse slots). Redeclaration in one scope is a compile-time
+  `SyntaxError` (an early error in JavaScript). Unknown names, use before
+  initialization and assignment to a `const` are run-time errors in
+  JavaScript, so the compiler emits `throw_error` (opcode `0x2A`, modelled on
+  QuickJS's `throw_error`) at that point: the task fails with
+  `VmErrorKind::ReferenceError` or `TypeError` only if that code runs. With no
+  closures, `break` or `continue` in the subset, initialization is decided
+  statically by source position; closures (clj-quickjs-20/21) will need a
+  run-time check.
+- **Operators.** New number-only opcodes (`div`, `rem`, `neg`, `gt`, `le`,
+  `ge`) follow the existing `add`/`sub`/`mul`/`lt` rule. The compiler applies
+  JavaScript ToNumber explicitly (`to_number`, `to_number_pair`) to operands
+  that are not statically numbers, after both operands are evaluated; with no
+  string values that is JavaScript's semantics. `loose_eq` is `==` for the
+  supported value types; `!=`/`!==` are the equality opcode plus `not`;
+  `&&`/`||`/`?:` are branches.
+- **Completion value.** A script's tasks complete with its completion value
+  (what `eval` would return), kept in local 0 and reset by `if`/`while` as
+  ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
+  `eval_ret_idx`. `compile_function` compiles one function declaration as a
+  task entry point (parameters are locals `0..n`, `return` completes the task).
+- **Source positions.** Compiled code keeps the source text and one
+  `SourceLocation` (byte span, line, column) per instruction, outside the byte
+  format; it never affects execution. A failure's `Diagnostic::source` is the
+  failing instruction's location, `Task::source_location` is the location of
+  the instruction a ready (for example yielded) task will run next, and
+  `throw_error` messages quote the binding name from the source.
+
 ## Task/dependency continuation shape (planned)
 
 Dependency waits reuse the same mechanism as `Yielded`: the task returns from
@@ -349,8 +397,18 @@ references only:
   user-extensible hooks. QuickJS has no persistent collections; none of its
   code is used for them.
 
-No QuickJS source, tests or encodings were copied or adapted, so no QuickJS
-license header applies to this repository's code yet. Any future adapted
-material must keep the notice from `research/quickjs/LICENSE` (MIT, Copyright
-(c) 2017-2021 Fabrice Bellard and Charlie Gordon) and be listed here with its
-source path and revision.
+- `research/quickjs/quickjs.c` (clj-quickjs-22): `compute_stack_size` for the
+  validator's stack-depth walk (already written fresh in clj-quickjs-1), the
+  `throw_error` opcode emitted for constant assignment, and the
+  `eval_ret_idx` completion-value local. No code was copied.
+
+No QuickJS source or encodings were copied. Adapted material keeps the notice
+from `research/quickjs/LICENSE` (MIT, Copyright (c) 2017-2021 Fabrice Bellard
+and Charlie Gordon) and is listed here with its source path and revision:
+
+- `tests/fixtures/js/quickjs_op1_while.js` (clj-quickjs-22): the supported
+  cases of `test_op1` in `research/quickjs/tests/test_language.js` and
+  `test_while` in `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8.
+  Modified: rewritten for the subset (`let` for `var`, `x = x + 1` for `++`,
+  failure flags instead of `assert()` calls); the bitwise, `**` and string
+  cases are omitted. The file carries the full notice.

@@ -24,7 +24,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use crate::dep::{self, DependencyLog, DependencyTable, Need, NeedError};
-use crate::error::{VmError, VmErrorKind};
+use crate::error::{SourceLocation, VmError, VmErrorKind};
 use crate::heap::gc::{MutatorToken, RootCategory, RootSource, Trace};
 use crate::heap::{Heap, ObjectId, Rooted};
 use crate::host::{Host, NoHost};
@@ -223,6 +223,16 @@ impl Task {
             .clone()
     }
 
+    /// Source location of the next instruction this task will execute, for
+    /// a ready task running code compiled from JavaScript source. `None` for
+    /// hand-assembled code, or while the task is running or finished.
+    pub fn source_location(&self) -> Option<SourceLocation> {
+        match &*self.0.body.try_lock().ok()? {
+            TaskBody::Ready(vm) => self.0.executable.0.location(vm.frame.pc),
+            TaskBody::Finished => None,
+        }
+    }
+
     /// Current status. A snapshot: it may change as soon as it is returned.
     /// During a collection pause the collector briefly locks the task to
     /// trace it, so a ready task may momentarily report `Running`.
@@ -393,6 +403,7 @@ fn guard_failure(task: &TaskInner, kind: VmErrorKind, message: &str, pc: usize) 
             instruction: pc,
             byte_offset: code.offsets.get(pc).copied(),
             opcode: code.instrs.get(pc).map(|i| i.opcode()),
+            source: code.location(pc),
         },
     }
 }
@@ -567,6 +578,64 @@ mod tests {
         assert_eq!(complete(c.run().unwrap()), ValueView::Number(6.0));
     }
 
+    /// The opcodes added for the source compiler, on operands source code
+    /// cannot produce yet (objects), and `throw_error` without source text.
+    #[test]
+    fn compiler_opcodes_reject_objects_and_throw_without_source() {
+        use Opcode::*;
+        let rt = Runtime::new();
+        let run = |build: &dyn Fn(&mut Assembler)| {
+            let mut asm = Assembler::new();
+            build(&mut asm);
+            asm.op(Return);
+            let exe = asm.finish("ops", 0, 1).unwrap();
+            rt.spawn(&exe, &[]).unwrap().run().unwrap()
+        };
+        let unsupported: [&dyn Fn(&mut Assembler); 5] = [
+            &|a| {
+                a.op(NewObject).op(ToNumber);
+            },
+            &|a| {
+                a.op(NewObject).op(Neg);
+            },
+            &|a| {
+                a.constant(num(1.0)).op(NewObject).op(ToNumberPair).op(Pop);
+            },
+            &|a| {
+                a.op(NewObject).constant(num(2.0)).op(Div);
+            },
+            &|a| {
+                a.op(NewObject).constant(Primitive::Bool(true)).op(LooseEq);
+            },
+        ];
+        for build in unsupported {
+            assert_eq!(failed(run(build)).kind(), VmErrorKind::UnsupportedOperand);
+        }
+        // `==` on objects is identity; an object never equals null.
+        let same = run(&|a| {
+            a.op(NewObject).set_local(0).get_local(0).get_local(0);
+            a.op(LooseEq);
+        });
+        assert_eq!(complete(same), ValueView::Bool(true));
+        let null = run(&|a| {
+            a.op(NewObject).constant(Primitive::Null).op(LooseEq);
+        });
+        assert_eq!(complete(null), ValueView::Bool(false));
+        // `neg` is number-only (a compiler emits `to_number` first).
+        let neg = run(&|a| {
+            a.constant(Primitive::Bool(true)).op(Neg);
+        });
+        assert_eq!(failed(neg).kind(), VmErrorKind::UnsupportedOperand);
+
+        let thrown = failed(run(&|a| {
+            a.op(ThrowError).raw(2).raw(0);
+        }));
+        assert_eq!(thrown.kind(), VmErrorKind::TypeError);
+        assert_eq!(thrown.message(), "assignment to a constant variable");
+        assert_eq!(thrown.diagnostic().opcode, Some(ThrowError));
+        assert_eq!(thrown.diagnostic().source, None);
+    }
+
     #[test]
     fn missing_arguments_are_undefined_and_extra_ones_ignored() {
         let rt = Runtime::new();
@@ -657,6 +726,7 @@ mod tests {
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,
+                debug: None,
             };
             let exe = Executable(Arc::new(code));
             let err = failed(rt.spawn(&exe, &[]).unwrap().run().unwrap());

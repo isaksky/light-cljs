@@ -8,9 +8,12 @@ agreement by tests: every `js accept` example below must parse, and every
 `js reject` example must fail with the stated error kind at the stated
 `line:column` (`frontend::tests::grammar_doc_examples`).
 
-Status: lexing and parsing only. Nothing here executes yet; lowering to VM
-bytecode, binding resolution and closures are later pellets
-(clj-quickjs-22, clj-quickjs-21).
+Status: everything below parses. Scripts made of literals other than
+strings, bindings, operators, assignment, blocks, `if`/`else` and `while`
+also compile to VM bytecode and execute (`frontend::compile_script`; see
+"Execution" below). String values, calls, property access, functions and
+closures parse but are rejected by the compiler until later pellets
+(clj-quickjs-21, -20, -4).
 
 ## Semantics model
 
@@ -139,10 +142,11 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
-- **Scope early errors are not checked by the parser.** Redeclaration
-  (`let a; let a;`), `let` shadowing a parameter in the same function body,
-  temporal-dead-zone use and assignment to a `const` are binding-resolution
-  errors, left to the resolver (clj-quickjs-22).
+- **Scope errors are checked by the compiler, not the parser.**
+  `parse_script` accepts redeclaration (`let a; let a;`) and a `let` that
+  repeats a parameter name; `compile_script` rejects them (see
+  "Execution"). Temporal-dead-zone use and assignment to a `const` are
+  run-time errors, as in JavaScript.
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
@@ -168,6 +172,59 @@ checks left to later stages:
 - **Directive prologues are not interpreted**: `"use strict"` is an ordinary
   expression statement, and every script is strict anyway.
 - Hashbang comments (`#!`) are rejected as an unknown token.
+
+## Execution
+
+`frontend::compile_script(name, source)` parses, resolves bindings and lowers
+a script to a validated `Executable` (`src/frontend/lower.rs`); a task
+running it completes with the script's **completion value**, the value
+JavaScript `eval` would return (the last expression statement that ran;
+`if` and `while` produce `undefined` unless their body produced a value).
+`frontend::compile_function(source)` compiles a source made of exactly one
+function declaration into an entry point whose parameters are the task's
+arguments (missing ones are `undefined`); `return` completes the task and
+falling off the end returns `undefined`.
+
+Executed, with JavaScript semantics:
+
+| Form | Semantics |
+|------|-----------|
+| Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
+| `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
+| `+ - * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign |
+| `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false) |
+| `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`) |
+| `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers |
+| `!`, `&&`, `\|\|`, `? :`, `if`, `while` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`); `&&`/`\|\|` short-circuit and return an operand |
+| `x = v` | evaluates `v`, then stores; the expression's value is `v` |
+| `return` (in `compile_function`) | completes the task |
+
+Errors:
+
+| Situation | When | Reported as |
+|-----------|------|-------------|
+| A name declared twice in one block, script or function body (including a `let` that repeats a parameter) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
+| String values, calls, property access, function declarations and expressions | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| More than 65,535 live bindings or 65,536 distinct constants | compile time | `SyntaxError`, kind `TooLarge` |
+| Reading or assigning a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading or assigning a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
+| Assigning to an initialized `const` | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
+
+Run-time failures carry the source position (`Diagnostic::source`, line and
+column) of the failing reference or operator. These errors cannot be caught
+until `throw`/`try` exist (clj-quickjs-11).
+
+Gaps specific to execution:
+
+- **No string values**, so `+` and the relational operators lower to
+  numeric operations; they must change when strings arrive.
+- **No objects from source.** Operators applied to objects (reachable only
+  through hand-built bytecode today) fail with `UnsupportedOperand` where
+  JavaScript would call ToPrimitive.
+- **No functions or closures yet.** Because the subset has no closures,
+  `break`, `continue` or labels, whether a binding is initialized is known
+  from source order alone; the compiler decides it statically. Closures
+  will need a run-time check.
 
 ## Examples
 

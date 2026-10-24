@@ -1,11 +1,14 @@
-//! JavaScript source frontend: lexer and parser for the documented subset
-//! (`docs/design.md` §§7, 12–14).
+//! JavaScript source frontend: lexer, parser and compiler for the documented
+//! subset (`docs/design.md` §§7, 12–14).
 //!
 //! The accepted grammar, the rejected forms and the known gaps are listed in
 //! `docs/grammar.md`; that document and this parser are kept in agreement by
-//! the tests in `frontend/tests.rs`. Lowering the AST to VM bytecode is a
-//! later stage (pellet clj-quickjs-22); nothing here executes code.
+//! the tests in `frontend/tests.rs`.
 //!
+//! * [`compile_script`] / [`compile_function`]: source text to a validated
+//!   [`Executable`], via binding resolution and lowering (`frontend/lower.rs`;
+//!   `docs/grammar.md`, "Execution"). Forms that parse but cannot execute yet
+//!   (strings, calls, property access, functions) are compile errors.
 //! * [`parse_script`]: source text to an [`ast::Script`], or the first
 //!   [`SyntaxError`]. No AST is produced for input that uses an unsupported
 //!   form; the error names the form and its position.
@@ -21,12 +24,15 @@
 
 pub mod ast;
 pub mod lexer;
+mod lower;
 mod parser;
 
 #[cfg(test)]
 mod tests;
 
 use std::fmt;
+
+use crate::vm::Executable;
 
 /// Nesting budget, in units: each nesting construct (parentheses, blocks,
 /// functions, prefix operators, statement bodies, links of operator, member
@@ -86,6 +92,12 @@ pub enum SyntaxErrorKind {
     Invalid,
     /// Nesting deeper than [`MAX_NESTING`].
     TooDeep,
+    /// The compiled code would exceed a bytecode limit (65,535 simultaneously
+    /// live bindings, 65,536 distinct constants, or 4 GiB of code).
+    TooLarge,
+    /// The compiler produced bytecode that the validator rejected. This is a
+    /// compiler bug, reported instead of panicking.
+    Internal,
 }
 
 /// A positioned frontend diagnostic.
@@ -168,4 +180,84 @@ pub fn line_column(source: &str, offset: usize) -> (u32, u32) {
 /// produced for input containing an unsupported or malformed form.
 pub fn parse_script(source: &str) -> Result<ast::Script, SyntaxError> {
     parser::Parser::new(source).parse_script()
+}
+
+/// Compile `source` as a script of the documented subset into a validated
+/// [`Executable`] named `name` (`docs/grammar.md`, "Execution").
+///
+/// A task running it completes with the script's completion value, as
+/// JavaScript `eval` would return it: the value of the last expression
+/// statement that ran, or `undefined` (an `if` or `while` statement resets it
+/// to `undefined` before running). Every instruction carries the
+/// [`SourceLocation`](crate::SourceLocation) of the construct it was lowered
+/// from.
+///
+/// Errors: any [`parse_script`] error; a redeclared binding in one scope
+/// ([`SyntaxErrorKind::Invalid`], a JavaScript early error); forms that parse
+/// but cannot execute yet: string values, calls, property access and
+/// functions ([`SyntaxErrorKind::Unsupported`]); and bytecode limits
+/// ([`SyntaxErrorKind::TooLarge`]). Unknown names, use of a binding before its
+/// declaration ran, and assignment to a `const` are not compile errors: as in
+/// JavaScript, they fail the task when (and only if) that code runs.
+pub fn compile_script(name: &str, source: &str) -> Result<Executable, SyntaxError> {
+    let script = parse_script(source)?;
+    lower::lower_script(name, source, &script)
+}
+
+/// Compile `source`, which must consist of exactly one function declaration,
+/// into an executable whose parameters are that function's parameters: the
+/// entry point of a task, spawned with arguments. `return` completes the
+/// task; falling off the end returns `undefined`. The body follows the same
+/// rules as [`compile_script`]; nested functions are not supported yet
+/// (clj-quickjs-21).
+pub fn compile_function(source: &str) -> Result<Executable, SyntaxError> {
+    let script = parse_script(source)?;
+    match script.body.as_slice() {
+        [
+            ast::Stmt {
+                kind: ast::StmtKind::FunctionDecl(function),
+                ..
+            },
+        ] => lower::lower_function(source, function),
+        _ => Err(SyntaxError::new(
+            source,
+            SyntaxErrorKind::Unsupported,
+            script.span,
+            "compile_function expects exactly one function declaration",
+        )),
+    }
+}
+
+/// 1-based `(line, column)` of each offset in `offsets`, which must be sorted
+/// ascending: the same result as [`line_column`] for each, in one pass over
+/// the source.
+pub(crate) fn line_columns(source: &str, offsets: &[usize]) -> Vec<(u32, u32)> {
+    let (mut line, mut column): (u32, u32) = (1, 1);
+    let mut pos = 0;
+    let mut after_cr = false;
+    let mut out = Vec::with_capacity(offsets.len());
+    for &offset in offsets {
+        let mut target = offset.min(source.len());
+        while !source.is_char_boundary(target) {
+            target -= 1;
+        }
+        while pos < target {
+            let Some(c) = source[pos..].chars().next() else {
+                break;
+            };
+            pos += c.len_utf8();
+            match c {
+                // The LF of a CRLF pair ends no further line.
+                '\n' if after_cr => {}
+                '\r' | '\n' | '\u{2028}' | '\u{2029}' => {
+                    line = line.saturating_add(1);
+                    column = 1;
+                }
+                _ => column = column.saturating_add(1),
+            }
+            after_cr = c == '\r';
+        }
+        out.push((line, column));
+    }
+    out
 }

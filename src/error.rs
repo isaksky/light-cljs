@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::collections::{BuilderError, CollectionError};
+use crate::frontend::Span;
 use crate::ids::{TaskId, WorldId};
 use crate::vm::Opcode;
 
@@ -33,6 +34,14 @@ pub enum VmErrorKind {
     /// A builder operation was rejected by the builder lifecycle: another
     /// task's builder, a frozen builder, or one whose owner has finished.
     Builder(BuilderError),
+    /// A JavaScript ReferenceError raised by compiled source: a reference to
+    /// an undeclared name, or use of a `let`/`const` binding before its
+    /// declaration ran (temporal dead zone). Not catchable until exceptions
+    /// exist (clj-quickjs-11).
+    ReferenceError,
+    /// A JavaScript TypeError raised by compiled source: assignment to a
+    /// `const` binding.
+    TypeError,
 }
 
 /// Where a failure happened.
@@ -48,6 +57,26 @@ pub struct Diagnostic {
     /// internal error where the position itself was invalid).
     pub byte_offset: Option<u32>,
     pub opcode: Option<Opcode>,
+    /// Source position of the failing instruction, for code compiled from
+    /// JavaScript source (`None` for hand-assembled bytecode).
+    pub source: Option<SourceLocation>,
+}
+
+/// A position in JavaScript source attached to a compiled instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// Byte range of the source construct the instruction was lowered from.
+    pub span: Span,
+    /// 1-based line of `span.start`.
+    pub line: u32,
+    /// 1-based column of `span.start`, in Unicode scalar values.
+    pub column: u32,
+}
+
+impl fmt::Display for SourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
 }
 
 /// A runtime failure with its diagnostic context.
@@ -86,7 +115,11 @@ impl fmt::Display for VmError {
             d.byte_offset.map_or("?".to_string(), |o| o.to_string()),
             d.task,
             d.world
-        )
+        )?;
+        match d.source {
+            Some(at) => write!(f, " at source {at}"),
+            None => Ok(()),
+        }
     }
 }
 

@@ -27,7 +27,7 @@ use crate::host::{Host, HostCall, call_leaf};
 use crate::value::Value;
 use crate::vm::executable::Code;
 use crate::vm::frames::VmState;
-use crate::vm::instr::{Instr, Opcode};
+use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
 
 /// How a run of the interpreter loop ended.
@@ -51,6 +51,8 @@ pub(crate) enum Fault {
     Collection(CollectionError),
     /// A builder operation was rejected by the builder lifecycle.
     Builder(BuilderError),
+    /// A `ThrowError` instruction ran.
+    Throw(ThrowKind),
 }
 
 fn pop(operands: &mut Vec<Value>) -> Result<Value, Fault> {
@@ -74,6 +76,58 @@ fn numbers(op: Opcode, a: Value, b: Value) -> Result<(f64, f64), Fault> {
             a.type_name(),
             b.type_name()
         ))),
+    }
+}
+
+/// JavaScript ToNumber for primitives. Objects need ToPrimitive, which is
+/// deferred, so they are rejected explicitly.
+fn to_number(v: Value) -> Result<f64, Fault> {
+    match v {
+        Value::Undefined => Ok(f64::NAN),
+        Value::Null => Ok(0.0),
+        Value::Bool(b) => Ok(if b { 1.0 } else { 0.0 }),
+        Value::Number(x) => Ok(x),
+        Value::Object(_) => Err(Fault::Unsupported(
+            "converting an object to a number (ToPrimitive) is not supported".to_string(),
+        )),
+    }
+}
+
+/// JavaScript `==` (IsLooselyEqual) for the supported value types. Strings
+/// do not exist yet; an object compared with a number or boolean would need
+/// ToPrimitive, which is deferred, so that case is rejected explicitly.
+fn loose_equals(a: Value, b: Value) -> Result<bool, Fault> {
+    use Value::*;
+    Ok(match (a, b) {
+        (Undefined | Null, Undefined | Null) => true,
+        (Undefined | Null, _) | (_, Undefined | Null) => false,
+        (Object(_), Object(_)) | (Number(_), Number(_)) | (Bool(_), Bool(_)) => a.strict_equals(b),
+        (Number(_), Bool(_)) | (Bool(_), Number(_)) => to_number(a)? == to_number(b)?,
+        (Object(_), _) | (_, Object(_)) => {
+            return Err(Fault::Unsupported(format!(
+                "loose_eq between {} and {} needs ToPrimitive, which is not supported",
+                a.type_name(),
+                b.type_name()
+            )));
+        }
+    })
+}
+
+/// Failure message of a `ThrowError`, naming the binding when the code has
+/// source text.
+fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
+    let name = code.location(pc).and_then(|at| code.source_text(at));
+    match (kind, name) {
+        (ThrowKind::Unresolvable, Some(n)) => format!("{n} is not defined"),
+        (ThrowKind::Unresolvable, None) => "reference to an undeclared name".to_string(),
+        (ThrowKind::Uninitialized, Some(n)) => {
+            format!("cannot access '{n}' before initialization")
+        }
+        (ThrowKind::Uninitialized, None) => "binding accessed before initialization".to_string(),
+        (ThrowKind::ConstAssignment, Some(n)) => {
+            format!("assignment to constant variable '{n}'")
+        }
+        (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
     }
 }
 
@@ -114,7 +168,15 @@ fn step(
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             ops.push(v);
         }
-        Instr::Add | Instr::Sub | Instr::Mul | Instr::Lt => {
+        Instr::Add
+        | Instr::Sub
+        | Instr::Mul
+        | Instr::Lt
+        | Instr::Div
+        | Instr::Rem
+        | Instr::Gt
+        | Instr::Le
+        | Instr::Ge => {
             let b = pop(ops)?;
             let a = pop(ops)?;
             let (x, y) = numbers(instr.opcode(), a, b)?;
@@ -122,7 +184,14 @@ fn step(
                 Instr::Add => Value::Number(x + y),
                 Instr::Sub => Value::Number(x - y),
                 Instr::Mul => Value::Number(x * y),
-                _ => Value::Bool(x < y),
+                Instr::Div => Value::Number(x / y),
+                // Rust's `%` on f64 is C `fmod`: the result has the sign of
+                // the dividend, as JavaScript's `%` requires.
+                Instr::Rem => Value::Number(x % y),
+                Instr::Lt => Value::Bool(x < y),
+                Instr::Gt => Value::Bool(x > y),
+                Instr::Le => Value::Bool(x <= y),
+                _ => Value::Bool(x >= y),
             });
         }
         Instr::StrictEq => {
@@ -134,6 +203,33 @@ fn step(
             let v = pop(ops)?;
             ops.push(Value::Bool(!v.truthy()));
         }
+        Instr::Neg => match pop(ops)? {
+            Value::Number(x) => ops.push(Value::Number(-x)),
+            v => {
+                return Err(Fault::Unsupported(format!(
+                    "neg supports number operands only, got {}",
+                    v.type_name()
+                )));
+            }
+        },
+        Instr::ToNumber => {
+            let v = pop(ops)?;
+            ops.push(Value::Number(to_number(v)?));
+        }
+        Instr::ToNumberPair => {
+            let b = pop(ops)?;
+            let a = pop(ops)?;
+            let x = to_number(a)?;
+            let y = to_number(b)?;
+            ops.push(Value::Number(x));
+            ops.push(Value::Number(y));
+        }
+        Instr::LooseEq => {
+            let b = pop(ops)?;
+            let a = pop(ops)?;
+            ops.push(Value::Bool(loose_equals(a, b)?));
+        }
+        Instr::ThrowError(kind) => return Err(Fault::Throw(kind)),
         Instr::Jump(target) => frame.pc = target as usize,
         Instr::JumpIfFalse(target) => {
             if !pop(ops)?.truthy() {
@@ -220,6 +316,15 @@ pub(crate) fn execute(
             Err(Fault::OutOfMemory(m)) => (VmErrorKind::OutOfMemory, m.to_string()),
             Err(Fault::Collection(e)) => (VmErrorKind::Collection(e), e.to_string()),
             Err(Fault::Builder(e)) => (VmErrorKind::Builder(e), e.to_string()),
+            Err(Fault::Throw(kind)) => {
+                let error_kind = match kind {
+                    ThrowKind::Unresolvable | ThrowKind::Uninitialized => {
+                        VmErrorKind::ReferenceError
+                    }
+                    ThrowKind::ConstAssignment => VmErrorKind::TypeError,
+                };
+                (error_kind, throw_message(code, pc, kind))
+            }
         };
         return Exit::Fail(VmError {
             kind,
@@ -231,6 +336,7 @@ pub(crate) fn execute(
                 instruction: pc,
                 byte_offset: code.offsets.get(pc).copied(),
                 opcode: instr.map(Instr::opcode),
+                source: code.location(pc),
             },
         });
     }
