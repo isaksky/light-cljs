@@ -25223,3 +25223,90 @@ fn intl_display_names_long_calendar_budget() {
         assert_eq!(eval(&source), ValueView::Bool(true), "{suffix}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. SupportedLocalesOf uses ToObject
+/// rather than the constructor's strict GetOptionsObject rule.
+#[test]
+fn intl_display_names_supported_locales_options() {
+    for options in ["1", "true", "'text'", "Symbol()", "1n", "undefined"] {
+        let source = format!(
+            "let a=Intl.DisplayNames.supportedLocalesOf(['en','fr','xx'],{options});a.length === 2 && a[0] === 'en' && a[1] === 'fr'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{options}");
+    }
+    assert_eq!(
+        eval(
+            "let caught=false;try{Intl.DisplayNames.supportedLocalesOf('en',null);}catch(e){caught=e instanceof TypeError;}caught"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Callback exceptions preserve
+/// identity, stop subsequent reads, and unwind after dependency waits.
+#[test]
+fn intl_display_names_callback_failures() {
+    for (source, failed) in [
+        (
+            "let sentinel={};let log='';let caught=false;try{new Intl.DisplayNames('en',{get style(){log+='s';__rt.need(1,1);throw sentinel;},get type(){log+='t';return 'region';}});}catch(e){caught=e === sentinel;}caught && log === 's'",
+            false,
+        ),
+        (
+            "let sentinel={};let log='';let caught=false;try{new Intl.DisplayNames('en',{get type(){log+='t';return {toString(){log+='c';__rt.need(1,1);throw sentinel;}};},get fallback(){log+='f';return 'none';}});}catch(e){caught=e === sentinel;}caught && log === 'tc'",
+            false,
+        ),
+        (
+            "let sentinel={};let log='';let caught=false;let d=new Intl.DisplayNames('en',{type:'region'});try{d.of({toString(){log+='c';__rt.need(1,1);throw sentinel;}});}catch(e){caught=e === sentinel;}caught && log === 'c'",
+            false,
+        ),
+        (
+            "let log='';let caught=false;try{new Intl.DisplayNames('en',{get type(){log+='t';__rt.need(1,1);log+='x';return 'region';},get fallback(){log+='f';return 'none';}});}catch(e){caught=e.cause === 42;}caught && log === 't'",
+            true,
+        ),
+        (
+            "let log='';let caught=false;let d=new Intl.DisplayNames('en',{type:'region'});try{d.of({toString(){log+='c';__rt.need(1,1);log+='x';return 'US';}});}catch(e){caught=e.cause === 42;}caught && log === 'c'",
+            true,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waited = 0;
+        let mut complete = false;
+        for _ in 0..3000 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert_eq!(waited, 1);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(42.0));
+                    let completion = if failed {
+                        Completion::Failed(&value)
+                    } else {
+                        Completion::Ready(&value)
+                    };
+                    task = rt
+                        .complete(request.key(), request.producer(), completion)
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete);
+        assert_eq!(waited, 1);
+    }
+}

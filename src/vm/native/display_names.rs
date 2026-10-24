@@ -31,6 +31,7 @@ enum Stage {
     CodeValue,
     Of,
     Calendar,
+    Cleanup,
 }
 #[derive(Debug)]
 pub(super) struct State {
@@ -46,6 +47,8 @@ pub(super) struct State {
     calendar: Option<UnitCursor>,
     normalized: JsString,
     subtag_len: usize,
+    discard: Option<UnitCursor>,
+    failure: Option<&'static str>,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -67,9 +70,11 @@ impl State {
         task: TaskId,
     ) -> Result<Self, Fault> {
         let of = which == builtin::Builtin::IntlDisplayNamesOf;
-        if of {
-            display_names::record(heap, task, this)?;
-        }
+        let slots = if of {
+            Some(display_names::record(heap, task, this)?)
+        } else {
+            None
+        };
         let code = args.first().cloned().unwrap_or(Value::Undefined);
         Ok(Self {
             list: if of {
@@ -84,11 +89,22 @@ impl State {
             stage: if of { Stage::Code } else { Stage::List },
             supported: which == builtin::Builtin::IntlDisplayNamesSupportedLocales,
             option: 0,
-            slots: None,
+            slots,
             calendar: None,
             normalized: JsString::from(""),
             subtag_len: 0,
+            discard: None,
+            failure: None,
         })
+    }
+    fn reject(&mut self, kind: &'static str) -> Action {
+        self.failure = Some(kind);
+        self.discard = Some(UnitCursor::new(std::mem::replace(
+            &mut self.normalized,
+            JsString::from(""),
+        )));
+        self.stage = Stage::Cleanup;
+        Action::Continue
     }
     fn result(input: Input) -> Result<Value, Fault> {
         if let Input::CallResult(value) = input {
@@ -166,7 +182,19 @@ impl State {
                 action => Ok(action),
             },
             Stage::Options => {
-                service::get_options_object(&self.options)?;
+                if self.supported {
+                    if matches!(self.options, Value::Null) {
+                        return Err(Fault::TypeError("Intl options cannot be null".into()));
+                    }
+                    // Primitive wrappers have no localeMatcher own property;
+                    // the fixed realm prototypes cannot add one. Avoid the
+                    // general Boolean/BigInt primitive-property gap here.
+                    if !matches!(self.options, Value::Undefined | Value::Object(_)) {
+                        self.options = Value::Undefined;
+                    }
+                } else {
+                    service::get_options_object(&self.options)?;
+                }
                 if !self.supported && matches!(self.options, Value::Undefined) {
                     return Err(Fault::TypeError("DisplayNames options are required".into()));
                 }
@@ -245,21 +273,16 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Of => {
-                let Value::String(code) = &self.code else {
+                let Value::String(code) = std::mem::replace(&mut self.code, Value::Undefined)
+                else {
                     unreachable!()
                 };
-                let slots = display_names::record(heap, task, &self.this)?;
-                if slots.kind == "language" {
-                    return slots.of("").map(Action::Return);
-                }
+                let slots = self.slots.as_ref().unwrap();
                 if code.len() > 32 {
+                    self.calendar = Some(UnitCursor::new(code));
                     if slots.kind != "calendar" {
-                        return Err(Fault::RangeError(format!("invalid {} code", slots.kind)));
+                        return Ok(self.reject(slots.kind));
                     }
-                    // Calendar's type production permits arbitrarily many
-                    // subtags. Validate and lowercase without flattening a rope
-                    // or copying an input-sized buffer in one native step.
-                    self.calendar = Some(UnitCursor::new(code.clone()));
                     self.stage = Stage::Calendar;
                     return Ok(Action::Continue);
                 }
@@ -273,7 +296,7 @@ impl State {
                         CursorStep::Continue => (),
                         CursorStep::End => {
                             if !(3..=8).contains(&self.subtag_len) {
-                                return Err(Fault::RangeError("invalid calendar code".into()));
+                                return Ok(self.reject("calendar"));
                             }
                             done = true;
                             break;
@@ -287,21 +310,23 @@ impl State {
                             {
                                 self.subtag_len += 1;
                             } else {
-                                return Err(Fault::RangeError("invalid calendar code".into()));
+                                return Ok(self.reject("calendar"));
                             }
                             chunk.push((c as u8).to_ascii_lowercase() as char);
                         }
                     }
                 }
-                self.normalized = self
-                    .normalized
-                    .concat(&JsString::from(chunk.as_str()))
-                    .ok_or_else(|| Fault::RangeError("calendar code too long".into()))?;
+                if self.slots.as_ref().unwrap().fallback == "code" {
+                    self.normalized = self
+                        .normalized
+                        .concat(&JsString::from(chunk.as_str()))
+                        .ok_or_else(|| Fault::RangeError("calendar code too long".into()))?;
+                }
                 if done {
                     // All snapshot calendar keys and aliases fit in 32 units:
                     // a longer validated type is an unknown canonical code.
                     return Ok(Action::Return(
-                        if display_names::record(heap, task, &self.this)?.fallback == "none" {
+                        if self.slots.as_ref().unwrap().fallback == "none" {
                             Value::Undefined
                         } else {
                             Value::String(self.normalized.clone())
@@ -310,6 +335,138 @@ impl State {
                 }
                 Ok(Action::Continue)
             }
+            Stage::Cleanup => {
+                for _ in 0..128 {
+                    if let Some(cursor) = &mut self.calendar {
+                        if !cursor.discard_step() {
+                            self.calendar = None;
+                        }
+                    } else if let Some(cursor) = &mut self.discard {
+                        if !cursor.discard_step() {
+                            self.discard = None;
+                        }
+                    } else {
+                        let kind = self.failure.take().unwrap();
+                        return Err(if kind == "language" {
+                            Fault::TypeError(
+                                "DisplayNames language names are not implemented (clj-quickjs-224)"
+                                    .into(),
+                            )
+                        } else {
+                            Fault::RangeError(format!("invalid {kind} code"))
+                        });
+                    }
+                }
+                Ok(Action::Continue)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::string::cursor_release_counts;
+
+    #[test]
+    fn long_calendar_cleanup_is_budgeted() {
+        for (kind, fallback, invalid) in [
+            ("calendar", "none", 0),
+            ("calendar", "code", 0),
+            ("calendar", "none", 1),
+            ("calendar", "code", 1),
+            ("calendar", "none", 2),
+            ("calendar", "code", 2),
+            ("region", "code", 1),
+            ("language", "code", 1),
+        ] {
+            let heap = Heap::default();
+            let task = TaskId::from_raw(1);
+            let proto = crate::realm::intrinsics(&heap)
+                .unwrap()
+                .intl_display_names_prototype;
+            let mut slots = DisplayNames::new("en".into());
+            slots.kind = kind;
+            slots.fallback = fallback;
+            let this = Value::Object(
+                heap.alloc(HeapObject::Plain(
+                    OrdinaryObject::with_prototype(task, proto).with_display_names(slots),
+                ))
+                .unwrap(),
+            );
+            let mut text = JsString::from(if invalid == 1 { "!BC" } else { "ABC" });
+            for _ in 0..3000 {
+                text = text.concat(&JsString::from("-DEF")).unwrap();
+            }
+            if invalid == 2 {
+                text = text.concat(&JsString::from("-X")).unwrap();
+            }
+            // State owns the only Rust reference to this temporary rope.
+            let mut state = State::new(
+                builtin::Builtin::IntlDisplayNamesOf,
+                &this,
+                &[Value::String(text)],
+                &heap,
+                task,
+            )
+            .unwrap_or_else(|_| panic!("DisplayNames state construction failed"));
+            let mut returned = Value::Undefined;
+            let mut cleanup = 0;
+            let mut finished = false;
+            for _ in 0..10000 {
+                let before = cursor_release_counts();
+                if matches!(state.stage, Stage::Cleanup) {
+                    cleanup += 1;
+                }
+                let result = state.step(&heap, task, Input::Start);
+                let after = cursor_release_counts();
+                assert!(after.0 - before.0 <= 128, "cursor cleanup exceeded budget");
+                assert!(after.1 - before.1 <= 144, "rope cleanup exceeded budget");
+                match result {
+                    Ok(Action::Continue) => (),
+                    Ok(Action::Return(value)) => {
+                        assert_eq!(invalid, 0);
+                        if fallback == "none" {
+                            assert!(matches!(value, Value::Undefined));
+                        } else {
+                            assert!(matches!(value,Value::String(ref s) if s.len()==12003));
+                        }
+                        returned = value;
+                        finished = true;
+                        break;
+                    }
+                    Err(Fault::RangeError(_)) => {
+                        assert_ne!(invalid, 0);
+                        assert_ne!(kind, "language");
+                        finished = true;
+                        break;
+                    }
+                    Err(Fault::TypeError(_)) => {
+                        assert_eq!(kind, "language");
+                        finished = true;
+                        break;
+                    }
+                    _ => panic!("unexpected native action"),
+                }
+            }
+            assert!(finished);
+            if invalid == 1 || (invalid == 2 && fallback == "code") {
+                assert!(cleanup > 1, "{kind} {fallback} {invalid}: {cleanup}");
+            }
+            let before = cursor_release_counts();
+            drop(state);
+            let after = cursor_release_counts();
+            assert!(
+                after.0 - before.0 <= 2,
+                "native-frame cursor disposal exceeded budget"
+            );
+            // Successful fallback code hands its output to the caller,
+            // which retains it while the native frame is disposed.
+            assert!(
+                after.1 - before.1 <= 16,
+                "native-frame rope disposal exceeded budget"
+            );
+            drop(returned);
         }
     }
 }

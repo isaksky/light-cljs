@@ -270,6 +270,12 @@ pub(crate) enum PrimitiveData {
     Symbol(crate::value::JsSymbol),
 }
 
+#[derive(Debug)]
+enum IntlServiceSlots {
+    RelativeTimeFormat(crate::intl::relative_time_format::RelativeTimeFormat),
+    DisplayNames(crate::intl::display_names::DisplayNames),
+}
+
 /// Keep service slots behind one pointer so adding a service does not enlarge
 /// every object by an inline cached Value (including dispatcher temporaries).
 #[derive(Debug)]
@@ -322,10 +328,8 @@ pub(crate) struct OrdinaryObject {
     list_format: Option<Box<crate::intl::list_format::ListFormat>>,
 
     // Immutable Rust strings/static tables only; no additional GC edges.
-    relative_time_format: Option<Box<crate::intl::relative_time_format::RelativeTimeFormat>>,
+    intl_service: Option<Box<IntlServiceSlots>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
-    // Immutable Rust strings only; ordinary properties remain task-owned.
-    display_names: Option<Box<crate::intl::display_names::DisplayNames>>,
 }
 
 impl OrdinaryObject {
@@ -333,11 +337,14 @@ impl OrdinaryObject {
         mut self,
         data: crate::intl::display_names::DisplayNames,
     ) -> Self {
-        self.display_names = Some(Box::new(data));
+        self.intl_service = Some(Box::new(IntlServiceSlots::DisplayNames(data)));
         self
     }
     pub(crate) fn display_names(&self) -> Option<&crate::intl::display_names::DisplayNames> {
-        self.display_names.as_deref()
+        match self.intl_service.as_deref() {
+            Some(IntlServiceSlots::DisplayNames(data)) => Some(data),
+            _ => None,
+        }
     }
 
     pub(crate) fn with_segmenter(mut self, data: crate::intl::segmenter::Data) -> Self {
@@ -392,9 +399,8 @@ impl OrdinaryObject {
             date_time_format: None,
             list_format: None,
 
-            relative_time_format: None,
+            intl_service: None,
             segmenter: None,
-            display_names: None,
         }
     }
 
@@ -465,13 +471,16 @@ impl OrdinaryObject {
         mut self,
         data: crate::intl::relative_time_format::RelativeTimeFormat,
     ) -> Self {
-        self.relative_time_format = Some(Box::new(data));
+        self.intl_service = Some(Box::new(IntlServiceSlots::RelativeTimeFormat(data)));
         self
     }
     pub(crate) fn relative_time_format(
         &self,
     ) -> Option<&crate::intl::relative_time_format::RelativeTimeFormat> {
-        self.relative_time_format.as_deref()
+        match self.intl_service.as_deref() {
+            Some(IntlServiceSlots::RelativeTimeFormat(data)) => Some(data),
+            _ => None,
+        }
     }
     pub(crate) fn with_plural_rules(
         mut self,

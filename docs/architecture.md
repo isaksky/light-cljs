@@ -7780,3 +7780,14 @@ when the resolved language has no data. This acceptance requirement refines
 the earlier -209 policy row: translated-name coverage remains exactly en/fr.
 Calendar aliases use canonical Unicode types with the snapshot's legacy data
 keys. Lowercase currencies intentionally throw under the pinned-output policy.
+
+DisplayNames and RelativeTimeFormat occupy variants of one boxed immutable
+service payload, keeping the ordinary-object size at its previous baseline;
+small-stack worker execution is checked without increasing test stack sizes.
+Long-code validation moves input ownership into its cursor, skips normalized
+output for fallback none, and drains input/partial-output cursors in bounded
+steps before raising validation errors. Native-frame disposal after return or
+validation failure has no pending rope tree. SupportedLocalesOf applies
+ToObject-equivalent property reads to non-null primitive options, separately
+from the strict constructor options rule. Callback failure tests preserve
+thrown identities and dependency-failure causes after waits and GC.
