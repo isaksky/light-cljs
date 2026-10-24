@@ -465,7 +465,10 @@ checks left to later stages:
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
   SyntaxErrors; callable revivers fail explicitly with TypeError.
-  Stringify and reviver traversal remain deferred.
+  Reviver traversal remains deferred. Compact `JSON.stringify` (clj-quickjs-160)
+  serializes primitives, wrappers, arrays and objects with resumable getters/
+  `toJSON`, cycle checks and bounded quoting/traversal. Replacer and space
+  arguments fail explicitly; see "JSON.stringify" below for resource limits.
 - **Error instances** (clj-quickjs-228/-229): `Error` and all seven NativeError
   constructors are callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
