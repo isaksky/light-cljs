@@ -357,3 +357,86 @@ fn resubscription_in_a_later_run_refreshes_the_wake_handle() {
         [(h, Wake::Runnable(_))] if h.execution() == 2
     ));
 }
+
+/// Producer cancellation wakes like success and failure: the parked
+/// consumer is returned to enqueue, the consumer still in its subscribing
+/// run has the wake remembered (its park yields), duplicates are stale, and
+/// both resumed needs read `Cancelled` with their waits resolved. (Consumer
+/// cancellation is pellet clj-quickjs-24.)
+#[test]
+fn cancelled_completion_wakes_parked_and_parking_consumers() {
+    let rt = Runtime::new();
+    let (parked, parking) = (consumer(&rt), consumer(&rt));
+    let mut g = parked.try_begin_run().unwrap();
+    let Need::Waiting {
+        produce: Some(req), ..
+    } = g.need(DEF, KIND).unwrap()
+    else {
+        panic!("the first need claims");
+    };
+    assert!(matches!(g.park(), RunOutcome::Waiting(_)));
+    let mut parking_guard = parking.try_begin_run().unwrap();
+    let _ = parking_guard.need(DEF, KIND).unwrap();
+
+    let wakeups = rt
+        .complete(req.key(), req.producer(), Completion::Cancelled)
+        .unwrap();
+    let handles: Vec<WakeHandle> = wakeups.deliveries().iter().map(|(h, _)| *h).collect();
+    assert!(matches!(
+        wakeups.deliveries(),
+        [(_, Wake::Runnable(_)), (_, Wake::Remembered)]
+    ));
+    let runnable = wakeups.into_runnable();
+    assert_eq!(runnable.len(), 1);
+    assert_eq!(runnable[0].id(), parked.id());
+    assert!(matches!(parking_guard.park(), RunOutcome::Yielded));
+    for (task, h) in [&parked, &parking].into_iter().zip(&handles) {
+        assert!(matches!(task.wake(*h), Wake::Stale), "duplicate");
+        let mut g = task.try_begin_run().unwrap();
+        assert!(matches!(g.need(DEF, KIND).unwrap(), Need::Cancelled));
+        assert_eq!(task.dependency_log().waiting(), None);
+    }
+}
+
+/// Starting a run never waits for the task body: while a diagnostic reader
+/// holds it (here this thread, standing in for `Task::source_location` on
+/// another), the claim is undone and `AlreadyRunning` is reported; the task
+/// stays runnable and starts normally once the body is free.
+#[test]
+fn beginning_a_run_does_not_wait_for_a_body_reader() {
+    let rt = Runtime::new();
+    let task = consumer(&rt);
+    let body = task.0.body.lock().unwrap();
+    assert_eq!(task.try_begin_run().err(), Some(RunError::AlreadyRunning));
+    assert_eq!(task.status(), TaskStatus::Ready, "the claim was undone");
+    drop(body);
+    let guard = task.try_begin_run().unwrap();
+    assert_eq!(guard.wake_handle().execution(), 2, "a fresh run number");
+}
+
+/// A wake handle names its runtime: task ids and run numbers restart in
+/// every runtime, but another runtime's handle (even one whose runtime and
+/// task are gone) never wakes a task.
+#[test]
+fn foreign_runtime_wake_handles_are_stale() {
+    let foreign = {
+        let other = Runtime::new();
+        let task = consumer(&other);
+        let guard = task.try_begin_run().unwrap();
+        guard.wake_handle()
+    };
+    let rt = Runtime::new();
+    let task = consumer(&rt);
+    let mut guard = task.try_begin_run().unwrap();
+    let _ = guard.need(DEF, KIND).unwrap();
+    let own = guard.wake_handle();
+    assert_eq!(
+        (own.task(), own.execution()),
+        (foreign.task(), foreign.execution()),
+        "same task id and run number in both runtimes"
+    );
+    assert!(matches!(guard.park(), RunOutcome::Waiting(_)));
+    assert!(matches!(task.wake(foreign), Wake::Stale));
+    assert_eq!(task.status(), TaskStatus::Waiting);
+    assert!(matches!(task.wake(own), Wake::Runnable(_)));
+}

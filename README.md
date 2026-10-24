@@ -336,8 +336,8 @@ Supported:
   `RunOutcome::Waiting(key)` if it parked, or `RunOutcome::Yielded` (task
   runnable, requeue it) if the result was published after the subscription
   but before the park.
-- `WakeHandle` (task id + subscribing run): stale handles are rejected, so
-  duplicate or late wakes are harmless (`Task::wake` returns `Wake::Stale`).
+- `WakeHandle` (runtime + task id + subscribing run): stale and foreign
+  handles are rejected, so duplicate or late wakes are harmless (`Task::wake` returns `Wake::Stale`).
 - `Runtime::complete` returns `Wakeups`: it delivers every drained handle
   after releasing the cell lock (one CAS each, nothing inline) and
   `into_runnable()` gives the parked tasks to enqueue, each exactly once

@@ -383,7 +383,8 @@ contract). Design: `design.md` §§3, 8, 10, 15.
   ends by a store to `Runnable` (yield, guard dropped) or `Terminal`
   (complete, fail), or by `RunGuard::park`. `Task::status` reports
   `Ready | Running | Waiting | Finished` from the word.
-- **Wake handles.** `WakeHandle` = task id + the execution that subscribed.
+- **Wake handles.** `WakeHandle` = process-unique runtime id + task id +
+  the execution that subscribed.
   A cell stores one per task (a later run's re-subscription replaces the
   stale one) plus a `Weak` reference to the task, never a callback.
 - **Park vs. wake.** `RunGuard::park` CASes `Executing(m) → Parked(m)` and

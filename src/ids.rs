@@ -167,17 +167,30 @@ impl fmt::Display for ProducerId {
 /// execution is still running or parked. Once the task has been woken, has
 /// ended that run without parking, has started a later run, or has finished,
 /// the handle is stale and delivering it does nothing, so a duplicate or late
-/// notification can never make a later, unrelated suspension runnable. See
+/// notification can never make a later, unrelated suspension runnable. It
+/// also names the runtime, so a handle of another runtime is always stale. See
 /// [`crate::task`] for the state machine that checks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WakeHandle {
+    /// Process-unique identity of the runtime the task belongs to: task ids
+    /// restart at 1 in every runtime, so this keeps another runtime's
+    /// handle from waking a task with the same id and run number.
+    runtime: u64,
     task: TaskId,
     execution: u64,
 }
 
 impl WakeHandle {
-    pub(crate) const fn new(task: TaskId, execution: u64) -> Self {
-        WakeHandle { task, execution }
+    pub(crate) const fn new(runtime: u64, task: TaskId, execution: u64) -> Self {
+        WakeHandle {
+            runtime,
+            task,
+            execution,
+        }
+    }
+
+    pub(crate) fn runtime(&self) -> u64 {
+        self.runtime
     }
 
     /// The task to wake.

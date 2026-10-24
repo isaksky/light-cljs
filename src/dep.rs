@@ -245,6 +245,9 @@ impl Hooks {
 /// The dependency cells of one runtime. See the module docs.
 pub(crate) struct DependencyTable {
     heap: Arc<Heap>,
+    /// Process-unique identity of the owning runtime, carried by every wake
+    /// handle its tasks register.
+    pub(crate) runtime: u64,
     cells: RwLock<HashMap<DependencyKey, Arc<Cell>>>,
     next_producer: AtomicU64,
     #[cfg(test)]
@@ -261,8 +264,11 @@ impl fmt::Debug for DependencyTable {
 
 impl DependencyTable {
     pub(crate) fn new(heap: Arc<Heap>) -> Self {
+        // Relaxed: the counter only needs uniqueness, not ordering.
+        static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         DependencyTable {
             heap,
+            runtime: NEXT_RUNTIME.fetch_add(1, Ordering::Relaxed),
             cells: RwLock::new(HashMap::new()),
             next_producer: AtomicU64::new(1),
             #[cfg(test)]
@@ -792,7 +798,7 @@ mod tests {
     /// A waiter for task `id`, execution 1, with no live task behind it.
     fn w(id: u64) -> Waiter {
         Waiter {
-            handle: WakeHandle::new(TaskId::from_raw(id), 1),
+            handle: WakeHandle::new(0, TaskId::from_raw(id), 1),
             task: Weak::new(),
         }
     }

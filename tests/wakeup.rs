@@ -18,8 +18,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use clj_quickjs::{
-    Assembler, CellStatus, Completion, DependencyId, DependencyKey, Need, Opcode, Primitive,
-    ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus, Wake, WakeHandle,
+    Assembler, Budget, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Need,
+    Opcode, Primitive, ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus,
+    ValueView, Wake, WakeHandle,
 };
 
 const DEF: DependencyId = DependencyId::new(11);
@@ -256,4 +257,103 @@ fn a_woken_task_has_exactly_one_execution_owner() {
         );
         assert_eq!(task.status(), TaskStatus::Ready);
     }
+}
+
+/// Counts host effects and records the OS thread of each.
+#[derive(Default)]
+struct Effects(Vec<thread::ThreadId>);
+
+impl Host for Effects {
+    fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+        self.0.push(thread::current().id());
+        Ok(Primitive::Null)
+    }
+}
+
+/// A parked task's saved frame is a collector root and its continuation
+/// survives the park: the task runs part of its program (an effect, then a
+/// new object held only in a local), needs a pending key and parks; a
+/// collection succeeds while it is parked (the park left no mutator
+/// registered) and keeps the object; after the completion the task resumes
+/// on another thread at the saved instruction, without replaying the
+/// effect, and returns that same object.
+///
+/// Early VM test: hand-assembled bytecode, not JavaScript source support.
+/// The need is issued from Rust between runs, standing in for the VM
+/// operation of pellet clj-quickjs-23.
+#[test]
+fn parked_frames_survive_collection_and_resume_on_another_worker() {
+    let rt = Runtime::new();
+    let mut asm = Assembler::new();
+    asm.constant(Primitive::Number(1.0))
+        .host_effect(7)
+        .op(Opcode::Pop); // 0, 1, 2
+    asm.op(Opcode::NewObject).set_local(0); // 3, 4
+    asm.get_local(0).op(Opcode::Return); // 5, 6
+    let task = rt
+        .spawn(&asm.finish("park-mid-program", 0, 1).unwrap(), &[])
+        .unwrap();
+    let mut effects = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::instructions(5), &mut effects)
+            .unwrap(),
+        RunOutcome::Yielded
+    ));
+    assert_eq!(effects.0.len(), 1);
+
+    let mut guard = task.try_begin_run().unwrap();
+    let Need::Waiting {
+        produce: Some(req), ..
+    } = guard.need(DEF, KIND).unwrap()
+    else {
+        panic!("the first need claims");
+    };
+    assert!(matches!(guard.park(), RunOutcome::Waiting(_)));
+    let garbage = rt.scope(|s| {
+        let o = s.new_object();
+        s.downgrade(o)
+    });
+    assert_eq!(rt.heap_stats().objects, 2);
+    let stats = rt
+        .collect()
+        .expect("a parked task is not a mutator: collection runs");
+    assert_eq!(stats.reclaimed, 1);
+    assert!(!garbage.is_live());
+    assert_eq!(
+        rt.heap_stats().objects,
+        1,
+        "the object in the parked frame survives"
+    );
+
+    let value = rt.root(Primitive::Number(2.0));
+    let mut runnable = rt
+        .complete(req.key(), req.producer(), Completion::Ready(&value))
+        .unwrap()
+        .into_runnable();
+    let woken = runnable.pop().expect("the parked task is returned");
+    let parker = thread::current().id();
+    let (outcome, worker) = thread::scope(|s| {
+        s.spawn(|| {
+            let mut guard = woken.try_begin_run().unwrap();
+            assert!(matches!(guard.need(DEF, KIND).unwrap(), Need::Ready(_)));
+            (
+                guard.run_with(Budget::UNLIMITED, &mut effects),
+                thread::current().id(),
+            )
+        })
+        .join()
+        .unwrap()
+    });
+    assert_ne!(worker, parker, "resumed on another worker");
+    let RunOutcome::Complete(result) = outcome else {
+        panic!("expected Complete, got {outcome:?}");
+    };
+    assert_eq!(result.view(), ValueView::Object);
+    assert_eq!(effects.0, [parker], "the effect is not replayed");
+    assert_eq!(
+        rt.heap_stats().objects,
+        1,
+        "no new object: the result is the one from the saved frame"
+    );
+    assert_eq!(task.status(), TaskStatus::Finished);
 }

@@ -74,17 +74,20 @@
 //! after park: the wake returns the task as runnable.
 //!
 //! **Locks.** The state word is not a lock. The task body mutex is taken only
-//! by the claim's owner (and briefly by the collector, which cannot run while
-//! a run guard exists); the dependency log mutex is a leaf. No lock is held
-//! while a wake is delivered, and delivering a wake runs no JavaScript and no
-//! host code: it is one CAS that reports what the caller should enqueue.
+//! by the claim's owner (and for an instant by the collector, which cannot
+//! run while a run guard exists, or by a diagnostic reader such as
+//! `Task::source_location`); the claim only `try_lock`s it, reporting
+//! `AlreadyRunning` on contention, so starting a run never waits. The
+//! dependency log mutex is a leaf. No lock is held while a wake is
+//! delivered, and delivering a wake runs no JavaScript and no host code: it
+//! is one CAS that reports what the caller should enqueue.
 
 #[cfg(test)]
 mod handoff_tests;
 mod state;
 
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use crate::dep::{self, DependencyLog, DependencyTable, HookPoint, Need, NeedError, Waiter};
 use crate::error::{SourceLocation, VmError, VmErrorKind};
@@ -252,7 +255,7 @@ impl RootSource for TaskInner {
 impl TaskInner {
     /// Deliver a wake for `handle`'s execution (module docs).
     fn deliver(self: &Arc<Self>, handle: WakeHandle) -> Wake {
-        if handle.task() != self.id {
+        if handle.runtime() != self.deps.runtime || handle.task() != self.id {
             return Wake::Stale;
         }
         match self.exec.wake(handle.execution(), || {
@@ -423,10 +426,16 @@ impl Task {
             Err(NotRunnable::Parked) => return Err(RunError::Waiting),
             Err(NotRunnable::Terminal) => return Err(RunError::Finished),
         };
-        // The claim makes this thread the body's only user apart from the
-        // collector, which cannot run while `mutator` exists: this lock does
-        // not wait. On the error paths the claim is dropped (task runnable).
-        let body = self.0.body.lock().map_err(|_| RunError::Poisoned)?;
+        // The claim makes this thread the only runner; the body may still be
+        // held for an instant by a diagnostic reader (`source_location`, test
+        // helpers). Never wait for it: report `AlreadyRunning` as before the
+        // state machine existed. On the error paths the claim is dropped,
+        // making the task runnable again.
+        let body = match self.0.body.try_lock() {
+            Ok(body) => body,
+            Err(TryLockError::WouldBlock) => return Err(RunError::AlreadyRunning),
+            Err(TryLockError::Poisoned(_)) => return Err(RunError::Poisoned),
+        };
         if let TaskBody::Finished = *body {
             // Unreachable: a finished body always comes with `Terminal`.
             drop(body);
@@ -493,7 +502,7 @@ impl RunGuard<'_> {
     /// Delivering it with [`Task::wake`] while the run is executing is a
     /// spurious but harmless wake (the park returns `Yielded`).
     pub fn wake_handle(&self) -> WakeHandle {
-        WakeHandle::new(self.task.id, self.claim.number)
+        WakeHandle::new(self.task.deps.runtime, self.task.id, self.claim.number)
     }
 
     /// Read or subscribe to the result `kind` of `dependency` in this task's
