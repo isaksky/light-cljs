@@ -2465,3 +2465,12 @@ Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
 `cargo test --test js_source object_literal_methods -- --exact`,
 `cargo test --test publication method_home_object_prevents_publication -- --exact`,
 and `cargo test --test gc_roots method_home_object`.
+
+### Number prefix parsing (clj-quickjs-148)
+
+Global `parseInt(string, radix)` and `parseFloat(string)` execute, with
+identical `Number.parseInt` / `Number.parseFloat` aliases. They accept the
+longest valid prefix, preserve signed zero and round to binary64. Object
+coercion is resumable; long scans charge the instruction budget. Global
+object properties remain deferred to clj-quickjs-104. Run the parsing cases
+with `cargo test --test js_source parse_`.

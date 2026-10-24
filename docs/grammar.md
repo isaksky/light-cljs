@@ -413,6 +413,10 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **Number prefix parsing** (clj-quickjs-148): global `parseInt` and
+  `parseFloat`, and their identical `Number` aliases, execute with resumable
+  object coercion and budgeted scans. Built-in globals remain immutable
+  realm bindings until the global object exists (clj-quickjs-104).
 - **String extraction and combination** (clj-quickjs-145): `substring`,
   `slice`, `concat`, `padStart` and `padEnd` are supported, including generic
   receivers, resumable object coercion and budgeted result copying. Ropes and
@@ -786,6 +790,22 @@ delete a[o];
 ```
 
 ## Execution
+
+Global `parseInt(string, radix)` and `parseFloat(string)` parse the longest
+valid prefix after leading StrWhiteSpace and ToString. `Number.parseInt`
+and `Number.parseFloat` are the same function objects (clj-quickjs-148).
+`parseInt` converts radix with ToInt32 after string conversion; zero or
+undefined detects `0x`/`0X` as radix 16, otherwise 10. Explicit radix 16
+also strips hex prefixes; other valid radixes are 2..36. There is no octal
+or binary prefix detection. Invalid radix or no digits gives NaN.
+`parseFloat` accepts decimal fractions, exponents and signed `Infinity`,
+discarding an incomplete exponent (`'1e+'` gives 1); it accepts no radix
+prefix. Both preserve negative zero and round to binary64, including large
+integers, overflow and underflow. Object coercion can yield, wait, collect
+and migrate through OrdinaryToPrimitive, with string hint for the first
+argument and number hint for radix. Scans inspect at most 256 units per
+native step. Existing bulk primitive ToNumber conversion of a string radix
+can still delay yielding (clj-quickjs-265).
 
 String extraction and combination methods (`substring`, `slice`, `concat`,
 `padStart`, `padEnd`) operate on UTF-16 units. Object coercion can suspend;

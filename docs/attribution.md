@@ -109,3 +109,15 @@ for this runtime, not light-cljs output.
 `js_number_isFinite`, `js_number_isInteger`, `js_number_isSafeInteger`
 and `js_number_funcs` in `research/quickjs/quickjs.c` at the same revision
 were read as semantic references. The Rust implementation was written afresh.
+
+## Number prefix parsing (clj-quickjs-148)
+
+`tests/js_source.rs::parse_int_and_parse_float` adapts every assertion in
+`test_number` lines 365-380 of `research/quickjs/tests/test_builtin.js`,
+including the three unary-plus StringToNumber regression rows, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`string_code_unit_access` in that file (`research/quickjs/LICENSE`).
+Other cases are synthetic fixtures, not light-cljs output. `js_parseInt`,
+`js_parseFloat` and `js_atof` in `research/quickjs/quickjs.c` at that revision
+were consulted for semantics. The Rust scanners were written afresh.

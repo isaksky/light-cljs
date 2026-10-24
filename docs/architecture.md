@@ -3605,3 +3605,42 @@ Synthetic source tests cover constants, descriptors, numeric boundaries,
 non-coercing object inputs, conversion order and throws. The existing
 one-instruction conversion matrix additionally exercises these globals
 through waits, collection at every yield and thread migration.
+
+## Number prefix parsing (clj-quickjs-148)
+
+The append-only realm global table adds `parseInt` and `parseFloat`;
+`Number.parseInt` and `Number.parseFloat` reference those exact intrinsic
+function objects. Their usual method descriptors and function metadata are
+included in the immutable realm views and precise intrinsic roots. Global
+object properties remain the work of clj-quickjs-104.
+
+Every call uses `ConvertTarget::NumberParse`: ToString of the first operand
+finishes before ToInt32 of the radix begins. OrdinaryToPrimitive calls run
+as resumable VM frames with string and number hints respectively. Pending
+operands are traced by the existing conversion frame. Extra arguments are
+ignored. The parser state owns only immutable `JsString` leaf storage and
+Rust scalars/buffers, with no heap edges; unwind and cancellation drop it
+through the ordinary native-frame protocol.
+
+`NativeState::NumberParse` scans at most 256 input units per budgeted step,
+including leading whitespace. For integers, a fixed 32-limb accumulator
+retains the exact magnitude up to 1024 bits; larger magnitudes necessarily
+round to Infinity. Each input digit performs at most 32 multiply-adds.
+Finalization inspects at most 1024 bits and reuses StringToNumber's
+round-to-nearest, ties-to-even top-bits/guard/sticky rounding helper. This
+rounds once, avoiding accumulated floating-point multiply-add errors in all
+radixes 2..36, including decimal.
+
+For decimals, the StrDecimalLiteral prefix state machine also validates
+StringToNumber's full decimal grammar. An incomplete exponent is ignored
+only by parseFloat. Decimal accumulation retains at most 1100 significant
+digits, an adjusted decimal exponent and a sticky flag for discarded
+nonzero digits. Every binary64 rounding midpoint has fewer than 1100
+significant decimal digits (it is a dyadic rational with denominator at most
+2^1075); appending a sticky digit preserves the side of every midpoint.
+Rust's correctly rounded parser therefore receives a bounded decimal of at
+most 1101 digits plus its exponent. Exponent saturation exceeds twice
+MAX_STRING_LEN so long significands/fractions cannot cancel away an
+otherwise saturated exponent. Parser allocation and finalization are
+bounded; bulk primitive coercion of a string radix retains the existing
+StringToNumber limitation tracked by clj-quickjs-265.

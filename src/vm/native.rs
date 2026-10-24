@@ -307,6 +307,9 @@ enum ConvertTarget {
         concat_len: usize,
     },
     NumberPredicate(builtin::Builtin),
+    NumberParse {
+        integer: bool,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -347,6 +350,7 @@ enum NativeState {
     },
     StringSearch(crate::value::string::StringSearch),
     StringBuild(crate::value::string::StringBuild),
+    NumberParse(Box<crate::value::string::NumberParse>),
 }
 
 /// A pending resumable native operation. See the module docs.
@@ -381,7 +385,9 @@ impl Trace for NativeFrame {
                     v.trace(visit);
                 }
             }
-            NativeState::StringSearch(_) | NativeState::StringBuild(_) => {} // No heap edges.
+            NativeState::StringSearch(_)
+            | NativeState::StringBuild(_)
+            | NativeState::NumberParse(_) => {} // No heap edges.
         }
     }
 }
@@ -518,6 +524,18 @@ pub(crate) fn start_builtin_conversion(
                 ConvertTarget::NumberPredicate(which),
                 vec![value.clone()],
                 Hint::Number,
+            )
+        }
+        Builtin::ParseInt | Builtin::ParseFloat if !construct => {
+            let integer = which == Builtin::ParseInt;
+            let mut operands = vec![args.first().cloned().unwrap_or(Value::Undefined)];
+            if integer {
+                operands.push(args.get(1).cloned().unwrap_or(Value::Undefined));
+            }
+            (
+                ConvertTarget::NumberParse { integer },
+                operands,
+                Hint::String,
             )
         }
         Builtin::Number | Builtin::String => {
@@ -951,7 +969,14 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
-                        if let ConvertTarget::StringBuiltin {
+                        if let ConvertTarget::NumberParse { .. } = target {
+                            operands[*next] = if *next == 0 {
+                                Value::String(dispatch::to_js_string(receiver)?)
+                            } else {
+                                Value::Number(dispatch::to_number(receiver)?)
+                            };
+                            *hint = Hint::Number;
+                        } else if let ConvertTarget::StringBuiltin {
                             which, concat_len, ..
                         } = target
                         {
@@ -1018,6 +1043,22 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::NumberParse { integer } => {
+                        let text = dispatch::to_js_string(&operands[0])?;
+                        let radix = if integer {
+                            let radix = dispatch::to_int32(dispatch::to_number(&operands[1])?);
+                            if radix != 0 && !(2..=36).contains(&radix) {
+                                return Ok(Action::Return(Value::Number(f64::NAN)));
+                            }
+                            Some(radix as u32)
+                        } else {
+                            None
+                        };
+                        *self = NativeState::NumberParse(Box::new(
+                            crate::value::string::NumberParse::new(text, radix),
+                        ));
+                        Ok(Action::Continue)
+                    }
                     ConvertTarget::Instruction(instr) => Ok(Action::Resume {
                         instr,
                         operands: operands.clone(),
@@ -1073,6 +1114,10 @@ impl NativeState {
                 Some(text) => Action::Return(Value::String(text)),
                 None => Action::Continue,
             }),
+            NativeState::NumberParse(parse) => Ok(match parse.advance(256) {
+                Some(number) => Action::Return(Value::Number(number)),
+                None => Action::Continue,
+            }),
         }
     }
 
@@ -1089,7 +1134,8 @@ impl NativeState {
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }
                 | NativeState::StringSearch(_)
-                | NativeState::StringBuild(_),
+                | NativeState::StringBuild(_)
+                | NativeState::NumberParse(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,
             ) => Action::Unwind,
         }

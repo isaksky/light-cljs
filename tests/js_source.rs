@@ -3858,6 +3858,214 @@ fn strings_convert_with_string_to_number() {
     }
 }
 
+/// `test_number` rows 365-380 from research/quickjs/tests/test_builtin.js,
+/// revision 7d1c13c5d8f8. The full QuickJS copyright and MIT permission notice
+/// is retained on string_code_unit_access above. Remaining cases are synthetic
+/// fixtures, not light-cljs output.
+#[test]
+fn parse_int_and_parse_float() {
+    for (src, expected) in [
+        (r#"parseInt("123")"#, 123.0),
+        (r#"parseInt("  123r")"#, 123.0),
+        (r#"parseInt("0x123")"#, 0x123 as f64),
+        (r#"parseInt("0o123")"#, 0.0),
+        (r#"+"  123   ""#, 123.0),
+        (r#"+"0b111""#, 7.0),
+        (r#"+"0o123""#, 83.0),
+        (r#"parseFloat("2147483647")"#, 2147483647.0),
+        (r#"parseFloat("2147483648")"#, 2147483648.0),
+        (r#"parseFloat("-2147483647")"#, -2147483647.0),
+        (r#"parseFloat("-2147483648")"#, -2147483648.0),
+        (r#"parseFloat("0x1234")"#, 0.0),
+        (r#"parseFloat("Infinity")"#, f64::INFINITY),
+        (r#"parseFloat("-Infinity")"#, f64::NEG_INFINITY),
+        (r#"parseFloat("123.2")"#, 123.2),
+        (r#"parseFloat("123.2e3")"#, 123200.0),
+        (r#"parseInt("ff", 16)"#, 255.0),
+        (r#"parseInt("0x10", 16)"#, 16.0),
+        (r#"parseInt("-0x10")"#, -16.0),
+        (r#"parseInt("123", 0)"#, 123.0),
+        (r#"parseInt("9007199254740993")"#, 9007199254740992.0),
+        (r#"parseFloat(" .5e1x")"#, 5.0),
+        (r#"parseFloat("Infinityx")"#, f64::INFINITY),
+        (r#"parseFloat("+Infinityx")"#, f64::INFINITY),
+        (r#"parseFloat("1e400")"#, f64::INFINITY),
+        (r#"parseFloat("1e+")"#, 1.0),
+        (r#"parseFloat("12.e-x")"#, 12.0),
+        (r#"parseInt("11", 4294967298)"#, 3.0),
+        (r#"parseInt("11", -4294967294)"#, 3.0),
+        (r#"parseInt("10", 2.9)"#, 2.0),
+        (r#"parseInt("0b11")"#, 0.0),
+        (r#"parseInt("010")"#, 10.0),
+        (r#"parseInt("10", Infinity)"#, 10.0),
+        (r#"parseInt("10", null)"#, 10.0),
+        (r#"parseInt("10", "16")"#, 16.0),
+        (r#"parseInt("z!", 36)"#, 35.0),
+        (r#"parseInt("9007199254740995")"#, 9007199254740996.0),
+        (r#"parseInt("20000000000001", 16)"#, 9007199254740992.0),
+        (r#"parseInt("20000000000003", 16)"#, 9007199254740996.0),
+        (r#"parseInt(123.9)"#, 123.0),
+        (r#"parseFloat(123.9)"#, 123.9),
+        (r#"parseInt("\uFEFF\u00A0 -12x")"#, -12.0),
+        (r#"parseFloat("\u2028\u3000 12.5x")"#, 12.5),
+        (r#"parseFloat("1\uD800")"#, 1.0),
+        (r#"parseInt("1\uD800")"#, 1.0),
+    ] {
+        assert_eq!(num(src), expected, "{src}");
+    }
+    for src in [
+        r#"parseInt("12", 37)"#,
+        r#"parseInt("12", 1)"#,
+        r#"parseInt("")"#,
+        r#"parseInt(" 0x")"#,
+        r#"parseInt("+ 1")"#,
+        r#"parseFloat("e3")"#,
+        r#"parseFloat(".")"#,
+        r#"parseFloat("infinity")"#,
+        "parseInt()",
+        "parseFloat()",
+        "parseInt(null)",
+        "parseFloat(true)",
+    ] {
+        assert!(num(src).is_nan(), "{src}");
+    }
+    for src in [
+        r#"parseInt("  -0")"#,
+        r#"parseInt("-0")"#,
+        r#"parseFloat("-.0")"#,
+    ] {
+        assert_eq!(num(src).to_bits(), (-0.0f64).to_bits(), "{src}");
+    }
+    for src in [
+        "1 / parseInt('-0') === -Infinity",
+        "Number.parseInt === parseInt && Number.parseFloat === parseFloat",
+        "parseInt.length === 2 && parseFloat.length === 1 && parseInt.name === 'parseInt' && parseFloat.name === 'parseFloat'",
+        "let parseInt = () => 7; parseInt('123') === 7",
+        "let o = {toString: () => 'ff', valueOf: () => 0}; parseInt(o, 16) === 255",
+        "let order = ''; let s = {toString: () => {order += 's'; return '11';}}; let r = {valueOf: () => {order += 'r'; return 2;}}; parseInt(s, r) === 3 && order === 'sr'",
+        "let n = 0; try {parseInt({toString: () => {throw 42;}}, {valueOf: () => {n++; return 10;}});} catch(e) {n += e;} n === 42",
+        "let n = 0; parseFloat('1', {valueOf: () => {n++; return 2;}}) === 1 && n === 0",
+        "let caught = false; try {new parseInt('1');} catch(e) {caught = true;} caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(failure("new parseInt('1')").kind(), VmErrorKind::TypeError);
+    assert_eq!(
+        failure("new parseFloat('1')").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Both operands stay rooted
+/// across callback waits and migration; their observable conversions run once.
+#[test]
+fn parse_numbers_coercion_waits_yields_collects_and_migrates() {
+    for expression in [
+        "parseInt(s, r) === 255 && order === 'sr'",
+        "Number.parseInt.call(null, s, r) === 255 && order === 'sr'",
+        "parseFloat({toString: () => {order += 'f'; __rt.need(1481, 1); return '12.5x';}}) === 12.5 && order === 'f'",
+        "parseInt({toString: parseFloat.bind(null, {toString: () => {order += 'f'; __rt.need(1481, 1); return '12.5x';}})}) === 12 && order === 'f'",
+        "(() => {let caught = 0; try {parseInt(s, {valueOf: () => {order += 'r'; __rt.need(1482, 1); throw 42;}});} catch(e) {caught = e;} return caught === 42 && order === 'sr';})()",
+    ] {
+        let rt = Runtime::new();
+        let src = format!(
+            "let order = ''; let s = {{toString: () => {{order += 's'; __rt.need(1481, 1); return 'ff';}}}}; \
+             let r = {{valueOf: () => {{order += 'r'; __rt.need(1482, 1); return 16;}}}}; {expression}"
+        );
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 2, "repeated callback: {expression}");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "instruction bound exceeded: {expression}");
+        assert_eq!(
+            waits,
+            if expression.contains("order === 'sr'") {
+                2
+            } else {
+                1
+            }
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Scans must yield even when
+/// all operands are already primitives; retained decimal storage is bounded.
+#[test]
+fn parse_numbers_long_inputs_are_budgeted_and_rounded() {
+    for (expression, expected) in [
+        (format!("parseInt('{}1', 2)", "0".repeat(8192)), 1.0),
+        (format!("parseInt('{}ff', 16)", " ".repeat(8192)), 255.0),
+        (format!("parseFloat('0.{}1e8193')", "0".repeat(8192)), 1.0),
+        (format!("parseFloat('1.{}1')", "0".repeat(8192)), 1.0),
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&expression), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..100 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.view(), ValueView::Number(expected));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete);
+        assert!(yields >= 8192 / 256, "scan did not yield: {yields}");
+    }
+    for name in ["parseInt", "parseFloat"] {
+        let src = format!(
+            "let d = Object.getOwnPropertyDescriptor(Number, '{name}'); \
+             d.value === {name} && d.writable && !d.enumerable && d.configurable && \
+             Object.getPrototypeOf({name}) === Function.prototype"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true));
+    }
+}
+
 /// Relational comparison of two strings by UTF-16 code units
 /// (clj-quickjs-68). `'b' > 'a'` is from `test_op1` (the case on line 103) of
 /// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (its

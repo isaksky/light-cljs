@@ -42,6 +42,7 @@
 //! | `Number`, `String` (callable and constructible, clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
 //! | String code-unit methods (clj-quickjs-143) | built-in functions | `String.prototype` has `charAt`, `charCodeAt`, `codePointAt`; `String` has `fromCharCode`, `fromCodePoint`; all have `length` (1), `name` |
 //! | String extraction/combination (clj-quickjs-145) | built-in functions | `String.prototype` has `substring`, `slice` (length 2), `concat`, `padStart`, `padEnd` (length 1); each has `name` |
+//! | `parseInt`, `parseFloat` (clj-quickjs-148) | built-in functions, also on `Number` with the same identities | `length` (2, 1), `name` |
 //! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
@@ -107,6 +108,7 @@
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
 //! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102), and `Array` (clj-quickjs-155). The compiler emits `get_builtin_global i` for such a
 //! name; `isNaN` and `isFinite` use the same path (clj-quickjs-147).
+//! `parseInt` and `parseFloat` also resolve here (clj-quickjs-148).
 //! When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
@@ -142,11 +144,14 @@ pub(crate) enum Global {
     /// Coercing number predicates (clj-quickjs-147).
     IsNaN = 6,
     IsFinite = 7,
+
+    ParseInt = 8,
+    ParseFloat = 9,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 8] = [
+    const ALL: [Global; 10] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -155,6 +160,8 @@ impl Global {
         Global::Array,
         Global::IsNaN,
         Global::IsFinite,
+        Global::ParseInt,
+        Global::ParseFloat,
     ];
 
     /// The JavaScript name.
@@ -168,6 +175,9 @@ impl Global {
             Global::Array => "Array",
             Global::IsNaN => "isNaN",
             Global::IsFinite => "isFinite",
+
+            Global::ParseInt => "parseInt",
+            Global::ParseFloat => "parseFloat",
         }
     }
 
@@ -224,6 +234,9 @@ pub(crate) struct Intrinsics {
     /// The coercing global number predicates.
     is_nan: ObjectId,
     is_finite: ObjectId,
+
+    parse_int: ObjectId,
+    parse_float: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -304,6 +317,9 @@ impl Intrinsics {
             Global::Array => Value::Object(self.array),
             Global::IsNaN => Value::Object(self.is_nan),
             Global::IsFinite => Value::Object(self.is_finite),
+
+            Global::ParseInt => Value::Object(self.parse_int),
+            Global::ParseFloat => Value::Object(self.parse_float),
         }
     }
 }
@@ -523,6 +539,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     }
     let is_nan = b.function(Builtin::GlobalIsNaN, &[])?;
     let is_finite = b.function(Builtin::GlobalIsFinite, &[])?;
+
+    let parse_int = b.function(Builtin::ParseInt, &[])?;
+    let parse_float = b.function(Builtin::ParseFloat, &[])?;
+    b.add(number, "parseInt", parse_int, PropertyFlags::METHOD)?;
+    b.add(number, "parseFloat", parse_float, PropertyFlags::METHOD)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -563,6 +584,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         string,
         is_nan,
         is_finite,
+
+        parse_int,
+        parse_float,
     })
 }
 
@@ -763,7 +787,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 53);
+        assert_eq!(first.all.len(), 55);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -785,7 +809,12 @@ mod tests {
         assert_eq!(Global::from_name("isFinite"), Some(Global::IsFinite));
         assert_eq!(Global::from_u16(6), Some(Global::IsNaN));
         assert_eq!(Global::from_u16(7), Some(Global::IsFinite));
-        assert_eq!(Global::from_u16(8), None);
+
+        assert_eq!(Global::from_name("parseInt"), Some(Global::ParseInt));
+        assert_eq!(Global::from_name("parseFloat"), Some(Global::ParseFloat));
+        assert_eq!(Global::from_u16(8), Some(Global::ParseInt));
+        assert_eq!(Global::from_u16(9), Some(Global::ParseFloat));
+        assert_eq!(Global::from_u16(10), None);
     }
 
     /// Every built-in function inherits from `Function.prototype`, which

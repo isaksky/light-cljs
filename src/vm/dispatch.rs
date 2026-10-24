@@ -218,7 +218,7 @@ fn numbers(op: Opcode, a: &Value, b: &Value) -> Result<(f64, f64), Fault> {
 /// JavaScript ToInt32 of a Number: NaN and ±Infinity are 0; otherwise the
 /// value truncated toward zero, modulo 2^32, as a two's-complement 32-bit
 /// integer. ToUint32 is the same bits read as `u32`.
-fn to_int32(x: f64) -> i32 {
+pub(crate) fn to_int32(x: f64) -> i32 {
     if !x.is_finite() {
         return 0;
     }

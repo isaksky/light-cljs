@@ -827,6 +827,8 @@ fn realm_intrinsics_retain() {
         "Number.isFinite",
         "Number.isInteger",
         "Number.isSafeInteger",
+        "parseInt",
+        "parseFloat",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -850,8 +852,9 @@ fn realm_intrinsics_retain() {
     // `Array.prototype.push`, clj-quickjs-155, and the five string code-unit
     // methods, clj-quickjs-143, and both substring-search methods,
     // clj-quickjs-144, five extraction/combination methods, clj-quickjs-145,
-    // and six number predicates, clj-quickjs-147.)
-    assert_eq!(rt.heap_usage().objects.builtin, 48);
+    // six number predicates, clj-quickjs-147, and the two parsing functions,
+    // clj-quickjs-148.)
+    assert_eq!(rt.heap_usage().objects.builtin, 50);
     assert_eq!(rt.heap_usage().objects.plain, 5);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

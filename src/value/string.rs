@@ -572,31 +572,217 @@ pub fn string_to_number(s: &JsString) -> f64 {
 /// True when `t` is `[+-]? (D+ ('.' D*)? | '.' D+) ([eE] [+-]? D+)?` with
 /// ASCII decimal digits `D`.
 fn is_str_decimal_literal(t: &[u8]) -> bool {
-    let digits = |t: &[u8]| t.iter().take_while(|b| b.is_ascii_digit()).count();
-    let mut i = usize::from(matches!(t.first(), Some(b'+' | b'-')));
-    let int = digits(&t[i..]);
-    i += int;
-    let mut frac = 0;
-    if t.get(i) == Some(&b'.') {
-        i += 1;
-        frac = digits(&t[i..]);
-        i += frac;
+    let mut prefix = DecimalPrefix::default();
+    t.iter().all(|&c| prefix.push(u16::from(c))) && prefix.complete()
+}
+
+/// The shared StrDecimalLiteral prefix grammar (Infinity is handled by
+/// callers). State 3 is a point with no digit yet; 5/6 are an incomplete
+/// exponent, which parseFloat discards but StringToNumber rejects.
+#[derive(Debug, Default)]
+struct DecimalPrefix(u8);
+
+impl DecimalPrefix {
+    fn push(&mut self, c: u16) -> bool {
+        let digit = (48..=57).contains(&c);
+        self.0 = match (self.0, c) {
+            (0, 43 | 45) => 1,
+            (0..=2, _) if digit => 2,
+            (0 | 1, 46) => 3,
+            (2, 46) => 4,
+            (3 | 4, _) if digit => 4,
+            (2 | 4, 69 | 101) => 5,
+            (5, 43 | 45) => 6,
+            (5..=7, _) if digit => 7,
+            _ => return false,
+        };
+        true
     }
-    if int + frac == 0 {
-        return false;
+
+    fn complete(&self) -> bool {
+        matches!(self.0, 2 | 4 | 7)
     }
-    if matches!(t.get(i), Some(b'e' | b'E')) {
-        i += 1;
-        if matches!(t.get(i), Some(b'+' | b'-')) {
-            i += 1;
+}
+
+/// Budgeted parseInt/parseFloat scanning over immutable leaf storage. No
+/// heap edges. Each advance inspects at most `budget` input units; integer
+/// arithmetic touches at most 32 limbs per unit and decimal finalization
+/// parses at most 1100 retained digits plus a sticky digit and exponent.
+#[derive(Debug)]
+pub(crate) struct NumberParse {
+    text: JsString,
+    next: usize,
+    started: bool,
+    negative: bool,
+    radix: Option<u32>,
+    integer: [u32; 32],
+    any: bool,
+    decimal: DecimalPrefix,
+    digits: String,
+    fraction: i64,
+    dropped: i64,
+    sticky: bool,
+    exponent: i64,
+    exponent_negative: bool,
+}
+
+impl NumberParse {
+    /// `None` selects parseFloat; `Some(0)` detects hex for parseInt.
+    pub(crate) fn new(text: JsString, radix: Option<u32>) -> Self {
+        Self {
+            text,
+            radix,
+            next: 0,
+            started: false,
+            negative: false,
+            integer: [0; 32],
+            any: false,
+            decimal: DecimalPrefix::default(),
+            digits: String::new(),
+            fraction: 0,
+            dropped: 0,
+            sticky: false,
+            exponent: 0,
+            exponent_negative: false,
         }
-        let exp = digits(&t[i..]);
-        if exp == 0 {
-            return false;
-        }
-        i += exp;
     }
-    i == t.len()
+
+    pub(crate) fn advance(&mut self, budget: usize) -> Option<f64> {
+        for _ in 0..budget {
+            let Some(&c) = self.text.code_units().get(self.next) else {
+                return Some(self.finish());
+            };
+            if !self.started {
+                self.next += 1;
+                if is_str_white_space(c) {
+                    continue;
+                }
+                self.started = true;
+                self.negative = c == 45;
+                if !matches!(c, 43 | 45) {
+                    self.next -= 1;
+                }
+                let rest = &self.text.code_units()[self.next..];
+                if let Some(radix) = &mut self.radix {
+                    if matches!(*radix, 0 | 16)
+                        && rest.first() == Some(&48)
+                        && matches!(rest.get(1), Some(88 | 120))
+                    {
+                        *radix = 16;
+                        self.next += 2;
+                    } else if *radix == 0 {
+                        *radix = 10;
+                    }
+                } else if rest.len() >= 8 && rest[..8].iter().copied().eq("Infinity".encode_utf16())
+                {
+                    return Some(self.signed(f64::INFINITY));
+                }
+                continue;
+            }
+            self.next += 1;
+            if let Some(radix) = self.radix {
+                let digit = match c {
+                    48..=57 => u32::from(c - 48),
+                    65..=90 => u32::from(c - 65) + 10,
+                    97..=122 => u32::from(c - 97) + 10,
+                    _ => return Some(self.finish()),
+                };
+                if digit >= radix {
+                    return Some(self.finish());
+                }
+                self.any = true;
+                let mut carry = u64::from(digit);
+                for limb in &mut self.integer {
+                    carry += u64::from(*limb) * u64::from(radix);
+                    *limb = carry as u32;
+                    carry >>= 32;
+                }
+                if carry != 0 {
+                    // Every possible extension is already beyond 2^1024.
+                    return Some(self.signed(f64::INFINITY));
+                }
+            } else {
+                let before = self.decimal.0;
+                // The optional sign was consumed above; a second sign is invalid.
+                if (before == 0 && matches!(c, 43 | 45)) || !self.decimal.push(c) {
+                    return Some(self.finish());
+                }
+                if self.decimal.0 == 7 {
+                    // Greater than twice MAX_STRING_LEN, so saturation cannot
+                    // hide cancellation against a long fraction/significand.
+                    self.exponent = (self.exponent * 10 + i64::from(c - 48)).min(4_000_000_000);
+                } else if before == 5 && c == 45 {
+                    self.exponent_negative = true;
+                } else if (48..=57).contains(&c) {
+                    self.any = true;
+                    if matches!(before, 3 | 4) {
+                        self.fraction += 1;
+                    }
+                    if c != 48 || !self.digits.is_empty() {
+                        if self.digits.len() < 1100 {
+                            self.digits.push(c as u8 as char);
+                        } else {
+                            self.dropped += 1;
+                            self.sticky |= c != 48;
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn signed(&self, n: f64) -> f64 {
+        if self.negative { -n } else { n }
+    }
+
+    fn finish(&self) -> f64 {
+        if !self.any {
+            return f64::NAN;
+        }
+        if self.radix.is_some() {
+            // Stream the exact (at most 1024-bit) integer into the same
+            // top-bits/guard/sticky rounding rule used by StringToNumber.
+            let mut mant = 0u64;
+            let mut dropped = 0u64;
+            let mut sticky = false;
+            for limb in self.integer.iter().rev() {
+                for k in (0..32).rev() {
+                    let bit = u64::from((limb >> k) & 1);
+                    if mant >> 63 == 0 {
+                        mant = (mant << 1) | bit;
+                    } else {
+                        dropped += 1;
+                        sticky |= bit != 0;
+                    }
+                }
+            }
+            return self.signed(round_integer(mant, dropped, sticky));
+        }
+        if self.digits.is_empty() {
+            return self.signed(0.0);
+        }
+        let mut shift = self.dropped - self.fraction;
+        if self.decimal.0 == 7 {
+            shift += if self.exponent_negative {
+                -self.exponent
+            } else {
+                self.exponent
+            };
+        }
+        let mut digits = self.digits.clone();
+        if self.sticky {
+            // A binary64 rounding boundary is a dyadic rational with at
+            // most 1075 fractional decimal places and fewer than 1100
+            // significant digits. Beyond 1100 digits only nonzeroness can
+            // affect which side of that boundary this value occupies.
+            digits.push('1');
+            shift -= 1;
+        }
+        digits.push('e');
+        digits.push_str(&shift.to_string());
+        self.signed(digits.parse::<f64>().expect("validated decimal"))
+    }
 }
 
 /// The value of the unsigned integer whose digits in radix
@@ -628,6 +814,10 @@ fn radix_integer(digits: &[u8], bits_per_digit: u32) -> f64 {
             }
         }
     }
+    round_integer(mant, dropped, sticky)
+}
+
+fn round_integer(mant: u64, dropped: u64, sticky: bool) -> f64 {
     if mant == 0 {
         return 0.0;
     }
@@ -656,6 +846,73 @@ fn radix_integer(digits: &[u8], bits_per_digit: u32) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    fn parsed(text: &str, radix: Option<u32>) -> f64 {
+        let mut parser = NumberParse::new(JsString::from(text), radix);
+        for _ in 0..text.len() + 2 {
+            if let Some(number) = parser.advance(1) {
+                return number;
+            }
+        }
+        panic!("parser did not finish");
+    }
+
+    #[test]
+    fn parse_integer_all_radixes_round_exact_integers_once() {
+        for radix in 2..=36u32 {
+            for n in [
+                0,
+                1,
+                (1u128 << 53) + 1,
+                (1u128 << 53) + 3,
+                (1u128 << 100) + (1u128 << 46) + 1,
+                u128::MAX,
+            ] {
+                let mut digits = Vec::new();
+                let mut rest = n;
+                loop {
+                    digits
+                        .push(char::from_digit((rest % u128::from(radix)) as u32, radix).unwrap());
+                    rest /= u128::from(radix);
+                    if rest == 0 {
+                        break;
+                    }
+                }
+                let text: String = digits.into_iter().rev().collect();
+                assert_eq!(parsed(&text, Some(radix)), n as f64, "{text} radix {radix}");
+            }
+        }
+        for text in ["1".repeat(309), "9".repeat(309), "0".repeat(2000)] {
+            assert_eq!(parsed(&text, Some(10)), text.parse::<f64>().unwrap());
+        }
+        assert_eq!(parsed(&"f".repeat(256), Some(16)), f64::INFINITY);
+        let below_overflow = format!("{}{}", "1".repeat(53), "0".repeat(971));
+        assert_eq!(parsed(&below_overflow, Some(2)), f64::MAX);
+    }
+
+    #[test]
+    fn parse_float_retained_digits_preserve_rounding_boundaries() {
+        let midpoint = "1.00000000000000011102230246251565404236316680908203125";
+        let cases = [
+            format!("{midpoint}{}", "0".repeat(2000)),
+            format!("{midpoint}{}1", "0".repeat(2000)),
+            format!("{}e-2000", "1234567890".repeat(200)),
+            format!("0.{}123e2003", "0".repeat(2000)),
+            format!("{}e-9999999999999999999999999999", "9".repeat(2000)),
+            format!("0.{}1e9999999999999999999999999999", "0".repeat(2000)),
+            "2.4703282292062327e-324".to_string(),
+            "2.4703282292062328e-324".to_string(),
+            "1.7976931348623157e308".to_string(),
+            "1.7976931348623159e308".to_string(),
+        ];
+        for text in cases {
+            assert_eq!(
+                parsed(&text, None).to_bits(),
+                text.parse::<f64>().unwrap().to_bits(),
+                "{text}"
+            );
+        }
+    }
+
     #[test]
     fn incremental_string_build_checks_limits_and_moves_completed_storage() {
         let source = JsString::from("ab");

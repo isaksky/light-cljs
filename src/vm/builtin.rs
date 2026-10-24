@@ -90,6 +90,8 @@
 //! | `String.prototype.substring`, `.slice`, `.concat`, `.padStart`, `.padEnd` (clj-quickjs-145) | generic ToString receivers and resumable argument coercion; UTF-16 extraction/combination, with at most 256 output units copied per native step; length above `2^30 - 1`: catchable `RangeError` ("string too long") |
 //! | `Number(...)`, `String(...)`, `new Number(...)`, `new String(...)` (clj-quickjs-72) | convert the argument (absent: 0 / ""); `new` allocates a task-owned ordinary object with [[NumberData]] / [[StringData]]; object arguments use resumable ToPrimitive with number / string hint |
 //! | global `isNaN`, `isFinite`; `Number.isNaN`, `.isFinite`, `.isInteger`, `.isSafeInteger` (clj-quickjs-147) | globals apply ToNumber (objects through a resumable native conversion); Number methods return false for non-numbers without coercion; all ignore `this` and use only the first argument (absent: undefined) |
+
+//! | `parseInt`, `parseFloat` (clj-quickjs-148) | resumable ToString and, for parseInt, ToInt32(radix); bounded prefix scanning in native::NumberParse; `Number` exposes the same functions |
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
@@ -222,6 +224,10 @@ pub(crate) enum Builtin {
     NumberIsFinite,
     NumberIsInteger,
     NumberIsSafeInteger,
+
+    /// Global and Number parsing functions (clj-quickjs-148).
+    ParseInt,
+    ParseFloat,
 }
 
 impl Builtin {
@@ -271,6 +277,9 @@ impl Builtin {
             Builtin::GlobalIsFinite | Builtin::NumberIsFinite => "isFinite",
             Builtin::NumberIsInteger => "isInteger",
             Builtin::NumberIsSafeInteger => "isSafeInteger",
+
+            Builtin::ParseInt => "parseInt",
+            Builtin::ParseFloat => "parseFloat",
         }
     }
 
@@ -318,6 +327,9 @@ impl Builtin {
             | Builtin::NumberIsFinite
             | Builtin::NumberIsInteger
             | Builtin::NumberIsSafeInteger => 1,
+
+            Builtin::ParseInt => 2,
+            Builtin::ParseFloat => 1,
         }
     }
 }
@@ -437,8 +449,10 @@ pub(crate) fn call(
         | Builtin::StringPrototypeSlice
         | Builtin::StringPrototypeConcat
         | Builtin::StringPrototypePadStart
-        | Builtin::StringPrototypePadEnd => Err(Fault::Internal(
-            "string operation requires a resumable native frame",
+        | Builtin::StringPrototypePadEnd
+        | Builtin::ParseInt
+        | Builtin::ParseFloat => Err(Fault::Internal(
+            "operation requires a resumable native frame",
         )),
         Builtin::GlobalIsNaN
         | Builtin::GlobalIsFinite
