@@ -22,6 +22,96 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## Re-measured against shadow-cljs (October 23, 2026, at `81f9837`)
+
+light-cljs master `81f9837` (after light-cljs-426 to 429, 432 to 437, 439,
+441, 442 and 459) against fresh shadow-cljs 3.5.3, back to back on the same
+machine in one session (24-core Mac, macOS 15.7.3, 32 GB, OpenJDK 25.0.2),
+with no other job running. `bb benchmarks/penpot.bb DIR shadow-compile
+shadow-release` and then `render main-none main-advanced` for each
+light-cljs configuration, `LIGHT_CLJS_BINARY` an immutable copy of the
+release binary and the configuration in `LIGHT_CLJS_EXTRA_ARGS` (with
+`--stats`), 3 rounds with the light-cljs configurations in reverse order in
+round 2. Medians (range). Peak RSS from `/usr/bin/time -l`. The 1-minute
+load average was 2.3 to 12.4: shadow's JVM drives it to 9-12 while it
+runs, and the average lags, so the light-cljs builds right after a shadow
+job record 5-10 although the machine was otherwise idle.
+
+Configurations: *today* is today's default, `--jobs 1 --macro-memory-limit
+67108864`; *proposed* is light-cljs-434's proposed default, `--jobs 4
+--macro-memory-limit 1073741824` (256 MiB per job); *8 jobs* is `--jobs 8
+--macro-memory-limit 2147483648`. These flags come after `penpot.bb`'s own
+`--macro-memory-limit 4000000000`, and the last one wins.
+
+| Build | Wall | User CPU | Peak RSS | vs shadow (wall, RSS) |
+| --- | --- | ---: | ---: | --- |
+| shadow `compile main` (dev) | 31.30 s (30.91-34.68) | 90.6 s | 2.210 GB | |
+| light `main --optimize none`, today | 12.58 s (12.13-12.95) | 15.3 s | 0.819 GB | 2.49x faster, 0.37x |
+| light `main --optimize none`, proposed | 7.48 s (7.33-7.49) | 18.4 s | 1.095 GB | 4.18x faster, 0.50x |
+| light `main --optimize none`, 8 jobs | 7.46 s (7.44-7.71) | 22.0 s | 1.432 GB | 4.20x faster, 0.65x |
+| shadow `release main` | 60.93 s (56.02-65.57) | 145.6 s | 4.225 GB | |
+| light `main` advanced, today | 14.41 s (14.19-15.35) | 17.1 s | 1.030 GB | 4.23x faster, 0.24x |
+| light `main` advanced, proposed | 9.73 s (9.50-9.87) | 20.7 s | 1.357 GB | 6.26x faster, 0.32x |
+| light `main` advanced, 8 jobs | 9.81 s (9.27-9.98) | 24.3 s | 1.712 GB | 6.21x faster, 0.41x |
+| light `app.render --optimize none`, today | 2.21 s (2.13-2.31) | 2.6 s | 0.403 GB | |
+| light `app.render --optimize none`, proposed | 1.32 s (1.29-1.36) | 3.5 s | 0.578 GB | |
+
+Shadow reported `1209 files, 1189 compiled, 0 warnings` for `compile` and
+`1176 files, 916 compiled, 0 warnings` for `release`. Its `:main` build is
+wider than light's `app.main`: it also builds the `render`, `rasterizer` and
+`util-highlight` modules and writes source maps. Of its release output
+(32.9 MB over ten module files, pseudo-names on), those three modules'
+own files are 0.27 MB (0.8%; code they share with `main` is in `shared.js`),
+and light-cljs builds `app.render` alone in 2.21 s today and 1.32 s
+proposed, so the scope difference is worth at most a few seconds of
+shadow's 31 to 61 s. light's `main` includes the app's five lazy modules.
+Every light-cljs output is one SHA-256 per build at every configuration and
+at both commits below (first 16 hex digits: `main-none` `dbf5cfcf91e48aaa`,
+`main-advanced` `fe303824959337ac`, `render` `d352af3a2bb2d35f`).
+
+Against the parent of light-cljs-426 (`dd1c1be`), built as a second
+immutable binary and alternated with master in the same rounds:
+
+| Build | `dd1c1be` | `81f9837` | change |
+| --- | --- | --- | --- |
+| `main-none`, `--jobs 1`, 64 MiB | 20.48 s, 25.9 s user, 0.826 GB | 12.58 s, 15.3 s user, 0.819 GB | -38.6% |
+| `main-none`, `--jobs 8`, 2 GiB | 10.04 s, 33.3 s user, 1.443 GB | 7.46 s, 22.0 s user, 1.432 GB | -25.7% |
+| `main-none`, `--jobs 8`, 64 MiB | fails 3 of 3 | 12.01 s, 16.4 s user, 0.858 GB | |
+| `main-advanced`, `--jobs 1`, 64 MiB | 22.26 s, 27.4 s user, 1.075 GB | 14.41 s, 17.1 s user, 1.030 GB | -35.3% |
+| `main-advanced`, `--jobs 8`, 2 GiB | 12.17 s, 35.3 s user, 1.700 GB | 9.81 s, 24.3 s user, 1.712 GB | -19.4% |
+
+At `dd1c1be`, eight jobs at 64 MiB fail in `instaparse.abnf/precompile-cljs-grammar`
+("JavaScript session memory limit exhausted"); at `81f9837` the slots beyond
+the isolates get engine-less workers (light-cljs-437), so the build succeeds
+with no worker isolate. `--stats` medians for `main-none` at `--jobs 1`:
+V8 time (`trace.engine-ms`) 12.90 s to 6.55 s, of which deferred units 9.53
+to 3.79 s; engine entries 1,319,396 to 548,210; units entering the macro
+host 7,573 to 3,758 of 13,361; top-level passes 4.80 to 4.23 s. At eight
+jobs 8,975 units need no engine at all (5,304 at `dd1c1be`), and the
+coordinator's V8 time is its top-level passes' (2.81 s); its waits at drain
+points are 1.44 s (1.97 s at `dd1c1be`).
+
+With light-cljs-426's temporary macro probe (`--jobs 1`, 64 MiB, one run,
+12.03 s with the probe against 24.2 s at `dd1c1be` on October 22): 300 core
+macro calls still reach the engine (`..` 196, `as->` 58, `hash-map` 22,
+`doto` 16, and 8 calls to `amap`, `areduce`, `comment`, `dotimes` and large `js-obj`), 0.06 s, against 28,090 and 6.27 s; the 20,126
+calls to source macros take 7.89 s, 392 us per call, against 11.06 s and
+549 us. The largest are `mf/defc` (1,033 calls, 2.93 s),
+`precompile-cljs-grammar` (1 call, 0.73 s), `stl/css` (5,131, 0.52 s) and
+`mf/html` (105, 0.49 s).
+
+QuickJS-only (`--no-default-features --target-dir target/quickjs`) at the
+proposed default, 3 rounds: `main-none` 31.94 s (31.61-32.61), 53.1 s user,
+0.985 GB, the same output hash, against shadow `compile`'s 31.30 s. Its
+coordinator spends 18.81 s in top-level passes (17.12 s of it in QuickJS)
+and waits 11.44 s at drain points.
+
+Output size, both with pseudo-names (so neither is a production size):
+light `main-advanced` is 24,646,495 bytes and 2,741,041 with `gzip -9`;
+shadow's release modules concatenated are 32,917,428 bytes and 3,561,142
+(render and rasterizer, 36,779 of it), so light's is 23% smaller after
+gzip.
+
 ## Earlier measurements
 
 The entries below retain the state and decisions at each earlier phase.

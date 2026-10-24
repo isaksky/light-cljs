@@ -7,7 +7,8 @@ advanced). Every output printed the oracle's checksum for input 42 and 3
 iterations, and `check-waste.bb --strict` passed for both. The tables up to
 Findings are the baseline at `ac88cb2`; [the re-measurement at
 `76c6366`](#re-measured-after-the-scaling-pellets-october-22-2026-at-76c6366)
-follows them.
+follows them, and [the head-to-head at
+`81f9837`](#re-measured-at-81f9837-october-23-2026) after that.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -170,6 +171,88 @@ baseline growth column is the group's table at `ac88cb2`:
 
 Rounds differed by under 3% for most counters and by 7.5% at most
 (`trace.top-level.engine-ms` at 400k).
+
+## Re-measured at `81f9837` (October 23, 2026)
+
+light-cljs master `81f9837` (after light-cljs-426 to 429, 432 to 437, 439,
+441, 442 and 459) against shadow-cljs 3.5.3 with `-Xmx8g`, back to back in
+one session on the machine of [Setup](#setup) with nothing else running.
+Each round ran `compare.bb DIR --light WRAPPER --runs 1` once with shadow
+and today's light-cljs default, then `--light-only` for each other
+configuration; three rounds, medians (range). WRAPPER is a shell script that
+appends the configuration's flags to an immutable copy of the release binary
+(`release bench --no-cache --jobs 4 ...`; the command line overrides the
+project's `:macro-memory-limit` of 2 GiB) and records user CPU and the load
+average from an inner `/usr/bin/time -l`; a `clojure` wrapper on `PATH` does
+the same for shadow. Every output printed the oracle's checksum
+(`compare.bb` stops otherwise) and passed `check-waste.bb --strict`
+(`:waste-ok` in each round's `compare-result.edn`).
+
+Configurations: *today* is today's default, `--jobs 1 --macro-memory-limit
+67108864`; *proposed* is light-cljs-434's proposed default, `--jobs 4
+--macro-memory-limit 1073741824`; *8 jobs* is `--jobs 8
+--macro-memory-limit 2147483648`. Uncached builds, wall (range), user CPU,
+peak RSS:
+
+| Size | shadow | light today | light proposed | light 8 jobs |
+| --- | --- | --- | --- | --- |
+| 200k | 40.19 s (38.83-41.82), 122.5 s, 3.36 GB | 7.17 s (7.04-8.28), 7.4 s, 1.05 GB | 5.03 s (5.00-5.06), 9.6 s, 1.34 GB | 5.18 s (5.00-5.23), 13.2 s, 1.58 GB |
+| 800k | 179.15 s (166.14-203.05), 414.1 s, 7.75 GB | fails 2 of 2 | 27.20 s (26.59-28.62), 49.9 s, 4.43 GB | 27.57 s (27.05-27.97), 64.4 s, 4.75 GB |
+
+Against shadow, uncached: 5.6x faster at 31% of its peak RSS (200k, today),
+8.0x at 40% (200k, proposed) and 6.6x at 57% (800k, proposed). The 800k
+build fails at today's default with "JavaScript session memory limit
+exhausted" after about 12 s, in a different unit from run to run
+(`workload.namir/gourujoun`, `workload.brombro/kumdarstul`), as
+light-cljs-434 found. 1-minute load average: 2.2-3.3 for shadow and today's
+light at 200k, 4.4-6.9 for the light builds that follow a shadow run (the
+average lags shadow's JVM), 2.7-4.0 at 800k.
+
+Cached, no change (one warm-up, then the timed rebuild): shadow 32.39 s
+(32.37-33.65) and 3.43 GB at 200k, 146.72 s (145.09-150.18) and 7.96 GB at
+800k; light 1.02 s and 0.53 GB (today), 1.04 s and 0.58 GB (proposed),
+1.02 s and 0.57 GB (8 jobs) at 200k, 4.82 s and 2.01 GB (proposed) and 4.69
+s and 2.02 GB (8 jobs) at 800k. Output is unchanged from `76c6366` at every
+configuration: 3,456,905 bytes and 860,671 gzip at 200k, 13,396,492 and
+3,302,076 at 800k, against shadow's 4,067,637 / 1,002,909 and 15,710,764 /
+3,894,315 (-14.2% and -15.2% gzip).
+
+QuickJS-only (`--no-default-features --target-dir target/quickjs`) at the
+proposed default, 3 rounds: 200k 6.36 s (6.28-6.52), 12.9 s user, 1.16 GB,
+the same output; Penpot in benchmarks/penpot-investigation.md.
+
+*Before and after.* The parent of light-cljs-426 (`dd1c1be`) as a second
+immutable binary, alternated with `81f9837` in the same rounds, `release
+bench --no-cache --stats` on the 200k project:
+
+| Build | `dd1c1be` | `81f9837` | change |
+| --- | --- | --- | --- |
+| `--jobs 1`, 64 MiB | 12.69 s (12.59-12.72), 14.9 s user, 1.11 GB | 7.02 s (6.88-7.05), 7.4 s user, 1.03 GB | -44.7% |
+| `--jobs 8`, 2 GiB | 8.80 s (8.75-8.82), 29.7 s user, 1.78 GB | 5.05 s (4.98-5.06), 13.0 s user, 1.60 GB | -42.6% |
+| `--jobs 8`, 64 MiB | fails 3 of 3 | 6.63 s (6.49-6.96), 9.2 s user, 1.10 GB | |
+
+At one job V8 time (`trace.engine-ms`) fell from 4.58 to 0.91 s, engine
+entries from 968,732 to 255,183, units entering the macro host from 7,345 to
+2,493, top-level passes from 2.61 to 1.73 s and deferred units from 7.34 to
+2.61 s. At eight jobs the pool takes all 13,477 units (8,222 at `dd1c1be`),
+9,938 of them with no engine (3,924), the workers spend 2.93 s summed
+(14.87 s) and the coordinator's V8 time is 0.51 s, all of it top-level
+passes. At 64 MiB `dd1c1be` fails in `workload.nansimraim` and `81f9837`
+runs the 9,938 engine-free units on seven engine-less workers with no worker
+isolate. Output is byte-identical between the commits.
+
+With the macro probe of light-cljs-426 (temporary, `--jobs 1`, one run): 0
+core macro calls reach the engine (25,466 at `dd1c1be`, 5.76 s), and the
+5,226 calls to source macros take 1.18 s, 226 us per call (2.82 s, 540 us).
+
+*A cache-writing cold build is much slower than an uncached one.* The
+untimed warm-up of the cached scenario, which writes the cache into an empty
+directory, took 9.7 s at 200k (today and proposed) and 10.8 s with 8 jobs,
+and 81.7 s (80.9-87.6, 229 s user) at 800k proposed and 102.5 s (102.4-104.7,
+421 s user, 5.83 GB) with 8 jobs, against 27.2 and 27.6 s uncached. A
+`--stats` pair at 200k proposed shows every unit entering the macro host
+when the build records (13,477 against 2,406) and the coordinator waiting
+2.65 s at drain points. Filed as light-cljs-461.
 
 ## Follow-up findings
 
