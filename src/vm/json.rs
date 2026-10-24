@@ -509,9 +509,16 @@ impl Parser {
                                 let message = if c == 0 {
                                     "Unexpected token '".to_string()
                                 } else {
+                                    // QuickJS's %c formats the first UTF-8
+                                    // byte; a non-ASCII leading byte becomes
+                                    // U+FFFD when its error buffer is decoded.
                                     format!(
                                         "Unexpected token '{}'",
-                                        char::from_u32(u32::from(c)).unwrap_or('\u{fffd}')
+                                        if c < 128 {
+                                            char::from(c as u8)
+                                        } else {
+                                            '\u{fffd}'
+                                        }
                                     )
                                 };
                                 return Err(self.error(&message));

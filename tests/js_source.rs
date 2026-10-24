@@ -5280,6 +5280,7 @@ fn json_parse_error_positions() {
         ("@01", "Unexpected number"),
         ("-@01", "Unexpected number"),
         ("-@", "Unexpected token '"),
+        ("-@é", "Unexpected token '�'"),
         ("1.@", "Unterminated fractional number"),
         ("1e+@", "Exponent part is missing a number"),
         ("[1 @2]", "expecting ']'"),
