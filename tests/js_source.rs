@@ -104,6 +104,30 @@ fn string_code_unit_access_explicit_gaps() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_code_unit_method_descriptors() {
+    for (owner, name) in [
+        ("String.prototype", "charAt"),
+        ("String.prototype", "charCodeAt"),
+        ("String.prototype", "codePointAt"),
+        ("String", "fromCharCode"),
+        ("String", "fromCodePoint"),
+    ] {
+        let src = format!(
+            "let owner = {owner}; let d = Object.getOwnPropertyDescriptor(owner, '{name}'); \
+             d.value === owner['{name}'] && typeof d.value === 'function' && \
+             d.writable === true && d.enumerable === false && d.configurable === true && \
+             d.value.name === '{name}' && d.value.length === 1"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        eval("Object.keys(String.prototype).length === 0 && Object.keys(String).length === 0"),
+        ValueView::Bool(true)
+    );
+}
+
 /// A host for budgeted runs of code that performs no host effects.
 struct NoEffects;
 

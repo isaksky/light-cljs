@@ -403,6 +403,12 @@ fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Resu
     }
     let string = match this {
         Value::Object(id) if is_intrinsic(heap, *id, |r| r.string_prototype) => JsString::from(""),
+        Value::Object(_) => {
+            return Err(Fault::Unsupported(
+                "String code-unit methods need resumable ToPrimitive for object receivers"
+                    .to_string(),
+            ));
+        }
         _ => crate::vm::dispatch::to_js_string(this)?,
     };
     let number = crate::vm::dispatch::to_number(pos)?;
@@ -433,8 +439,9 @@ fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Resu
     })
 }
 
-/// Leaf construction: O(args), bounded by the configured VM value-stack
-/// limit (including apply's argument-list check), at most two units per arg.
+/// Leaf construction: O(args + total primitive-string conversion work),
+/// at most two output units per argument. The stack limit bounds args but
+/// does not bound aggregate string scans; resumable coercion is clj-quickjs-265.
 /// No JavaScript conversion is attempted on this Rust stack.
 fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
     let mut units = Vec::new();

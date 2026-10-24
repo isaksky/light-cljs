@@ -581,7 +581,8 @@ checks left to later stages:
   the property or element index leading to the innermost one.
 - **String methods remain incomplete** (the string-methods pellets).
   String primitives and wrappers expose code-unit `length` and indices
-  (clj-quickjs-142); `String.fromCharCode` remains deferred.
+  (clj-quickjs-142). The code-unit
+  methods and `String.fromCharCode`/`fromCodePoint` execute (clj-quickjs-143).
 - **Identifier tables are Unicode 16.0**, the version compiled into the perl
   that generated them; code points assigned later are not identifier
   characters until the tables are regenerated.
@@ -2195,3 +2196,8 @@ and error-object properties are also deferred. In particular the acceptance
 rows reading `String.fromCharCode(0xd800).length` and
 `String.fromCodePoint(0x41, 0x1f600).length` cannot execute yet, although the
 constructed UTF-16 contents are tested exactly.
+
+Bulk primitive-string coercion in the static constructors currently runs
+inside a leaf call. Repeated large string arguments can delay yielding and
+collection even within the value-stack limit; clj-quickjs-265 tracks bounded,
+resumable conversion for this case.

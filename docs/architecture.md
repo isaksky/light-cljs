@@ -3454,9 +3454,13 @@ Static constructors build arbitrary UTF-16 units, including lone
 surrogates. `fromCharCode` truncates and reduces finite numbers modulo
 65536; `fromCodePoint` validates finite integral numbers before encoding a
 point, using the existing catchable `Fault::RangeError` path for invalid
-points. The leaf loop is O(argument count), bounded by the configured VM
-value-stack limit (default 2^20 values, with `apply` checking stack room),
-with at most two output units per argument and `MAX_STRING_LEN` enforced.
+points. The leaf loop costs O(argument count plus total primitive-string
+conversion work), with at most two output units per argument and
+`MAX_STRING_LEN` enforced. The configured VM value-stack limit (default
+2^20 values, with `apply` checking stack room) bounds the argument count,
+but repeated large primitive strings can make the aggregate conversion
+work large within one call. Bounded resumable coercion is clj-quickjs-265;
+until then this can delay yielding and collection.
 It runs no JavaScript and retains no continuation across a wait. Object
 coercion fails explicitly until these built-ins use resumable ToPrimitive;
 primitive conversion reuses the dispatch helpers. All operands stay rooted
