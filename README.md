@@ -1406,16 +1406,25 @@ Supported (`cargo test --test js_source string_values`,
   (`docs/architecture.md`, "String values"): publishable to other tasks,
   usable as persistent map keys by content (`__rt.get(__rt.map("k", 1), "k")`
   is 1), stored as UTF-16 code units.
+- `+` with a string operand concatenates the ToString of both operands
+  (clj-quickjs-66; `cargo test --test js_source addition_concatenates_strings`,
+  `cargo test --lib value::string::`): `"a" + 1` is `"a1"`, `1 + 2 + "3"`
+  is `"33"`, `"" + null` is `"null"`. Numbers convert by Number::toString
+  in radix 10 (shortest round-trip digits; `"" + 1e21` is `"1e+21"`,
+  `"" + 0.000001` is `"0.000001"`, `"" + 1.5e-7` is `"1.5e-7"`,
+  `"" + -0` is `"0"`). Without a string operand `+` stays numeric
+  (`true + 1` is 2).
 
 Deferred:
 
 - Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
-  one string operand (ToString, clj-quickjs-66); arithmetic, bitwise, `**`,
+  an object operand (ToPrimitive, clj-quickjs-70); arithmetic, bitwise, `**`,
   `++`/`--` on strings and `==` between a string and a number or boolean
   (StringToNumber, clj-quickjs-67); relational comparison of strings
   (clj-quickjs-68). No `typeof`, templates, `length`, indexing or string
-  methods yet; lone surrogate escapes are still rejected by the lexer
-  (clj-quickjs-141).
+  methods yet (so no `Number.prototype.toString` call, and no radix other
+  than 10, clj-quickjs-149); lone surrogate escapes are still rejected by
+  the lexer (clj-quickjs-141).
 
 ### Labelled statements (clj-quickjs-82)
 

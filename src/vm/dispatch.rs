@@ -77,7 +77,8 @@ use crate::error::{VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
-use crate::value::Value;
+use crate::value::string::number_to_string;
+use crate::value::{JsString, Value};
 use crate::vm::exception::{
     Completion, ErrorObject, Exception, HandlerKind, describe_thrown, error_object,
 };
@@ -222,29 +223,43 @@ fn to_number(v: &Value) -> Result<f64, Fault> {
     }
 }
 
+/// JavaScript ToString for primitives (QuickJS `JS_ToStringInternal`):
+/// `"undefined"`, `"null"`, `"true"` / `"false"`, Number::toString in radix
+/// 10 ([`number_to_string`]), and a string itself (the same body). Objects
+/// need ToPrimitive (clj-quickjs-70), so they are rejected explicitly.
+fn to_js_string(v: &Value) -> Result<JsString, Fault> {
+    Ok(match v {
+        Value::String(s) => s.clone(),
+        Value::Undefined => JsString::from("undefined"),
+        Value::Null => JsString::from("null"),
+        Value::Bool(b) => JsString::from(if *b { "true" } else { "false" }),
+        Value::Number(x) => JsString::from(number_to_string(*x).as_str()),
+        Value::Object(_) => {
+            return Err(Fault::Unsupported(
+                "converting an object to a string (ToPrimitive) is not supported".to_string(),
+            ));
+        }
+    })
+}
+
 /// JavaScript binary `+` (ApplyStringOrNumericBinaryOperator for `+`, QuickJS
-/// `js_add_slow`) on the supported value types: two strings concatenate, two
-/// numbers add, and other primitive pairs without a string add their
-/// ToNumber values. A string with a non-string operand needs ToString
-/// (clj-quickjs-66) and an object needs ToPrimitive; both are deferred, so
-/// those cases are rejected explicitly, never converted with ToNumber.
+/// `js_add_slow`) on primitives: when either operand is a string, the
+/// ToString of both concatenate; otherwise the ToNumber of both add. Objects
+/// need ToPrimitive first (clj-quickjs-70), which is deferred, so an object
+/// operand is rejected explicitly before any conversion, whatever the other
+/// operand is.
 fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
-        (Value::String(x), Value::String(y)) => x
-            .concat(y)
-            .map(Value::String)
-            .ok_or(Fault::OutOfMemory("string too long")),
         (Value::Object(_), _) | (_, Value::Object(_)) => Err(Fault::Unsupported(format!(
             "plus of {} and {} needs ToPrimitive, which is not supported",
             a.type_name(),
             b.type_name()
         ))),
-        (Value::String(_), _) | (_, Value::String(_)) => Err(Fault::Unsupported(format!(
-            "plus of {} and {} needs ToString, which is not supported yet",
-            a.type_name(),
-            b.type_name()
-        ))),
+        (Value::String(_), _) | (_, Value::String(_)) => to_js_string(a)?
+            .concat(&to_js_string(b)?)
+            .map(Value::String)
+            .ok_or(Fault::OutOfMemory("string too long")),
         _ => Ok(Value::Number(to_number(a)? + to_number(b)?)),
     }
 }

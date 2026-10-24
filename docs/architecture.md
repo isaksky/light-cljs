@@ -1231,9 +1231,10 @@ blocks", native frames). Design: `design.md` §§10–11, 13.
 
 ## String values (clj-quickjs-65)
 
-Contract: `src/value/string.rs` (`JsString`), `src/value.rs`
-(`Value::String`, `Primitive::String`, `ValueView::String`), `plus` and
-`loose_equals` in `src/vm/dispatch.rs`. Design: `design.md` §§4, 11.
+Contract: `src/value/string.rs` (`JsString`, `number_to_string`),
+`src/value.rs` (`Value::String`, `Primitive::String`, `ValueView::String`),
+`plus`, `to_js_string` and `loose_equals` in `src/vm/dispatch.rs`.
+Design: `design.md` §§4, 11.
 
 - **Representation: a primitive over immutable `Arc` storage, not a heap
   object.** `Value::String(JsString)` holds a thin `Arc` (one pointer, so a
@@ -1289,10 +1290,16 @@ Contract: `src/value/string.rs` (`JsString`), `src/value.rs`
 - **Instructions.** String literals are constants (`ExecutableSpec::constants`,
   `Primitive::String`; deduplicated by content; the `TooLarge` limit of
   65,536 distinct constants is unchanged). `plus` (opcode `0x49`) is
-  JavaScript's binary `+` on primitives: two strings concatenate, two
-  numbers add, a string with any other operand and an object operand fail
-  with `UnsupportedOperand` (ToString is clj-quickjs-66, ToPrimitive
-  clj-quickjs-70), other primitives add their ToNumber. The compiler emits
+  JavaScript's binary `+` on primitives: two numbers add; when either
+  operand is a string the ToString of both concatenate (clj-quickjs-66);
+  an object operand fails with `UnsupportedOperand` (ToPrimitive is
+  clj-quickjs-70); other primitives add their ToNumber. ToString of a
+  primitive (`to_js_string` in `src/vm/dispatch.rs`) is `"undefined"`,
+  `"null"`, `"true"`/`"false"`, the string itself, or Number::toString in
+  radix 10 (`value::string::number_to_string`): the shortest round-trip
+  digits from Rust's `{:e}` formatting, laid out by the ECMA-262 rules
+  (plain decimal for `1e-7 <= |x| < 1e21`, else `1e+21` / `1.5e-7`;
+  `"0"` for `-0`). Radix 2..36 is clj-quickjs-149. The compiler emits
   `add` when both operands are statically numbers and `plus` otherwise, so
   `+` never applies ToNumber to a string. `to_number` on a string fails
   with `UnsupportedOperand` (StringToNumber is clj-quickjs-67), so `-`,
@@ -1551,3 +1558,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `push_break_entry` (`is_regular_stmt`). Unlike QuickJS, a label set
   (`L1: L2: while ...`) lets `continue` target any of its labels. No code
   was copied.
+- `tests/js_source.rs` `addition_concatenates_strings` (clj-quickjs-66):
+  the message expression of the `assert` helper (line 1) and the number
+  `19686109595169230000` of `test_cvt` (line 108) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: the helper's parameters are `let` bindings, its optional
+  message part is omitted, and the number is converted by `"" +` instead
+  of `.toString()`. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_add_slow`, `JS_ToStringInternal` and
+  `js_dtoa2` were consulted only, for semantics; the Number::toString
+  layout in `src/value/string.rs` follows ECMA-262 and takes its digits
+  from Rust's shortest round-trip formatting. No code was copied.

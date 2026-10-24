@@ -1599,13 +1599,14 @@ fn string_values() {
     let (kind, message, ..) = failure_at(r#""s"()"#);
     assert_eq!(kind, VmErrorKind::TypeError);
     assert_eq!(message, "string is not a function");
-    // Mixed operands wait for ToString (clj-quickjs-66) and
-    // StringToNumber (clj-quickjs-67): rejected, never converted.
+    // Mixed operands wait for StringToNumber (clj-quickjs-67) and an object
+    // operand of `+` for ToPrimitive (clj-quickjs-70): rejected, never
+    // converted. (Mixed `+` concatenates: `addition_concatenates_strings`.)
     for src in [
-        r#""a" + 1"#,
-        r#"1 + "a""#,
         r#"let a = "a"; a - 1"#,
         r#""1" == 1"#,
+        r#""a" + (() => 1)"#,
+        r#"(() => 1) + 1"#,
     ] {
         assert_eq!(
             failure(src).kind(),
@@ -1622,6 +1623,82 @@ fn string_values() {
         eval(r#"let r; try { throw "e" + "x"; } catch (v) { r = v === "ex"; } r"#),
         ValueView::Bool(true)
     );
+}
+
+/// Binary `+` with a string operand concatenates ToString of both operands
+/// (clj-quickjs-66). Two rows are adapted from
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8: the
+/// message expression of the shared `assert` helper (line 1), with
+/// `let` bindings for its parameters and without the optional message
+/// part, and the number of `test_cvt` (line 108) whose
+/// `.toString()` is `"19686109595169230000"`, converted here by `"" +`
+/// (method calls on primitives are a later pellet); see
+/// `docs/architecture.md`, "QuickJS references and provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn addition_concatenates_strings() {
+    // When either operand is a string, `+` concatenates the ToString of
+    // both, left to right.
+    for (src, expected) in [
+        (r#""a" + 1"#, "a1"),
+        (r#"1 + "a""#, "1a"),
+        (r#"1 + 2 + "3""#, "33"),
+        (r#""3" + 1 + 2"#, "312"),
+        (r#""" + true"#, "true"),
+        (r#"false + """#, "false"),
+        (r#""" + null"#, "null"),
+        (r#""" + undefined"#, "undefined"),
+        (r#""" + -0"#, "0"),
+        // `test_cvt`.
+        (r#""" + 19686109595169230000"#, "19686109595169230000"),
+        (r#""" + 1e21"#, "1e+21"),
+        (r#""" + 1.5e-7"#, "1.5e-7"),
+        (r#""" + 0.000001"#, "0.000001"),
+        (r#""" + 0.1"#, "0.1"),
+        (r#""" + (0.1 + 0.2)"#, "0.30000000000000004"),
+        (r#""" + NaN"#, "NaN"),
+        (r#""" + -Infinity"#, "-Infinity"),
+        // Operands that are not statically known still convert at run time.
+        (
+            r#"let f = (a, b) => a + b; f(2, "x") + f(null, "")"#,
+            "2xnull",
+        ),
+        // The shared `assert` helper's message.
+        (
+            r#"let actual = 1, expected = true;
+               "assertion failed: got |" + actual + "|" + ", expected |" + expected + "|""#,
+            "assertion failed: got |1|, expected |true|",
+        ),
+    ] {
+        assert_eq!(string(src), expected, "{src}");
+    }
+    // Without a string operand, `+` stays numeric.
+    assert_eq!(num("1 + 2"), 3.0);
+    assert_eq!(num("true + 1"), 2.0);
+    assert_eq!(num("let n = null, t = true; n + t"), 1.0);
+    assert!(num("undefined + 1").is_nan());
+    // Both operands are evaluated before the conversion: an unresolvable
+    // right operand fails with its ReferenceError.
+    let (kind, message, ..) = failure_at(r#""x" + nope"#);
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "nope is not defined");
 }
 
 #[test]

@@ -200,9 +200,114 @@ impl fmt::Debug for JsString {
     }
 }
 
+/// JavaScript Number::toString(x) in radix 10 (ECMA-262 Number::toString,
+/// QuickJS `js_dtoa2` via `JS_ToStringInternal`, `research/quickjs/quickjs.c`,
+/// revision 7d1c13c5d8f8): `"NaN"`, `"0"` for both zeros, `"Infinity"` /
+/// `"-Infinity"`, otherwise the shortest decimal digits that round-trip to
+/// `x`, laid out in plain decimal when `1e-7 <= |x| < 1e21` and in exponent
+/// form (`"1e+21"`, `"1.5e-7"`) otherwise.
+///
+/// The digits come from Rust's `{:e}` formatting, which prints the shortest
+/// digit string that round-trips to `x` (choosing the closest one when
+/// several are equally short): the specification's `k` digits of `s`, with
+/// exponent `n - 1`. Only the layout below is JavaScript's own; Rust's `{}`
+/// layout differs (`1e21` prints `1000000000000000000000`, `1e-7` prints
+/// `0.0000001`) and is not used. Radix 2..36 is clj-quickjs-149.
+pub fn number_to_string(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".to_string();
+    }
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    let sci = format!("{:e}", x.abs());
+    let (mantissa, exponent) = sci
+        .split_once('e')
+        .expect("`{:e}` of a finite number has an exponent");
+    // `mantissa` is `d` or `d.ddd`: the digits of `s`, all ASCII.
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32;
+    // |x| = s × 10^(n - k), that is 0.digits × 10^n.
+    let n = exponent
+        .parse::<i32>()
+        .expect("`{:e}` exponent is an integer")
+        + 1;
+    let mut out = String::with_capacity(digits.len() + 8);
+    if x < 0.0 {
+        out.push('-');
+    }
+    if k <= n && n <= 21 {
+        // An integer: the digits, then n - k zeros.
+        out.push_str(&digits);
+        out.extend(std::iter::repeat_n('0', (n - k) as usize));
+    } else if 0 < n && n <= 21 {
+        // The point falls inside the digits.
+        out.push_str(&digits[..n as usize]);
+        out.push('.');
+        out.push_str(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        // A small fraction: "0.", -n zeros, the digits.
+        out.push_str("0.");
+        out.extend(std::iter::repeat_n('0', (-n) as usize));
+        out.push_str(&digits);
+    } else {
+        // Exponent form: d[.ddd]e±(n - 1).
+        out.push_str(&digits[..1]);
+        if k > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        out.push(if n > 0 { '+' } else { '-' });
+        out.push_str(&(n - 1).unsigned_abs().to_string());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_to_string_matches_javascript() {
+        let cases: &[(f64, &str)] = &[
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1.0, "1"),
+            (-1.0, "-1"),
+            (0.1, "0.1"),
+            (0.5, "0.5"),
+            (123.456, "123.456"),
+            (-123.456, "-123.456"),
+            (0.1 + 0.2, "0.30000000000000004"),
+            (100.0, "100"),
+            (1e20, "100000000000000000000"),
+            (1e21, "1e+21"),
+            (-1e21, "-1e+21"),
+            (1.5e21, "1.5e+21"),
+            (1e-7, "1e-7"),
+            (1.5e-7, "1.5e-7"),
+            (-1.5e-7, "-1.5e-7"),
+            (0.000001, "0.000001"),
+            (0.0000015, "0.0000015"),
+            (1.5e300, "1.5e+300"),
+            (5e-324, "5e-324"),
+            (1.7976931348623157e308, "1.7976931348623157e+308"),
+            (9007199254740992.0, "9007199254740992"),
+            (19686109595169230000.0, "19686109595169230000"),
+            (123e-20, "1.23e-18"),
+            (2147483648.0, "2147483648"),
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+        ];
+        for &(x, expected) in cases {
+            assert_eq!(number_to_string(x), expected, "Number::toString({x:e})");
+        }
+    }
 
     #[test]
     fn length_and_order_are_in_code_units() {

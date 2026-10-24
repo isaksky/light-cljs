@@ -350,7 +350,7 @@ Executed, with JavaScript semantics:
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
 | String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values (UTF-16 code units) loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
-| `+` | two strings concatenate (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"); two numbers add; a string with any other operand fails with `UnsupportedOperand` until ToString (clj-quickjs-66); other primitives: ToNumber of both, then IEEE addition. Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
+| `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits, plain decimal for `1e-7 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1.5e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
 | `- * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1), then IEEE arithmetic; `%` keeps the dividend's sign; a string operand fails with `UnsupportedOperand` until StringToNumber (clj-quickjs-67) |
 | `< > <= >=` | ToNumber, then numeric comparison (anything with NaN is false); a string operand fails with `UnsupportedOperand` (string comparison is clj-quickjs-68) |
 | `&`, `\|`, `^`, `<<`, `>>`, `>>>` and unary `~` (clj-quickjs-62) | ToNumber of both operands (left first, after both are evaluated), then ToInt32 (NaN and ±Infinity are 0; truncate, wrap modulo 2^32), ToUint32 for the left operand of `>>>`; a shift count is `ToUint32(right) & 31`; the result is a 32-bit integer (unsigned for `>>>`), never `-0` |
@@ -431,11 +431,13 @@ would escape such a finally block ends the cleanup there (`src/task.rs`,
 
 Gaps specific to execution:
 
-- **Strings are values without conversions yet** (clj-quickjs-65). String
-  literals, `===`/`==` between strings, `+` of two strings, ToBoolean and
-  strings as map keys execute. Every operation that would convert a string
-  to or from another type fails with `UnsupportedOperand` instead of
-  guessing: `+` with one string operand (ToString, clj-quickjs-66), the
+- **Strings convert only by ToString of primitives** (clj-quickjs-65,
+  clj-quickjs-66). String literals, `===`/`==` between strings, `+` with a
+  string operand (ToString of a primitive, then concatenation), ToBoolean
+  and strings as map keys execute. Every operation that would convert a
+  string to another type, or an object to a string, fails with
+  `UnsupportedOperand` instead of guessing: `+` with an object operand
+  (ToPrimitive, clj-quickjs-70), the
   arithmetic, bitwise, shift, `**` and `++`/`--` operators on a string and
   `==` between a string and a number or boolean (StringToNumber,
   clj-quickjs-67), and relational comparison (clj-quickjs-68). `typeof`,
@@ -587,6 +589,12 @@ const s = 'it\'s \u{1F600} \x41\
 let greeting = "hello, " + 'world';
 const m = __rt.map(greeting, 1);
 greeting === "hello, world" && "1" != "01" && !"" ? __rt.get(m, "hello, world") : 0
+```
+
+```js accept
+// `+` with a string operand concatenates ToString of both (clj-quickjs-66).
+let n = 1, t = true;
+"got |" + n + "|, expected |" + t + "|" + null + undefined + 1e21 + -0
 ```
 
 ```js accept

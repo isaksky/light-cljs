@@ -206,15 +206,16 @@
 //! other handler-stack mismatches above.
 //!
 //! Opcode `0x49` `Plus` is JavaScript's binary `+` on primitives
-//! (clj-quickjs-65; QuickJS `js_add_slow`): two strings concatenate into a
-//! new string (immutable storage outside the heap, `crate::value::JsString`;
-//! a result longer than 2^30 - 1 code units fails with `OutOfMemory`), two
-//! numbers add, other primitive pairs without a string add their ToNumber
-//! values, and a string with a non-string operand or any object operand
-//! fails with `UnsupportedOperand` (ToString and ToPrimitive are deferred),
-//! never converting a string with ToNumber. It allocates no heap object, so
-//! it is not a poll point. The compiler emits it for every `+` whose
-//! operands are not both statically numbers; `Add` stays number-only.
+//! (clj-quickjs-65, clj-quickjs-66; QuickJS `js_add_slow`): when either
+//! operand is a string, the ToString of both concatenate into a new string
+//! (immutable storage outside the heap, `crate::value::JsString`; a result
+//! longer than 2^30 - 1 code units fails with `OutOfMemory`); otherwise two
+//! numbers add and other primitive pairs add their ToNumber values. Any
+//! object operand fails with `UnsupportedOperand` (ToPrimitive is
+//! deferred), and a string is never converted with ToNumber. It allocates
+//! no heap object, so it is not a poll point. The compiler emits it for
+//! every `+` whose operands are not both statically numbers; `Add` stays
+//! number-only.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
