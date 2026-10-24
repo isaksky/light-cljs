@@ -3373,7 +3373,7 @@ In-range element descriptors are writable/enumerable/configurable data
 properties, but deletion and attribute restrictions fail. A nonempty view
 cannot be frozen (preventing extensions still succeeds).
 
-Explicit gaps: floating-point and BigInt typed arrays, iterable/array-like/copy
+Explicit gaps: BigInt typed arrays, iterable/array-like/copy
 construction, typed-array methods, resizable buffers and subclass/species
 construction remain deferred. Unsupported object construction fails explicitly.
 
@@ -3446,3 +3446,20 @@ toJSON override (including a getter or non-callable value) remains observable.
 Host clock/zone integration is documented at `src/vm/date.rs`:
 unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
 no host supplies a zone. No host input is consumed by this UTC-only core.
+
+## Floating-point typed arrays (clj-quickjs-167)
+
+Execution: `new Float16Array`, `new Float32Array` and `new Float64Array` accept
+a primitive length or `(buffer, byteOffset?, length?)`, sharing the integer
+constructors' resumable ToIndex conversion, alignment/bounds RangeErrors,
+detached-buffer TypeErrors and zero initialization. They inherit the same
+`%TypedArray%` prototype and expose fixed `BYTES_PER_ELEMENT` of 2, 4 and 8.
+Element writes perform resumable ToNumber, then round to binary16/binary32
+with ties to even or retain binary64 exactly. Negative zero and subnormals
+are preserved, overflow becomes signed infinity, and stores select a positive
+quiet NaN representation. Loads widen exactly to Number. The backing bytes
+are little-endian; all existing exotic operations and detachment rules apply.
+
+Explicit gaps: `Math.f16round`, BigInt views, iterable/array-like/copy
+construction, typed-array methods, resizable buffers and subclass/species
+construction remain deferred.

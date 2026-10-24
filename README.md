@@ -2911,7 +2911,7 @@ round-half-to-even clamping. The shared `%TypedArray%` prototype provides
 prototypes expose fixed `BYTES_PER_ELEMENT`. Detached views have zero length
 and undefined elements. Allocation uses ArrayBuffer's fallible 16 MiB bound.
 
-Deferred: floating-point and BigInt views, iterable/array-like/copy constructors,
+Deferred: BigInt views, iterable/array-like/copy constructors,
 resizable buffers, species/subclassing, and typed-array methods (`set`, `fill`,
 `join`, etc.). Non-buffer object constructor arguments fail explicitly.
 
@@ -2942,3 +2942,17 @@ The host clock/zone extension point is documented in
 `src/vm/date.rs`; this core reads neither the clock nor the OS zone.
 Tests: `cargo test --lib vm::date::tests::date_time_arithmetic` and
 `cargo test --test js_source date_`.
+
+### Floating-point typed arrays (clj-quickjs-167)
+
+Supported: `Float16Array`, `Float32Array` and `Float64Array` reuse the length
+and ArrayBuffer view constructors, integer-indexed element operations, resumable
+Number coercion, detachment and task ownership described above. Their fixed
+`BYTES_PER_ELEMENT` values are 2, 4 and 8. Stores use IEEE 754 round-to-nearest,
+ties-to-even (directly from Number for Float16), preserve negative zero and
+subnormals, overflow to signed infinity and canonicalize NaNs to positive quiet
+NaNs. Loads widen exactly to Number; bytes are always little-endian.
+
+Deferred: `Math.f16round`, BigInt views and the remaining typed-array constructor
+forms/methods listed above. Validation: `cargo test --test js_source float_typed_array`
+and `cargo test --lib object::typed_array::tests::`.

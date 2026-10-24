@@ -280,6 +280,8 @@ pub(crate) enum Builtin {
     IntlLocaleGet(crate::intl::locale::Field),
 
     TypedArray,
+    /// Concrete Number typed arrays, including floating-point kinds. The
+    /// original integer-only registry entry also supplies their continuation.
     IntegerTypedArray(crate::object::typed_array::ElementType),
     TypedArrayBuffer,
     TypedArrayLength,

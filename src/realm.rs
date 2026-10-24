@@ -199,11 +199,14 @@ pub(crate) enum Global {
     Uint32Array = 30,
 
     Date = 31,
+    Float16Array = 32,
+    Float32Array = 33,
+    Float64Array = 34,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 32] = [
+    const ALL: [Global; 35] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -236,6 +239,9 @@ impl Global {
         Global::Int32Array,
         Global::Uint32Array,
         Global::Date,
+        Global::Float16Array,
+        Global::Float32Array,
+        Global::Float64Array,
     ];
 
     /// The JavaScript name.
@@ -278,6 +284,9 @@ impl Global {
             Global::Uint32Array => "Uint32Array",
 
             Global::Date => "Date",
+            Global::Float16Array => "Float16Array",
+            Global::Float32Array => "Float32Array",
+            Global::Float64Array => "Float64Array",
         }
     }
 
@@ -355,8 +364,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) intl: ObjectId,
     pub(crate) intl_locale_prototype: ObjectId,
-    pub(crate) typed_array_prototypes: [ObjectId; 7],
-    typed_array_constructors: [ObjectId; 7],
+    pub(crate) typed_array_prototypes: [ObjectId; 10],
+    typed_array_constructors: [ObjectId; 10],
 
     pub(crate) date_prototype: ObjectId,
     date: ObjectId,
@@ -432,6 +441,9 @@ impl Intrinsics {
             Global::Uint16Array => Value::Object(self.typed_array_constructors[4]),
             Global::Int32Array => Value::Object(self.typed_array_constructors[5]),
             Global::Uint32Array => Value::Object(self.typed_array_constructors[6]),
+            Global::Float16Array => Value::Object(self.typed_array_constructors[7]),
+            Global::Float32Array => Value::Object(self.typed_array_constructors[8]),
+            Global::Float64Array => Value::Object(self.typed_array_constructors[9]),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
             Global::Date => Value::Object(self.date),
@@ -1349,11 +1361,11 @@ impl Build<'_> {
 }
 
 /// The abstract %TypedArray% and its shared accessor prototype, followed by
-/// one constructor/prototype pair for each integer element type.
+/// one constructor/prototype pair for each element type.
 fn typed_array_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
-) -> Option<([ObjectId; 7], [ObjectId; 7])> {
+) -> Option<([ObjectId; 10], [ObjectId; 10])> {
     use crate::object::typed_array::ElementType;
     let heap = b.heap;
     let shared = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
@@ -1392,8 +1404,8 @@ fn typed_array_intrinsics(
             return None;
         }
     }
-    let mut prototypes = [shared; 7];
-    let mut constructors = [abstract_constructor; 7];
+    let mut prototypes = [shared; 10];
+    let mut constructors = [abstract_constructor; 10];
     for (index, kind) in ElementType::ALL.into_iter().enumerate() {
         let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(shared))))?;
         b.all.push(prototype);
@@ -1533,7 +1545,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 152); // Includes Locale methods, typed arrays and Date.
+        assert_eq!(first.all.len(), 158); // Includes Locale methods, Number typed arrays and Date.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1586,7 +1598,10 @@ mod tests {
 
         assert_eq!(Global::from_name("Date"), Some(Global::Date));
         assert_eq!(Global::from_u16(31), Some(Global::Date));
-        assert_eq!(Global::from_u16(32), None);
+        assert_eq!(Global::from_u16(32), Some(Global::Float16Array));
+        assert_eq!(Global::from_u16(33), Some(Global::Float32Array));
+        assert_eq!(Global::from_u16(34), Some(Global::Float64Array));
+        assert_eq!(Global::from_u16(35), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

@@ -4980,7 +4980,7 @@ Writes retain both the
 receiver and original RHS (assignment result); a callback may detach the
 buffer, wait or erase the caller's binding without retaining a Rust stack or
 losing the only buffer edge. ArrayBuffer's fallible 16 MiB allocation limit
-applies to newly allocated view backing stores. Resizable, floating and
+applies to newly allocated view backing stores. Resizable and
 BigInt views, copy/iterable constructors and typed-array methods are deferred.
 
 Own-key reflection and `for`-`in` share a detached-aware element snapshot;
@@ -5100,3 +5100,33 @@ formatting and Symbol.toPrimitive behavior rather than returning Object's
 tag/numeric value or serializing a Date as an ordinary JSON object. Presence
 checks report the deferred methods without reading them, while own toJSON
 overrides still participate in resumable JSON serialization.
+
+## Floating-point typed-array storage (clj-quickjs-167)
+
+`ElementType` appends Float16, Float32 and Float64; all use the existing traced,
+task-owned `TypedArray`/ArrayBuffer representation and constructor/write
+continuations. The legacy `Builtin::IntegerTypedArray` registry entry also
+dispatches these Number element kinds. No new heap category or continuation
+state is needed. Encoding and decoding use explicit little-endian bytes.
+
+Binary16 conversion is dependency-free safe Rust with no unstable `f16` type.
+`to_binary16` extracts the binary64 sign, exponent and 53-bit significand.
+It discards 42 significand bits for normal values, or 43..53 bits to round
+subnormals at a fixed 2^-24 quantum. Comparing the discarded remainder with
+half a quantum, and incrementing an odd retained significand at equality,
+implements round-to-nearest, ties-to-even. Integer carry handles the smallest
+normal and infinity boundaries. Rounding directly from binary64 avoids the
+double-rounding error of converting through binary32. Smaller values become
+signed zero. `from_binary16` widens normals by assembling binary64 bits and
+subnormals by exact scaling of the ten-bit fraction by 2^-24.
+
+Binary32 stores use Rust's IEEE narrowing cast; binary64 stores retain their
+Number bits. All three explicitly store positive canonical quiet NaNs:
+0x7e00, 0x7fc00000 and 0x7ff8000000000000. Loads accept every NaN encoding,
+including payloads written through overlapping integer views. Signed zero,
+infinities and subnormals survive exact widening. Unit tests cover every
+binary16 encoding and all finite positive adjacent-value midpoints with
+binary64 neighbors on either side, plus negative ties and overflow. Source
+tests cover shared bytes, metadata, errors and coercion across waits, GC and
+worker migration. `Math.f16round` and further typed-array methods/forms remain
+outside this slice.

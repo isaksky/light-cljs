@@ -503,3 +503,17 @@ is retained with both tests. All fixtures are synthetic, not light-cljs output.
 `set_date_fields_checked`, `js_date_constructor`, `js_Date_UTC`,
 `js_date_getTime` and `js_date_setTime` were semantic references at that
 revision; the Rust implementation and remaining tests were written afresh.
+
+## Floating-point typed arrays (clj-quickjs-167)
+
+`tests/js_source.rs::float_typed_array_byte_layout` adapts the shared-buffer
+sequence in `research/quickjs/tests/test_builtin.js::test_typed_array`
+(lines 484-506), asserting individual little-endian bytes instead of the
+deferred typed-array `toString` method. The full QuickJS copyright/MIT notice
+is retained on the test. Other fixtures are synthetic, not light-cljs output.
+Semantic references: `js_TA_get_float16`, `js_TA_get_float32` and
+`js_TA_get_float64` in `research/quickjs/quickjs.c`, and `tofp16`/`fromfp16` in
+`research/quickjs/cutils.h`, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust bit conversion and rounding implementation was written afresh;
+no upstream conversion code was copied. License: `research/quickjs/LICENSE`.

@@ -519,6 +519,93 @@ fn integer_typed_array_elements() {
 }
 
 #[test]
+fn float_typed_array_elements() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let a = new Float16Array(7); a[0] = 1; a[1] = 65504; a[2] = 65520; a[3] = 5.960464477539063e-8; a[4] = 0.1; a[5] = -0; a[6] = NaN; a[0] === 1 && a[1] === 65504 && a[2] === Infinity && a[3] === 5.960464477539063e-8 && a[4] === 0.0999755859375 && 1 / a[5] === -Infinity && a[6] !== a[6]",
+        "let a = new Float32Array(4); a[0] = 0.1; a[1] = -0; a[2] = 1e40; a[3] = NaN; a[0] === 0.10000000149011612 && 1 / a[1] === -Infinity && a[2] === Infinity && a[3] !== a[3]",
+        "let a = new Float64Array(4); a[0] = 0.1; a[1] = -0; a[2] = -Infinity; a[3] = NaN; a[0] === 0.1 && 1 / a[1] === -Infinity && a[2] === -Infinity && a[3] !== a[3]",
+        "let a = new Float16Array(4); a[0] = 1 + 2**-11; a[1] = 1 + 3 * 2**-11; a[2] = 1 + 2**-11 + 2**-40; a[3] = -(2**-25); a[0] === 1 && a[1] === 1 + 2**-9 && a[2] === 1 + 2**-10 && 1 / a[3] === -Infinity",
+        "let a = new Float32Array(4); a[0] = 1 + 2**-24; a[1] = 1 + 3 * 2**-24; a[2] = 2**-149; a[3] = 2**-150; a[0] === 1 && a[1] === 1 + 2**-22 && a[2] === 2**-149 && a[3] === 0",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture adapting the buffer-view rows of QuickJS test_builtin.js.
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn float_typed_array_byte_layout() {
+    assert_eq!(
+        eval(
+            "let buffer = new ArrayBuffer(16); let a = new Uint32Array(buffer, 12, 1); a[0] = -1; a = new Uint16Array(buffer, 2); a[0] = -1; a = new Float16Array(buffer, 8, 1); a[0] = 1; a = new Float32Array(buffer, 8, 1); a[0] = 1; let bytes = new Uint8Array(buffer); let expected = [0,0,255,255,0,0,0,0,0,0,128,63,255,255,255,255]; let ok = true; for (let i = 0; i < 16; i++) { if (bytes[i] !== expected[i]) ok = false; } ok"
+        ),
+        ValueView::Bool(true)
+    );
+    for src in [
+        "let a = new Float16Array(1); a[0] = 1; let b = new Uint8Array(a.buffer); b[0] === 0 && b[1] === 60",
+        "let a = new Float64Array(1); a[0] = 1; let b = new Uint8Array(a.buffer); b[0] === 0 && b[1] === 0 && b[2] === 0 && b[3] === 0 && b[4] === 0 && b[5] === 0 && b[6] === 240 && b[7] === 63",
+        "let a = new Float16Array(1); a[0] = NaN; new Uint16Array(a.buffer)[0] === 32256",
+        "let a = new Float32Array(1); a[0] = NaN; new Uint32Array(a.buffer)[0] === 2143289344",
+        "let a = new Float64Array(1); a[0] = NaN; let b = new Uint32Array(a.buffer); b[0] === 0 && b[1] === 2146959360",
+        "let b = new ArrayBuffer(8); let u = new Uint16Array(b); u[0] = 1; u[1] = 32768; u[2] = 31745; let a = new Float16Array(b); a[0] === 2**-24 && 1 / a[1] === -Infinity && a[2] !== a[2]",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn float_typed_array_constructors_and_coercion() {
+    // Synthetic fixtures, not light-cljs output.
+    for (kind, size) in [
+        ("Float16Array", 2),
+        ("Float32Array", 4),
+        ("Float64Array", 8),
+    ] {
+        let src = format!(
+            "let a = new {kind}('2.9'); let b = new {kind}(a.buffer, {size}, 1); a[1] = {{valueOf() {{ return '0.1'; }}}}; b[0] === a[1] && a.length === 2 && b.byteOffset === {size} && b.byteLength === {size} && {kind}.BYTES_PER_ELEMENT === {size} && a.BYTES_PER_ELEMENT === {size} && {kind}.length === 3 && a instanceof {kind} && Object.getPrototypeOf({kind}) === Object.getPrototypeOf(Uint8Array) && Object.prototype.toString.call(a) === '[object {kind}]'"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for (expr, error) in [
+            (format!("{kind}(1)"), "TypeError"),
+            (format!("new {kind}(new ArrayBuffer(16), 1)"), "RangeError"),
+            (format!("new {kind}(new ArrayBuffer(17))"), "RangeError"),
+            (
+                format!("new {kind}(new ArrayBuffer(16), 16, 1)"),
+                "RangeError",
+            ),
+            (format!("let a = new {kind}(1); a[0] = 1n"), "TypeError"),
+            (
+                format!("let a = new {kind}(1); a[0] = Symbol()"),
+                "TypeError",
+            ),
+        ] {
+            let src = format!(
+                "let ok = false; try {{ {expr}; }} catch(e) {{ ok = e instanceof {error}; }} ok"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+}
+
+#[test]
 fn typed_array_views_share_buffer() {
     assert_eq!(
         eval(
@@ -682,6 +769,9 @@ fn typed_array_constructor_validation_and_metadata() {
 fn typed_array_coercion_survives_waits_gc_and_migration() {
     // Synthetic fixtures, not light-cljs output.
     for source in [
+        "let a = new Float16Array(1); a[0] = {valueOf() { __rt.need(166, 1); return 0.1; }}; a[0] === 0.0999755859375",
+        "let a = new Float32Array(1); a[0] = {valueOf() { __rt.need(166, 1); return 0.1; }}; a[0] === 0.10000000149011612",
+        "let a = new Float64Array(1); a[0] = {valueOf() { __rt.need(166, 1); return -0; }}; 1 / a[0] === -Infinity",
         "let b = new ArrayBuffer(8); let a = new Uint16Array(b, {valueOf() { b = null; __rt.need(166, 1); return 2; }}, 2); a.length === 2 && a.byteOffset === 2 && a.buffer.byteLength === 8",
         "let b = new ArrayBuffer(8); let a = new Uint16Array(b, 0, {valueOf() { b = null; __rt.need(166, 1); return 2; }}); a.length === 2 && a.byteLength === 4",
         "let a = new Uint8Array(1); let v = {valueOf() { __rt.need(166, 1); return 257; }}; let r = (a[0] = v); a[0] === 1 && r === v",
