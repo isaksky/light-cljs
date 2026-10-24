@@ -4071,3 +4071,19 @@ wait, yield, survive GC and migrate between workers. GeneratorFunction,
 AsyncFunction, Function.prototype.toString and subclass allocation are deferred.
 
 Verify with `cargo test --test js_functions function_constructor`.
+
+### Unmodified QuickJS object fixtures (clj-quickjs-140)
+
+`tests/quickjs_objects.rs::quickjs_object_cases_run_unmodified` runs all
+eleven selected object, class and symbol cases from the pinned QuickJS
+`tests/test_language.js` and `tests/test_builtin.js`. The fixtures retain
+the original helpers, assertions and script modes; adapted rows: none.
+They are synthetic fixtures, not light-cljs output. Each case runs
+independently with bounded instruction slices and collection between slices.
+
+This adds fixture coverage for existing behavior. Private names, class static
+blocks, subclassing built-ins other than Object, generator `return()/throw()`
+and shared-object `Symbol.toPrimitive` dispatch remain outside this coverage.
+
+Verify with
+`CARGO_BUILD_JOBS=3 nix develop -c cargo test --test quickjs_objects quickjs_object_cases_run_unmodified -- --exact --nocapture --test-threads=3`.

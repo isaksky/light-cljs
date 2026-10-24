@@ -1303,3 +1303,21 @@ MIT license notices in both test modules apply. `research/quickjs/quickjs.c`
 `js_parse_class`, the field-initializer path, and `CASE(OP_define_field)` were
 read as semantic references. The Rust implementation is original; all other
 new fixtures are synthetic, not light-cljs output.
+
+### Unmodified object, class and symbol fixtures (clj-quickjs-140)
+
+`tests/fixtures/js/quickjs_test_language_objects.js` preserves lines 1-32,
+222-249, 251-258, 260-269, 281-354, 378-387, 428-433, 435-443 and 609-632
+of `research/quickjs/tests/test_language.js`.
+`tests/fixtures/js/quickjs_test_builtin_objects.js` preserves lines 1-71,
+124-172, 174-189 and 813-843 of `research/quickjs/tests/test_builtin.js`.
+Both use revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
+(VERSION 2026-06-04). All selected bytes, including assertion helpers,
+strictness directives and the optional-chaining comment, were compared
+against that checkout. Adapted rows: none. Only descriptive headers,
+the full copyright/MIT notice from `research/quickjs/LICENSE`, and one
+trailing call per case are added; file-level `__loadScript` lines are excluded.
+These are adapted QuickJS test text, synthetic fixtures, not light-cljs output.
+`tests/quickjs_objects.rs::quickjs_object_cases_run_unmodified` checks embedded
+upstream line counts and runs all eleven cases independently with the original
+script modes, bounded instruction slices and collection between slices.
