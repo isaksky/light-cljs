@@ -1163,3 +1163,22 @@ the upstream bytes were compared directly after reversing those documented
 WeakRef edits. `tests/quickjs_collections.rs` adds harness-only WeakMap
 constructor observation without editing upstream bodies, allowing the
 Rust-side live-entry diagnostic to check all three still-rooted maps.
+
+## Upstream BigInt fixtures (clj-quickjs-206)
+
+`tests/fixtures/js/quickjs_test_bigint.js` and `quickjs_pi_bigint.js` preserve
+the complete `research/quickjs/tests/test_bigint.js` (279 lines) and
+`research/quickjs/examples/pi_bigint.js` (118 lines), respectively, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Only descriptive headers and the full copyright/license notice from
+`research/quickjs/LICENSE` are prepended; the example's original comment
+remains intact. Both are synthetic fixtures, not light-cljs output.
+The upstream bodies were compared byte for byte during implementation.
+
+`tests/quickjs_bigint.rs` runs the whole BigInt test unchanged, then replaces
+exactly its five final calls with one call for each individual case. The
+example driver prepends exactly this line, also recorded in its fixture header:
+`"use strict"; function print(value) { __rt.effect(0, value); }`.
+No other lines, assertions, expected values or default digit counts change.
+The example's output is compared with the first 1002 characters of the
+unchanged 2000-decimal-place `test_pi` expectation.

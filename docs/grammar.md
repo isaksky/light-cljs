@@ -5386,3 +5386,16 @@ import('s');
 ```js module-reject Unsupported 1:1
 import.meta;
 ```
+
+### Upstream BigInt fixtures (clj-quickjs-206)
+
+Lexical grammar: no changes. Both complete pinned BigInt files compile with
+their original strict directives, BigInt literals and function bodies.
+Execution coverage: `tests/quickjs_bigint.rs` runs unmodified `test_bigint.js`,
+each of its five cases independently, and the 1000-digit `pi_bigint.js`
+example with the documented one-line host-print prelude. The 2000-digit pi
+case also yields and collects every 1000 instructions.
+Explicit gaps: QuickJS shell globals `__loadScript`, `scriptArgs` and
+top-level `arguments` are deliberately absent. The upstream missing-helper
+catch and default-argument branch execute as written. These fixtures add no
+syntax, engine behavior or broader shell compatibility.

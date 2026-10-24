@@ -7480,3 +7480,22 @@ altering native methods. A returned persistent vector keeps the maps alive
 for Rust's existing `weak_map_live_entry_count` diagnostic: one map in the
 ordinary case and two in the cycle case must each have zero entries. No
 runtime representations, collector edges or built-in semantics change.
+
+## Upstream BigInt fixture driver (clj-quickjs-206)
+
+`tests/quickjs_bigint.rs` compiles both complete pinned upstream files and
+executes the BigInt test as a whole and its five cases individually in fresh
+runtimes. Individual runs replace only the final five calls with one call.
+The whole-file run leaves `__loadScript` undefined, so the upstream catch
+handles the missing shell helper. The pi example receives only a one-line
+`print` declaration using the existing leaf host-effect intrinsic; absent
+`scriptArgs` and top-level `arguments` select its original 1000-digit default.
+Its single output line is compared with the unchanged test_pi expectation.
+
+Each run is bounded by 20 million instructions and 30 seconds, checked
+between slices. Normal slices contain 50,000 instructions. The individual
+2000-digit `test_pi` uses 1000-instruction slices, forces collection after
+every yield and requires at least one yield. It completes across 56 yields
+and collections, exercising BigInts live in explicit recursive frames.
+The existing 1 Mbit BigInt cap and one-instruction arithmetic cost remain
+unchanged; no new runtime behavior or representation is introduced.

@@ -3791,3 +3791,13 @@ Rust additionally checks that all three retained WeakMaps have zero entries.
 No additional engine behavior is introduced.
 
 Run `CARGO_BUILD_JOBS=3 cargo test --test quickjs_collections -- --test-threads=3`.
+
+### Upstream BigInt fixtures (clj-quickjs-206)
+
+Supported test coverage: complete pinned QuickJS `test_bigint.js` and all
+five cases individually, including 2000 decimal places of pi across small
+instruction budgets and forced collections. The complete `pi_bigint.js`
+example prints its default 1000 decimal places through a one-line host-print
+prelude; all upstream bodies and expected values remain unchanged.
+QuickJS shell argument/loading globals remain absent.
+Run `CARGO_BUILD_JOBS=3 cargo test --test quickjs_bigint -- --test-threads=3`.
