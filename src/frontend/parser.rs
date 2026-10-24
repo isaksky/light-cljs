@@ -1798,7 +1798,7 @@ impl<'a> Parser<'a> {
     /// ArrayLiteral: `[` (Elision? AssignmentExpression `,`)* Elision?
     /// `]` (clj-quickjs-118), with the current token the `[`. Each comma
     /// not directly after an element is a hole; a final comma after an
-    /// element adds nothing. Spread elements are rejected explicitly.
+    /// element adds nothing. Spread operands are assignment expressions.
     #[inline(never)]
     fn parse_array_literal(&mut self) -> PResult<Expr> {
         let start = self.tok.span.start;
@@ -1815,12 +1815,9 @@ impl<'a> Parser<'a> {
                     self.advance()?;
                     continue;
                 }
-                TokenKind::Punct(Punct::Ellipsis) => {
-                    return Err(self.unsupported(self.tok.span, "spread elements are"));
-                }
                 _ => {}
             }
-            elements.push(Some(self.parse_assignment()?));
+            elements.push(Some(self.parse_spread_element()?));
             if !self.eat_punct(Punct::Comma)? {
                 break;
             }
@@ -2625,10 +2622,7 @@ impl<'a> Parser<'a> {
         let no_in = std::mem::replace(&mut self.no_in, false);
         let mut args = Vec::new();
         while !self.is_punct(Punct::RParen) {
-            if self.is_punct(Punct::Ellipsis) {
-                return Err(self.unsupported(self.tok.span, "spread arguments are"));
-            }
-            args.push(self.parse_assignment()?);
+            args.push(self.parse_spread_element()?);
             if !self.eat_punct(Punct::Comma)? {
                 break;
             }
@@ -2636,6 +2630,17 @@ impl<'a> Parser<'a> {
         self.no_in = no_in;
         self.expect_punct(Punct::RParen)?;
         Ok(args)
+    }
+
+    fn parse_spread_element(&mut self) -> PResult<Expr> {
+        if !self.is_punct(Punct::Ellipsis) {
+            return self.parse_assignment();
+        }
+        let start = self.tok.span.start;
+        self.advance()?;
+        let operand = self.parse_assignment()?;
+        let span = Span::new(start, operand.span.end);
+        self.expr(ExprKind::Spread(Box::new(operand)), span)
     }
 
     fn parse_primary(&mut self) -> PResult<Expr> {

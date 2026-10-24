@@ -561,6 +561,61 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     }
 }
 
+/// Compiler-private dense argument array. Read storage directly: iteration
+/// already ran in budgeted bytecode, and prototype getters must not run a
+/// second time. Hand-loaded bytecode is checked for array kind and owner too.
+fn spread_arguments(state: &VmState, heap: &Heap, copy: bool) -> Result<Vec<Value>, Fault> {
+    let [value] = top_operands(state, 1)? else {
+        return Err(Fault::Internal("missing spread arguments"));
+    };
+    let Value::Object(id) = value else {
+        return Err(Fault::TypeError("spread arguments require an array".into()));
+    };
+    heap.read(*id, |o| {
+        let HeapObject::Array(array) = o else {
+            return Err(Fault::TypeError("spread arguments require an array".into()));
+        };
+        if array.object().owner() != Some(state.diag.task) {
+            return Err(Fault::ForeignObject {
+                owner: array.object().owner(),
+                caller: state.diag.task,
+            });
+        }
+        let len = array.length() as usize;
+        if len > u16::MAX as usize {
+            return Err(Fault::RangeError(
+                "more than 65,535 spread arguments".into(),
+            ));
+        }
+        if !copy {
+            return Ok(Vec::new());
+        }
+        if len > state.forward_limits(state.stack_len() - 2).0 {
+            return Err(Fault::StackOverflow(
+                "too many spread arguments for the value stack".into(),
+            ));
+        }
+        Ok((0..array.length())
+            .map(|i| array.get(i).cloned().unwrap_or(Value::Undefined))
+            .collect())
+    })
+    .ok_or(Fault::Internal("spread arguments were reclaimed"))?
+}
+
+fn call_spread(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
+    let args = spread_arguments(state, heap, true)?;
+    let argc = args.len() as u16;
+    state.pop()?;
+    for arg in args {
+        state.push(arg);
+    }
+    match instr {
+        Instr::ConstructSpread => construct(state, heap, argc),
+        Instr::CallMethodSpread => call(state, heap, argc, true),
+        _ => call(state, heap, argc, false),
+    }
+}
+
 /// The call a forwarding built-in makes (`crate::vm::builtin`, "Forwarding
 /// built-ins"), followed through further forwarding built-ins
 /// (`f.call.call(g, 1)`) to what finally runs: a function object, entered
@@ -1452,6 +1507,9 @@ pub(crate) fn step(
             let array = property::new_array(heap, state.diag.task)?;
             state.push(array);
         }
+        Instr::CheckSpreadArguments => {
+            spread_arguments(state, heap, false)?;
+        }
         Instr::AppendElement | Instr::AppendHole => {
             // The array stays on the stack for the next element.
             let element = match instr {
@@ -1773,6 +1831,9 @@ pub(crate) fn step(
         }
         Instr::Call(argc) => return call(state, heap, argc, false),
         Instr::CallMethod(argc) => return call(state, heap, argc, true),
+        Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => {
+            return call_spread(state, heap, instr);
+        }
         Instr::Construct(argc) => return construct(state, heap, argc),
         Instr::GetThis => {
             let this = this_value(state)?;
@@ -1855,7 +1916,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.
         Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally
-        | Instr::Construct(_) => true,
+        | Instr::Construct(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => true,
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_)
@@ -1949,6 +2010,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::DefineSetter(_)
         | Instr::AppendElement
         | Instr::AppendHole
+        | Instr::CheckSpreadArguments
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2
         | Instr::ToPropertyKey

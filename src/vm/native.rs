@@ -820,7 +820,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | CallMethod(_) | NewObjectLiteral | ToString | GetThis | NewArray | AppendElement
         | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | Construct(_) | SetProto
         | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
-        | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow => false,
+        | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow | CallSpread
+        | CallMethodSpread | ConstructSpread | CheckSpreadArguments => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)

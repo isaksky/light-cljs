@@ -5928,3 +5928,27 @@ The new Date.parse intrinsic is allocated after previously rooted intrinsics,
 preserving their identities. Source tests cover UTC and UTC+01:00, long
 fractions, metadata, coercion order, waits/GC/migration, clipping, and named-zone
 DST transitions. Non-ISO fallback parsing remains deferred.
+
+## Array and argument spread (clj-quickjs-130)
+
+The parser represents a spread element/argument as `ExprKind::Spread`,
+restricted to array, call and constructor lists. Lowering reuses `GetIterator`
+(`native::iterator::State::get_iterator`) and the for-of protocol: iterator,
+cached next and result occupy hidden frame locals; `CallMethod`,
+`RequireObject` and ordinary property reads implement each step. Each back
+edge, call and getter is budgeted and resumable, with no retained Rust frame
+or second iterator implementation. Destination arrays stay on the operand
+stack. These existing traced roots retain all intermediate values across
+collection, dependency waits and worker migration. No new heap kind or root
+category is introduced.
+
+Array spread uses the existing own-element append operation. Call spread
+builds an inaccessible dense array in source order. `CheckSpreadArguments`
+(0x7A) bounds its length after every append to 65,535. Operand-less
+`CallSpread` (0x77), `CallMethodSpread` (0x78) and `ConstructSpread` (0x79)
+copy its elements directly, check available stack room, and enter the existing
+call/construct dispatch. They preserve forwarding, bound arguments, native
+continuations, constructor return overrides and method receivers. This final
+copy is a bounded leaf operation; all observable iteration and argument
+expression evaluation already ran through budgeted VM instructions. The
+packed list cannot invoke getters or iterate again at call entry.

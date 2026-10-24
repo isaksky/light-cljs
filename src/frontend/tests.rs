@@ -34,6 +34,7 @@ fn render_expr(e: &Expr) -> String {
             None => "(yield)".into(),
         },
         ExprKind::Await(value) => format!("(await {})", render_expr(value)),
+        ExprKind::Spread(value) => format!("(spread {})", render_expr(value)),
         ExprKind::RegExp { pattern, flags } => format!("/{pattern}/{flags}"),
         ExprKind::Number(n) => format!("{n}"),
         ExprKind::BigInt(n) => format!("{n}n"),
@@ -1851,8 +1852,28 @@ fn property_assignment() {
 }
 
 /// Array literals (clj-quickjs-118): elisions are holes, one final comma
-/// adds nothing, elements are assignment expressions; spread elements and
-/// array assignment patterns stay rejected.
+/// adds nothing, elements are assignment expressions; array assignment
+/// patterns stay rejected.
+#[test]
+fn spread_forms() {
+    assert_eq!(ast("[1, ...a, 2];"), "(array 1 (spread a) 2)");
+    assert_eq!(ast("[...[ , ]];"), "(array (spread (array <hole>)))");
+    assert_eq!(ast("f(...a, b);"), "(call f (spread a) b)");
+    assert_eq!(ast("o.m(...a);"), "(call (. o m) (spread a))");
+    assert!(parse_script("(...a);").is_err());
+    assert_eq!(
+        compile_script("intrinsic-spread", "__rt.count(...a)")
+            .unwrap_err()
+            .kind,
+        SyntaxErrorKind::Unsupported
+    );
+    let source = format!("f(...a,{})", vec!["0"; 65_535].join(","));
+    assert_eq!(
+        compile_script("too-many-args", &source).unwrap_err().kind,
+        SyntaxErrorKind::TooLarge
+    );
+}
+
 #[test]
 fn array_literals() {
     use SyntaxErrorKind::{Invalid, UnexpectedEnd, UnexpectedToken, Unsupported};
@@ -1881,8 +1902,6 @@ fn array_literals() {
     };
     assert_eq!(value.span.text(src), "[1, , 3,]");
 
-    rejects_with("x = [...a];", Unsupported, 1, 6, "spread elements");
-    rejects_with("x = [1, ...a];", Unsupported, 1, 9, "spread elements");
     rejects_with("[a] = b;", Unsupported, 1, 1, "destructuring assignment");
     rejects_with("[a, b] = [b, a];", Unsupported, 1, 1, "destructuring");
     rejects_with("let [a] = b;", Unsupported, 1, 5, "destructuring");
@@ -3735,9 +3754,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = import('y');", 1, 5, "import"),
         ("x = super.y;", 1, 5, "super"),
         ("x.y &&= 1;", 1, 5, "&&="),
-        ("x = [...a];", 1, 6, "spread elements"),
         ("[a] = b;", 1, 1, "destructuring assignment"),
-        ("f(...a);", 1, 3, "spread"),
         ("function f(...a) {}", 1, 12, "rest"),
         ("let [a] = b;", 1, 5, "destructuring"),
         ("let {a} = b;", 1, 5, "destructuring"),

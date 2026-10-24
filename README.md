@@ -1935,7 +1935,7 @@ Deferred:
 - Array methods other than `push`, `join`, `toString` and `Array.isArray`.
   Boolean receivers of the generic array
   string methods require the deferred Boolean wrappers. Assigning `length` supports
-  ArraySetLength (clj-quickjs-154). Spread elements and array destructuring
+  ArraySetLength (clj-quickjs-154). Array destructuring
   (`Unsupported`); object keys convert since clj-quickjs-70.
   `__rt.vector` values stay persistent vectors, not arrays.
 
@@ -2023,7 +2023,7 @@ Deferred:
 - `new.target` (clj-quickjs-99, `Unsupported`), classes and `super`
   (clj-quickjs-135..-139), built-in constructors such as `new Object()`,
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
-  (clj-quickjs-75), spread arguments.
+  (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
 - `new` on a published function whose `prototype` was never created fails
   with `UnsupportedOperand`, as reading that `prototype` does.
 
@@ -3250,3 +3250,15 @@ fallback grammar remains deferred to clj-quickjs-185; Date default coercion,
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --lib vm::date:: -- --test-threads=3`.
+
+### Array and argument spread (clj-quickjs-130)
+
+Supported: `[a, ...iterable, b]`, `f(a, ...iterable)`, `o.m(...iterable)`
+and `new F(...iterable)` reuse the synchronous iteration protocol. User
+iterator methods and getters may yield, wait on dependencies and migrate.
+Holes become own elements; method receivers are preserved. Argument lists
+above 65,535 values throw RangeError; task stack limits still apply.
+Compiler-reserved `__rt` intrinsics require static arguments. Object spread,
+rest parameters and destructuring remain deferred. Verify with
+`cargo test --test js_source spread_`, `cargo test --test need iterator_next_waits_on_dependency`
+and `cargo test --lib frontend::tests::spread_forms`.

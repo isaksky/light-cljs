@@ -185,7 +185,8 @@ Update                = ( "++" | "--" ) Unary
 Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral }
 New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expression "]" | TemplateLiteral } [ Arguments ]
                         (* the first Arguments belong to `new`: `new F()()` calls the result *)
-Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
+Arguments             = "(" [ SpreadElement { "," SpreadElement } [ "," ] ] ")"
+SpreadElement         = [ "..." ] AssignmentExpression
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
                       | ArrayLiteral | TemplateLiteral | RegExpLiteral | "this" | "(" Expression ")"
                         (* `this`: script global object, ordinary receivers, lexical arrow captures *)
@@ -201,7 +202,7 @@ PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
                       | "get" PropertyName "(" ")" FunctionBody
                       | "set" PropertyName "(" BindingIdentifier [ "=" AssignmentExpression ] ")" FunctionBody
 PropertyName          = IdentifierName | String | Number
-ArrayLiteral          = "[" { [ AssignmentExpression ] "," } [ AssignmentExpression ] "]"
+ArrayLiteral          = "[" { [ SpreadElement ] "," } [ SpreadElement ] "]"
                         (* an omitted element is a hole; see the notes *)
 Literal               = Number | String | "true" | "false" | "null"
                       | "undefined" | "NaN" | "Infinity"
@@ -345,7 +346,7 @@ Notes on the grammar:
   elision, a hole: `[ , ]` has length 1 and no element, `[1, , 3]` has a
   hole at index 1. One comma after the last element ends the list without
   adding anything (`[1, 2,]` has length 2). Spread elements (`[...a]`)
-  are `Unsupported`, and so is an array literal as an assignment target
+  consume the synchronous iteration protocol (clj-quickjs-130). An array literal as an assignment target is unsupported
   (`[a, b] = v`, destructuring); `let [a] = v` stays rejected as before.
 - `a[k]` (clj-quickjs-115; parsed since clj-quickjs-118) reads a
   computed property, and `a[k] = v`
@@ -436,7 +437,7 @@ are still covered by the computed-key rejection below.
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | execution of parsed async functions/arrows/methods and generators (including `yield`/`await`) | Unsupported at the function during compilation |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
-| optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
+| optional chaining `?.`, object spread `...` (in an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233) | Unsupported |
 | numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
@@ -467,7 +468,7 @@ checks left to later stages:
 
 - **Synchronous iteration** (clj-quickjs-237): plain for-of, array/typed-array
   `values` and string iteration execute. Async iteration, `for (using ...)`,
-  destructuring/property heads, spread and other iterable consumers remain
+  destructuring/property heads and other iterable consumers remain
   separate features. Iterator prototypes expose their `Symbol.toStringTag`;
   generic `Object.prototype.toString` symbol-tag dispatch remains deferred.
 
@@ -4097,3 +4098,48 @@ fallback parsing is reserved for clj-quickjs-185; default Date primitive
 conversion, `toJSON`, and locale formatting remain deferred. Parsing introduces
 no new input-length cap; the existing 4096-unit Date numeric-field conversion
 limit still applies only to numeric conversions.
+
+## Array and argument spread (clj-quickjs-130)
+
+Syntax: `[a, ...iterable, b]`, `f(a, ...iterable, b)`,
+`o.m(...iterable)` and `new F(...iterable)` accept spread operands at
+AssignmentExpression precedence. Multiple spread operands and trailing commas
+are supported. The ellipsis is part of the element's AST span.
+
+Execution: each spread consumes the existing synchronous iterator protocol,
+including user overrides of `Symbol.iterator`, cached `next`, object result
+validation, and resumable `done`/`value` getters. Iteration finishes before the
+following element or argument is evaluated. Holes yield own `undefined`
+elements (or inherited values); array iterators observe the current length.
+Method calls preserve their receiver. Errors obtaining or advancing the
+iterator are catchable TypeErrors and are located at the ellipsis. Errors
+thrown by JavaScript retain their own source location. Exhaustion and
+`next`/`done`/`value` failures do not call `return`.
+
+The compiler retains the 65,535 syntactic argument limit (`TooLarge`). Packed
+spread arguments are checked after each append; more than 65,535 values throw
+a catchable RangeError. A list that cannot fit the task's value stack throws
+the existing catchable StackOverflow at the call. The private packed array is
+never exposed to JavaScript or re-iterated when the call starts.
+
+Rejected forms: object spread, rest parameters, destructuring and a standalone
+`(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
+intrinsics require statically supplied arguments and reject spread with
+`Unsupported`. Global eval and dynamic Function construction retain their
+existing explicit rejection; spread adds no dynamic compilation.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+let a = [1, ...[2, 3], 4];
+let holes = [...[,]];
+function f(a, b, c) { return a + b * 10 + c * 100; }
+f(...[1, 2], 3);
+let o = {m(x) { return this === o && x === 1; }};
+o.m(...[1]);
+new f(...[1, 2, 3]);
+```
+
+```js reject Unsupported 1:2
+(...a);
+```

@@ -13,6 +13,82 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+// First two rows adapt test_spread in research/quickjs/tests/test_language.js,
+// revision 7d1c13c5d8f8; synthetic fixtures, not light-cljs output.
+// Copyright (c) 2017-2021 Fabrice Bellard
+// Copyright (c) 2017-2021 Charlie Gordon
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+#[test]
+fn array_spread_and_spread_arguments() {
+    for source in [
+        "let x = [1, 2, ...[3, 4]]; x.length === 4 && x[0] === 1 && x[1] === 2 && x[2] === 3 && x[3] === 4",
+        "let x = [...[,]]; let names = Object.getOwnPropertyNames(x); x[0] === undefined && names.length === 2 && names[0] === '0' && names[1] === 'length'",
+        "function f(a, b, c) { return a + b * 10 + c * 100; } f(...[1, 2], 3) === 321",
+        "let o = {m(a) { return this === o && a === 1; }}; o.m(...[1]) && o['m'](...[1])",
+        "let n = 0; let it = {}; it[Symbol.iterator] = function() { return {next() { n++; return {done: n > 3, value: n}; }}; }; let x = [0, ...it, n]; n === 4 && x.length === 5 && x[1] === 1 && x[3] === 3 && x[4] === 4",
+        "let n = 0; try { [...1]; } catch(e) { if (e instanceof TypeError) n++; } try { (function() {})(...null); } catch(e) { if (e instanceof TypeError) n++; } n === 2",
+        "function F(a, b) { this.n = a + b; } new F(...[2, 3]).n === 5",
+        "let it = [1].values(); Array.prototype[Symbol.iterator] === Array.prototype.values && it[Symbol.iterator]() === it",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn spread_protocol_errors_and_order() {
+    for source in [
+        "let a = [1]; let it = a.values(); a.push(2); let x = [...it]; x.length === 2 && x[1] === 2 && [...it].length === 0",
+        "let a = [,]; Object.setPrototypeOf(a, {0: 5}); [...Array.prototype.values.call(a)][0] === 5",
+        "function f(a, b, c) { return a + b * 10 + c * 100; } f(...[], ...[1], ...[2, 3]) === 321 && [...[], 1, ...[], 2].length === 2",
+        "let n = 0; let it = {next() { n++; this.next = function() { throw 99; }; return {get done() { return n > 2; }, get value() { return n; }}; }}; it[Symbol.iterator] = function() { return this; }; let a = [...it]; n === 3 && a[0] === 1 && a[1] === 2",
+        "let it = {next() { return {done: true, get value() { throw 99; }}; }}; it[Symbol.iterator] = function() { return this; }; [...it].length === 0",
+        "let a = [1]; a[Symbol.iterator] = function() { return [7].values(); }; [...a][0] === 7 && [...'A\\u{1f600}'].length === 2 && [...new Uint8Array([2,3])][1] === 3",
+        "let log = ''; function v(n) { log += n; return n; } function f() { return arguments[0] + arguments[1] + arguments[2]; } let it = {next() { log += 'n'; return {done: log.length > 2, value: 2}; }}; it[Symbol.iterator] = function() { log += 'i'; return this; }; f(v(1), ...it, v(3)); log === '1in3'",
+        "let n = 0; let it = {}; it[Symbol.iterator] = 1; try { [...it]; } catch(e) { if (e instanceof TypeError) n++; } it[Symbol.iterator] = function() { return 1; }; try { [...it]; } catch(e) { if (e instanceof TypeError) n++; } it[Symbol.iterator] = function() { return {next() { return 1; }}; }; try { [...it]; } catch(e) { if (e instanceof TypeError) n++; } n === 3",
+        "let closed = 0; let it = {next() { throw 17; }, return() { closed++; return {}; }}; it[Symbol.iterator] = function() { return this; }; let error; try { [...it]; } catch(e) { error = e; } error === 17 && closed === 0",
+        "function f(a, b) { return this.n + a + b; } let o = {n: 10}; f.bind(o, 1)(...[2]) === 13 && Reflect.apply(f, o, [...[1, 2]]) === 13",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let (_, _, line, column) = failure_at("let x = [...1];");
+    assert_eq!((line, column), (1, 10));
+    assert_eq!(
+        eval(
+            "let n = 0; let it = {next() { return {value: ++n, done: false}; }}; it[Symbol.iterator] = function() { return this; }; let caught = false; try { (function() {})(...it); } catch(e) { caught = e instanceof RangeError; } caught && n === 65536"
+        ),
+        ValueView::Bool(true)
+    );
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_stack_values: 128,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let task = rt
+        .spawn(&exe("(function() {})(...new Array(200))"), &[])
+        .unwrap();
+    match task.run().unwrap() {
+        RunOutcome::Failed(error) => assert_eq!(error.kind(), VmErrorKind::StackOverflow),
+        other => panic!("spread arguments bypassed stack limits: {other:?}"),
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn promise_thenable_adoption() {
@@ -11163,8 +11239,8 @@ fn array_literals() {
         ValueView::Bool(true)
     );
 
-    // Destructuring and spread are their own pellets.
-    for src in ["[a] = [1];", "let [a] = [1];", "x = [...a];"] {
+    // Destructuring remains explicitly unsupported.
+    for src in ["[a] = [1];", "let [a] = [1];"] {
         let e = compile_script("t", src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
     }

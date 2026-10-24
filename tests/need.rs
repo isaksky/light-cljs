@@ -31,6 +31,63 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
 #[test]
+fn iterator_next_waits_on_dependency() {
+    // Synthetic fixtures, not light-cljs output. Collect at every yield and
+    // move the suspended task to another worker after publication.
+    for expression in [
+        "[...it]",
+        "(function(a, b) { return [a, b]; })(...it)",
+        "({n: true, m(a, b) { return this.n ? [a, b] : []; }}).m(...it)",
+        "new (function(a, b) { this.a = a; return [this.a, b]; })(...it)",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let n = 0; let it = {{}}; it[Symbol.iterator] = function() {{ return {{next() {{ n++; __rt.effect(1, n); let v = __rt.need(5, 3); return {{done: n > 2, value: {{n: v + n}}}}; }} }}; }}; let x = {expression}; x[0].n + x[1].n + n"
+        );
+        let task = rt
+            .spawn(&compile_script("spread-wait", &source).unwrap(), &[])
+            .unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        for steps in 0..2000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    break;
+                }
+            }
+            assert!(steps < 1999);
+        }
+        assert_eq!(host.effects, [1.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let (result, host) = thread::spawn(move || {
+            for steps in 0..2000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (number(outcome), host),
+                }
+                assert!(steps < 1999);
+            }
+            unreachable!()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, 20.0);
+        assert_eq!(host.effects, [1.0, 2.0, 3.0]);
+    }
+}
+
+#[test]
 fn getter_waits_on_dependency_and_resumes() {
     // Synthetic fixtures, not light-cljs output. Each row exercises a
     // different property continuation with the same wait/migration/GC path.
@@ -47,6 +104,10 @@ fn getter_waits_on_dependency_and_resumes() {
         // The first argument is retained only by the native list cursor
         // across the second index getter's wait.
         "let args = {length: 2, get 0() { return {n: 1}; }, get 1() { return __rt.need(5, 3) + 2; }}; __rt.effect(1, 3) + Reflect.apply((a, b) => a.n + b, null, args)",
+        "let it = {}; Object.defineProperty(it, Symbol.iterator, {get: function() { __rt.need(5, 3); return function() { return [9].values(); }; }}); __rt.effect(1, 3) + [...it][0] + 1",
+        "let n = 0; let it = {get next() { __rt.need(5, 3); return function() { return {value: 9, done: n++ > 0}; }; }}; it[Symbol.iterator] = function() { return this; }; __rt.effect(1, 3) + [...it][0] + 1",
+        "let n = 0; let it = {next() { return {get done() { __rt.need(5, 3); return n > 0; }, get value() { n++; return 9; }}; }}; it[Symbol.iterator] = function() { return this; }; __rt.effect(1, 3) + (function(x) { return x; })(...it) + 1",
+        "let n = 0; let it = {next() { return {done: n > 0, get value() { n++; return __rt.need(5, 3) + 2; }}; }}; it[Symbol.iterator] = function() { return this; }; __rt.effect(1, 3) + [...it][0] + 1",
         "let a = {length: 0, set 0(v) { this.x = __rt.need(5, 3) + v; }}; let before = __rt.effect(1, 3); Array.prototype.push.call(a, 2); before + a.x + 1",
         "let f = () => 0; Object.defineProperty(f, 'name', {get: function() { return 'x' + __rt.need(5, 3); }}); let before = __rt.effect(1, 3); let b = f.bind(null); before + (b.name === 'bound x7' ? 10 : 0)",
         "let p = {}; let f = () => 0; Object.defineProperty(f, 'prototype', {get: function() { __rt.need(5, 3); return p; }}); let o = Object.create(p); __rt.effect(1, 3) + (o instanceof f ? 10 : 0)",

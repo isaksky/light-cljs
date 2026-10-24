@@ -763,3 +763,13 @@ fixtures, not light-cljs output. `research/quickjs/quickjs.c` functions
 were semantic references. The Rust parser/continuation is written afresh;
 QuickJS's 128-byte prefix truncation and nine-digit fraction scan cap are not
 copied. Non-ISO syntax extensions are reserved for the fallback parser.
+
+## Array and argument spread (clj-quickjs-130)
+
+The first two rows of `tests/js_source.rs::array_spread_and_spread_arguments`
+adapt `research/quickjs/tests/test_language.js::test_spread`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Rust assertions inspect elements,
+length and own names rather than relying on array string conversion. The
+QuickJS MIT notice is retained beside the test. `research/quickjs/quickjs.c`
+`OP_append` and the iterator helpers were consulted as semantic references;
+no engine code was copied. Other fixtures are synthetic, not light-cljs output.

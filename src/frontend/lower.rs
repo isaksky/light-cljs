@@ -2149,13 +2149,7 @@ impl<'s> Lowerer<'s> {
         let result = self.temp(span)?;
         let in_body = self.temp(span)?;
         let suppress = self.temp(span)?;
-        self.expr(object)?;
-        self.out().op(Opcode::GetIterator, span);
-        self.out().op(Opcode::Dup, span);
-        self.iterator_field("next", span)?;
-        self.out().op_u16(Opcode::SetLocal, next, span);
-        self.iterator_field("iterator", span)?;
-        self.out().op_u16(Opcode::SetLocal, it, span);
+        self.iterator_acquire(object, it, next, span)?;
         let start = self.out().label();
         let exhausted = self.out().label();
         let close = self.out().label();
@@ -2164,17 +2158,7 @@ impl<'s> Lowerer<'s> {
         self.out().bind(start);
         self.constant(Primitive::Bool(false), span)?;
         self.out().op_u16(Opcode::SetLocal, in_body, span);
-        self.out().op_u16(Opcode::GetLocal, it, span);
-        self.out().op_u16(Opcode::GetLocal, next, span);
-        self.out().op_u16(Opcode::CallMethod, 0, span);
-        self.out().op(Opcode::RequireObject, span);
-        self.out().op_u16(Opcode::SetLocal, result, span);
-        self.out().op_u16(Opcode::GetLocal, result, span);
-        self.iterator_field("done", span)?;
-        self.out().op(Opcode::Not, span);
-        self.out().branch(Opcode::JumpIfFalse, exhausted, span);
-        self.out().op_u16(Opcode::GetLocal, result, span);
-        self.iterator_field("value", span)?;
+        self.iterator_step(it, next, result, exhausted, span)?;
         self.out().op_u16(Opcode::SetLocal, result, span);
         self.constant(Primitive::Bool(true), span)?;
         self.out().op_u16(Opcode::SetLocal, in_body, span);
@@ -2247,6 +2231,50 @@ impl<'s> Lowerer<'s> {
         let key = self.string_index(JsString::from(name), span)?;
         self.out().op_u16(Opcode::GetField, key, span);
         Ok(())
+    }
+
+    /// Shared protocol lowering for for-of and spread. Acquisition itself
+    /// runs the existing resumable native iterator state machine.
+    #[inline(never)]
+    fn iterator_acquire(
+        &mut self,
+        source: &Expr,
+        it: u16,
+        next: u16,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(source)?;
+        self.out().op(Opcode::GetIterator, span);
+        self.out().op(Opcode::Dup, span);
+        self.iterator_field("next", span)?;
+        self.out().op_u16(Opcode::SetLocal, next, span);
+        self.iterator_field("iterator", span)?;
+        self.out().op_u16(Opcode::SetLocal, it, span);
+        Ok(())
+    }
+
+    /// Branch on exhaustion, otherwise leave the next value on the stack.
+    /// Every callback and getter remains an ordinary resumable VM operation.
+    #[inline(never)]
+    fn iterator_step(
+        &mut self,
+        it: u16,
+        next: u16,
+        result: u16,
+        done: usize,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op_u16(Opcode::GetLocal, next, span);
+        self.out().op_u16(Opcode::CallMethod, 0, span);
+        self.out().op(Opcode::RequireObject, span);
+        self.out().op_u16(Opcode::SetLocal, result, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("done", span)?;
+        self.out().op(Opcode::Not, span);
+        self.out().branch(Opcode::JumpIfFalse, done, span);
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("value", span)
     }
 
     #[inline(never)]
@@ -2742,12 +2770,66 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::NewArray, span);
         for element in elements {
             match element {
+                Some(Expr {
+                    kind: ExprKind::Spread(operand),
+                    span,
+                    ..
+                }) => {
+                    self.spread_element(operand, *span, false)?;
+                }
                 Some(e) => {
                     self.expr(e)?;
                     self.out().op(Opcode::AppendElement, e.span);
                 }
                 None => self.out().op(Opcode::AppendHole, span),
             }
+        }
+        Ok(())
+    }
+
+    /// Append to the private array on the operand stack. Reuse GetIterator
+    /// and the for-of protocol, with every next/done/value operation in VM
+    /// code. Hidden locals and the destination remain precise GC roots.
+    #[inline(never)]
+    fn spread_element(
+        &mut self,
+        operand: &Expr,
+        span: Span,
+        arguments: bool,
+    ) -> Result<(), SyntaxError> {
+        let saved_slot = self.cur().next_slot;
+        let it = self.temp(span)?;
+        let next = self.temp(span)?;
+        let result = self.temp(span)?;
+        self.iterator_acquire(operand, it, next, span)?;
+        let start = self.out().label();
+        let done = self.out().label();
+        self.out().bind(start);
+        self.iterator_step(it, next, result, done, span)?;
+        self.out().op(Opcode::AppendElement, span);
+        if arguments {
+            self.out().op(Opcode::CheckSpreadArguments, span);
+        }
+        self.out().branch(Opcode::Jump, start, span);
+        self.out().bind(done);
+        for slot in [it, next, result] {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.cur_mut().next_slot = saved_slot;
+        Ok(())
+    }
+
+    fn spread_arguments(&mut self, args: &[Expr], span: Span) -> Result<(), SyntaxError> {
+        self.out().op(Opcode::NewArray, span);
+        for arg in args {
+            if let ExprKind::Spread(operand) = &arg.kind {
+                self.spread_element(operand, arg.span, true)?;
+            } else {
+                self.expr(arg)?;
+                self.out().op(Opcode::AppendElement, arg.span);
+            }
+            self.out().op(Opcode::CheckSpreadArguments, arg.span);
         }
         Ok(())
     }
@@ -3085,6 +3167,7 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.compound_assign_property(*op, target, value, *op_span),
             ExprKind::Function(f) => self.function_expr(f),
+            ExprKind::Spread(_) => Err(self.internal(span, "spread outside element list")),
             ExprKind::Yield { .. } | ExprKind::Await(_) => Err(self.error(
                 SyntaxErrorKind::Unsupported,
                 e.span,
@@ -3369,6 +3452,18 @@ impl<'s> Lowerer<'s> {
         } else {
             self.expr(callee)?;
         }
+        if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
+            self.spread_arguments(args, span)?;
+            self.out().op(
+                if method {
+                    Opcode::CallMethodSpread
+                } else {
+                    Opcode::CallSpread
+                },
+                op_span,
+            );
+            return Ok(());
+        }
         for arg in args {
             self.expr(arg)?;
         }
@@ -3438,6 +3533,11 @@ impl<'s> Lowerer<'s> {
             ));
         }
         self.expr(callee)?;
+        if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
+            self.spread_arguments(args, span)?;
+            self.out().op(Opcode::ConstructSpread, op_span);
+            return Ok(());
+        }
         for arg in args {
             self.expr(arg)?;
         }
@@ -3565,6 +3665,13 @@ impl<'s> Lowerer<'s> {
         at: Span,
     ) -> Result<(), SyntaxError> {
         let name = &property.name;
+        if let Some(arg) = args.iter().find(|a| matches!(a.kind, ExprKind::Spread(_))) {
+            return Err(self.error(
+                SyntaxErrorKind::Unsupported,
+                arg.span,
+                "spread arguments to compiler intrinsics are not supported",
+            ));
+        }
         let Some(intrinsic) = intrinsics::lookup(name) else {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,

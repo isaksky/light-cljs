@@ -398,7 +398,7 @@ impl Expr {
             | ExprKind::Identifier(_)
             | ExprKind::Update { .. } => 0,
             ExprKind::Unary { operand, .. } | ExprKind::Delete { operand, .. } => operand.height,
-            ExprKind::Await(operand) => operand.height,
+            ExprKind::Await(operand) | ExprKind::Spread(operand) => operand.height,
             ExprKind::Yield { value, .. } => value.as_ref().map_or(0, |e| e.height),
             ExprKind::Binary { left, right, .. } | ExprKind::Logical { left, right, .. } => {
                 left.height.max(right.height)
@@ -452,6 +452,9 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    /// Spread element/argument. Only occurs directly in Array, Call or New.
+    /// The span begins at the ellipsis, where protocol errors are reported.
+    Spread(Box<Expr>),
     /// Assignment-expression precedence; an absent operand yields undefined.
     Yield {
         value: Option<Box<Expr>>,

@@ -107,6 +107,10 @@
 //! | `GetIterator` | 0x74 | – | iterable → record | resumable Symbol.iterator lookup/call and next lookup; hidden record has iterator/next |
 //! | `RequireObject` | 0x75 | – | value → value | TypeError unless value is an object (iterator protocol validation) |
 //! | `PendingThrow` | 0x76 | – | → boolean | whether this frame's innermost handler is a pending throw completion |
+//! | `CallSpread` | 0x77 | – | f args → result | call with private packed array's elements |
+//! | `CallMethodSpread` | 0x78 | – | this f args → result | packed call preserving receiver |
+//! | `ConstructSpread` | 0x79 | – | f args → result | packed constructor call |
+//! | `CheckSpreadArguments` | 0x7A | – | args → args | RangeError above 65,535 elements |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -585,6 +589,10 @@ pub enum Opcode {
     GetIterator = 0x74,
     RequireObject = 0x75,
     PendingThrow = 0x76,
+    CallSpread = 0x77,
+    CallMethodSpread = 0x78,
+    ConstructSpread = 0x79,
+    CheckSpreadArguments = 0x7A,
 }
 
 /// Operand encoding of an opcode.
@@ -758,6 +766,10 @@ impl Opcode {
             0x74 => GetIterator,
             0x75 => RequireObject,
             0x76 => PendingThrow,
+            0x77 => CallSpread,
+            0x78 => CallMethodSpread,
+            0x79 => ConstructSpread,
+            0x7A => CheckSpreadArguments,
             _ => return None,
         })
     }
@@ -884,6 +896,10 @@ impl Opcode {
             GetIterator => "get_iterator",
             RequireObject => "require_object",
             PendingThrow => "pending_throw",
+            CallSpread => "call_spread",
+            CallMethodSpread => "call_method_spread",
+            ConstructSpread => "construct_spread",
+            CheckSpreadArguments => "check_spread_arguments",
         }
     }
 
@@ -922,7 +938,9 @@ impl Opcode {
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
             | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
             GetIterator | RequireObject | PendingThrow | GetGlobalObject | ToNumeric | Inc
-            | Dec => OperandKind::None,
+            | Dec | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
+                OperandKind::None
+            }
         }
     }
 }
@@ -1093,6 +1111,10 @@ pub(crate) enum Instr {
     GetIterator,
     RequireObject,
     PendingThrow,
+    CallSpread,
+    CallMethodSpread,
+    ConstructSpread,
+    CheckSpreadArguments,
 }
 
 impl Instr {
@@ -1216,6 +1238,10 @@ impl Instr {
             Instr::GetIterator => Opcode::GetIterator,
             Instr::RequireObject => Opcode::RequireObject,
             Instr::PendingThrow => Opcode::PendingThrow,
+            Instr::CallSpread => Opcode::CallSpread,
+            Instr::CallMethodSpread => Opcode::CallMethodSpread,
+            Instr::ConstructSpread => Opcode::ConstructSpread,
+            Instr::CheckSpreadArguments => Opcode::CheckSpreadArguments,
         }
     }
 
@@ -1240,6 +1266,9 @@ impl Instr {
             | Instanceof | In => (2, 1),
             ForInStart | GetIterator | RequireObject => (1, 1),
             PendingThrow => (0, 1),
+            CallSpread | ConstructSpread => (2, 1),
+            CallMethodSpread => (3, 1),
+            CheckSpreadArguments => (1, 1),
             ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
