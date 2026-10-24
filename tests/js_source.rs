@@ -4774,6 +4774,32 @@ fn new_operator_constructs_objects() {
     }
 }
 
+/// `Executable::to_spec` re-encodes the argument counts of `construct` and
+/// `call_method` (clj-quickjs-71): the reloaded script has the same bytes
+/// and computes the same value.
+#[test]
+fn construct_and_method_call_operands_survive_a_spec_round_trip() {
+    let script = exe("function F(a, b, c) { this.s = a * 100 + b * 10 + c; } \
+         const o = {m: function (x, y) { return x - y; }}; \
+         new F(1, 2, 3).s + o.m(9, 4) + Object.is(1, 1)");
+    let spec = script.to_spec();
+    let ops = decode(&spec.code);
+    assert!(ops.iter().any(|&(_, op)| op == Opcode::Construct));
+    assert!(ops.iter().any(|&(_, op)| op == Opcode::CallMethod));
+    let operand = |op: Opcode| {
+        let (at, _) = *ops.iter().find(|&&(_, o)| o == op).unwrap();
+        u16::from_le_bytes([spec.code[at + 1], spec.code[at + 2]])
+    };
+    assert_eq!(operand(Opcode::Construct), 3);
+    assert_eq!(operand(Opcode::CallMethod), 2);
+    let again = Executable::load(spec.clone()).unwrap();
+    assert_eq!(again.to_spec().code, spec.code);
+    match run(&again, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(129.0)),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// `new` near the parser's nesting budget (clj-quickjs-71): 84 nested
 /// `new`s and 60 constructions nested in arguments compile on the same
 /// 2 MiB thread stack as `deep_expressions_compile_within_a_small_stack`.
