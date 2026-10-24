@@ -7298,3 +7298,18 @@ Coverage reproduces the pinned selector's strings, including English fallback
 for other locales, Spanish `y` for disjunction and no contextual `e` alternation.
 It does not infer a CLDR release or general translated-list coverage. Further
 patterns require a separately pinned extension of this same data pipeline.
+
+## Upstream built-in fixture execution (clj-quickjs-163)
+
+`tests/quickjs_builtins.rs::quickjs_builtin_cases_run_unmodified` executes the
+six selected QuickJS Array, String, Math, Number, JSON and rope cases with the
+unchanged upstream assertion helpers. Each case gets one compilation and a
+fresh runtime/task; compile or runtime failures are accumulated so one missing
+feature cannot hide the other cases. The fixture contains the exact selected
+388 upstream lines, a license header and six calls (see `docs/attribution.md`).
+Each task runs in slices of 50,000 instructions, with collection after every
+yield and a limit of 2,000 slices. The rope case must yield at least once.
+All six cases complete, including String's direct eval (clj-quickjs-107)
+and Math.sumPrecise (clj-quickjs-158). The rope case completes across 204
+yields and collections. No runtime behavior or representation changes are
+introduced here.

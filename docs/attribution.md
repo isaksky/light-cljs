@@ -1082,3 +1082,19 @@ The first three `tests/js_source.rs::intl_list_format` rows adapt
 QuickJS copyright and MIT notice appear at the top of the test file. Remaining
 fixtures are synthetic, not light-cljs output. Snapshot limitations, including
 Spanish and default-language fallbacks, are recorded in grammar/architecture.
+
+## Unmodified built-in source cases (clj-quickjs-163)
+
+`tests/fixtures/js/quickjs_test_builtin_builtins.js` extracts
+`research/quickjs/tests/test_builtin.js` lines 1–71, 191–233, 235–342,
+344–361, 363–401, 527–610 and 1066–1090 at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+All 388 selected lines, including the assertion helpers and expected values,
+are byte-for-byte unchanged. Only a header carrying the complete QuickJS
+LICENSE notice and six case calls are added. This is adapted QuickJS test
+text, labelled as a synthetic fixture, not light-cljs output.
+`tests/quickjs_builtins.rs` selects each complete function range with the
+original assertion helpers, retaining all JSON position helpers, and compiles
+once per case. It checks the embedded range lengths without requiring the
+research checkout at test time. The rope case retains both upstream
+100,000-code-unit loops and runs with collection between budgeted slices.

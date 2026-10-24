@@ -996,6 +996,15 @@ a?.b = 1;
 new a?.b();
 ```
 
+The six upstream built-in cases in
+`tests/fixtures/js/quickjs_test_builtin_builtins.js` keep all selected source
+lines and assertion helpers unchanged (clj-quickjs-163). The integration test
+compiles each complete case separately, reporting all failures. Tasks run in
+50,000-instruction slices, with collection after each yield and a total limit
+of 100 million instructions per case; the rope case must exercise yields.
+All six cases complete, including String's direct eval (clj-quickjs-107)
+and Math.sumPrecise (clj-quickjs-158), without changing upstream assertions.
+
 `Number.prototype.toExponential(fractionDigits)` and `toPrecision(precision)`
 (clj-quickjs-151) accept Number primitives and wrappers. Both round the exact
 binary64 value, choosing the larger magnitude on ties, and pad the requested
