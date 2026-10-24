@@ -1979,3 +1979,42 @@ fn json_module_errors_keep_utf16_positions_and_parser_limits() {
         assert!(effects.is_empty());
     }
 }
+
+#[test]
+fn json_module_multiple_sources_keep_distinct_values() {
+    let sources = [
+        (
+            "entry.js",
+            "import a from './a.json'; import b from './b.json'; import * as ns from './b.json'; __rt.effect(0, a !== b && a.x === 1 && b.x === 2 && ns.default === b); a.x = 7; __rt.effect(0, b.x === 2 && a.tab[2] === 3);",
+        ),
+        ("a.json", MESSAGE_JSON),
+        ("b.json", "{\"x\":2}"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 2]);
+    }
+}
+
+#[test]
+fn json_module_later_parse_error_prevents_all_bodies() {
+    let sources = [
+        (
+            "entry.js",
+            "import './effect.js'; import a from './a.json'; import b from './b.json'; __rt.effect(0, a.x + b.x);",
+        ),
+        ("effect.js", "__rt.effect(0, 2);"),
+        ("a.json", MESSAGE_JSON),
+        ("b.json", "{ \"x\": }"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        let RunOutcome::Failed(error) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+        assert!(error.message().contains("b.json:1:8"), "{error:?}");
+        assert!(effects.is_empty());
+    }
+}
