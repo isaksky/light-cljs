@@ -15,8 +15,8 @@ use clj_quickjs::host::sim::{
     ANALYSIS, BINDING, CALLABLE, INITIALIZED, Producer, SimError, SimEvent, SimHost, WorldSpec,
 };
 use clj_quickjs::{
-    CellStatus, DependencyId, DependencyKey, Primitive, ResultKind, Rooted, Runtime, ValueView,
-    WorldId,
+    CellStatus, Completion, DependencyId, DependencyKey, Primitive, ResultKind, Rooted, Runtime,
+    ValueView, WorldId,
 };
 
 const IS_EVEN: DependencyId = DependencyId::new(1);
@@ -481,4 +481,193 @@ fn calling_a_non_callable_or_a_failing_function_fails_the_call() {
         matches!(&err, SimError::ActivationFailed { callable, .. } if *callable == DependencyKey::new(w, USER, CALLABLE)),
         "{err:?}"
     );
+}
+
+#[test]
+fn a_result_of_another_runtime_settles_the_cell_as_failed() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let mut spec = WorldSpec::new();
+    spec.define(CONFIG, "config").produce(
+        CONFIG,
+        INITIALIZED,
+        Producer::rust(|_, _| Ok(Runtime::new().root(Primitive::Null))),
+    );
+    let w = host.add_world(spec);
+    let key = DependencyKey::new(w, CONFIG, INITIALIZED);
+    for _ in 0..2 {
+        let err = host.need(w, CONFIG, INITIALIZED).result.unwrap_err();
+        assert!(
+            matches!(&err, SimError::ProducerFailed { key: k, message } if *k == key && message.contains("different runtime")),
+            "{err:?}"
+        );
+    }
+    assert!(matches!(rt.cell_status(key), CellStatus::Failed(_)));
+    assert_eq!(scheduled(&host, key), 1);
+    assert_eq!(host.parked(), 0);
+}
+
+fn identity_world(host: &mut SimHost) -> WorldId {
+    let mut spec = WorldSpec::new();
+    let identity = compile_function("function id(x) { return x; }").unwrap();
+    spec.define(USER, "id")
+        .produce(USER, CALLABLE, Producer::callable(identity, None));
+    spec.define(CONFIG, "alias");
+    host.add_world(spec)
+}
+
+#[test]
+fn invoke_checks_publication_of_the_argument_and_keeps_its_identity() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let w = identity_world(&mut host);
+    let (shareable, unshareable) = rt.scope(|s| {
+        let one = s.primitive(Primitive::Number(1.0));
+        let inner = s.new_vector(&[one]).unwrap();
+        let ok = s.new_vector(&[inner]).unwrap();
+        let plain = s.new_object();
+        let nested = s.new_vector(&[plain]).unwrap();
+        let bad = s.new_vector(&[nested]).unwrap();
+        (s.persist(ok), s.persist(bad))
+    });
+    let back = host.invoke(w, USER, &shareable).result.unwrap();
+    assert!(back.same_object(&shareable), "no copy: the same graph");
+    let err = host.invoke(w, USER, &unshareable).result.unwrap_err();
+    assert!(
+        matches!(&err, SimError::ArgumentNotShareable { callable, .. } if *callable == DependencyKey::new(w, USER, CALLABLE)),
+        "{err:?}"
+    );
+    assert_eq!(activations(&host), 1, "the rejected argument ran nothing");
+}
+
+#[test]
+fn a_stalled_invocation_resumed_later_drops_its_answer() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let w = identity_world(&mut host);
+    // Someone outside the host claims alias's callable, so the call stalls.
+    let alias = DependencyKey::new(w, CONFIG, CALLABLE);
+    let claim = rt.claim(alias).unwrap();
+    let graph = rt.scope(|s| {
+        let n = s.primitive(Primitive::Number(5.0));
+        let v = s.new_vector(&[n]).unwrap();
+        s.persist(v)
+    });
+    let weak = graph.downgrade();
+    let stalled = host.invoke(w, CONFIG, &graph);
+    assert_eq!(
+        stalled.result.unwrap_err(),
+        SimError::Stalled { waiting: alias }
+    );
+    drop(graph);
+
+    let token = host.need(w, USER, CALLABLE).result.unwrap();
+    let woken = rt
+        .complete(alias, claim.producer(), Completion::Ready(&token))
+        .unwrap();
+    assert_eq!(woken, [stalled.task]);
+    host.wake(&woken);
+    host.run_until_idle();
+    assert_eq!(activations(&host), 1, "the resumed call ran");
+    assert_eq!(host.parked(), 0);
+    rt.collect().unwrap();
+    assert!(!weak.is_live(), "the late answer was not retained");
+}
+
+#[test]
+fn cancelled_inputs_fail_dependents_without_running_their_work() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let mut spec = WorldSpec::new();
+    spec.define(CONFIG, "config");
+    spec.define(USER, "user")
+        .produce(
+            USER,
+            INITIALIZED,
+            tagged(&runs, 1.0).needing(CONFIG, INITIALIZED),
+        )
+        .produce(USER, ANALYSIS, Producer::invoke(CONFIG, Primitive::Null));
+    let w = host.add_world(spec);
+    let config = |kind| DependencyKey::new(w, CONFIG, kind);
+    for kind in [INITIALIZED, CALLABLE] {
+        let claim = rt.claim(config(kind)).unwrap();
+        rt.complete(config(kind), claim.producer(), Completion::Cancelled)
+            .unwrap();
+    }
+
+    assert_eq!(
+        host.need(w, CONFIG, INITIALIZED).result.unwrap_err(),
+        SimError::Cancelled {
+            key: config(INITIALIZED)
+        }
+    );
+    let user = DependencyKey::new(w, USER, INITIALIZED);
+    assert_eq!(
+        host.need(w, USER, INITIALIZED).result.unwrap_err(),
+        SimError::InputCancelled {
+            key: user,
+            input: config(INITIALIZED)
+        }
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "the body never ran");
+    assert!(matches!(rt.cell_status(user), CellStatus::Failed(_)));
+
+    // An initializer calling a cancelled callable fails the same way.
+    let analysis = DependencyKey::new(w, USER, ANALYSIS);
+    assert_eq!(
+        host.need(w, USER, ANALYSIS).result.unwrap_err(),
+        SimError::InputCancelled {
+            key: analysis,
+            input: config(CALLABLE)
+        }
+    );
+    assert!(matches!(rt.cell_status(analysis), CellStatus::Failed(_)));
+    assert_eq!(activations(&host), 0);
+}
+
+#[test]
+fn a_producer_keeps_its_ordered_inputs_across_several_waits() {
+    let rt = Runtime::new();
+    let mut host = SimHost::new(&rt);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let unused = Arc::new(AtomicUsize::new(0));
+    let mut spec = WorldSpec::new();
+    spec.define(CONFIG, "a")
+        .produce(CONFIG, INITIALIZED, tagged(&unused, 1.0));
+    spec.define(IS_EVEN, "b")
+        .produce(IS_EVEN, INITIALIZED, tagged(&unused, 2.0));
+    let counted = Arc::clone(&runs);
+    spec.define(USER, "pair").produce(
+        USER,
+        INITIALIZED,
+        Producer::rust(move |rt, inputs| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let tags: Vec<_> = inputs.iter().map(|v| first_item(rt, v)).collect();
+            assert_eq!(tags, [ValueView::Number(1.0), ValueView::Number(2.0)]);
+            Ok(rt.root(Primitive::Number(inputs.len() as f64)))
+        })
+        .needing(CONFIG, INITIALIZED)
+        .needing(IS_EVEN, INITIALIZED),
+    );
+    let w = host.add_world(spec);
+    let user = DependencyKey::new(w, USER, INITIALIZED);
+    let a = DependencyKey::new(w, CONFIG, INITIALIZED);
+    let b = DependencyKey::new(w, IS_EVEN, INITIALIZED);
+
+    let pair = host.need(w, USER, INITIALIZED).result.unwrap();
+    assert_eq!(pair.view(), ValueView::Number(2.0));
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the work ran once");
+    let log = host.producer_log(user).unwrap();
+    assert_eq!((log.edges(), log.waiting()), (&[a, b][..], None));
+    // The producer parked once on each pending input, in declaration order.
+    let waits: Vec<_> = host
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::Parked { waiting, .. } if *waiting == a || *waiting == b => Some(*waiting),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(waits, [a, b]);
 }

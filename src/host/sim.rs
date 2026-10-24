@@ -66,14 +66,17 @@
 //! fails with [`SimError::UnknownWorld`], an unknown definition with
 //! [`SimError::MissingDefinition`], a known definition without a producer for
 //! the kind with [`SimError::MissingResult`]. A Rust producer returning an
-//! error (or a result that fails the publication check) settles its cell as
+//! error (or a result that fails the publication check or belongs to another
+//! runtime) settles its cell as
 //! `Failed` ([`SimError::ProducerFailed`]); a producer whose input failed or
 //! was cancelled fails with [`SimError::InputFailed`] /
 //! [`SimError::InputCancelled`]. The published error value is the number
 //! [`SimError::code`]; the full error is kept by the host
 //! ([`SimHost::failure`]). When the queue runs dry while a top-level request
 //! is still waiting, the request reports [`SimError::Stalled`] instead of
-//! hanging; reporting the wait cycle itself is pellet clj-quickjs-26.
+//! hanging; reporting the wait cycle itself is pellet clj-quickjs-26. Its
+//! job stays parked (consumer cancellation is pellet clj-quickjs-24); if a
+//! later completion wakes it, it runs to the end and its answer is dropped.
 //!
 //! # Calls (stand-in)
 //!
@@ -82,7 +85,8 @@
 //! token (a persistent vector holding the callable's index in the host's
 //! table, unforgeable because the host checks its identity) and calls are
 //! dispatched by the host. An activation is a new VM task running the
-//! callable's executable with one argument. A callable may declare one
+//! callable's executable with one argument, which must pass the publication
+//! check first ([`SimError::ArgumentNotShareable`]). A callable may declare one
 //! `tail_callee`: when an activation returns a **number**, the host needs
 //! the tail callee's [`CALLABLE`] result (recording the edge) and calls it
 //! with that number; any other returned value is the result. The control
@@ -90,7 +94,7 @@
 //! only performs the call that the function requested. Activations per
 //! invocation are bounded ([`SimHost::set_activation_limit`]).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -287,6 +291,12 @@ pub enum SimError {
     Cancelled { key: DependencyKey },
     /// A runtime API refused a host operation (a host bug).
     Internal { message: String },
+    /// An argument handed to an activation of `callable` failed the
+    /// publication check (it reaches task-owned mutation).
+    ArgumentNotShareable {
+        callable: DependencyKey,
+        message: String,
+    },
 }
 
 impl SimError {
@@ -306,6 +316,7 @@ impl SimError {
             SimError::Failed { .. } => 11.0,
             SimError::Cancelled { .. } => 12.0,
             SimError::Internal { .. } => 13.0,
+            SimError::ArgumentNotShareable { .. } => 14.0,
         }
     }
 }
@@ -336,6 +347,9 @@ impl fmt::Display for SimError {
             SimError::Failed { key } => write!(f, "{key} failed"),
             SimError::Cancelled { key } => write!(f, "{key} was cancelled"),
             SimError::Internal { message } => write!(f, "simulated host error: {message}"),
+            SimError::ArgumentNotShareable { callable, message } => {
+                write!(f, "cannot pass the argument to {callable}: {message}")
+            }
         }
     }
 }
@@ -438,6 +452,9 @@ pub struct SimHost {
     failures: HashMap<DependencyKey, SimError>,
     producer_logs: HashMap<DependencyKey, DependencyLog>,
     answers: HashMap<u64, (Result<Rooted, SimError>, DependencyLog)>,
+    /// Top-level requests still waiting for their answer; a job finishing
+    /// after its request returned (`Stalled`) has its answer dropped.
+    awaiting: HashSet<u64>,
     next_answer: u64,
     events: Vec<SimEvent>,
     activation_limit: usize,
@@ -469,6 +486,7 @@ impl SimHost {
             failures: HashMap::new(),
             producer_logs: HashMap::new(),
             answers: HashMap::new(),
+            awaiting: HashSet::new(),
             next_answer: 0,
             events: Vec::new(),
             activation_limit: 10_000,
@@ -576,8 +594,10 @@ impl SimHost {
             }
         };
         let id = task.id();
+        self.awaiting.insert(answer);
         self.ready.push_back(Job { task, work });
         self.run_until_idle();
+        self.awaiting.remove(&answer);
         let (result, log) = match self.answers.remove(&answer) {
             Some(answered) => answered,
             None => {
@@ -729,6 +749,12 @@ impl SimHost {
                     result = Err(SimError::ProducerFailed {
                         key,
                         message: format!("result is not shareable: {e}"),
+                    });
+                }
+                Err(CompleteError::Handle(e)) if result.is_ok() => {
+                    result = Err(SimError::ProducerFailed {
+                        key,
+                        message: format!("result is not a value of this runtime: {e}"),
                     });
                 }
                 Err(e) => {
@@ -916,6 +942,13 @@ impl SimHost {
                     limit: self.activation_limit,
                 });
             }
+            // The argument moves to another task: the publication handoff.
+            if let Err(e) = self.rt.publish(&arg) {
+                break Err(SimError::ArgumentNotShareable {
+                    callable,
+                    message: e.to_string(),
+                });
+            }
             activations += 1;
             let activation = match self.rt.spawn_in(task.world(), &function, &[&arg]) {
                 Ok(activation) => activation,
@@ -991,6 +1024,8 @@ impl SimHost {
     }
 
     fn finish_answer(&mut self, answer: u64, task: &Task, result: Result<Rooted, SimError>) {
-        self.answers.insert(answer, (result, task.dependency_log()));
+        if self.awaiting.contains(&answer) {
+            self.answers.insert(answer, (result, task.dependency_log()));
+        }
     }
 }
