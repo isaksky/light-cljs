@@ -16863,6 +16863,70 @@ fn bigint_string_conversion_waits_yields_collects_and_migrates() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Both conversions may suspend;
+/// long strings use budgeted parsing even when the requested width is zero.
+#[test]
+fn bigint_as_n_waits_yields_collects_and_migrates() {
+    for expression in [
+        "BigInt.asIntN(bits, value) === -1n",
+        "BigInt.asUintN(bits, value) === (1n << 65n) - 1n",
+        "BigInt.asIntN(0 * bits, value) === 0n",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "let log = ''; let bits = {{valueOf() {{log += 'b'; return __rt.need(2041, 1);}}}}; let value = {{valueOf() {{log += 'n'; return __rt.need(2042, 1);}}}}; let ok = {expression}; ok && log === 'bn'"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let text = format!("0x{}", "f".repeat(8000));
+        let mut waited = 0;
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert!(waited <= 2);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(if waited == 1 {
+                        Primitive::Number(65.0)
+                    } else {
+                        Primitive::String(text.as_str().into())
+                    });
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    assert_eq!(waited, 2);
+                    assert!(yields > 100, "string parsing must yield: {yields}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete, "{expression}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Every primitive result takes
 /// the same constructor completion path after object coercion, exactly once.
 #[test]
@@ -18222,5 +18286,113 @@ fn intl_number_format_locale_resolution() {
             "{source}"
         );
         assert_eq!(host.1, reads, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The first 19 rows adapt
+/// research/quickjs/tests/test_bigint.js::test_bigint_asintn at 7d1c13c5d8f8.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn bigint_as_int_n_and_as_uint_n() {
+    for src in [
+        "BigInt.asIntN(0, -1n) === 0n",
+        "BigInt.asIntN(1, -1n) === -1n",
+        "BigInt.asIntN(8, 128n) === -128n",
+        "BigInt.asIntN(8, 127n) === 127n",
+        "BigInt.asIntN(64, -1n) === -1n",
+        "BigInt.asIntN(64, 0x8000000000000000n) === -0x8000000000000000n",
+        "BigInt.asIntN(128, -1n) === -1n",
+        "BigInt.asUintN(0, -1n) === 0n",
+        "BigInt.asUintN(1, -1n) === 1n",
+        "BigInt.asUintN(8, -1n) === 0xffn",
+        "BigInt.asUintN(64, -1n) === 0xffffffffffffffffn",
+        "BigInt.asUintN(64, -2n) === 0xfffffffffffffffen",
+        "BigInt.asUintN(64, 0x8000000000000000n) === 0x8000000000000000n",
+        "BigInt.asUintN(128, -1n) === (1n << 128n) - 1n",
+        "BigInt.asUintN(192, -1n) === (1n << 192n) - 1n",
+        "BigInt.asUintN(64, -(1n << 64n)) === 0n",
+        "BigInt.asUintN(64, 1n << 64n) === 0n",
+        "BigInt.asUintN(64, 123n) === 123n",
+        "BigInt.asIntN(64, 123n) === 123n",
+        "BigInt.asUintN(65, -1n) === (1n << 65n) - 1n",
+        "BigInt.asIntN(65, 1n << 64n) === -(1n << 64n)",
+        "BigInt.asIntN(3, 25n) === 1n",
+        "BigInt.asIntN(64, '-1') === -1n",
+        "BigInt.asUintN(2**53 - 1, 5n) === 5n",
+        "BigInt.asIntN(2**53 - 1, -5n) === -5n",
+        "BigInt.asUintN(2**53 - 1, 0n) === 0n",
+        "BigInt.asIntN(undefined, -1n) === 0n && BigInt.asUintN(NaN, true) === 0n",
+        "BigInt.asUintN('8.9', true) === 1n && BigInt.asIntN(-0.9, false) === 0n",
+        "BigInt.asUintN(8, ' 0xff ') === 255n && BigInt.asIntN(8, true) === 1n",
+        "let log = ''; let bits = {valueOf() { log += 'b'; return '8'; }}; let n = {valueOf() { log += 'n'; return {}; }, toString() { log += 's'; return '-1'; }}; BigInt.asUintN(bits, n) === 255n && log === 'bns'",
+        "let calls = 0; let n = {valueOf() { calls++; return -1n; }}; BigInt.asIntN(0, n) === 0n && calls === 1",
+        "let calls = 0; let caught = false; try { BigInt.asIntN(-1, {valueOf() { calls++; return 1n; }}); } catch(e) { caught = e instanceof RangeError; } caught && calls === 0",
+        "BigInt.asIntN.call(null, 8, 255n) === -1n && BigInt.asUintN.apply(null, [8, -1n]) === 255n && BigInt.asIntN.bind(null, 8)(128n) === -128n",
+        "let a = Object.getOwnPropertyDescriptor(BigInt, 'asIntN'); let b = Object.getOwnPropertyDescriptor(BigInt, 'asUintN'); !a.enumerable && a.writable && a.configurable && !b.enumerable && b.writable && b.configurable && a.value.length === 2 && b.value.length === 2 && a.value.name === 'asIntN' && b.value.name === 'asUintN'",
+        "let n = BigInt.asUintN(1048576, -1n); n >> 1048575n === 1n && BigInt.asIntN(1048576, n) === -1n",
+        "let n = -(1n << 1048575n); BigInt.asIntN(1048576, n) === n && BigInt.asIntN(1048577, n) === n && BigInt.asUintN(1048576, n) === -n",
+        "let n = (1n << 1048575n); BigInt.asUintN(1048577, n) === n && BigInt.asIntN(2**53 - 1, n) === n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (kind, expressions) in [
+        (
+            "RangeError",
+            &[
+                "BigInt.asIntN(-1, 1n)",
+                "BigInt.asUintN(-1, 1n)",
+                "BigInt.asIntN(2**53, 1n)",
+                "BigInt.asUintN(Infinity, 1n)",
+                "BigInt.asIntN(-Infinity, 1n)",
+                "BigInt.asUintN(2**53 - 1, -1n)",
+                "BigInt.asUintN(1048577, -1n)",
+            ][..],
+        ),
+        (
+            "TypeError",
+            &[
+                "BigInt.asIntN(8, 1)",
+                "BigInt.asUintN(8, 1)",
+                "BigInt.asIntN(0, 1)",
+                "BigInt.asIntN(8, null)",
+                "BigInt.asUintN(8, undefined)",
+                "BigInt.asIntN(8, Symbol())",
+                "BigInt.asIntN(1n, 1n)",
+                "BigInt.asUintN(Symbol(), 1n)",
+                "BigInt.asIntN(8, {valueOf() { return 1; }})",
+                "BigInt.asUintN()",
+                "new BigInt.asIntN(8, 1n)",
+                "new BigInt.asUintN(8, 1n)",
+            ][..],
+        ),
+        (
+            "SyntaxError",
+            &["BigInt.asIntN(0, '1n')", "BigInt.asUintN(8, '1.5')"][..],
+        ),
+    ] {
+        for expression in expressions {
+            assert_eq!(
+                eval(&format!(
+                    "let caught = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof {kind}; }} caught"
+                )),
+                ValueView::Bool(true),
+                "{expression}"
+            );
+        }
     }
 }

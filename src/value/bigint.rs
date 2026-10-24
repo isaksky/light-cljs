@@ -77,6 +77,54 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    /// Wrap to a signed two's-complement width without constructing 2^bits.
+    pub fn checked_as_int_n(&self, bits: u64) -> Result<Self, BigIntError> {
+        self.checked_as_n(bits, true)
+    }
+
+    /// Wrap to an unsigned width. A negative value needs `bits` result bits;
+    /// reject widths above the magnitude cap before allocating a buffer.
+    pub fn checked_as_uint_n(&self, bits: u64) -> Result<Self, BigIntError> {
+        self.checked_as_n(bits, false)
+    }
+
+    fn checked_as_n(&self, bits: u64, signed: bool) -> Result<Self, BigIntError> {
+        if bits == 0 {
+            return Ok(Self::from(0));
+        }
+        let mut small = [0; 2];
+        let (negative, limbs) = self.magnitude(&mut small);
+        let magnitude_bits = limbs.last().map_or(0, |high| {
+            (limbs.len() - 1) * 32 + 32 - high.leading_zeros() as usize
+        });
+        if (signed && bits > magnitude_bits as u64)
+            || (!signed && !negative && bits >= magnitude_bits as u64)
+        {
+            return Ok(self.clone());
+        }
+        if bits > MAX_BIGINT_BITS as u64 {
+            return Err(BigIntError::TooLarge);
+        }
+        let bits = bits as usize;
+        let mut carry = negative;
+        let mut out = (0..bits.div_ceil(32))
+            .map(|i| complement_word(limbs.get(i).copied().unwrap_or(0), negative, &mut carry))
+            .collect::<Vec<_>>();
+        let mask = u32::MAX >> ((32 - bits % 32) % 32);
+        *out.last_mut().unwrap() &= mask;
+        let result_negative = signed && out.last().unwrap() & (1 << ((bits - 1) % 32)) != 0;
+        if result_negative {
+            // Invert-plus-one converts the truncated two's-complement words
+            // back to a magnitude. Mask again at a partial high limb.
+            let mut carry = true;
+            for word in &mut out {
+                *word = complement_word(*word, true, &mut carry);
+            }
+            *out.last_mut().unwrap() &= mask;
+        }
+        Self::from_sign_magnitude(result_negative, out)
+    }
+
     /// Round to binary64 once, to nearest with ties to even. Overflow rounds
     /// to signed infinity; canonical BigInt zero always gives positive zero.
     /// Borrow the existing magnitude, and examine at most 1024 bits: larger
@@ -1075,6 +1123,108 @@ impl fmt::Display for JsBigInt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapping_matches_small_integer_modulo_and_stays_canonical() {
+        for bits in 0..=16 {
+            let modulus = 1i64 << bits;
+            for n in -1025i64..=1025 {
+                let unsigned = n.rem_euclid(modulus);
+                let signed = if bits != 0 && unsigned >= modulus / 2 {
+                    unsigned - modulus
+                } else {
+                    unsigned
+                };
+                let value = JsBigInt::from(n);
+                assert_eq!(
+                    value.checked_as_uint_n(bits).unwrap(),
+                    JsBigInt::from(unsigned)
+                );
+                assert_eq!(
+                    value.checked_as_int_n(bits).unwrap(),
+                    JsBigInt::from(signed)
+                );
+            }
+        }
+        for bits in [31, 32, 33, 63, 64, 65, 95, 96, 97, 127] {
+            let power = JsBigInt::from(1)
+                .checked_shl(&JsBigInt::from(bits))
+                .unwrap();
+            let max = power.checked_sub(&JsBigInt::from(1)).unwrap();
+            assert_eq!(
+                JsBigInt::from(-1).checked_as_uint_n(bits as u64).unwrap(),
+                max
+            );
+            assert_eq!(
+                max.checked_as_int_n(bits as u64).unwrap(),
+                JsBigInt::from(-1)
+            );
+            assert_eq!(
+                power.negated().checked_as_uint_n(bits as u64).unwrap(),
+                JsBigInt::from(0)
+            );
+        }
+        assert_eq!(
+            JsBigInt::from(-1).checked_as_uint_n(u64::MAX),
+            Err(BigIntError::TooLarge)
+        );
+        assert_eq!(
+            JsBigInt::from(-1).checked_as_int_n(u64::MAX).unwrap(),
+            JsBigInt::from(-1)
+        );
+        assert_eq!(
+            JsBigInt::from(5).checked_as_uint_n(u64::MAX).unwrap(),
+            JsBigInt::from(5)
+        );
+        let cap =
+            JsBigInt::from_sign_magnitude(false, vec![u32::MAX; MAX_BIGINT_BITS / 32]).unwrap();
+        assert_eq!(
+            cap.checked_as_int_n(MAX_BIGINT_BITS as u64).unwrap(),
+            JsBigInt::from(-1)
+        );
+        assert_eq!(
+            JsBigInt::from(-1)
+                .checked_as_uint_n(MAX_BIGINT_BITS as u64)
+                .unwrap(),
+            cap
+        );
+    }
+
+    #[test]
+    fn wrapping_matches_i128_across_limb_boundaries() {
+        let from_i128 = |n: i128| {
+            let magnitude = n.unsigned_abs();
+            JsBigInt::from_sign_magnitude(
+                n < 0,
+                (0..4).map(|i| (magnitude >> (32 * i)) as u32).collect(),
+            )
+            .unwrap()
+        };
+        let mut random = 204u128;
+        for _ in 0..200 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let n = (random >> 2) as i128;
+            for n in [n, -n, i64::MIN as i128, i64::MAX as i128] {
+                for bits in [1, 31, 32, 33, 63, 64, 65, 95, 96, 97, 126] {
+                    let modulus = 1i128 << bits;
+                    let unsigned = n.rem_euclid(modulus);
+                    let signed = if unsigned >= modulus / 2 {
+                        unsigned - modulus
+                    } else {
+                        unsigned
+                    };
+                    assert_eq!(
+                        from_i128(n).checked_as_uint_n(bits).unwrap(),
+                        from_i128(unsigned)
+                    );
+                    assert_eq!(
+                        from_i128(n).checked_as_int_n(bits).unwrap(),
+                        from_i128(signed)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn number_rounding_at_every_binary64_integer_exponent() {

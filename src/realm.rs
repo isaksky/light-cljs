@@ -1044,6 +1044,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         string_prototype,
         typed_array_prototypes[0],
     )?;
+
+    for method in [Builtin::BigIntAsIntN, Builtin::BigIntAsUintN] {
+        let function = b.function(method, &[])?;
+        b.add(bigint, method.name(), function, PropertyFlags::METHOD)?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1882,7 +1887,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 240); // Includes the nine iterator intrinsics (clj-quickjs-237).
+        assert_eq!(first.all.len(), 242); // Includes iterator intrinsics (-237) and BigInt wrapping (-204).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

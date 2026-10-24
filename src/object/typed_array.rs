@@ -180,12 +180,12 @@ pub(crate) fn to_number(value: &Value) -> Result<f64, Fault> {
 }
 
 pub(crate) fn to_index(value: &Value) -> Result<usize, Fault> {
-    let number = to_number(value)?;
-    let index = if number.is_nan() { 0.0 } else { number.trunc() };
-    if !(0.0..=9007199254740991.0).contains(&index) {
-        return Err(Fault::RangeError("invalid typed array index".into()));
-    }
-    usize::try_from(index as u64)
+    let number = Value::Number(to_number(value)?);
+    let index = dispatch::to_index(&number).map_err(|error| match error {
+        Fault::RangeError(_) => Fault::RangeError("invalid typed array index".into()),
+        error => error,
+    })?;
+    usize::try_from(index)
         .map_err(|_| Fault::RangeError("typed array index exceeds platform limit".into()))
 }
 

@@ -3561,8 +3561,8 @@ yield through native continuations. Each advance handles at most 256 bounded
 scan/limb steps (a decimal group reads at most nine digits); an existing string
 rope may first flatten in linear time.
 
-Explicit gaps: BigInt wrapper objects and `asIntN`/`asUintN` remain with their
-sibling pellets. Prototype and Number conversion are supported below.
+Explicit gaps: BigInt wrapper objects remain deferred. Prototype, Number
+conversion and width wrapping are supported below.
 
 ### Execution: Date UTC field access (clj-quickjs-181)
 
@@ -3892,7 +3892,7 @@ Ignored extra arguments are not coerced. Unary plus also rejects BigInt;
 BigInt arithmetic and comparisons retain their separate ToNumeric/exact-value
 rules. `Number` is the explicit numeric conversion exception.
 
-Explicit gaps: BigInt wrapper objects, `asIntN`/`asUintN`, and BigInt typed-array
+Explicit gaps: BigInt wrapper objects and BigInt typed-array
 storage remain deferred. This adds no Number prototype methods or Math methods.
 
 ### Decimal NumberFormat (clj-quickjs-213)
@@ -3954,3 +3954,28 @@ property escapes, v sets, d indices and lookbehind remain deferred.
 /k/iu.test('\u212A') && /[a-z]/iu.test('\u017F');
 'aAbBcC'.replace(/[^A-B]/gui, 'X') === 'aAbBXX';
 ```
+
+### BigInt width wrapping (clj-quickjs-204)
+
+Lexical grammar: ordinary calls and existing BigInt literals suffice; no new
+syntax. Execution: `BigInt.asIntN(bits, value)` and `BigInt.asUintN(bits, value)`
+have length 2, with writable, configurable, non-enumerable properties on
+`BigInt`. ToIndex truncates `bits` toward zero (`undefined`/NaN become zero),
+rejecting negative integers, infinities and indices above 2^53 - 1 with
+RangeError; BigInt and Symbol widths throw TypeError. Then ToBigInt accepts
+BigInt, boolean and integer strings, rejecting Numbers/null/undefined/Symbol
+with TypeError and malformed strings with SyntaxError. Both object arguments
+use resumable ToPrimitive with number hint, in order. A zero width still
+converts the value. Ignored extra arguments are not coerced.
+
+Unsigned results are modulo 2^bits; signed results interpret the low bits as
+two's complement, including partial and complete limb widths. All results are
+canonical. Widths up to 2^53 - 1 return already-fitting values without allocating
+width-sized storage. In particular huge signed widths return either sign
+unchanged, and huge unsigned widths return nonnegative inputs unchanged.
+An unsigned conversion of a negative input needs the requested width: above
+the runtime's 1 Mbit magnitude cap it throws RangeError (`BigInt is too large`)
+before allocation. At exactly the cap it succeeds. This follows QuickJS's
+checked-allocation behavior with this runtime's documented size limit.
+
+Explicit gaps: BigInt wrappers and typed-array storage remain deferred.

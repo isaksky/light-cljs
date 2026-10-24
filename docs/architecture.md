@@ -5768,3 +5768,36 @@ text copied: `research/quickjs/quickjs.c`,
 `js_promise_resolve_function_call`, `js_promise_resolve_thenable_job` and
 `js_create_resolving_functions`, revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+
+## BigInt width wrapping (clj-quickjs-204)
+
+`JsBigInt::checked_as_int_n` and `checked_as_uint_n` borrow canonical magnitude
+limbs, short-circuit already-fitting values, then stream at most the requested
+low two's-complement words through the existing `complement_word` helper.
+The high word is masked at partial widths; signed results convert back to
+sign/magnitude in place and pass through `from_sign_magnitude`, restoring the
+inline form whenever possible. No 2^bits intermediate or oversized magnitude
+is constructed. Widths remain u64 until bounded by MAX_BIGINT_BITS, so even
+2^53 - 1 is handled without host-index narrowing. Negative unsigned inputs at
+widths above 1 Mbit throw RangeError before buffer allocation; at the cap they
+fit. This is the same checked-size behavior as QuickJS `js_bigint_asUintN`,
+using our magnitude cap rather than its allocation limit.
+
+Two append-only Builtin variants and two realm function roots expose methods
+with length 2 and ordinary method attributes. The existing ToIndex operation
+is shared with typed-array conversion via `dispatch::to_index`, retaining the
+array-specific platform/allocation checks. `builtin::to_bigint` shares the
+BigInt constructor's non-Number primitive conversions; only the constructor
+explicitly accepts integral Numbers. The native Convert frame finishes and
+validates ToIndex before starting the value's number-hint ToPrimitive. Strings
+continue through the existing budgeted StringToBigInt parser, which now retains
+an optional width/signedness completion. Even a zero width performs ToBigInt,
+including parser errors and side effects, before producing zero.
+
+Wrapping itself remains a single bounded leaf computation, matching the
+one-instruction arithmetic policy of clj-quickjs-196. Conversion callbacks
+and string parsing can yield, wait, collect and migrate using traced native
+frames; no Rust stack is retained and no new heap kind or edges are added.
+Tests cover every pinned upstream width assertion, 65-bit cases, independent
+small-integer modulo checks, canonical forms, reflection, conversion ordering,
+cap boundaries, and callback/parser continuations under collection/migration.

@@ -837,6 +837,17 @@ fn integer(v: &Value, max: f64) -> Option<f64> {
     }
 }
 
+/// ToIndex after resumable ToPrimitive: truncate, then check 0..=2^53-1.
+/// Keep the exact index in u64, independently of the host allocation size.
+pub(crate) fn to_index(value: &Value) -> Result<u64, Fault> {
+    let number = to_number(value)?;
+    let index = if number.is_nan() { 0.0 } else { number.trunc() };
+    if !(0.0..=9_007_199_254_740_991.0).contains(&index) {
+        return Err(Fault::RangeError("invalid index".into()));
+    }
+    Ok(index as u64)
+}
+
 /// A definition id operand: an integer number in `0..=2^53-1`.
 pub(crate) fn dependency_id(v: &Value) -> Option<DependencyId> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;

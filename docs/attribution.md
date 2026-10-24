@@ -689,3 +689,15 @@ and [DerivedCoreProperties.txt](https://www.unicode.org/Public/17.0.0/ucd/Derive
 with hashes in the repacker and `src/regexp/case_fold_provenance.txt`.
 The QuickJS FB05/FB06 representative is reversed to the normative C/S target.
 The Unicode License v3 notice is reproduced in `docs/UNICODE-LICENSE`.
+
+## BigInt width wrapping (clj-quickjs-204)
+
+`tests/js_source.rs::bigint_as_int_n_and_as_uint_n` adapts all 19 assertions in
+`research/quickjs/tests/test_bigint.js::test_bigint_asintn`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS copyright and MIT permission notice is retained beside the test;
+see `research/quickjs/LICENSE`. Additional fixtures are synthetic, not
+light-cljs output. `js_bigint_asUintN` and `js_bigint_funcs` in
+`research/quickjs/quickjs.c` at that revision were semantic references.
+The Rust wrapping implementation was written independently using our existing
+canonical sign/magnitude and two's-complement helpers.

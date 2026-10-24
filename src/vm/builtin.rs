@@ -351,6 +351,9 @@ pub(crate) enum Builtin {
     StringIterator,
     IteratorNext(super::native::iterator::Kind),
     IteratorIdentity,
+
+    BigIntAsIntN,
+    BigIntAsUintN,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -397,6 +400,8 @@ impl Builtin {
             Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
             Builtin::IteratorNext(_) => "next",
             Builtin::BigInt => "BigInt",
+            Builtin::BigIntAsIntN => "asIntN",
+            Builtin::BigIntAsUintN => "asUintN",
 
             Builtin::TypedArraySet => "set",
             Builtin::TypedArrayFill => "fill",
@@ -565,6 +570,7 @@ impl Builtin {
             | Builtin::IteratorNext(_)
             | Builtin::IteratorIdentity => 0,
             Builtin::BigInt => 1,
+            Builtin::BigIntAsIntN | Builtin::BigIntAsUintN => 2,
 
             Builtin::TypedArraySet => 1,
             Builtin::TypedArrayFill => 1,
@@ -924,6 +930,9 @@ pub(crate) fn call(
         },
         Builtin::BigIntPrototypeToString => Err(Fault::Internal(
             "BigInt formatting requires a resumable frame",
+        )),
+        Builtin::BigIntAsIntN | Builtin::BigIntAsUintN => Err(Fault::Internal(
+            "BigInt wrapping requires a resumable frame",
         )),
         Builtin::BigIntPrototypeValueOf => match this {
             Value::BigInt(_) => Ok(this.clone()),
@@ -1333,10 +1342,33 @@ pub(super) fn wrapper_data(
     .unwrap_or(Err(Fault::Internal("wrapper receiver was reclaimed")))
 }
 
-/// Finish a Number/String call or construction after resumable ToPrimitive
-/// (when needed) has produced a primitive. Arguments remain traced on the
-/// calling frame's operand stack or in its native continuation. The result
-/// replaces them before any safepoint, so allocation needs no temporary root.
+/// ToBigInt after resumable ToPrimitive. StringToBigInt runs in a native frame;
+/// unlike the BigInt constructor, this conversion never accepts a Number.
+pub(crate) fn to_bigint(value: &Value) -> Result<Value, Fault> {
+    match value {
+        Value::BigInt(_) => Ok(value.clone()),
+        Value::Bool(b) => Ok(Value::BigInt(crate::value::JsBigInt::from(i64::from(*b)))),
+        Value::String(_) => Err(Fault::Internal("StringToBigInt requires a resumable frame")),
+        _ => Err(Fault::TypeError("cannot convert to BigInt".into())),
+    }
+}
+
+pub(crate) fn bigint_as_n(bits: u64, value: &Value, signed: bool) -> Result<Value, Fault> {
+    let Value::BigInt(value) = to_bigint(value)? else {
+        unreachable!("ToBigInt returns a BigInt")
+    };
+    if signed {
+        value.checked_as_int_n(bits)
+    } else {
+        value.checked_as_uint_n(bits)
+    }
+    .map(Value::BigInt)
+    .map_err(|error| Fault::RangeError(error.to_string()))
+}
+
+/// Finish a primitive constructor after resumable ToPrimitive. Arguments remain
+/// traced on the calling frame's operand stack or in its native continuation.
+/// The result replaces them before any safepoint, needing no temporary root.
 pub(crate) fn primitive_constructor(
     heap: &Heap,
     task: TaskId,
@@ -1346,8 +1378,6 @@ pub(crate) fn primitive_constructor(
 ) -> Result<Value, Fault> {
     let value = match which {
         Builtin::BigInt if !construct => match args.first().unwrap_or(&Value::Undefined) {
-            Value::BigInt(n) => Value::BigInt(n.clone()),
-            Value::Bool(b) => Value::BigInt(crate::value::JsBigInt::from(i64::from(*b))),
             Value::Number(n) => Value::BigInt(
                 crate::value::JsBigInt::from_integral_number(*n).ok_or_else(|| {
                     Fault::RangeError(
@@ -1355,10 +1385,7 @@ pub(crate) fn primitive_constructor(
                     )
                 })?,
             ),
-            Value::String(_) => {
-                return Err(Fault::Internal("StringToBigInt requires a resumable frame"));
-            }
-            _ => return Err(Fault::TypeError("cannot convert to BigInt".into())),
+            value => to_bigint(value)?,
         },
         Builtin::Number => Value::Number(match args.first() {
             // Number uses ToNumeric and explicitly permits BigInt. All

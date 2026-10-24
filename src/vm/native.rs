@@ -399,6 +399,9 @@ enum ConvertTarget {
     DateLocalString {
         part: u8,
     },
+    BigIntAsN {
+        signed: bool,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -411,6 +414,7 @@ enum NativeState {
         instr: Option<Instr>,
         operands: Vec<Value>,
         index: usize,
+        wrap: Option<(u64, bool)>,
     },
     Promise(super::promise::PromiseState),
     StringSplit {
@@ -989,6 +993,7 @@ pub(crate) fn start_builtin(
             instr: None,
             operands: vec![],
             index: 0,
+            wrap: None,
         };
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, parser)?;
@@ -1345,6 +1350,16 @@ pub(crate) fn start_builtin(
                 Hint::Number,
             )
         }
+        Builtin::BigIntAsIntN | Builtin::BigIntAsUintN if !construct => (
+            ConvertTarget::BigIntAsN {
+                signed: which == Builtin::BigIntAsIntN,
+            },
+            vec![
+                args.first().cloned().unwrap_or(Value::Undefined),
+                args.get(1).cloned().unwrap_or(Value::Undefined),
+            ],
+            Hint::Number,
+        ),
         Builtin::BigIntPrototypeToString if !construct => {
             if !matches!(this, Value::BigInt(_)) {
                 return Err(Fault::TypeError("not a BigInt".into()));
@@ -2126,6 +2141,7 @@ fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
         instr: Some(instr),
         operands: operands.to_vec(),
         index,
+        wrap: None,
     })
 }
 
@@ -2150,6 +2166,7 @@ impl NativeState {
                 instr,
                 operands,
                 index,
+                wrap,
             } => {
                 use crate::value::bigint::BigIntError;
                 let Some(result) = parser.advance() else {
@@ -2170,6 +2187,11 @@ impl NativeState {
                         operands: std::mem::take(operands),
                     })
                 } else {
+                    let value = if let Some((bits, signed)) = wrap {
+                        builtin::bigint_as_n(*bits, &value, *signed)?
+                    } else {
+                        value
+                    };
                     Ok(Action::Return(value))
                 }
             }
@@ -2659,6 +2681,13 @@ impl NativeState {
                         return Ok(Action::Continue);
                     }
                     if !matches!(receiver, Value::Object(_)) {
+                        if matches!(target, ConvertTarget::BigIntAsN { .. }) && *next == 0 {
+                            // ToIndex must finish (and reject) before any
+                            // observable ToBigInt conversion of the value.
+                            operands[0] = Value::Number(dispatch::to_index(receiver)? as f64);
+                            *next += 1;
+                            continue;
+                        }
                         if let ConvertTarget::TypedArray { kind, from_buffer } = target {
                             let number =
                                 Value::Number(crate::object::typed_array::to_number(receiver)?);
@@ -3059,6 +3088,7 @@ impl NativeState {
                                 instr: None,
                                 operands: vec![],
                                 index: 0,
+                                wrap: None,
                             };
                             return Ok(Action::Continue);
                         }
@@ -3079,6 +3109,23 @@ impl NativeState {
                         // NaN; only an originally undefined radix means 10.
                         let radix = Value::Number(dispatch::to_number(&operands[0])?);
                         builtin::number_to_string(number, &radix).map(Action::Return)
+                    }
+                    ConvertTarget::BigIntAsN { signed } => {
+                        let bits = dispatch::to_index(&operands[0])?;
+                        if let Value::String(text) = &operands[1] {
+                            *self = NativeState::BigIntParse {
+                                parser: Box::new(crate::value::bigint::StringToBigInt::new(
+                                    text.clone(),
+                                )),
+                                instr: None,
+                                operands: vec![],
+                                index: 0,
+                                wrap: Some((bits, signed)),
+                            };
+                            Ok(Action::Continue)
+                        } else {
+                            builtin::bigint_as_n(bits, &operands[1], signed).map(Action::Return)
+                        }
                     }
                     ConvertTarget::BigIntToString => {
                         // Only an originally undefined radix defaulted to 10.
