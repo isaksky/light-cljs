@@ -67,7 +67,9 @@
 //! declaration (or inside its own
 //! initializer) still always runs before initialization, and one after it
 //! always runs after. Such references, assignments to `const` bindings and
-//! references to undeclared names lower to `throw_error`. Only closures can
+//! references to undeclared names lower to `throw_error`. (As the operand of
+//! `typeof`, an undeclared name lowers to `undefined` instead, clj-quickjs-69,
+//! while a binding in its temporal dead zone still throws.) Only closures can
 //! run a reference at another time, and they use the run-time check above.
 //! The exception is a `switch` (clj-quickjs-83), which enters its case
 //! block at the selected clause, past the declarations of the clauses
@@ -1723,9 +1725,16 @@ impl<'s> Lowerer<'s> {
                 let access = self.resolve(name);
                 self.load(access, at)?;
             }
+            ExprKind::Unary {
+                op: UnaryOp::Typeof,
+                operand,
+            } if matches!(operand.kind, ExprKind::Identifier(_)) => {
+                self.typeof_reference(operand, span)?;
+            }
             ExprKind::Unary { op, operand } => {
                 self.expr(operand)?;
                 match op {
+                    UnaryOp::Typeof => self.out().op(Opcode::Typeof, span),
                     UnaryOp::Not => self.out().op(Opcode::Not, span),
                     UnaryOp::Neg | UnaryOp::Plus => {
                         if !is_number(operand) {
@@ -1997,6 +2006,27 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Need, span);
             }
         }
+        Ok(())
+    }
+
+    /// `typeof name`: the operand is a reference (parentheses included),
+    /// so a name with no binding is `undefined` rather than a
+    /// ReferenceError (QuickJS `OP_get_var_undef`). With no global object
+    /// that is known statically; once one exists the name must be looked
+    /// up at run time. A binding in its temporal dead zone still throws, as
+    /// a plain read does. Out of line, so the recursive [`Self::expr`]
+    /// frame stays small.
+    #[inline(never)]
+    fn typeof_reference(&mut self, operand: &Expr, span: Span) -> Result<(), SyntaxError> {
+        let ExprKind::Identifier(name) = &operand.kind else {
+            return Err(self.internal(operand.span, "typeof operand is not a name"));
+        };
+        let at = self.name_span(name, operand.span);
+        match self.resolve(name) {
+            Access::Unresolvable => self.out().op(Opcode::Undefined, at),
+            access => self.load(access, at)?,
+        }
+        self.out().op(Opcode::Typeof, span);
         Ok(())
     }
 

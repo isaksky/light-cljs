@@ -434,6 +434,10 @@ pub enum UnaryOp {
     Plus,
     /// `~`
     BitNot,
+    /// `typeof`. Its operand, when a (possibly parenthesized) identifier,
+    /// is a reference: a name with no binding gives `"undefined"` rather
+    /// than a ReferenceError.
+    Typeof,
 }
 
 /// The operator of an [`ExprKind::Update`].

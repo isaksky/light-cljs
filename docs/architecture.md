@@ -406,6 +406,15 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   the binding's read, then `v`, then exactly the instructions of the
   binary operator `x op v` (`plus` for `+=`, `to_number_pair` and the
   numeric opcode otherwise), then the binding's store.
+  `typeof` (clj-quickjs-69) is the opcode `typeof` (`0x4E`), which reads
+  the heap only to tell a function object (`"function"`) from every other
+  object kind (`"object"`; the mapping of every value kind is in
+  `src/vm/instr.rs`). Its operand is a reference when it is a name: with
+  no global object, a name that resolves to no binding is known
+  statically, so the compiler emits `undefined` (then `typeof`) instead of
+  `throw_error`; once a global object exists that name must be looked up
+  at run time. A binding in its temporal dead zone is read as usual, so it
+  still throws.
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -1481,9 +1490,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
 - `tests/js_source.rs` `identifiers_are_not_normalized` (clj-quickjs-50):
   `test_unicode_ident` of `research/quickjs/tests/test_language.js` (line
   634), revision 7d1c13c5d8f8, as JavaScript source compiled by this
-  frontend. Modified: `let` for `var`; `typeof õ` (not in the subset) is a
-  reference to `õ` that must fail with a ReferenceError; the declared name
-  is also read back. The test carries the full notice; the name `Ãµ` also
+  frontend. Modified: `let` for `var`; `typeof õ` evaluates to `"undefined"`
+  (since clj-quickjs-69), and a plain reference to `õ` must fail with a
+  ReferenceError; the declared name is also read back. The test carries the full notice; the name `Ãµ` also
   appears in `src/frontend/tests.rs` `unicode_identifiers`.
   `research/quickjs/quickjs.c` `next_token` (`lre_js_is_ident_first` /
   `lre_js_is_ident_next`) and `ident_realloc` were consulted only; the
@@ -1642,3 +1651,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   order. `tests/js_source.rs` `compound_assignment_on_bindings` and
   `src/frontend/tests.rs` `compound_assignment` are written for this
   project. No code was copied.
+- `tests/js_source.rs` `typeof_operator` (clj-quickjs-69): the `typeof 1`,
+  `typeof null` and `typeof unknown_var` rows of `test_op2` (line 195) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: `assert(actual, expected, msg)` is a Rust assertion on the
+  expression's value; `typeof Object` waits for a global `Object`. The
+  notice is on `identifiers_are_not_normalized`, which also runs the
+  `typeof õ` case of `test_unicode_ident`. `research/quickjs/quickjs.c`
+  `js_operator_typeof`, `OP_typeof`, `js_parse_unary` and
+  `OP_get_var_undef` were consulted only, for semantics: here an
+  unresolvable operand is decided statically (there is no global object)
+  and `type_of` in `src/vm/dispatch.rs` classifies this runtime's value
+  kinds. No code was copied.

@@ -82,6 +82,7 @@
 //! | `CompareGt`     | 0x4B | –                  | a b → a>b              | JavaScript `>` on primitives |
 //! | `CompareLe`     | 0x4C | –                  | a b → a<=b             | JavaScript `<=` on primitives |
 //! | `CompareGe`     | 0x4D | –                  | a b → a>=b             | JavaScript `>=` on primitives |
+//! | `Typeof`        | 0x4E | –                  | v → type               | JavaScript `typeof`: the type name of v as a string |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -243,6 +244,21 @@
 //! with a static number on either side two strings are impossible, so it
 //! keeps `ToNumber`/`ToNumberPair` and the number-only `Lt`, `Gt`, `Le`, `Ge`.
 //!
+//! Opcode `0x4E`, `Typeof`, is JavaScript `typeof` (clj-quickjs-69; ECMAScript
+//! TypeofOperator, QuickJS `js_operator_typeof`, `research/quickjs/quickjs.c`,
+//! revision 7d1c13c5d8f8). It replaces the value with its type name, a
+//! string: `undefined` is `"undefined"`, `null` is `"object"`, a boolean
+//! `"boolean"`, a number `"number"`, a string `"string"`. Of the heap
+//! objects, a function object (the one callable kind, `Call` accepts
+//! nothing else) is `"function"`; every other kind is `"object"`: plain
+//! objects, native payload objects (error objects among them), persistent
+//! vectors, maps and syntax occurrences, transient builders, atoms and
+//! binding cells (which JavaScript code never holds as values). It never
+//! fails on a live value and calls no JavaScript. The string lives outside
+//! the heap, so it allocates nothing there and is not a poll point. The
+//! compiler lowers `typeof name` for a name with no binding to `Undefined`
+//! and `Typeof` instead of the ReferenceError a plain read throws.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
@@ -345,6 +361,7 @@ pub enum Opcode {
     CompareGt = 0x4B,
     CompareLe = 0x4C,
     CompareGe = 0x4D,
+    Typeof = 0x4E,
 }
 
 /// Operand encoding of an opcode.
@@ -470,6 +487,7 @@ impl Opcode {
             0x4B => CompareGt,
             0x4C => CompareLe,
             0x4D => CompareGe,
+            0x4E => Typeof,
             _ => return None,
         })
     }
@@ -555,6 +573,7 @@ impl Opcode {
             CompareGt => "compare_gt",
             CompareLe => "compare_le",
             CompareGe => "compare_ge",
+            Typeof => "typeof",
         }
     }
 
@@ -577,7 +596,7 @@ impl Opcode {
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe => OperandKind::None,
+            | CompareLe | CompareGe | Typeof => OperandKind::None,
         }
     }
 }
@@ -699,6 +718,7 @@ pub(crate) enum Instr {
     CompareGt,
     CompareLe,
     CompareGe,
+    Typeof,
 }
 
 impl Instr {
@@ -781,6 +801,7 @@ impl Instr {
             Instr::CompareGt => Opcode::CompareGt,
             Instr::CompareLe => Opcode::CompareLe,
             Instr::CompareGe => Opcode::CompareGe,
+            Instr::Typeof => Opcode::Typeof,
         }
     }
 
@@ -801,9 +822,8 @@ impl Instr {
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
-            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot => {
-                (1, 1)
-            }
+            Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
+            | Typeof => (1, 1),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
@@ -828,6 +848,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 77);
+        assert_eq!(assigned, 78);
     }
 }

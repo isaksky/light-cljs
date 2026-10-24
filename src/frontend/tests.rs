@@ -31,6 +31,7 @@ fn render_expr(e: &Expr) -> String {
                 UnaryOp::Neg => "neg",
                 UnaryOp::Plus => "pos",
                 UnaryOp::BitNot => "~",
+                UnaryOp::Typeof => "typeof",
             };
             format!("({op} {})", render_expr(operand))
         }
@@ -884,6 +885,19 @@ fn unary_binds_tighter_than_binary_and_looser_than_calls() {
     assert_eq!(ast("!!f(x).y;"), "(! (! (. (call f x) y)))");
     assert_eq!(ast("- -1;"), "(neg (neg 1))");
     assert_eq!(ast("a - -b;"), "(- a (neg b))");
+    // `typeof` has the precedence of `!` (clj-quickjs-69); parentheses
+    // leave its operand an identifier.
+    assert_eq!(
+        ast("typeof x === \"number\";"),
+        "(=== (typeof x) \"number\")"
+    );
+    assert_eq!(
+        ast("typeof typeof f(x).y;"),
+        "(typeof (typeof (. (call f x) y)))"
+    );
+    assert_eq!(ast("typeof -x + 1;"), "(+ (typeof (neg x)) 1)");
+    assert_eq!(ast("typeof (x);"), "(typeof x)");
+    assert_eq!(ast("!typeof x;"), "(! (typeof x))");
 }
 
 /// Bitwise and shift operators and `~` (clj-quickjs-62), at ECMAScript
@@ -935,7 +949,7 @@ fn exponent_operator_syntax() {
     assert_eq!(ast("a | b ** c;"), "(| a (** b c))");
     assert_eq!(ast("x => x ** 2;"), ast("x => (x ** 2);"));
     // A prefix-operator expression may not be the base: `Invalid` at `**`.
-    use SyntaxErrorKind::{Invalid, Unsupported};
+    use SyntaxErrorKind::Invalid;
     rejects_with("-a ** b;", Invalid, 1, 4, "parenthesize");
     rejects_with("!a ** b;", Invalid, 1, 4, "parenthesize");
     rejects_with("+a ** b;", Invalid, 1, 4, "parenthesize");
@@ -944,8 +958,9 @@ fn exponent_operator_syntax() {
     rejects_with("-2 ** 2;", Invalid, 1, 4, "parenthesize");
     // Also in the exponent: `a ** -b ** c` has the unary `-b` as a base.
     rejects_with("a ** -b ** c;", Invalid, 1, 9, "parenthesize");
-    // The other prefix operators stay unsupported before `**` is reached.
-    rejects_with("typeof a ** b;", Unsupported, 1, 1, "typeof");
+    // `typeof` is a prefix operator like the others (clj-quickjs-69).
+    rejects_with("typeof a ** b;", Invalid, 1, 10, "parenthesize");
+    assert_eq!(ast("typeof (a ** b);"), "(typeof (** a b))");
     // `**=` is a compound assignment (clj-quickjs-84).
     assert_eq!(ast("a **= b ** 2;"), "(**= a (** b 2))");
 }
@@ -1037,8 +1052,9 @@ fn update_expressions() {
     rejects("a--b", UnexpectedToken, 1, 4);
     // The unary-operand restriction of `**` still applies around updates.
     rejects_with("-a++ ** 2;", Invalid, 1, 6, "parenthesize");
-    // The other prefix operators stay unsupported.
-    rejects_with("typeof a++;", Unsupported, 1, 1, "typeof");
+    // `typeof` applies to the whole update (clj-quickjs-69).
+    assert_eq!(ast("typeof a++;"), "(typeof (post++ a))");
+    assert_eq!(ast("typeof --a;"), "(typeof (pre-- a))");
     // An update is not a compound-assignment target (clj-quickjs-84).
     rejects_with("a++ += 1;", Invalid, 1, 1, "invalid assignment target");
 }
@@ -1897,7 +1913,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x = new F();", 1, 5, "new"),
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
-        ("x = typeof y;", 1, 5, "typeof"),
         ("void 0;", 1, 1, "void"),
         ("delete x.y;", 1, 1, "delete"),
         ("++x.y;", 1, 3, "increment and decrement of properties"),

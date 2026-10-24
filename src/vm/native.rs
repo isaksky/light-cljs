@@ -332,7 +332,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PushCatch(_)
         | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
         | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
-        | CompareGt | CompareLe | CompareGe => false,
+        | CompareGt | CompareLe | CompareGe | Typeof => false,
     }
 }
 

@@ -29,7 +29,8 @@ jumps out of `try` statements that run their finally blocks on the way
 parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`,
 `>>>=`) on identifier bindings (clj-quickjs-84) parses and executes; the
-logical assignments `&&=`, `||=` and `??=` do not.
+logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
+(clj-quickjs-69) parses and executes, including on a name with no binding.
 
 ## Semantics model
 
@@ -116,7 +117,7 @@ Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
 Exponentiation        = Unary | Update "**" Exponentiation
-Unary                 = ( "!" | "-" | "+" | "~" ) Unary | Update
+Unary                 = ( "!" | "-" | "+" | "~" | "typeof" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
 Call                  = Primary { Arguments | "." IdentifierName }
@@ -272,7 +273,7 @@ Every form below is rejected where it starts. Error kinds:
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
-| `typeof`, `void`, `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
+| `void`, `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
 | assignment or compound assignment to a property (`a.b = 1`, `a.b += 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
@@ -383,6 +384,7 @@ Executed, with JavaScript semantics:
 | `**` (clj-quickjs-63) | ToNumber of both operands (left first, after both are evaluated), then Number::exponentiate: IEEE `pow`, except that a NaN or ±Infinity exponent with base `1` or `-1` gives NaN (`1 ** NaN`, `(-1) ** Infinity`); `x ** 0` is 1 even for NaN |
 | `===`, `!==` | IsStrictlyEqual (`NaN !== NaN`, `0 === -0`; strings by content, never equal to a non-string) |
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
+| `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures; the only callable values); `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
@@ -422,6 +424,23 @@ Two strings compare by UTF-16 code units, a string and a number as numbers
 "\u{10000}" < "\uFFFF" && !("\uFFFF" < "\u{10000}");
 ```
 
+`typeof` gives a type name; a name with no binding is `"undefined"`, not a
+ReferenceError (clj-quickjs-69); each line below evaluates to `true`:
+
+```js accept
+typeof 1 === "number" && typeof null === "object" && typeof typeof 1 === "string";
+typeof nope === "undefined" && typeof (nope) === "undefined" && typeof undefined === "undefined";
+typeof (() => 1) === "function" && typeof __rt.vector() === "object" && typeof "" === "string";
+```
+
+`typeof` of a binding in its temporal dead zone still fails, at run time
+(`ReferenceError` "cannot access 'x' before initialization", at `x`), and
+`typeof` is a prefix operator, so it cannot be the base of `**` unparenthesized:
+
+```js reject Invalid 1:10
+typeof a ** 2;
+```
+
 Errors:
 
 | Situation | When | Reported as |
@@ -431,8 +450,8 @@ Errors:
 | Property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
-| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
-| Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
+| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
 | Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
@@ -603,6 +622,10 @@ function f(__rt) { return 1; }
 
 ```js compile-reject Invalid 1:6
 __rt.toString();
+```
+
+```js compile-reject ReservedWord 1:8
+typeof __rt;
 ```
 
 ```js compile-reject Invalid 1:41
@@ -1044,6 +1067,12 @@ tests in order with `OP_strict_eq`, then a jump to `default`; one scope
 for the case block; "duplicate default"). `test_switch1` and
 `test_switch2` of `research/quickjs/tests/test_loop.js` are adapted in
 `tests/js_source.rs` `switch_statements` with the notice.
+For `typeof` (clj-quickjs-69): `js_parse_unary` (an identifier operand
+read with `OP_get_var_undef`, so an unresolvable name is not an error),
+`js_operator_typeof` and `OP_typeof`; the `typeof` rows of `test_op2` of
+`test_language.js` are adapted in `tests/js_source.rs` `typeof_operator`
+(notice on `identifiers_are_not_normalized`, which also runs the
+`typeof õ` case of `test_unicode_ident`).
 `test_try_catch5` of `research/quickjs/tests/test_loop.js` is adapted in
 `tests/exceptions.rs` `break_and_continue_run_finally_blocks`, and
 `test_try_catch1`–`test_try_catch8` with their upstream strings and

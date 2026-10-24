@@ -1727,9 +1727,9 @@ fn identifiers_are_not_normalized() {
     // normalization: `Ãµ` (U+00C3 U+00B5) and `õ` (U+00F5) are different
     // names. The `Ãµ` / `õ` case is adapted from `test_unicode_ident` in
     // `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
-    // (`let` for `var`; a ReferenceError for `typeof õ`, as `typeof` is not
-    // in the subset); see `docs/architecture.md`, "QuickJS references and
-    // provenance".
+    // (`let` for `var`; since clj-quickjs-69 the upstream `typeof õ` itself,
+    // plus a plain read of `õ`, which is a ReferenceError); see
+    // `docs/architecture.md`, "QuickJS references and provenance".
     //
     // QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
     // released under the MIT license: Permission is hereby granted, free of
@@ -1749,6 +1749,7 @@ fn identifiers_are_not_normalized() {
     // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     // SOFTWARE.
     assert_eq!(num("let Ãµ = 3; Ãµ"), 3.0);
+    assert_eq!(string("let Ãµ = 3; typeof õ"), "undefined");
     let (kind, message, line, column) = failure_at("let Ãµ = 3; õ");
     assert_eq!(kind, VmErrorKind::ReferenceError);
     assert_eq!(message, "õ is not defined");
@@ -2309,6 +2310,110 @@ fn strings_compare_loosely_with_numbers() {
     ] {
         assert_eq!(eval(src), ValueView::Bool(expected), "{src}");
     }
+}
+
+/// The `typeof` operator (clj-quickjs-69). The `typeof 1`, `typeof null` and
+/// `typeof unknown_var` rows are adapted from `test_op2` (line 195) of
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8 (each
+/// `assert(actual, expected)` as a Rust assertion); `typeof Object` waits
+/// for a global `Object` (clj-quickjs-77). The `typeof õ` case of
+/// `test_unicode_ident` is in `identifiers_are_not_normalized`, whose
+/// QuickJS MIT notice covers these rows too; see `docs/architecture.md`,
+/// "QuickJS references and provenance".
+#[test]
+fn typeof_operator() {
+    for (src, expected) in [
+        // `test_op2`.
+        ("typeof 1", "number"),
+        ("typeof null", "object"),
+        ("typeof unknown_var", "undefined"),
+        // The pellet's acceptance cases.
+        ("typeof NaN", "number"),
+        ("typeof undefined", "undefined"),
+        ("typeof (unknown_var)", "undefined"),
+        ("typeof true", "boolean"),
+        (r#"typeof "s""#, "string"),
+        ("typeof typeof 1", "string"),
+        ("typeof function () {}", "function"),
+        ("function f() {} typeof f", "function"),
+        ("typeof __rt.vector()", "object"),
+        ("typeof __rt.vectorBuilder()", "object"),
+        (r#"typeof -"1""#, "number"),
+        // Every other value kind source code can make.
+        ("typeof false", "boolean"),
+        ("typeof -0", "number"),
+        ("typeof ''", "string"),
+        ("typeof (() => 1)", "function"),
+        ("let k = 2; typeof (() => k)", "function"),
+        ("function g() { return () => 1; } typeof g()", "function"),
+        ("typeof __rt.map()", "object"),
+        ("typeof __rt.mapBuilder()", "object"),
+        ("typeof __rt.freeze(__rt.vectorBuilder())", "object"),
+        (
+            "let t; try { missing; } catch (e) { t = typeof e; } t",
+            "object",
+        ),
+        (
+            "let t; try { throw 'x'; } catch (e) { t = typeof e; } t",
+            "string",
+        ),
+        // Bindings: the type of the current value.
+        ("let u; typeof u", "undefined"),
+        ("let n = null; typeof n", "object"),
+        ("let a = 1; a = 'one'; typeof a", "string"),
+        // An unresolvable name inside a function, through two sets of
+        // parentheses and a comment, and in a closure.
+        ("function h() { return typeof nope; } h()", "undefined"),
+        ("typeof ( /* c */ (nope))", "undefined"),
+        ("let c = () => typeof nope; c()", "undefined"),
+        // The result is an ordinary string.
+        ("typeof 1 + typeof 'a'", "numberstring"),
+        ("typeof typeof unknown_var", "string"),
+    ] {
+        assert_eq!(string(src), expected, "{src}");
+    }
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        r#"typeof 1 === "number" && typeof null === "object" && typeof typeof 1 === "string""#,
+        r#"typeof nope === "undefined" && typeof (nope) === "undefined" && typeof undefined === "undefined""#,
+        r#"typeof (() => 1) === "function" && typeof __rt.vector() === "object" && typeof "" === "string""#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // Only the operand of `typeof` is exempt: a plain read still throws.
+    let (kind, _, _, column) = failure_at("typeof x == 'undefined' && !x");
+    assert_eq!((kind, column), (VmErrorKind::ReferenceError, 29));
+    // The operand is evaluated: its effects and failures happen.
+    assert_eq!(num("let i = 0; typeof (i = i + 1); typeof i++; i"), 2.0);
+    let (kind, message, line, column) = failure_at("typeof (0, nope)");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "nope is not defined");
+    assert_eq!((line, column), (1, 12));
+    let (kind, ..) = failure_at("typeof nope()");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    // A binding in its temporal dead zone still throws, statically ...
+    let (kind, message, line, column) = failure_at("{ typeof x; let x; }");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "cannot access 'x' before initialization");
+    assert_eq!((line, column), (1, 10));
+    let (kind, _, _, column) = failure_at("{ typeof (x); const x = 1; }");
+    assert_eq!((kind, column), (VmErrorKind::ReferenceError, 11));
+    // ... and through a closure that runs before the declaration.
+    let (kind, message, line, _) = failure_at("let f = () => typeof y;\nf();\nlet y = 1;");
+    assert_eq!(kind, VmErrorKind::ReferenceError);
+    assert_eq!(message, "cannot access 'y' before initialization");
+    assert_eq!(line, 1);
+    assert_eq!(string("let f = () => typeof y; let y = 1; f()"), "number");
+    // The reserved intrinsic binding is still not a value.
+    let e = compile_script("t", "typeof __rt").unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::ReservedWord);
+    // `typeof` lowers to the `typeof` opcode; an unresolvable operand to
+    // `undefined` before it, with no `throw_error`.
+    let ops = opcodes(&exe("typeof unknown_var"));
+    assert!(
+        ops.contains(&Opcode::Typeof) && !ops.contains(&Opcode::ThrowError),
+        "{ops:?}"
+    );
 }
 
 #[test]

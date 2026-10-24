@@ -288,6 +288,35 @@ fn is_less_than(opcode: Opcode, x: &Value, y: &Value) -> Result<Option<bool>, Fa
     })
 }
 
+/// JavaScript `typeof v` (ECMAScript TypeofOperator, QuickJS
+/// `js_operator_typeof`): a function object, the only callable kind, is
+/// `"function"`; every other heap object is `"object"` (no other kind is
+/// callable, and none emulates `undefined`). It inspects the object only
+/// under the heap read lock and calls no JavaScript.
+fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
+    Ok(match v {
+        Value::Undefined => "undefined",
+        Value::Null => "object",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Object(id) => heap
+            .read(*id, |object| match object {
+                HeapObject::Function(_) => "function",
+                HeapObject::Plain
+                | HeapObject::Native(_)
+                | HeapObject::Vector(_)
+                | HeapObject::Map(_)
+                | HeapObject::Occurrence(_)
+                | HeapObject::Builder(_)
+                | HeapObject::Cell(_)
+                | HeapObject::Atom(_) => "object",
+            })
+            // A frame keeps its operands alive; a stale id is reported.
+            .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
+    })
+}
+
 /// JavaScript `==` (IsLooselyEqual, QuickJS `js_eq_slow`) for the supported
 /// value types. `null` and `undefined` equal each other and nothing else;
 /// two values of one type compare strictly (two strings by content). A
@@ -684,6 +713,10 @@ fn step(
                 _ => is_less_than(opcode, &a, &b)? == Some(false),
             }));
         }
+        Instr::Typeof => {
+            let v = state.pop()?;
+            state.push(Value::String(JsString::from(type_of(heap, &v)?)));
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -977,6 +1010,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CompareGt
         | Instr::CompareLe
         | Instr::CompareGe
+        | Instr::Typeof
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit
@@ -1331,6 +1365,85 @@ mod tests {
                 Exit::Fail(e) => assert_eq!(e.kind, VmErrorKind::Internal, "{instrs:?}"),
                 other => panic!("{instrs:?}: {other:?}"),
             }
+        }
+    }
+
+    /// `typeof` (clj-quickjs-69) classifies every heap object kind: a
+    /// function object is "function", each other kind "object". Early VM
+    /// test (hand-built bytecode, for the kinds JavaScript source cannot
+    /// make), not JavaScript source support.
+    #[test]
+    fn typeof_classifies_every_object_kind() {
+        let heap = Heap::default();
+        let type_of_result = |asm: &mut Assembler| {
+            asm.op(Opcode::Typeof).op(Opcode::Return);
+            let exe = asm.finish("t", 0, 0).unwrap();
+            match execute(&mut state(&exe, 1), &heap, &mut NoHost, None) {
+                Exit::Return(Value::String(s)) => s.to_string(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut asm = Assembler::new();
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        let child = asm.finish("child", 0, 0).unwrap();
+        let mut asm = Assembler::new();
+        asm.function(&child);
+        assert_eq!(type_of_result(&mut asm), "function");
+        type Produce = fn(&mut Assembler);
+        let producers: [(&str, Produce); 8] = [
+            ("plain object", |asm| {
+                asm.op(Opcode::NewObject);
+            }),
+            ("vector", |asm| {
+                asm.new_vector(0);
+            }),
+            ("map", |asm| {
+                asm.new_map(0);
+            }),
+            ("vector builder", |asm| {
+                asm.op(Opcode::NewVectorBuilder);
+            }),
+            ("map builder", |asm| {
+                asm.op(Opcode::NewMapBuilder);
+            }),
+            ("binding cell", |asm| {
+                asm.op(Opcode::NewCell);
+            }),
+            ("atom", |asm| {
+                asm.op(Opcode::Undefined).op(Opcode::AtomNew);
+            }),
+            // A caught VM error is a native error object.
+            ("error object", |asm| {
+                let catch = asm.label();
+                asm.push_catch(catch);
+                let kind = (ThrowKind::Unresolvable as u16).to_le_bytes();
+                asm.op(Opcode::ThrowError).raw(kind[0]).raw(kind[1]);
+                asm.bind(catch);
+            }),
+        ];
+        for (kind, produce) in producers {
+            let mut asm = Assembler::new();
+            produce(&mut asm);
+            assert_eq!(type_of_result(&mut asm), "object", "{kind}");
+        }
+        // A syntax occurrence has no producing instruction.
+        let provenance = crate::collections::Provenance {
+            source: 0,
+            line: 1,
+            column: 1,
+        };
+        let occurrence =
+            crate::collections::new_occurrence(&heap, Value::Undefined, provenance).unwrap();
+        assert_eq!(type_of(&heap, &occurrence).ok(), Some("object"));
+        // Primitives.
+        for (v, expected) in [
+            (Value::Undefined, "undefined"),
+            (Value::Null, "object"),
+            (Value::Bool(false), "boolean"),
+            (Value::Number(f64::NAN), "number"),
+            (Value::String(JsString::from("s")), "string"),
+        ] {
+            assert_eq!(type_of(&heap, &v).ok(), Some(expected));
         }
     }
 }

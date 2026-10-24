@@ -416,6 +416,7 @@ impl Executable {
                 Opcode::CompareGt => Instr::CompareGt,
                 Opcode::CompareLe => Instr::CompareLe,
                 Opcode::CompareGe => Instr::CompareGe,
+                Opcode::Typeof => Instr::Typeof,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

@@ -1423,8 +1423,8 @@ Deferred:
 - Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
   an object operand (ToPrimitive, clj-quickjs-70). (Strings convert to
   numbers since clj-quickjs-67 and compare relationally by code units since
-  clj-quickjs-68, below.) No `typeof`, templates, `length`, indexing or
-  string methods yet (so no `Number.prototype.toString` call, and no radix
+  clj-quickjs-68, below; `typeof` is clj-quickjs-69.) No templates,
+  `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
   other than 10, clj-quickjs-149); lone surrogate escapes are still rejected
   by the lexer (clj-quickjs-141).
 
@@ -1558,3 +1558,30 @@ Deferred:
 
 - Logical assignment (`&&=`, `||=`, `??=`) stays `Unsupported`; compound
   assignment to a property (`a.b += 1`) waits for property assignment.
+
+### `typeof` (clj-quickjs-69)
+
+Supported (`cargo test --test js_source typeof_operator`,
+`cargo test --lib vm::dispatch::tests::typeof_classifies_every_object_kind`,
+`cargo test --lib frontend::tests::unary_binds_tighter_than_binary_and_looser_than_calls`):
+
+- `typeof x`, a prefix operator with the precedence of `!` (so
+  `typeof a ** 2` is `Invalid` at the `**`), evaluates to the type name of
+  its operand's value as a string: `"undefined"`, `"object"` for `null`,
+  `"boolean"`, `"number"`, `"string"`, `"function"` for function objects
+  (declarations, expressions, arrows, closures: the only callable values),
+  and `"object"` for every other object (persistent vectors, maps and
+  occurrences, builders, atoms, caught error objects, plain objects). New
+  opcode `typeof` (`0x4E`).
+- A name with no binding as the operand, possibly parenthesized
+  (`typeof nope`, `typeof (nope)`), is `"undefined"` rather than a
+  ReferenceError, including the upstream `typeof õ` case of
+  `test_unicode_ident`; a binding in its temporal dead zone still throws.
+  Other operands (`typeof (0, nope)`, `typeof nope()`) are evaluated as
+  usual.
+
+Deferred:
+
+- `typeof Object` waits for a global `Object` (clj-quickjs-77); once a
+  global object exists, an unbound name must be looked up at run time
+  rather than decided by the compiler.
