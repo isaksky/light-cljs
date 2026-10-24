@@ -340,6 +340,9 @@ fn script_completion_value_follows_javascript() {
     assert_eq!(num("if (false) 1; else 2;"), 2.0);
     assert_eq!(eval("1; while (false) {}"), ValueView::Undefined);
     assert_eq!(num("let i = 0; while (i < 3) { i = i + 1; }"), 3.0);
+    // A compound assignment's value is the stored value (clj-quickjs-84).
+    assert_eq!(num("let i = 0; while (i < 3) { i += 2; }"), 4.0);
+    assert_eq!(num("let a = 6; 1; a /= 4;"), 1.5);
     // A loop whose body never produces a value completes with undefined,
     // not with the value before the loop.
     assert_eq!(
@@ -1335,8 +1338,8 @@ fn labelled_break_and_continue() {
 /// see `docs/architecture.md` for the attribution): `let` for `var`, and
 /// the asserted condition is the completion value. The numeric versions map
 /// `"a"`, `"b"`, `"c"` to the digits 1, 2, 3 and append with
-/// `s = s * 10 + d` (`a = i` for `a = "" + i`); the string versions append
-/// with `s = s + a` for `s += a` (compound assignment is clj-quickjs-84).
+/// `s = s * 10 + d` (`a = i` for `a = "" + i`); the string versions keep
+/// upstream's `s += a` (compound assignment, clj-quickjs-84).
 /// The other scripts are written for this project.
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
@@ -1417,7 +1420,7 @@ fn switch_statements() {
                 a = "c";
                 break;
             }
-            s = s + a;
+            s += a;
         }
         s === "abc" && i === 3"#
         ),
@@ -1443,7 +1446,7 @@ fn switch_statements() {
                 a = "" + i;
                 break;
             }
-            s = s + a;
+            s += a;
         }
         s === "ab3" && i === 4"#
         ),
@@ -2973,6 +2976,140 @@ fn update_expressions_on_bindings() {
         1,
         "{ops:?}"
     );
+}
+
+/// Compound assignment on identifier bindings (clj-quickjs-84): read, then
+/// the right operand, then the binary operator's own instructions, then the
+/// store.
+#[test]
+fn compound_assignment_on_bindings() {
+    assert_eq!(
+        num("let a = 7; a += 3; a -= 1; a *= 2; a /= 3; a %= 4; a"),
+        2.0
+    );
+    for src in [
+        // The expression's value is the stored value.
+        "let b = 1; let r = (b += 2); r === 3 && b === 3",
+        // Right-associative.
+        "let a = 10, b = 2; a -= b *= 3; a === 4 && b === 6",
+        "let a = 1, b = 2; a += b += 3; a === 6 && b === 5",
+        // Parenthesized targets and parameters.
+        "let p = 2; (p) *= 5; ((p)) -= 1; p === 9",
+        "function g(x) { x %= 3; return x; } g(7) === 1",
+        // ToNumber on `undefined`, `null` and booleans.
+        "let t = true; t += 1; t === 2",
+        "let n = null; n -= 1; n === -1",
+        "let f = false; f *= 5; f === 0",
+        // The bitwise, shift and `**` forms (clj-quickjs-62, -63).
+        "let a = 3; a **= 2; a === 9",
+        "let a = 6; a &= 3; a === 2",
+        "let a = 6; a |= 1; a === 7",
+        "let a = 6; a ^= 3; a === 5",
+        "let a = 1; a <<= 4; a === 16",
+        "let a = -16; a >>= 2; a === -4",
+        "let a = -1; a >>>= 28; a === 15",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // The old value is read before the right operand runs.
+    assert_eq!(
+        num("let a = 1; function f() { a = 10; return 5; } a += f(); a"),
+        6.0
+    );
+    assert_eq!(num("let a = 2; a *= (a = 5) + 1; a"), 12.0);
+    assert!(num("let u; u += 1").is_nan());
+    assert!(num("let u; u -= 1; u").is_nan());
+    // `+=` concatenates when either value is a string (clj-quickjs-66).
+    assert_eq!(string(r#"let s = ""; s += "a"; s += 1; s"#), "a1");
+    assert_eq!(string(r#"let n = 1; n += "b"; n"#), "1b");
+    // A closure-captured counter lives in a binding cell.
+    assert_eq!(
+        num(
+            "function mk() { let c = 0; return (d) => c += d; } const f = mk(); f(2); f(3) * 10 + f(0)"
+        ),
+        55.0
+    );
+    assert_eq!(
+        num("let c = 1; const g = () => c; c += 4; c *= g(); c"),
+        25.0
+    );
+
+    // `const`: the read and the right operand run, then the TypeError.
+    let (kind, message, line, column) = failure_at("const c = 1;\nc += 1;");
+    assert_eq!(kind, VmErrorKind::TypeError);
+    assert!(message.contains("constant variable 'c'"), "{message}");
+    assert_eq!((line, column), (2, 1));
+    assert_eq!(
+        num("const c = 1; let r = 0; try { c -= (r = 5); } catch (e) { r = r + 1; } r * 10 + c"),
+        61.0
+    );
+    assert_eq!(
+        failure("const k = 1; const g = () => k **= 2; g()").kind(),
+        VmErrorKind::TypeError
+    );
+    // Temporal dead zone and unresolvable names fail at the read, before
+    // the right operand is evaluated.
+    let (kind, _, line, column) = failure_at("{ x += 1; let x = 1; }");
+    assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 1, 3));
+    assert_eq!(
+        failure("function g() { return q |= 1; } g(); let q = 1;").kind(),
+        VmErrorKind::ReferenceError
+    );
+    let (kind, message, line, column) = failure_at("nope += 1");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (VmErrorKind::ReferenceError, "nope is not defined", 1, 1)
+    );
+    assert_eq!(
+        num(
+            "let r = 0; try { nope += (r = 1); } catch (e) {} try { { y -= (r = 2); let y; } } catch (e) {} r"
+        ),
+        0.0
+    );
+    // A failing operator is reported at the `op=` token.
+    let (kind, _, line, column) = failure_at("let f = () => 1;\n  f -= 1;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 5)
+    );
+    let (kind, _, line, column) = failure_at("let v = __rt.vector();\nv += 1;");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 2, 3)
+    );
+    // The reserved intrinsic binding cannot be assigned.
+    let e = compile_script("t", "__rt += 1;").unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{e}");
+
+    // No new opcode: `+=` on a binding is `plus` (it may concatenate), the
+    // others convert both values and use the numeric instruction.
+    let ops = opcodes(&exe("let a = 1; a += 1; a -= 2; a <<= 1"));
+    for op in [
+        Opcode::Plus,
+        Opcode::ToNumberPair,
+        Opcode::Sub,
+        Opcode::Shl,
+        Opcode::SetLocal,
+    ] {
+        assert!(ops.contains(&op), "{op:?} missing from {ops:?}");
+    }
+
+    // A task yields between the read and the store and resumes there.
+    let looping = exe("let a = 0, i = 0; while (i < 50) { a += i * 2; a -= i; i += 1; } a");
+    let task = Runtime::new().spawn(&looping, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(2), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Number(1225.0));
+    assert!(yields >= 100, "{yields} yields");
 }
 
 #[test]

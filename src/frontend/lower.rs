@@ -1746,7 +1746,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::Binary { op, left, right } => {
                 self.expr(left)?;
                 self.expr(right)?;
-                self.binary(*op, left, right, span);
+                self.binary(*op, is_number(left), is_number(right), span);
             }
             ExprKind::Logical { op, left, right } => {
                 // The left value is the result unless it selects the right.
@@ -1780,6 +1780,27 @@ impl<'s> Lowerer<'s> {
                 self.expr(value)?;
                 let at = self.name_span(&target.name, target.span);
                 let access = self.resolve(&target.name);
+                self.store(access, at)?;
+            }
+            ExprKind::CompoundAssign {
+                op,
+                target,
+                value,
+                op_span,
+            } => {
+                // Read the binding (with the same checks as any read), then
+                // evaluate the right operand, apply the binary operator's
+                // own instructions, and store (with the same checks as `=`,
+                // so a `const` is a TypeError after the right operand).
+                let at = self.name_span(&target.name, target.span);
+                let access = self.resolve(&target.name);
+                if matches!(access, Access::Intrinsic) {
+                    // The error of `__rt = x`, not of reading `__rt`.
+                    return self.store(access, at);
+                }
+                self.load(access, at)?;
+                self.expr(value)?;
+                self.binary(*op, false, is_number(value), *op_span);
                 self.store(access, at)?;
             }
             ExprKind::Update {
@@ -1980,7 +2001,9 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Emit a binary operator; both operands are on the stack.
-    fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) {
+    /// `left_number` / `right_number`: the operand is known to be a Number
+    /// ([`is_number`]), so it needs no ToNumber.
+    fn binary(&mut self, op: BinaryOp, left_number: bool, right_number: bool, span: Span) {
         let numeric = match op {
             BinaryOp::Mul => Opcode::Mul,
             BinaryOp::Div => Opcode::Div,
@@ -1988,7 +2011,7 @@ impl<'s> Lowerer<'s> {
             // `+` is numeric addition only when both operands are numbers;
             // otherwise `plus` decides at run time (strings concatenate) and
             // no ToNumber may run first.
-            BinaryOp::Add if is_number(left) && is_number(right) => Opcode::Add,
+            BinaryOp::Add if left_number && right_number => Opcode::Add,
             BinaryOp::Add => {
                 self.out().op(Opcode::Plus, span);
                 return;
@@ -2036,9 +2059,9 @@ impl<'s> Lowerer<'s> {
         };
         // ToNumber(left) must happen after the right operand is evaluated,
         // so a non-number left operand converts both together.
-        if !is_number(left) {
+        if !left_number {
             self.out().op(Opcode::ToNumberPair, span);
-        } else if !is_number(right) {
+        } else if !right_number {
             self.out().op(Opcode::ToNumber, span);
         }
         self.out().op(numeric, span);
@@ -2078,6 +2101,9 @@ fn is_number(e: &Expr) -> bool {
             ..
         } => is_number(consequent) && is_number(alternate),
         ExprKind::Assign { value, .. } => is_number(value),
+        // The binding's old value may be a string, so only `+=` may
+        // concatenate; the other compound operators are numeric.
+        ExprKind::CompoundAssign { op, .. } => *op != BinaryOp::Add,
         ExprKind::Sequence { right, .. } => is_number(right),
         ExprKind::Update { .. } => true,
         _ => false,

@@ -26,7 +26,10 @@ jumps out of `try` statements that run their finally blocks on the way
 (clj-quickjs-79). Labelled statements and labelled `break`/`continue`
 (clj-quickjs-82) parse and execute. Prefix and postfix `++`/`--` on identifier bindings
 (clj-quickjs-64) parse and execute. `switch` statements (clj-quickjs-83)
-parse and execute.
+parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
+(`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`,
+`>>>=`) on identifier bindings (clj-quickjs-84) parses and executes; the
+logical assignments `&&=`, `||=` and `??=` do not.
 
 ## Semantics model
 
@@ -94,7 +97,9 @@ FunctionRest        = "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] 
 
 Expression            = AssignmentExpression { "," AssignmentExpression }
 AssignmentExpression  = ConditionalExpression | ArrowFunction
-                      | Identifier "=" AssignmentExpression
+                      | Identifier AssignOperator AssignmentExpression
+AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
+                      | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
 ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
 ArrowParameters       = BindingIdentifier
                       | "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
@@ -204,7 +209,10 @@ Notes on the grammar:
   comma expression is not an assignment target: `(a, b) = 1` is `Invalid`.
 - `BindingIdentifier` excludes reserved words, `undefined`, `NaN`,
   `Infinity`, `eval` and `arguments`.
-- The assignment target may be parenthesized (`(a) = 1`), as in JavaScript.
+- The assignment target may be parenthesized (`(a) = 1`, `(a) += 1`), as
+  in JavaScript. A compound assignment (clj-quickjs-84) takes the same
+  targets as `=` and is right-associative too: `a -= b *= 2` is
+  `a -= (b *= 2)`.
 - `a.b` (an `IdentifierName` after `.`, reserved words included) is parsed
   so the compiler can resolve the compiler-reserved intrinsic binding
   (`__rt.vector(...)`; see "Reserved intrinsic binding"). The subset has no
@@ -264,13 +272,13 @@ Every form below is rejected where it starts. Error kinds:
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
-| `typeof`, `void`, `delete`, `??`, `in`, `instanceof`, compound assignment (`+=`, `**=`, `&&=`, `\|=`, `<<=`, `>>>=`, ...) | Unsupported |
-| assignment to a property (`a.b = 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
+| `typeof`, `void`, `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
+| assignment or compound assignment to a property (`a.b = 1`, `a.b += 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
 | references to `eval` or `arguments` | Unsupported |
-| reserved word as a binding name or reference; binding, assigning, incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
+| reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -378,6 +386,7 @@ Executed, with JavaScript semantics:
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
+| `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
 | `do body while (test)` (clj-quickjs-80) | runs the body, then evaluates the test, and repeats while it is truthy: the body always runs at least once |
@@ -422,9 +431,9 @@ Errors:
 | Property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
-| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
-| Assigning to an initialized `const` (`c = 1`, `c++`), or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
+| Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
 
@@ -752,6 +761,14 @@ i
 ```
 
 ```js accept
+// Compound assignment on bindings (clj-quickjs-84): right-associative,
+// with the targets of `=`; `a>>>=b` is one `>>>=` token.
+let s = "", n = 1, m = 2;
+s += "x" + n; n -= m *= 3; (n) **= 2; n %= 7; m /= 2;
+m <<= 1; m >>= 1; m >>>= 0; m &= 0xFF; m |= 1; m ^= n; a>>>=b
+```
+
+```js accept
 #!/usr/bin/env qjs
 let x = 1;
 ```
@@ -816,19 +833,23 @@ a--b;
 ```
 
 ```js reject Unsupported 1:2
-a>>>=b
+a&&=b
 ```
 
 ```js reject Unsupported 1:3
-h |= 1;
+h ??= 1;
+```
+
+```js reject Unsupported 1:1
+a.b += 1;
+```
+
+```js reject Invalid 1:1
+f() *= 2;
 ```
 
 ```js reject Invalid 1:4
 -2 ** 2;
-```
-
-```js reject Unsupported 1:3
-x **= 2;
 ```
 
 ```js reject ReservedWord 1:5

@@ -353,8 +353,8 @@ Deferred:
   below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `var`, update and compound
-  assignment operators (rejected by the parser). (Unlabelled `break` and
+- `var` and the logical assignment operators (rejected by the parser).
+  (Update: clj-quickjs-64; compound assignment: clj-quickjs-84; unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
   clj-quickjs-81; labels: clj-quickjs-82; `switch`: clj-quickjs-83, below.)
 
@@ -1241,8 +1241,8 @@ Supported (`cargo test --lib frontend::tests::bitwise_and_shift_precedence`,
 
 Deferred:
 
-- Compound assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`) is still
-  rejected by the parser; object operands wait for ToPrimitive (they fail
+- (Compound assignment `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`:
+  clj-quickjs-84, below.) Object operands wait for ToPrimitive (they fail
   with `UnsupportedOperand`; string operands convert since
   clj-quickjs-67).
 
@@ -1284,7 +1284,7 @@ Supported (`cargo test --lib frontend::tests::exponent_operator_syntax`,
 
 Deferred:
 
-- `**=` is still rejected by the parser (compound assignment); object
+- (`**=`: clj-quickjs-84, below.) Object
   operands wait for ToPrimitive (they fail with `UnsupportedOperand`;
   string operands convert since clj-quickjs-67). BigInt is outside the
   subset.
@@ -1329,7 +1329,7 @@ Deferred:
 
 - `++`/`--` on properties (`a.b++` is `Unsupported`; clj-quickjs-76);
   object operands wait for ToPrimitive (they fail with
-  `UnsupportedOperand`); compound assignment stays rejected.
+  `UnsupportedOperand`). (Compound assignment: clj-quickjs-84, below.)
 
 ### `do`-`while` loops (clj-quickjs-80)
 
@@ -1529,9 +1529,29 @@ Supported (`cargo test --lib frontend::tests::switch_statements`,
   start at an empty operand stack and the switch is ordinary branches: a
   task may yield, wait or migrate inside any clause. No new opcode.
   QuickJS `test_switch1` and `test_switch2` run from source (adapted, with
-  notice), as digit versions and as string versions.
+  notice), as digit versions and as string versions (the string versions
+  with upstream's `s += a` since clj-quickjs-84).
+
+### Compound assignment on bindings (clj-quickjs-84)
+
+Supported (`cargo test --lib frontend::tests::compound_assignment`,
+`cargo test --test js_source compound_assignment_on_bindings`):
+
+- `x op= v` for `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`,
+  `<<=`, `>>=` and `>>>=` on an identifier binding, possibly
+  parenthesized; right-associative (`a -= b *= 2`), with the targets of
+  `=` (`1 += 2` is `Invalid`, `undefined += 1` and `__rt += 1` are
+  `ReservedWord`).
+- Evaluation: read the binding (temporal-dead-zone and unresolvable-name
+  checks as for any read, before the right operand), evaluate `v`, apply
+  the binary operator's own instructions (`+=` concatenates when either
+  value is a string, the others apply ToNumber to both values), store (as
+  `=`: a `const` is a `TypeError` after `v`, a closure-captured binding is
+  updated through its binding cell). The value is the stored value; the
+  old value is the one read before `v` runs. No new opcode; failures of
+  the operator are reported at the `op=` token.
 
 Deferred:
 
-- Both upstream tests use `s += a` (compound assignment, clj-quickjs-84):
-  the string versions use `s = s + a` until it lands.
+- Logical assignment (`&&=`, `||=`, `??=`) stays `Unsupported`; compound
+  assignment to a property (`a.b += 1`) waits for property assignment.

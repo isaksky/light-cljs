@@ -323,7 +323,7 @@ impl Expr {
                 consequent,
                 alternate,
             } => test.height.max(consequent.height).max(alternate.height),
-            ExprKind::Assign { value, .. } => value.height,
+            ExprKind::Assign { value, .. } | ExprKind::CompoundAssign { value, .. } => value.height,
             ExprKind::Call { callee, args } => args
                 .iter()
                 .map(|a| a.height)
@@ -407,6 +407,20 @@ pub enum ExprKind {
     Sequence {
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    /// `name op= value` for an arithmetic, bitwise, shift or `**` operator
+    /// `op` on an identifier binding (property targets are not supported
+    /// yet; the target may be parenthesized): reads the binding, evaluates
+    /// `value`, applies `op` as the binary operator does, and stores the
+    /// result, which is the expression's value. The logical assignments
+    /// (`&&=`, `||=`, `??=`) are not supported.
+    CompoundAssign {
+        op: BinaryOp,
+        target: Ident,
+        value: Box<Expr>,
+        /// The `op=` token, where run-time failures of the operator are
+        /// reported.
+        op_span: Span,
     },
 }
 

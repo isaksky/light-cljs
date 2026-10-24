@@ -1057,7 +1057,8 @@ impl<'a> Parser<'a> {
     }
 
     /// AssignmentExpression: ConditionalExpression, ArrowFunction, or
-    /// Identifier `=` AssignmentExpression (right-associative).
+    /// Identifier (`=` | an arithmetic, bitwise, shift or `**` compound
+    /// operator) AssignmentExpression (right-associative).
     fn parse_assignment(&mut self) -> PResult<Expr> {
         let saved = self.depth;
         self.deeper(cost::ASSIGNMENT)?;
@@ -1067,6 +1068,24 @@ impl<'a> Parser<'a> {
             return Ok(arrow);
         }
         let left = self.parse_conditional()?;
+        if let TokenKind::Punct(p) = self.tok.kind
+            && let Some(op) = compound_assign_op(p)
+        {
+            let target = self.simple_target(&left, TargetUse::Assign)?;
+            let op_span = self.advance()?.span;
+            let value = self.parse_assignment()?;
+            self.depth = saved;
+            let span = left.span.to(value.span);
+            return self.expr(
+                ExprKind::CompoundAssign {
+                    op,
+                    target,
+                    value: Box::new(value),
+                    op_span,
+                },
+                span,
+            );
+        }
         if !self.is_punct(Punct::Assign) {
             if let Some(error) = self.assignment_operator_error(&left) {
                 return Err(error);
@@ -1088,13 +1107,13 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// Rejects compound assignment and an arrow after an expression.
+    /// Rejects logical assignment and an arrow after an expression.
     #[inline(never)]
     fn assignment_operator_error(&self, left: &Expr) -> Option<SyntaxError> {
         match &self.tok.kind {
-            TokenKind::Punct(p) if is_compound_assign(*p) => Some(self.unsupported(
+            TokenKind::Punct(p) if is_logical_assign(*p) => Some(self.unsupported(
                 self.tok.span,
-                &format!("compound assignment `{}` is", p.as_str()),
+                &format!("logical assignment `{}` is", p.as_str()),
             )),
             TokenKind::Punct(Punct::Arrow) if is_async_call(left) => {
                 Some(self.unsupported(left.span.to(self.tok.span), "async arrow functions are"))
@@ -1632,24 +1651,31 @@ fn make_binary(op: BinOrLogical, left: Expr, right: Expr) -> Expr {
     Expr::new(kind, span)
 }
 
-fn is_compound_assign(p: Punct) -> bool {
+/// The binary operator of an arithmetic, bitwise, shift or `**` compound
+/// assignment token (`+=` applies [`BinaryOp::Add`]).
+fn compound_assign_op(p: Punct) -> Option<BinaryOp> {
+    Some(match p {
+        Punct::PlusAssign => BinaryOp::Add,
+        Punct::MinusAssign => BinaryOp::Sub,
+        Punct::StarAssign => BinaryOp::Mul,
+        Punct::SlashAssign => BinaryOp::Div,
+        Punct::PercentAssign => BinaryOp::Rem,
+        Punct::StarStarAssign => BinaryOp::Exp,
+        Punct::ShlAssign => BinaryOp::Shl,
+        Punct::ShrAssign => BinaryOp::Sar,
+        Punct::UShrAssign => BinaryOp::UShr,
+        Punct::AmpAssign => BinaryOp::BitAnd,
+        Punct::PipeAssign => BinaryOp::BitOr,
+        Punct::CaretAssign => BinaryOp::BitXor,
+        _ => return None,
+    })
+}
+
+/// `&&=`, `||=` and `??=`, which the subset rejects.
+fn is_logical_assign(p: Punct) -> bool {
     matches!(
         p,
-        Punct::PlusAssign
-            | Punct::MinusAssign
-            | Punct::StarAssign
-            | Punct::SlashAssign
-            | Punct::PercentAssign
-            | Punct::StarStarAssign
-            | Punct::ShlAssign
-            | Punct::ShrAssign
-            | Punct::UShrAssign
-            | Punct::AmpAssign
-            | Punct::PipeAssign
-            | Punct::CaretAssign
-            | Punct::AmpAmpAssign
-            | Punct::PipePipeAssign
-            | Punct::NullishAssign
+        Punct::AmpAmpAssign | Punct::PipePipeAssign | Punct::NullishAssign
     )
 }
 

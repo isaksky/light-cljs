@@ -35,29 +35,14 @@ fn render_expr(e: &Expr) -> String {
             format!("({op} {})", render_expr(operand))
         }
         ExprKind::Binary { op, left, right } => {
-            let op = match op {
-                BinaryOp::Mul => "*",
-                BinaryOp::Div => "/",
-                BinaryOp::Rem => "%",
-                BinaryOp::Add => "+",
-                BinaryOp::Sub => "-",
-                BinaryOp::Lt => "<",
-                BinaryOp::Gt => ">",
-                BinaryOp::Le => "<=",
-                BinaryOp::Ge => ">=",
-                BinaryOp::LooseEq => "==",
-                BinaryOp::LooseNe => "!=",
-                BinaryOp::StrictEq => "===",
-                BinaryOp::StrictNe => "!==",
-                BinaryOp::BitAnd => "&",
-                BinaryOp::BitOr => "|",
-                BinaryOp::BitXor => "^",
-                BinaryOp::Shl => "<<",
-                BinaryOp::Sar => ">>",
-                BinaryOp::UShr => ">>>",
-                BinaryOp::Exp => "**",
-            };
+            let op = binary_name(*op);
             format!("({op} {} {})", render_expr(left), render_expr(right))
+        }
+        ExprKind::CompoundAssign {
+            op, target, value, ..
+        } => {
+            let op = binary_name(*op);
+            format!("({op}= {} {})", target.name, render_expr(value))
         }
         ExprKind::Logical { op, left, right } => {
             let op = match op {
@@ -105,6 +90,31 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Sequence { left, right } => {
             format!("(, {} {})", render_expr(left), render_expr(right))
         }
+    }
+}
+
+fn binary_name(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Rem => "%",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Lt => "<",
+        BinaryOp::Gt => ">",
+        BinaryOp::Le => "<=",
+        BinaryOp::Ge => ">=",
+        BinaryOp::LooseEq => "==",
+        BinaryOp::LooseNe => "!=",
+        BinaryOp::StrictEq => "===",
+        BinaryOp::StrictNe => "!==",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Sar => ">>",
+        BinaryOp::UShr => ">>>",
+        BinaryOp::Exp => "**",
     }
 }
 
@@ -898,18 +908,15 @@ fn bitwise_and_shift_precedence() {
     assert_eq!(ast("a & b & c;"), "(& (& a b) c)");
     assert_eq!(ast("a << b >> c >>> d;"), "(>>> (>> (<< a b) c) d)");
     assert_eq!(ast("a >>> b * c - d;"), "(>>> a (- (* b c) d))");
-    // Compound forms and `??` stay rejected at the operator.
+    // The compound forms are assignments (clj-quickjs-84).
+    assert_eq!(ast("a |= 1;"), "(|= a 1)");
+    assert_eq!(ast("a &= 1;"), "(&= a 1)");
+    assert_eq!(ast("a ^= 1;"), "(^= a 1)");
+    assert_eq!(ast("a <<= 1;"), "(<<= a 1)");
+    assert_eq!(ast("a >>= 1;"), "(>>= a 1)");
+    assert_eq!(ast("a >>>= b | c;"), "(>>>= a (| b c))");
+    // `??` stays rejected at the operator.
     use SyntaxErrorKind::Unsupported;
-    for (src, needle) in [
-        ("a |= 1;", "|="),
-        ("a &= 1;", "&="),
-        ("a ^= 1;", "^="),
-        ("a <<= 1;", "<<="),
-        ("a >>= 1;", ">>="),
-        ("a >>>= 1;", ">>>="),
-    ] {
-        rejects_with(src, Unsupported, 1, 3, needle);
-    }
     rejects_with("a | b ?? c;", Unsupported, 1, 7, "??");
 }
 
@@ -939,8 +946,8 @@ fn exponent_operator_syntax() {
     rejects_with("a ** -b ** c;", Invalid, 1, 9, "parenthesize");
     // The other prefix operators stay unsupported before `**` is reached.
     rejects_with("typeof a ** b;", Unsupported, 1, 1, "typeof");
-    // `**=` stays rejected (compound assignment).
-    rejects_with("a **= 2;", Unsupported, 1, 3, "**=");
+    // `**=` is a compound assignment (clj-quickjs-84).
+    assert_eq!(ast("a **= b ** 2;"), "(**= a (** b 2))");
 }
 
 /// Prefix and postfix `++`/`--` on identifier bindings (clj-quickjs-64).
@@ -1032,8 +1039,8 @@ fn update_expressions() {
     rejects_with("-a++ ** 2;", Invalid, 1, 6, "parenthesize");
     // The other prefix operators stay unsupported.
     rejects_with("typeof a++;", Unsupported, 1, 1, "typeof");
-    // Compound assignment stays unsupported.
-    rejects_with("a++ += 1;", Unsupported, 1, 5, "+=");
+    // An update is not a compound-assignment target (clj-quickjs-84).
+    rejects_with("a++ += 1;", Invalid, 1, 1, "invalid assignment target");
 }
 
 #[test]
@@ -1044,6 +1051,53 @@ fn conditional_and_assignment_are_right_associative() {
     assert_eq!(ast("a ? b = 1 : c = 2;"), "(? a (= b 1) (= c 2))");
     assert_eq!(ast("(a) = 1;"), "(= a 1)");
     assert_eq!(ast("a ?.5 : 1;"), "(? a 0.5 1)");
+}
+
+/// Arithmetic, bitwise, shift and `**` compound assignment on identifier
+/// bindings (clj-quickjs-84): the target rules of `=`, right-associative,
+/// and the logical assignments stay unsupported.
+#[test]
+fn compound_assignment() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
+    assert_eq!(ast("a += 1;"), "(+= a 1)");
+    assert_eq!(ast("a -= b *= 2;"), "(-= a (*= b 2))");
+    assert_eq!(ast("(a) %= 3;"), "(%= a 3)");
+    assert_eq!(ast("a /= b = c;"), "(/= a (= b c))");
+    assert_eq!(ast("a = b += c;"), "(= a (+= b c))");
+    assert_eq!(ast("x = a ? b : c += 1;"), "(= x (? a b (+= c 1)))");
+    assert_eq!(ast("a += b, c;"), "(, (+= a b) c)");
+    assert_eq!(ast("f(a += 1);"), "(call f (+= a 1))");
+    // The target and the `op=` token are recorded separately.
+    let script = parse_script("((a)) *= 2;").unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    assert_eq!((e.span.start, e.span.end), (0, 10));
+    let &ExprKind::CompoundAssign {
+        op,
+        ref target,
+        op_span,
+        ..
+    } = &e.kind
+    else {
+        panic!("not a compound assignment")
+    };
+    assert_eq!(op, BinaryOp::Mul);
+    assert_eq!((target.span.start, target.span.end), (0, 5));
+    assert_eq!((op_span.start, op_span.end), (6, 8));
+    // Invalid targets.
+    rejects_with("1 += 2;", Invalid, 1, 1, "invalid assignment target");
+    rejects_with("f() += 1;", Invalid, 1, 1, "invalid assignment target");
+    rejects_with("a + b -= 1;", Invalid, 1, 1, "invalid assignment target");
+    rejects_with("(a, b) += 1;", Invalid, 1, 1, "invalid assignment target");
+    rejects_with("undefined += 1;", ReservedWord, 1, 1, "undefined");
+    rejects_with("NaN -= 1;", ReservedWord, 1, 1, "NaN");
+    rejects_with("__rt.count += 1;", ReservedWord, 1, 1, "__rt");
+    rejects_with("a.b += 1;", Unsupported, 1, 1, "assignment to properties");
+    // Logical assignment is not supported.
+    rejects_with("a &&= 1;", Unsupported, 1, 3, "&&=");
+    rejects_with("a ||= 1;", Unsupported, 1, 3, "||=");
+    rejects_with("a ??= 1;", Unsupported, 1, 3, "??=");
 }
 
 #[test]
@@ -1697,9 +1751,11 @@ fn rejects_lexically_ambiguous_input() {
     rejects("let n = 3in x;", InvalidToken, 1, 10);
     rejects("0b102", InvalidToken, 1, 5);
     rejects("1.5n", InvalidToken, 1, 4);
-    // Maximal munch: these are single unsupported tokens.
-    rejects_with("a>>>=b", Unsupported, 1, 2, ">>>=");
-    rejects_with("a**=b", Unsupported, 1, 2, "**=");
+    // Maximal munch: these are single tokens (the first two are compound
+    // assignments, clj-quickjs-84; the others are unsupported).
+    assert_eq!(ast("a>>>=b"), "(>>>= a b)");
+    assert_eq!(ast("a**=b"), "(**= a b)");
+    rejects_with("a&&=b", Unsupported, 1, 2, "&&=");
     rejects_with("a ?? b", Unsupported, 1, 3, "??");
     rejects_with("a?.b", Unsupported, 1, 2, "optional chaining");
     // `a--b` is `a--` then `b`, with no operator between them. (HTML-like
@@ -1854,7 +1910,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("let [a] = b;", 1, 5, "destructuring"),
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
-        ("a += 1;", 1, 3, "+="),
         ("a ||= 1;", 1, 3, "||="),
         ("a.b = 1;", 1, 1, "assignment to properties"),
         ("x in y;", 1, 3, "in"),

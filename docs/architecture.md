@@ -402,6 +402,10 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   constant 1 and the binding's store (through `cell_set` for a binding in
   a cell, a `throw_error` for a `const`), with a `dup` before the
   arithmetic so a postfix update yields the converted old value.
+  Compound assignment `x op= v` on a binding (clj-quickjs-84) likewise:
+  the binding's read, then `v`, then exactly the instructions of the
+  binary operator `x op v` (`plus` for `+=`, `to_number_pair` and the
+  numeric opcode otherwise), then the binding's store.
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -1593,9 +1597,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
 - `tests/js_source.rs` `switch_statements` (clj-quickjs-83):
   `test_switch1` (line 208) and `test_switch2` (line 230) of
   `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
-  JavaScript source compiled by this frontend. Modified: `let` for `var`,
-  `s = s + a` for `s += a`, and the asserted condition is the script's
-  completion value; a numeric version maps `"a"`, `"b"`, `"c"` to 1, 2, 3
+  JavaScript source compiled by this frontend. Modified: `let` for `var`
+  and the asserted condition is the script's completion value (`s += a` is
+  upstream's since clj-quickjs-84; it was `s = s + a` before); a numeric version maps `"a"`, `"b"`, `"c"` to 1, 2, 3
   and appends with `s = s * 10 + a` (and sets `a = i` for `a = "" + i`).
   The test carries the full notice. The
   `TOK_SWITCH` case of `js_parse_statement_or_decl` in
@@ -1625,3 +1629,10 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_string_compare` were consulted only, for semantics; `is_less_than` in
   `src/vm/dispatch.rs` follows ECMA-262 IsLessThan on primitives. No code
   was copied.
+- Compound assignment (clj-quickjs-84): `js_parse_assign_expr2` in
+  `research/quickjs/quickjs.c`, revision 7d1c13c5d8f8 (`TOK_MUL_ASSIGN` ..
+  `TOK_POW_ASSIGN`: `get_lvalue` keeping the reference, the right operand,
+  the operator, `put_lvalue`), was consulted only, for the evaluation
+  order. `tests/js_source.rs` `compound_assignment_on_bindings` and
+  `src/frontend/tests.rs` `compound_assignment` are written for this
+  project. No code was copied.
