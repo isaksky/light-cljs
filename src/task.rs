@@ -287,6 +287,24 @@ use crate::vm::frames::{PendingNeed, VmState};
 use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
 pub use stats::TaskStats;
 
+/// A rejected Promise still lacking a handler at task quiescence.
+/// Both handles are independent persistent roots owned by the embedder.
+#[derive(Debug)]
+pub struct UnhandledRejection {
+    pub promise: Rooted,
+    pub reason: Rooted,
+}
+
+/// A snapshot of the task's bounded rejection diagnostic, in rejection order.
+#[derive(Debug, Default)]
+pub struct UnhandledRejections {
+    /// At most 30 entries; attaching any `then` reaction removes its source.
+    pub entries: Vec<UnhandledRejection>,
+    /// Additional unhandled rejections omitted while the queue was full.
+    /// These retain no values. Later handling decrements this counter too.
+    pub dropped: usize,
+}
+
 /// Result of one run of a task.
 #[derive(Debug)]
 pub enum RunOutcome {
@@ -643,6 +661,27 @@ impl Task {
     /// Diagnostic strings never retain activations or their captured values.
     pub fn suspended_async_activations(&self) -> Vec<String> {
         self.0.suspended_async.lock().unwrap().clone()
+    }
+
+    /// Unhandled rejections from this task's settlements. Empty until the
+    /// body, jobs and timers have drained successfully; yields and dependency
+    /// waits never report. `Complete(value)` is unchanged. Later handling,
+    /// including from a foreign task, removes entries from future snapshots.
+    /// The task retains at most 30 promises and reasons until handled or the
+    /// task is dropped; returned handles remain rooted independently.
+    pub fn unhandled_rejections(&self) -> UnhandledRejections {
+        let _access = self.0.heap.enter_mutator(Access::Op);
+        let (entries, dropped) = self.0.jobs.rejections();
+        UnhandledRejections {
+            entries: entries
+                .into_iter()
+                .map(|(promise, reason)| UnhandledRejection {
+                    promise: Rooted::new(&self.0.heap, Value::Object(promise)),
+                    reason: Rooted::new(&self.0.heap, reason),
+                })
+                .collect(),
+            dropped,
+        }
     }
 
     pub fn id(&self) -> TaskId {
@@ -1243,6 +1282,7 @@ impl RunGuard<'_> {
                         continue;
                     }
                     task.report_suspended_async(self.vm().expect("live activation"));
+                    task.jobs.report_rejections();
                     break Exit::Return(
                         self.vm()
                             .expect("live activation")

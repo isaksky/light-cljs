@@ -85,6 +85,264 @@ fn promise_then_catch_jobs() {
     assert_eq!(numbers, [3.0, 9.0, 4.0, 2.0, 7.0]);
 }
 
+#[test]
+fn unhandled_rejections_reported_at_quiescence() {
+    // The first body adapts test_async_promise_rejection (license above),
+    // replacing its timer with a final reaction job until timers land.
+    for (source, reasons) in [
+        (
+            "let counter=0; let p1=Promise.reject(); let p2=Promise.reject(); let p3=Promise.resolve(); p1.catch(() => counter++); p2.catch(() => counter++); p3.then(() => counter++); Promise.resolve().then(() => { if(counter !== 3) throw counter; }); 42;",
+            vec![],
+        ),
+        ("Promise.reject(1); 42;", vec![1.]),
+        (
+            "let p=Promise.reject(2); Promise.resolve().then(() => p.catch(() => {})); 42;",
+            vec![],
+        ),
+        ("let p=Promise.reject(3); p.then(x => x); 42;", vec![3.]),
+        (
+            "async function f() { await 0; throw 4; } f(); 42;",
+            vec![4.],
+        ),
+        (
+            "async function f() { throw 5; } (async () => { try { await f(); } catch(e) {} })(); 42;",
+            vec![],
+        ),
+        ("Promise.reject(6).catch(e => { throw e; }); 42;", vec![6.]),
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("rejections", source).unwrap(), &[])
+            .unwrap();
+        // Budget boundaries are not reporting boundaries. Collect around
+        // every instruction to exercise the new task roots while running.
+        let mut complete = false;
+        for _ in 0..5000 {
+            match task
+                .run_with(Budget::instructions(1), &mut Effects::default())
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    assert!(task.unhandled_rejections().entries.is_empty());
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Number(42.));
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "{source}");
+        let report = task.unhandled_rejections();
+        assert_eq!(report.dropped, 0);
+        assert_eq!(
+            report
+                .entries
+                .iter()
+                .map(|r| r.reason.view())
+                .collect::<Vec<_>>(),
+            reasons
+                .into_iter()
+                .map(ValueView::Number)
+                .collect::<Vec<_>>(),
+            "{source}"
+        );
+    }
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &compile_script(
+                "derived",
+                "let p=Promise.reject(1); let q=p.then(x => x); __rt.vector(p,q);",
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+    let pair = finish(&task);
+    let derived = finish(&function(
+        &rt,
+        "function get(pair) { return __rt.nth(pair,1); }",
+        &[pair],
+    ));
+    assert!(
+        task.unhandled_rejections().entries[0]
+            .promise
+            .same_object(&derived)
+    );
+}
+
+#[test]
+fn rejection_queue_is_bounded_and_later_handling_updates_overflow() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        "function body() { let ps=[]; for(let i=0;i<35;i++) ps.push(Promise.reject(i)); Promise.resolve().then(() => { ps[0].catch(() => {}); ps[34].catch(() => {}); Promise.reject(35); }); return 42; }",
+        &[],
+    );
+    finish(&task);
+    let report = task.unhandled_rejections();
+    assert_eq!(report.entries.len(), 30);
+    assert_eq!(report.dropped, 4);
+    assert_eq!(report.entries[0].reason.view(), ValueView::Number(1.));
+    assert_eq!(report.entries[29].reason.view(), ValueView::Number(35.));
+    let owner = function(
+        &rt,
+        "function body() { let p; for(let i=0;i<31;i++) p=Promise.reject(i); return p; }",
+        &[],
+    );
+    let omitted = finish(&owner);
+    assert_eq!(owner.unhandled_rejections().dropped, 1);
+    finish(&function(
+        &rt,
+        "function handle(p) { p.catch(() => {}); }",
+        &[omitted],
+    ));
+    assert_eq!(owner.unhandled_rejections().dropped, 0);
+    assert_eq!(owner.unhandled_rejections().entries.len(), 30);
+    // Overflow promises/reasons are not retained, even if they formed cycles.
+    let object = rt.scope(|s| s.persist(s.new_object()));
+    let weak = object.downgrade();
+    let overflow = function(
+        &rt,
+        "function body(o) { for(let i=0;i<30;i++) Promise.reject(i); Promise.reject(o); }",
+        &[object],
+    );
+    finish(&overflow);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    assert_eq!(overflow.unhandled_rejections().dropped, 1);
+}
+
+#[test]
+fn unhandled_rejection_roots_are_retained_and_reclaimed() {
+    let rt = Runtime::new();
+    let object = rt.scope(|s| s.persist(s.new_object()));
+    let weak = object.downgrade();
+    let task = function(
+        &rt,
+        "function body(o) { Promise.reject(o); return 42; }",
+        &[object],
+    );
+    finish(&task);
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    let report = task.unhandled_rejections();
+    let promise = report.entries[0].promise.downgrade();
+    drop(task);
+    rt.collect().unwrap();
+    assert!(
+        weak.is_live() && promise.is_live(),
+        "snapshots own persistent roots"
+    );
+    drop(report);
+    rt.collect().unwrap();
+    assert!(!weak.is_live() && !promise.is_live());
+}
+
+#[test]
+fn foreign_handling_removes_the_rejecting_tasks_record() {
+    let rt = Runtime::new();
+    let maker = function(
+        &rt,
+        "function make() { let reject; let p=new Promise((r,j) => { reject=j; }); return __rt.vector(p,reject); }",
+        &[],
+    );
+    let pair = finish(&maker);
+    let get = |i| {
+        finish(&function(
+            &rt,
+            &format!("function get(pair) {{ return __rt.nth(pair,{i}); }}"),
+            std::slice::from_ref(&pair),
+        ))
+    };
+    let p = get(0);
+    let reject = get(1);
+    let settler = function(&rt, "function settle(reject) { reject(9); }", &[reject]);
+    finish(&settler);
+    assert!(maker.unhandled_rejections().entries.is_empty());
+    assert!(
+        settler.unhandled_rejections().entries[0]
+            .promise
+            .same_object(&p)
+    );
+    let handler = function(&rt, "function handle(p) { p.catch(() => {}); }", &[p]);
+    finish(&handler);
+    assert!(settler.unhandled_rejections().entries.is_empty());
+    assert!(handler.unhandled_rejections().entries.is_empty());
+}
+
+#[test]
+fn rejection_reports_wait_for_dependency_resume_and_discard_on_abort() {
+    for abort in ["", "throw 7;", "__rt.need(249,2);"] {
+        let rt = Runtime::new();
+        let object = rt.scope(|s| s.persist(s.new_object()));
+        let weak = object.downgrade();
+        let source = format!(
+            "function body(o) {{ let p=Promise.reject(o); __rt.need(249,1); {abort} p.catch(() => {{}}); return 42; }}"
+        );
+        let task = function(&rt, &source, &[object]);
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        assert!(task.unhandled_rejections().entries.is_empty());
+        rt.collect().unwrap();
+        assert!(weak.is_live());
+        satisfy(&rt, &task);
+        match task.run().unwrap() {
+            RunOutcome::Complete(_) => assert!(abort.is_empty()),
+            RunOutcome::Failed(_) => assert_eq!(abort, "throw 7;"),
+            RunOutcome::Waiting(_) => {
+                assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+                assert!(matches!(task.run().unwrap(), RunOutcome::Cancelled));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(task.unhandled_rejections().entries.is_empty());
+        rt.collect().unwrap();
+        assert!(!weak.is_live(), "{abort}");
+    }
+}
+
+#[test]
+fn binary_reports_unhandled_rejections_and_exits_nonzero() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("rejection-cli-{}.js", std::process::id()));
+    for (source, status, expected) in [
+        (
+            "Promise.reject(1); 42;",
+            1,
+            "Possibly unhandled promise rejection: 1",
+        ),
+        ("Promise.reject(1).catch(() => {}); 42;", 0, ""),
+        (
+            "async function f() { await 0; throw 7; } f(); 42;",
+            1,
+            "Possibly unhandled promise rejection: 7",
+        ),
+        (
+            "for(let i=0;i<32;i++) Promise.reject(i); 42;",
+            1,
+            "2 additional unhandled promise rejections omitted",
+        ),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_clj-quickjs"))
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(status));
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        if expected.is_empty() {
+            assert!(stderr.is_empty(), "{stderr}");
+        } else {
+            assert!(stderr.contains(expected), "{stderr}");
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 fn finish(task: &clj_quickjs::Task) -> clj_quickjs::Rooted {
     let out = task.run().unwrap();
     let RunOutcome::Complete(value) = out else {

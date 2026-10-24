@@ -52,13 +52,14 @@ fn main() {
         }
     };
     let rt = Runtime::new();
-    let outcome = rt
-        .spawn(&exe, &[])
-        .map_err(|e| e.to_string())
-        .and_then(|t| {
-            t.run_with(Budget::UNLIMITED, &mut PrintingHost)
-                .map_err(|e| e.to_string())
-        });
+    let task = match rt.spawn(&exe, &[]) {
+        Ok(task) => task,
+        Err(e) => {
+            eprintln!("run error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let outcome = task.run_with(Budget::UNLIMITED, &mut PrintingHost);
     match outcome {
         Ok(RunOutcome::Complete(v)) => match v.view() {
             ValueView::Number(n) => println!("{name} completed with {n}"),
@@ -82,5 +83,29 @@ fn main() {
             eprintln!("run error: {e}");
             std::process::exit(1);
         }
+    }
+    let report = task.unhandled_rejections();
+    for rejection in &report.entries {
+        let reason = &rejection.reason;
+        let shown = if let Some(error) = reason.error() {
+            error.to_string()
+        } else {
+            match reason.view() {
+                ValueView::Number(n) => n.to_string(),
+                ValueView::String => format!("{:?}", reason.string().unwrap()),
+                ValueView::BigInt => format!("{}n", reason.bigint().unwrap()),
+                other => format!("{other:?}"),
+            }
+        };
+        eprintln!("{name}: Possibly unhandled promise rejection: {shown}");
+    }
+    if report.dropped > 0 {
+        eprintln!(
+            "{name}: {} additional unhandled promise rejections omitted",
+            report.dropped
+        );
+    }
+    if !report.entries.is_empty() || report.dropped > 0 {
+        std::process::exit(1);
     }
 }

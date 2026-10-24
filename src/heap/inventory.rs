@@ -100,11 +100,12 @@ enum Holder {
     EphemeronValue,
     WeakMapEntries,
     SuspendedAsync,
+    UnhandledRejection,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 40] = [
+const HOLDERS: [Holder; 41] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -145,6 +146,7 @@ const HOLDERS: [Holder; 40] = [
     Holder::EphemeronValue,
     Holder::WeakMapEntries,
     Holder::SuspendedAsync,
+    Holder::UnhandledRejection,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -213,6 +215,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
+            UnhandledRejection,
             SuspendedGenerator,
             SuspendedAsync,
             RunningFrame,
@@ -302,6 +305,16 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::UnhandledRejection => Coverage {
+            retains: (
+                Promises,
+                "unhandled_rejection_roots_are_retained_and_reclaimed",
+            ),
+            reclaims: (
+                Promises,
+                "unhandled_rejection_roots_are_retained_and_reclaimed",
+            ),
+        },
         Holder::WeakNotification => Coverage {
             retains: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),
             reclaims: (Collector, "cleared_weak_slots_are_notified_after_the_pause"),

@@ -20,6 +20,9 @@ pub(crate) struct Promise {
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
+    // The rejecting task owns the bounded diagnostic. This weak receipt
+    // permits handling on a different task without retaining the owner.
+    rejection: Option<(Weak<JobInbox>, bool)>,
 }
 
 /// A fresh resolve/reject pair shares this concurrent first-call guard.
@@ -113,6 +116,7 @@ fn new(heap: &Heap) -> Result<ObjectId, Fault> {
             result: None,
             reactions: vec![],
             is_handled: false,
+            rejection: None,
         }),
     )
 }
@@ -208,6 +212,7 @@ fn forwarding_guard(heap: &Heap, fulfilled: &Value, rejected: &Value) -> Option<
 fn settle(
     heap: &Heap,
     task: TaskId,
+    inbox: &Weak<JobInbox>,
     id: ObjectId,
     rejected: bool,
     value: Value,
@@ -224,7 +229,11 @@ fn settle(
                     owner,
                 });
                 if rejected && !p.is_handled {
-                    rejection_tracking(id, false);
+                    p.rejection = inbox.upgrade().and_then(|queue| {
+                        queue
+                            .reject(id, p.result.as_ref().unwrap().value.clone())
+                            .map(|stored| (inbox.clone(), stored))
+                    });
                 }
                 // Keep the enqueue sequence within the settlement/registration
                 // linearization point. Inbox push is a leaf metadata operation.
@@ -238,9 +247,6 @@ fn settle(
     })
     .ok_or(Fault::Internal("promise reclaimed"))?
 }
-/// Hook for clj-quickjs-249: rejection without handler / handler attached.
-fn rejection_tracking(_promise: ObjectId, _handled: bool) {}
-
 #[derive(Debug)]
 pub(crate) enum PromiseState {
     AsyncRejectTypeError {
@@ -485,11 +491,11 @@ impl PromiseState {
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("missing TypeError result"));
                 };
-                settle(heap, task, *promise, true, value.clone())?;
+                settle(heap, task, inbox, *promise, true, value.clone())?;
                 if let Some(guard) = forwarding
                     && let Some(target) = claim(heap, *guard)?
                 {
-                    settle(heap, task, target, true, value)?;
+                    settle(heap, task, inbox, target, true, value)?;
                 }
                 Ok(Action::Return(Value::Undefined))
             }
@@ -553,7 +559,7 @@ impl PromiseState {
                 constructor,
             } => {
                 if guard.is_none() || claim(heap, guard.unwrap())?.is_some() {
-                    settle(heap, task, *promise, true, value.clone())?;
+                    settle(heap, task, inbox, *promise, true, value.clone())?;
                 }
                 Ok(Action::Return(if *constructor {
                     Value::Object(*promise)
@@ -604,7 +610,7 @@ impl PromiseState {
                         })
                         .map_err(|_| Fault::Internal("promise task inbox closed"))?;
                 } else {
-                    settle(heap, task, *promise, false, value.clone())?;
+                    settle(heap, task, inbox, *promise, false, value.clone())?;
                 }
                 Ok(Action::Return(Value::Undefined))
             }
@@ -654,7 +660,7 @@ impl PromiseState {
                 };
                 if dispatch::callee(heap, handler).is_err() {
                     if result.rejected {
-                        settle(heap, task, reaction.derived, true, result.value)?;
+                        settle(heap, task, inbox, reaction.derived, true, result.value)?;
                         return Ok(Action::Return(Value::Undefined));
                     }
                     // Identity is a normal handler completion: resolve the
@@ -771,7 +777,7 @@ pub(crate) fn start(
                 return Ok(None);
             };
             if reject {
-                settle(heap, task, promise, true, arg(0))?;
+                settle(heap, task, inbox, promise, true, arg(0))?;
                 return Ok(None);
             }
             PromiseState::Resolve {
@@ -834,7 +840,7 @@ pub(crate) fn leaf(
                 ));
             }
             let promise = new(heap)?;
-            settle(heap, task, promise, true, arg(0))?;
+            settle(heap, task, inbox, promise, true, arg(0))?;
             Ok(Value::Object(promise))
         }
         Builtin::PromiseThen => {
@@ -929,8 +935,12 @@ fn register(
         let HeapObject::Promise(p) = o else {
             unreachable!()
         };
-        if p.result.as_ref().is_some_and(|r| r.rejected) && !p.is_handled {
-            rejection_tracking(source, true);
+        if p.result.as_ref().is_some_and(|r| r.rejected)
+            && !p.is_handled
+            && let Some((owner, stored)) = p.rejection.take()
+            && let Some(owner) = owner.upgrade()
+        {
+            owner.handle_rejection(source, stored);
         }
         p.is_handled = true;
         let registration = Registration {

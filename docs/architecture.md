@@ -288,6 +288,7 @@ public API cannot reach.
 
 | typed-array backing buffer, ordinary properties and prototype | `PersistentHandle` (`TypedArray` → `ArrayBuffer`, property/prototype objects) | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* | `typed_array_retains_buffer_and_properties` *(tests/gc.rs)* |
 | built-in iterator source internal slot | `PersistentHandle` (`PlainObject` cursor → source array) | `builtin_iterator_source_retains_and_reclaims` *(lib)* | `builtin_iterator_source_retains_and_reclaims` *(lib)* |
+| bounded unhandled Promise/reason queue | `TaskFrame` (task inbox, including after completion) | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* | `unhandled_rejection_roots_are_retained_and_reclaimed` *(tests/promises.rs)* |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -4951,8 +4952,8 @@ ownership and GC retention/reclamation. QuickJS's `JS_EnqueueJob2`,
 references at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`; no source or
 test text was adapted. Promise settlement/reactions, async resumes, WeakRef
 kept-object clearing, FinalizationRegistry producers and timers are deferred.
-Future unhandled-rejection checks must run only at quiescence after jobs and
-timers drain, rather than after each job; this pellet adds no rejection check.
+Unhandled-rejection checks run only at quiescence after jobs and timers drain,
+rather than after each job (clj-quickjs-249 below).
 
 
 
@@ -5627,8 +5628,8 @@ thenables are adopted through resolve-thenable jobs (clj-quickjs-247). Promise
 subclass capabilities/species and mutable own properties are explicit gaps.
 Self-resolution and inaccessible foreign results reject with errors built by
 the intrinsic TypeError constructor, including its ordinary `stack` property.
-The two internal rejection-tracking transitions are reserved for -249;
-quiescence reporting and its fixed-size list are not implemented here.
+The two internal rejection-tracking transitions feed the bounded per-task
+quiescence diagnostic described under clj-quickjs-249 below.
 
 Root inventory additions: `pending_promise_reactions_are_traced` retains a
 pending Promise reachable only through a closure, the derived Promise, both
@@ -6770,3 +6771,56 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `OP_define_method_computed` at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` for semantic comparison only.
 No upstream source or test text was copied; fixtures are synthetic.
+
+## Unhandled Promise rejections (clj-quickjs-249)
+
+Embedding policy: a successful task still returns `RunOutcome::Complete(value)`.
+After that return, `Task::unhandled_rejections()` supplies an `UnhandledRejections`
+snapshot containing `entries` (each an `UnhandledRejection { promise, reason }`)
+and `dropped`. The runner enables the query only at quiescence, after the body,
+jobs and any timers drain; it never checks after individual jobs, budget yields
+or dependency waits. No callback or JavaScript runs as part of reporting.
+Unsettled awaits retain their separate string-only activation diagnostic.
+The CLI prints the remaining reasons to stderr and exits 1, including overflow.
+
+Settlement's reject transition and PerformPromiseThen's handle transition run
+under the existing Promise metadata lock. The rejecting task's inbox holds a
+FIFO queue bounded to 30 entries. Each entry traces exactly the Promise identity
+and rejection reason as TaskFrame roots; those roots persist after successful
+completion while the task handle exists. This retains the Promise prototype
+and reason graph, but a rejected Promise has already drained its registrations,
+so its original reactions are not retained by this diagnostic. A query creates
+independent persistent handles after releasing the inbox lock, under short
+registered heap access, so snapshots remain safe across concurrent handling
+and collection. Dropping the task releases its records; failure/cancellation
+close admission and discard records before terminal cleanup.
+
+When full, new entries retain neither Promise nor reason: only the saturating
+`dropped` counter increments. Each rejected Promise carries a weak inbox
+receipt and one stored/overflow bit; this adds no GC edge or task root. Any
+later reaction attachment uses that receipt to remove the stored entry or
+decrement overflow, including across tasks and after completion. Newly freed
+queue slots admit subsequent rejections; overflow records are never promoted.
+Snapshots already returned remain snapshots. The rejecting task owns the
+record even for a Promise created elsewhere. Marking every `then` source
+handled matches HostPromiseRejectionTracker: a missing rejection handler
+causes the reaction job to reject its derived Promise, which is reported
+instead. Internal await reactions follow the same handle transition.
+
+Root inventory addition: `UnhandledRejection` is a TaskFrame holder covered by
+`tests/promises.rs::unhandled_rejection_roots_are_retained_and_reclaimed`.
+`rejection_queue_is_bounded_and_later_handling_updates_overflow` also proves
+omitted reasons are collectible, and the acceptance test collects between
+individual instructions. Waiting, cancellation, failure, foreign settlement,
+and foreign handling have dedicated tests.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+`fulfill_or_reject_promise`, `perform_promise_then`, and
+`JS_SetHostPromiseRejectionTracker`; `research/quickjs/quickjs-libc.c`
+`js_std_promise_rejection_tracker`, `js_std_promise_rejection_check`, and
+`js_std_loop`; revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The implementation is written fresh. The opening body of
+`unhandled_rejections_reported_at_quiescence` adapts
+`research/quickjs/tests/test_std.js::test_async_promise_rejection` at that
+revision, replacing its timer with a final reaction job until simulated timers
+land; `tests/promises.rs` retains the upstream copyright/license notice.

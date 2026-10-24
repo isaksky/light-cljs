@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::heap::gc::{Access, Trace};
-use crate::heap::{Heap, Rooted};
+use crate::heap::{Heap, ObjectId, Rooted};
 use crate::value::{Value, share};
 
 #[derive(Debug)]
@@ -24,6 +24,9 @@ impl Trace for Job {
 struct Inbox {
     queue: VecDeque<Job>,
     closed: bool,
+    rejections: VecDeque<(ObjectId, Value)>,
+    dropped_rejections: usize,
+    rejections_reported: bool,
 }
 
 #[derive(Default)]
@@ -59,6 +62,49 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
+    /// Called under the Promise settlement lock. This is a leaf operation:
+    /// no heap access, user code, or acquisition of another inbox lock.
+    /// The returned bit distinguishes a stored entry from a counted overflow.
+    pub(crate) fn reject(&self, promise: ObjectId, reason: Value) -> Option<bool> {
+        let mut inbox = self.inbox.lock().unwrap();
+        if inbox.closed {
+            return None;
+        }
+        if inbox.rejections.len() == 30 {
+            inbox.dropped_rejections = inbox.dropped_rejections.saturating_add(1);
+            Some(false)
+        } else {
+            inbox.rejections.push_back((promise, reason));
+            Some(true)
+        }
+    }
+
+    pub(crate) fn handle_rejection(&self, promise: ObjectId, stored: bool) {
+        let mut inbox = self.inbox.lock().unwrap();
+        if stored {
+            inbox.rejections.retain(|(id, _)| *id != promise);
+        } else {
+            inbox.dropped_rejections = inbox.dropped_rejections.saturating_sub(1);
+        }
+    }
+
+    /// Only the runner calls this, at quiescence after jobs and timers drain.
+    pub(crate) fn report_rejections(&self) {
+        self.inbox.lock().unwrap().rejections_reported = true;
+    }
+
+    /// Caller holds heap access until these raw values become rooted.
+    pub(crate) fn rejections(&self) -> (Vec<(ObjectId, Value)>, usize) {
+        let inbox = self.inbox.lock().unwrap();
+        if !inbox.rejections_reported {
+            return (vec![], 0);
+        }
+        (
+            inbox.rejections.iter().cloned().collect(),
+            inbox.dropped_rejections,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn next_for_test(&self) -> Value {
         self.inbox
@@ -100,6 +146,10 @@ impl JobInbox {
         let mut inbox = self.inbox.lock().unwrap();
         inbox.closed = true;
         inbox.queue.clear();
+        if !inbox.rejections_reported {
+            inbox.rejections.clear();
+            inbox.dropped_rejections = 0;
+        }
     }
 
     /// Extension point for ClearKeptObjects: after the script and after
@@ -113,12 +163,12 @@ impl JobInbox {
 
 impl Trace for JobInbox {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
-        self.inbox
-            .lock()
-            .unwrap()
-            .queue
-            .iter()
-            .for_each(|j| j.trace(visit));
+        let inbox = self.inbox.lock().unwrap();
+        inbox.queue.iter().for_each(|j| j.trace(visit));
+        for (promise, reason) in &inbox.rejections {
+            visit((*promise).into());
+            reason.trace(visit);
+        }
     }
 }
 

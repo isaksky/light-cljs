@@ -4002,8 +4002,8 @@ Thenable calls can yield, wait, migrate and survive collection like reactions.
 
 Rejected forms: async generators and class syntax retain their existing explicit
 rejections. Explicit gaps: subclass capabilities,
-species, combinators, `finally`, arbitrary Promise own properties and unhandled
-rejection reporting are deferred. Only the intrinsic Promise constructor is
+species, combinators, `finally` and arbitrary Promise own properties are
+deferred. Only the intrinsic Promise constructor is
 accepted as `this` for static resolve/reject.
 
 Synthetic fixtures, not light-cljs output; callbacks run after the final
@@ -4697,4 +4697,35 @@ Explicit gaps: async generators and top-level await are unsupported.
 
 ```js accept
 (async () => 2 + await 3)().then(x => __rt.effect(0, x));
+```
+
+### Unhandled Promise rejections (clj-quickjs-249)
+
+Syntax: existing Promise methods and async functions suffice; no new syntax.
+Execution: HostPromiseRejectionTracker's reject/handle transitions record
+rejected Promises without reactions and remove them when any `then` reaction
+attaches. An absent rejection handler transfers rejection to the derived
+Promise. `await` installs an internal reaction, so catching an awaited
+rejection does not report it. A throw from `catch` rejects its derived Promise.
+
+The embedding policy is `RunOutcome::Complete(value)` plus the queryable
+`Task::unhandled_rejections()` snapshot, checked only at quiescence after jobs
+and timers drain. Before completion the query is empty, including during a
+budget yield or dependency wait. It holds at most 30 Promise/reason pairs;
+`dropped` counts overflow without rooting additional values. Later handling
+removes stored records or decrements overflow. The binary reports remaining
+rejections on stderr and exits with status 1. Failure/cancellation discard them.
+Rejected forms are unchanged. Explicit gaps: no JavaScript-visible rejection
+events or host rejection callback; unresolved awaits alone are not rejections.
+
+Synthetic fixtures, not light-cljs output. These complete normally in the
+embedding API; only the first has a remaining diagnostic (reason 1):
+
+```js accept
+Promise.reject(1); 42;
+```
+
+```js accept
+let p = Promise.reject(2); Promise.resolve().then(() => p.catch(() => {})); 42;
+(async () => { try { await Promise.reject(3); } catch (e) {} })();
 ```

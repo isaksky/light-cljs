@@ -2874,9 +2874,9 @@ tasks without executing JavaScript during publication. Dependency waits
 continue to suspend the whole task. The boundary hook is ready for WeakRef
 kept-object clearing. Details: `docs/architecture.md`, "Task-owned jobs".
 
-Deferred: JavaScript-visible enqueue APIs, promise reaction producers, async generator
-resumes, FinalizationRegistry producers, WeakRef kept-object clearing, timers
-and rejection reporting. The queue itself adds none of those built-ins.
+Deferred: JavaScript-visible enqueue APIs, async generator resumes,
+FinalizationRegistry producers, WeakRef kept-object clearing and timers.
+Promise producers and rejection reporting are described below.
 
 ### Regular expression matcher (clj-quickjs-187)
 
@@ -3125,7 +3125,7 @@ to their settling task; foreign reactions reject with TypeError.
 
 Deferred: Promise subclass
 capabilities/species, arbitrary own-property mutation on promises, async generators,
-combinators, finally and unhandled rejection reporting. Test with
+combinators and finally. Test with
 `cargo test --test promises -- --test-threads=3`.
 Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
 
@@ -3526,3 +3526,16 @@ Computed shorthand, object spread and `super` remain rejected.
 Checks: `cargo test --lib frontend::tests::computed_property_names -- --exact`,
 `cargo test --test js_source computed_prop`,
 `cargo test --test need computed_property_names_wait_and_migrate -- --exact`.
+
+### Unhandled Promise rejections (clj-quickjs-249)
+
+Supported: `Task::unhandled_rejections()` returns an `UnhandledRejections`
+query snapshot after successful quiescence, alongside the unchanged
+`RunOutcome::Complete(value)`. The queue retains at most 30 Promise/reason
+pairs in rejection order; `dropped` counts additional unhandled rejections
+without retaining their values. Attaching a reaction removes its source,
+including when the handler attaches in a later job or another task. A missing
+rejection handler propagates to the derived Promise. Yields and dependency
+waits do not report; cancellation and failure discard pending diagnostics.
+The binary prints remaining rejections to stderr and exits with status 1.
+Test: `cargo test --test promises -- --test-threads=3`.
