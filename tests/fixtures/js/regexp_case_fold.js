@@ -31,6 +31,8 @@ check(/[\W]/iu.test("!"));
 check(!/[\W]/iu.test("\u017F"));
 check(/\bſ\b/iu.test("s"));
 check(!/\Bſ/iu.test("s"));
+check(/\bs\b/iu.test("ſ") && /\bk\b/iu.test("K"));
+check(!/\Bs/iu.test("ſ") && !/\Bk/iu.test("K"));
 check(/Σ/iu.test("ς") && /ς/iu.test("σ"));
 check(/ẞ/iu.test("ß") && !/ß/iu.test("ss"));
 check(!/İ/iu.test("i"));
