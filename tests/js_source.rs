@@ -98,6 +98,7 @@ fn array_from_iterables_and_array_likes() {
         "Array.from([1, 2], function(x, i) { return x * 10 + i; }).join() === '10,21'",
         "Array.from([1, 2], function(x, i) { return this.n + x + i; }, {n: 5}).join() === '6,8'",
         "Array.from.call(null, [1])[0] === 1 && Array.from.call(() => 0, {length: 1, 0: 2})[0] === 2 && Array.from.call(Math.floor, [3])[0] === 3",
+        "Array.from.call((() => 0).bind(null), [4])[0] === 4 && Array.from.call(BigInt, [5])[0] === 5",
         "let n = 0; try { Array.from(null); } catch(e) { if (e instanceof TypeError) n++; } try { Array.from(undefined); } catch(e) { if (e instanceof TypeError) n++; } n === 2",
         "let n = 0; let o = {}; o[Symbol.iterator] = function() { return {next() { n++; return {value: n, done: n > 3}; }}; }; let a = Array.from(o, function(x, i) { return n === i + 1 ? x : 99; }); a.join() === '1,2,3' && n === 4",
         "let ok = false; try { Array.from([1], 5); } catch(e) { ok = e instanceof TypeError; } ok",

@@ -7,6 +7,7 @@ use crate::vm::exception::Exception;
 enum Stage {
     Start,
     Method,
+    Create,
     Iterator,
     Next,
     NextResult,
@@ -38,6 +39,7 @@ pub(super) struct State {
     index: u64,
     length: u64,
     iterable: bool,
+    bound_receiver: bool,
     pending: Option<Exception>,
 }
 
@@ -81,6 +83,7 @@ impl State {
             index: 0,
             length: 0,
             iterable: false,
+            bound_receiver: false,
             pending: None,
         }
     }
@@ -146,29 +149,35 @@ impl State {
         }
     }
 
-    fn create(&mut self, heap: &Heap, task: TaskId) -> Result<(), Fault> {
+    fn create(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
         // Classes/subclassing are unavailable. Reject custom constructors
         // explicitly rather than silently returning an array of the wrong brand.
         let custom = match dispatch::callee(heap, &self.constructor) {
             Ok(Callee::Code(_, code)) => code.constructor,
-            Ok(Callee::Bound(_)) => true,
-            Ok(Callee::Builtin(which)) => matches!(
-                which,
-                builtin::Builtin::Object
-                    | builtin::Builtin::Date
-                    | builtin::Builtin::Map
-                    | builtin::Builtin::Number
-                    | builtin::Builtin::String
-                    | builtin::Builtin::Error
-                    | builtin::Builtin::NativeError(_)
-                    | builtin::Builtin::ArrayBuffer
-                    | builtin::Builtin::IntlLocale
-                    | builtin::Builtin::IntegerTypedArray(_)
-                    | builtin::Builtin::RegExp
-                    | builtin::Builtin::Promise
-                    | builtin::Builtin::IntlNumberFormat
-                    | builtin::Builtin::IntlPluralRules
-            ),
+            Ok(Callee::Bound(bound)) => {
+                // One bound target per step; bound nonconstructors still
+                // select the ordinary array fallback.
+                self.constructor = bound.callee;
+                self.bound_receiver = true;
+                return Ok(Action::Continue);
+            }
+            Ok(Callee::Builtin(builtin::Builtin::Array)) => self.bound_receiver,
+            Ok(Callee::Builtin(builtin::Builtin::BigInt | builtin::Builtin::Symbol)) => false,
+            Ok(Callee::Builtin(_)) => {
+                // Realm constructors expose fixed own prototype metadata.
+                // Inspect the descriptor without invoking a getter, and
+                // avoid duplicating the registry of built-in constructors.
+                let Value::Object(id) = self.constructor else {
+                    return Err(Fault::Internal("built-in constructor is not an object"));
+                };
+                property::get_own_property(
+                    heap,
+                    task,
+                    id,
+                    &property::Key::Name(JsString::from("prototype")),
+                )?
+                .is_some()
+            }
             Err(Fault::NotCallable(_)) => false,
             Err(fault) => return Err(fault),
         };
@@ -178,7 +187,12 @@ impl State {
             ));
         }
         self.out = property::new_array(heap, task)?;
-        Ok(())
+        self.stage = if self.iterable {
+            Stage::Iterator
+        } else {
+            Stage::Element
+        };
+        Ok(Action::Continue)
     }
 
     fn mapped(&mut self, value: Value) -> Result<Action, Fault> {
@@ -221,14 +235,14 @@ impl State {
                     self.stage = Stage::Length;
                 } else {
                     dispatch::callee(heap, &method)?;
-                    self.create(heap, task)?;
                     self.iterable = true;
                     self.acquisition =
                         Some(iterator::State::with_method(self.items.clone(), method));
-                    self.stage = Stage::Iterator;
+                    self.stage = Stage::Create;
                 }
                 Ok(Action::Continue)
             }
+            Stage::Create => self.create(heap, task),
             Stage::Iterator => {
                 let action = self
                     .acquisition
@@ -315,8 +329,7 @@ impl State {
                 if self.length > u64::from(u32::MAX) {
                     return Err(Fault::RangeError("invalid array length".into()));
                 }
-                self.create(heap, task)?;
-                self.stage = Stage::Element;
+                self.stage = Stage::Create;
                 Ok(Action::Continue)
             }
             Stage::Element => {
