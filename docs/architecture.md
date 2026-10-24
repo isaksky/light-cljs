@@ -5614,6 +5614,8 @@ complete UTC form, including English day/month names, signed negative years
 with at least four digits, and `Invalid Date` for NaN. The formatter truncates
 the existing runtime zone's seconds offset toward zero to minutes before
 decomposition, matching QuickJS's `get_date_fields` and `get_date_string`.
+Zone lookup also truncates epoch milliseconds toward zero to whole seconds,
+as QuickJS does, including just before negative-epoch zone transitions.
 It prints `GMT±hhmm` without an abbreviation; UTC prints `GMT`. No tables,
 dependencies or heap kinds are added. Local getters keep their second precision.
 

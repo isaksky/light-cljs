@@ -266,7 +266,10 @@ fn calendar_fields(time: f64) -> Option<UtcFields> {
 /// get_date_fields, truncate the offset to minutes before decomposing the time.
 /// This intentionally differs from the second-precision local field getters.
 pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part: u8) -> Value {
-    let offset = zone.map_or(0, |z| z.offset_seconds(time) / 60);
+    // QuickJS's host offset lookup first divides the integer epoch time by
+    // 1000, truncating toward zero (observable just before pre-epoch changes).
+    let offset_time = (time as i64 / 1000 * 1000) as f64;
+    let offset = zone.map_or(0, |z| z.offset_seconds(offset_time) / 60);
     let Some(fields) = calendar_fields(time + f64::from(offset) * 60_000.0) else {
         return Value::String("Invalid Date".into());
     };

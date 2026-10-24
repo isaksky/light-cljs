@@ -90,6 +90,16 @@ fn date_string_named_zone_formats() {
         ),
         ValueView::Bool(true)
     );
+    // QuickJS truncates negative epoch milliseconds toward zero to select the
+    // offset's whole second, including the final millisecond before a change.
+    assert_eq!(
+        evaluate(
+            &Runtime::new(),
+            &mut monrovia,
+            "new Date(-1604359013000).toTimeString().slice(-8) === 'GMT-0043' && new Date(-1604359012001).toTimeString().slice(-8) === 'GMT-0044' && new Date(-1604359012000).toTimeString().slice(-8) === 'GMT-0044'"
+        ),
+        ValueView::Bool(true)
+    );
     for time in [f64::NAN, f64::INFINITY, 8.64e15 + 1.0] {
         let mut host = SimTimeHost::new(time, TimeZone::UTC);
         assert_eq!(
