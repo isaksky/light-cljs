@@ -37,51 +37,39 @@ fn finish(task: &Task, host: &mut dyn Host) -> ValueView {
 #[test]
 fn gc_point_collects_before_next_statement() {
     let rt = Runtime::new();
-    let task = task(
-        &rt,
-        "var target = {}; __rt.effect(0, 0); target = null; std.gc(); __rt.effect(0, 1); 42;",
-    );
-    let mut effects = Effects::default();
-    for _ in 0..1000 {
-        assert!(matches!(
-            task.run_with(Budget::instructions(1), &mut effects)
-                .unwrap(),
-            RunOutcome::Yielded
-        ));
-        if effects.0 == [0.0] {
-            break;
-        }
-    }
-    assert_eq!(effects.0, [0.0]);
-    let weak = {
-        let mut guard = task.try_begin_run().unwrap();
-        let global = guard.vm().unwrap().global_object.unwrap();
-        let key = task
-            .0
-            .heap
-            .keys()
-            .lookup(&crate::JsString::from("target"))
-            .unwrap();
-        let value = task
-            .0
-            .heap
-            .read(global, |object| match object {
-                crate::heap::HeapObject::Plain(object) => {
-                    object.get_own(key).unwrap().value.clone()
-                }
-                _ => unreachable!(),
-            })
-            .unwrap();
-        Rooted::new(&task.0.heap, value).downgrade()
+    // Obtain the weak identity through a script result, then give its
+    // published object to the collecting script without retaining a host root.
+    let allocation = rt
+        .spawn(
+            &compile_script("allocate.js", "__rt.vector(175)").unwrap(),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(object) = allocation.run().unwrap() else {
+        panic!("allocator must complete");
     };
+    rt.publish(&object).unwrap();
+    let weak = object.downgrade();
+    let code = crate::frontend::compile_function("function collect(target) { __rt.effect(0, 0); target = null; std.gc(); __rt.effect(0, 1); return 42; }").unwrap();
+    let task = rt.spawn(&code, &[&object]).unwrap();
+    task.install_sim_host_bindings().unwrap();
+    drop(object);
+    let mut effects = Effects::default();
     assert!(weak.is_live());
     struct Check<'a>(&'a crate::WeakHandle, &'a mut Effects);
     impl Host for Check<'_> {
         fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
-            assert!(
-                !self.0.is_live(),
-                "collection must finish before the next statement"
-            );
+            if call.arg == Primitive::Number(0.0) {
+                assert!(
+                    self.0.is_live(),
+                    "the collecting task still holds its argument"
+                );
+            } else {
+                assert!(
+                    !self.0.is_live(),
+                    "collection must finish before the next statement"
+                );
+            }
             self.1.effect(call)
         }
     }

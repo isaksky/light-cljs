@@ -6985,6 +6985,9 @@ The public `Runtime::request_collection` contract remains unchanged:
 independent explicit calls each collect. FinalizationRegistry's consumer of
 these notifications is separate work.
 
+Collection-driver temporaries stay in a separate helper, and optional host
+state is boxed, preserving ordinary execution on 64 KiB worker stacks.
+
 `src/host/sim/facilities.rs` holds each task's virtual clock and pending
 `(due time, sequence, callback)` records in traced VM state. Timer IDs increase
 per task. Delay conversion uses the ordinary resumable ToNumber protocol,

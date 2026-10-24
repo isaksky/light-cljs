@@ -159,7 +159,7 @@ pub(crate) fn install(heap: &Heap, state: &mut VmState) -> Option<()> {
         return None;
     }
     state.global_object = Some(global);
-    state.sim_host = Some(TaskHost::default());
+    state.sim_host = Some(Box::default());
     Some(())
 }
 

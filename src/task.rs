@@ -1232,6 +1232,40 @@ impl RunGuard<'_> {
         self.run_with(Budget::UNLIMITED, &mut NoHost)
     }
 
+    // Keep collection-driver temporaries out of the ordinary dispatch stack.
+    #[inline(never)]
+    fn collect_at_point(self) -> (Self, Result<(), crate::heap::CollectError>) {
+        let task = self.task;
+        let ticket = match task.heap.collection_point_ticket() {
+            Ok(ticket) => ticket,
+            Err(error) => return (self, Err(error)),
+        };
+        let RunGuard {
+            task,
+            body,
+            claim,
+            subscribed,
+            _mutator,
+        } = self;
+        task.collection_paused.store(true, Ordering::Release);
+        drop(body);
+        drop(_mutator);
+        let result = task.heap.serve_collection_point(ticket).map(|_| ());
+        let mutator = task.heap.enter_mutator(Access::Run);
+        let body = task.body.lock().unwrap_or_else(PoisonError::into_inner);
+        task.collection_paused.store(false, Ordering::Release);
+        (
+            RunGuard {
+                task,
+                body,
+                claim,
+                subscribed,
+                _mutator: mutator,
+            },
+            result,
+        )
+    }
+
     /// Execute until the task returns or fails or `budget` is used up, then
     /// release the guard. See [`Task::run_with`].
     ///
@@ -1298,43 +1332,13 @@ impl RunGuard<'_> {
                     // Keep exclusive execution ownership while exposing the
                     // complete saved VM state to the collector. No body or
                     // heap lock, or mutator token, crosses the wait.
-                    let ticket = match task.heap.collection_point_ticket() {
-                        Ok(ticket) => ticket,
-                        Err(_) => {
-                            break Exit::Fail(guard_failure(
-                                task,
-                                VmErrorKind::Internal,
-                                "collection point requires no enclosing heap access",
-                                0,
-                            ));
-                        }
-                    };
-                    let RunGuard {
-                        task,
-                        body,
-                        claim,
-                        subscribed,
-                        _mutator,
-                    } = self;
-                    task.collection_paused.store(true, Ordering::Release);
-                    drop(body);
-                    drop(_mutator);
-                    let result = task.heap.serve_collection_point(ticket);
-                    let mutator = task.heap.enter_mutator(Access::Run);
-                    let body = task.body.lock().unwrap_or_else(PoisonError::into_inner);
-                    task.collection_paused.store(false, Ordering::Release);
-                    self = RunGuard {
-                        task,
-                        body,
-                        claim,
-                        subscribed,
-                        _mutator: mutator,
-                    };
+                    let (guard, result) = self.collect_at_point();
+                    self = guard;
                     if result.is_err() {
                         break Exit::Fail(guard_failure(
                             task,
                             VmErrorKind::Internal,
-                            "collection point requires no enclosing run guard or native operation",
+                            "collection point requires no enclosing heap access",
                             0,
                         ));
                     }

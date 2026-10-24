@@ -228,7 +228,7 @@ pub(crate) struct GlobalLexical {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
-    pub(crate) sim_host: Option<crate::host::sim::facilities::TaskHost>,
+    pub(crate) sim_host: Option<Box<crate::host::sim::facilities::TaskHost>>,
     pub(crate) collection_point: bool,
     pub(crate) jobs: std::sync::Weak<crate::job::JobInbox>,
     /// The script body's completion value, retained while jobs run.
