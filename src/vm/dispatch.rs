@@ -800,6 +800,10 @@ fn step(
             let v = state.pop()?;
             state.push(Value::String(JsString::from(type_of(heap, &v)?)));
         }
+        Instr::ToString => {
+            let v = state.pop()?;
+            state.push(Value::String(to_js_string(&v)?));
+        }
         Instr::GetField(i) => {
             let name = name_constant(code, i)?;
             let base = state.pop()?;
@@ -1122,6 +1126,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CompareLe
         | Instr::CompareGe
         | Instr::Typeof
+        | Instr::ToString
         // Property storage grows outside the object table: no heap object
         // is allocated, so no poll (`crate::vm::property`).
         | Instr::GetField(_)

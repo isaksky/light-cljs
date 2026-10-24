@@ -4,7 +4,9 @@
 //! `arrow_functions_and_asi`, one in `break_and_continue`, two in
 //! `labelled_statements` and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
-//! notice), the keys and shorthands of `object_literals`,
+//! notice), the keys and shorthands of `object_literals`, the `${a, b}`
+//! and nested-template forms of `template_literals` (notice in
+//! `tests/js_source.rs` `template_literal_values`),
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
 //! `test_unicode_ident` (notice in `tests/js_source.rs`
 //! `identifiers_are_not_normalized`).
@@ -127,6 +129,23 @@ fn render_expr(e: &Expr) -> String {
             property.name,
             render_expr(value)
         ),
+        // Text parts render as their cooked value, followed by `raw` and
+        // the raw text where that differs.
+        ExprKind::Template { quasis, exprs } => {
+            let mut out = "(template".to_string();
+            for (i, part) in quasis.iter().enumerate() {
+                out.push_str(&format!(" {:?}", part.cooked));
+                if part.raw != part.cooked.to_string() {
+                    out.push_str(&format!(" raw {:?}", part.raw));
+                }
+                if let Some(e) = exprs.get(i) {
+                    out.push(' ');
+                    out.push_str(&render_expr(e));
+                }
+            }
+            out.push(')');
+            out
+        }
     }
 }
 
@@ -2047,6 +2066,109 @@ fn unicode_ident_tables_are_sorted_disjoint_ranges() {
     }
 }
 
+/// Untagged template literals (clj-quickjs-57): one token per part, the
+/// part after a substitution starting at the `}` that closes it, cooked
+/// and raw text, and substitutions that are full Expressions. The
+/// `${a, b}` and nested-template forms follow `test_template` and
+/// `test_template_skip` in `research/quickjs/tests/test_language.js`
+/// (see `tests/js_source.rs` `template_literal_values`).
+#[test]
+fn template_literals() {
+    use SyntaxErrorKind::*;
+    assert_eq!(ast("`abc`"), r#"(template "abc")"#);
+    assert_eq!(ast("`abc${b}d`"), r#"(template "abc" b "d")"#);
+    assert_eq!(ast("`${a}${b}`"), r#"(template "" a "" b "")"#);
+    assert_eq!(ast("``"), r#"(template "")"#);
+    // Nested: a template in a substitution, at any depth.
+    assert_eq!(
+        ast("`${ `a${a}` }baz`"),
+        r#"(template "" (template "a" a "") "baz")"#
+    );
+    assert_eq!(
+        ast("`${`${`${x}`}`}`"),
+        r#"(template "" (template "" (template "" x "") "") "")"#
+    );
+    // A substitution is an Expression: the comma operator, operators,
+    // calls, members.
+    assert_eq!(ast("`${a, b}`"), r#"(template "" (, a b) "")"#);
+    assert_eq!(
+        ast("`x${a + f(1)}y${o.p}z`"),
+        r#"(template "x" (+ a (call f 1)) "y" (. o p) "z")"#
+    );
+    // Braces inside a substitution: only the `}` that closes it ends it.
+    assert_eq!(
+        ast("`${ {a: {b: 1}} }`"),
+        r#"(template "" (object (a (object (b 1)))) "")"#
+    );
+    assert_eq!(
+        ast("`${function () { return `}`; }}!`"),
+        r#"(template "" (function - () (return (template "}"))) "!")"#
+    );
+    // Escapes: an escaped backtick or `$` does not end the part; `$` and
+    // `{` alone are text.
+    assert_eq!(ast(r"`a\`b`"), r#"(template "a`b" raw "a\\`b")"#);
+    assert_eq!(
+        ast(r"`\${a}$ {b} $`"),
+        r#"(template "${a}$ {b} $" raw "\\${a}$ {b} $")"#
+    );
+    assert_eq!(ast(r"`\u{41}`"), r#"(template "A" raw "\\u{41}")"#);
+    assert_eq!(
+        ast(r"`\x41\n\0\'`"),
+        r#"(template "A\n\0'" raw "\\x41\\n\\0\\'")"#
+    );
+    // Line terminators are text; CR and CRLF read as LF in both values, a
+    // line continuation is nothing cooked.
+    assert_eq!(ast("`a\r\nb`"), r#"(template "a\nb")"#);
+    assert_eq!(ast("`a\rb\nc`"), r#"(template "a\nb\nc")"#);
+    assert_eq!(ast("`a\\\r\nb`"), r#"(template "ab" raw "a\\\nb")"#);
+    assert_eq!(ast("`a\u{2028}b`"), r#"(template "a\u{2028}b")"#);
+    // ... and count for positions: the error is on line 3.
+    rejects("x = `a\r\nb\nc` + @;", UnknownToken, 3, 6);
+    // A template is not a directive, and ends a statement by ASI.
+    assert_eq!(ast("`a`\nb"), r#"(template "a") b"#);
+    assert!(
+        !parse_script_with("`use strict`; 010", ScriptOptions::SLOPPY)
+            .unwrap()
+            .strict
+    );
+    // Lookahead past a template: an arrow with a template default.
+    assert_eq!(
+        ast("f = (a = `${b}`) => a;"),
+        r#"(= f (arrow (a=(template "" b "")) => a))"#
+    );
+
+    // Unterminated: at the backtick, or at the `}` of the open part.
+    rejects_with("`abc", UnexpectedEnd, 1, 1, "unterminated template");
+    rejects_with("x = `a${b}c", UnexpectedEnd, 1, 10, "unterminated template");
+    rejects_with("`a\\", UnexpectedEnd, 1, 1, "unterminated template");
+    rejects("`${a", UnexpectedEnd, 1, 5);
+    rejects("`${", UnexpectedEnd, 1, 4);
+    // Invalid escapes are errors in an untagged template, in either mode;
+    // octal and `\8` `\9` escapes too, also in sloppy code.
+    rejects("`\\x4`", InvalidToken, 1, 2);
+    rejects("`a${b}\\u12`", InvalidToken, 1, 7);
+    rejects("`\\u{110000}`", InvalidToken, 1, 2);
+    rejects_with("`\\1`", InvalidToken, 1, 2, "template");
+    rejects_with("`\\00`", InvalidToken, 1, 2, "template");
+    rejects_with("`\\8`", InvalidToken, 1, 2, "template");
+    sloppy_rejects("`\\07`", InvalidToken, 1, 2);
+    sloppy_rejects("`\\9`", InvalidToken, 1, 2);
+    // An escape cannot read past the end of its part.
+    rejects("`\\u{41`}", InvalidToken, 1, 2);
+    // The substitution must be one Expression closed by `}`.
+    rejects("`${}`", UnexpectedToken, 1, 4);
+    rejects_with("`${a b}`", UnexpectedToken, 1, 6, "`}` closing");
+    rejects_with("`${a)}`", UnexpectedToken, 1, 5, "`}` closing");
+    rejects_with("`${a + }`", UnexpectedToken, 1, 8, "`}` closing");
+    // A `}` closing a substitution is not a punctuator.
+    rejects("{ `${ }` }", UnexpectedToken, 1, 7);
+    // Tagged templates are clj-quickjs-58, also across a line break.
+    rejects_with("f`x`", Unsupported, 1, 2, "tagged template");
+    rejects_with("a.b\n`x${1}`", Unsupported, 2, 1, "tagged template");
+    rejects_with("f()`x`", Unsupported, 1, 4, "tagged template");
+    rejects_with("`${f`x`}`", Unsupported, 1, 5, "tagged template");
+}
+
 // ----- negative: lexical ambiguity -------------------------------------------
 
 #[test]
@@ -2110,7 +2232,8 @@ fn rejects_lexically_ambiguous_input() {
     rejects("'\\u{110000}'", InvalidToken, 1, 2);
     rejects("'abc\ndef'", InvalidToken, 1, 1);
     // Characters and constructs that are not tokens of the subset.
-    rejects_with("x = `t`;", Unsupported, 1, 5, "template");
+    // (Template literals are tokens since clj-quickjs-57: `template_literals`.)
+    assert_eq!(ast("x = `t`;"), r#"(= x (template "t"))"#);
     rejects("x = @y;", UnknownToken, 1, 5);
     // A hashbang is a comment only at the start of the source.
     assert_eq!(ast("#!/usr/bin/env node"), "");
@@ -2780,6 +2903,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("property assignments", |n| {
             format!("x = {}1;", "a.b = ".repeat(n))
         }),
+        ("templates", |n| {
+            format!("x = {}1{};", "`${".repeat(n), "}`".repeat(n))
+        }),
         ("wrapped member chains", |n| {
             let mut s = "a".to_string();
             for _ in 0..n {
@@ -2850,6 +2976,7 @@ fn arbitrary_input_never_panics() {
         "'s",
         "\"",
         "`",
+        "${",
         "\\",
         "\n",
         "/*",

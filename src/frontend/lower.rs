@@ -152,8 +152,8 @@ use std::sync::Arc;
 
 use super::ast::{
     BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, FunctionKind, Ident, LexicalDecl,
-    LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, UnaryOp,
-    UpdateOp,
+    LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase,
+    TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -2096,7 +2096,8 @@ impl<'s> Lowerer<'s> {
         self.constant_index(ConstKey::String(s.clone()), Primitive::String(s), span)
     }
 
-    /// Member reads, object literals and property assignments, out of line
+    /// Member reads, object literals, property assignments and template
+    /// literals (clj-quickjs-57), out of line
     /// so the recursive [`Self::expr`] frame stays small (its size bounds
     /// how deep an expression compiles on a 2 MiB stack).
     #[inline(never)]
@@ -2110,6 +2111,7 @@ impl<'s> Lowerer<'s> {
                 value,
                 op_span,
             } => self.assign_member(object, property, value, *op_span),
+            ExprKind::Template { quasis, exprs } => self.template(quasis, exprs, e.span),
             _ => Err(self.internal(e.span, "not a property expression")),
         }
     }
@@ -2389,7 +2391,10 @@ impl<'s> Lowerer<'s> {
                 };
                 self.out().op_u16(call, args.len() as u16, *op_span);
             }
-            ExprKind::Member { .. } | ExprKind::Object(_) | ExprKind::AssignMember { .. } => {
+            ExprKind::Member { .. }
+            | ExprKind::Object(_)
+            | ExprKind::AssignMember { .. }
+            | ExprKind::Template { .. } => {
                 self.property_expr(e)?;
             }
             ExprKind::Function(f) => {
@@ -2407,6 +2412,43 @@ impl<'s> Lowerer<'s> {
                 self.expr(left)?;
                 self.out().op(Opcode::Pop, span);
                 self.expr(right)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// An untagged template literal (clj-quickjs-57; ECMAScript
+    /// TemplateLiteral evaluation, QuickJS `js_parse_template`): its first
+    /// text part, then per substitution its value, `ToString` (reported at
+    /// the substitution) and `Plus` onto the string so far, then the next
+    /// text part unless it is empty. Each substitution is converted before
+    /// the next one is evaluated. `Plus` of two strings is concatenation, so
+    /// the only conversion is the substitution's ToString. An empty first
+    /// part before a substitution is left out: the converted substitution
+    /// is already the string so far. Out of line, like
+    /// [`Self::get_field`].
+    #[inline(never)]
+    fn template(
+        &mut self,
+        quasis: &[TemplateElement],
+        exprs: &[Expr],
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let Some((first, rest)) = quasis.split_first() else {
+            return Err(self.internal(span, "a template literal without parts"));
+        };
+        if exprs.is_empty() || !first.cooked.is_empty() {
+            self.constant(Primitive::String(first.cooked.clone()), first.span)?;
+        }
+        for (i, (expr, part)) in exprs.iter().zip(rest).enumerate() {
+            self.expr(expr)?;
+            self.out().op(Opcode::ToString, expr.span);
+            if i > 0 || !first.cooked.is_empty() {
+                self.out().op(Opcode::Plus, expr.span);
+            }
+            if !part.cooked.is_empty() {
+                self.constant(Primitive::String(part.cooked.clone()), part.span)?;
+                self.out().op(Opcode::Plus, part.span);
             }
         }
         Ok(())

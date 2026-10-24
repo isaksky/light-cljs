@@ -423,6 +423,11 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `throw_error`; once a global object exists that name must be looked up
   at run time. A binding in its temporal dead zone is read as usual, so it
   still throws.
+  An untagged template literal (clj-quickjs-57) is its first text part as
+  a string constant, then per substitution the substitution's code, the
+  opcode `to_string` (`0x55`, ToString: ToPrimitive with hint string once
+  objects convert, clj-quickjs-70, unlike the default hint of `+`) and
+  `plus`, then the next non-empty text part and `plus`.
 - **Completion value.** A script's tasks complete with its completion value
   (what `eval` would return), kept in local 0 and reset by `if`/`while` as
   ECMAScript's UpdateEmpty rules require, the same technique as QuickJS's
@@ -2028,3 +2033,14 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `JS_GetPropertyInternal` (prototype walk), `JS_SetPropertyInternal`
   (inherited read-only check) and `CASE(OP_call_method)` were consulted
   only, for semantics. No code was copied.
+- `tests/js_source.rs` `template_literal_values` (clj-quickjs-57):
+  `test_template` (line 356) and `test_template_skip` (line 371) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: the `String.raw` case is dropped (clj-quickjs-58), each
+  `assert` is a value the completion checks, and the destructuring
+  default of `test_template_skip` is a plain `var` initializer. The test
+  carries the full notice; `frontend::tests::template_literals` parses the
+  same forms. `research/quickjs/quickjs.c` `js_parse_template_part`,
+  `js_parse_template`, `js_parse_string` and the template case of
+  `js_parse_skip_parens_token` were consulted only, for semantics. No
+  code was copied.

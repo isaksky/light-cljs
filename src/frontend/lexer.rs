@@ -6,8 +6,16 @@
 //! the parser as one token and is rejected there with a precise diagnostic.
 //! A `/` is always lexed as the division punctuator: the parser decides from
 //! context whether a regular expression literal would have started, and
-//! rejects it. Template literals, BigInt literals and numeric separators are
-//! rejected here.
+//! rejects it. BigInt literals and numeric separators are rejected here.
+//!
+//! Template literals (clj-quickjs-57) lex as one token per part. The lexer
+//! keeps a stack of open substitutions, and the `}` that closes one (the
+//! first `}` not matching a `{` opened inside it) starts the template's
+//! next part instead of being a punctuator. In this subset a `{` or `}`
+//! inside a substitution can only be a punctuator (regular expression
+//! literals, where a brace could be pattern text, are rejected), so the
+//! lexer can choose the template goal itself, and every clone of it, such
+//! as the parser's lookahead, lexes templates the same way.
 //!
 //! Identifiers are Unicode: a start character is `ID_Start`, `$` or `_`, a
 //! later one `ID_Continue`, `$`, ZWNJ or ZWJ (ECMAScript §12.7; tables in
@@ -41,6 +49,8 @@ pub enum TokenKind {
     /// A string literal's cooked value: UTF-16 code units, possibly with
     /// lone surrogates (clj-quickjs-141).
     String(JsString),
+    /// One part of a template literal (clj-quickjs-57).
+    Template(Box<TemplatePart>),
     Punct(Punct),
     Eof,
 }
@@ -53,10 +63,35 @@ impl TokenKind {
             TokenKind::Keyword(k) => format!("keyword `{}`", k.as_str()),
             TokenKind::Number(_) => "number literal".to_string(),
             TokenKind::String(_) => "string literal".to_string(),
+            TokenKind::Template(part) if part.head => "template literal".to_string(),
+            TokenKind::Template(_) => "`}` closing a template substitution".to_string(),
             TokenKind::Punct(p) => format!("`{}`", p.as_str()),
             TokenKind::Eof => "end of input".to_string(),
         }
     }
+}
+
+/// One part of a template literal (ECMAScript §12.9.6): a
+/// NoSubstitutionTemplate (`head` and `tail`), a TemplateHead (`head`; it
+/// ends at the `${` of a substitution), a TemplateMiddle (neither) or a
+/// TemplateTail (`tail`; it ends at the closing backtick).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TemplatePart {
+    /// The template value (TV): the text between the delimiters with
+    /// escapes decoded as in a string literal and CR and CRLF read as LF,
+    /// as UTF-16 code units. An invalid escape (an octal or `\8` `\9`
+    /// escape, in either mode, or a malformed `\x` or `\u` escape) gives
+    /// its SyntaxError instead: an untagged template rejects it, while a
+    /// tagged one (clj-quickjs-58) sees `undefined`.
+    pub cooked: Result<JsString, SyntaxError>,
+    /// The template raw value (TRV): the text between the delimiters as
+    /// written, escapes included, with CR and CRLF read as LF.
+    pub raw: String,
+    /// It starts at a backtick rather than at the `}` closing a
+    /// substitution.
+    pub head: bool,
+    /// It ends at the closing backtick rather than at `${`.
+    pub tail: bool,
 }
 
 macro_rules! keywords {
@@ -269,6 +304,11 @@ pub struct Lexer<'a> {
     /// `\8` `\9` string escapes (clj-quickjs-258) are early errors. The
     /// parser keeps it in step with its own mode ([`Lexer::set_strict`]).
     strict: bool,
+    /// One entry per template substitution open at the current position,
+    /// innermost last: how many `{` punctuators inside it are not closed
+    /// yet. A `}` while that count is 0 closes the substitution and starts
+    /// the template's next part (clj-quickjs-57).
+    substitutions: Vec<u32>,
 }
 
 impl<'a> Lexer<'a> {
@@ -287,6 +327,7 @@ impl<'a> Lexer<'a> {
             pos,
             after_dot: false,
             strict: true,
+            substitutions: Vec::new(),
         }
     }
 
@@ -402,15 +443,22 @@ impl<'a> Lexer<'a> {
                 self.lex_number()?
             }
             Some(q @ ('"' | '\'')) => self.lex_string(q)?,
-            Some('`') => {
-                return Err(self.error_at(
-                    start,
-                    SyntaxErrorKind::Unsupported,
-                    "template literals are not supported",
-                ));
+            Some('`') => self.lex_template(true)?,
+            Some('}') if self.substitutions.last() == Some(&0) => {
+                self.substitutions.pop();
+                self.lex_template(false)?
             }
             Some(c) => match self.lex_punct() {
-                Some(p) => TokenKind::Punct(p),
+                Some(p) => {
+                    if let Some(open) = self.substitutions.last_mut() {
+                        match p {
+                            Punct::LBrace => *open += 1,
+                            Punct::RBrace => *open -= 1,
+                            _ => {}
+                        }
+                    }
+                    TokenKind::Punct(p)
+                }
                 None => {
                     return Err(self.error_at(
                         start,
@@ -683,7 +731,7 @@ impl<'a> Lexer<'a> {
                         "unterminated string literal (line break before closing quote)",
                     ));
                 }
-                '\\' => self.lex_escape(char_pos, &mut out)?,
+                '\\' => self.lex_escape(char_pos, &mut out, false)?,
                 c => push_char(&mut out, c),
             }
         }
@@ -706,7 +754,17 @@ impl<'a> Lexer<'a> {
     /// give the same code units as the astral character itself, and a lone
     /// surrogate escape stays a lone surrogate (ECMAScript §12.9.4.1 SV;
     /// QuickJS `js_parse_string`).
-    fn lex_escape(&mut self, backslash: usize, out: &mut Vec<u16>) -> Result<(), SyntaxError> {
+    ///
+    /// In a template literal (`template`) a digit escape other than `\0`
+    /// not followed by a digit is an error in either mode (ECMAScript
+    /// NotEscapeSequence; QuickJS `js_parse_string` with a backtick
+    /// separator).
+    fn lex_escape(
+        &mut self,
+        backslash: usize,
+        out: &mut Vec<u16>,
+        template: bool,
+    ) -> Result<(), SyntaxError> {
         let Some(c) = self.bump() else {
             return Err(self.error(
                 SyntaxErrorKind::UnexpectedEnd,
@@ -725,6 +783,20 @@ impl<'a> Lexer<'a> {
             'f' => out.push(0x0C),
             'v' => out.push(0x0B),
             '0' if !self.peek_char().is_some_and(|c| c.is_ascii_digit()) => out.push(0),
+            '0'..='7' if template => {
+                return Err(escape_error(
+                    self,
+                    SyntaxErrorKind::InvalidToken,
+                    "octal escape sequences are not allowed in template literals",
+                ));
+            }
+            '8' | '9' if template => {
+                return Err(escape_error(
+                    self,
+                    SyntaxErrorKind::InvalidToken,
+                    "\\8 and \\9 escapes are not allowed in template literals",
+                ));
+            }
             '0'..='7' if self.strict => {
                 return Err(escape_error(
                     self,
@@ -789,6 +861,103 @@ impl<'a> Lexer<'a> {
             value = value * 8 + (digit as u16 - u16::from(b'0'));
         }
         value
+    }
+
+    /// A template literal part (clj-quickjs-57; ECMAScript §12.9.6, QuickJS
+    /// `js_parse_template_part`), at its opening delimiter: the backtick of
+    /// a NoSubstitutionTemplate or TemplateHead (`head`), or the `}` that
+    /// closes a substitution. It ends at an unescaped backtick or at `${`,
+    /// which opens a substitution. Line terminators are part of its text.
+    fn lex_template(&mut self, head: bool) -> Result<TokenKind, SyntaxError> {
+        let start = self.pos;
+        self.bump();
+        let body_start = self.pos;
+        let mut raw = String::new();
+        let unterminated = |lexer: &Self| {
+            lexer.error(
+                SyntaxErrorKind::UnexpectedEnd,
+                Span::new(start, lexer.pos),
+                "unterminated template literal",
+            )
+        };
+        let (tail, body_end) = loop {
+            let at = self.pos;
+            let Some(mut c) = self.bump() else {
+                return Err(unterminated(self));
+            };
+            match c {
+                '`' => break (true, at),
+                '$' if self.peek_char() == Some('{') => {
+                    self.bump();
+                    break (false, at);
+                }
+                // An escaped character never ends the part.
+                '\\' => {
+                    raw.push(c);
+                    c = self.bump().ok_or_else(|| unterminated(self))?;
+                }
+                _ => {}
+            }
+            if c == '\r' {
+                if self.peek_char() == Some('\n') {
+                    self.bump();
+                }
+                c = '\n';
+            }
+            raw.push(c);
+        };
+        let cooked = self.template_value(Span::new(body_start, body_end))?;
+        if !tail {
+            self.substitutions.push(0);
+        }
+        Ok(TokenKind::Template(Box::new(TemplatePart {
+            cooked,
+            raw,
+            head,
+            tail,
+        })))
+    }
+
+    /// The template value of the part text at `body`: `Ok(Ok(..))` with the
+    /// cooked value, or `Ok(Err(..))` with the error of its first invalid
+    /// escape. A value longer than 2^30 - 1 code units is an error either
+    /// way.
+    fn template_value(&self, body: Span) -> Result<Result<JsString, SyntaxError>, SyntaxError> {
+        // A lexer whose source ends with the text, so that no escape can
+        // read past it.
+        let mut lexer = Lexer {
+            src: &self.src[..body.end],
+            pos: body.start,
+            after_dot: false,
+            strict: true,
+            substitutions: Vec::new(),
+        };
+        let mut out: Vec<u16> = Vec::new();
+        loop {
+            let at = lexer.pos;
+            match lexer.bump() {
+                None => break,
+                Some('\\') => {
+                    if let Err(e) = lexer.lex_escape(at, &mut out, true) {
+                        return Ok(Err(e));
+                    }
+                }
+                Some('\r') => {
+                    if lexer.peek_char() == Some('\n') {
+                        lexer.bump();
+                    }
+                    out.push(0x0A);
+                }
+                Some(c) => push_char(&mut out, c),
+            }
+        }
+        JsString::from_code_units(out).map(Ok).ok_or_else(|| {
+            self.error(
+                SyntaxErrorKind::TooLarge,
+                body,
+                "a template literal part longer than 2^30 - 1 code units",
+            )
+        })
     }
 
     /// Whether a line terminator (possibly inside a comment) comes before
@@ -883,6 +1052,7 @@ pub(crate) fn legacy_escape_in_strict_code(src: &str, string: Span) -> Option<Sy
         pos: string.start,
         after_dot: false,
         strict: true,
+        substitutions: Vec::new(),
     };
     lexer.next_token().err()
 }

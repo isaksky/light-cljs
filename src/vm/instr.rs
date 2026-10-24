@@ -86,6 +86,7 @@
 //! | `GetBuiltinGlobal` | 0x52 | u16 built-in global | → v                  | push the realm's value of a built-in global name (`crate::realm::Global`: 0 is `Object`) |
 //! | `CallMethod`    | 0x53 | u16 argument count | this f a1 … an → r     | call `f` with receiver `this` (a method call) |
 //! | `NewObjectLiteral` | 0x54 | –               | → obj                  | allocate a fresh ordinary object inheriting from `Object.prototype` (an object literal) |
+//! | `ToString`      | 0x55 | –                  | v → s                  | JavaScript ToString on primitives (clj-quickjs-57) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -284,6 +285,16 @@
 //! a null prototype (OrdinaryObjectCreate(null), as `Object.create(null)`
 //! will need), and allocating with it never builds the realm.
 //!
+//! Opcode `0x55`, `ToString`, is JavaScript ToString (clj-quickjs-57;
+//! ECMAScript ToString, QuickJS `JS_ToStringInternal`): a string stays the
+//! same string, `undefined`, `null` and booleans give their names, and a
+//! number its Number::toString in radix 10. An object operand fails with
+//! `UnsupportedOperand` (ToPrimitive with hint string is clj-quickjs-70).
+//! The compiler emits it after each substitution of a template literal,
+//! before the `Plus` that appends it, so the conversion is ToString rather
+//! than the default-hint ToPrimitive of `+`. The string lives outside the
+//! heap, so it is not a poll point.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
@@ -393,6 +404,7 @@ pub enum Opcode {
     GetBuiltinGlobal = 0x52,
     CallMethod = 0x53,
     NewObjectLiteral = 0x54,
+    ToString = 0x55,
 }
 
 /// Operand encoding of an opcode.
@@ -532,6 +544,7 @@ impl Opcode {
             0x52 => GetBuiltinGlobal,
             0x53 => CallMethod,
             0x54 => NewObjectLiteral,
+            0x55 => ToString,
             _ => return None,
         })
     }
@@ -624,6 +637,7 @@ impl Opcode {
             GetBuiltinGlobal => "get_builtin_global",
             CallMethod => "call_method",
             NewObjectLiteral => "new_object_literal",
+            ToString => "to_string",
         }
     }
 
@@ -648,7 +662,7 @@ impl Opcode {
             | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
             | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe | Typeof | NewObjectLiteral => OperandKind::None,
+            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString => OperandKind::None,
         }
     }
 }
@@ -782,6 +796,7 @@ pub(crate) enum Instr {
     /// Argument count (the receiver and callee are below the arguments).
     CallMethod(u16),
     NewObjectLiteral,
+    ToString,
 }
 
 impl Instr {
@@ -871,6 +886,7 @@ impl Instr {
             Instr::GetBuiltinGlobal(_) => Opcode::GetBuiltinGlobal,
             Instr::CallMethod(_) => Opcode::CallMethod,
             Instr::NewObjectLiteral => Opcode::NewObjectLiteral,
+            Instr::ToString => Opcode::ToString,
         }
     }
 
@@ -893,7 +909,7 @@ impl Instr {
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
-            | Typeof | GetField(_) => (1, 1),
+            | Typeof | GetField(_) | ToString => (1, 1),
             PutField(_) | DefineField(_) => (2, 1),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
@@ -920,6 +936,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 84);
+        assert_eq!(assigned, 85);
     }
 }

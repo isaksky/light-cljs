@@ -76,7 +76,7 @@ non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
 | Reserved words | all ECMAScript reserved words plus the strict-mode ones (`let`, `static`, `yield`, `implements`, `interface`, `package`, `private`, `protected`, `public`) and `await`; any of these may follow `.` or be an object literal key as a property name, also written with escapes (`a.l\u0065t` is the property `let`, so is the key in `{l\u0065t: 1}`) | as binding names, assignment targets or references; a reserved word written with escapes (`l\u0065t`, `tru\u0065`) is never the keyword and is rejected (`ReservedWord`) everywhere except right after `.` and as an object literal key (not a shorthand) |
 | Numbers | decimal integers, fractions (`1.5`, `.5`, `5.`), exponents (`1e-3`), `0x`/`0o`/`0b` integers; values are IEEE-754 doubles, correctly rounded; overflow gives `Infinity`; a member access may follow a literal (`0.1.a`, `0x1.a`, `.5.a`, `1..a`: the second `.` starts the access); in sloppy code only (clj-quickjs-51; ECMAScript B.1.1), a `0` followed by digits: all octal digits make a legacy octal integer (`017` is 15), which takes no fraction or exponent, so `01.a` is a member access; an `8` or `9` among them makes a decimal literal that may take a fraction and exponent (`08` is 8, `09.5`, `08e1`) | in strict code, legacy octal / leading zeros (`017`, `08`) at the `0`, also right after a `"use strict"` directive (`"use strict"; 010`); in sloppy code, a legacy octal integer followed by a fraction (`01.5` is `01` then `.5`, `UnexpectedToken`) or an exponent (`01e1`), and a `n` suffix or separator after a leading `0` (`01n`, `08n`, `0_1`, `08_1`: `InvalidToken`); numeric separators (`1_000`), BigInt (`10n`), a literal immediately followed by an identifier or digit (`3in`, `1.toString`, `0.a`), a number literal where a property name is expected (`0.1.2`), missing digits (`0x`, `1e`) |
 | Strings | `'...'` and `"..."` with escapes `\n \t \r \b \f \v \0 \xHH \uHHHH \u{H...}`, each `\u` escape is its UTF-16 code unit(s), so two surrogate escapes spell a pair (`"\u{dbff}\u{dfff}"` is U+10FFFF) and a lone surrogate escape (`\u{d800}`, a high surrogate before a non-surrogate) is a lone code unit (clj-quickjs-141), line continuations, identity escapes (`\'`, `\\`, `\q`), raw U+2028/U+2029; in sloppy code only (clj-quickjs-258; ECMAScript B.1.2), legacy octal escapes of at most three octal digits and value 0o377 (`"\07"` is U+0007, `"\101"` is `A`, `"\400"` is U+0020 then `0`; `\0` not followed by a digit is the null character in either mode) and `\8` `\9` (the characters `8` and `9`) | unterminated strings, raw LF/CR inside a string, malformed `\x`/`\u`; in strict code, octal escapes (`\07`, `\1`, `\08`) and `\8` `\9` at the `\`, also in a directive before a `"use strict"` directive (`"\07"; "use strict";`) and in the string right after one (`"use strict"; "\07"`) |
-| Template literals | – | any backtick |
+| Template literals (clj-quickjs-57) | `` `...` `` with substitutions `${ Expression }`, nested to any depth within the nesting budget; one token per part (NoSubstitutionTemplate, TemplateHead, TemplateMiddle, TemplateTail): the `}` that closes a substitution (the first `}` not matching a `{` inside it) starts the next part. The text may contain raw line terminators (CR and CRLF read as LF, U+2028/U+2029 kept; they count for line numbers but not for ASI) and the escapes of string literals, except that a digit escape other than `\0` not followed by a digit is an error in either mode; `` \` `` and `\$` are text. Each part keeps its cooked value (escapes decoded) and its raw value (escapes as written, CR and CRLF read as LF; for tagged templates, clj-quickjs-58) | unterminated (`UnexpectedEnd` at the backtick, or at the `}` of the open part); malformed `\x`/`\u` escapes, octal escapes (`\1`, `\07`, `\00`) and `\8` `\9` (`InvalidToken` at the `\`, also in sloppy code); a substitution that is not one Expression followed by `}` (`` `${}` ``, `` `${a b}` ``: `UnexpectedToken`); a tagged template (`` f`x` ``, also with a line break before the template: `Unsupported`, clj-quickjs-58) |
 | Regular expressions | – | a `/` where an expression is expected (the parser decides; `a / b / c` is division) |
 | Punctuators | every ECMAScript punctuator is lexed by maximal munch (`a>>>=b` is `a`, `>>>=`, `b`) so the parser can name an unsupported operator precisely | other characters (`@`, `#`, ...) |
 
@@ -147,7 +147,9 @@ Update                = ( "++" | "--" ) Unary
 Call                  = Primary { Arguments | "." IdentifierName }
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
-                      | "(" Expression ")"
+                      | TemplateLiteral | "(" Expression ")"
+TemplateLiteral       = NoSubstitutionTemplate
+                      | TemplateHead Expression { TemplateMiddle Expression } TemplateTail
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
 PropertyName          = IdentifierName | String | Number
@@ -318,7 +320,7 @@ Every form below is rejected where it starts. Error kinds:
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` (also in an object literal) | Unsupported |
 | in object literals: computed keys `{[k]: v}`, methods `{m() {}}`, getters and setters, `async` and generator methods, `__proto__: v` (it sets the prototype) | Unsupported |
-| template literals, regular expression literals, BigInt, numeric separators | Unsupported |
+| tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
 | `void`, `delete`, `??`, `in`, `instanceof`, logical assignment (`&&=`, `\|\|=`, `??=`) | Unsupported |
 | compound assignment to a property (`a.b += 1`), `++`/`--` on a property (`a.b++`) | Unsupported |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
@@ -618,6 +620,7 @@ Executed, with JavaScript semantics:
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
 | `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units fails with `OutOfMemory`, as QuickJS's "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
+| `` `a${x}b${y}c` `` untagged template literals (clj-quickjs-57) | a new string: the cooked text parts and the ToString of each substitution, in order (ECMAScript TemplateLiteral evaluation, QuickJS `js_parse_template`); the substitutions are evaluated left to right, each converted right after it is evaluated and before the next runs. ToString is that of `+` (`"undefined"`, `"null"`, `"true"`/`"false"`, Number::toString); an object substitution fails with `UnsupportedOperand` (ToPrimitive with hint string is clj-quickjs-70). Lowered to the first text part as a constant, then per substitution its code, the `to_string` opcode (`0x55`) and `plus`, then the next text part (when not empty) and `plus`; a result over 2^30 - 1 code units fails with `OutOfMemory` |
 | `- * / %` and unary `-`, `+` | ToNumber on `undefined` (NaN), `null` (0), booleans (0/1) and strings (StringToNumber, next row), then IEEE arithmetic; `%` keeps the dividend's sign |
 | StringToNumber (clj-quickjs-67), wherever ToNumber applies | leading and trailing whitespace and line terminators (including NBSP, BOM and Unicode `Zs`) are ignored; empty or all-whitespace is 0; an unsigned `0x`/`0o`/`0b` integer (any length, correctly rounded); a decimal with optional sign, fraction and exponent (`"-1.5e3"`, `".5"`, `"5."`; `"-0"` is -0; `"010"` is 10, no legacy octal); `Infinity` with an optional sign; anything else is NaN (`"1_000"`, `"1n"`, `"-0x1"`, `"12px"`, `"infinity"`) |
 | `< > <= >=` | IsLessThan on primitives: two strings compare lexicographically by UTF-16 code units, a proper prefix being smaller (`"10" < "9"`, `"B" < "a"` and `"" < "a"` are true; `"\u{10000}" < "\uFFFF"` is true because U+10000 is the code units D800 DC00; clj-quickjs-68); any other pair converts with ToNumber, then compares numerically (anything with NaN is false; `"10" < 9` and `"abc" >= 1` are false). An object operand fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70). Lowered to `compare_lt`/`compare_gt`/`compare_le`/`compare_ge` when neither operand is statically a number, otherwise to ToNumber and the number-only `lt`/`gt`/`le`/`ge` |
@@ -823,8 +826,9 @@ Gaps specific to execution:
   map keys execute. Every operation that would convert an object fails
   with `UnsupportedOperand` instead of guessing (ToPrimitive,
   clj-quickjs-70). `typeof`,
-  template literals, `length`, indexing and string methods are not
-  supported yet.
+  `length`, indexing and string methods are not
+  supported yet. Untagged template literals execute (clj-quickjs-57);
+  tagged templates and `String.raw` are clj-quickjs-58.
 - **Error objects are opaque.** A caught ReferenceError, TypeError or
   StackOverflow is an object without properties (`e.message`, `e.name`,
   `instanceof` and the `Error` constructors do not exist yet); it can be
@@ -1205,8 +1209,17 @@ let g = (a, a) => a;
 a ? b, c : d;
 ```
 
-```js reject Unsupported 1:5
-x = `template`;
+```js accept
+x = `a${b, `c${d}`}e
+f`;
+```
+
+```js reject Unsupported 1:6
+x = f`template`;
+```
+
+```js reject InvalidToken 1:7
+x = `a\1`;
 ```
 
 ```js reject Unsupported 1:1

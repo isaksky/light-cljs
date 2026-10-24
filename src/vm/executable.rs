@@ -454,6 +454,7 @@ impl Executable {
                 Opcode::GetBuiltinGlobal => Instr::GetBuiltinGlobal(operand as u16),
                 Opcode::CallMethod => Instr::CallMethod(operand as u16),
                 Opcode::NewObjectLiteral => Instr::NewObjectLiteral,
+                Opcode::ToString => Instr::ToString,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

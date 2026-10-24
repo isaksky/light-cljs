@@ -1206,9 +1206,8 @@ Supported (`cargo test --lib frontend::tests::comma_operator`,
   AssignmentExpressions, so `f(a, b)` has two arguments, `f((a, b))` one,
   and `a ? b, c : d` is a syntax error; `(a, b) => ...` is still an arrow.
 
-Deferred:
-
-- Template substitutions (`` `${a, b}` ``) wait for template literals.
+Template substitutions (`` `${a, b}` ``) are Expressions too since
+clj-quickjs-57.
 
 ### Unicode identifiers (clj-quickjs-50)
 
@@ -1434,8 +1433,8 @@ Deferred:
 - Conversions fail with `UnsupportedOperand` instead of guessing: `+` with
   an object operand (ToPrimitive, clj-quickjs-70). (Strings convert to
   numbers since clj-quickjs-67 and compare relationally by code units since
-  clj-quickjs-68, below; `typeof` is clj-quickjs-69.) No templates,
-  `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
+  clj-quickjs-68, below; `typeof` is clj-quickjs-69; untagged templates
+  are clj-quickjs-57.) No `length`, indexing or string methods yet (so no `Number.prototype.toString` call, and no radix
   other than 10, clj-quickjs-149).
 
 ### StringToNumber and loose equality with strings (clj-quickjs-67)
@@ -1762,3 +1761,20 @@ Deferred:
   properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
   objects for `Object(1)` and primitive receivers (clj-quickjs-72/-73),
   `Object.getPrototypeOf` and the other reflection functions.
+
+### Untagged template literals (clj-quickjs-57)
+
+Supported (`cargo test --lib frontend::tests::template_literals`,
+`cargo test --test js_source template`):
+
+- `` `text ${expr} text` ``: substitutions are full Expressions (the comma operator included) and
+  may hold further templates to any depth within the nesting budget; raw line breaks (CRLF read as
+  LF) and the escapes of string literals, except that octal and `\8` `\9` escapes are `InvalidToken`
+  in either mode. Each part keeps its cooked and raw text.
+- Evaluation is left to right; each substitution is converted with ToString (`"undefined"`, `"null"`,
+  `"true"`, Number::toString) by the `to_string` opcode right after it runs, then concatenated.
+
+Deferred:
+
+- Tagged templates and `String.raw` (clj-quickjs-58; `` f`x` `` is `Unsupported`); an object
+  substitution fails with `UnsupportedOperand` until ToPrimitive (clj-quickjs-70).

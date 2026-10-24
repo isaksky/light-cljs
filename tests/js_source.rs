@@ -3123,6 +3123,137 @@ fn expression_evaluation_order_and_conditional_short_circuiting() {
     assert_eq!((kind, line, column), (VmErrorKind::ReferenceError, 2, 6));
 }
 
+/// Untagged template literals (clj-quickjs-57). `TEST_TEMPLATE` is adapted
+/// from `test_template` (line 356) of `research/quickjs/tests/test_language.js`
+/// (QuickJS, revision 7d1c13c5d8f8; see `docs/architecture.md` for the
+/// attribution): the `String.raw` case (clj-quickjs-58) is dropped and each
+/// `assert(x, v)` is a variable whose value the completion checks.
+/// `TEST_TEMPLATE_SKIP` is adapted from `test_template_skip` (line 371):
+/// the destructuring default `var { b = ... } = {}` (destructuring is not
+/// supported) is a plain `var b = ...`. The other cases are written for
+/// this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn template_literal_values() {
+    const TEST_TEMPLATE: &str = r#"
+        var a, b;
+        b = 123;
+        a = `abc${b}d`;
+        var first = a;
+        a = "aaa";
+        b = "bbb";
+        first + "|" + `aaa${a, b}ccc`
+    "#;
+    const TEST_TEMPLATE_SKIP: &str = r#"
+        var a = "Bar";
+        var b = `${a + `a${a}` }baz`;
+        b
+    "#;
+    assert_eq!(string(TEST_TEMPLATE), "abc123d|aaabbbccc");
+    assert_eq!(string(TEST_TEMPLATE_SKIP), "BaraBarbaz");
+    // The pellet's acceptance forms.
+    assert_eq!(string("let b = 123; `abc${b}d`"), "abc123d");
+    assert_eq!(
+        string("let a = \"Bar\"; `${a + `a${a}` }baz`"),
+        "BaraBarbaz"
+    );
+    assert_eq!(
+        string("`${1}${true}${null}${undefined}`"),
+        "1truenullundefined"
+    );
+    assert_eq!(
+        string("let a = \"aaa\", b = \"bbb\"; `aaa${a, b}ccc`"),
+        "aaabbbccc"
+    );
+    // ToString of numbers is Number::toString; a string stays itself.
+    assert_eq!(
+        string("`${1.5}|${-0}|${1e21}|${NaN}|${-Infinity}|${0.1 + 0.2}|${'s'}`"),
+        "1.5|0|1e+21|NaN|-Infinity|0.30000000000000004|s"
+    );
+    // No substitutions, empty parts, a substitution alone.
+    assert_eq!(string("``"), "");
+    assert_eq!(string("`plain`"), "plain");
+    assert_eq!(string("`${''}${''}`"), "");
+    assert_eq!(string("`${42}`"), "42");
+    assert_eq!(eval("typeof `${1}`"), eval("'string'"));
+    // Escapes are decoded; raw line breaks are text, CRLF read as LF; a
+    // line continuation is nothing.
+    assert_eq!(
+        string("`a\\tb\\x41\\u{1F600}\\`\\${x}\r\nc\\\nd`"),
+        "a\tbA\u{1F600}`${x}\ncd"
+    );
+    // Substitutions run left to right, each converted before the next.
+    assert_eq!(
+        string(
+            "let log = ''; function f(x) { log = log + x; return x; }
+             `${f(1)}-${f(2)}-${f(3)}` + ':' + log"
+        ),
+        "1-2-3:123"
+    );
+    // Closures and nesting.
+    assert_eq!(
+        string("let x = 1; let g = () => `<${x}>`; x = 2; `${g()}${`${g()}`}`"),
+        "<2><2>"
+    );
+    // A template is a string value like any other.
+    assert_eq!(eval("`ab` === 'ab'"), ValueView::Bool(true));
+    assert_eq!(num("`2` * `${3}`"), 6.0);
+    // An object substitution needs ToPrimitive (clj-quickjs-70): it fails
+    // at the substitution, before the next substitution runs (that one
+    // would throw).
+    let (kind, _, line, column) =
+        failure_at("let o = {};\nfunction g() { throw 'later'; }\n`a${o}${g()}`");
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::UnsupportedOperand, 3, 5)
+    );
+    // The conversion is ToString, an instruction of its own.
+    assert!(opcodes(&exe("let b = 1; `a${b}`")).contains(&Opcode::ToString));
+}
+
+/// Templates nested in substitutions as deep as the parser allows compile
+/// within the 2 MiB thread stack the parser is tested with, and run.
+#[test]
+fn deep_templates_compile_within_a_small_stack() {
+    let nested = |n: usize| format!("{}1{}", "`<${".repeat(n), "}>`".repeat(n));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            (1..100)
+                .map(|n| (n, compile_script("templates", &nested(n))))
+                .take_while(|(_, c)| !matches!(c, Err(e) if e.kind == SyntaxErrorKind::TooDeep))
+                .last()
+                .unwrap()
+        })
+        .unwrap();
+    let (depth, exe) = handle.join().unwrap();
+    assert!(depth >= 40, "only {depth} nested templates");
+    match run(&exe.unwrap(), &[]) {
+        RunOutcome::Complete(v) => assert_eq!(
+            v.string().expect("a string").to_string(),
+            format!("{}1{}", "<".repeat(depth), ">".repeat(depth))
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// The comma operator (clj-quickjs-61): every operand runs, left to right,
 /// and the last one is the value.
 #[test]

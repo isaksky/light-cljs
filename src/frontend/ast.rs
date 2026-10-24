@@ -366,6 +366,7 @@ impl Expr {
                 properties.iter().map(|p| p.value.height).max().unwrap_or(0)
             }
             ExprKind::AssignMember { object, value, .. } => object.height.max(value.height),
+            ExprKind::Template { exprs, .. } => exprs.iter().map(|e| e.height).max().unwrap_or(0),
         };
         Expr {
             kind,
@@ -480,6 +481,26 @@ pub enum ExprKind {
         /// are reported.
         op_span: Span,
     },
+    /// An untagged template literal (clj-quickjs-57): its text parts and
+    /// its substitutions, interleaved as `quasis[0] exprs[0] quasis[1] ...
+    /// quasis[n]`, so there is one more part than substitutions. Each
+    /// substitution is an Expression (the comma operator included).
+    Template {
+        quasis: Vec<TemplateElement>,
+        exprs: Vec<Expr>,
+    },
+}
+
+/// One text part of a template literal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TemplateElement {
+    /// The template value: escapes decoded, CR and CRLF read as LF.
+    pub cooked: JsString,
+    /// The raw text as written, CR and CRLF read as LF (for tagged
+    /// templates, clj-quickjs-58).
+    pub raw: String,
+    /// The part's token, delimiters included.
+    pub span: Span,
 }
 
 /// One property definition of an object literal.
