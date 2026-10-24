@@ -2006,13 +2006,13 @@ task-owned when it is first written.
   fail explicitly. `Function.prototype` (clj-quickjs-102) is a realm
   intrinsic: it is the record's prototype and where a record-less
   function's reads continue (`f.call`, `f.apply`, `f.constructor`). The
-  names it does not have yet (`bind`, `toString`, `arguments`, `caller`)
+  names it does not have yet (`toString`, `arguments`, `caller`)
   and `length`/`name` fail with `UnsupportedOperand` unless the function
   has its own (`function::FUNCTION_PROTOTYPE_NAMES`), and every other name
   continues at `Function.prototype` and then `Object.prototype`. Class statics (`static m() {}`) and `F.prototype.m =
   ...` are record writes, so a class or constructor that has been set up is
   task-owned, like the objects it creates. Bound functions (clj-quickjs-103)
-  can use the same record. Built-in functions keep their immutable
+  use the same record. Built-in functions keep their immutable
   intrinsic property store.
 
 **Alternatives considered.**
@@ -2320,8 +2320,8 @@ Contract: `src/vm/prototype.rs` (`instance_of`), `src/vm/instr.rs`
 (`BinaryOp::Instanceof`), lowered by the existing out-of-line
 `binary_expr` helper to one appended opcode, as QuickJS's
 `OP_instanceof`. The opcode is InstanceofOperator without the
-`@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance without
-bound functions (clj-quickjs-103): the right operand must be a callable
+`@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance. Bound
+functions delegate to their targets (clj-quickjs-103); otherwise the right operand must be a callable
 object, a primitive left operand is `false`, `F.prototype` is read with
 the ordinary property walk (a built-in method such as `Object.is`
 inherits no `prototype` from `Function.prototype` or `Object.prototype`,
@@ -3130,8 +3130,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   of `test_function` (line 83) with its helper `my_func` (line 78) in
   `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8.
   Modified: the asserts are Rust assertions and `assert_throws` is a
-  `try`/`catch`; the `new Function` and `bind` rows wait for
-  clj-quickjs-111 and -103. The test carries the full notice.
+  `try`/`catch`; the `new Function` rows wait for clj-quickjs-111.
+  Bound functions are covered separately by clj-quickjs-103. The test carries the full notice.
   `research/quickjs/quickjs.c` `js_function_proto`, `js_function_call`,
   `js_function_apply`, `build_arg_list` and `js_reflect_apply` were
   consulted only, for semantics (call and apply are tail calls here, not

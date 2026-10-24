@@ -2160,7 +2160,7 @@ Supported (`cargo test --test js_source in_operator`,
 Deferred:
 
 - An object key needs ToPrimitive (clj-quickjs-70); names `Function.prototype` does not have yet
-  (`bind`, `toString`; `call`/`apply` are found since clj-quickjs-102) and error objects' properties (clj-quickjs-230) fail
+  (`toString`; `call`/`apply`/`bind` are supported) and error objects' properties (clj-quickjs-230) fail
   with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
 
 ### `for`-`in` over own properties (clj-quickjs-85)

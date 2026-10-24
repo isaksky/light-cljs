@@ -72,10 +72,8 @@ fn bound_functions() {
         num("function f(a,b) { return this*100+a*10+b; } f.bind(1).bind(2,3)(4);"),
         134.0
     );
-    assert_eq!(
-        failure("Function.prototype.bind.call(1);").kind(),
-        VmErrorKind::TypeError
-    );
+    let (kind, _, line, column) = failure_at("Function.prototype.bind.call(1);");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 1, 29));
     assert_eq!(
         eval(
             "function C(a) { this.x=a; } const B=C.bind(null,7).bind(null); const o=new B(); o.x===7 && o instanceof B && o instanceof C && B.prototype===undefined && typeof B==='function';"
@@ -131,12 +129,13 @@ fn bound_function_properties_and_native_callbacks() {
         "function f(a,b) { return this+a+b; } const g=f.bind(1,2); g.call(7,3)===6 && g.apply(8,[3])===6 && Reflect.apply(g,9,[3])===6;",
         "function f() { return this; } f.bind()()===undefined;",
         "function C(x) { this.x=x; } const receiver={x:0}; const B=C.bind(receiver,7); const o=new B(); receiver.x===0 && o.x===7;",
+        "function C() {} const B=C.bind(); B.prototype={}; const o=new B(); o instanceof B && Object.getPrototypeOf(o)===C.prototype && Object.getPrototypeOf(o)!==B.prototype;",
         "function C() { return {x:9}; } (new (C.bind(null))()).x===9;",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
     assert_eq!(
-        failure("new ((a)=>a).bind(null,1)();").kind(),
+        failure("const B=((a)=>a).bind(null,1); new B();").kind(),
         VmErrorKind::TypeError
     );
 }

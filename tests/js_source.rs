@@ -5727,6 +5727,7 @@ fn in_operator() {
     // (clj-quickjs-102).
     for src in [
         "!('x' in Object) && 'call' in Object && 'apply' in Object.is",
+        "'bind' in Object",
         "function f() {} 'call' in f && 'constructor' in f && 'valueOf' in f && !('x' in f)",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
@@ -5737,7 +5738,6 @@ fn in_operator() {
     // (clj-quickjs-230).
     for src in [
         "({}) in {}",
-        "'bind' in Object",
         "function f() {} 'toString' in f",
         "let e; try { nope; } catch (x) { e = x; } 'message' in e",
     ] {
@@ -5853,6 +5853,10 @@ fn a_constructor_suspends_at_a_need_and_completes_after_publication() {
 /// clj-quickjs-73, `methods_on_primitive_bases`).
 #[test]
 fn property_access_on_values_that_are_not_ordinary_objects() {
+    assert_eq!(
+        eval("let f = function () {}; typeof f.bind === 'function';"),
+        ValueView::Bool(true)
+    );
     assert_eq!(eval("__rt.vector(1, 2).x"), ValueView::Undefined);
     assert_eq!(eval("__rt.map(1, 2).x"), ValueView::Undefined);
     assert_eq!(eval("__rt.vectorBuilder().x"), ValueView::Undefined);
@@ -5902,7 +5906,6 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
         )
     );
     for (src, needle) in [
-        ("let f = function () {};\nf.bind;", "of a function"),
         ("let f = function () {};\nf.length = 1;", "of a function"),
         ("let s = 'a';\ns.length;", "of a string"),
         ("let b = true;\nb.x;", "of a boolean"),
