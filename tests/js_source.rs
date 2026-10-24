@@ -3020,6 +3020,11 @@ fn compound_assignment_on_bindings() {
         6.0
     );
     assert_eq!(num("let a = 2; a *= (a = 5) + 1; a"), 12.0);
+    // `+=` may yield a string, so an enclosing operator converts it; the
+    // other compound forms yield numbers.
+    assert_eq!(string(r#"let s = ""; (s += "a") + 1"#), "a1");
+    assert_eq!(num(r#"let s = ""; 2 * (s += "3")"#), 6.0);
+    assert_eq!(num(r#"let s = "4"; (s -= 1) + 1"#), 4.0);
     assert!(num("let u; u += 1").is_nan());
     assert!(num("let u; u -= 1; u").is_nan());
     // `+=` concatenates when either value is a string (clj-quickjs-66).
@@ -3068,6 +3073,16 @@ fn compound_assignment_on_bindings() {
             "let r = 0; try { nope += (r = 1); } catch (e) {} try { { y -= (r = 2); let y; } } catch (e) {} r"
         ),
         0.0
+    );
+    // The operator (and its conversions) runs after the right operand, so
+    // the right operand's failure comes first.
+    assert_eq!(
+        failure("let a = () => 1; a -= nope").kind(),
+        VmErrorKind::ReferenceError
+    );
+    assert_eq!(
+        failure("let a = __rt.vector(); a <<= (() => { throw 1; })()").kind(),
+        VmErrorKind::Thrown
     );
     // A failing operator is reported at the `op=` token.
     let (kind, _, line, column) = failure_at("let f = () => 1;\n  f -= 1;");
