@@ -4130,6 +4130,7 @@ table may grow, as in source literals.
 SyntaxError messages retain JSON input line/UTF-16 column/offset independently
 of the VM call diagnostic. The engine's existing catchable error path is
 used; NativeError constructors and engine-error prototypes are separate work.
+
 ## Tagged template objects and String.raw (clj-quickjs-58)
 
 The parser retains an optional tag and optional cooked values on template

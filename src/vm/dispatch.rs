@@ -1817,6 +1817,76 @@ mod tests {
         VmState::new(&code.0, &[], diag, VmLimits::DEFAULT)
     }
 
+    /// Early VM test: hand-loaded code cannot put mutable edges or invalid
+    /// primitive types into the shared realm template registry.
+    #[test]
+    fn template_object_rejects_nonprimitive_parts() {
+        let mut asm = Assembler::new();
+        asm.get_local(0)
+            .get_local(1)
+            .op(Opcode::TemplateObject)
+            .raw(1)
+            .raw(0)
+            .op(Opcode::Return);
+        let code = asm.finish("template", 2, 2).unwrap();
+        let heap = Heap::default();
+        let object = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(
+                TaskId::from_raw(1),
+            ))))
+            .unwrap();
+        for position in 0..2 {
+            for invalid in [
+                Value::Object(object),
+                Value::Bool(true),
+                Value::Number(0.0),
+                Value::Null,
+                Value::Undefined,
+            ] {
+                if position == 0 && invalid == Value::Undefined {
+                    continue;
+                }
+                let mut state = state(&code, 1);
+                *state.local(0).unwrap_or_else(|_| panic!("validated local")) =
+                    Value::String(JsString::from("x"));
+                *state.local(1).unwrap_or_else(|_| panic!("validated local")) =
+                    Value::String(JsString::from("x"));
+                *state
+                    .local(position)
+                    .unwrap_or_else(|_| panic!("validated local")) = invalid;
+                let Exit::Fail(error) = execute(&mut state, &heap, &mut NoHost, None) else {
+                    panic!("invalid template operand accepted");
+                };
+                assert_eq!(error.kind, VmErrorKind::Internal);
+                assert!(
+                    realm::intrinsics(&heap)
+                        .unwrap()
+                        .templates
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+        let mut state = state(&code, 1);
+        *state.local(0).unwrap_or_else(|_| panic!("validated local")) = Value::Undefined;
+        *state.local(1).unwrap_or_else(|_| panic!("validated local")) =
+            Value::String(JsString::from("x"));
+        assert!(matches!(
+            execute(&mut state, &heap, &mut NoHost, None),
+            Exit::Return(Value::Object(_))
+        ));
+        assert_eq!(
+            realm::intrinsics(&heap)
+                .unwrap()
+                .templates
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     #[test]
     fn two_tasks_share_function_code_but_not_frames() {
         // function child() { 1; 2; return 3; }  function parent() { return child(); }

@@ -372,6 +372,50 @@ fn tagged_templates_reject_literal_append() {
     }
 }
 
+/// Synthetic fixtures: descriptor no-ops and strict/sloppy deletes on arrays
+/// shared from a producer task obey frozen descriptors, not ownership errors.
+#[test]
+fn tagged_templates_descriptor_operations() {
+    let rt = Runtime::new();
+    for source in ["(s => s)`x`", "(s => s.raw)`x`"] {
+        let RunOutcome::Complete(array) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("producer");
+        };
+        rt.publish(&array).unwrap();
+        let noop = compile_function("function noop(a) { return Object.defineProperty(a, '0', {value: 'x', writable: false, enumerable: true, configurable: false}) === a && Object.defineProperty(a, 'length', {value: 1}) === a && delete a.absent; }").unwrap();
+        let RunOutcome::Complete(result) = rt.spawn(&noop, &[&array]).unwrap().run().unwrap()
+        else {
+            panic!("descriptor no-op");
+        };
+        assert_eq!(result.view(), ValueView::Bool(true));
+        for expression in [
+            "Object.defineProperty(a, '0', {value: 'changed'})",
+            "Object.defineProperty(a, '0', {writable: true})",
+            "Object.defineProperty(a, 'extra', {value: 1})",
+            "Object.defineProperty(a, 'length', {value: 2})",
+            "delete a[0]",
+            "delete a.length",
+        ] {
+            let code = compile_function(&format!("function change(a) {{ return {expression}; }}"))
+                .unwrap();
+            let RunOutcome::Failed(error) = rt.spawn(&code, &[&array]).unwrap().run().unwrap()
+            else {
+                panic!("mutation accepted: {expression}");
+            };
+            assert_eq!(error.kind(), VmErrorKind::TypeError, "{expression}");
+        }
+        let sloppy = compile_function_with("function check(a) { return delete a[0] === false && delete a.length === false && delete a.absent === true && a.length === 1 && a[0] === 'x' && !('extra' in a) && Object.isFrozen(a); }", ScriptOptions::SLOPPY).unwrap();
+        rt.collect().unwrap();
+        let RunOutcome::Complete(result) = rt.spawn(&sloppy, &[&array]).unwrap().run().unwrap()
+        else {
+            panic!("sloppy delete");
+        };
+        assert_eq!(result.view(), ValueView::Bool(true));
+        rt.publish(&array).unwrap();
+    }
+}
+
 /// Synthetic fixture: each getter/conversion runs once through waits,
 /// single-instruction yields, collection and migration to fresh threads.
 #[test]
