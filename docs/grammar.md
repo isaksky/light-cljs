@@ -6560,3 +6560,34 @@ Malformed outer JavaScript still fails during compilation:
 ```js reject UnexpectedEnd 1:14
 new Function(
 ```
+
+## Named function expression stores (clj-quickjs-96)
+
+Syntax: the existing `FunctionExpression` and `AssignmentExpression` EBNF
+productions cover these stores; no new syntax is introduced.
+
+Execution: a named function expression's inner name remains bound to the
+function. A sloppy assignment evaluates its right-hand side once, leaves
+the binding unchanged and yields the assigned value. This also applies in
+a sloppy arrow closing over that name. The mode of the assigning function
+controls the store. Strict stores throw `TypeError` after evaluating the
+right-hand side. Assigning an initialized `const` throws in both modes.
+
+Rejected forms: these assignments are accepted syntax in both modes;
+strict function-name and `const` stores fail at runtime as described in
+the Execution error table. Explicit gaps: `compile_function` entry-name
+assignment remains a compile-time `Unsupported` error, as listed there.
+
+Synthetic fixtures, not light-cljs output; each script evaluates to true:
+
+```js sloppy-accept
+const f = function m() { const v = (m = 5); return v === 5 && m === f; }; f();
+const g = function n() { (() => { n = 1; })(); return n; }; g() === g;
+```
+
+Strict assignment is also accepted syntax; its TypeError is catchable:
+
+```js accept
+const f = function m() { "use strict"; m = 5; };
+let caught = false; try { f(); } catch (e) { caught = e instanceof TypeError; } caught;
+```

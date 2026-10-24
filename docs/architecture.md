@@ -2752,6 +2752,14 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- Sloppy function-expression name stores (clj-quickjs-96):
+  `tests/js_functions.rs::sloppy_assignment_to_function_expression_name_is_ignored`
+  adapts the two non-eval sloppy cases of
+  `research/quickjs/tests/test_language.js::test_function_expr_name` at revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, retaining the QuickJS MIT
+  copyright/license notice beside the test. Remaining cases are synthetic.
+  The existing `Lowerer::store` function-name branch leaves the assigned value
+  on the stack in sloppy code; no new lowering or runtime code is required.
 - Object environments (clj-quickjs-110): consulted `js_parse_statement_or_decl`
   (`TOK_WITH`), `js_has_unscopable` and `OP_with_get_var` and siblings in
   `research/quickjs/quickjs.c`, revision

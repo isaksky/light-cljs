@@ -623,6 +623,10 @@ and `examples/`):
   task-owned.
 - A function's own name inside it is `current_function` (named function
   expressions, `compile_function` entries, never-reassigned declarations).
+- Assigning a named function expression's inner name in sloppy code evaluates
+  the right-hand side and returns its value while leaving the name bound to
+  the function, including from sloppy arrows (clj-quickjs-96). Strict stores
+  throw `TypeError`; `const` assignment throws in either mode.
 - The compiler-reserved intrinsic binding `__rt` with a specified contract
   (no shadowing, reassignment, computed access or aliasing; explicit
   `ReservedWord`/`Invalid` diagnostics): `__rt.vector`, `map`, `count`,

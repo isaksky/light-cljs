@@ -1315,6 +1315,85 @@ fn hoisted_declarations_and_self_references() {
     assert_eq!(num("const g = function h(h) { return h * 2; }; g(4)"), 8.0);
 }
 
+/// The first two cases adapt `test_function_expr_name` from
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+/// Remaining cases are synthetic fixtures, not light-cljs output.
+///
+/// Copyright (c) 2017-2021 Fabrice Bellard
+/// Copyright (c) 2017-2021 Charlie Gordon
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn sloppy_assignment_to_function_expression_name_is_ignored() {
+    let run = |src: &str| {
+        let program = compile_script_with("function-name", src, ScriptOptions::SLOPPY)
+            .unwrap_or_else(|e| panic!("{src}: {e}"));
+        Runtime::new().spawn(&program, &[]).unwrap().run().unwrap()
+    };
+    for body in [
+        "myfunc = 1; return myfunc;",
+        "myfunc = 1; (() => { myfunc = 1; })(); return myfunc;",
+    ] {
+        let src = format!("var f = function myfunc() {{ {body} }}; f() === f");
+        let RunOutcome::Complete(value) = run(&src) else {
+            panic!("sloppy function-name assignment failed: {src}");
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+
+        // The body's directive makes these same stores strict. The strict
+        // nested-only closure regression belongs to clj-quickjs-93.
+        let src = format!("var f = function myfunc() {{ 'use strict'; {body} }}; f()");
+        let RunOutcome::Failed(error) = run(&src) else {
+            panic!("strict function-name assignment did not fail: {src}");
+        };
+        assert_eq!(error.kind(), VmErrorKind::TypeError, "{src}");
+    }
+    for (src, expected) in [
+        (
+            "const f = function m() { return (m = 5); }; f()",
+            ValueView::Number(5.0),
+        ),
+        (
+            "let calls = 0; const f = function m() { const v = (m = (++calls, 5)); return v === 5 && m === f; }; f() && calls === 1",
+            ValueView::Bool(true),
+        ),
+        (
+            "let calls = 0; const f = function m() { const v = (() => (m = (++calls, 5)))(); return v === 5 && m === f; }; f() && calls === 1",
+            ValueView::Bool(true),
+        ),
+    ] {
+        let RunOutcome::Complete(value) = run(src) else {
+            panic!("sloppy assignment did not complete: {src}");
+        };
+        assert_eq!(value.view(), expected, "{src}");
+    }
+    for src in [
+        "const f = function m() { 'use strict'; return (m = 5); }; f()",
+        "const c = 1; c = 2;",
+    ] {
+        let RunOutcome::Failed(error) = run(src) else {
+            panic!("immutable binding assignment did not fail: {src}");
+        };
+        assert_eq!(error.kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
 #[test]
 fn closures_see_assignments_and_keep_bindings_alive() {
     // Two closures share one binding.
