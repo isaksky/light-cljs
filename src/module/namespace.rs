@@ -54,6 +54,15 @@ pub(crate) fn probe(
     id: ObjectId,
     key: &Key,
 ) -> Result<Option<Option<Entry>>, Fault> {
+    // Realm objects cannot be namespaces. Preserve the property walk's
+    // immutable intrinsic views without taking the object-table lock.
+    if heap
+        .realm()
+        .get()
+        .is_some_and(|realm| realm.view(id).is_some())
+    {
+        return Ok(None);
+    }
     heap.read(id, |o| {
         let HeapObject::ModuleNamespace(ns) = o else {
             return Ok(None);
@@ -147,6 +156,13 @@ pub(crate) fn keys(
     id: ObjectId,
     filter: KeyFilter,
 ) -> Result<Option<Vec<OwnKey>>, Fault> {
+    if heap
+        .realm()
+        .get()
+        .is_some_and(|realm| realm.view(id).is_some())
+    {
+        return Ok(None);
+    }
     let entries = heap
         .read(id, |o| {
             let HeapObject::ModuleNamespace(ns) = o else {
