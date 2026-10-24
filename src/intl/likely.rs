@@ -146,6 +146,7 @@ mod tests {
             ("en-GB", "en-GB"),
             ("en-Latn-US", "en"),
             ("en-Cyrl-US", "en-Cyrl"),
+            ("en-Cyrl-GB", "en-Cyrl-GB"),
             ("xx", "xx"),
             ("xx-Latn", "xx-Latn"),
             ("und", "en"),

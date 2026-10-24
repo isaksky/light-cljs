@@ -2832,8 +2832,9 @@ existing deferred `@@toStringTag` behavior.
 ### Locale likely subtags (clj-quickjs-211)
 
 Supported: `Intl.Locale.prototype.maximize()` and `minimize()` return fresh
-Locale objects, preserve variants and every extension, and reject non-Locale
-receivers with TypeError. They use all 7,788 pinned likely-subtag entries as
+Locale objects, preserve variants and every extension before constructor alias
+normalization, and reject non-Locale receivers with TypeError. They use all
+7,788 pinned likely-subtag entries as
 supplemental data without expanding the advertised service locale set.
 For example, `en` maximizes to `en-Latn-US`; `zh-Hant` minimizes to `zh-TW`.
 Lookup and unknown-subtag behavior reproduce the pinned QuickJS strings:

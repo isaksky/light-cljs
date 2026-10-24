@@ -14843,6 +14843,7 @@ fn intl_locale_maximize_minimize() {
                 ("ja", "ja"),
                 ("zh-Hant", "zh-TW"),
                 ("en-GB", "en-GB"),
+                ("en-Cyrl-GB", "en-Cyrl-GB"),
             ][..],
         ),
     ] {
@@ -14854,6 +14855,9 @@ fn intl_locale_maximize_minimize() {
     for source in [
         "new Intl.Locale('en-u-ca-gregory').maximize().toString() === 'en-Latn-US-u-ca-gregory'",
         "new Intl.Locale('zh-Hant-u-ca-gregory').minimize().toString() === 'zh-TW-u-ca-gregory'",
+        "new Intl.Locale('und-Hant-hakka').maximize().toString() === 'hak-Hant-TW'",
+        "new Intl.Locale('und-Hant-hakka').minimize().toString() === 'hak-TW'",
+        "let l = new Intl.Locale('und-CN-hakka-a-foobar-u-ca-gregory-x-private'); let m = l.maximize(); let n = l.minimize(); m.toString() === 'hak-Hans-CN-a-foobar-u-ca-gregory-x-private' && n.toString() === 'hak-a-foobar-u-ca-gregory-x-private' && Intl.getCanonicalLocales([m,n]).join() === m.toString() + ',' + n.toString()",
         "let l = new Intl.Locale('en'); let m = l.maximize(); let n = l.minimize(); m !== l && n !== l && m !== n && l.toString() === 'en' && m instanceof Intl.Locale && Object.getPrototypeOf(m) === Intl.Locale.prototype",
         "let l = new Intl.Locale('de-1901-a-foobar-u-attr-ca-gregory-kn-x-private'); l.maximize().toString() === 'de-Latn-DE-1901-a-foobar-u-attr-ca-gregory-kn-x-private' && l.maximize().minimize().toString() === l.toString()",
         "let l = new Intl.Locale('en'); l.toString = function(){throw 9;}; l.maximize().toString() === 'en-Latn-US'",

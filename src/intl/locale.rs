@@ -139,11 +139,14 @@ pub(crate) fn likely_subtags(
 ) -> Result<Value, Fault> {
     let tag = record(heap, task, this)?
         .ok_or_else(|| Fault::TypeError("Intl.Locale receiver required".into()))?;
-    let tag = if minimize {
+    let mut tag = if minimize {
         super::likely::minimize(&tag)
     } else {
         super::likely::maximize(&tag)
     };
+    // Inferring the language can activate a language-specific variant alias.
+    // Match the Locale constructor's normalization before publishing the slots.
+    tag.apply_base_aliases();
     let prototype = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("realm exhausted"))?
         .intl_locale_prototype;

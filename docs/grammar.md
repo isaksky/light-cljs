@@ -891,7 +891,8 @@ descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent string fields return
 `Intl.Locale.prototype.maximize()` and `minimize()` return a fresh Locale using
 the intrinsic Locale prototype (clj-quickjs-211). They read branded internal
 slots, preserve variants, Unicode attributes/keywords, other extensions and
-private use, and throw TypeError on non-Locale receivers. Maximize fills missing
+private use, then apply constructor base-alias normalization, and throw TypeError
+on non-Locale receivers. Maximize fills missing
 language/script/region from the pinned likely-subtag table; minimize tries
 language alone, language-region, then language-script, retaining the first that
 maximizes to the same triple. Unmatched identifiers remain unchanged. These leaf
