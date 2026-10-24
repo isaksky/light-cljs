@@ -57,6 +57,9 @@ pub(super) struct Parser<'a> {
     prev_end: usize,
     depth: usize,
     in_function: bool,
+    /// Inside the body of a loop of the current function (`break` and
+    /// `continue` are allowed).
+    in_loop: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -72,6 +75,7 @@ impl<'a> Parser<'a> {
             prev_end: 0,
             depth: 0,
             in_function: false,
+            in_loop: false,
         }
     }
 
@@ -254,6 +258,9 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Return) => self.parse_return()?,
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw()?,
             TokenKind::Keyword(Keyword::Try) => self.parse_try()?,
+            TokenKind::Keyword(Keyword::Break | Keyword::Continue) => {
+                self.parse_break_continue()?
+            }
             _ => {
                 if let Some(error) = self.statement_start_error() {
                     return Err(error);
@@ -356,7 +363,9 @@ impl<'a> Parser<'a> {
         self.deeper(cost::BODY)?;
         self.advance()?;
         let test = self.parse_paren_condition()?;
+        let outer = std::mem::replace(&mut self.in_loop, true);
         let body = Box::new(self.parse_statement()?);
+        self.in_loop = outer;
         self.depth = saved;
         Ok(StmtKind::While { test, body })
     }
@@ -397,6 +406,37 @@ impl<'a> Parser<'a> {
         let argument = self.parse_expression()?;
         self.expect_semi()?;
         Ok(StmtKind::Throw(argument))
+    }
+
+    /// BreakStatement: `break` `;` and ContinueStatement: `continue` `;`,
+    /// unlabelled. Restricted productions (`break` [no LineTerminator here]
+    /// LabelIdentifier): a line break after the keyword ends the statement.
+    /// Early error: outside a loop of the same function (QuickJS
+    /// `emit_break`: "break must be inside loop or switch", "continue must
+    /// be inside loop"; the subset has no `switch` yet).
+    #[inline(never)]
+    fn parse_break_continue(&mut self) -> PResult<StmtKind> {
+        let keyword = self.advance()?;
+        let (name, kind) = if keyword.kind == TokenKind::Keyword(Keyword::Break) {
+            ("break", StmtKind::Break)
+        } else {
+            ("continue", StmtKind::Continue)
+        };
+        if matches!(self.tok.kind, TokenKind::Identifier(_)) && !self.tok.newline_before {
+            return Err(self.unsupported(
+                keyword.span.to(self.tok.span),
+                &format!("labelled `{name}` is"),
+            ));
+        }
+        if !self.in_loop {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                keyword.span,
+                format!("`{name}` must be inside a loop of the same function"),
+            ));
+        }
+        self.expect_semi()?;
+        Ok(kind)
     }
 
     /// TryStatement: `try` Block (Catch | Finally | Catch Finally), where
@@ -554,8 +594,10 @@ impl<'a> Parser<'a> {
         let start = self.tok.span.start;
         let (name, params) = self.parse_function_head(declaration)?;
         let outer = std::mem::replace(&mut self.in_function, true);
+        let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let body = self.parse_block()?;
         self.in_function = outer;
+        self.in_loop = outer_loop;
         self.depth = saved;
         let function = Function::new(
             FunctionKind::Ordinary,
@@ -637,8 +679,10 @@ impl<'a> Parser<'a> {
         self.advance()?;
         let (kind, body) = if self.is_punct(Punct::LBrace) {
             let outer = std::mem::replace(&mut self.in_function, true);
+            let outer_loop = std::mem::replace(&mut self.in_loop, false);
             let body = self.parse_block()?;
             self.in_function = outer;
+            self.in_loop = outer_loop;
             (FunctionKind::Arrow, body)
         } else {
             // The body is an AssignmentExpression, so the arrow ends with
@@ -1200,8 +1244,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
         Keyword::Var => "`var` declarations are (use `let` or `const`)",
         Keyword::For => "`for` loops are (use `while`)",
         Keyword::Do => "`do`-`while` loops are (use `while`)",
-        Keyword::Break => "`break` is",
-        Keyword::Continue => "`continue` is",
         Keyword::Switch => "`switch` is",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",

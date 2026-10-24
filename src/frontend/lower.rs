@@ -48,11 +48,17 @@
 //!
 //! **Temporal dead zone.** Within the function that declares a binding,
 //! whether it is initialized at a reference is still decided by position:
-//! the subset has no `break`, `continue` or labels, so code of one function
-//! runs in source order except that an exception or a `return` may leave a
-//! `try` block early for its catch or finally block. Those blocks follow the
-//! whole `try` block, and every binding declared inside it is out of their
-//! scope, so a reference before the declaration (or inside its own
+//! the subset has no labels, so code of one function runs in source order
+//! except for jumps that never enter a scope past a declaration. An
+//! exception or a `return` may leave a `try` block early for its catch or
+//! finally block, which follow the whole `try` block, where every binding
+//! declared inside it is out of scope. An unlabelled `break` only leaves
+//! scopes (to the end of its loop), and `continue` jumps to the loop test,
+//! before the loop body, which is entered again from its start: neither
+//! skips a declaration of a scope it lands in, and the bindings of the
+//! enclosing statement list are in the same state at the test on every
+//! iteration (a loop body is a single statement, so it declares nothing
+//! there). So a reference before the declaration (or inside its own
 //! initializer) still always runs before initialization, and one after it
 //! always runs after. Such references, assignments to `const` bindings and
 //! references to undeclared names lower to `throw_error`. Only closures can
@@ -77,6 +83,14 @@
 //! special lowering, since the VM runs the frame's finally blocks itself.
 //! A catch parameter is a binding of the catch body's scope, initialized
 //! from the exception value.
+//!
+//! **`break` and `continue`** (unlabelled, clj-quickjs-78) jump to the end
+//! or the test of the innermost loop of the running function
+//! (`Lowerer::jump`), first popping the catch handler of every `try` block
+//! they leave; a jump out of a `try` statement with a finally block is
+//! rejected as `Unsupported`. The script completion value needs nothing
+//! extra: local 0 already holds the value the loop body produced so far
+//! (ECMAScript `UpdateEmpty`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -334,6 +348,23 @@ struct FnCtx {
     /// Child functions, as indices into `Lowerer::sealed` (emit pass only).
     children: Vec<usize>,
     child_count: usize,
+    /// Constructs `break`/`continue` may leave, innermost last.
+    exits: Vec<Exit>,
+}
+
+/// A construct of the running function that a `break` or `continue` inside
+/// it may leave (QuickJS keeps the same chain as `BlockEnv`).
+#[derive(Clone, Copy)]
+enum Exit {
+    /// A loop body: `break` jumps to `brk`, `continue` to `cont`.
+    Loop { brk: usize, cont: usize },
+    /// The block of a `try` statement with a catch clause: its catch handler
+    /// is on the handler stack, so leaving pops it.
+    Catch,
+    /// A block, catch body or finally body of a `try` statement with a
+    /// finally block: leaving would have to run (or abandon) the finally
+    /// block, which is not supported yet.
+    Finally,
 }
 
 /// A lowered function waiting to be loaded ([`Lowerer::load_all`]).
@@ -433,6 +464,7 @@ impl<'s> Lowerer<'s> {
             capture_index: HashMap::new(),
             children: Vec::new(),
             child_count: 0,
+            exits: Vec::new(),
         });
     }
 
@@ -1101,7 +1133,12 @@ impl<'s> Lowerer<'s> {
                 self.out().bind(start);
                 self.expr(test)?;
                 self.out().branch(Opcode::JumpIfFalse, end, test.span);
+                self.cur_mut().exits.push(Exit::Loop {
+                    brk: end,
+                    cont: start,
+                });
                 self.statement(body)?;
+                self.cur_mut().exits.pop();
                 self.out().branch(Opcode::Jump, start, span);
                 self.out().bind(end);
             }
@@ -1114,10 +1151,47 @@ impl<'s> Lowerer<'s> {
                 handler,
                 finalizer,
             } => self.try_statement(block, handler.as_ref(), finalizer.as_deref(), span)?,
+            StmtKind::Break => self.jump(true, span)?,
+            StmtKind::Continue => self.jump(false, span)?,
             // Created when its statement list was entered (hoisting).
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
         }
         Ok(())
+    }
+
+    /// Lower an unlabelled `break` (`is_break`) or `continue` at `span`: pop
+    /// the catch handler of every `try` block it leaves, innermost first, so
+    /// the handler stack is the loop's again, then jump past the innermost
+    /// loop or to its test (as QuickJS's `emit_break` walks its `BlockEnv`
+    /// chain). Statements leave nothing on the operand stack, so no operand
+    /// needs dropping. Leaving a `try` statement that has a finally block is
+    /// rejected until finally blocks can run on the way.
+    fn jump(&mut self, is_break: bool, span: Span) -> Result<(), SyntaxError> {
+        let keyword = if is_break { "break" } else { "continue" };
+        let at = Span::new(span.start, span.start + keyword.len());
+        let exits = self.cur().exits.clone();
+        for exit in exits.iter().rev() {
+            match *exit {
+                Exit::Catch => self.out().op(Opcode::PopCatch, at),
+                Exit::Finally => {
+                    return Err(self.unsupported(
+                        at,
+                        &format!("`{keyword}` out of a `try` statement with a `finally` block"),
+                    ));
+                }
+                Exit::Loop { brk, cont } => {
+                    let target = if is_break { brk } else { cont };
+                    self.out().branch(Opcode::Jump, target, at);
+                    return Ok(());
+                }
+            }
+        }
+        // The parser rejects this; kept as a guard.
+        Err(self.error(
+            SyntaxErrorKind::Invalid,
+            at,
+            format!("`{keyword}` must be inside a loop of the same function"),
+        ))
     }
 
     /// Lower `try`/`catch`/`finally` onto the VM handler stack
@@ -1153,12 +1227,19 @@ impl<'s> Lowerer<'s> {
         if let Some((_, label)) = finally {
             self.out().branch(Opcode::PushFinally, label, span);
         }
+        // A `break`/`continue` inside sees the finally handler (block and
+        // catch body) or the pending completion (finally body) below it.
+        if finally.is_some() {
+            self.cur_mut().exits.push(Exit::Finally);
+        }
         match handler {
             Some(handler) => {
                 let catch = self.out().label();
                 let end = self.out().label();
                 self.out().branch(Opcode::PushCatch, catch, span);
+                self.cur_mut().exits.push(Exit::Catch);
                 self.statement_list(block, &[], false)?;
+                self.cur_mut().exits.pop();
                 self.out().op(Opcode::PopCatch, span);
                 self.out().branch(Opcode::Jump, end, span);
                 self.out().bind(catch);
@@ -1205,6 +1286,7 @@ impl<'s> Lowerer<'s> {
                 self.out().op_u16(Opcode::SetLocal, slot, span);
                 self.cur_mut().next_slot -= 1;
             }
+            self.cur_mut().exits.pop();
             self.out().op(Opcode::EndFinally, span);
         }
         Ok(())

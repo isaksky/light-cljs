@@ -351,8 +351,9 @@ Deferred:
   intrinsic binding compile since clj-quickjs-21, below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
-- `for`, `do`-`while`, `break`, `continue`, `switch`, `var`, update and
-  compound assignment operators (rejected by the parser).
+- `for`, `do`-`while`, labels, `switch`, `var`, update and compound
+  assignment operators (rejected by the parser). (Unlabelled `break` and
+  `continue`: clj-quickjs-78, below.)
 
 ### Parking and wakeups (clj-quickjs-7)
 
@@ -846,7 +847,8 @@ Deferred:
   clj-quickjs-27 (below).
 - Error objects have no properties (`message`, `name`), no `Error`
   constructors or `instanceof`; strings cannot be thrown (no string values).
-- `break`/`continue` through finally blocks (no `break`/`continue` yet).
+- `break`/`continue` through finally blocks (rejected as `Unsupported`
+  since clj-quickjs-78; clj-quickjs-79).
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 
@@ -1238,3 +1240,27 @@ Deferred:
   rejected by the parser; string operands wait for StringToNumber
   (clj-quickjs-67) and object operands for ToPrimitive (they fail with
   `UnsupportedOperand`).
+
+### Unlabelled `break` and `continue` (clj-quickjs-78)
+
+Supported (`cargo test --lib frontend::tests::break_and_continue`,
+`cargo test --test js_source while_break_and_continue`):
+
+- `break;` and `continue;` inside a `while` loop body of the same function:
+  `break` jumps past the innermost loop, `continue` to its test. A line
+  break after the keyword ends the statement. Outside a loop (including in
+  a function nested in one) they are early errors (`Invalid`).
+- Leaving `try` blocks pops their catch handlers (`pop_catch`), so a later
+  exception is not caught by a handler the jump left; leaving a catch body
+  needs nothing. A task may yield, wait or migrate anywhere in the loop:
+  the jumps are ordinary branches and the state stays in the task.
+- Script completion values follow ECMAScript `UpdateEmpty`
+  (`5; while (true) { 6; break; }` is 6, `5; while (true) { break; }` is
+  `undefined`).
+
+Deferred:
+
+- Jumps out of a `try` statement with a finally block (its block, catch
+  body or finally body) are rejected at compile time as `Unsupported`
+  (clj-quickjs-79).
+- Labels (`break l;` is `Unsupported`), `do`-`while`, `for` and `switch`.

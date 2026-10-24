@@ -372,9 +372,12 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   initialization and assignment to a `const` are run-time errors in
   JavaScript, so the compiler emits `throw_error` (opcode `0x2A`, modelled on
   QuickJS's `throw_error`) at that point: the task fails with
-  `VmErrorKind::ReferenceError` or `TypeError` only if that code runs. With no
-  `break`, `continue` or exceptions in the subset, initialization is decided
-  statically by source position within the declaring function; bindings
+  `VmErrorKind::ReferenceError` or `TypeError` only if that code runs.
+  Initialization is decided statically by source position within the
+  declaring function (no jump of the subset enters a scope past a
+  declaration: exceptions, `return`, and since clj-quickjs-78 `break` and
+  `continue`, only leave scopes or restart a loop body from its start; see
+  `docs/grammar.md`, "Explicit gaps"); bindings
   that closures capture use the VM's run-time check, binding cells, where
   needed (clj-quickjs-21, below).
 - **Operators.** New number-only opcodes (`div`, `rem`, `neg`, `gt`, `le`,
@@ -1350,3 +1353,17 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_binary_logic_slow`, `JS_ToInt32Free`, the `OP_shr` / `OP_sar` cases
   of `JS_CallInternal` and `js_unary_arith_slow` were consulted only. No
   code was copied.
+- `src/frontend/tests.rs` `break_and_continue` and `tests/js_source.rs`
+  `while_break_and_continue` (clj-quickjs-78): the first statement of
+  `test_labels2` in `research/quickjs/tests/test_language.js` (`while (1)
+  label: break` followed by a line break) and the body of `test_while_break`
+  in `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8. Modified:
+  the label is dropped (labelled statements are not supported) and the
+  next line is `x`, checked as a parse tree; `let` for `var`, `x = x + 1`
+  for `x++`, and the asserted condition is the script's completion value.
+  Each test carries the notice. Consulted only, in
+  `research/quickjs/quickjs.c`: the `TOK_BREAK`/`TOK_CONTINUE` case of
+  `js_parse_statement_or_decl`, `emit_break`, `push_break_entry` and
+  `close_scopes` (which enclosing loops and handlers a jump leaves, and the
+  early errors). Here the compiler pops catch handlers of the task-owned
+  handler stack with `pop_catch` before the jump. No code was copied.

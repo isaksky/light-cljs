@@ -64,7 +64,7 @@ impl Stmt {
             } => max_height(block)
                 .max(handler.as_ref().map_or(0, |h| max_height(&h.body)))
                 .max(finalizer.as_deref().map_or(0, max_height)),
-            StmtKind::Return(None) | StmtKind::Empty => 0,
+            StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Empty => 0,
         };
         Stmt {
             kind,
@@ -110,6 +110,12 @@ pub enum StmtKind {
         handler: Option<CatchClause>,
         finalizer: Option<Vec<Stmt>>,
     },
+    /// `break;` (unlabelled): leaves the innermost enclosing loop. Only
+    /// inside a loop of the same function.
+    Break,
+    /// `continue;` (unlabelled): starts the next iteration of the innermost
+    /// enclosing loop. Only inside a loop of the same function.
+    Continue,
     /// `;`
     Empty,
 }

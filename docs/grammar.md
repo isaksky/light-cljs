@@ -18,7 +18,9 @@ and expressions, calls, closures (clj-quickjs-21), arrow functions
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). String values and property access parse but are rejected by the
 compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
-execute; see "Exceptions" below.
+execute; see "Exceptions" below. Unlabelled `break` and `continue` in `while`
+loops (clj-quickjs-78) parse and execute, except a jump out of a `try`
+statement that has a finally block.
 
 ## Semantics model
 
@@ -57,12 +59,15 @@ Script              = { StatementListItem } EOF
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement
                     | ReturnStatement | ThrowStatement | TryStatement
+                    | BreakStatement | ContinueStatement
                     | ExpressionStatement
 Block               = "{" { StatementListItem } "}"
 IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
 WhileStatement      = "while" "(" Expression ")" Statement
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
 ThrowStatement      = "throw" [no LineTerminator here] Expression ";"
+BreakStatement      = "break" ";"        (* [no LineTerminator here] before a label *)
+ContinueStatement   = "continue" ";"
 TryStatement        = "try" Block ( Catch [ Finally ] | Finally )
 Catch               = "catch" [ "(" BindingIdentifier ")" ] Block
 Finally             = "finally" Block
@@ -110,6 +115,11 @@ Notes on the grammar:
   left-associative. This is ECMAScript's ordering restricted to the
   supported operators.
 - `ReturnStatement` is accepted only inside a function body.
+- `BreakStatement` and `ContinueStatement` (clj-quickjs-78) are accepted
+  only inside the body of a `while` loop of the same function: a function
+  nested in the loop starts a new context (`while (x) { function f() {
+  break; } }` is an early error). They are unlabelled; a label after the
+  keyword on the same line (`break l;`) is rejected as unsupported.
 - `FunctionDeclaration` and `LexicalDeclaration` are statement-list items:
   allowed in the script, a function body or a block, but not as the direct
   body of `if`/`else`/`while` (strict mode rejects that; wrap it in a block).
@@ -150,6 +160,8 @@ of input, or is preceded by a line terminator. A line break never ends a
 statement the next token can continue, exactly as in JavaScript: `a` newline
 `(b)` is a call, and `a = b` newline `+c` is `a = b + c`. `return`
 followed by a line break returns `undefined` (restricted production).
+Likewise a line break after `break` or `continue` ends the statement
+(`while (1) break` newline `x` is a loop and the statement `x`).
 Postfix `++`/`--` after a line break begins a new statement (where it is
 rejected as unsupported). No semicolon is ever inserted to create an empty
 statement, so `if (x)` newline `else y` is an error.
@@ -174,7 +186,7 @@ Every form below is rejected where it starts. Error kinds:
 
 | Form | Kind |
 |------|------|
-| `var`, `for`, `do`-`while`, `break`, `continue`, `switch`, labelled statements, `debugger`, `with` | Unsupported |
+| `var`, `for`, `do`-`while`, `switch`, labelled statements, labelled `break`/`continue`, `debugger`, `with` | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest/default parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -186,7 +198,7 @@ Every form below is rejected where it starts. Error kinds:
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
+| `return` outside a function, `break` or `continue` outside a loop of the same function, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -248,7 +260,10 @@ running it completes with the script's **completion value**, the value
 JavaScript `eval` would return (the last expression statement that ran;
 `if`, `while` and `try` produce `undefined` unless their body produced a
 value; a `try` statement's value is that of its block or catch body, never
-that of a finally block that completes normally).
+that of a finally block that completes normally; a `break` or `continue`
+keeps the value its loop body produced so far, as ECMAScript `UpdateEmpty`
+does, so `5; while (true) { 6; break; }` is 6 and
+`5; while (true) { break; }` is `undefined`).
 `frontend::compile_function(source)` compiles a source made of exactly one
 function declaration into an entry point whose parameters are the task's
 arguments (missing ones are `undefined`); `return` completes the task and
@@ -269,6 +284,7 @@ Executed, with JavaScript semantics:
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `a, b` | evaluates `a` and discards its value, then evaluates `b`, the value; as the last expression statement, `b` is the completion value |
 | `return` (in `compile_function`) | completes the task |
+| `break`, `continue` (unlabelled) | `break` leaves the innermost enclosing loop, `continue` evaluates its test again; leaving a `try` block pops its catch handler, so a later exception is not caught by it |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
 | arrow functions | lowered exactly as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; the subset has no `this`, `arguments`, `new.target` or `super`, so an arrow's lexical versions of them do not arise (they stay rejected inside arrows) |
@@ -285,6 +301,7 @@ Errors:
 | A name declared twice in one block, script or function body (including a `let` that repeats a parameter, and a function declaration that clashes with a `let`/`const` or repeats one in a block) | compile time | `SyntaxError`, kind `Invalid`, at the second declaration |
 | A function declaration that repeats a parameter or another function declaration at the top level of a script or function body (valid JavaScript) | compile time | `SyntaxError`, kind `Unsupported`, at the second name |
 | String values, property access other than `__rt.name(...)`, and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
+| A `break` or `continue` that would leave a `try` block, catch body or finally block of a `try` statement with a finally block (until finally blocks run on the way) | compile time | `SyntaxError`, kind `Unsupported`, at the keyword |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
 | Reading or assigning a name with no binding (strict mode; there is no global object) | run time, only if reached, after the assigned value is evaluated | `VmErrorKind::ReferenceError`: "x is not defined" |
@@ -345,9 +362,12 @@ Gaps specific to execution:
   bitwise and shift operators applied to them fail with `UnsupportedOperand` where JavaScript
   would call ToPrimitive (`===`/`==` compare them by identity).
 - **Temporal dead zone: static within a function, dynamic across
-  closures.** The subset has no `break`, `continue` or labels, and an
-  exception or `return` only leaves a `try` block for its catch or finally
-  block (outside the scope of the block's bindings), so within the function
+  closures.** The subset has no labels; an exception or `return` only
+  leaves a `try` block for its catch or finally block (outside the scope
+  of the block's bindings); an unlabelled `break` only leaves scopes and
+  `continue` jumps to the loop test, from which the body is entered again
+  at its start (clj-quickjs-78), so no jump enters a scope past a
+  declaration. So within the function
   that declares a binding, whether it is initialized at a reference is
   known from source order, and the compiler
   decides it statically. A closure may run at any time, so a binding a
@@ -483,6 +503,16 @@ if (a = a + 1, a < b) a, b;
 ```
 
 ```js accept
+// Unlabelled `break` and `continue`; ASI after the keyword.
+let i = 0;
+while (true) {
+  i = i + 1;
+  if (i < 3) continue
+  try { break; } catch (e) {}
+}
+```
+
+```js accept
 const f = __rt.need("defn/foo", "callable")
 f.call(undefined, NaN, Infinity, null, true, false, 0x1F, 0b101, 0o17, .5, 5., 1e3)
 ```
@@ -580,6 +610,22 @@ return 1;
 const c;
 ```
 
+```js reject Invalid 2:18
+while (x) {
+  function f() { continue; }
+}
+```
+
+```js reject Unsupported 1:11
+while (x) break outer;
+```
+
+```js compile-reject Unsupported 2:9
+while (x) {
+  try { break; } finally { cleanup(); }
+}
+```
+
 ```js reject UnexpectedToken 1:11
 let a = 1 let b = 2;
 ```
@@ -635,12 +681,19 @@ identifiers (clj-quickjs-50): `next_token`'s `lre_js_is_ident_first` /
 `lre_js_is_ident_next` checks and `ident_realloc` (escapes decoded into the
 name, an escaped reserved word never a keyword); the tables here are
 generated from perl's Unicode database, not from QuickJS's
-`libunicode-table.h`. The tests
+`libunicode-table.h`. For `break` and `continue` (clj-quickjs-78):
+the `TOK_BREAK` / `TOK_CONTINUE` case of `js_parse_statement_or_decl`,
+`emit_break` (the chain of enclosing loops and handlers a jump leaves, and
+its early errors), `push_break_entry` and `close_scopes`. The tests
 in `src/frontend/tests.rs` are written for this project and are not adapted
 from QuickJS, except the hashbang line of `research/quickjs/tests/test_std.js`
-in `hashbang_comment_only_at_start`, which carries its notice, and the name
+in `hashbang_comment_only_at_start`, which carries its notice, the name
 `Ãµ` of `test_unicode_ident` (`research/quickjs/tests/test_language.js`),
 whose case `identifiers_are_not_normalized` in `tests/js_source.rs` adapts
-with its notice;
+with its notice, and the first statement of `test_labels2` in
+`test_language.js` (without its label) in `break_and_continue`, which
+carries the notice; `test_while_break` of
+`research/quickjs/tests/test_loop.js` is adapted in `tests/js_source.rs`
+`while_break_and_continue` with the notice;
 `tests/fixtures/js/quickjs_closure.js` is adapted from
 `research/quickjs/tests/test_closure.js` and carries its notice (`docs/architecture.md`, "QuickJS references and provenance").

@@ -1,7 +1,8 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
-//! `hashbang_comment_only_at_start` and three scripts in
-//! `arrow_functions_and_asi` (each marked there, with the QuickJS notice),
+//! `hashbang_comment_only_at_start`, three scripts in
+//! `arrow_functions_and_asi` and one in `break_and_continue` (each marked
+//! there, with the QuickJS notice),
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
 //! `test_unicode_ident` (notice in `tests/js_source.rs`
 //! `identifiers_are_not_normalized`).
@@ -201,6 +202,8 @@ fn render_stmt(s: &Stmt) -> String {
         StmtKind::While { test, body } => {
             format!("(while {} {})", render_expr(test), render_stmt(body))
         }
+        StmtKind::Break => "(break)".into(),
+        StmtKind::Continue => "(continue)".into(),
         StmtKind::Empty => "(empty)".into(),
     }
 }
@@ -365,6 +368,76 @@ fn throw_and_try_statements() {
         1,
         16,
     );
+}
+
+/// Unlabelled `break` and `continue` (clj-quickjs-78). The script
+/// `while (1) break` newline `x` is adapted from the first statement of
+/// `test_labels2` in `research/quickjs/tests/test_language.js` (QuickJS,
+/// revision 7d1c13c5d8f8; see `docs/architecture.md` for the attribution):
+/// its label is dropped (labelled statements are not supported) and the
+/// next line is `x`. The other cases are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn break_and_continue() {
+    use SyntaxErrorKind::{Invalid, UnexpectedToken, Unsupported};
+    assert_eq!(ast("while (x) break;"), "(while x (break))");
+    assert_eq!(
+        ast("while (x) { continue; }"),
+        "(while x (block (continue)))"
+    );
+    // Restricted production: a line break after the keyword inserts `;`.
+    assert_eq!(ast("while (1) break\nx"), "(while 1 (break)) x");
+    assert_eq!(ast("while (1) continue\nx;"), "(while 1 (continue)) x");
+    assert_eq!(ast("while (x) { break }"), "(while x (block (break)))");
+    // Anywhere inside the loop body of the same function.
+    assert_eq!(
+        ast("while (a) { if (b) break; else { continue; } }"),
+        "(while a (block (if b (break) (block (continue)))))"
+    );
+    assert_eq!(
+        ast("while (a) try { break; } catch (e) { continue; } finally {}"),
+        "(while a (try (block (break)) (catch e (continue)) (finally)))"
+    );
+    assert_eq!(
+        ast("while (a) { function f() { while (b) break; } continue; }"),
+        "(while a (block (function f () (while b (break))) (continue)))"
+    );
+    // Early errors: outside a loop, or in a function nested in the loop.
+    rejects_with("break;", Invalid, 1, 1, "inside a loop");
+    rejects_with("{ continue; }", Invalid, 1, 3, "inside a loop");
+    rejects_with("if (x) break;", Invalid, 1, 8, "inside a loop");
+    rejects_with(
+        "while (x) { function f() { break; } }",
+        Invalid,
+        1,
+        28,
+        "inside a loop",
+    );
+    rejects("while (x) { (() => { continue; })(); }", Invalid, 1, 22);
+    rejects("while (x) { g = function () { break; }; }", Invalid, 1, 31);
+    rejects("function f() { break; }", Invalid, 1, 16);
+    rejects("while (x) {} break;", Invalid, 1, 14);
+    // Labels after the keyword are not supported yet (on the same line).
+    rejects_with("while (x) break l;", Unsupported, 1, 11, "labelled `break`");
+    rejects_with("while (x) continue l;", Unsupported, 1, 11, "labelled");
+    rejects("while (x) break 1;", UnexpectedToken, 1, 17);
+    rejects("while (x) break if;", UnexpectedToken, 1, 17);
 }
 
 #[test]
@@ -1162,8 +1235,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("var x = 1;", 1, 1, "var"),
         ("for (;;) {}", 1, 1, "for"),
         ("do {} while (x);", 1, 1, "do"),
-        ("while (x) { break; }", 1, 13, "break"),
-        ("while (x) continue;", 1, 11, "continue"),
         ("switch (x) {}", 1, 1, "switch"),
         ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("label: x;", 1, 1, "labelled"),

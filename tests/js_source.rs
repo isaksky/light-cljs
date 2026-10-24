@@ -300,6 +300,218 @@ fn script_completion_value_follows_javascript() {
         eval("let i = 0; while (i < 2) { i = i + 1; if (i > 5) { 9; } }"),
         ValueView::Undefined
     );
+    // `break`/`continue` (clj-quickjs-78) carry the value their statement
+    // list produced so far; an `if` around them makes it undefined.
+    assert_eq!(num("5; while (true) { 6; { break; } }"), 6.0);
+    assert_eq!(
+        eval("let i = 0; while (true) { i = i + 1; if (i > 2) break; }"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("let i = 0; while (i < 3) { i = i + 1; continue; 7; }"),
+        3.0
+    );
+    assert_eq!(
+        eval("let i = 0; 1; while (i < 2) { i = i + 1; if (i == 2) { continue; } 8; }"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("while (true) { 1; try { 2; break; } catch (e) {} }"),
+        2.0
+    );
+    assert_eq!(
+        eval("3; while (true) { 4; while (true) { break; } break; }"),
+        ValueView::Undefined
+    );
+}
+
+/// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
+/// `TEST_WHILE_BREAK` is adapted from `test_while_break` in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution): `let` for `var`,
+/// `x = x + 1` for `x++`, and the asserted condition is the completion
+/// value. The other scripts are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn while_break_and_continue() {
+    const TEST_WHILE_BREAK: &str = "
+        let i, c;
+        i = 0;
+        c = 0;
+        while (i < 3) {
+            c = c + 1;
+            if (i == 1)
+                break;
+            i = i + 1;
+        }
+        c === 2 && i === 1";
+    assert_eq!(eval(TEST_WHILE_BREAK), ValueView::Bool(true));
+    // The same loop under a 3-instruction budget yields inside it and
+    // resumes there with the same result.
+    let exe = exe(TEST_WHILE_BREAK);
+    let task = Runtime::new().spawn(&exe, &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        match task
+            .run_with(Budget::instructions(3), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, ValueView::Bool(true));
+    assert!(yields >= 1, "{yields} yields");
+
+    // `continue` skips the rest of the body: the odd numbers below 10.
+    assert_eq!(
+        num("let i = 0, sum = 0;
+             while (i < 10) {
+                 i = i + 1;
+                 if (i % 2 === 0) continue;
+                 if (i >= 10) continue;
+                 sum = sum + i;
+             }
+             sum"),
+        25.0
+    );
+    // `break` leaves only the innermost loop; `continue` restarts it.
+    assert_eq!(
+        num("let i = 0, log = 0;
+             while (i < 3) {
+                 i = i + 1;
+                 let j = 0;
+                 while (true) {
+                     j = j + 1;
+                     if (j === 2) continue;
+                     if (j > i) break;
+                     log = log * 10 + j;
+                 }
+                 log = log * 10;
+             }
+             log"),
+        // i = 1: j 1, 3 breaks; i = 2: j 1, 3 breaks; i = 3: j 1, 3, 4 breaks.
+        1010130.0
+    );
+    // Loop bodies make new bindings each iteration, also after `continue`.
+    assert_eq!(
+        num("let fs = 0, i = 0;
+             while (i < 3) {
+                 i = i + 1;
+                 const k = i;
+                 if (k === 1) { fs = () => k; continue; }
+                 if (k === 2) break;
+             }
+             fs() * 10 + i"),
+        12.0
+    );
+    // In a function: `break` then `return`; a loop inside a callee.
+    assert_eq!(
+        num("function find(n) {
+                 let i = 0;
+                 while (true) { if (i * i >= n) break; i = i + 1; }
+                 return i;
+             }
+             find(10) * 100 + find(0)"),
+        400.0
+    );
+
+    // Leaving a `try` block pops its catch handler: the `throw` after the
+    // loop is not caught by it and escapes. (Each loop runs a bounded number
+    // of times even if a stale handler caught the `throw` and re-entered it.)
+    let thrown = |src: &str| {
+        let (kind, message, _, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::Thrown, "{src}: {message}");
+        message
+    };
+    assert_eq!(
+        thrown(
+            "let n = 0;\nwhile (n === 0) { try { n = 1; break; } catch (e) { n = 99; } }\nthrow n + 1;"
+        ),
+        "uncaught exception: 2"
+    );
+    assert_eq!(
+        thrown(
+            "let n = 0;\nwhile (n < 3) { try { n = n + 1; continue; } catch (e) { n = 99; } }\nthrow n;"
+        ),
+        "uncaught exception: 3"
+    );
+    // ... also two nested try blocks, and a catch body (whose handler is
+    // already gone) inside a try block.
+    assert_eq!(
+        thrown(
+            "let n = 0;\nwhile (n === 0) { n = 1; try { try { break; } catch (e) { n = 50; } } catch (e) { n = 60; } }\nthrow n + 3;"
+        ),
+        "uncaught exception: 4"
+    );
+    assert_eq!(
+        thrown(
+            "let n = 0;\nwhile (n === 0) { n = 1; try { try { throw 1; } catch (e) { break; } } catch (e) { n = 60; } }\nthrow n + 4;"
+        ),
+        "uncaught exception: 5"
+    );
+    // A handler outside the loop stays: it catches the later `throw`.
+    assert_eq!(
+        num("let r = 0, n = 0;
+             try {
+                 while (n === 0) { n = 1; try { break; } catch (e) { r = 1; } }
+                 throw 7;
+             } catch (e) { r = r * 10 + e; }
+             r"),
+        7.0
+    );
+    // A loop inside a `try` with a finally block: the jump stays inside.
+    assert_eq!(
+        num("let r = 0;
+             try { while (true) { r = r + 1; if (r < 3) continue; break; } }
+             finally { r = r * 10; }
+             r"),
+        30.0
+    );
+
+    // Completion values (ECMAScript UpdateEmpty).
+    assert_eq!(num("5; while (true) { 6; break; }"), 6.0);
+    assert_eq!(eval("5; while (true) { break; }"), ValueView::Undefined);
+
+    // Jumps out of a `try` statement with a finally block wait for
+    // clj-quickjs-79: rejected at the keyword.
+    for (src, column) in [
+        ("while (x) { try { break; } finally {} }", 19),
+        (
+            "while (x) { try {} catch (e) { continue; } finally {} }",
+            32,
+        ),
+        ("while (x) { try {} finally { break; } }", 30),
+        (
+            "while (x) { try { try { continue; } catch (e) {} } finally {} }",
+            25,
+        ),
+    ] {
+        let e = compile_script("t", src).unwrap_err();
+        assert_eq!(
+            (e.kind, e.line, e.column),
+            (SyntaxErrorKind::Unsupported, 1, column),
+            "{src}: {e}"
+        );
+        assert!(e.message.contains("`finally` block"), "{src}: {e}");
+    }
 }
 
 #[test]
