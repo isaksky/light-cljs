@@ -2996,10 +2996,13 @@ fn compound_assignment_on_bindings() {
         // Parenthesized targets and parameters.
         "let p = 2; (p) *= 5; ((p)) -= 1; p === 9",
         "function g(x) { x %= 3; return x; } g(7) === 1",
-        // ToNumber on `undefined`, `null` and booleans.
+        // ToNumber on `undefined`, `null`, booleans and (except for `+=`)
+        // strings (clj-quickjs-67).
         "let t = true; t += 1; t === 2",
         "let n = null; n -= 1; n === -1",
         "let f = false; f *= 5; f === 0",
+        r#"let s = "8"; s -= "2"; s /= 2; s === 3"#,
+        r#"let s = " 0x10 "; s |= 1; s === 17"#,
         // The bitwise, shift and `**` forms (clj-quickjs-62, -63).
         "let a = 3; a **= 2; a === 9",
         "let a = 6; a &= 3; a === 2",
