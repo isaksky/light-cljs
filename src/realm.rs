@@ -214,11 +214,12 @@ pub(crate) enum Global {
     WeakMap = 38,
     Eval = 39,
     WeakRef = 40,
+    FinalizationRegistry = 41,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 41] = [
+    const ALL: [Global; 42] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -260,6 +261,7 @@ impl Global {
         Global::WeakMap,
         Global::Eval,
         Global::WeakRef,
+        Global::FinalizationRegistry,
     ];
 
     /// The JavaScript name.
@@ -294,6 +296,7 @@ impl Global {
             Global::Map => "Map",
             Global::WeakMap => "WeakMap",
             Global::WeakRef => "WeakRef",
+            Global::FinalizationRegistry => "FinalizationRegistry",
 
             Global::ArrayBuffer => "ArrayBuffer",
 
@@ -387,6 +390,8 @@ pub(crate) struct Intrinsics {
     weak_map: ObjectId,
     pub(crate) weak_ref_prototype: ObjectId,
     weak_ref: ObjectId,
+    pub(crate) finalization_registry_prototype: ObjectId,
+    finalization_registry: ObjectId,
 
     pub(crate) array_buffer_prototype: ObjectId,
     array_buffer: ObjectId,
@@ -504,6 +509,7 @@ impl Intrinsics {
             Global::Map => Value::Object(self.map),
             Global::WeakMap => Value::Object(self.weak_map),
             Global::WeakRef => Value::Object(self.weak_ref),
+            Global::FinalizationRegistry => Value::Object(self.finalization_registry),
             Global::Date => Value::Object(self.date),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
@@ -1097,6 +1103,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
     let (weak_map_prototype, weak_map) = weak_map_intrinsics(&mut b, object_prototype)?;
     let (weak_ref_prototype, weak_ref) = weak_ref_intrinsics(&mut b, object_prototype)?;
+    let (finalization_registry_prototype, finalization_registry) =
+        finalization_registry_intrinsics(&mut b, object_prototype)?;
 
     let (array_buffer_prototype, array_buffer) = array_buffer_intrinsics(&mut b, object_prototype)?;
 
@@ -1314,6 +1322,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         weak_map,
         weak_ref_prototype,
         weak_ref,
+        finalization_registry_prototype,
+        finalization_registry,
         intl,
         intl_locale_prototype,
 
@@ -2273,6 +2283,45 @@ fn weak_ref_intrinsics(
     Some((prototype, constructor))
 }
 
+fn finalization_registry_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::FinalizationRegistry,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for (name, builtin) in [
+        ("register", Builtin::FinalizationRegistryRegister),
+        ("unregister", Builtin::FinalizationRegistryUnregister),
+    ] {
+        let method = b.function(builtin, &[])?;
+        b.add(prototype, name, method, PropertyFlags::METHOD)?;
+    }
+    let tag_key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    b.heap
+        .with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("FinalizationRegistry")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
+    Some((prototype, constructor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2390,7 +2439,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 290); // Includes WeakRef, Symbol wrappers and six ListFormat intrinsics.
+        assert_eq!(first.all.len(), 294); // Includes ListFormat (-220) and FinalizationRegistry (-177).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2458,7 +2507,12 @@ mod tests {
         assert_eq!(Global::from_u16(39), Some(Global::Eval));
         assert_eq!(Global::from_u16(40), Some(Global::WeakRef));
         assert_eq!(Global::from_name("WeakRef"), Some(Global::WeakRef));
-        assert_eq!(Global::from_u16(41), None);
+        assert_eq!(Global::from_u16(41), Some(Global::FinalizationRegistry));
+        assert_eq!(
+            Global::from_name("FinalizationRegistry"),
+            Some(Global::FinalizationRegistry)
+        );
+        assert_eq!(Global::from_u16(42), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

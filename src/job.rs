@@ -23,6 +23,7 @@ impl Trace for Job {
 #[derive(Debug, Default)]
 struct Inbox {
     queue: VecDeque<Job>,
+    registries: std::collections::HashSet<ObjectId>,
     closed: bool,
     rejections: VecDeque<(ObjectId, Value)>,
     dropped_rejections: usize,
@@ -64,6 +65,17 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
+    /// Called under the object-table lock, like registry cell mutation.
+    /// Never acquire heap access while holding the inbox lock.
+    pub(crate) fn retain_registry(&self, id: ObjectId, retain: bool) {
+        let mut inbox = self.inbox.lock().unwrap();
+        if retain && !inbox.closed {
+            inbox.registries.insert(id);
+        } else {
+            inbox.registries.remove(&id);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn rejection_snapshot_boundary(&self) {
         run_hook(&self.before_rejection_roots);
@@ -146,6 +158,7 @@ impl JobInbox {
             #[cfg(test)]
             run_hook(&self.before_close);
             inbox.closed = true;
+            inbox.registries.clear();
         }
         next
     }
@@ -153,6 +166,7 @@ impl JobInbox {
     pub(crate) fn close(&self) {
         let mut inbox = self.inbox.lock().unwrap();
         inbox.closed = true;
+        inbox.registries.clear();
         inbox.queue.clear();
         if !inbox.rejections_reported {
             inbox.rejections.clear();
@@ -173,6 +187,7 @@ impl Trace for JobInbox {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         let inbox = self.inbox.lock().unwrap();
         inbox.queue.iter().for_each(|j| j.trace(visit));
+        inbox.registries.iter().for_each(|id| visit((*id).into()));
         for (promise, reason) in &inbox.rejections {
             visit((*promise).into());
             reason.trace(visit);

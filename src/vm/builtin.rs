@@ -408,6 +408,11 @@ pub(crate) enum Builtin {
     IntlListFormatFormatToParts,
     IntlListFormatResolvedOptions,
     IntlListFormatSupportedLocales,
+
+
+    FinalizationRegistry,
+    FinalizationRegistryRegister,
+    FinalizationRegistryUnregister,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -620,6 +625,9 @@ impl Builtin {
             Builtin::WeakMapDelete => "delete",
             Builtin::WeakRef => "WeakRef",
             Builtin::WeakRefDeref => "deref",
+            Builtin::FinalizationRegistry => "FinalizationRegistry",
+            Builtin::FinalizationRegistryRegister => "register",
+            Builtin::FinalizationRegistryUnregister => "unregister",
             Builtin::MapSet => "set",
             Builtin::MapGet => "get",
             Builtin::MapHas => "has",
@@ -801,6 +809,8 @@ impl Builtin {
             Builtin::MapSet | Builtin::WeakMapSet => 2,
             Builtin::WeakRef => 1,
             Builtin::WeakRefDeref => 0,
+            Builtin::FinalizationRegistry | Builtin::FinalizationRegistryUnregister => 1,
+            Builtin::FinalizationRegistryRegister => 2,
             Builtin::WeakMap
             | Builtin::WeakMapGet
             | Builtin::WeakMapHas
@@ -1022,6 +1032,12 @@ pub(crate) fn call(
         Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
         Builtin::WeakRef => Err(Fault::TypeError("WeakRef requires new".into())),
         Builtin::WeakRefDeref => Err(Fault::Internal("WeakRef.deref requires task kept objects")),
+        Builtin::FinalizationRegistry => {
+            Err(Fault::TypeError("FinalizationRegistry requires new".into()))
+        }
+        Builtin::FinalizationRegistryRegister | Builtin::FinalizationRegistryUnregister => Err(
+            Fault::Internal("FinalizationRegistry methods require task state"),
+        ),
         Builtin::WeakMapSet
         | Builtin::WeakMapGet
         | Builtin::WeakMapHas
@@ -1994,7 +2010,8 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::Native(_)
                 | HeapObject::JsMap(_)
                 | HeapObject::WeakMap(_)
-                | HeapObject::WeakRef(_) => Ok("Object"),
+                | HeapObject::WeakRef(_)
+                | HeapObject::FinalizationRegistry(_) => Ok("Object"),
                 HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
@@ -2054,6 +2071,12 @@ pub(crate) fn call_in_state(
     this: &Value,
     args: &[Value],
 ) -> Result<Value, Fault> {
+    if matches!(
+        which,
+        Builtin::FinalizationRegistryRegister | Builtin::FinalizationRegistryUnregister
+    ) {
+        return finalization_registry_operation(heap, state, which, this, args);
+    }
     if which != Builtin::WeakRefDeref {
         return call(heap, state.diag.task, which, this, args);
     }
@@ -2151,6 +2174,87 @@ fn weak_map_operation(
         })
     })
     .unwrap_or(Err(Fault::Internal("WeakMap receiver was reclaimed")))
+}
+
+pub(crate) fn finalization_registry_constructor(
+    heap: &Heap,
+    state: &super::frames::VmState,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let callback = args.first().unwrap_or(&Value::Undefined);
+    callable(heap, callback)?;
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .finalization_registry_prototype;
+    heap.alloc(HeapObject::FinalizationRegistry(Box::new(
+        crate::object::finalization_registry::FinalizationRegistryObject::new(
+            state.diag.task,
+            prototype,
+            callback.clone(),
+        ),
+    )))
+    .map(Value::Object)
+    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+fn finalization_registry_operation(
+    heap: &Heap,
+    state: &super::frames::VmState,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let invalid = || {
+        Fault::TypeError(
+            "FinalizationRegistry method requires a FinalizationRegistry receiver".into(),
+        )
+    };
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    let inbox = state
+        .jobs
+        .upgrade()
+        .ok_or(Fault::Internal("missing job inbox"))?;
+    heap.with_object_mut(*id, |object| {
+        let HeapObject::FinalizationRegistry(registry) = object else {
+            return Err(invalid());
+        };
+        if registry.object().owner() != Some(state.diag.task) {
+            return Err(Fault::ForeignObject {
+                owner: registry.object().owner(),
+                caller: state.diag.task,
+            });
+        }
+        let first = args.first().unwrap_or(&Value::Undefined);
+        let key = crate::object::weak_map::weak_key(first).ok_or_else(|| {
+            Fault::TypeError("invalid finalization target or unregister token".into())
+        })?;
+        let result = if which == Builtin::FinalizationRegistryRegister {
+            let held = args.get(1).unwrap_or(&Value::Undefined);
+            if same_value(first, held) {
+                return Err(Fault::TypeError("held value cannot be the target".into()));
+            }
+            let token = match args.get(2) {
+                None | Some(Value::Undefined) => None,
+                Some(token) => Some(
+                    crate::object::weak_map::weak_key(token)
+                        .ok_or_else(|| Fault::TypeError("invalid unregister token".into()))?,
+                ),
+            };
+            registry.register(key, held.clone(), token).ok_or_else(|| {
+                Fault::RangeError("finalization cell identities exhausted".into())
+            })?;
+            Value::Undefined
+        } else {
+            Value::Bool(registry.unregister(key))
+        };
+        inbox.retain_registry(*id, !registry.is_empty());
+        Ok(result)
+    })
+    .unwrap_or(Err(Fault::Internal(
+        "FinalizationRegistry receiver was reclaimed",
+    )))
 }
 
 #[cfg(test)]

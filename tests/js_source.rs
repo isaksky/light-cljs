@@ -23973,3 +23973,73 @@ fn quickjs_date_regexp_cases_run_unmodified() {
         assert!(complete, "{name}: exceeded bounded fixture run");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn finalization_registry_argument_errors() {
+    for expression in [
+        "r.register(1, 2)",
+        "r.register(o, o)",
+        "r.register(o, 1, 2)",
+        "r.unregister(1)",
+        "new FinalizationRegistry(1)",
+        "FinalizationRegistry(() => 0)",
+        "r.register(Symbol.for('registered'), 1)",
+        "r.unregister(Symbol.for('registered'))",
+        "FinalizationRegistry.prototype.register.call({}, o, 1)",
+        "FinalizationRegistry.prototype.unregister.call({}, o)",
+    ] {
+        let source = format!(
+            "let r = new FinalizationRegistry(() => 0); let o = {{}}; let caught = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof TypeError; }} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{expression}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn finalization_registry_properties_and_forwarding() {
+    for source in [
+        "let r = new FinalizationRegistry(() => 0); r instanceof FinalizationRegistry && r.constructor === FinalizationRegistry && FinalizationRegistry.name === 'FinalizationRegistry' && FinalizationRegistry.length === 1 && r[Symbol.toStringTag] === 'FinalizationRegistry' && Object.getPrototypeOf(r) === FinalizationRegistry.prototype",
+        "let d = Object.getOwnPropertyDescriptor(FinalizationRegistry.prototype, 'register'); d.writable && !d.enumerable && d.configurable && d.value.name === 'register' && d.value.length === 2 && FinalizationRegistry.prototype.unregister.length === 1",
+        "let d = Object.getOwnPropertyDescriptor(FinalizationRegistry.prototype, Symbol.toStringTag); d.value === 'FinalizationRegistry' && !d.writable && !d.enumerable && d.configurable",
+        "let r = new FinalizationRegistry(() => 0); let token = {}; Object.freeze(r); Reflect.apply(r.register, r, [{}, 1, token]); r.unregister.bind(r)(token) && !r.unregister.call(r, token)",
+        "let r = new FinalizationRegistry(() => 0); Object.defineProperty(r, 'x', {value: 7, configurable: true}); r.x === 7 && delete r.x && !('x' in r) && r.cleanupSome === undefined",
+        "let r = new FinalizationRegistry(() => 0); r.register({}, 1, undefined) === undefined",
+        "let r = new FinalizationRegistry(() => 0); let token = Symbol(); r.register({}, 1, token); r.unregister(token) && !r.unregister(token)",
+        "let r = new FinalizationRegistry(() => 0); r.register({}, 1, Symbol.iterator); r.unregister(Symbol.iterator)",
+        "let r = new FinalizationRegistry(() => 0); let token = {}; r.register({}, 1, token); __rt.reduce(r.unregister.bind(r, token), 0, __rt.vector(1)) === true",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Raw host handles do not
+/// transfer permission to mutate or inspect a foreign registry.
+#[test]
+fn finalization_registries_reject_access_from_another_task() {
+    let rt = Runtime::new();
+    let owner = rt
+        .spawn(&exe("new FinalizationRegistry(() => 0)"), &[])
+        .unwrap();
+    let RunOutcome::Complete(registry) = owner.run().unwrap() else {
+        panic!("registry expected")
+    };
+    for body in [
+        "r.register({}, 1)",
+        "r.unregister({})",
+        "FinalizationRegistry.prototype.register.call(r, {}, 1)",
+        "Reflect.apply(FinalizationRegistry.prototype.unregister, r, [{}])",
+        "Object.defineProperty(r, 'x', {value: 1})",
+        "Object.keys(r)",
+        "Object.getPrototypeOf(r)",
+        "Object.freeze(r)",
+    ] {
+        let code = compile_function(&format!("function read(r) {{ return {body}; }}")).unwrap();
+        let task = rt.spawn(&code, &[&registry]).unwrap();
+        assert!(
+            matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+            "{body}"
+        );
+    }
+}

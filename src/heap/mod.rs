@@ -160,6 +160,7 @@ pub(crate) enum ObjectKind {
     WeakMap,
     AsyncState,
     WeakRef,
+    FinalizationRegistry,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -241,6 +242,7 @@ pub(crate) enum HeapObject {
     WeakMap(Box<crate::object::weak_map::WeakMapObject>),
     AsyncState(Box<crate::vm::asynchronous::AsyncState>),
     WeakRef(Box<crate::object::weak_ref::WeakRefObject>),
+    FinalizationRegistry(Box<crate::object::finalization_registry::FinalizationRegistryObject>),
 }
 
 impl HeapObject {
@@ -267,6 +269,7 @@ impl HeapObject {
             HeapObject::JsMap(_) => ObjectKind::JsMap,
             HeapObject::WeakMap(_) => ObjectKind::WeakMap,
             HeapObject::WeakRef(_) => ObjectKind::WeakRef,
+            HeapObject::FinalizationRegistry(_) => ObjectKind::FinalizationRegistry,
             HeapObject::BoundFunction(_) => ObjectKind::BoundFunction,
             HeapObject::ArrayBuffer(_) => ObjectKind::ArrayBuffer,
             HeapObject::TypedArray(_) => ObjectKind::TypedArray,
@@ -296,6 +299,7 @@ impl Trace for HeapObject {
             HeapObject::JsMap(m) => m.trace(visit),
             HeapObject::WeakMap(m) => m.trace(visit),
             HeapObject::WeakRef(m) => m.trace(visit),
+            HeapObject::FinalizationRegistry(m) => m.trace(visit),
             HeapObject::BoundFunction(f) => f.trace(visit),
             HeapObject::ArrayBuffer(b) => b.trace(visit),
             HeapObject::TypedArray(a) => a.trace(visit),
@@ -325,6 +329,7 @@ impl Trace for HeapObject {
             HeapObject::JsMap(m) => m.trace_conditional(visit),
             HeapObject::WeakMap(m) => m.trace_conditional(visit),
             HeapObject::WeakRef(m) => m.trace_conditional(visit),
+            HeapObject::FinalizationRegistry(m) => m.trace_conditional(visit),
             HeapObject::ArrayBuffer(b) => b.trace_conditional(visit),
             HeapObject::TypedArray(a) => a.trace_conditional(visit),
             HeapObject::Promise(p) => p.trace_conditional(visit),

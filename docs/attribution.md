@@ -1116,3 +1116,16 @@ Europe/Paris (a zone with DST). RegExp's upstream line 744,
 `a = eval("/\0a/");`, executes unchanged with direct eval support
 (clj-quickjs-107). Both cases run every original assertion without
 source substitutions or changed expected values.
+
+## JavaScript FinalizationRegistry tests (clj-quickjs-177)
+
+`tests/gc.rs::finalization_callbacks_run_as_jobs_after_collection` adapts both
+blocks of `research/quickjs/tests/test_builtin.js::test_finalization_registry`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The QuickJS MIT copyright/license notice retained above test_async_gc in that
+file also covers these adapted blocks. Both object and number held values
+are unchanged; added counters/order effects check asynchronous owner-task
+execution. `js_finrec_constructor`, `js_finrec_register`, `js_finrec_unregister`,
+`js_finrec_mark`, `finrec_delete_weakref` and `js_finrec_job` in
+`research/quickjs/quickjs.c` were semantic references only, with no C port.
+Other fixtures are synthetic, not light-cljs output.

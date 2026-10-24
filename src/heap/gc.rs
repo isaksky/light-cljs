@@ -52,7 +52,8 @@
 //! and lazy, separate from heap-internal slots. JavaScript WeakMap uses this
 //! storage (`crate::object::weak_map`); WeakRef uses weak slots and task
 //! job keep-alives (`crate::object::weak_ref`). FinalizationRegistry scheduling
-//! is a later layer. Dead symbol-slot metadata is retired after the pause,
+//! consumes notifications on its owner task (`crate::object::finalization_registry`).
+//! Dead symbol-slot metadata is retired after the pause,
 //! so keeping a cleared slot does not retain the target's description storage.
 //!
 //! # Mutators
@@ -1939,6 +1940,7 @@ mod tests {
             | HeapObject::JsMap(_)
             | HeapObject::WeakMap(_)
             | HeapObject::WeakRef(_)
+            | HeapObject::FinalizationRegistry(_)
             | HeapObject::ArrayBuffer(_)
             | HeapObject::TypedArray(_)
             | HeapObject::Promise(_)

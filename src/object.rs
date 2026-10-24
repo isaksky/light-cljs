@@ -68,6 +68,7 @@
 //! because [`crate::atom`] is the concurrent reference.
 
 pub(crate) mod array;
+pub(crate) mod finalization_registry;
 pub(crate) mod map;
 pub(crate) mod weak_map;
 pub(crate) mod weak_ref;

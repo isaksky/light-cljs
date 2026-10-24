@@ -2890,8 +2890,8 @@ tasks without executing JavaScript during publication. Dependency waits
 continue to suspend the whole task. The owner clears WeakRef kept objects
 at job boundaries (-176). Details: `docs/architecture.md`, "Task-owned jobs".
 
-Deferred: JavaScript-visible enqueue APIs, async generator resumes and
-FinalizationRegistry producers. Promise producers, async resumes, rejection
+Deferred: JavaScript-visible enqueue APIs and async generator resumes.
+FinalizationRegistry producers, Promise producers, async resumes, rejection
 reporting and optional host timers are described below.
 
 ### Regular expression matcher (clj-quickjs-187)
@@ -3386,7 +3386,7 @@ notifications root their owners and held data until consumed. Existing Map
 entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
 WeakRef uses the weak slots and task job keep-alives (-176).
 Deferred JavaScript surfaces: WeakSet and
-FinalizationRegistry registration and cleanup jobs.
+cross-task weak-object publication.
 
 ### `Array.prototype.sort` (clj-quickjs-208)
 
@@ -3461,7 +3461,7 @@ WeakMaps are task-owned and reject publication, even when empty or frozen;
 foreign tasks cannot use borrowed methods to bypass ownership.
 
 Deferred: non-nullish iterable construction (explicit TypeError, as for Map),
-WeakSet, FinalizationRegistry and generic symbol-tag consumption by
+WeakSet and generic symbol-tag consumption by
 Object.prototype.toString. WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
@@ -3751,3 +3751,16 @@ UTC, UTC+01:00, UTC-05:00 and Europe/Paris through simulated hosts. The
 complete `test_regexp` runs unchanged, including its NUL-pattern direct
 eval. Both cases retain all upstream assertions and expected values.
 Run `CARGO_BUILD_JOBS=3 cargo test --test js_source quickjs_date_regexp_cases_run_unmodified -- --exact --test-threads=3`.
+
+### JavaScript FinalizationRegistry (clj-quickjs-177)
+
+Supported: `new FinalizationRegistry(callback)`, `register(target, heldValue,
+optionalToken)`, `unregister(token)`, receiver/argument checks, constructor
+metadata and `Symbol.toStringTag`. Targets and tokens are weak object or
+non-registered symbol identities; callbacks and held values are strong.
+Registries with cells outlive their last JavaScript reference through an owner
+task root. After collection, cleanup runs as ordinary owner-task jobs before
+timers, outside the pause. A finished or cancelled owner drops cleanup.
+Instances remain task-owned even when empty/frozen, and publication rejects
+them directly or through collections/closures. Deferred: `cleanupSome` and
+cross-task registry publication. Tests use opt-in `std.gc()` and virtual timers.

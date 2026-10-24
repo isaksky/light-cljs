@@ -411,6 +411,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::JsMap(_)
                 | HeapObject::WeakMap(_)
                 | HeapObject::WeakRef(_)
+                | HeapObject::FinalizationRegistry(_)
                 | HeapObject::ArrayBuffer(_)
                 | HeapObject::TypedArray(_)
                 | HeapObject::Promise(_)
@@ -809,6 +810,11 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
         }
         Ok(Callee::Builtin(Builtin::WeakRef)) => {
             let result = builtin::weak_ref_constructor(heap, state, &args)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
+        Ok(Callee::Builtin(Builtin::FinalizationRegistry)) => {
+            let result = builtin::finalization_registry_constructor(heap, state, &args)?;
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }

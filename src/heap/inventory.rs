@@ -104,11 +104,13 @@ enum Holder {
     TaskGlobalLexicals,
     WeakRefProperties,
     KeptObjects,
+    FinalizationRegistryEdges,
+    ActiveFinalizationRegistries,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 44] = [
+const HOLDERS: [Holder; 46] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -153,6 +155,8 @@ const HOLDERS: [Holder; 44] = [
     Holder::TaskGlobalLexicals,
     Holder::WeakRefProperties,
     Holder::KeptObjects,
+    Holder::FinalizationRegistryEdges,
+    Holder::ActiveFinalizationRegistries,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -169,7 +173,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 22] = [
+const KINDS: [ObjectKind; 23] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -192,6 +196,7 @@ const KINDS: [ObjectKind; 22] = [
     ObjectKind::WeakMap,
     ObjectKind::AsyncState,
     ObjectKind::WeakRef,
+    ObjectKind::FinalizationRegistry,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -220,6 +225,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             EphemeronValue,
             WeakMapEntries,
             WeakRefProperties,
+            FinalizationRegistryEdges,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -240,6 +246,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ArrayBufferProperty,
             TaskGlobalLexicals,
             KeptObjects,
+            ActiveFinalizationRegistries,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -284,6 +291,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::JsMap => &[JsMapEntries],
         ObjectKind::WeakMap => &[WeakMapEntries],
         ObjectKind::WeakRef => &[WeakRefProperties],
+        ObjectKind::FinalizationRegistry => &[FinalizationRegistryEdges],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -316,6 +324,20 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::FinalizationRegistryEdges => Coverage {
+            retains: (
+                Gc,
+                "finalization_registry_properties_and_callback_are_traced",
+            ),
+            reclaims: (
+                Gc,
+                "finalization_registry_properties_and_callback_are_traced",
+            ),
+        },
+        Holder::ActiveFinalizationRegistries => Coverage {
+            retains: (Gc, "finalization_held_value_is_strong"),
+            reclaims: (Gc, "finalization_held_value_is_strong"),
+        },
         Holder::UnhandledRejection => Coverage {
             retains: (
                 Promises,
@@ -915,7 +937,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 290); // Includes WeakRef, Symbol wrappers and six ListFormat intrinsics.
+    assert_eq!(ids.len(), 294); // Includes ListFormat (-220) and FinalizationRegistry (-177).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

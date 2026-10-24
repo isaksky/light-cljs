@@ -1348,3 +1348,282 @@ fn unreachable_async_cycle_can_be_collected_before_task_completion() {
     rt.collect().unwrap();
     assert!(!weak.is_live());
 }
+
+#[derive(Default)]
+struct FinalizationEffects(Vec<f64>);
+impl Host for FinalizationEffects {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        let Primitive::Number(n) = call.arg else {
+            panic!("number expected")
+        };
+        self.0.push(n);
+        Ok(Primitive::Undefined)
+    }
+}
+
+/// Adapted from QuickJS tests/test_builtin.js::test_finalization_registry,
+/// revision 7d1c13c5d8f8. The MIT notice above applies to this adaptation.
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn finalization_callbacks_run_as_jobs_after_collection() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_script(
+        "finalization",
+        r#"
+        __rt.effect(0, 0);
+        {
+            let expected = {};
+            let actual;
+            let count = 0;
+            let finrec = new FinalizationRegistry(v => { actual = v; count++; __rt.effect(0, 2); });
+            finrec.register({}, expected);
+            os.setTimeout(() => {
+                if (actual !== expected || count !== 1) throw 'object cleanup';
+                __rt.effect(0, 3);
+            }, 0);
+        }
+        {
+            let expected = 42;
+            let actual;
+            let count = 0;
+            let finrec = new FinalizationRegistry(v => { actual = v; count++; __rt.effect(0, 2); });
+            finrec.register({}, expected);
+            os.setTimeout(() => {
+                if (actual !== expected || count !== 1) throw 'number cleanup';
+                __rt.effect(0, 3);
+            }, 0);
+        }
+        std.gc();
+        __rt.effect(0, 1);
+        42
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    task.install_sim_host_bindings().unwrap();
+    let mut host = FinalizationEffects::default();
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()).view(),
+        ValueView::Number(42.0)
+    );
+    assert_eq!(host.0, [0., 1., 2., 2., 3., 3.]);
+    rt.collect().unwrap();
+    assert_eq!(host.0.len(), 6);
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn finalization_unregister_prevents_callback() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_script("unregister", r#"
+        const r = new FinalizationRegistry(() => { throw 'unregistered cleanup'; });
+        const token = {};
+        r.register({}, 1, token); r.register({}, 2, token);
+        if (r.unregister(token) !== true || r.unregister(token) !== false) throw 'unregister result';
+        std.gc(); os.setTimeout(() => { std.gc(); }, 0); 42
+    "#).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    task.install_sim_host_bindings().unwrap();
+    assert_eq!(complete(task.run().unwrap()).view(), ValueView::Number(42.));
+}
+
+/// Synthetic fixture, not light-cljs output. A parked task owns the only
+/// strong held-value edge, then a queued job owns it until that job returns.
+#[test]
+fn finalization_held_value_is_strong() {
+    let rt = Runtime::new();
+    let held = new_rooted_object(&rt);
+    let weak = held.downgrade();
+    let target = new_rooted_object(&rt);
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(target, held) {
+        let r = new FinalizationRegistry(v => { __rt.effect(0, 1); });
+        r.register(target, held); target = null; held = null; r = null;
+        __rt.need(177, 1); return 42;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&target, &held]).unwrap();
+    drop(held);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    rt.collect().unwrap();
+    assert!(weak.is_live(), "registry retains held value");
+    drop(target);
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert!(weak.is_live(), "queued cleanup retains held value");
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = rt.root(Primitive::Undefined);
+    let wakes = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    let mut host = FinalizationEffects::default();
+    drop(complete(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+    ));
+    assert_eq!(host.0, [1.]);
+    rt.collect().unwrap();
+    assert!(!weak.is_live(), "completed cleanup releases held value");
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn finalization_owner_finished_drops_cleanup() {
+    let rt = Runtime::new();
+    let target = new_rooted_object(&rt);
+    let weak_target = target.downgrade();
+    let held = new_rooted_object(&rt);
+    let weak_held = held.downgrade();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(target, held) {
+        const r = new FinalizationRegistry(() => { throw 'finished owner cleanup'; });
+        r.register(target, held); return r;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&target, &held]).unwrap();
+    let registry = complete(task.run().unwrap());
+    drop((target, held));
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert!(!weak_target.is_live(), "target was actually collected");
+    assert!(!weak_held.is_live(), "closed inbox retains no cleanup job");
+    assert!(registry.downgrade().is_live());
+    assert!(matches!(task.run(), Err(clj_quickjs::RunError::Finished)));
+}
+
+/// Synthetic fixture, not light-cljs output. Empty registries still trace
+/// their callback's capture, ordinary properties and custom prototype.
+#[test]
+fn finalization_registry_properties_and_callback_are_traced() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function make() {
+        let capture = {}; let property = {}; let prototype = {};
+        let r = new FinalizationRegistry(() => capture);
+        r.own = property; Object.setPrototypeOf(r, prototype);
+        return __rt.vector(r, capture, property, prototype);
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    let (registry, edges) = rt.scope(|s| {
+        let r = s.local(&result).unwrap();
+        (
+            s.persist(s.nth(r, 0).unwrap()),
+            [1, 2, 3].map(|i| s.downgrade(s.nth(r, i).unwrap())),
+        )
+    });
+    drop((task, result));
+    rt.collect().unwrap();
+    assert!(edges.iter().all(|edge| edge.is_live()));
+    drop(registry);
+    rt.collect().unwrap();
+    assert!(edges.iter().all(|edge| !edge.is_live()));
+    assert_eq!(rt.heap_usage().objects.finalization_registry, 0);
+}
+
+/// Synthetic fixture, not light-cljs output. The target and unregister
+/// token may be the same object/symbol: neither slot is a strong edge.
+#[test]
+fn finalization_targets_and_tokens_are_weak() {
+    for target in ["{}", "Symbol('target')", "Symbol.iterator"] {
+        let rt = Runtime::new();
+        let source = format!(
+            r#"
+            let count = 0;
+            const r = new FinalizationRegistry(v => {{ if (v !== 177) throw 'held'; count++; }});
+            let t = {target}; r.register(t, 177, t); t = null;
+            std.gc();
+            os.setTimeout(() => {{
+                if (count !== {expected}) throw 'weak target';
+            }}, 0); 42
+        "#,
+            expected = if target == "Symbol.iterator" { 0 } else { 1 }
+        );
+        let task = rt
+            .spawn(
+                &clj_quickjs::frontend::compile_script("weak-finalization", &source).unwrap(),
+                &[],
+            )
+            .unwrap();
+        task.install_sim_host_bindings().unwrap();
+        assert_eq!(complete(task.run().unwrap()).view(), ValueView::Number(42.));
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Collection on a foreign
+/// thread queues work; the owner runs it, parks in it, then migrates.
+#[test]
+fn finalization_cleanup_jobs_can_wait_and_migrate() {
+    let rt = Runtime::new();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body() {
+        let r = new FinalizationRegistry(v => { __rt.need(177, 2); __rt.effect(0, v); });
+        r.register({}, 7); r = null; __rt.need(177, 1); return 42;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    thread::scope(|s| s.spawn(|| rt.collect().unwrap()).join().unwrap());
+    let mut host = FinalizationEffects::default();
+    let resume = || {
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Undefined);
+        rt.complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap()
+    };
+    let wakes = resume();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert!(host.0.is_empty());
+    rt.collect().unwrap();
+    let wakes = resume();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    let outcome = thread::scope(|s| {
+        s.spawn(|| task.run_with(Budget::UNLIMITED, &mut host).unwrap())
+            .join()
+            .unwrap()
+    });
+    assert_eq!(complete(outcome).view(), ValueView::Number(42.));
+    assert_eq!(host.0, [7.]);
+}
+
+/// Synthetic fixture, not light-cljs output. Cancellation closes admission
+/// and releases even otherwise-unreachable registry/held-value cycles.
+#[test]
+fn finalization_cancelled_owner_releases_registry_roots() {
+    let rt = Runtime::new();
+    let held = new_rooted_object(&rt);
+    let weak = held.downgrade();
+    let code = clj_quickjs::frontend::compile_function(
+        r#"function body(held) {
+        let r = new FinalizationRegistry(() => { throw 'cancelled cleanup'; });
+        r.register({}, held); held = null; r = null;
+        __rt.need(177, 3);
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&held]).unwrap();
+    drop(held);
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+    assert!(matches!(task.run().unwrap(), RunOutcome::Cancelled));
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    assert_eq!(rt.heap_usage().objects.finalization_registry, 0);
+}

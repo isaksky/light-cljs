@@ -3630,7 +3630,7 @@ the body and after each completed job (clj-quickjs-176).
 
 Explicit gaps: enqueue is crate-internal, with no new syntax or global API.
 Promise reactions, async resumes and host timers use this queue.
-FinalizationRegistry cleanup producers remain deferred.
+FinalizationRegistry cleanup producers use this queue (clj-quickjs-177 below).
 Cross-task delivery transfers shareable arguments to an owner-registered
 callable without running JavaScript during publication. Future rejection
 reporting waits for quiescence after jobs and timers, not individual jobs.
@@ -4586,9 +4586,8 @@ Execution: the collector supports heap-internal weak slots and ephemeron
 tables, clears dead conditional edges before sweeping, and hands notifying
 slots to observers after the pause with rooted owners. This introduces no
 JavaScript syntax or globals and does not change ordinary Map semantics.
-WeakRef and its job keep-alives are supported (-176). Explicit gaps:
-JavaScript WeakSet and FinalizationRegistry registration and cleanup
-scheduling remain deferred.
+WeakRef and its job keep-alives are supported (-176), as are FinalizationRegistry
+registration and owner-task cleanup jobs (-177). WeakSet remains deferred.
 
 ## Array.prototype.sort (clj-quickjs-208)
 
@@ -4717,8 +4716,8 @@ self cycles and cycles between tables. WeakMaps cannot be published across
 tasks, directly or through persistent values or captures.
 
 Explicit gaps: non-nullish iterable construction throws TypeError, matching
-Map's current constructor boundary. WeakSet and FinalizationRegistry
-remain deferred. WeakMap has no enumeration, size, clear or iterator API;
+Map's current constructor boundary. WeakSet remains deferred; FinalizationRegistry
+is supported (-177 below). WeakMap has no enumeration, size, clear or iterator API;
 the host-only entry-count test hook is not a JavaScript property. Generic
 Object.prototype.toString symbol-tag consumption remains deferred.
 
@@ -4975,8 +4974,8 @@ entry disappear. WeakRef instances and ordinary properties remain task-owned.
 Explicit gaps: publishing WeakRefs across tasks is deferred, including frozen
 instances. With optional simulated host bindings installed, `std.gc()` preserves
 the active job's kept objects, and `os.setTimeout()` starts a later job after
-the kept set clears. This adds no FinalizationRegistry API (-177) or automatic
-collection trigger.
+the kept set clears. FinalizationRegistry (-177 below) uses notifications;
+automatic collection triggers remain deferred.
 
 ### Symbol prototype and wrapper execution (clj-quickjs-129)
 
@@ -5180,3 +5179,23 @@ English fallbacks outside Spanish and British English. All narrow patterns use
 spaces; Spanish disjunction uses `y`, short Spanish multi-item lists use commas,
 and Spanish has no sound-dependent conjunction. Further translations and
 contextual alternation require separately pinned data and are deferred.
+
+### Execution: FinalizationRegistry (clj-quickjs-177)
+
+`new FinalizationRegistry(callback)` requires a callable and returns an
+owner-task registry. `register(target, heldValue, token?)` returns undefined;
+target and optional non-undefined token must be weakly holdable objects or
+non-registered symbols, and heldValue must differ from target by SameValue.
+`unregister(token)` requires a weakly holdable token, removes all matching
+cells, and returns whether it removed any. Invalid receivers/arguments and
+construction without `new` throw TypeError. Constructor length is 1, register
+length 2, unregister length 1, and prototype Symbol.toStringTag is
+`FinalizationRegistry` with the standard non-enumerable descriptor.
+
+The task retains registries with cells. Collection queues one cleanup job per
+collected target, passing the strong held value with undefined receiver.
+Callbacks run after the body/current job before timers; they may suspend and
+migrate. Finished/cancelled tasks drop cleanup. Collection never calls JS inline.
+Explicit gaps: no `cleanupSome`, cross-task registry publication, or guarantee
+of collection without an explicit/requested collection point. The opt-in
+simulated `std.gc()` waits for notification delivery, not execution of jobs.

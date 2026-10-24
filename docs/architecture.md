@@ -214,7 +214,7 @@ notifications for later processing; no JavaScript, host callback or payload
 destructor runs in the pause. The collector substrate has no JavaScript
 surface itself: WeakMap builds on it (clj-quickjs-173); WeakSet remains
 deferred, WeakRef uses task job keep-alives (clj-quickjs-176), and
-FinalizationRegistry must add registration, held-data and job scheduling.
+FinalizationRegistry adds registration, held-data and owner-task jobs (clj-quickjs-177).
 Collector tests use original native payload fixtures in `heap::gc::tests`.
 QuickJS's `test_weak_map_cycles`, `test_weak_ref` and
 `test_finalization_registry` (`research/quickjs/tests/test_builtin.js`,
@@ -5014,7 +5014,7 @@ ownership and GC retention/reclamation. QuickJS's `JS_EnqueueJob2`,
 references at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`; no source or
 test text was adapted. Promise settlement/reactions, async resumes, timers and
 WeakRef kept-object clearing are implemented by subsequent pellets.
-FinalizationRegistry producers remain deferred. Unhandled-rejection checks run
+FinalizationRegistry producers use the same queue (clj-quickjs-177). Unhandled-rejection checks run
 only at quiescence after jobs and timers drain (clj-quickjs-249 below).
 
 
@@ -7044,7 +7044,7 @@ for an older explicit collection whose weak slots were already cleared.
 Observers remain concurrent and may request reentrant explicit collections;
 they must not wait on runtime task progress. Collection points from an active
 observer are refused to avoid waiting on their own report. FinalizationRegistry's
-consumer of these notifications is separate work.
+consumer delivers owner-task jobs (clj-quickjs-177 below).
 
 Collection-driver temporaries stay in a separate helper, and optional host
 state is boxed, preserving ordinary execution on 64 KiB worker stacks.
@@ -7331,3 +7331,53 @@ upstream line 744's direct eval of a NUL-containing pattern. Direct eval
 uses the support from clj-quickjs-107; this strict expression needs no
 sloppy declaration hoisting. The fixture bytes and expected values remain
 unchanged. No engine behavior, host representation or GC edges change.
+
+## FinalizationRegistry and owner-task cleanup (clj-quickjs-177)
+
+The append-only `FinalizationRegistry` heap kind embeds an ordinary task-owned
+property store, a strong callback and registration cells. Each cell has a
+notifying weak target slot, a strong held value and an optional weak unregister
+token slot. Private monotonically increasing cell IDs identify notifications;
+cleared/repeated/out-of-order notifications cannot consume another cell.
+Objects and non-registered symbols are eligible targets/tokens; registered
+symbols and SameValue(target, heldValue) are rejected with TypeError. Calling
+unregister removes every matching cell; collecting the token itself
+merely clears that slot and does not unregister the target.
+
+Retention is an explicit implementation choice: the owner task's inbox roots
+all registries with active cells, even after the last JavaScript reference
+vanishes. A registry therefore outlives its last JavaScript reference while
+it has cells. This preserves the two block-scoped upstream finalization cases.
+Removing/cleaning the last cell releases that root; task completion, failure
+and cancellation release all active-registry roots. A registry may still be
+reachable through ordinary JavaScript/host roots after its owner finishes.
+
+Each task is a weakly registered collection observer. After the pause and all
+collector locks end, it consumes only notifications branded with its task ID,
+removes the cleared cell, and transfers callback/held value into an ordinary
+job on its inbox. It holds heap access throughout transfer; notification roots
+keep the registry/callback/held values alive until then. Cell mutation and
+retention updates share the object-table lock, followed by the leaf inbox
+lock. No path enters heap access while holding that inbox lock. JavaScript
+never runs during delivery or under a collector/waiter/inbox lock. Finished or
+cancelled owners drop cleanup through the closed inbox. No delivery wakes a
+dependency wait. Cleanup can yield, wait and migrate like any other job; jobs
+drain after the body and before virtual timers. No `cleanupSome` is exposed.
+
+Instances classify as TaskOwned, including empty or frozen registries.
+Publication checks reject them through direct values, persistent collections,
+closures, dependency outcomes and atom publication paths, consistently with
+WeakMap/WeakRef. Host raw handles confer no authority to use another task's
+registry. Cross-task publication has no snapshot/promotion rule and is deferred.
+Freezing ordinary properties does not disable register/unregister.
+
+Root inventory additions: `FinalizationRegistryEdges` covers callback captures,
+held values, properties and prototype; `ActiveFinalizationRegistries` covers
+the owner-task retention set under TaskFrame. Tests
+`finalization_registry_properties_and_callback_are_traced` and
+`finalization_held_value_is_strong` retain/reclaim these edges and pending job
+arguments. Targets and tokens are never marked by registry tracing.
+`finalization_callbacks_run_as_jobs_after_collection` adapts both upstream
+blocks, with an order log proving body/collection, cleanup jobs, then timers.
+Other tests cover unregister, weak symbols/tokens, finished owners and cleanup
+waiting followed by migration. See docs/attribution.md for the upstream notice.

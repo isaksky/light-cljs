@@ -1316,3 +1316,60 @@ fn weak_refs_are_task_owned_at_publication_boundaries() {
         assert_eq!((found, owner), ("WeakRef", Some(task.id())));
     }
 }
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn finalization_registries_are_task_owned_at_publication_boundaries() {
+    use clj_quickjs::AtomError;
+    let rt = Runtime::new();
+    for src in [
+        "new FinalizationRegistry(() => 0)",
+        "let r = new FinalizationRegistry(() => 0); r.register({}, 1); r",
+        "Object.freeze(new FinalizationRegistry(() => 0))",
+    ] {
+        let task = rt
+            .spawn(
+                &compile_script("finalization-publication", src).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let value = complete(task.run().unwrap());
+        assert_eq!(
+            not_shareable(rt.publish(&value).unwrap_err()),
+            (vec![], "FinalizationRegistry", Some(task.id()))
+        );
+        let check = |error| match error {
+            AtomError::NotShareable(e) => {
+                assert_eq!(
+                    not_shareable(e),
+                    (vec![], "FinalizationRegistry", Some(task.id()))
+                )
+            }
+            other => panic!("expected task-owned rejection, got {other:?}"),
+        };
+        check(rt.new_atom(&value).unwrap_err());
+        let initial = rt.root(num(0.0));
+        let atom = rt.new_atom(&initial).unwrap();
+        let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+        check(publisher.publish(&value).unwrap_err());
+        check(
+            rt.atom_compare_and_set(&atom, &initial, &value)
+                .unwrap_err(),
+        );
+    }
+    for src in [
+        "__rt.vector(new FinalizationRegistry(() => 0))",
+        "(function() { const w = new FinalizationRegistry(() => 0); return () => w; })()",
+    ] {
+        let task = rt
+            .spawn(
+                &compile_script("finalization-transitive", src).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let value = complete(task.run().unwrap());
+        let (path, found, owner) = not_shareable(rt.publish(&value).unwrap_err());
+        assert!(!path.is_empty());
+        assert_eq!((found, owner), ("FinalizationRegistry", Some(task.id())));
+    }
+}
