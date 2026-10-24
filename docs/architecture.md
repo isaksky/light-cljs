@@ -7268,9 +7268,14 @@ added. Functions without direct eval retain their existing lookup bytecode.
 Resolution inserts that environment between body bindings and outer scopes
 (before parameters for bodies with parameter expressions). Closures capture the
 environment itself, so a closure created before eval sees later additions and
-deletions. Default expressions run before the body environment exists. Scope
-descriptors retain the ordered environments and the number nearer than each
-static binding, together with the variable target, reusable static cells, and
+deletions. Default expressions run before the body environment exists. References
+selected for assignments retain the environment and name across the
+right-hand side: a sloppy store recreates a deleted binding there, while a
+strict store throws if that binding is still absent. Destructuring defaults and
+numeric updates use the same reference selection.
+
+Scope descriptors retain the ordered environments and the number nearer than
+each static binding, together with the variable target, reusable static cells, and
 all intervening lexical names. Imported descriptors preserve that ordering
 through nested eval and nested functions.
 
@@ -7282,7 +7287,8 @@ configurable global declarations. Strict eval and lexical declarations keep
 private bindings. All execution remains in resumable task-owned frames.
 
 QuickJS references and provenance: semantic references are
-`research/quickjs/quickjs.c::add_eval_variables/JS_CheckDefineGlobalVar` and
+`research/quickjs/quickjs.c::add_eval_variables/JS_CheckDefineGlobalVar`,
+`OP_with_make_ref/OP_put_ref_value`, and
 `research/quickjs/tests/test_closure.js::test_with` at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The parameter-body eval and
 immutable function-name rows in

@@ -1032,11 +1032,19 @@ mod tests {
 
     #[test]
     fn eval_site_capture_limits() {
-        for (count, new_target, valid) in [
-            (65_534, None, true),
-            (65_534, Some(EvalSource::NewTarget), false),
-            (65_533, Some(EvalSource::NewTarget), true),
-            (65_535, None, false),
+        for (count, environments, new_target, valid) in [
+            (65_534, 0, None, true),
+            (65_534, 0, Some(EvalSource::NewTarget), false),
+            (65_533, 0, Some(EvalSource::NewTarget), true),
+            (65_535, 0, None, false),
+            (65_533, 1, None, true),
+            (65_534, 1, None, false),
+            (65_532, 1, Some(EvalSource::NewTarget), true),
+            (65_533, 1, Some(EvalSource::NewTarget), false),
+            (0, 65_534, None, true),
+            (0, 65_535, None, false),
+            (0, 65_533, Some(EvalSource::NewTarget), true),
+            (0, 65_534, Some(EvalSource::NewTarget), false),
         ] {
             let mut spec = with_functions(vec![UNDEF, Opcode::Call as u8, 0, 0, RET], vec![]);
             spec.eval_sites.push(EvalSite {
@@ -1054,21 +1062,26 @@ mod tests {
                 receiver: EvalSource::This,
                 receiver_strict: true,
                 new_target,
-                environments: Vec::new(),
+                environments: vec![EvalSource::This; environments],
                 variable_environment: None,
                 variable_bindings: Vec::new(),
                 lexical_conflicts: Vec::new(),
             });
             let result = Executable::load(spec);
             if valid {
-                result.unwrap_or_else(|error| panic!("{count}, {new_target:?}: {error:?}"));
+                result.unwrap_or_else(|error| {
+                    panic!("{count}, {environments}, {new_target:?}: {error:?}")
+                });
             } else {
                 assert!(
                     result.is_err(),
-                    "accepted {count} bindings with {new_target:?}"
+                    "accepted {count} bindings and {environments} environments with {new_target:?}"
                 );
                 if let Err(error) = result {
-                    assert_eq!(error.kind, InvalidEvalSite, "{count}, {new_target:?}");
+                    assert_eq!(
+                        error.kind, InvalidEvalSite,
+                        "{count}, {environments}, {new_target:?}"
+                    );
                 }
             }
         }

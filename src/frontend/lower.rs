@@ -464,7 +464,8 @@ enum Access {
     /// Index in Lowerer::dynamic_accesses; retained as a small Copy handle.
     Dynamic(usize),
     /// A dynamic reference selected before evaluating an assignment RHS or
-    /// numeric conversion. A missing cell retains its static fallback.
+    /// numeric conversion. The slot retains the selected environment, not
+    /// its current cell; fallback indexes the name and static fallback.
     Prepared { slot: u16, fallback: usize },
     Found {
         place: Place,
@@ -688,7 +689,7 @@ struct Sealed {
 }
 
 struct Lowerer<'s> {
-    prepared_accesses: Vec<Access>,
+    prepared_accesses: Vec<(String, Access)>,
     dynamic_accesses: Vec<(Place, usize, String, Access)>,
     eval_environments: Vec<(Place, usize)>,
     eval_variable_environment: Option<Place>,
@@ -1729,15 +1730,11 @@ impl<'s> Lowerer<'s> {
                 self.environment_lookup(env, &name, at)?;
                 Ok(fallback)
             }
-            Access::Prepared { slot, fallback } => {
-                self.out().op_u16(Opcode::GetLocal, slot, at);
-                Ok(self.prepared_accesses[fallback])
-            }
             _ => Err(self.internal(at, "expected a dynamic reference")),
         }
     }
 
-    /// Select the first dynamic cell without reading its binding. Resolving
+    /// Select the first dynamic environment without reading its binding. Resolving
     /// a reference precedes the RHS; TDZ/const checks still happen at GetValue
     /// or PutValue, and deletion during the RHS cannot retarget the store.
     fn select_reference(&mut self, access: Access, at: Span) -> Result<Access, SyntaxError> {
@@ -1746,10 +1743,16 @@ impl<'s> Lowerer<'s> {
             return Ok(access);
         }
         let fallback = self.lookup_reference(access, at)?;
+        let Access::Dynamic(i) = access else {
+            unreachable!()
+        };
+        let env = self.dynamic_accesses[i].0;
         let missing = self.out().label();
         let done = self.out().label();
         self.out().op(Opcode::Dup, at);
         self.out().branch(Opcode::JumpIfFalse, missing, at);
+        self.out().op(Opcode::Pop, at);
+        self.out().load(env, at);
         self.out().branch(Opcode::Jump, done, at);
         self.out().bind(missing);
         self.out().op(Opcode::Pop, at);
@@ -1763,10 +1766,14 @@ impl<'s> Lowerer<'s> {
             return Ok(access);
         }
         let slot = self.temp(at)?;
+        let Access::Dynamic(i) = access else {
+            unreachable!()
+        };
+        let name = self.dynamic_accesses[i].2.clone();
         let fallback = self.select_reference(access, at)?;
         self.out().op_u16(Opcode::SetLocal, slot, at);
         let index = self.prepared_accesses.len();
-        self.prepared_accesses.push(fallback);
+        self.prepared_accesses.push((name, fallback));
         Ok(Access::Prepared {
             slot,
             fallback: index,
@@ -1778,12 +1785,29 @@ impl<'s> Lowerer<'s> {
         let env = self
             .eval_variable_environment
             .ok_or_else(|| self.internal(at, "missing eval environment"))?;
+        self.environment_cell(env, name, at, false)
+    }
+
+    /// SetMutableBinding rechecks the selected environment by name. A sloppy
+    /// store recreates a deleted binding; a strict store reports ReferenceError.
+    fn environment_cell(
+        &mut self,
+        env: Place,
+        name: &str,
+        at: Span,
+        strict: bool,
+    ) -> Result<(), SyntaxError> {
         let done = self.out().label();
         self.environment_lookup(env, name, at)?;
         self.out().op(Opcode::Dup, at);
         self.out().op(Opcode::Not, at);
         self.out().branch(Opcode::JumpIfFalse, done, at);
         self.out().op(Opcode::Pop, at);
+        if strict {
+            self.throw(ThrowKind::Unresolvable, at);
+            self.out().bind(done);
+            return Ok(());
+        }
         self.out().op(Opcode::NewCell, at);
         self.out().op(Opcode::Dup, at);
         self.out().op(Opcode::Undefined, at);
@@ -1944,7 +1968,20 @@ impl<'s> Lowerer<'s> {
         typeof_name: bool,
     ) -> Result<(), SyntaxError> {
         match access {
-            Access::Dynamic(_) | Access::Prepared { .. } => {
+            Access::Prepared { slot, fallback } => {
+                let (name, fallback) = self.prepared_accesses[fallback].clone();
+                let missing = self.out().label();
+                let done = self.out().label();
+                self.out().op_u16(Opcode::GetLocal, slot, at);
+                self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.environment_lookup(Place::Local(slot), &name, at)?;
+                self.out().op(Opcode::CellGet, at);
+                self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(missing);
+                self.load_reference(fallback, at, typeof_name)?;
+                self.out().bind(done);
+            }
+            Access::Dynamic(_) => {
                 let missing = self.out().label();
                 let done = self.out().label();
                 let fallback = self.lookup_reference(access, at)?;
@@ -1998,7 +2035,31 @@ impl<'s> Lowerer<'s> {
             }
         }
         match access {
-            Access::Dynamic(_) | Access::Prepared { .. } => {
+            Access::Prepared { slot, fallback } => {
+                let (name, fallback) = self.prepared_accesses[fallback].clone();
+                let tmp = self.temp(at)?;
+                self.out().op_u16(Opcode::SetLocal, tmp, at);
+                let missing = self.out().label();
+                let done = self.out().label();
+                self.out().op_u16(Opcode::GetLocal, slot, at);
+                self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.environment_cell(
+                    Place::Local(slot),
+                    &name,
+                    at,
+                    self.cur().strict || self.cur().strict_expression,
+                )?;
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.out().op(Opcode::CellSet, at);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(missing);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                self.store(fallback, at)?;
+                self.out().bind(done);
+                self.cur_mut().next_slot -= 1;
+            }
+            Access::Dynamic(_) => {
                 let tmp = self.temp(at)?;
                 self.out().op_u16(Opcode::SetLocal, tmp, at);
                 let missing = self.out().label();
@@ -2786,7 +2847,7 @@ impl<'s> Lowerer<'s> {
                             access = self.dynamic_accesses[i].3;
                         }
                         let fallback = self.prepared_accesses.len();
-                        self.prepared_accesses.push(access);
+                        self.prepared_accesses.push((name.name.clone(), access));
                         access = Access::Prepared { slot, fallback };
                     }
                     self.store(access, at)?;
