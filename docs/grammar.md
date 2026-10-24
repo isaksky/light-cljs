@@ -5632,3 +5632,30 @@ Explicit gaps: duration strings and Temporal objects' private duration slots
 are unsupported. Unit spellings follow the pinned QuickJS finite table, with
 its literal unit-identifier fallback where patterns are absent; this is not
 complete CLDR coverage. NumberFormat style unit still throws RangeError.
+
+### Acyclic module execution (clj-quickjs-253)
+
+After pre-run loading, `Runtime::spawn_module(&graph)` links and evaluates an
+acyclic JavaScript graph in the graph's world. Named imports, side-effect
+imports, exported declarations and export lists execute. Imported names are
+immutable live aliases of the origin's binding cell, including exports of
+imports. Missing exports are SyntaxError failures before any body effect.
+Module functions are instantiated before evaluation, let/const remain in TDZ
+until initialized, and var starts as undefined. Bodies run once each in
+source-request DFS post-order; a throw fails the entry task immediately.
+The task completes with undefined. Module this is undefined and top-level
+bindings do not become global-object properties. Effects, budget yields,
+need waits, collection and migration use the ordinary VM continuation rules.
+
+Synthetic fixture, not light-cljs output (host supplies counter.js):
+
+```js module-accept
+import {n, inc} from './counter.js';
+inc(); inc();
+__rt.effect(0, n);
+```
+
+Explicit execution gaps: cycles, namespace imports, JSON instances and
+`export default` declarations fail before bodies execute. Top-level await,
+dynamic import, import.meta and attributes remain unsupported. The CLI stays
+script-only; loading continues to accept cyclic graphs for future execution.

@@ -7834,3 +7834,39 @@ including French and subsecond spellings. Data for NumberFormat unit style is
 now present, but its constructor/options/compound-unit behavior remain a gap;
 this pellet enables only the duration consumer. Locale coverage and the host
 default-locale leaf remain the shared Intl policy.
+
+### Acyclic module execution (clj-quickjs-253)
+
+`Runtime::spawn_module(&graph)` starts one module instance per graph record in
+an entry task, in the graph's world. Static linking computes a source-order
+DFS post-order, resolves named imports through local/indirect export entries,
+and checks every link before any body can run. Missing exports fail the task
+with SyntaxError naming the export and module. Cycles, namespace imports,
+JSON instances and default-export declarations fail explicitly for now.
+
+The compiled entry driver allocates ordinary task-owned binding cells for all
+module bindings before calling any instantiation frame. Each module has two
+private strict executable entry points receiving those cells as internal
+parameters: instantiation creates hoisted functions, then evaluation runs the
+body. Imports receive the origin's cell, with immutable assignment semantics
+preserved through closures and direct eval. Lexicals have dynamic TDZ checks;
+var cells start as undefined. Declarations never create global properties and
+top-level this is undefined. Function closures capture module cells, including
+recursive references, so later writes to exported functions remain live.
+
+These are ordinary VM frames/instructions, precisely traced by the existing
+cell/function GC paths and classified as task-owned by value::share. There is
+no new heap kind, lock or host fetch during a run. Budgets, need waits, GC and
+migration preserve the exact continuation, including allocation/instantiation;
+no earlier module effect is replayed. Bodies run once in post-order; a throw
+stops the driver, failing its task before later bodies run. Completion is
+undefined. A finished task cannot be run again; a fresh spawn creates fresh
+instances, including after failure. Imports create no dependency-log edges.
+
+QuickJS references and provenance: `research/quickjs/quickjs.c` functions
+`js_create_module_function`, `js_resolve_export`, `js_inner_module_linking`,
+`js_inner_module_evaluation`, `js_execute_sync_module`, and
+`js_evaluate_module`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`,
+were consulted as semantic references, without adapting C code. The licensed
+`tests/fixtures/modules/fib_module.js` copy of `examples/fib_module.js` is now
+executed as well as parsed; its JavaScript body remains verbatim.

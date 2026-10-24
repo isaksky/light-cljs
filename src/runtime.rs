@@ -135,6 +135,15 @@ impl Runtime {
         self.spawn_in(self.0.world, executable, args)
     }
 
+    /// Spawn a loaded acyclic module graph in its world. Module cells and
+    /// closures are instantiated independently in this task; no host fetch
+    /// occurs during its runs. Linking errors fail the task with SyntaxError
+    /// before any module body executes. Completion is undefined.
+    pub fn spawn_module(&self, graph: &crate::module::ModuleGraph) -> Task {
+        self.spawn_in(graph.world(), &graph.executable(), &[])
+            .expect("module entry has no foreign arguments")
+    }
+
     /// [`Runtime::spawn`] in world `world`: the task's needs read the
     /// dependency cells of that world (`docs/design.md` §7). `world` should
     /// come from [`Runtime::world`] or [`Runtime::new_world`] of this runtime.

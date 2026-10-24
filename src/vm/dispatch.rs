@@ -482,6 +482,8 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
             format!("assignment to constant variable '{n}'")
         }
         (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
+        (ThrowKind::ModuleLink, Some(message)) => message.to_string(),
+        (ThrowKind::ModuleLink, None) => "could not link module".to_string(),
     }
 }
 
@@ -1659,6 +1661,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
             let error_kind = match kind {
                 ThrowKind::Unresolvable | ThrowKind::Uninitialized => VmErrorKind::ReferenceError,
                 ThrowKind::ConstAssignment => VmErrorKind::TypeError,
+                ThrowKind::ModuleLink => VmErrorKind::SyntaxError,
             };
             (error_kind, throw_message(code, pc, kind))
         }

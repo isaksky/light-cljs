@@ -37,6 +37,7 @@ pub mod ast;
 mod intrinsics;
 pub mod lexer;
 mod lower;
+pub(crate) use lower::{ModuleBinding, lower_module, module_bindings};
 mod module;
 mod parser;
 mod unicode_ident;

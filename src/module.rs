@@ -5,6 +5,8 @@
 //! no heap, takes no runtime locks and creates no dependency cells or edges.
 //! Linking/evaluation (including JSON default exports) is a separate phase.
 
+mod link;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -143,6 +145,10 @@ pub struct ModuleGraph {
 }
 
 impl ModuleGraph {
+    pub(crate) fn executable(&self) -> crate::Executable {
+        link::compile_graph(self).unwrap_or_else(|error| link::failure(error.message))
+    }
+
     pub fn world(&self) -> WorldId {
         self.world
     }

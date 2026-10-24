@@ -18,11 +18,13 @@ struct RecordingHost {
     names: HashMap<String, ModuleKey>,
     sources: HashMap<ModuleKey, (String, Result<String, String>)>,
     events: Vec<Event>,
+    effects: Vec<Primitive>,
 }
 
 impl Host for RecordingHost {
-    fn effect(&mut self, _call: HostCall) -> Result<Primitive, String> {
-        panic!("unexpected leaf effect");
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        self.effects.push(call.arg);
+        Ok(Primitive::Undefined)
     }
 }
 
@@ -385,4 +387,243 @@ fn missing_entry_and_lone_surrogate_specifiers_are_reported() {
     assert!(
         matches!(host.events.last(), Some(Event::Resolve(specifier, Some(_))) if specifier.code_units() == [0xd800])
     );
+}
+
+fn execute_modules(sources: &[(&str, &str)], budget: Budget) -> (RunOutcome, Vec<Primitive>) {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for (name, text) in sources {
+        host.add(name, text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &sources[0].0.into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    for _ in 0..100_000 {
+        match task.run_with(budget, &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                runtime.collect().unwrap();
+            }
+            outcome => return (outcome, host.effects),
+        }
+    }
+    panic!("module task did not finish");
+}
+
+fn assert_effects(sources: &[(&str, &str)], expected: Vec<Primitive>) {
+    let (outcome, effects) = execute_modules(sources, Budget::UNLIMITED);
+    assert!(
+        matches!(outcome, RunOutcome::Complete(ref v) if v.view() == ValueView::Undefined),
+        "{outcome:?}"
+    );
+    assert_eq!(effects, expected);
+}
+
+#[test]
+fn named_import_calls_exported_function() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {fib} from './fib.js'; __rt.effect(0, fib(10)); 123;",
+            ),
+            ("fib.js", include_str!("fixtures/modules/fib_module.js")),
+        ],
+        vec![Primitive::Number(55.0)],
+    );
+}
+
+#[test]
+fn imports_are_live_bindings() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n, inc} from './counter.js'; inc(); inc(); __rt.effect(0, n);",
+            ),
+            (
+                "counter.js",
+                "export let n = 0; export function inc() { n++ }",
+            ),
+        ],
+        vec![Primitive::Number(2.0)],
+    );
+}
+
+#[test]
+fn import_binding_is_immutable() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n} from './counter.js'; try { n = 7; } catch (e) { __rt.effect(0, e instanceof TypeError); } __rt.effect(0, n);",
+            ),
+            ("counter.js", "export let n = 0;"),
+        ],
+        vec![Primitive::Bool(true), Primitive::Number(0.0)],
+    );
+}
+
+#[test]
+fn reexported_import_resolves_to_origin() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {f as a} from './b.js'; import {f as b} from './c.js'; __rt.effect(0, a === b);",
+            ),
+            ("b.js", "import {f} from './c.js'; export {f};"),
+            ("c.js", "export function f() { return 3; }"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn missing_export_fails_at_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import {nope} from './dep.js'; __rt.effect(0, 'entry');",
+            ),
+            ("dep.js", "__rt.effect(0, 'dep');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+    assert!(
+        error
+            .message()
+            .contains("Could not find export 'nope' in module 'dep.js'"),
+        "{error}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn evaluation_order_is_post_order() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import './a.js'; import './b.js'; __rt.effect(0, 'entry');",
+            ),
+            ("a.js", "import './leaf.js'; __rt.effect(0, 'a');"),
+            ("b.js", "import './leaf.js'; __rt.effect(0, 'b');"),
+            ("leaf.js", "__rt.effect(0, 'leaf');"),
+        ],
+        ["leaf", "a", "b", "entry"]
+            .map(|s| Primitive::String(s.into()))
+            .to_vec(),
+    );
+}
+
+#[test]
+fn module_body_throw_fails_entry() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './dep.js'; __rt.effect(0, 'entry');"),
+            ("dep.js", "throw 42;"),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::Thrown);
+    assert!(error.message().contains("42"));
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_body_yields_and_resumes() {
+    let sources = [
+        ("entry.js", "import {n} from './dep.js'; __rt.effect(0, n);"),
+        (
+            "dep.js",
+            "export let n = 0; while(n < 12) { __rt.effect(0, n); n++; }",
+        ),
+    ];
+    let (outcome, effects) = execute_modules(&sources, Budget::instructions(7));
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, execute_modules(&sources, Budget::UNLIMITED).1);
+}
+
+#[test]
+fn module_environments_are_private_and_check_tdz() {
+    assert_effects(
+        &[(
+            "entry.js",
+            r#"
+        export var moduleVar = 4;
+        export function f() { return later; }
+        try { f(); } catch(e) { __rt.effect(0, e instanceof ReferenceError); }
+        export let later = 7;
+        __rt.effect(0, f());
+        __rt.effect(0, this === undefined && (() => this)() === undefined);
+        __rt.effect(0, globalThis.moduleVar === undefined && globalThis.f === undefined);
+        __rt.effect(0, eval('later'));
+    "#,
+        )],
+        vec![
+            Primitive::Bool(true),
+            Primitive::Number(7.0),
+            Primitive::Bool(true),
+            Primitive::Bool(true),
+            Primitive::Number(7.0),
+        ],
+    );
+}
+
+#[test]
+fn import_assignment_through_closure_and_eval_is_immutable() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                r#"import {n} from './dep.js';
+            function set() { n = 2; }
+            for (const action of [set, () => eval('n = 3')]) {
+                try { action(); } catch(e) { __rt.effect(0, e instanceof TypeError); }
+            }
+            __rt.effect(0, n);
+        "#,
+            ),
+            ("dep.js", "export let n = 1;"),
+        ],
+        vec![
+            Primitive::Bool(true),
+            Primitive::Bool(true),
+            Primitive::Number(1.0),
+        ],
+    );
+}
+
+#[test]
+fn rejects_cycles_namespaces_and_json_before_effects() {
+    for sources in [
+        vec![("entry.js", "import './entry.js'; __rt.effect(0, 1);")],
+        vec![
+            (
+                "entry.js",
+                "import * as ns from './dep.js'; __rt.effect(0, 1);",
+            ),
+            ("dep.js", ""),
+        ],
+        vec![
+            ("entry.js", "import x from './dep.json'; __rt.effect(0, 1);"),
+            ("dep.json", "{}"),
+        ],
+    ] {
+        let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
+        assert!(
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
+            "{outcome:?}"
+        );
+        assert!(effects.is_empty());
+    }
 }

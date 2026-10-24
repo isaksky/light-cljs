@@ -158,6 +158,9 @@
 //! (ECMAScript `UpdateEmpty`), and a finally block that a jump runs restores
 //! it on completing normally, as for any other completion.
 
+mod modules;
+pub(crate) use modules::{ModuleBinding, lower_module, module_bindings};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -338,6 +341,7 @@ fn function_length(f: &Function) -> u16 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BindingKind {
+    Import,
     Let,
     Const,
     Param,
@@ -762,6 +766,7 @@ impl<'s> Lowerer<'s> {
             let mut access = Access::Found {
                 place: Place::Capture(i as u16),
                 target: match b.kind {
+                    EvalBindingKind::Import => Target::Binding(BindingKind::Import),
                     EvalBindingKind::Mutable => Target::Binding(BindingKind::Let),
                     EvalBindingKind::Const => Target::Binding(BindingKind::Const),
                     EvalBindingKind::FunctionName => Target::SelfFn(SelfKind::Expression),
@@ -1241,7 +1246,10 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::Undefined, span);
                     self.out().op(Opcode::CellInit, span);
                 }
-                BindingKind::Let | BindingKind::Const | BindingKind::Function => {}
+                BindingKind::Import
+                | BindingKind::Let
+                | BindingKind::Const
+                | BindingKind::Function => {}
             }
             self.out().op_u16(Opcode::SetLocal, b.slot, span);
         }
@@ -2107,6 +2115,13 @@ impl<'s> Lowerer<'s> {
                 ..
             } if !self.cur().strict && !self.cur().strict_expression => {}
             Access::Found {
+                target: Target::Binding(BindingKind::Import),
+                ..
+            } => {
+                self.out().op(Opcode::Pop, at);
+                self.throw(ThrowKind::ConstAssignment, at);
+            }
+            Access::Found {
                 target: Target::Binding(BindingKind::Const) | Target::SelfFn(SelfKind::Expression),
                 place,
                 repr,
@@ -2292,6 +2307,7 @@ impl<'s> Lowerer<'s> {
                     name,
                     source: eval_source(place),
                     kind: match target {
+                        Target::Binding(BindingKind::Import) => EvalBindingKind::Import,
                         Target::Binding(BindingKind::Const) => EvalBindingKind::Const,
                         Target::SelfFn(_) => EvalBindingKind::FunctionName,
                         _ => EvalBindingKind::Mutable,
