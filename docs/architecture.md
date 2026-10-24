@@ -1435,10 +1435,10 @@ and Charlie Gordon) and is listed here with its source path and revision:
   each in upstream order, as JavaScript source compiled by this frontend;
   the script completes with `"ok"`. The string literals, thrown strings,
   `for(;;)` and `assert(actual, expected, message)` calls are upstream's.
-  Modified: `let` for `var` (until clj-quickjs-94); `s = s + x` for
-  `s += x` (until clj-quickjs-84); `assert` tests `expected === undefined`
-  instead of `arguments.length == 1` (until clj-quickjs-97), throws its
-  message string instead of `Error(...)` (until clj-quickjs-228) and drops
+  Modified: `let` for `var` (until clj-quickjs-94); `assert` tests
+  `expected === undefined` instead of `arguments.length == 1` (until
+  clj-quickjs-97), throws its message string instead of `Error(...)` (until
+  clj-quickjs-228) and drops
   the unreached object/`toString()` comparison (until clj-quickjs-69 and
   clj-quickjs-70); `test_try_catch8` iterates `"x"`, `"y"` with a counted
   `for` instead of `for (var i in {x:1, y:2})` (until clj-quickjs-85,

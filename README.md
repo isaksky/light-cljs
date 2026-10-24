@@ -845,8 +845,8 @@ Supported:
   upstream strings, `for(;;)` and `assert()` calls (clj-quickjs-227; `5`
   since clj-quickjs-79, `8` with a counted `for` for `for`-`in`)
   (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice and
-  its remaining adaptations: `let` for `var`, `s = s + x` for `s += x`,
-  and an `assert` that throws its message string).
+  its remaining adaptations: `let` for `var` and an `assert` that throws
+  its message string).
 
 Deferred:
 

@@ -3,7 +3,6 @@
 // order), QuickJS revision 7d1c13c5d8f8 (VERSION 2026-06-04). Modifications,
 // each for a form the documented subset lacks yet:
 // - `let` instead of `var` (until clj-quickjs-94);
-// - `s = s + x` instead of `s += x` (until clj-quickjs-84);
 // - assert() tests `expected === undefined` instead of
 //   `arguments.length == 1` (until clj-quickjs-97), throws its message
 //   string instead of `Error(...)` (until clj-quickjs-228), and drops the
@@ -76,11 +75,11 @@ function test_try_catch3()
     let s;
     s = "";
     try {
-        s = s + "t";
+        s += "t";
     } catch (e) {
-        s = s + "c";
+        s += "c";
     } finally {
-        s = s + "f";
+        s += "f";
     }
     assert(s, "tf", "catch");
 }
@@ -90,12 +89,12 @@ function test_try_catch4()
     let s;
     s = "";
     try {
-        s = s + "t";
+        s += "t";
         throw "c";
     } catch (e) {
-        s = s + e;
+        s += e;
     } finally {
-        s = s + "f";
+        s += "f";
     }
     assert(s, "tcf", "catch");
 }
@@ -106,11 +105,11 @@ function test_try_catch5()
     s = "";
     for(;;) {
         try {
-            s = s + "t";
+            s += "t";
             break;
-            s = s + "b";
+            s += "b";
         } finally {
-            s = s + "f";
+            s += "f";
         }
     }
     assert(s, "tf", "catch");
@@ -120,10 +119,10 @@ function test_try_catch6()
 {
     function f() {
         try {
-            s = s + 't';
+            s += 't';
             return 1;
         } finally {
-            s = s + "f";
+            s += "f";
         }
     }
     let s = "";
@@ -138,15 +137,15 @@ function test_try_catch7()
 
     try {
         try {
-            s = s + "t";
+            s += "t";
             throw "a";
         } finally {
-            s = s + "f";
+            s += "f";
         }
     } catch(e) {
-        s = s + e;
+        s += e;
     } finally {
-        s = s + "g";
+        s += "g";
     }
     assert(s, "tfag", "catch");
 }
@@ -159,12 +158,12 @@ function test_try_catch8()
     for (let n = 0; n < 2; n++) {
         let i = n === 0 ? "x" : "y";
         try {
-            s = s + i;
+            s += i;
             throw "a";
         } catch (e) {
-            s = s + e;
+            s += e;
         } finally {
-            s = s + "f";
+            s += "f";
         }
     }
     assert(s === "xafyaf");
