@@ -140,8 +140,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, Ident, LexicalDecl, LexicalKind,
-    LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, FunctionKind, Ident, LexicalDecl,
+    LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, UnaryOp,
+    UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -168,7 +169,7 @@ pub(crate) fn lower_script(
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
-        lower.enter_function(None, true);
+        lower.enter_function(None, true, script.strict);
         lower.statement_list(&script.body, &[], true)?;
         let end = Span::new(script.span.end, script.span.end);
         lower.out().op_u16(Opcode::GetLocal, 0, end);
@@ -197,7 +198,8 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
             }
             None => None,
         };
-        lower.enter_function(self_name, false);
+        lower.enter_function(self_name, false, function.strict);
+        lower.cur_mut().own_arguments = true;
         lower.statement_list(&function.body, &function.params, true)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -315,6 +317,11 @@ enum Access {
     /// The reserved intrinsic binding `__rt`.
     Intrinsic,
     Unresolvable,
+    /// A sloppy-mode reference to `eval` or `arguments` that denotes
+    /// something the subset lacks (clj-quickjs-95,
+    /// `Lowerer::resolve_reference`): any use is an `Unsupported` compile
+    /// error with this message.
+    Unsupported(&'static str),
 }
 
 /// Constant-pool deduplication key. Numbers compare by bit pattern, so `0`
@@ -388,6 +395,17 @@ struct FnCtx {
     max_slots: usize,
     /// The completion-value local of a script; `None` in a function.
     completion: Option<u16>,
+    /// The function (or script) is strict-mode code (clj-quickjs-95;
+    /// [`Function::strict`], [`Script::strict`]), recorded in its code as
+    /// `ExecutableSpec::strict`. Lowering that differs between strict and
+    /// sloppy code consults `self.cur().strict`: the mode of the innermost
+    /// function, an arrow's own (inherited unless its body has a directive).
+    strict: bool,
+    /// A `function` declaration or expression (not an arrow or a script):
+    /// in JavaScript it has its own `arguments` object, which a reference
+    /// to `arguments` denotes unless the function binds that name itself
+    /// ([`Lowerer::check_arguments_reference`]).
+    own_arguments: bool,
     /// The function's own name and how it may be referred to from inside.
     self_name: Option<(String, SelfKind)>,
     /// Identity of the self-binding (never a source offset).
@@ -440,6 +458,7 @@ struct Sealed {
     params: u16,
     locals: u16,
     captures: u16,
+    strict: bool,
     code: Vec<u8>,
     spans: Vec<Span>,
     constants: Vec<Primitive>,
@@ -515,7 +534,12 @@ impl<'s> Lowerer<'s> {
         self.error(SyntaxErrorKind::Internal, span, what.to_string())
     }
 
-    fn enter_function(&mut self, self_name: Option<(String, SelfKind)>, script: bool) {
+    fn enter_function(
+        &mut self,
+        self_name: Option<(String, SelfKind)>,
+        script: bool,
+        strict: bool,
+    ) {
         let slots = usize::from(script);
         let self_key = self.next_self_key;
         self.next_self_key -= 1;
@@ -525,6 +549,8 @@ impl<'s> Lowerer<'s> {
             next_slot: slots,
             max_slots: slots,
             completion: script.then_some(0),
+            strict,
+            own_arguments: false,
             self_name,
             self_key,
             captures: Vec::new(),
@@ -551,6 +577,7 @@ impl<'s> Lowerer<'s> {
             mut out,
             max_slots,
             captures,
+            strict,
             children,
             ..
         } = ctx;
@@ -574,6 +601,7 @@ impl<'s> Lowerer<'s> {
             params,
             locals: max_slots as u16,
             captures: captures.len() as u16,
+            strict,
             code: out.code,
             spans: out.spans,
             constants: out.constants,
@@ -622,6 +650,7 @@ impl<'s> Lowerer<'s> {
                 constants: f.constants,
                 functions,
                 captures: f.captures,
+                strict: f.strict,
             };
             let shared = Arc::clone(&self.shared_source);
             let exe = Executable::load_compiled(spec, shared, locations).map_err(|e| {
@@ -934,6 +963,63 @@ impl<'s> Lowerer<'s> {
         self.resolve_in(self.fns.len() - 1, name)
     }
 
+    /// Resolve a reference to `name` written in the source (a read, an
+    /// assignment or update target, a `typeof` operand). The parser passes
+    /// `eval` and `arguments` through only in sloppy code (clj-quickjs-95),
+    /// where a program may bind them; a reference is supported only where
+    /// it denotes such a binding, and is otherwise
+    /// [`Access::Unsupported`], which [`Self::load`] and [`Self::store`]
+    /// report as a compile error. `eval` must have a binding of that name
+    /// in scope (the global `eval` is clj-quickjs-106); for `arguments`,
+    /// see [`Self::arguments_is_bound`]. Returning no `Result` keeps the
+    /// recursive [`Self::expr`] frame small.
+    #[inline(never)]
+    fn resolve_reference(&mut self, name: &str) -> Access {
+        let bound = match name {
+            "eval" => self.fns.iter().any(|ctx| {
+                ctx.scopes.iter().any(|scope| scope.contains_key(name))
+                    || ctx.self_name.as_ref().is_some_and(|(n, _)| n == name)
+            }),
+            "arguments" => self.arguments_is_bound(),
+            _ => true,
+        };
+        match (bound, name) {
+            (true, _) => self.resolve(name),
+            (false, "eval") => Access::Unsupported(
+                "`eval` is not supported by this JavaScript subset (only a binding named `eval` is)",
+            ),
+            (false, _) => Access::Unsupported(
+                "the `arguments` object is not supported by this JavaScript subset",
+            ),
+        }
+    }
+
+    /// A reference to `arguments` (clj-quickjs-95) is supported only where
+    /// it denotes a binding the program declares. Searching outwards, the
+    /// first function that binds `arguments` in a scope enclosing the
+    /// reference decides, unless a `function` (not an arrow) without such a
+    /// binding comes first: its own `arguments` object (clj-quickjs-97)
+    /// would be the referent. In a `function`, a plain `var arguments` is
+    /// that object too (ECMAScript FunctionDeclarationInstantiation keeps
+    /// the object for a `var`), so it does not count. A script binds no
+    /// `arguments` object: an unbound reference there is an ordinary
+    /// unresolvable name.
+    fn arguments_is_bound(&self) -> bool {
+        for ctx in self.fns.iter().rev() {
+            let binding = ctx
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get("arguments"));
+            match binding {
+                Some(b) => return !(ctx.own_arguments && b.kind == BindingKind::Var),
+                None if ctx.own_arguments => return false,
+                None => {}
+            }
+        }
+        true
+    }
+
     /// Resolve `name` as seen from function `level`, adding captures to it
     /// (and to the functions between it and the declaring one) as needed.
     /// Recursion depth is the function nesting depth, bounded by the tree
@@ -1060,6 +1146,9 @@ impl<'s> Lowerer<'s> {
             }
             Access::Intrinsic => return Err(self.not_a_value(at)),
             Access::Unresolvable => self.throw(ThrowKind::Unresolvable, at),
+            Access::Unsupported(message) => {
+                return Err(self.error(SyntaxErrorKind::Unsupported, at, message));
+            }
         }
         Ok(())
     }
@@ -1082,6 +1171,9 @@ impl<'s> Lowerer<'s> {
             }
         }
         match access {
+            Access::Unsupported(message) => {
+                return Err(self.error(SyntaxErrorKind::Unsupported, at, message));
+            }
             Access::Intrinsic => {
                 return Err(self.error(
                     SyntaxErrorKind::ReservedWord,
@@ -1186,7 +1278,8 @@ impl<'s> Lowerer<'s> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
         }
-        self.enter_function(self_name, false);
+        self.enter_function(self_name, false, f.strict);
+        self.cur_mut().own_arguments = f.kind == FunctionKind::Ordinary;
         self.statement_list(&f.body, &f.params, true)?;
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
@@ -1935,7 +2028,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span)?,
             ExprKind::Identifier(name) => {
                 let at = self.name_span(name, span);
-                let access = self.resolve(name);
+                let access = self.resolve_reference(name);
                 self.load(access, at)?;
             }
             ExprKind::Unary {
@@ -2006,7 +2099,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::Assign { target, value } => {
                 self.expr(value)?;
                 let at = self.name_span(&target.name, target.span);
-                let access = self.resolve(&target.name);
+                let access = self.resolve_reference(&target.name);
                 self.store(access, at)?;
             }
             ExprKind::CompoundAssign {
@@ -2020,7 +2113,7 @@ impl<'s> Lowerer<'s> {
                 // own instructions, and store (with the same checks as `=`,
                 // so a `const` is a TypeError after the right operand).
                 let at = self.name_span(&target.name, target.span);
-                let access = self.resolve(&target.name);
+                let access = self.resolve_reference(&target.name);
                 if matches!(access, Access::Intrinsic) {
                     // The error of `__rt = x`, not of reading `__rt`.
                     return self.store(access, at);
@@ -2041,7 +2134,7 @@ impl<'s> Lowerer<'s> {
                 // as `=`). A postfix update keeps the converted old value
                 // under the new one and drops the stored value.
                 let at = self.name_span(&target.name, target.span);
-                let access = self.resolve(&target.name);
+                let access = self.resolve_reference(&target.name);
                 self.load(access, at)?;
                 let op_span = *op_span;
                 self.out().op(Opcode::ToNumber, op_span);
@@ -2241,7 +2334,7 @@ impl<'s> Lowerer<'s> {
             return Err(self.internal(operand.span, "typeof operand is not a name"));
         };
         let at = self.name_span(name, operand.span);
-        match self.resolve(name) {
+        match self.resolve_reference(name) {
             Access::Unresolvable => self.out().op(Opcode::Undefined, at),
             access => self.load(access, at)?,
         }

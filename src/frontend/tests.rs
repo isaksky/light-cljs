@@ -10,11 +10,14 @@
 //! `identifiers_are_not_normalized`).
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, PropertyName, Stmt, StmtKind,
-    UnaryOp, UpdateOp,
+    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, PropertyName, Script, Stmt,
+    StmtKind, UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
-use super::{MAX_NESTING, SyntaxError, SyntaxErrorKind, line_column, parse_script};
+use super::{
+    MAX_NESTING, ScriptOptions, SyntaxError, SyntaxErrorKind, line_column, parse_script,
+    parse_script_with,
+};
 
 // ----- S-expression rendering of the AST ------------------------------------
 
@@ -2099,6 +2102,167 @@ fn rejects_reserved_word_misuse() {
     rejects("true = 1;", Invalid, 1, 1);
 }
 
+// ----- directive prologues and sloppy mode (clj-quickjs-95) --------------------
+
+fn sloppy_script(src: &str) -> Script {
+    parse_script_with(src, ScriptOptions::SLOPPY)
+        .unwrap_or_else(|e| panic!("sloppy {src:?} failed: {e}"))
+}
+
+/// Assert sloppy `src` is rejected with `kind` at 1-based `line:column`.
+#[track_caller]
+fn sloppy_rejects(src: &str, kind: SyntaxErrorKind, line: u32, column: u32) {
+    match parse_script_with(src, ScriptOptions::SLOPPY) {
+        Ok(script) => panic!("sloppy {src:?} parsed but must be rejected: {script:?}"),
+        Err(e) => assert_eq!(
+            (e.kind, e.line, e.column),
+            (kind, line, column),
+            "sloppy {src:?} gave {e}"
+        ),
+    }
+}
+
+/// `(name, strict)` of each function declaration in `body` and of each
+/// function a `return` statement returns (named `=>` for an arrow), each
+/// followed by those in its own body, in source order.
+fn strictness(body: &[Stmt], out: &mut Vec<(String, bool)>) {
+    for s in body {
+        let f = match &s.kind {
+            StmtKind::FunctionDecl(f) => f,
+            StmtKind::Return(Some(Expr {
+                kind: ExprKind::Function(f),
+                ..
+            })) => f,
+            _ => continue,
+        };
+        let name = f.name.as_ref().map_or("=>", |n| n.name.as_str());
+        out.push((name.to_string(), f.strict));
+        strictness(&f.body, out);
+    }
+}
+
+fn strictness_of(script: &Script) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    strictness(&script.body, &mut out);
+    out
+}
+
+#[test]
+fn directive_prologues_set_strictness() {
+    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    // Sloppy code may bind `eval` and `arguments`.
+    for src in [
+        "function f(eval) {}",
+        "let arguments = 1;",
+        "var eval, arguments = 2;",
+        "const eval = 1;",
+        "function eval() {} function arguments() {}",
+        "x = function eval(arguments) {};",
+        "(eval) => 1; arguments => { return 1; };",
+        "try {} catch (eval) {}",
+        // Not a directive prologue: the directive follows a statement.
+        "function f() { 1; \"use strict\"; let arguments; }",
+        // Not `"use strict"` directives: parenthesized, an operand, an
+        // escape sequence, a line continuation.
+        "function f() { (\"use strict\"); let eval; }",
+        "function f() { \"use strict\" + 1; let eval; }",
+        "function f() { \"use strict\"\n+ 1; let eval; }",
+        "function f() { \"use\\x20strict\"; let eval; }",
+        "function f() { 'use \\\nstrict'; let eval; }",
+        "function f() { \"use strict \"; let eval; }",
+        // A directive applies to its own function only.
+        "function f() { \"use strict\"; } let eval;",
+        "x = function () { 'use strict'; }; function g(eval) {}",
+    ] {
+        sloppy_script(src);
+    }
+    // `"use strict"` checks the name and parameters again, retroactively.
+    sloppy_rejects("function f(eval) { \"use strict\"; }", ReservedWord, 1, 12);
+    sloppy_rejects("function eval() { 'use strict'; }", ReservedWord, 1, 10);
+    sloppy_rejects(
+        "x = function arguments() { 'use strict' };",
+        ReservedWord,
+        1,
+        14,
+    );
+    sloppy_rejects(
+        "function f(a, arguments) { \"a\"; \"use strict\"; }",
+        ReservedWord,
+        1,
+        15,
+    );
+    // A script-level directive makes everything after it strict.
+    sloppy_rejects("\"use strict\"; function f(eval) {}", ReservedWord, 1, 26);
+    sloppy_rejects("'use strict'\nlet arguments;", ReservedWord, 2, 5);
+    // Arrow functions may have their own directive, and inherit strictness.
+    sloppy_rejects("(eval) => { \"use strict\"; }", ReservedWord, 1, 2);
+    sloppy_rejects("eval => { 'use strict' }", ReservedWord, 1, 1);
+    sloppy_rejects(
+        "function f() { \"use strict\"; return (eval) => 1; }",
+        ReservedWord,
+        1,
+        38,
+    );
+    sloppy_rejects(
+        "function f() { 'use strict'; function g() { let eval; } }",
+        ReservedWord,
+        1,
+        49,
+    );
+    // Sloppy references to them parse; the compiler decides whether they
+    // denote a binding (`tests/js_source.rs` `use_strict_directives`).
+    // Strict references stay unsupported.
+    sloppy_script("let eval = 1; eval = eval + 1; eval++; typeof arguments;");
+    sloppy_rejects(
+        "function f() { 'use strict'; return eval; }",
+        Unsupported,
+        1,
+        37,
+    );
+    rejects("let a = 1; a = eval;", Unsupported, 1, 16);
+
+    // The recorded mode of the script and of each function.
+    let script = sloppy_script(
+        "function sloppy() { return () => 1; }
+         function strict() { 'use strict'; function inner() {} return () => { return 2; }; }
+         function own() { return () => { 'use strict'; }; }",
+    );
+    assert!(!script.strict);
+    let expected = [
+        ("sloppy", false),
+        ("=>", false),
+        ("strict", true),
+        ("inner", true),
+        ("=>", true),
+        ("own", false),
+        ("=>", true),
+    ];
+    let expected: Vec<_> = expected.iter().map(|&(n, s)| (n.to_string(), s)).collect();
+    assert_eq!(strictness_of(&script), expected);
+    let script = sloppy_script("\"use strict\"; function f() { return () => 1; }");
+    assert!(script.strict);
+    assert_eq!(
+        strictness_of(&script),
+        [("f".to_string(), true), ("=>".to_string(), true)]
+    );
+    // Directives stay ordinary expression statements.
+    assert_eq!(sloppy_script("'use strict'; 1;").body.len(), 2);
+
+    // Strict defaults unchanged: `parse_script` is strict throughout.
+    rejects("function f(eval) {}", ReservedWord, 1, 12);
+    rejects("let arguments = 1;", ReservedWord, 1, 5);
+    let script = parse_script("function f() { return () => 1; }").unwrap();
+    assert!(script.strict);
+    assert_eq!(
+        strictness_of(&script),
+        [("f".to_string(), true), ("=>".to_string(), true)]
+    );
+    assert_eq!(
+        parse_script("let a = 1;"),
+        parse_script_with("let a = 1;", ScriptOptions::STRICT)
+    );
+}
+
 // ----- negative: unsupported syntax --------------------------------------------
 
 #[test]
@@ -2470,6 +2634,20 @@ fn grammar_doc_examples() {
             }
             ["reject", kind, position] => {
                 let e = err(&src);
+                assert_eq!(
+                    format!("{:?} {}:{}", e.kind, e.line, e.column),
+                    format!("{kind} {position}"),
+                    "doc example {src:?} gave {e}"
+                );
+                rejected += 1;
+            }
+            // Parsed as non-strict code (clj-quickjs-95).
+            ["sloppy-accept"] => {
+                sloppy_script(&src);
+                accepted += 1;
+            }
+            ["sloppy-reject", kind, position] => {
+                let e = parse_script_with(&src, ScriptOptions::SLOPPY).expect_err(&src);
                 assert_eq!(
                     format!("{:?} {}:{}", e.kind, e.line, e.column),
                     format!("{kind} {position}"),

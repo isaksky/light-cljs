@@ -1417,6 +1417,7 @@ mod tests {
                 constants: Box::new([]),
                 functions: functions.into(),
                 captures: 0,
+                strict: true,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

@@ -3,7 +3,10 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
-use clj_quickjs::frontend::{SyntaxErrorKind, compile_function, compile_script};
+use clj_quickjs::frontend::{
+    ScriptOptions, SyntaxErrorKind, compile_function, compile_function_with, compile_script,
+    compile_script_with,
+};
 use clj_quickjs::{
     Budget, Cancel, Executable, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime,
     ValidationErrorKind, ValueView, VmError, VmErrorKind,
@@ -1712,6 +1715,137 @@ fn function_entry_points_take_arguments_and_return() {
         let e = compile_function(src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}");
     }
+}
+
+/// Directive prologues and sloppy compilation (clj-quickjs-95).
+#[test]
+fn use_strict_directives() {
+    // A directive is still an expression statement with its string value.
+    assert_eq!(num("\"use strict\"; 1"), 1.0);
+    assert_eq!(string("\"use strict\";"), "use strict");
+    assert_eq!(string("'use strict'"), "use strict");
+
+    // Sloppy script, one strict function, an arrow nested in it.
+    let src = "function sloppy(eval) { var arguments = 2; return 2; }
+               function strict(a) { \"use strict\"; return () => a; }
+               strict(1)() + sloppy(0)";
+    let script =
+        compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_or_else(|e| panic!("{e}"));
+    let sloppy = script.function(0).unwrap();
+    let strict = script.function(1).unwrap();
+    let arrow = strict.function(0).unwrap();
+    assert_eq!(
+        (sloppy.name(), strict.name(), arrow.name()),
+        ("sloppy", "strict", "anonymous")
+    );
+    assert!(!script.is_strict());
+    assert!(!sloppy.is_strict());
+    assert!(strict.is_strict());
+    assert!(arrow.is_strict());
+    match run(&script, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(3.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    // Strictness is part of the code: it survives the byte format.
+    assert!(!Executable::load(sloppy.to_spec()).unwrap().is_strict());
+    assert!(Executable::load(strict.to_spec()).unwrap().is_strict());
+
+    // A script-level directive makes the script and its functions strict.
+    let script = compile_script_with(
+        "directive",
+        "'use strict'; function f() { return 1; } f()",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    assert!(script.is_strict() && script.function(0).unwrap().is_strict());
+
+    // Sloppy entry functions are strict only with their own directive.
+    let entry =
+        compile_function_with("function f(eval) { return 1; }", ScriptOptions::SLOPPY).unwrap();
+    assert!(!entry.is_strict());
+    match run(&entry, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(1.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    let entry =
+        compile_function_with("function f() { 'use strict'; }", ScriptOptions::SLOPPY).unwrap();
+    assert!(entry.is_strict());
+
+    // Sloppy bindings named `eval` and `arguments` are read and assigned
+    // like any other binding.
+    let sloppy = |src: &str| {
+        let exe = compile_script_with("sloppy", src, ScriptOptions::SLOPPY)
+            .unwrap_or_else(|e| panic!("{src:?}: {e}"));
+        match run(&exe, &[]) {
+            RunOutcome::Complete(v) => v.view(),
+            other => panic!("{src:?}: expected Complete, got {other:?}"),
+        }
+    };
+    for (src, expected) in [
+        ("let eval = 1; eval = 2; eval", 2.0),
+        (
+            "function f(arguments) { arguments = 3; return arguments; } f(1)",
+            3.0,
+        ),
+        (
+            "function f(eval) { eval += 1; eval++; return eval; } f(1)",
+            3.0,
+        ),
+        ("function eval() { return 4; } eval()", 4.0),
+        ("var arguments = 2; arguments", 2.0),
+        (
+            "function f() { let arguments = 5; return () => arguments; } f()()",
+            5.0,
+        ),
+        ("let arguments = 6; (() => arguments)()", 6.0),
+        (
+            "function f() { function arguments() { return 7; } return arguments(); } f()",
+            7.0,
+        ),
+        (
+            "function f() { { let arguments = 8; return arguments; } } f()",
+            8.0,
+        ),
+        ("try { throw 9; } catch (eval) { eval }", 9.0),
+    ] {
+        assert_eq!(sloppy(src), ValueView::Number(expected), "{src}");
+    }
+    assert_eq!(
+        sloppy("typeof arguments === 'undefined'"),
+        ValueView::Bool(true)
+    );
+    // Where they would denote the global `eval` (clj-quickjs-106) or a
+    // function's own `arguments` object (clj-quickjs-97), they are not
+    // supported yet; `var arguments` in a function is that object.
+    for (src, column) in [
+        ("x = eval;", 5),
+        ("function f() { return arguments; }", 23),
+        ("function f() { var arguments = 2; return arguments; }", 42),
+        (
+            "let arguments = 1; function f() { return () => arguments; }",
+            48,
+        ),
+        ("function arguments() { return arguments; }", 31),
+    ] {
+        let e = compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_err();
+        assert_eq!(
+            (e.kind, e.line, e.column),
+            (SyntaxErrorKind::Unsupported, 1, column),
+            "{src}: {e}"
+        );
+    }
+
+    // The entry points without options stay strict throughout.
+    let script = exe("function f() { return () => 1; } f()()");
+    let f = script.function(0).unwrap();
+    assert!(script.is_strict() && f.is_strict() && f.function(0).unwrap().is_strict());
+    assert!(compile_function("function f() {}").unwrap().is_strict());
+    for src in ["function f(eval) {}", "let arguments = 1;"] {
+        let e = compile_script("strict", src).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{src}");
+    }
+    let e = compile_function("function f(eval) {}").unwrap_err();
+    assert_eq!(e.kind, SyntaxErrorKind::ReservedWord);
 }
 
 #[test]

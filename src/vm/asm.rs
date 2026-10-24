@@ -214,6 +214,7 @@ impl Assembler {
             constants: self.constants,
             functions: self.functions,
             captures: self.captures,
+            strict: true,
         }
     }
 

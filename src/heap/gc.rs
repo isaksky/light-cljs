@@ -1048,6 +1048,7 @@ mod tests {
             constants: Box::new([obj(constant)]),
             functions: Box::new([]),
             captures: 0,
+            strict: true,
             offsets: Box::new([0, 3]),
             instrs: Box::new([Instr::Const(0), Instr::Return]),
             max_stack: 1,

@@ -19,6 +19,10 @@ use crate::value::JsString;
 pub struct Script {
     pub body: Vec<Stmt>,
     pub span: Span,
+    /// The top level is strict-mode code: parsed strict
+    /// ([`ScriptOptions`](super::ScriptOptions)) or starting with a
+    /// `"use strict"` directive prologue (clj-quickjs-95).
+    pub strict: bool,
 }
 
 /// A binding name or property name with its span.
@@ -265,6 +269,10 @@ pub struct Function {
     pub span: Span,
     /// Tree height; at most [`MAX_NESTING`](super::MAX_NESTING).
     pub height: usize,
+    /// The function's code (name, parameters and body) is strict-mode
+    /// code: it is nested in strict code or its body starts with a
+    /// `"use strict"` directive prologue (clj-quickjs-95).
+    pub strict: bool,
 }
 
 impl Function {
@@ -274,6 +282,7 @@ impl Function {
         params: Vec<Ident>,
         body: Vec<Stmt>,
         span: Span,
+        strict: bool,
     ) -> Function {
         let height = max_height(&body) + 1;
         Function {
@@ -283,6 +292,7 @@ impl Function {
             body,
             span,
             height,
+            strict,
         }
     }
 }

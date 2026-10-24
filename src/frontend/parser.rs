@@ -47,9 +47,14 @@ mod cost {
 /// literals and cannot be bound or assigned.
 const RESERVED_CONSTANTS: &[&str] = &["undefined", "NaN", "Infinity"];
 
-/// Names strict mode forbids as binding names; the subset also does not
-/// support referencing them.
+/// Names strict mode forbids as binding names (sloppy code may bind them,
+/// clj-quickjs-95); strict code cannot reference them in this subset
+/// (see [`Parser::parse_identifier_reference`]).
 const STRICT_RESTRICTED: &[&str] = &["eval", "arguments"];
+
+/// The exact source text of a `"use strict"` directive: no escape sequence
+/// or line continuation (ECMAScript "Use Strict Directive").
+const USE_STRICT: [&str; 2] = ["\"use strict\"", "'use strict'"];
 
 pub(super) struct Parser<'a> {
     src: &'a str,
@@ -59,6 +64,15 @@ pub(super) struct Parser<'a> {
     /// End offset of the last consumed token.
     prev_end: usize,
     depth: usize,
+    /// The code being parsed is strict-mode code (clj-quickjs-95): the
+    /// script was parsed strict, or a `"use strict"` directive of the
+    /// script or of an enclosing function applies. The parser consults it
+    /// for mode-dependent early errors; the result is recorded as
+    /// [`Script::strict`] and [`Function::strict`]. The lexer does not
+    /// depend on it yet (legacy octal is clj-quickjs-51): when it does, note
+    /// that the token after a directive is lexed before the directive is
+    /// recognised.
+    strict: bool,
     in_function: bool,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -80,7 +94,8 @@ struct LabelEntry {
 }
 
 impl<'a> Parser<'a> {
-    pub(super) fn new(src: &'a str) -> Parser<'a> {
+    /// A parser of `src` whose top level is strict-mode code if `strict`.
+    pub(super) fn new(src: &'a str, strict: bool) -> Parser<'a> {
         Parser {
             src,
             lexer: Lexer::new(src),
@@ -91,6 +106,7 @@ impl<'a> Parser<'a> {
             },
             prev_end: 0,
             depth: 0,
+            strict,
             in_function: false,
             in_loop: false,
             in_switch: false,
@@ -233,16 +249,68 @@ impl<'a> Parser<'a> {
 
     // ----- script and statements ----------------------------------------
 
+    /// Script: Directive* StatementListItem* (the directive prologue is
+    /// recognised by [`Self::directive`]).
     pub(super) fn parse_script(mut self) -> PResult<Script> {
         self.advance()?;
         let mut body = Vec::new();
+        let mut prologue = true;
         while self.tok.kind != TokenKind::Eof {
-            body.push(self.parse_statement_list_item()?);
+            let stmt = self.parse_statement_list_item()?;
+            prologue = prologue && self.directive(&stmt, None, &[])?;
+            body.push(stmt);
         }
         Ok(Script {
             body,
             span: Span::new(0, self.src.len()),
+            strict: self.strict,
         })
+    }
+
+    /// Directive prologues (clj-quickjs-95; QuickJS `js_parse_directives`).
+    /// `stmt` was parsed while the prologue of a script or function body
+    /// may still continue: returns whether it does, that is whether `stmt`
+    /// is an expression statement made of a single string literal token
+    /// (not parenthesized, and not an operand: `"a" + b;` ends the
+    /// prologue). The directive whose exact source text is
+    /// [`USE_STRICT`] makes the code strict from here on. The function's
+    /// `name` and `params` were parsed before its body, in the enclosing
+    /// mode, so they are checked again now (QuickJS
+    /// `js_parse_function_check_names`): `eval` or `arguments` there is a
+    /// [`SyntaxErrorKind::ReservedWord`] at that name. Directives are kept
+    /// as ordinary expression statements in the tree.
+    #[inline(never)]
+    fn directive(&mut self, stmt: &Stmt, name: Option<&Ident>, params: &[Ident]) -> PResult<bool> {
+        let StmtKind::Expr(Expr {
+            kind: ExprKind::String(_),
+            span,
+            ..
+        }) = &stmt.kind
+        else {
+            return Ok(false);
+        };
+        let text = span.text(self.src);
+        if text.starts_with('(') {
+            return Ok(false);
+        }
+        if USE_STRICT.contains(&text) && !self.strict {
+            self.strict = true;
+            if let Some(ident) = name
+                .into_iter()
+                .chain(params)
+                .find(|i| STRICT_RESTRICTED.contains(&i.name.as_str()))
+            {
+                return Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    ident.span,
+                    format!(
+                        "`{}` cannot be used as a binding name in strict mode (the function has a \"use strict\" directive)",
+                        ident.name
+                    ),
+                ));
+            }
+        }
+        Ok(true)
     }
 
     /// StatementListItem: a declaration or a statement.
@@ -883,7 +951,7 @@ impl<'a> Parser<'a> {
     }
 
     /// BindingIdentifier: an identifier that is not a reserved word, a
-    /// reserved constant, `eval` or `arguments`.
+    /// reserved constant, or (in strict code) `eval` or `arguments`.
     fn parse_binding_identifier(&mut self, what: &str) -> PResult<Ident> {
         match &self.tok.kind {
             TokenKind::Identifier(name) => {
@@ -894,7 +962,7 @@ impl<'a> Parser<'a> {
                         format!("`{name}` is reserved by this subset and cannot be rebound"),
                     ));
                 }
-                if STRICT_RESTRICTED.contains(&name.as_str()) {
+                if self.strict && STRICT_RESTRICTED.contains(&name.as_str()) {
                     return Err(self.error(
                         SyntaxErrorKind::ReservedWord,
                         self.tok.span,
@@ -931,7 +999,7 @@ impl<'a> Parser<'a> {
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
         let outer_labels = std::mem::take(&mut self.labels);
-        let body = self.parse_block()?;
+        let (body, strict) = self.parse_function_body(name.as_ref(), &params)?;
         self.in_function = outer;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
@@ -943,9 +1011,40 @@ impl<'a> Parser<'a> {
             params,
             body,
             self.span_from(start),
+            strict,
         );
         self.check_height(function.height)?;
         Ok(function)
+    }
+
+    /// `{` FunctionBody `}`: a [`Self::parse_block`] whose leading
+    /// statements are a directive prologue ([`Self::directive`], with the
+    /// function's `name` and `params` for its retroactive check). Returns
+    /// the body and whether the function is strict; the enclosing mode is
+    /// restored after it.
+    fn parse_function_body(
+        &mut self,
+        name: Option<&Ident>,
+        params: &[Ident],
+    ) -> PResult<(Vec<Stmt>, bool)> {
+        let saved = self.depth;
+        let outer_strict = self.strict;
+        self.deeper(cost::BLOCK)?;
+        self.expect_punct(Punct::LBrace)?;
+        let mut body = Vec::new();
+        let mut prologue = true;
+        while !self.is_punct(Punct::RBrace) {
+            if self.tok.kind == TokenKind::Eof {
+                return Err(self.unexpected("`}`"));
+            }
+            let stmt = self.parse_statement_list_item()?;
+            prologue = prologue && self.directive(&stmt, name, params)?;
+            body.push(stmt);
+        }
+        self.advance()?;
+        let strict = std::mem::replace(&mut self.strict, outer_strict);
+        self.depth = saved;
+        Ok((body, strict))
     }
 
     /// `function` Name? `(` Params `)`, up to the body.
@@ -965,7 +1064,8 @@ impl<'a> Parser<'a> {
     }
 
     /// `(` [ BindingIdentifier { `,` BindingIdentifier } [ `,` ] ] `)`:
-    /// distinct plain identifiers (strict mode; always so for an arrow).
+    /// distinct plain identifiers (strict mode and arrows; the subset also
+    /// rejects duplicates in sloppy functions, `docs/grammar.md`).
     fn parse_formal_parameters(&mut self) -> PResult<Vec<Ident>> {
         self.expect_punct(Punct::LParen)?;
         let mut params: Vec<Ident> = Vec::new();
@@ -1015,17 +1115,17 @@ impl<'a> Parser<'a> {
             return Err(self.misplaced_arrow(&self.tok));
         }
         self.advance()?;
-        let (kind, body) = if self.is_punct(Punct::LBrace) {
+        let (kind, body, strict) = if self.is_punct(Punct::LBrace) {
             let outer = std::mem::replace(&mut self.in_function, true);
             let outer_loop = std::mem::replace(&mut self.in_loop, false);
             let outer_switch = std::mem::replace(&mut self.in_switch, false);
             let outer_labels = std::mem::take(&mut self.labels);
-            let body = self.parse_block()?;
+            let (body, strict) = self.parse_function_body(None, &params)?;
             self.in_function = outer;
             self.in_loop = outer_loop;
             self.in_switch = outer_switch;
             self.labels = outer_labels;
-            (FunctionKind::Arrow, body)
+            (FunctionKind::Arrow, body, strict)
         } else {
             // The body is an AssignmentExpression, so the arrow ends with
             // it: a `,` after it separates arguments or declarators, or is
@@ -1033,10 +1133,10 @@ impl<'a> Parser<'a> {
             let value = self.parse_assignment()?;
             let span = value.span;
             let body = self.bounded(Stmt::new(StmtKind::Return(Some(value)), span))?;
-            (FunctionKind::ConciseArrow, vec![body])
+            (FunctionKind::ConciseArrow, vec![body], self.strict)
         };
         self.depth = saved;
-        let function = Function::new(kind, None, params, body, self.span_from(start));
+        let function = Function::new(kind, None, params, body, self.span_from(start), strict);
         self.check_height(function.height)?;
         let span = function.span;
         self.expr(ExprKind::Function(Box::new(function)), span)
@@ -1706,7 +1806,11 @@ impl<'a> Parser<'a> {
     }
 
     /// An identifier in expression position, including the reserved
-    /// constants and the `async` / arrow rejections.
+    /// constants and the `async` / arrow rejections. `eval` and `arguments`
+    /// are unsupported in strict code, where they cannot name a binding of
+    /// the program; in sloppy code (clj-quickjs-95) they are ordinary
+    /// identifiers here, and the compiler accepts them only where they
+    /// denote such a binding (`Lowerer::resolve_reference`).
     #[inline(never)]
     fn parse_identifier_reference(&mut self) -> PResult<Expr> {
         let span = self.tok.span;
@@ -1717,8 +1821,10 @@ impl<'a> Parser<'a> {
             "undefined" => ExprKind::Undefined,
             "NaN" => ExprKind::Number(f64::NAN),
             "Infinity" => ExprKind::Number(f64::INFINITY),
-            "eval" => return Err(self.unsupported(span, "`eval` is")),
-            "arguments" => return Err(self.unsupported(span, "the `arguments` object is")),
+            "eval" if self.strict => return Err(self.unsupported(span, "`eval` is")),
+            "arguments" if self.strict => {
+                return Err(self.unsupported(span, "the `arguments` object is"));
+            }
             "async" => {
                 let next = self.peek_next().filter(|t| !t.newline_before);
                 match next.map(|t| t.kind) {

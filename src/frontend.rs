@@ -12,6 +12,10 @@
 //!   closures and the compiler-reserved intrinsic binding `__rt`
 //!   (`frontend/intrinsics.rs`; `docs/grammar.md`, "Reserved intrinsic
 //!   binding") compile to VM instructions.
+//! * [`ScriptOptions`] and the `_with` entry points ([`parse_script_with`],
+//!   [`compile_script_with`], [`compile_function_with`]): non-strict
+//!   (sloppy) source and `"use strict"` directive prologues
+//!   (clj-quickjs-95); the entry points without options are strict.
 //! * [`parse_script`]: source text to an [`ast::Script`], or the first
 //!   [`SyntaxError`]. No AST is produced for input that uses an unsupported
 //!   form; the error names the form and its position.
@@ -182,10 +186,45 @@ pub fn line_column(source: &str, offset: usize) -> (u32, u32) {
 
 /// Parse `source` as a script of the documented subset (`docs/grammar.md`).
 ///
-/// All code is treated as strict-mode code. Returns the first error; no AST is
-/// produced for input containing an unsupported or malformed form.
+/// All code is treated as strict-mode code ([`ScriptOptions::STRICT`]; see
+/// [`parse_script_with`]). Returns the first error; no AST is produced for
+/// input containing an unsupported or malformed form.
 pub fn parse_script(source: &str) -> Result<ast::Script, SyntaxError> {
-    parser::Parser::new(source).parse_script()
+    parse_script_with(source, ScriptOptions::STRICT)
+}
+
+/// [`parse_script`] with the top level in the mode `options` gives.
+pub fn parse_script_with(source: &str, options: ScriptOptions) -> Result<ast::Script, SyntaxError> {
+    parser::Parser::new(source, options.strict).parse_script()
+}
+
+/// How a frontend entry point treats its source (clj-quickjs-95).
+///
+/// `strict` is the mode of the script's top level. `true` makes all of the
+/// code strict-mode code. `false` makes it non-strict ("sloppy") code, in
+/// which a `"use strict"` directive prologue (`docs/grammar.md`, "Directive
+/// prologues and strictness") makes that script or function, and every
+/// function nested in it, strict. The entry points without options
+/// ([`parse_script`], [`compile_script`], [`compile_function`]) stay strict,
+/// as all code was before sloppy mode existed. ECMAScript scripts are sloppy
+/// by default, so an upstream test script runs as written with
+/// [`ScriptOptions::SLOPPY`].
+///
+/// The resulting mode of each script and function is recorded in the tree
+/// ([`ast::Script::strict`], [`ast::Function::strict`]) and in its compiled
+/// code ([`Executable::is_strict`]); sloppy-mode semantics branch on it
+/// there (in the compiler, `FnCtx::strict` of the function being lowered).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptOptions {
+    pub strict: bool,
+}
+
+impl ScriptOptions {
+    /// Strict-mode code throughout: the mode of the entry points without
+    /// options.
+    pub const STRICT: ScriptOptions = ScriptOptions { strict: true };
+    /// Non-strict code, except where a `"use strict"` directive applies.
+    pub const SLOPPY: ScriptOptions = ScriptOptions { strict: false };
 }
 
 /// Compile `source` as a script of the documented subset into a validated
@@ -208,7 +247,18 @@ pub fn parse_script(source: &str) -> Result<ast::Script, SyntaxError> {
 /// declaration ran, and assignment to a `const` are not compile errors: as in
 /// JavaScript, they fail the task when (and only if) that code runs.
 pub fn compile_script(name: &str, source: &str) -> Result<Executable, SyntaxError> {
-    let script = parse_script(source)?;
+    compile_script_with(name, source, ScriptOptions::STRICT)
+}
+
+/// [`compile_script`] with the top level in the mode `options` gives. The
+/// script's code and each function's code record whether they are strict
+/// ([`Executable::is_strict`]).
+pub fn compile_script_with(
+    name: &str,
+    source: &str,
+    options: ScriptOptions,
+) -> Result<Executable, SyntaxError> {
+    let script = parse_script_with(source, options)?;
     lower::lower_script(name, source, &script)
 }
 
@@ -218,9 +268,22 @@ pub fn compile_script(name: &str, source: &str) -> Result<Executable, SyntaxErro
 /// task; falling off the end returns `undefined`. The body follows the same
 /// rules as [`compile_script`]. Inside the body, the function's own name is
 /// the running function object (so it can recurse); assigning it is
-/// [`SyntaxErrorKind::Unsupported`].
+/// [`SyntaxErrorKind::Unsupported`]. The function is strict
+/// ([`ScriptOptions::STRICT`]; see [`compile_function_with`]).
 pub fn compile_function(source: &str) -> Result<Executable, SyntaxError> {
-    let script = parse_script(source)?;
+    compile_function_with(source, ScriptOptions::STRICT)
+}
+
+/// [`compile_function`] with the declaration parsed as a script in the mode
+/// `options` gives. With [`ScriptOptions::SLOPPY`] the function is strict
+/// only when its own body starts with a `"use strict"` directive (a
+/// script-level directive would be a second statement, which this entry
+/// point rejects).
+pub fn compile_function_with(
+    source: &str,
+    options: ScriptOptions,
+) -> Result<Executable, SyntaxError> {
+    let script = parse_script_with(source, options)?;
     match script.body.as_slice() {
         [
             ast::Stmt {

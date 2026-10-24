@@ -59,6 +59,13 @@ pub struct ExecutableSpec {
     /// instruction pops this many, and `GetCapture` operands are checked
     /// against it. 0 for code that captures nothing, such as a task entry.
     pub captures: u16,
+    /// The function is strict-mode code (clj-quickjs-95). Compiled code
+    /// takes it from the source ([`crate::frontend::ScriptOptions`] and
+    /// `"use strict"` directives); hand-assembled code is strict, the only
+    /// mode before sloppy code existed. Instructions whose JavaScript
+    /// semantics differ by mode branch on [`Executable::is_strict`] of the
+    /// running code, or are chosen by the compiler from it.
+    pub strict: bool,
 }
 
 /// Validated code shared by every task that runs it.
@@ -72,6 +79,8 @@ pub(crate) struct Code {
     pub(crate) functions: Box<[Arc<Code>]>,
     /// Number of captured values a closure over this code carries.
     pub(crate) captures: u16,
+    /// Strict-mode code ([`ExecutableSpec::strict`]).
+    pub(crate) strict: bool,
     pub(crate) instrs: Box<[Instr]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
@@ -265,6 +274,7 @@ impl Executable {
             constants,
             functions,
             captures,
+            strict,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -480,6 +490,7 @@ impl Executable {
             constants: constants.into_iter().map(Value::from).collect(),
             functions: functions.into_iter().map(|f| f.0).collect(),
             captures,
+            strict,
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
@@ -490,6 +501,13 @@ impl Executable {
     /// Diagnostic name.
     pub fn name(&self) -> &str {
         &self.0.name
+    }
+
+    /// True for strict-mode code ([`ExecutableSpec::strict`]): code compiled
+    /// in strict mode or under a `"use strict"` directive, and all
+    /// hand-assembled code.
+    pub fn is_strict(&self) -> bool {
+        self.0.strict
     }
 
     /// Maximum operand-stack depth computed at load time.
@@ -566,6 +584,7 @@ impl Executable {
                 .collect(),
             functions: code.functions.iter().cloned().map(Executable).collect(),
             captures: code.captures,
+            strict: code.strict,
         }
     }
 }
@@ -657,6 +676,7 @@ mod tests {
             constants,
             functions: Vec::new(),
             captures: 0,
+            strict: true,
         })
     }
 
@@ -737,6 +757,7 @@ mod tests {
             constants: vec![],
             functions: vec![],
             captures: 0,
+            strict: true,
         });
         assert_eq!(
             kind(e),
@@ -818,6 +839,7 @@ mod tests {
             constants: vec![],
             functions: vec![],
             captures: 0,
+            strict: true,
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
@@ -868,6 +890,7 @@ mod tests {
             constants: vec![],
             functions,
             captures: 0,
+            strict: true,
         }
     }
 

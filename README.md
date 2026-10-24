@@ -1650,3 +1650,31 @@ Deferred:
   methods and method calls, computed keys and `o[k]`, `delete`,
   `__proto__`, property `++`/`--` and compound assignment; properties of
   functions, error objects and primitives fail with `UnsupportedOperand`.
+
+### Directive prologues and sloppy compilation (clj-quickjs-95)
+
+Supported (`cargo test --lib frontend::tests::directive_prologues_set_strictness`,
+`cargo test --test js_source use_strict_directives`):
+
+- `ScriptOptions { strict }` and the entry points `parse_script_with`,
+  `compile_script_with` and `compile_function_with`. `ScriptOptions::SLOPPY`
+  compiles non-strict code; `parse_script`, `compile_script` and
+  `compile_function` stay strict (`ScriptOptions::STRICT`).
+- A `"use strict"` / `'use strict'` directive (exact source text, no escapes)
+  in the directive prologue of a script, function or arrow body makes it and
+  everything nested in it strict, including a retroactive `ReservedWord`
+  check of the function's own name and parameters. Arrows inherit the
+  enclosing mode. Directives still evaluate as string statements.
+- Sloppy code may bind, read and assign `eval` and `arguments` (parameters, `let`/`const`/`var`,
+  function names, catch parameters).
+- Each function's mode is recorded in its code: `ExecutableSpec::strict`,
+  `Executable::is_strict()` (hand-assembled code is strict).
+
+Deferred:
+
+- Every other sloppy-mode difference (listed in `docs/grammar.md`,
+  "Explicit gaps"): references that would denote the `arguments` object (clj-quickjs-97) or the global `eval`
+  (clj-quickjs-106), legacy octal (clj-quickjs-51), sloppy function-name
+  stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
+  (clj-quickjs-110); strict reserved words and duplicate parameters stay
+  rejected in sloppy code.

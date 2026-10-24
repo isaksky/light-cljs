@@ -7,7 +7,9 @@ rejects everything else with a positioned `SyntaxError`. Requirements:
 agreement by tests: every `js accept` example below must parse, every
 `js reject` example must fail with the stated error kind at the stated
 `line:column`, and every `js compile-reject` example must parse but fail to
-compile that way (`frontend::tests::grammar_doc_examples`).
+compile that way (`frontend::tests::grammar_doc_examples`). Examples marked
+`js sloppy-accept` / `js sloppy-reject` are parsed as non-strict code
+(`ScriptOptions::SLOPPY`); all others are strict.
 
 Status: everything below parses. Everything except method calls
 (`o.f()`) also compiles to VM bytecode and executes (`frontend::compile_script`; see
@@ -35,13 +37,24 @@ logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
 (clj-quickjs-69) parses and executes, including on a name with no binding.
 `var` statements (clj-quickjs-94) parse and execute, with function-level
 hoisting; top-level function declarations of a script or function body
-are var-scoped.
+are var-scoped. `"use strict"` directive prologues are interpreted and
+non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
+"Directive prologues and strictness").
 
 ## Semantics model
 
-- All source is **strict-mode** code (as if it began with `"use strict"`):
-  strict reserved words, legacy octal literals and escapes, `with`, and
-  binding `eval` or `arguments` are rejected.
+- Source is **strict-mode** code by default: `parse_script`,
+  `compile_script` and `compile_function` treat all code as if it began
+  with `"use strict"`. The `_with` entry points (`parse_script_with`,
+  `compile_script_with`, `compile_function_with`) take
+  `ScriptOptions { strict }`; with `ScriptOptions::SLOPPY` the top level
+  is non-strict code, as an ECMAScript script is, and a `"use strict"`
+  directive makes a script or function strict (see "Directive prologues
+  and strictness"). In strict code, strict reserved words, legacy octal
+  literals and escapes, `with`, and binding `eval` or `arguments` are
+  rejected. Sloppy code differs only where listed under "Directive
+  prologues and strictness"; every other sloppy-only form is still
+  rejected as in strict code.
 - Accepted forms keep ordinary JavaScript meaning. A form whose meaning the
   subset does not implement is rejected, never reinterpreted.
 - The subset additionally **reserves** the global constants `undefined`,
@@ -70,7 +83,8 @@ are var-scoped.
 EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 
 ```
-Script              = { StatementListItem } EOF
+Script              = { Directive } { StatementListItem } EOF
+Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
                     | ForStatement | SwitchStatement | VariableStatement
@@ -100,7 +114,8 @@ Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
 FunctionDeclaration = "function" BindingIdentifier FunctionRest
 FunctionExpression  = "function" [ BindingIdentifier ] FunctionRest
 FunctionRest        = "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
-                      "{" { StatementListItem } "}"
+                      FunctionBody
+FunctionBody        = "{" { Directive } { StatementListItem } "}"
 
 Expression            = AssignmentExpression { "," AssignmentExpression }
 AssignmentExpression  = ConditionalExpression | ArrowFunction
@@ -111,7 +126,7 @@ AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
 ArrowFunction         = ArrowParameters [no LineTerminator here] "=>" ConciseBody
 ArrowParameters       = BindingIdentifier
                       | "(" [ BindingIdentifier { "," BindingIdentifier } [ "," ] ] ")"
-ConciseBody           = "{" { StatementListItem } "}" | AssignmentExpression
+ConciseBody           = FunctionBody | AssignmentExpression
 ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
 LogicalOr             = LogicalAnd { "||" LogicalAnd }
 LogicalAnd            = BitwiseOr { "&&" BitwiseOr }
@@ -205,7 +220,8 @@ Notes on the grammar:
   (`if (x) var y = 1;`). Its names are bindings of the enclosing function
   or script, wherever the statement is (see "Execution"); `var` in a `for`
   head is not supported yet.
-- Function parameter names must be distinct (strict mode).
+- Function parameter names must be distinct (strict mode; the subset
+  requires it in sloppy functions too).
 - Arrow functions (clj-quickjs-53). A `(` whose matching `)` is followed
   by `=>` starts an arrow parameter list (the ECMAScript cover grammar);
   otherwise the parentheses are a parenthesized expression, where `(a, b)`
@@ -225,7 +241,7 @@ Notes on the grammar:
   `a ? b, c : d` is a syntax error and `x => a, b` is `(x => a), b`. A
   comma expression is not an assignment target: `(a, b) = 1` is `Invalid`.
 - `BindingIdentifier` excludes reserved words, `undefined`, `NaN`,
-  `Infinity`, `eval` and `arguments`.
+  `Infinity`, and in strict code `eval` and `arguments`.
 - The assignment target may be parenthesized (`(a) = 1`, `(a) += 1`), as
   in JavaScript. A compound assignment (clj-quickjs-84) takes the same
   targets as `=` and is right-associative too: `a -= b *= 2` is
@@ -297,8 +313,8 @@ Every form below is rejected where it starts. Error kinds:
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
-| references to `eval` or `arguments` | Unsupported |
-| reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
+| references to `eval` or `arguments` in strict code (in sloppy code they parse, and the compiler rejects those that do not denote a binding the program declares) | Unsupported |
+| reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) or `++`/`--` on one (`__rt.count++`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
 | `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
@@ -368,8 +384,95 @@ checks left to later stages:
 - **Diagnostics stop at the first error**; there is no error recovery.
   Positions are byte spans plus 1-based line and column (columns count
   Unicode scalar values).
-- **Directive prologues are not interpreted**: `"use strict"` is an ordinary
-  expression statement, and every script is strict anyway.
+- **Sloppy mode is partial** (clj-quickjs-95). Non-strict code differs
+  from strict code only in allowing `eval` and `arguments` as binding
+  names, which are then read and assigned like any binding. Every other
+  sloppy-only form or behaviour is still the strict one, until the pellet
+  named for it: a reference to `arguments` that would denote a function's
+  own `arguments` object (clj-quickjs-97) and to `eval` that would denote
+  the global `eval` (clj-quickjs-106, direct eval -107/-108) are compile
+  errors (`Unsupported`, see "Directive prologues and strictness"); legacy
+  octal literals and octal escapes (clj-quickjs-51); silently
+  ignored stores to a function expression's own name (clj-quickjs-96);
+  implicit globals and `delete` of identifiers (clj-quickjs-105); `with`
+  (clj-quickjs-110); `this` substitution and the mapped `arguments` object
+  (not filed). Strict reserved words (`let`, `static`, `yield`,
+  `implements`, `interface`, `package`, `private`, `protected`, `public`)
+  stay reserved, duplicate parameter names stay `Invalid`, a function
+  declaration as a labelled or `if` body stays `Invalid`, and function
+  declarations in blocks stay lexical (no Annex B hoisting).
+
+## Directive prologues and strictness
+
+(clj-quickjs-95; ECMAScript "Directive Prologues and the Use Strict
+Directive"; QuickJS `js_parse_directives` and
+`js_parse_function_check_names` in `research/quickjs/quickjs.c` at
+7d1c13c5d8f8.)
+
+- A **directive prologue** is the leading run of expression statements of
+  a script or function body (an arrow function's block body included) that
+  each consist of exactly one string literal token, followed by `;` or an
+  inserted one. A parenthesized string (`("use strict");`), a string
+  operand (`"use strict" + 1;`, also across a line break) or any other
+  statement ends it, so a `"use strict"` after `1;` is an ordinary
+  statement.
+- A directive whose **exact source text** is `"use strict"` or
+  `'use strict'` makes that script or function strict-mode code from the
+  start, and with it every function nested in it. Any escape sequence or
+  line continuation (`"use\x20strict"`, `'use \` newline `strict'`)
+  makes it an ordinary directive with no effect. A function's own
+  directive applies to its name and parameters too: they were parsed
+  before the body, so they are checked again (`function eval() {
+  "use strict"; }` and `function f(arguments) { "use strict"; }` are
+  `ReservedWord` at the name).
+- **Arrow functions** inherit the strictness of the code around them and
+  may also have their own directive in a block body (`(eval) => {
+  "use strict"; }` is `ReservedWord`).
+- Directives stay **ordinary expression statements**: they evaluate to
+  their string, so a script that is only `"use strict";` completes with
+  `"use strict"`.
+- **`eval` and `arguments` in sloppy code** may be declared as
+  parameters, `let`/`const`/`var` bindings, function names and catch
+  parameters, and such bindings are read, assigned (`=`, compound, `++`)
+  and closed over as usual. A reference to either is a compile error
+  (`Unsupported`) where it would denote something the subset lacks:
+  `eval` with no binding of that name in scope (the global `eval`,
+  clj-quickjs-106); `arguments` in a `function` (directly or through
+  arrows) that does not itself bind `arguments` in an enclosing scope, or
+  binds it only with `var`, which in JavaScript keeps the function's
+  `arguments` object (clj-quickjs-97). In a script outside any `function`,
+  an unbound `arguments` is an ordinary unresolvable name
+  (ReferenceError at run time, `"undefined"` for `typeof`).
+- The resulting mode is recorded on the tree (`Script::strict`,
+  `Function::strict`) and in each function's compiled code
+  (`ExecutableSpec::strict`, `Executable::is_strict`; hand-assembled code
+  is strict). Later sloppy-mode semantics consult it: the parser through
+  its `strict` flag (the mode of the code being parsed), the compiler
+  through `FnCtx::strict` (the mode of the function being lowered), and the
+  VM through the running code's `Code::strict`.
+- The lexer does not depend on the mode yet; the token after a directive
+  is lexed before the directive is recognised, which a mode-dependent
+  lexer (clj-quickjs-51) has to take into account.
+
+```js sloppy-accept
+// Sloppy code may bind eval and arguments; directives apply per function.
+function f(eval) { var arguments = 2; return 1; }
+function g() { 1; "use strict"; let arguments; }
+function h() { "use\x20strict"; let eval; }
+```
+
+```js sloppy-reject ReservedWord 1:12
+function f(eval) { "use strict"; }
+```
+
+```js sloppy-reject ReservedWord 2:12
+"use strict";
+function f(eval) {}
+```
+
+```js sloppy-reject ReservedWord 1:2
+(eval) => { "use strict"; }
+```
 
 ## Execution
 
@@ -418,6 +521,7 @@ Executed, with JavaScript semantics:
 | `==`, `!=` | IsLooselyEqual for the supported types: `null == undefined`, neither equals anything else, booleans compare as numbers, two strings by content (`"1" == "01"` is false); a string compared with a number or boolean compares as a number, the string by StringToNumber and the boolean as 0 or 1 (`"" == 0`, `" 1 " == 1` and `"1" == true` are true, `"abc" == NaN` is false; clj-quickjs-67) |
 | `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures; the only callable values); `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
+| a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), with null prototype (until `Object.prototype` exists, clj-quickjs-117): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else (along its prototype chain) `undefined`; persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; function objects, caught error objects, numbers, booleans and strings fail with `UnsupportedOperand` until their properties exist (clj-quickjs-101, -230, -73); an object owned by another task fails with `ForeignObject` |
@@ -485,9 +589,9 @@ Errors:
 | A method call `o.f(...)` (other than `__rt.name(...)`), and (in `compile_function`) assignment to the entry function's own name | compile time | `SyntaxError`, kind `Unsupported`, at the form |
 | Misuse of the reserved intrinsic binding `__rt` | compile time | see "Reserved intrinsic binding" |
 | More than 65,535 live bindings, 65,536 distinct constants, 65,536 functions in one function, or 65,535 call arguments or captured bindings | compile time | `SyntaxError`, kind `TooLarge` |
-| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
+| Reading, assigning, incrementing or decrementing a name with no binding (strict mode; there is no global object, so sloppy code fails the same way until clj-quickjs-105), except as the operand of `typeof` | run time, only if reached, after the assigned value is evaluated (a compound assignment reads first, so it fails before evaluating its right operand) | `VmErrorKind::ReferenceError`: "x is not defined" |
 | Reading, assigning, incrementing or decrementing a `let`/`const` before its declaration ran (temporal dead zone), including inside its own initializer, as the operand of `typeof`, and from a closure that runs before it | run time, only if reached | `VmErrorKind::ReferenceError`: "cannot access 'x' before initialization" |
-| Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
+| Assigning to an initialized `const` (`c = 1`, `c += 1`, `c++`), or to a named function expression's name inside it (also in sloppy code until clj-quickjs-96) | run time, only if reached, after the value is evaluated | `VmErrorKind::TypeError`: "assignment to constant variable 'x'" |
 | Calling a value that is not a function | run time | `VmErrorKind::TypeError`: "number is not a function", "string is not a function" (names the value's type) |
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
 
