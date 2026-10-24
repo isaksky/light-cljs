@@ -999,10 +999,11 @@ mod tests {
     fn builtin_global_operands_are_validated() {
         let g = Opcode::GetBuiltinGlobal as u8;
         assert_eq!(
-            kind(load(vec![g, 40, 0, RET], vec![], 0)),
-            UnknownBuiltinGlobal { index: 40 }
+            kind(load(vec![g, 41, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 41 }
         );
-        for i in 0..40 {
+        // WeakRef appends operand 40; prior operands keep their meaning.
+        for i in 0..41 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
     }
