@@ -633,6 +633,23 @@ impl VmState {
         this: Value,
         argc: usize,
     ) -> Result<(), Fault> {
+        if code.constructor_kind == super::ConstructorKind::BaseClass {
+            return Err(Fault::TypeError(
+                "class constructor cannot be invoked without new".into(),
+            ));
+        }
+        self.enter_constructor(code, callee, this, argc)
+    }
+
+    /// Enter after the construct path has checked `[[Construct]]`, or after
+    /// `enter` has checked ordinary-call eligibility.
+    pub(crate) fn enter_constructor(
+        &mut self,
+        code: Arc<Code>,
+        callee: ObjectId,
+        this: Value,
+        argc: usize,
+    ) -> Result<(), Fault> {
         native::assert_no_borrow("entering a call frame (reentering JavaScript)");
         let base = self
             .stack

@@ -114,7 +114,13 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 ```
 Script              = { Directive } { StatementListItem } EOF
 Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
-StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
+StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | Statement
+ClassDeclaration    = "class" BindingIdentifier ClassBody
+ClassExpression     = "class" [ BindingIdentifier ] ClassBody
+ClassBody           = "{" { ";" | [ "static" ] ClassMethod } "}"
+ClassMethod         = PropertyName FormalParameters FunctionBody
+                    | ( "get" | "set" ) PropertyName FormalParameters FunctionBody
+                    | [ "async" [no LineTerminator here] ] [ "*" ] PropertyName FormalParameters FunctionBody
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
                     | ForStatement | ForInStatement | ForOfStatement | SwitchStatement
                     | VariableStatement
@@ -209,7 +215,7 @@ New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expre
                         (* the first Arguments belong to `new`: `new F()()` calls the result *)
 Arguments             = "(" [ SpreadElement { "," SpreadElement } [ "," ] ] ")"
 SpreadElement         = [ "..." ] AssignmentExpression
-Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
+Primary               = Identifier | Literal | FunctionExpression | ClassExpression | ObjectLiteral
                       | ArrayLiteral | TemplateLiteral | RegExpLiteral | "this" | "(" Expression ")"
                         (* `this`: script global object, ordinary receivers, lexical arrow captures *)
 TemplateLiteral       = NoSubstitutionTemplate
@@ -484,7 +490,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | Form | Kind |
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
-| classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
+| class inheritance (`extends`), fields, static initialization blocks, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
 | object spread `...` (in an object literal) | Unsupported |
@@ -507,7 +513,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 
 ## Explicit gaps
 
-Class constructors and class methods remain deferred (clj-quickjs-136).
+Derived classes, `super` and class fields remain deferred (clj-quickjs-137/138/139).
 Constructor rejection messages use the source spelling of an identifier or
 member callee (`G`, `o.m`, `o[k]`), independently of its mutable `name` property.
 Other callees use the value kind (`function` for an anonymous arrow), or the
@@ -2288,7 +2294,7 @@ throw /x/;
 /
 ```
 
-```js reject Unsupported 1:1
+```js accept
 class Point {}
 ```
 
@@ -4060,7 +4066,7 @@ fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
 the outer reaction: the adoption call and the inner forwarding reaction.
 Thenable calls can yield, wait, migrate and survive collection like reactions.
 
-Rejected forms: async generators and class syntax retain their existing explicit
+Rejected forms: async generators and derived class syntax retain explicit
 rejections. Explicit gaps: subclass capabilities,
 species, combinators, `finally` and arbitrary Promise own properties are
 deferred. Only the intrinsic Promise constructor is
@@ -5064,4 +5070,60 @@ readers[0]() === 0 && readers[1]() === 1 && readers[2]() === 2;
 
 ```js compile-reject Unsupported 1:16
 function f(x = eval('1')) {}
+```
+
+## Base classes (clj-quickjs-136)
+
+Syntax: named class declarations are lexical declarations in statement lists;
+class expressions have an optional name. Class bodies are strict, including
+parameters and computed keys. Elements support ordinary, generator and async
+methods, static methods, getters and setters, literal and computed property
+names, and empty semicolon elements. `static()`, `get()`, `set()` and `async()`
+are ordinary instance methods. A non-computed instance `constructor` is the
+constructor; a missing constructor has no parameters and returns its new receiver.
+
+Execution: declarations have a mutable outer binding with a temporal dead zone.
+A named class also has an independent immutable inner name binding, captured by
+its constructor and methods. Computed keys execute in order while this inner
+binding remains uninitialized. The binding is initialized after all elements.
+Constructors require `new`, including through call/apply/bind and spread calls.
+A constructor's `prototype` is non-writable, non-enumerable and non-configurable;
+its prototype's `constructor` is writable, non-enumerable and configurable.
+Methods and accessors are non-enumerable and configurable; methods are writable.
+Their home objects are the instance prototype or the class for static elements.
+Ordinary methods and accessors have no constructor capability. All callbacks
+use resumable VM frames, including constructors and computed-key conversion.
+
+Rejected forms: duplicate constructors, accessor/async/generator constructors,
+and non-computed static methods/accessors named `prototype` are early `Invalid`
+SyntaxErrors. Declarations in single-statement positions are `Invalid`.
+Inheritance, `super`, fields and static blocks are explicitly unsupported.
+Explicit gaps: derived constructors and `super()` (-137), super properties
+(-138), instance/static/private fields and static initialization blocks (-139).
+
+```js accept
+class Point { constructor(x) { this.x = x; } get y() { return this.x; } static origin() { return new Point(0); } }
+let p = new Point(3);
+p.y === 3;
+```
+
+```js accept
+let C = class Inner { static self() { return Inner; } ['m']() { return 7; } };
+C.self() === C && new C().m() === 7;
+```
+
+```js reject Invalid 1:28
+class C { constructor() {} constructor() {} }
+```
+
+```js reject Invalid 1:15
+class C { get constructor() {} }
+```
+
+```js reject Unsupported 1:9
+class C extends B {}
+```
+
+```js reject Unsupported 1:11
+class C { x; }
 ```

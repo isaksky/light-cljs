@@ -645,6 +645,17 @@ pub enum Opcode {
     CheckGlobalLexicalConflict = 0x90,
     GetRawThis = 0x91,
     CheckSloppyThis = 0x92,
+    /// Class member definitions: object key function → object. Members
+    /// are configurable and non-enumerable; methods are also writable.
+    DefineClassMethod = 0x93,
+    DefineClassGetter = 0x94,
+    DefineClassSetter = 0x95,
+    /// Strict writes/deletion inside a class computed name in sloppy code.
+    /// The operands and effects match their non-suffixed instructions.
+    PutGlobalStrict = 0x96,
+    PutFieldStrict = 0x97,
+    PutElemStrict = 0x98,
+    DeleteStrict = 0x99,
 }
 
 /// Operand encoding of an opcode.
@@ -826,6 +837,13 @@ impl Opcode {
             0x8E => DeleteGlobal,
             0x8F => DeclareGlobalConstValue,
             0x90 => CheckGlobalLexicalConflict,
+            0x93 => DefineClassMethod,
+            0x94 => DefineClassGetter,
+            0x95 => DefineClassSetter,
+            0x96 => PutGlobalStrict,
+            0x97 => PutFieldStrict,
+            0x98 => PutElemStrict,
+            0x99 => DeleteStrict,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -981,6 +999,13 @@ impl Opcode {
             DeleteGlobal => "delete_global",
             DeclareGlobalConstValue => "declare_global_const_value",
             CheckGlobalLexicalConflict => "check_global_lexical_conflict",
+            DefineClassMethod => "define_class_method",
+            DefineClassGetter => "define_class_getter",
+            DefineClassSetter => "define_class_setter",
+            PutGlobalStrict => "put_global_strict",
+            PutFieldStrict => "put_field_strict",
+            PutElemStrict => "put_elem_strict",
+            DeleteStrict => "delete_strict",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -1034,6 +1059,8 @@ impl Opcode {
             | CheckGlobalLexicalConflict
             | GetField
             | PutField
+            | PutFieldStrict
+            | PutGlobalStrict
             | DefineField
             | DefineGetter
             | DefineSetter
@@ -1065,7 +1092,9 @@ impl Opcode {
             | Await => OperandKind::None,
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
-            CheckDirectEval | GetRawThis | CheckSloppyThis => OperandKind::None,
+            GetRawThis | CheckSloppyThis => OperandKind::None,
+            PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
+            | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
     }
 }
@@ -1266,6 +1295,13 @@ pub(crate) enum Instr {
     CheckGlobalLexicalConflict(u16),
     GetRawThis,
     CheckSloppyThis,
+    DefineClassMethod,
+    DefineClassGetter,
+    DefineClassSetter,
+    PutGlobalStrict(u16),
+    PutFieldStrict(u16),
+    PutElemStrict,
+    DeleteStrict,
 }
 
 impl Instr {
@@ -1418,6 +1454,13 @@ impl Instr {
             Instr::CallMethodSpread => Opcode::CallMethodSpread,
             Instr::ConstructSpread => Opcode::ConstructSpread,
             Instr::CheckSpreadArguments => Opcode::CheckSpreadArguments,
+            Instr::DefineClassMethod => Opcode::DefineClassMethod,
+            Instr::DefineClassGetter => Opcode::DefineClassGetter,
+            Instr::DefineClassSetter => Opcode::DefineClassSetter,
+            Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
+            Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
+            Instr::PutElemStrict => Opcode::PutElemStrict,
+            Instr::DeleteStrict => Opcode::DeleteStrict,
         }
     }
 
@@ -1433,7 +1476,7 @@ impl Instr {
             GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) | DeleteGlobal(_) => (0, 1),
             DeclareGlobalLet(_) | DeclareGlobalConst(_) => (1, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw | InitGlobalLexical(_) => (1, 0),
-            PutGlobal(_) => (1, 1),
+            PutGlobal(_) | PutGlobalStrict(_) => (1, 1),
             DeclareGlobalVar(_)
             | DeclareGlobalFunction(_)
             | CheckGlobalVar(_)
@@ -1454,7 +1497,8 @@ impl Instr {
             PendingThrow => (0, 1),
             RequireCoercible | OwnKeys => (1, 1),
             IsEnumerable => (2, 1),
-            DefineElem | DefineGetterElem | DefineSetterElem => (3, 1),
+            DefineElem | DefineGetterElem | DefineSetterElem | DefineClassMethod
+            | DefineClassGetter | DefineClassSetter => (3, 1),
             SetComputedName(_) => (2, 2),
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
@@ -1468,8 +1512,8 @@ impl Instr {
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | ToNumeric | Inc
             | Dec | CellGet | BitNot | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
             PutField(_) | DefineField(_) | DefineGetter(_) | DefineSetter(_) | AppendElement
-            | GetElem | SetProto | Delete => (2, 1),
-            PutElem => (3, 1),
+            | GetElem | SetProto | Delete | PutFieldStrict(_) | DeleteStrict => (2, 1),
+            PutElem | PutElemStrict => (3, 1),
             Dup2 => (2, 4),
             ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
@@ -1499,6 +1543,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 146);
+        assert_eq!(assigned, 153);
     }
 }

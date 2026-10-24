@@ -13,6 +13,181 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixture, not light-cljs output. The C/E/P cases adapt
+/// QuickJS test_language.js::test_class (license notice below).
+#[test]
+fn base_classes() {
+    for source in [
+        "class C { constructor() { this.x = 10; } f() { return 1; } static F() { return -1; } get y() { return 12; } } C.F() === -1 && new C().f() === 1 && new C().x === 10 && new C().y === 12 && Object.getOwnPropertyDescriptor(C.prototype, 'y').get.name === 'get y' && Object.keys(C.prototype).length === 0",
+        "let E1 = class E { static F() { return E; } }; E1 === E1.F() && typeof E === 'undefined'",
+        "class P { static() { return 42; } get() { return 1; } set() { return 2; } async() { return 3; } } new P().static() === 42 && new P().get() === 1 && new P().set() === 2 && new P().async() === 3",
+        "class C {} let ok = false; try { C(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "let ok = false; try { C; } catch(e) { ok = e instanceof ReferenceError; } class C {} ok",
+        "class K {} let ok = false; try { K.prototype = {}; } catch(e) { ok = e instanceof TypeError; } ok",
+        "class C { static f() { C = 1; } } let ok = false; try { C.f(); } catch(e) { ok = e instanceof TypeError; } ok && typeof C === 'function'",
+        "class C { get y() { return this.x; } set y(v) { this.x = v; } static get z() { return this.x; } static set z(v) { this.x = v; } } let c = new C(); c.y = 7; C.z = 9; c.y === 7 && C.z === 9",
+        "let key = 'm'; class C { [key]() { return 3; } static [key]() { return 4; } } new C().m() === 3 && C.m() === 4",
+        "class C {} let d = Object.getOwnPropertyDescriptor(C, 'prototype'); let c = Object.getOwnPropertyDescriptor(C.prototype, 'constructor'); !d.writable && !d.enumerable && !d.configurable && c.value === C && c.writable && !c.enumerable && c.configurable && new C() instanceof C",
+        "class C { m(a) {} } let ok = false; try { new C.prototype.m(); } catch(e) { ok = e instanceof TypeError; } ok && C.prototype.m.name === 'm' && C.prototype.m.length === 1",
+        "let C = class {}; let D = class Named {}; C.name === 'C' && D.name === 'Named' && C.length === 0 && D.length === 0",
+        "let C = class Inner { constructor(x = 3) { this.x = x; } m() { return Inner; } }; let D = C; C = 1; new D().m() === D && new D().x === 3 && D.length === 0",
+        "class C { m() { return C; } } let D = C; C = 1; new D().m() === D",
+        "let ok = false; try { let C = class C { [C]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "let C = 9; let seen = 0; try { let D = class C { [(seen++, C)]() {} }; } catch(e) { seen += e instanceof ReferenceError ? 10 : 100; } C === 9 && seen === 11",
+        "class C { static constructor() { return 7; } ['constructor']() { return 8; } ['__proto__']() { return 9; } } C.constructor() === 7 && new C().constructor() === 8 && new C().__proto__() === 9",
+        "class C { *g() { yield 7; } async a() { return 8; } } new C().g().next().value === 7 && C.prototype.g.name === 'g' && C.prototype.a.name === 'a'",
+        "class C { static get x() { return 1; } static set x(v) {} m() {} m() { return 9; } } let d = Object.getOwnPropertyDescriptor(C, 'x'); typeof d.get === 'function' && typeof d.set === 'function' && !d.enumerable && d.configurable && new C().m() === 9 && Object.keys(C).length === 0",
+        "let s = Symbol('m'); class C { [s]() { return 7; } get ['x']() { return 9; } } new C()[s]() === 7 && C.prototype[s].name === '[m]' && Object.getOwnPropertyDescriptor(C.prototype, 'x').get.name === 'get x'",
+        "class C {} let n = 0; for (let i = 0; i < 4; i++) { try { if (i === 0) C.call(null); if (i === 1) C.apply(null, []); if (i === 2) C.bind(null)(); if (i === 3) C(...[]); } catch(e) { if (e instanceof TypeError) n++; } } n === 4 && new (C.bind(null))() instanceof C",
+        "class C { constructor() { return {x: 9}; } } new C().x === 9",
+        "class C { constructor() { this.x = 7; return 3; } } new C().x === 7",
+        "{ class C {} } typeof C === 'undefined'",
+        "class C { a() {} \\u0069f() { return 7; } } new C().if() === 7",
+        "function* g() { let D = class C { [yield 'key']() { return C; } }; return D; } let it = g(); let a = it.next(); let C = it.next('m').value; a.value === 'key' && new C().m() === C",
+        "let b = {x: 1}; let count = 0; for (let C = class { ['x' in b]() { return 1; } }; count < 1; count++) { if (new C().true() !== 1) throw 1; } count === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixture. Class constructors, prototypes and detached methods
+/// retain task-owned state through the existing traced edges.
+#[test]
+fn base_classes_publication() {
+    for source in [
+        "class C {} C",
+        "class C {} C.prototype",
+        "class C { m() {} } C.prototype.m",
+        "class C { static m() {} } C.m",
+        "class C { get x() {} } Object.getOwnPropertyDescriptor(C.prototype, 'x').get",
+    ] {
+        let rt = Runtime::new();
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("{source}")
+        };
+        rt.collect().unwrap();
+        assert!(rt.publish(&value).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn base_classes_bytecode_roundtrip() {
+    let code = exe(
+        "class C { constructor(x) { this.x = x; } m() { return C; } static get z() { return 8; } get y() { return this.x; } } let c = new C(7); c.y === 7 && c.m() === C && C.z === 8",
+    );
+    assert_eq!(
+        code.to_spec().functions[0].to_spec().constructor_kind,
+        clj_quickjs::ConstructorKind::BaseClass
+    );
+    let loaded = Executable::load(code.to_spec()).unwrap();
+    let RunOutcome::Complete(value) = run(&loaded, &[]) else {
+        panic!("reloaded classes")
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn base_classes_are_strict_in_sloppy_scripts() {
+    for source in [
+        "let ok = false; try { let C = class { [missing = 1]() {} }; } catch(e) { ok = e instanceof ReferenceError; } ok && typeof missing === 'undefined'",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [(o.x = 2)]() {} }; } catch(e) { ok = e instanceof TypeError; } ok && o.x === 1",
+        "class C {} let ok = false; try { C.prototype = {}; } catch(e) { ok = true; } !ok && typeof C.prototype === 'object'",
+        "class C { m() { return this; } } let m = C.prototype.m; m() === undefined",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [(o['x'] = 2)]() {} }; } catch(e) { ok = e instanceof TypeError; } ok",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let ok = false; try { let C = class { [delete o.x]() {} }; } catch(e) { ok = e instanceof TypeError; } ok",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let k = {toString() { return 'x'; }}; let n = 0; try { let C = class { [(o[k] = 2)]() {} }; } catch(e) { if (e instanceof TypeError) n++; } try { let C = class { [delete o[k]]() {} }; } catch(e) { if (e instanceof TypeError) n++; } n === 2",
+    ] {
+        let code = compile_script_with("classes.js", source, ScriptOptions::SLOPPY).unwrap();
+        let code = Executable::load(code.to_spec()).unwrap();
+        let RunOutcome::Complete(value) = run(&code, &[]) else {
+            panic!("{source}")
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures. Compile and initialize the realm on the host, then
+/// run creation, construction, methods and accessors on a 64 KiB worker.
+#[test]
+fn base_classes_on_small_worker_stack() {
+    for source in [
+        "class C {} return new C() instanceof C;",
+        "class C { constructor(v) { this.x = v; } m() { return this.x; } } return new C(7).m() === 7;",
+        "class C { static m() { return 7; } get x() { return 9; } set x(v) { this.y = v; } } let c = new C(); c.x = 8; return C.m() === 7 && c.x === 9 && c.y === 8;",
+        "let k = {toString() { return 'm'; }}; class C { [k]() { return 7; } static [k]() { return 8; } } return new C().m() === 7 && C.m() === 8;",
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = compile_function(&format!("function check() {{ {source} }}")).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("complete")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures. Every callback remains a resumable VM activation;
+/// force GC and worker migration between short budgets and dependency waits.
+#[test]
+fn base_classes_wait_collect_and_migrate() {
+    for source in [
+        "class C { constructor() { this.x = __rt.need(136, 1); } m() { return C; } } let c = new C(); c.x === 7 && c.m() === C",
+        "class C { m() { return __rt.need(136, 1); } get x() { return this.m(); } set x(v) { this.y = __rt.need(136, 1) + v; } static m() { return C; } } let c = new C(); c.x = 2; c.x === 7 && c.y === 9 && C.m() === C",
+        "let key = {toString() { __rt.need(136, 1); return 'm'; }}; class C { [key]() { return C; } } new C().m() === C",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let k = {toString() { __rt.need(136, 1); return 'x'; }}; let n = 0; try { let C = class { [(o[k] = 2)]() {} }; } catch(e) { if (e instanceof TypeError) n++; } try { let C = class { [delete o[k]]() {} }; } catch(e) { if (e instanceof TypeError) n++; } n === 2",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script_with("classes.js", source, ScriptOptions::SLOPPY).unwrap();
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(5), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(7.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}: {source}"),
+            }
+        }
+        assert!(complete && waits == 1, "{source}");
+    }
+}
+
 // The generator rejection row adapts test_language.js::test_constructor.
 // QuickJS Javascript Engine
 // Copyright (c) 2017-2021 Fabrice Bellard

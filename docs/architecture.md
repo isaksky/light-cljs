@@ -7208,3 +7208,45 @@ QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
 `research/quickjs/tests/test_closure.js::test_eval_closure/test_eval_const` at
 that revision and retains their MIT copyright/license notice. The implementation
 and the publication, serialization, and migration tests are written fresh.
+
+## Base class construction (clj-quickjs-136)
+
+`ExprKind::Class` stores the optional name, strict base constructor and ordered
+static/instance elements. Declarations are represented as lexical `let`
+declarations initialized by this expression, preserving ordinary scope conflict
+checks and TDZ. Lowering opens an inner immutable binding cell keyed by the
+class keyword's syntax occurrence, independently of the outer declaration name.
+Constructor and method closures capture that cell; computed keys execute before
+its initialization. Temporary locals keep constructor, prototype, key and method
+roots alive across resumable key conversion. The locals are cleared on completion.
+
+`ConstructorKind::BaseClass` extends ordinary/non-constructor metadata. The
+ordinary frame entry rejects it with TypeError; the checked construction path
+uses constructor frame entry. This covers direct calls and native forwarding
+without putting JavaScript on the Rust stack. Constructor return processing and
+receiver allocation use the existing construct continuation. Derived kinds and
+super operations remain separate future extensions.
+
+Class function creation eagerly materializes the existing function property
+record and prototype, makes `prototype` non-writable, and installs the prototype
+as the constructor's home object. Instance methods use that prototype as their
+home; statics use the constructor. Appended bytecodes `DefineClassMethod`,
+`DefineClassGetter` and `DefineClassSetter` consume `object key function` and
+return `object`, defining non-enumerable configurable descriptors (writable for
+methods), merging getter/setter pairs through the existing descriptor path.
+These instructions can allocate function property records for static members and
+are therefore allocation safepoints, with no retained borrows or JS callbacks.
+
+There is no new heap kind. Existing function tracing visits captures, property
+records and home objects. Constructors, prototypes and detached class methods
+therefore fail publication on their task-owned reachable state, just like
+object methods and functions with own properties. Tests exercise collection and
+worker migration during constructors, methods, accessors and computed-key
+conversion, and execution on 64 KiB worker stacks. Inheritance, fields and super
+syntax continue to fail explicitly.
+
+Computed keys execute inline in their enclosing activation, so `yield` and
+`await` retain the enclosing generator/async continuation. In sloppy scripts,
+lowering temporarily applies class strictness; appended `PutGlobalStrict`,
+`PutFieldStrict`, `PutElemStrict` and `DeleteStrict` bytecodes enforce strict
+runtime writes/deletion there without changing the surrounding function's mode.

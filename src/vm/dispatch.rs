@@ -206,6 +206,7 @@ pub(super) fn new_function(
     home_object: Option<ObjectId>,
 ) -> Result<Value, Fault> {
     let generator = code.is_generator();
+    let class = code.constructor_kind == super::ConstructorKind::BaseClass;
     let mut function = FunctionObject::new(code, captures, owner);
     function.home_object = home_object;
     let object = HeapObject::Function(function);
@@ -214,6 +215,9 @@ pub(super) fn new_function(
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
     if generator {
         super::generator::initialize_function(heap, owner, id)?;
+    }
+    if class {
+        super::function::initialize_class(heap, owner, id)?;
     }
     Ok(Value::Object(id))
 }
@@ -874,7 +878,7 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     let argc = args.len();
     state.push(f);
     args.into_iter().for_each(|a| state.push(a));
-    state.enter(code, id, Value::Object(object), argc)?;
+    state.enter_constructor(code, id, Value::Object(object), argc)?;
     state.top_mut().construct = true;
     Ok(Flow::FrameChanged)
 }
@@ -961,6 +965,7 @@ fn property_step(
             super::native::read_result(state, read, base)?;
         }
         Instr::PutField(i)
+        | Instr::PutFieldStrict(i)
         | Instr::DefineField(i)
         | Instr::DefineGetter(i)
         | Instr::DefineSetter(i) => {
@@ -970,7 +975,7 @@ fn property_step(
             let v = state.pop()?;
             let object = state.pop()?;
             let task = state.diag.task;
-            if let Instr::PutField(_) = instr {
+            if matches!(instr, Instr::PutField(_) | Instr::PutFieldStrict(_)) {
                 if native::typed_array_write(
                     heap,
                     state,
@@ -986,7 +991,7 @@ fn property_step(
                     &object,
                     &property::Key::from_name(&name),
                     v.clone(),
-                    code.strict,
+                    code.strict || matches!(instr, Instr::PutFieldStrict(_)),
                 )?;
                 super::native::write_result(state, setter, object, v)?;
             } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
@@ -1011,7 +1016,7 @@ fn property_step(
             let read = property::read(heap, state.diag.task, &base, &key)?;
             super::native::read_result(state, read, base)?;
         }
-        Instr::PutElem => {
+        Instr::PutElem | Instr::PutElemStrict => {
             // ToPropertyKey runs here, after the right-hand side; the value
             // stays on the stack as the result (`o[k] = v` is `v`).
             let v = state.pop()?;
@@ -1021,8 +1026,14 @@ fn property_step(
             if native::typed_array_write(heap, state, &base, &key, &v)? {
                 return Ok(Flow::Next);
             }
-            let setter =
-                property::prepare_put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
+            let setter = property::prepare_put(
+                heap,
+                state.diag.task,
+                &base,
+                &key,
+                v.clone(),
+                code.strict || matches!(instr, Instr::PutElemStrict),
+            )?;
             super::native::write_result(state, setter, base, v)?;
         }
         Instr::Dup2 => {
@@ -1071,6 +1082,7 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_)
         | Instr::PutGlobal(_)
+        | Instr::PutGlobalStrict(_)
         | Instr::DeclareGlobalVar(_)
         | Instr::DeclareGlobalFunction(_)
         | Instr::DeclareGlobalLet(_)
@@ -1090,11 +1102,13 @@ fn instruction_step(instr: Instr) -> InstructionStep {
         | Instr::SetComputedName(_) => object_pattern_step,
         Instr::GetField(_)
         | Instr::PutField(_)
+        | Instr::PutFieldStrict(_)
         | Instr::DefineField(_)
         | Instr::DefineGetter(_)
         | Instr::DefineSetter(_)
         | Instr::GetElem
         | Instr::PutElem
+        | Instr::PutElemStrict
         | Instr::Dup2
         | Instr::ToPropertyKey => property_step,
         _ => step,
@@ -1180,6 +1194,35 @@ fn define_element_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result
     match instr {
         Instr::DefineGetterElem => desc.get = Some(value),
         Instr::DefineSetterElem => desc.set = Some(value),
+        _ => {
+            desc.value = Some(value);
+            desc.writable = Some(true);
+        }
+    }
+    property::define_own_property(heap, state.diag.task, id, &key, &desc)?;
+    state.push(object);
+    Ok(Flow::Next)
+}
+
+/// Class definitions also target function property records (statics), which
+/// may allocate. Every allocation remains under the instruction's mutator
+/// guard; no JavaScript callback or collection runs with these locals unrooted.
+#[inline(never)]
+fn define_class_element(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
+    let value = state.pop()?;
+    let key = property::to_property_key(&state.pop()?)?;
+    let object = state.pop()?;
+    let Value::Object(id) = object else {
+        return Err(Fault::Internal("class element needs an object"));
+    };
+    let mut desc = crate::object::PropertyDescriptor {
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    match instr {
+        Instr::DefineClassGetter => desc.get = Some(value),
+        Instr::DefineClassSetter => desc.set = Some(value),
         _ => {
             desc.value = Some(value);
             desc.writable = Some(true);
@@ -1842,11 +1885,13 @@ fn step_instruction(
         }
         Instr::GetField(_)
         | Instr::PutField(_)
+        | Instr::PutFieldStrict(_)
         | Instr::DefineField(_)
         | Instr::DefineGetter(_)
         | Instr::DefineSetter(_)
         | Instr::GetElem
         | Instr::PutElem
+        | Instr::PutElemStrict
         | Instr::Dup2
         | Instr::ToPropertyKey => return property_step(state, code, heap, host, instr),
         Instr::RegExpLiteral(index) => {
@@ -1894,10 +1939,16 @@ fn step_instruction(
         Instr::Instanceof => {
             native::start_instanceof(state, heap)?;
         }
-        Instr::Delete => {
+        Instr::Delete | Instr::DeleteStrict => {
             let key = state.pop()?;
             let base = state.pop()?;
-            let deleted = property::delete(heap, state.diag.task, &base, &key, code.strict)?;
+            let deleted = property::delete(
+                heap,
+                state.diag.task,
+                &base,
+                &key,
+                code.strict || matches!(instr, Instr::DeleteStrict),
+            )?;
             state.push(Value::Bool(deleted));
         }
         Instr::In => {
@@ -2104,6 +2155,9 @@ fn step_instruction(
         | Instr::AtomNew
         | Instr::AtomLoad
         | Instr::AtomCas => intrinsics::step(state, heap, instr)?,
+        Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
+            return define_class_element(state, heap, instr);
+        }
         Instr::Function(i, n) | Instr::Method(i, n) => {
             let child = code
                 .functions
@@ -2235,6 +2289,7 @@ fn step_instruction(
         | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_)
         | Instr::PutGlobal(_)
+        | Instr::PutGlobalStrict(_)
         | Instr::DeclareGlobalVar(_)
         | Instr::DeclareGlobalFunction(_)
         | Instr::DeclareGlobalLet(_)
@@ -2294,7 +2349,7 @@ fn global_step(
             }
             native::read_result(state, found, global)?;
         }
-        Instr::PutGlobal(i) => {
+        Instr::PutGlobal(i) | Instr::PutGlobalStrict(i) => {
             let name = name_constant(code, i)?;
             if let Some(binding) = state.global_lexicals.get(&name) {
                 let value = state
@@ -2315,7 +2370,7 @@ fn global_step(
                 return Ok(Flow::Next);
             }
             let global = global_object(state, heap)?;
-            if code.strict
+            if (code.strict || matches!(instr, Instr::PutGlobalStrict(_)))
                 && !property::has_property(
                     heap,
                     state.diag.task,
@@ -2332,7 +2387,7 @@ fn global_step(
                 &global,
                 &property::Key::from_name(&name),
                 value.clone(),
-                code.strict,
+                code.strict || matches!(instr, Instr::PutGlobalStrict(_)),
             )?;
             native::write_result(state, setter, global, value)?;
         }
@@ -2453,14 +2508,14 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Construct(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => true,
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
-        | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_)
+        | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::PutGlobalStrict(_)
         | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) | Instr::CheckGlobalLexicalConflict(_) => true,
         // On a function object these may allocate its property record and
         // its lazy `prototype` object, and build the realm
         // (`crate::vm::function`, clj-quickjs-125).
-        Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem
+        Instr::GetField(_) | Instr::PutField(_) | Instr::PutFieldStrict(_) | Instr::GetElem | Instr::PutElem | Instr::PutElemStrict
         // Deleting initial metadata creates the property record (clj-quickjs-101).
-        | Instr::Delete
+        | Instr::Delete | Instr::DeleteStrict
         // Reads `f.prototype` (clj-quickjs-75).
         | Instr::Instanceof
         // Looks the key up through the chain, functions included
@@ -2487,6 +2542,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::Freeze
         | Instr::Function(..)
         | Instr::Method(..)
+        | Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter
         | Instr::CurrentFunction
         | Instr::NewCell
         | Instr::AtomNew

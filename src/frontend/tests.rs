@@ -195,6 +195,29 @@ fn render_expr(e: &Expr) -> String {
             format!("(. {} {})", render_expr(object), property.name)
         }
         ExprKind::Function(f) => render_function(f),
+        ExprKind::Class(c) => {
+            let mut out = format!(
+                "(class {} {}",
+                c.name.as_ref().map_or("-", |n| n.name.as_str()),
+                render_function(&c.constructor)
+            );
+            for e in &c.elements {
+                let name = match &e.property.name {
+                    PropertyName::Identifier(n) => n.clone(),
+                    PropertyName::String(n) => format!("{n:?}"),
+                    PropertyName::Number(n) => n.to_string(),
+                    PropertyName::Computed(n, _) => format!("[{}]", render_expr(n)),
+                };
+                out.push_str(&format!(
+                    " ({}{} {})",
+                    if e.is_static { "static " } else { "" },
+                    name,
+                    render_expr(&e.property.value)
+                ));
+            }
+            out.push(')');
+            out
+        }
         ExprKind::Delete { operand, .. } => format!("(delete {})", render_expr(operand)),
         ExprKind::Sequence { left, right } => {
             format!("(, {} {})", render_expr(left), render_expr(right))
@@ -492,6 +515,7 @@ fn render_function(f: &Function) -> String {
         ),
         FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
         FunctionKind::Method => format!("(method ({})", params.join(" ")),
+        FunctionKind::ClassConstructor => format!("(constructor ({})", params.join(" ")),
         FunctionKind::Getter => format!("(getter ({})", params.join(" ")),
         FunctionKind::Setter => format!("(setter ({})", params.join(" ")),
         FunctionKind::ConciseArrow => {
@@ -4001,12 +4025,78 @@ fn legacy_octal_escapes_in_sloppy_mode() {
 
 // ----- negative: unsupported syntax --------------------------------------------
 
+/// Synthetic AST fixtures using the C/E/P examples from test_class; the
+/// QuickJS copyright and MIT notice are retained above in this module.
+#[test]
+fn class_syntax() {
+    let script = parse_script("class C { constructor() { this.x = 10; } f() { return 1; } static F() { return -1; } get y() { return 12; } }").unwrap();
+    let StmtKind::Lexical(decl) = &script.body[0].kind else {
+        panic!("class declaration")
+    };
+    let ExprKind::Class(c) = &decl.declarators[0].init.as_ref().unwrap().kind else {
+        panic!("class")
+    };
+    assert_eq!(c.name.as_ref().unwrap().name, "C");
+    assert_eq!(c.constructor.kind, FunctionKind::ClassConstructor);
+    assert!(c.constructor.strict);
+    assert_eq!(c.elements.len(), 3);
+    assert!(!c.elements[0].is_static);
+    assert!(c.elements[1].is_static);
+    assert!(
+        matches!(&c.elements[2].property.value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Getter && f.strict)
+    );
+    for (source, name, is_static) in [
+        ("let E1 = class E { static F() { return E; } };", "E", true),
+        ("class P { static() { return 42; } }", "P", false),
+    ] {
+        let script = parse_script(source).unwrap();
+        let StmtKind::Lexical(d) = &script.body[0].kind else {
+            panic!()
+        };
+        let ExprKind::Class(c) = &d.declarators[0].init.as_ref().unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(c.name.as_ref().unwrap().name, name);
+        assert_eq!(c.elements[0].is_static, is_static);
+    }
+    for source in [
+        "class C { constructor() {} constructor() {} }",
+        "class C { get constructor() {} }",
+        "class C { set constructor(v) {} }",
+        "class C { *constructor() {} }",
+        "class C { async constructor() {} }",
+        "class C { static prototype() {} }",
+        "class C { static get prototype() {} }",
+        "if (true) class C {}",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+    for source in [
+        "class C extends B {}",
+        "class C { x; }",
+        "class C { static {} }",
+        "class C { m() { return super.x; } }",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::Unsupported,
+            "{source}"
+        );
+    }
+    assert!(parse_script_with("class C { m(eval) {} }", ScriptOptions::SLOPPY).is_err());
+    assert!(parse_script_with("class C {} let eval = 1;", ScriptOptions::SLOPPY).is_ok());
+}
+
 #[test]
 fn rejects_unsupported_syntax_with_positions() {
     use SyntaxErrorKind::Unsupported;
     let cases: &[(&str, u32, u32, &str)] = &[
-        ("class A {}", 1, 1, "classes"),
-        ("x = class {};", 1, 5, "classes"),
+        ("class A extends B {}", 1, 9, "inheritance"),
+        ("x = class { field; };", 1, 13, "fields"),
         ("await x;", 1, 1, "await"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
@@ -4457,6 +4547,20 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                 "async function* f() {{ {}1{}; }}",
                 "yield await (".repeat(n),
                 ")".repeat(n)
+            )
+        }),
+        ("nested class methods", |n| {
+            format!(
+                "let C = {}1{};",
+                "class { m() { return ".repeat(n),
+                "} }".repeat(n)
+            )
+        }),
+        ("nested class computed names", |n| {
+            format!(
+                "let C = {}1{};",
+                "class { [".repeat(n),
+                "]() {} }".repeat(n)
             )
         }),
     ];

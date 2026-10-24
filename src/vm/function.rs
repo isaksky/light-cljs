@@ -150,6 +150,11 @@
 //! captures and the property record. The persistent publication walk follows
 //! it with `.home_object`: because literals are task-owned, even detached
 //! methods with no captures cannot publish. No `super` execution is added.
+//!
+//! Base classes (clj-quickjs-136) eagerly materialize a non-writable
+//! `prototype` and retain it as the constructor's home object. Their own
+//! property records and method home objects use the same tracing and
+//! publication rules; class constructors cannot publish even without captures.
 
 use std::sync::Arc;
 
@@ -951,7 +956,11 @@ fn materialize(
     }
     let constructor = intern(heap, "constructor")?;
     let prototype_key = intern(heap, "prototype")?;
-    let generator = info(heap, function)?.code.is_some_and(|c| c.is_generator());
+    let code = info(heap, function)?.code;
+    let generator = code.as_ref().is_some_and(|c| c.is_generator());
+    let class = code
+        .as_ref()
+        .is_some_and(|c| c.constructor_kind == super::ConstructorKind::BaseClass);
     let parent = if generator {
         super::generator::prototype(heap)?
     } else {
@@ -967,7 +976,14 @@ fn materialize(
         .ok_or_else(exhausted)?;
     let defined = heap
         .with_object_mut(record, |object| match object {
-            HeapObject::Plain(o) => o.define_with(prototype_key, prototype.clone(), PROTOTYPE),
+            HeapObject::Plain(o) => o.define_with(
+                prototype_key,
+                prototype.clone(),
+                PropertyFlags {
+                    writable: !class,
+                    ..PROTOTYPE
+                },
+            ),
             _ => false,
         })
         .unwrap_or(false);
@@ -977,6 +993,24 @@ fn materialize(
         ));
     }
     Ok(prototype)
+}
+
+/// Classes eagerly materialize their prototype. Its task-owned property
+/// record and home object participate in existing tracing/publication checks.
+pub(crate) fn initialize_class(heap: &Heap, task: TaskId, function: ObjectId) -> Result<(), Fault> {
+    let key = Key::Name(JsString::from("prototype"));
+    let record = own_store(heap, task, function, &key)?
+        .ok_or(Fault::Internal("class prototype record is missing"))?;
+    let Value::Object(prototype) = materialize(heap, task, function, record)? else {
+        return Err(Fault::Internal("class prototype is not an object"));
+    };
+    heap.with_object_mut(function, |o| {
+        if let HeapObject::Function(f) = o {
+            f.home_object = Some(prototype);
+        }
+    })
+    .ok_or(Fault::Internal("class constructor was reclaimed"))?;
+    Ok(())
 }
 
 /// Storage of a mutable captured binding. See the module docs.

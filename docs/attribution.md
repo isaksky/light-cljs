@@ -1055,3 +1055,13 @@ not light-cljs output. The implementation independently follows the semantics
 of `js_thisSymbolValue`, `js_symbol_toString`, `js_symbol_valueOf`,
 `js_symbol_get_description`, `js_symbol_proto_funcs` and `JS_ToObject` in
 `research/quickjs/quickjs.c` at that revision; no C source was copied.
+
+### Base classes (clj-quickjs-136)
+
+The C/E/P cases in `frontend::tests::class_syntax` and `tests/js_source.rs::base_classes`
+adapt the base-class portions of `research/quickjs/tests/test_language.js::test_class`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The QuickJS copyright and
+MIT license notice are retained in both test modules. `js_parse_class`,
+`js_parse_class_default_ctor`, `js_op_define_class` and `OP_set_home_object` in
+`research/quickjs/quickjs.c` were consulted for semantics; no C code was ported.
+All other class tests are synthetic fixtures, not light-cljs output.

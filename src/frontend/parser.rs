@@ -9,7 +9,7 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Declarator, Expr, ExprKind, ForInHead,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, Declarator, Expr, ExprKind, ForInHead,
     ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
     PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
     UnaryOp, UpdateOp,
@@ -480,10 +480,181 @@ impl<'a> Parser<'a> {
             return self.parse_function_declaration();
         }
         match self.tok.kind {
+            TokenKind::Keyword(Keyword::Class) => self.parse_class_declaration(),
             TokenKind::Keyword(Keyword::Function) => self.parse_function_declaration(),
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => self.parse_lexical_decl(),
             _ => self.parse_statement(),
         }
+    }
+
+    #[inline(never)]
+    fn parse_class_declaration(&mut self) -> PResult<Stmt> {
+        let init = self.parse_class(true)?;
+        let ExprKind::Class(class) = &init.kind else {
+            unreachable!()
+        };
+        let name = class.name.clone().expect("named declaration");
+        let span = init.span;
+        self.bounded(Stmt::new(
+            StmtKind::Lexical(LexicalDecl {
+                kind: LexicalKind::Let,
+                declarators: vec![Declarator {
+                    name: Pattern::ident(name),
+                    init: Some(init),
+                    span,
+                }],
+            }),
+            span,
+        ))
+    }
+
+    #[inline(never)]
+    fn parse_class(&mut self, declaration: bool) -> PResult<Expr> {
+        let saved = self.depth;
+        self.deeper(cost::FUNCTION)?;
+        let start = self.tok.span.start;
+        let outer_strict = self.strict;
+        self.set_strict(true);
+        self.advance()?;
+        let name = if matches!(self.tok.kind, TokenKind::Identifier(_)) {
+            Some(self.parse_binding_identifier("a class name")?)
+        } else if declaration {
+            return Err(self.unexpected("a class name"));
+        } else {
+            None
+        };
+        if self.is_keyword(Keyword::Extends) {
+            return Err(self.unsupported(self.tok.span, "class inheritance is"));
+        }
+        self.lexer.expect_property_name();
+        self.expect_punct(Punct::LBrace)?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
+        let mut constructor = None;
+        let mut elements = Vec::new();
+        while !self.is_punct(Punct::RBrace) {
+            if self.is_punct(Punct::Semicolon) {
+                self.lexer.expect_property_name();
+                self.advance()?;
+                continue;
+            }
+            let is_static = self.tok.span.text(self.src) == "static"
+                && self
+                    .peek_property_name()
+                    .is_some_and(|t| t.kind != TokenKind::Punct(Punct::LParen));
+            if is_static {
+                self.lexer.expect_property_name();
+                self.advance()?;
+                if self.is_punct(Punct::LBrace) {
+                    return Err(self.unsupported(self.tok.span, "static initialization blocks are"));
+                }
+            }
+            let property = self.parse_class_element()?;
+            let is_constructor = !is_static && property.name.is_named("constructor");
+            if is_static && property.name.is_named("prototype") {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    property.name_span,
+                    "a static method cannot be named prototype",
+                ));
+            }
+            if is_constructor {
+                let ExprKind::Function(mut f) = property.value.kind else {
+                    unreachable!()
+                };
+                if f.kind != FunctionKind::Method
+                    || f.generator
+                    || f.asynchronous
+                    || constructor.is_some()
+                {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        property.name_span,
+                        "invalid or duplicate class constructor",
+                    ));
+                }
+                f.kind = FunctionKind::ClassConstructor;
+                constructor = Some(*f);
+            } else {
+                elements.push(ClassElement {
+                    is_static,
+                    property,
+                });
+            }
+            // The closing method brace already fetched the next token. Class
+            // element names may be escaped reserved words, like object keys.
+        }
+        self.set_strict(outer_strict);
+        self.advance()?;
+        self.no_in = no_in;
+        self.depth = saved;
+        let span = self.span_from(start);
+        let constructor = constructor.unwrap_or_else(|| {
+            Function::new(
+                FunctionKind::ClassConstructor,
+                None,
+                vec![],
+                vec![],
+                vec![],
+                span,
+                true,
+            )
+        });
+        self.expr(
+            ExprKind::Class(Box::new(Class {
+                name,
+                constructor,
+                elements,
+                span,
+            })),
+            span,
+        )
+    }
+
+    #[inline(never)]
+    fn parse_class_element(&mut self) -> PResult<PropertyDef> {
+        let span = self.tok.span;
+        let (generator, asynchronous) = self.parse_method_prefix()?;
+        let accessor = match &self.tok.kind {
+            TokenKind::Identifier(n)
+                if (n == "get" || n == "set")
+                    && !generator
+                    && !asynchronous
+                    && self.peek_property_name().is_some_and(|t| {
+                        matches!(
+                            t.kind,
+                            TokenKind::Identifier(_)
+                                | TokenKind::Keyword(_)
+                                | TokenKind::String(_)
+                                | TokenKind::Number(_)
+                                | TokenKind::Punct(Punct::LBracket)
+                        )
+                    }) =>
+            {
+                Some(if n == "get" {
+                    FunctionKind::Getter
+                } else {
+                    FunctionKind::Setter
+                })
+            }
+            _ => None,
+        };
+        if accessor.is_some() {
+            self.lexer.expect_property_name();
+            self.advance()?;
+        }
+        let name_span = self.tok.span;
+        let name = self.parse_pattern_key()?;
+        if !self.is_punct(Punct::LParen) {
+            return Err(self.unsupported(name_span, "class fields are"));
+        }
+        self.parse_method_property(
+            name,
+            name_span,
+            span,
+            accessor,
+            (generator, asynchronous),
+            true,
+        )
     }
 
     #[inline(never)]
@@ -540,6 +711,9 @@ impl<'a> Parser<'a> {
                 SyntaxErrorKind::Invalid,
                 span,
                 "a function declaration cannot be the body of `if`/`while`/`do`/`for` or a labelled statement; wrap it in a block",
+            )),
+            TokenKind::Keyword(Keyword::Class) => Some(self.error(
+                SyntaxErrorKind::Invalid, span, "a class declaration requires a statement list",
             )),
             TokenKind::Keyword(k @ (Keyword::Let | Keyword::Const)) => Some(self.error(
                 SyntaxErrorKind::Invalid,
@@ -1460,7 +1634,7 @@ impl<'a> Parser<'a> {
         let simple =
             defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
         let (body, strict) =
-            self.parse_function_body(name.as_ref(), &params, simple, self.strict)?;
+            self.parse_function_body(name.as_ref(), &params, simple, self.strict, false)?;
         self.in_function = outer;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
@@ -1496,6 +1670,7 @@ impl<'a> Parser<'a> {
         params: &[Pattern],
         simple: bool,
         outer_strict: bool,
+        property_after: bool,
     ) -> PResult<(Vec<Stmt>, bool)> {
         let saved = self.depth;
         self.deeper(cost::BLOCK)?;
@@ -1518,6 +1693,9 @@ impl<'a> Parser<'a> {
         // Restore the enclosing mode before the token after `}` is lexed.
         let strict = self.strict;
         self.set_strict(outer_strict);
+        if property_after {
+            self.lexer.expect_property_name();
+        }
         self.advance()?;
         self.depth = saved;
         Ok((body, strict))
@@ -1646,7 +1824,8 @@ impl<'a> Parser<'a> {
             let outer_labels = std::mem::take(&mut self.labels);
             let simple = defaults.iter().all(Option::is_none)
                 && params.iter().all(|p| p.identifier().is_some());
-            let (body, strict) = self.parse_function_body(None, &params, simple, self.strict)?;
+            let (body, strict) =
+                self.parse_function_body(None, &params, simple, self.strict, false)?;
             self.in_function = outer;
             self.in_loop = outer_loop;
             self.in_switch = outer_switch;
@@ -2462,6 +2641,7 @@ impl<'a> Parser<'a> {
                 span,
                 accessor,
                 (generator, asynchronous),
+                false,
             );
         }
         if generator || asynchronous {
@@ -2502,8 +2682,9 @@ impl<'a> Parser<'a> {
         span: Span,
         accessor: Option<FunctionKind>,
         (generator, asynchronous): (bool, bool),
+        class: bool,
     ) -> PResult<PropertyDef> {
-        let mut function = self.parse_object_method(span.start, generator, asynchronous)?;
+        let mut function = self.parse_object_method(span.start, generator, asynchronous, class)?;
         if let Some(kind) = accessor {
             let arity = usize::from(kind == FunctionKind::Setter);
             if function.params.len() != arity {
@@ -2535,6 +2716,7 @@ impl<'a> Parser<'a> {
         start: usize,
         generator: bool,
         asynchronous: bool,
+        class: bool,
     ) -> PResult<Function> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
@@ -2554,7 +2736,8 @@ impl<'a> Parser<'a> {
         let outer_labels = std::mem::take(&mut self.labels);
         let simple =
             defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
-        let (body, strict) = self.parse_function_body(None, &params, simple, outer_strict)?;
+        let (body, strict) =
+            self.parse_function_body(None, &params, simple, outer_strict, class)?;
         self.in_function = outer_function;
         self.in_loop = outer_loop;
         self.in_switch = outer_switch;
@@ -3229,6 +3412,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::False) => ExprKind::Bool(false),
             TokenKind::Keyword(Keyword::Null) => ExprKind::Null,
             TokenKind::Keyword(Keyword::This) => ExprKind::This,
+            TokenKind::Keyword(Keyword::Class) => return self.parse_class(false),
             TokenKind::Keyword(Keyword::Function) => {
                 let function = self.parse_function(false)?;
                 let span = function.span;
@@ -3657,7 +3841,6 @@ fn is_logical_assign(p: Punct) -> bool {
 /// keyword. (`let`, `const` and `function` are handled by the caller.)
 fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
-        Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",
         Keyword::With => "`with` is",
@@ -3669,7 +3852,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
 /// Expression-starting keywords of JavaScript that the subset rejects.
 fn unsupported_expression_keyword(k: Keyword) -> Option<&'static str> {
     Some(match k {
-        Keyword::Class => "classes are",
         Keyword::This => "`this` is",
         Keyword::Super => "`super` is",
         Keyword::Import => "dynamic `import` is",

@@ -162,7 +162,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Declarator, Expr, ExprKind, ForInHead,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, Declarator, Expr, ExprKind, ForInHead,
     ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
     PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
     UnaryOp, UpdateOp,
@@ -300,7 +300,9 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
 }
 
 fn constructor_kind(f: &Function) -> ConstructorKind {
-    if f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous {
+    if f.kind == FunctionKind::ClassConstructor {
+        ConstructorKind::BaseClass
+    } else if f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous {
         ConstructorKind::Ordinary
     } else {
         ConstructorKind::None
@@ -545,12 +547,15 @@ struct FnCtx {
     /// sloppy code consults `self.cur().strict`: the mode of the innermost
     /// function, an arrow's own (inherited unless its body has a directive).
     strict: bool,
+    /// Strict expressions inside a sloppy function need strict write/delete
+    /// bytecodes; their surrounding code and activation remain sloppy.
+    strict_expression: bool,
     /// An ordinary function or concise method (not an arrow or a script):
     /// in JavaScript it has its own `arguments` object, which a reference
     /// to `arguments` denotes unless the function binds that name itself
     /// ([`Lowerer::arguments_binding`]).
     own_arguments: bool,
-    /// Only ordinary functions can be constructed; methods own arguments too.
+    /// Ordinary functions and base classes can be constructed.
     constructor_kind: ConstructorKind,
     /// Arrows inherit their nearest ordinary function's receiver.
     lexical_this: bool,
@@ -761,6 +766,7 @@ impl<'s> Lowerer<'s> {
             max_slots: slots,
             completion: script.then_some(0),
             strict,
+            strict_expression: false,
             own_arguments: false,
             constructor_kind: ConstructorKind::None,
             lexical_this: false,
@@ -1614,7 +1620,9 @@ impl<'s> Lowerer<'s> {
                     ),
                 ));
             }
-            Access::Global(global) => self.global_op(Opcode::PutGlobal, global, at)?,
+            Access::Global(global) => {
+                self.global_op(self.strict_op(Opcode::PutGlobal), global, at)?
+            }
             Access::Found {
                 target: Target::SelfFn(SelfKind::Entry),
                 ..
@@ -2002,6 +2010,7 @@ impl<'s> Lowerer<'s> {
         self.cur_mut().own_arguments = matches!(
             f.kind,
             FunctionKind::Ordinary
+                | FunctionKind::ClassConstructor
                 | FunctionKind::Method
                 | FunctionKind::Getter
                 | FunctionKind::Setter
@@ -3420,7 +3429,8 @@ impl<'s> Lowerer<'s> {
         self.expr(object)?;
         self.expr(index)?;
         self.expr(value)?;
-        self.out().op(Opcode::PutElem, op_span);
+        let op = self.strict_op(Opcode::PutElem);
+        self.out().op(op, op_span);
         Ok(())
     }
 
@@ -3714,7 +3724,8 @@ impl<'s> Lowerer<'s> {
         self.expr(object)?;
         self.expr(value)?;
         let index = self.name_index(&property.name, property.span)?;
-        self.out().op_u16(Opcode::PutField, index, op_span);
+        let op = self.strict_op(Opcode::PutField);
+        self.out().op_u16(op, index, op_span);
         Ok(())
     }
 
@@ -3772,9 +3783,11 @@ impl<'s> Lowerer<'s> {
     /// Writes the value on top to the reference below it (`o v` or
     /// `o key v` → `v`), strictly, reported at the `.` or `[`.
     fn reference_put(&mut self, r: PropertyRef) {
+        let field = self.strict_op(Opcode::PutField);
+        let elem = self.strict_op(Opcode::PutElem);
         match r {
-            PropertyRef::Field(name, at) => self.out().op_u16(Opcode::PutField, name, at),
-            PropertyRef::Elem(at) => self.out().op(Opcode::PutElem, at),
+            PropertyRef::Field(name, at) => self.out().op_u16(field, name, at),
+            PropertyRef::Elem(at) => self.out().op(elem, at),
         }
     }
 
@@ -4052,6 +4065,7 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.compound_assign_property(*op, target, value, *op_span),
             ExprKind::Function(f) => self.function_expr(f),
+            ExprKind::Class(c) => self.class_expr(c, None),
             ExprKind::Spread(_) => Err(self.internal(span, "spread outside element list")),
 
             ExprKind::Yield {
@@ -4163,7 +4177,8 @@ impl<'s> Lowerer<'s> {
                 return self.constant(Primitive::Bool(true), op_span);
             }
         }
-        self.out().op(Opcode::Delete, op_span);
+        let op = self.strict_op(Opcode::Delete);
+        self.out().op(op, op_span);
         Ok(())
     }
 
@@ -4449,12 +4464,127 @@ impl<'s> Lowerer<'s> {
     /// NamedEvaluation changes metadata, never the lexical self binding.
     #[inline(always)]
     fn named_expr(&mut self, e: &Expr, name: JsString) -> Result<(), SyntaxError> {
+        if let ExprKind::Class(c) = &e.kind {
+            return self.class_expr(c, Some(name));
+        }
         if let ExprKind::Function(f) = &e.kind
             && f.name.is_none()
         {
             self.closure(f, None, Some(name))
         } else {
             self.expr(e)
+        }
+    }
+
+    /// Class names have an independent immutable cell. Keep it uninitialized
+    /// through computed-key evaluation, then initialize it after all methods.
+    #[inline(never)]
+    fn class_expr(&mut self, class: &Class, inferred: Option<JsString>) -> Result<(), SyntaxError> {
+        let span = class.span;
+        let outer_strict = self.cur().strict;
+        let outer_expression = self.cur().strict_expression;
+        self.cur_mut().strict_expression = outer_expression || !outer_strict;
+        self.cur_mut().strict = true;
+        let saved = self.cur().next_slot;
+        self.cur_mut().scopes.push(Scope::new());
+        // The keyword is a unique syntax occurrence separate from the outer
+        // declaration's identifier; binding analysis keys both by occurrence.
+        let inner = class.name.as_ref().map(|n| Ident {
+            name: n.name.clone(),
+            span: Span::new(span.start, span.start + 5),
+        });
+        if let Some(name) = &inner {
+            self.declare(name, BindingKind::Const, false, true)?;
+            let b = self.local(name)?;
+            self.out().op(Opcode::NewCell, span);
+            self.out().op_u16(Opcode::SetLocal, b.slot, span);
+        }
+        let ctor = self.temp(span)?;
+        let proto = self.temp(span)?;
+        let key = self.temp(span)?;
+        let value = self.temp(span)?;
+        let name = class
+            .name
+            .as_ref()
+            .map(|n| JsString::from(n.name.as_str()))
+            .or(inferred)
+            .unwrap_or_else(|| JsString::from(""));
+        self.closure(&class.constructor, None, Some(name))?;
+        self.out().op(Opcode::Dup, span);
+        self.out().op_u16(Opcode::SetLocal, ctor, span);
+        let prototype = self.name_index("prototype", span)?;
+        self.out().op_u16(Opcode::GetField, prototype, span);
+        self.out().op_u16(Opcode::SetLocal, proto, span);
+        for element in &class.elements {
+            let p = &element.property;
+            let at = p.name_span;
+            self.out().op_u16(
+                Opcode::GetLocal,
+                if element.is_static { ctor } else { proto },
+                at,
+            );
+            match &p.name {
+                PropertyName::Computed(e, _) => {
+                    self.expr(e)?;
+                    self.out().op(Opcode::ToPropertyKey, at);
+                }
+                PropertyName::Identifier(n) => {
+                    self.constant(Primitive::String(JsString::from(n.as_str())), at)?;
+                }
+                PropertyName::String(n) => {
+                    self.constant(Primitive::String(n.clone()), at)?;
+                }
+                PropertyName::Number(n) => {
+                    self.constant(
+                        Primitive::String(JsString::from(number_to_string(*n).as_str())),
+                        at,
+                    )?;
+                }
+            }
+            self.out().op_u16(Opcode::SetLocal, key, at);
+            self.expr(&p.value)?;
+            self.out().op_u16(Opcode::SetLocal, value, at);
+            self.out().op_u16(Opcode::GetLocal, key, at);
+            self.out().op_u16(Opcode::GetLocal, value, at);
+            let ExprKind::Function(f) = &p.value.kind else {
+                return Err(self.internal(at, "class element is not a method"));
+            };
+            let (prefix, opcode) = match f.kind {
+                FunctionKind::Getter => ("get ", Opcode::DefineClassGetter),
+                FunctionKind::Setter => ("set ", Opcode::DefineClassSetter),
+                _ => ("", Opcode::DefineClassMethod),
+            };
+            let prefix = self.name_index(prefix, at)?;
+            self.out().op_u16(Opcode::SetComputedName, prefix, at);
+            self.out().op(opcode, at);
+            self.out().op(Opcode::Pop, at);
+        }
+        self.out().op_u16(Opcode::GetLocal, ctor, span);
+        if let Some(name) = &inner {
+            self.out().op(Opcode::Dup, span);
+            self.pattern_store(&Pattern::ident(name.clone()), true, false)?;
+        }
+        // Clear scratch roots, including the inner cell (closures retain it).
+        for slot in saved..self.cur().next_slot {
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, slot as u16, span);
+        }
+        self.exit_scope(saved);
+        self.cur_mut().strict = outer_strict;
+        self.cur_mut().strict_expression = outer_expression;
+        Ok(())
+    }
+
+    fn strict_op(&self, opcode: Opcode) -> Opcode {
+        if !self.cur().strict_expression {
+            return opcode;
+        }
+        match opcode {
+            Opcode::PutGlobal => Opcode::PutGlobalStrict,
+            Opcode::PutField => Opcode::PutFieldStrict,
+            Opcode::PutElem => Opcode::PutElemStrict,
+            Opcode::Delete => Opcode::DeleteStrict,
+            _ => opcode,
         }
     }
 

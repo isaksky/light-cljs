@@ -48,6 +48,8 @@ pub enum ConstructorKind {
     None,
     /// An ordinary function declaration or expression.
     Ordinary,
+    /// A base class, requiring construction rather than an ordinary call.
+    BaseClass,
 }
 
 impl ConstructorKind {
@@ -613,6 +615,9 @@ impl Executable {
                 }
 
                 Opcode::DefineElem => Instr::DefineElem,
+                Opcode::DefineClassMethod => Instr::DefineClassMethod,
+                Opcode::DefineClassGetter => Instr::DefineClassGetter,
+                Opcode::DefineClassSetter => Instr::DefineClassSetter,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
@@ -624,6 +629,10 @@ impl Executable {
                 Opcode::GetGlobal => Instr::GetGlobal(operand as u16),
                 Opcode::GetGlobalOrUndefined => Instr::GetGlobalOrUndefined(operand as u16),
                 Opcode::PutGlobal => Instr::PutGlobal(operand as u16),
+                Opcode::PutGlobalStrict => Instr::PutGlobalStrict(operand as u16),
+                Opcode::PutFieldStrict => Instr::PutFieldStrict(operand as u16),
+                Opcode::PutElemStrict => Instr::PutElemStrict,
+                Opcode::DeleteStrict => Instr::DeleteStrict,
                 Opcode::DeclareGlobalVar => Instr::DeclareGlobalVar(operand as u16),
                 Opcode::DeclareGlobalFunction => Instr::DeclareGlobalFunction(operand as u16),
                 Opcode::TemplateObject => Instr::TemplateObject(operand as u16),
@@ -797,6 +806,8 @@ impl Executable {
                 | Instr::GetGlobal(v)
                 | Instr::GetGlobalOrUndefined(v)
                 | Instr::PutGlobal(v)
+                | Instr::PutGlobalStrict(v)
+                | Instr::PutFieldStrict(v)
                 | Instr::DeclareGlobalVar(v)
                 | Instr::DeclareGlobalFunction(v)
                 | Instr::DeclareGlobalLet(v)

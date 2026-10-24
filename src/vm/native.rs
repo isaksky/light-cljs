@@ -984,6 +984,13 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Await
         | DefineGetterElem
         | DefineSetterElem
+        | DefineClassMethod
+        | DefineClassGetter
+        | DefineClassSetter
+        | PutGlobalStrict(_)
+        | PutFieldStrict(_)
+        | PutElemStrict
+        | DeleteStrict
         | SetComputedName(_)
         | CheckDirectEval
         | GetRawThis
@@ -1094,8 +1101,12 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             }
             (2, 0, 2, Hint::Default)
         }
-        GetElem | ToPropertyKey | Delete | PutElem => {
-            let count = if matches!(instr, PutElem) { 3 } else { 2 };
+        GetElem | ToPropertyKey | Delete | DeleteStrict | PutElem | PutElemStrict => {
+            let count = if matches!(instr, PutElem | PutElemStrict) {
+                3
+            } else {
+                2
+            };
             let ops = state.operands();
             let base = ops
                 .get(
@@ -1128,7 +1139,14 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             || (matches!(v, Value::BigInt(_))
                 && (matches!(
                     instr,
-                    ToString | GetElem | ToPropertyKey | Delete | PutElem | In
+                    ToString
+                        | GetElem
+                        | ToPropertyKey
+                        | Delete
+                        | DeleteStrict
+                        | PutElem
+                        | PutElemStrict
+                        | In
                 ) || (instr == Plus
                     && ops[at..].iter().any(|v| matches!(v, Value::String(_))))))
     }) {
@@ -2615,9 +2633,14 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
             matches!(which, builtin::Builtin::String | builtin::Builtin::Symbol)
         }
         Instruction(Instr::ToString) => true,
-        Instruction(Instr::GetElem | Instr::ToPropertyKey | Instr::Delete | Instr::PutElem) => {
-            index == 1
-        }
+        Instruction(
+            Instr::GetElem
+            | Instr::ToPropertyKey
+            | Instr::Delete
+            | Instr::DeleteStrict
+            | Instr::PutElem
+            | Instr::PutElemStrict,
+        ) => index == 1,
         Instruction(Instr::In) | NumberParse { .. } => index == 0,
         PropertyBuiltin { .. } => index == 1,
         StringSplit { .. } => index != 1,

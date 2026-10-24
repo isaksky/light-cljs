@@ -446,6 +446,23 @@ pub enum FunctionKind {
     /// An object-literal accessor, sharing method home-object semantics.
     Getter,
     Setter,
+    /// A strict base-class constructor, callable only through `new`.
+    ClassConstructor,
+}
+
+/// A base class. Declarations use a lexical `let` initialized by this node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Class {
+    pub name: Option<Ident>,
+    pub constructor: Function,
+    pub elements: Vec<ClassElement>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassElement {
+    pub is_static: bool,
+    pub property: PropertyDef,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -500,6 +517,9 @@ impl Expr {
                 })
             }
             ExprKind::Function(f) => f.height,
+            ExprKind::Class(c) => c.elements.iter().fold(c.constructor.height, |h, e| {
+                h.max(e.property.value.height).max(e.property.name.height())
+            }),
             ExprKind::Sequence { left, right } => left.height.max(right.height),
             ExprKind::Object(properties) => properties
                 .iter()
@@ -539,6 +559,7 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    Class(Box<Class>),
     AssignPattern {
         target: Box<Pattern>,
         value: Box<Expr>,
@@ -839,6 +860,13 @@ pub enum PropertyName {
 }
 
 impl PropertyName {
+    pub(crate) fn is_named(&self, name: &str) -> bool {
+        match self {
+            Self::Identifier(n) => n == name,
+            Self::String(n) => *n == name,
+            _ => false,
+        }
+    }
     pub(crate) fn height(&self) -> usize {
         match self {
             Self::Computed(e, _) => e.height,
