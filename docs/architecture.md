@@ -4807,8 +4807,8 @@ timers drain, rather than after each job; this pellet adds no rejection check.
 ## Regular expression matcher (clj-quickjs-187)
 
 The in-tree matcher compiles the arena with an explicit build stack into
-immutable Rust bytecode. `regexp::matcher::compile` rejects lookbehind,
-Unicode and ignore-case execution explicitly. Non-Unicode backreferences
+immutable Rust bytecode. `regexp::matcher::compile` rejects lookbehind
+and ignore-case execution explicitly. Backreferences
 are supported, with an undefined/forward capture matching the empty string.
 Scoped m/s modifiers are compiled into the consuming/assertion instructions.
 The compiler checks arena edges/indices and computes each atom's capture span
@@ -5181,11 +5181,11 @@ catchable RangeError and never becomes a failed match. Parsing, source
 escaping, capture copying and string flattening are synchronous, bounded by
 the runtime's string length limit, like existing string leaf operations.
 
-Objects support the non-Unicode matcher, g/m/s/y, named captures with a
+Objects support the code-unit and Unicode matcher, g/m/s/u/y, named captures with a
 null-prototype groups object, and explicit undefined elements for unmatched
-captures. i/u/v/d constructors and literals throw SyntaxError naming the
+captures. i/v/d constructors and literals throw SyntaxError naming the
 unsupported flag; scoped i and lookbehind also fail explicitly. Symbol.match
-recognition, symbol-based string consumers, Unicode/case folding and indices
+recognition, symbol-based string consumers, case folding, Unicode sets and indices
 remain later work. Direct and indirect eval are unavailable, so the raw NUL
 upstream case is exercised through the constructor and a literal containing
 an actual NUL instead.
@@ -5363,3 +5363,23 @@ operands and all pre-existing continuation fields stay traced across yields,
 waits, collection and thread migration. Failure/cancellation drops the buffers.
 JSON still rejects BigInt serialization. Wrappers and locale-sensitive
 BigInt.prototype.toLocaleString remain deferred.
+
+## Unicode RegExp mode (clj-quickjs-190)
+
+The immutable matcher program stores a Unicode-mode bit (`u` or future `v`
+IR), and character instructions retain u32 code points. The shared forward
+reader decodes UTF-16 pairs and preserves lone surrogates. Literals, dot,
+classes and backreferences use that reader; the search loop uses the same
+AdvanceStringIndex operation as global replacement's empty-match progress.
+Compilation validates code points through U+10FFFF in Unicode mode and code
+units otherwise. The v parser/object flag remains explicitly unsupported.
+
+`matcher::exec` maps a starting offset within a pair to its lead, matching
+QuickJS `lre_exec`; this applies to both exec/test and sticky replacement.
+All machine positions, undo trails and captures remain UTF-16 offsets, so
+result extraction and lastIndex updates need no conversion tables or copies.
+Backreferences compare code points so a captured lone surrogate cannot match
+half of a later pair. Assertions retain BMP word/line classification; i/iu
+folding and lookbehind stay deferred. The existing single search step budget
+covers candidate scans and comparisons, with catchable RangeError on exhaustion.
+No heap representation, native continuation or publication rule changes.

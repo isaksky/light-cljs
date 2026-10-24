@@ -294,10 +294,6 @@ fn unsupported_features_fail_explicitly() {
         ));
     }
     assert!(matches!(
-        program("a", "u"),
-        Err(MatchError::Unsupported("Unicode matching"))
-    ));
-    assert!(matches!(
         program("a", "i"),
         Err(MatchError::Unsupported("ignore-case matching"))
     ));
@@ -353,6 +349,64 @@ fn backreference_comparisons_share_work_limit() {
             &program(r"^(a{1000})\1{1000}$", "").unwrap(),
             &vec![97; 1_001_000],
             0,
+        ),
+        Err(MatchError::LimitExceeded)
+    );
+}
+
+#[test]
+fn unicode_candidate_positions_and_capture_offsets() {
+    let input = [0xd83d, 0xdc31, 0xdc31];
+    for flags in ["u", "uy"] {
+        let matched = exec(&program("(.)", flags).unwrap(), &input, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.index, 0);
+        assert_eq!(matched.groups, [Some(0..2), Some(0..2)]);
+    }
+    let matched = exec(&program(r"\udc31", "u").unwrap(), &input, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(matched.groups, [Some(2..3)]);
+    assert_eq!(exec(&program(".", "u").unwrap(), &input, 3), Ok(None));
+    assert_eq!(exec(&program("", "u").unwrap(), &input, 4), Ok(None));
+    assert_eq!(advance_string_index(&input, 0, true), 2);
+    assert_eq!(advance_string_index(&input, 2, true), 3);
+    assert_eq!(advance_string_index(&input, 3, true), 4);
+    assert_eq!(advance_string_index(&input, 0, false), 1);
+}
+
+#[test]
+fn unicode_program_validation_and_shared_step_limit() {
+    // The v grammar remains deferred; core Unicode reads also apply to v IR.
+    let mut p = parse(&JsString::from("🐱"), &JsString::from("u")).unwrap();
+    p.flags.unicode = false;
+    p.flags.unicode_sets = true;
+    assert_eq!(
+        exec(&compile(&p).unwrap(), &[0xd83d, 0xdc31], 0)
+            .unwrap()
+            .unwrap()
+            .groups,
+        [Some(0..2)]
+    );
+    for flags in ["", "u"] {
+        for invalid in [
+            Node::Literal(0x110000),
+            Node::Class(CharacterClass {
+                inverted: false,
+                members: vec![ClassMember::Range(0, 0x110000)],
+            }),
+        ] {
+            let mut p = parse(&JsString::from("a"), &JsString::from(flags)).unwrap();
+            p.nodes[0] = invalid;
+            assert!(matches!(compile(&p), Err(MatchError::InvalidPattern)));
+        }
+    }
+    assert_eq!(
+        exec(
+            &program("🐱+b", "u").unwrap(),
+            &[0xd83d, 0xdc31].repeat(2000),
+            0
         ),
         Err(MatchError::LimitExceeded)
     );

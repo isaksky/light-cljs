@@ -2872,8 +2872,9 @@ Each search is bounded by `MAX_MATCH_STEPS = 1_000_000` across all candidate
 positions, assertions and backtracks. Exhaustion returns `LimitExceeded`
 (the RegExp object layer must throw a catchable RangeError). Native stack
 depth is independent of pattern depth and input length. Compilation has its
-own allowance of the same size. Lookbehind, ignore-case (including scoped i),
-and Unicode matching fail explicitly. JavaScript RegExp objects/methods,
+own allowance of the same size. Lookbehind and ignore-case (including scoped i)
+fail explicitly. Unicode mode executes by code point (clj-quickjs-190).
+JavaScript RegExp objects/methods,
 literals and global lastIndex are supplied by clj-quickjs-188.
 
 ### BigInt arithmetic (clj-quickjs-198)
@@ -2985,11 +2986,11 @@ ToLength and global/sticky updates. Match arrays include `index`, `input`,
 use a null-prototype object. Programs are immutable; objects are task-owned
 and cannot be published. Argument coercions and getters may suspend.
 
-Matching supports g/m/s/y. The 1,000,000-step search/compilation bounds throw
-catchable RangeError; invalid patterns and deferred i/u/v/d flags throw
-catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `gmsy`
+Matching supports g/m/s/u/y. The 1,000,000-step search/compilation bounds throw
+catchable RangeError; invalid patterns and deferred i/v/d flags throw
+catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `gmsuy`
 for currently constructible patterns. Deferred: literal pattern early errors,
-lookbehind, scoped i, Unicode/case folding, indices, Symbol.match recognition,
+lookbehind, scoped i, case folding, Unicode sets, indices, Symbol.match recognition,
 and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
@@ -3056,3 +3057,15 @@ and callback results are capped at 65,536 code units. `lastIndex` numeric
 conversion checks that same string bound after ToPrimitive. Aggregate capture,
 substitution and output work is capped at 1,000,000 units. Limits throw catchable
 RangeError. Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source string_replace -- --test-threads=3`.
+
+### Unicode RegExp matching (clj-quickjs-190)
+
+Supported: `u` patterns consume surrogate pairs as one code point for literals,
+dot, classes, ranges, quantifiers and backreferences. Lone surrogates match
+themselves, never half a pair. Braced escapes and astral ranges execute.
+Match/capture indices and lastIndex remain UTF-16 offsets; an initial lastIndex
+inside a pair starts at its lead surrogate. Global replacement advances empty
+matches by code point, while plain `exec` leaves empty matches at their end.
+The existing catchable step limit applies. Deferred: i/iu folding, property
+escapes, v sets, d indices and lookbehind. Test:
+`CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.

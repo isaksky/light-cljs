@@ -598,3 +598,17 @@ output. `js_thisBigIntValue`, `js_bigint_toString`, `js_bigint_valueOf` and
 `js_bigint_to_string1` in `research/quickjs/quickjs.c` at that revision were
 semantic references; the Rust chunked formatter and native continuation
 changes were written afresh, without adapting upstream implementation code.
+
+## Unicode RegExp matching (clj-quickjs-190)
+
+`tests/fixtures/js/regexp_unicode.js`, run by
+`tests/js_source.rs::regexp_unicode_mode`, adapts the two lastIndex rows
+from `research/quickjs/tests/test_builtin.js::test_regexp` (lines 792–801),
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The fixture retains QuickJS's copyright and MIT permission notice from
+`research/quickjs/LICENSE`; its other rows are synthetic, not light-cljs output.
+`research/quickjs/libregexp.c::lre_exec` and
+`research/quickjs/quickjs.c::js_regexp_exec` at that revision were read as
+semantic references for starting offsets and UTF-16 capture positions.
+The Rust code-point reader, matching changes and other tests were written
+independently; no C engine implementation was copied or linked.

@@ -16034,6 +16034,14 @@ fn bigint_bitwise_and_shift_size_limits() {
 }
 
 #[test]
+fn regexp_unicode_mode() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_unicode.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_objects_exec_and_test() {
     assert_eq!(
         eval(include_str!("fixtures/js/regexp_objects.js")),
@@ -16048,7 +16056,7 @@ fn regexp_objects_exec_and_test() {
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn regexp_flags_errors_and_internal_state() {
-    for flag in ['d', 'i', 'u', 'v'] {
+    for flag in ['d', 'i', 'v'] {
         for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
             assert_eq!(
                 eval(&format!(
@@ -16060,7 +16068,7 @@ fn regexp_flags_errors_and_internal_state() {
     }
     for src in [
         "let caught = false; try {'a'.split(/a/);} catch(e){caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0;} caught",
-        r"let r = /(b+)c/g; let m = r.exec('abbbbbc'); let a = m[1] === 'bbbbb' && m.index === 1; let b = new RegExp('a/b').source === 'a\\/b'; r = /a/y; r.lastIndex = 1; let c = r.test('ba') && r.lastIndex === 2; let d = false; try {/a/u;} catch(e) {d = e instanceof SyntaxError;} a && b && c && d",
+        r"let r = /(b+)c/g; let m = r.exec('abbbbbc'); let a = m[1] === 'bbbbb' && m.index === 1; let b = new RegExp('a/b').source === 'a\\/b'; r = /a/y; r.lastIndex = 1; let c = r.test('ba') && r.lastIndex === 2; let d = /a/u.test('a'); a && b && c && d",
         "let r = /a/g; RegExp(r) === r && new RegExp(r) !== r && new RegExp(r).flags === 'g' && RegExp(r, 'm').flags === 'm'",
         "let r = /a/g; let d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); d.value === 0 && d.writable && !d.enumerable && !d.configurable && r instanceof RegExp && r.constructor === RegExp",
         "RegExp.prototype.source === '(?:)' && RegExp.prototype.flags === '' && RegExp.prototype.global === undefined && RegExp.prototype.toString() === '/(?:)/'",
@@ -16115,6 +16123,7 @@ fn regexp_code_reload_and_publication() {
 fn regexp_coercions_wait_yield_collect_and_migrate() {
     for expression in [
         "RegExp({toString(){count++; __rt.need(188, 1); return 'a';}}, 'g').test('a')",
+        "let r = /./uy; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|r.exec('🐱')[0] === '🐱' && r.lastIndex === 2",
         "new RegExp('a', {toString(){count++; __rt.need(188, 1); return 'g';}}).test('a')",
         "let r = /a/g; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|r.exec('ba').index === 1",
         "let r = /a/g;|r.exec({toString(){count++; __rt.need(188, 1); return 'a';}})[0] === 'a'",
@@ -16979,6 +16988,7 @@ fn string_replace() {
 #[test]
 fn string_replace_wait_yield_collect_and_migrate() {
     for expression in [
+        "'🐱'.replace(/(?:)/gu, (m,p) => {if(p === 2){count++; __rt.need(189,1);} return '-';}) === '-🐱-'",
         "String.prototype.replace.call({get toString(){count++; __rt.need(189,1); return () => 'abc';}}, 'b', 'X') === 'aXc'",
         "'abc'.replace({toString(){count++; __rt.need(189,1); return 'b';}}, 'X') === 'aXc'",
         "'abc'.replaceAll('b', {toString(){count++; __rt.need(189,1); return 'X';}}) === 'aXc'",

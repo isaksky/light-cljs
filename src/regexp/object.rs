@@ -37,7 +37,6 @@ pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compile
     for (flag, set) in [
         ('d', parsed_flags.has_indices),
         ('i', parsed_flags.ignore_case),
-        ('u', parsed_flags.unicode),
         ('v', parsed_flags.unicode_sets),
     ] {
         if set {

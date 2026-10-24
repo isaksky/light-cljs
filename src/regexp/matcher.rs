@@ -1,4 +1,4 @@
-//! Bounded, non-Unicode regular expression matching over UTF-16 code units.
+//! Bounded regular expression matching over UTF-16 strings, with Unicode mode.
 //!
 //! Compile the parser's arena once, then call [`exec`]. Matching is a leaf
 //! operation: it never calls JavaScript or retains a native stack continuation.
@@ -51,11 +51,12 @@ pub struct Program {
     captures: usize,
     repeats: usize,
     sticky: bool,
+    unicode: bool,
 }
 
 #[derive(Clone, Debug)]
 enum Instruction {
-    Char(u16),
+    Char(u32),
     Dot(bool),
     Class(CharacterClass),
     Assert(Assertion, bool),
@@ -114,13 +115,12 @@ fn merge_span(a: CaptureSpan, b: CaptureSpan) -> CaptureSpan {
     }
 }
 
-/// Compile validated parser IR without recursive traversal. Lookbehind,
-/// ignore-case and Unicode matching are explicitly deferred, including scoped i.
+/// Compile validated parser IR without recursive traversal. Lookbehind
+/// and ignore-case matching are explicitly deferred, including scoped i.
 /// The public arena is checked for invalid edges/indices before indexing it.
 pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
-    if pattern.flags.unicode || pattern.flags.unicode_sets {
-        return Err(MatchError::Unsupported("Unicode matching"));
-    }
+    let unicode = pattern.flags.unicode || pattern.flags.unicode_sets;
+    let max_character = if unicode { 0x10ffff } else { 0xffff };
     if pattern.flags.ignore_case {
         return Err(MatchError::Unsupported("ignore-case matching"));
     }
@@ -184,7 +184,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                 child(*body)?
             }
             Node::Literal(c) => {
-                if *c > 0xffff {
+                if *c > max_character {
                     return Err(MatchError::InvalidPattern);
                 }
                 None
@@ -202,8 +202,8 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                 for member in &class.members {
                     budget.charge(1)?;
                     if match member {
-                        ClassMember::Literal(c) => *c > 0xffff,
-                        ClassMember::Range(a, b) => a > b || *b > 0xffff,
+                        ClassMember::Literal(c) => *c > max_character,
+                        ClassMember::Range(a, b) => a > b || *b > max_character,
                         ClassMember::Escape(_) => false,
                     } {
                         return Err(MatchError::InvalidPattern);
@@ -333,7 +333,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                             Build::Label(end),
                         ]);
                     }
-                    Node::Literal(c) => sequence.push(Build::Emit(Instruction::Char(*c as u16))),
+                    Node::Literal(c) => sequence.push(Build::Emit(Instruction::Char(*c))),
                     Node::Dot => sequence.push(Build::Emit(Instruction::Dot(modifiers.dot_all))),
                     Node::Assertion(a) => {
                         sequence.push(Build::Emit(Instruction::Assert(*a, modifiers.multiline)))
@@ -370,6 +370,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
         captures: pattern.captures.len() + 1,
         repeats,
         sticky: pattern.flags.sticky,
+        unicode,
     })
 }
 
@@ -473,29 +474,33 @@ impl Machine {
             let success = match instruction {
                 Instruction::Accept => return Ok(true),
                 Instruction::Char(c) => {
-                    if input.get(self.pos) == Some(c) {
-                        self.pos += 1;
+                    if let Some((actual, width)) = read_character(input, self.pos, program.unicode)
+                        && actual == *c
+                    {
+                        self.pos += width;
                         true
                     } else {
                         false
                     }
                 }
                 Instruction::Dot(dot_all) => {
-                    if input.get(self.pos).is_some_and(|c| *dot_all || !line(*c)) {
-                        self.pos += 1;
+                    if let Some((c, width)) = read_character(input, self.pos, program.unicode)
+                        && (*dot_all || !line(c))
+                    {
+                        self.pos += width;
                         true
                     } else {
                         false
                     }
                 }
                 Instruction::Class(class) => {
-                    if let Some(&c) = input.get(self.pos) {
+                    if let Some((c, width)) = read_character(input, self.pos, program.unicode) {
                         let mut found = false;
                         for member in &class.members {
                             self.budget.charge(1)?;
                             found |= match member {
-                                ClassMember::Literal(literal) => u32::from(c) == *literal,
-                                ClassMember::Range(a, b) => (*a..=*b).contains(&u32::from(c)),
+                                ClassMember::Literal(literal) => c == *literal,
+                                ClassMember::Range(a, b) => (*a..=*b).contains(&c),
                                 ClassMember::Escape(escape) => class_escape(*escape, c),
                             };
                             if found {
@@ -503,7 +508,7 @@ impl Machine {
                             }
                         }
                         if found != class.inverted {
-                            self.pos += 1;
+                            self.pos += width;
                             true
                         } else {
                             false
@@ -513,8 +518,14 @@ impl Machine {
                     }
                 }
                 Instruction::Assert(assertion, multiline) => {
-                    let previous = self.pos.checked_sub(1).and_then(|i| input.get(i)).copied();
-                    let next = input.get(self.pos).copied();
+                    // Line terminators and word characters are all BMP code
+                    // points; either surrogate half has the same classification.
+                    let previous = self
+                        .pos
+                        .checked_sub(1)
+                        .and_then(|i| input.get(i))
+                        .map(|&c| u32::from(c));
+                    let next = input.get(self.pos).map(|&c| u32::from(c));
                     match assertion {
                         Assertion::Start => {
                             self.pos == 0 || *multiline && previous.is_some_and(line)
@@ -541,13 +552,19 @@ impl Machine {
                     }
                     let mut equal = true;
                     if let Some(range) = range {
-                        for index in range {
+                        let mut index = range.start;
+                        while index < range.end {
                             self.budget.charge(1)?;
-                            if input.get(self.pos) != Some(&input[index]) {
+                            let (expected, width) = read_character(input, index, program.unicode)
+                                .expect("capture is within input");
+                            if read_character(input, self.pos, program.unicode)
+                                != Some((expected, width))
+                            {
                                 equal = false;
                                 break;
                             }
-                            self.pos += 1;
+                            self.pos += width;
+                            index += width;
                         }
                     }
                     equal
@@ -649,6 +666,8 @@ impl Machine {
 /// covers the entire search, not a fresh allowance per candidate or lookahead.
 /// `g` and `d` do not change this core operation; lastIndex/objects belong to the
 /// caller. `start > input.len()` gives no match.
+/// Unicode mode maps a start inside a surrogate pair to its lead surrogate;
+/// candidate positions and consuming instructions then advance by code point.
 pub fn exec(
     program: &Program,
     input: &[u16],
@@ -657,6 +676,15 @@ pub fn exec(
     if start > input.len() {
         return Ok(None);
     }
+    let start = if program.unicode
+        && start > 0
+        && matches!(input.get(start), Some(0xdc00..=0xdfff))
+        && matches!(input.get(start - 1), Some(0xd800..=0xdbff))
+    {
+        start - 1
+    } else {
+        start
+    };
     let mut budget = Budget(MAX_MATCH_STEPS);
     budget.charge(program.captures)?;
     budget.charge(program.repeats)?;
@@ -669,7 +697,8 @@ pub fn exec(
         backtrack: Vec::new(),
         budget,
     };
-    for index in start..=input.len() {
+    let mut index = start;
+    loop {
         machine.budget.charge(1)?;
         machine.pc = 0;
         machine.pos = index;
@@ -682,20 +711,43 @@ pub fn exec(
             }));
         }
         machine.rewind(0)?;
-        if program.sticky {
+        if program.sticky || index == input.len() {
             break;
         }
+        index = advance_string_index(input, index, program.unicode);
     }
     Ok(None)
 }
 
-fn line(c: u16) -> bool {
+/// Read a code unit, or a code point including an unpaired surrogate in
+/// Unicode mode. All positions and widths remain UTF-16 code-unit offsets.
+fn read_character(input: &[u16], index: usize, unicode: bool) -> Option<(u32, usize)> {
+    let first = u32::from(*input.get(index)?);
+    if unicode
+        && (0xd800..=0xdbff).contains(&first)
+        && let Some(&second @ 0xdc00..=0xdfff) = input.get(index + 1)
+    {
+        Some((
+            0x10000 + ((first - 0xd800) << 10) + u32::from(second) - 0xdc00,
+            2,
+        ))
+    } else {
+        Some((first, 1))
+    }
+}
+
+/// AdvanceStringIndex also advances one unit at the end for empty-match loops.
+pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -> usize {
+    index + read_character(input, index, unicode).map_or(1, |(_, width)| width)
+}
+
+fn line(c: u32) -> bool {
     matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029)
 }
-fn word(c: u16) -> bool {
+fn word(c: u32) -> bool {
     matches!(c, 48..=57 | 65..=90 | 95 | 97..=122)
 }
-fn space(c: u16) -> bool {
+fn space(c: u32) -> bool {
     line(c)
         || matches!(
             c,
@@ -703,7 +755,7 @@ fn space(c: u16) -> bool {
                 ..=0x200a | 0x202f | 0x205f | 0x3000 | 0xfeff
         )
 }
-fn class_escape(escape: ClassEscape, c: u16) -> bool {
+fn class_escape(escape: ClassEscape, c: u32) -> bool {
     match escape {
         ClassEscape::Digit => (48..=57).contains(&c),
         ClassEscape::NotDigit => !(48..=57).contains(&c),

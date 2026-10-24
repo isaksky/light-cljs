@@ -259,8 +259,11 @@ impl State {
                     && let Some(m) = &found
                     && m.groups[0].as_ref().unwrap().is_empty()
                 {
-                    self.next =
-                        advance_index(&self.text, end, re.flags.unicode || re.flags.unicode_sets);
+                    self.next = matcher::advance_string_index(
+                        self.text.code_units(),
+                        end,
+                        re.flags.unicode || re.flags.unicode_sets,
+                    );
                     set_last_index(heap, task, &self.search, self.next)?;
                 }
             }
@@ -380,13 +383,6 @@ fn set_last_index(heap: &Heap, task: TaskId, re: &Value, index: usize) -> Result
     )?;
     debug_assert!(setter.is_none());
     Ok(())
-}
-
-fn advance_index(text: &JsString, index: usize, unicode: bool) -> usize {
-    let pair = unicode
-        && matches!(text.code_units().get(index), Some(0xd800..=0xdbff))
-        && matches!(text.code_units().get(index + 1), Some(0xdc00..=0xdfff));
-    index + if pair { 2 } else { 1 }
 }
 
 fn substitute(

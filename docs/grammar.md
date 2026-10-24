@@ -3288,7 +3288,8 @@ reporting waits for quiescence after jobs and timers, not individual jobs.
 ### Regular expression matcher API (clj-quickjs-187)
 
 Execution: the Rust-only `regexp::matcher::compile(&Pattern)` and
-`exec(&Program, input: &[u16], start)` execute non-Unicode pattern IR. The
+`exec(&Program, input: &[u16], start)` execute pattern IR, including Unicode
+mode (clj-quickjs-190). The
 result is `Result<Option<Captures>, MatchError>`: a match, no match, or an
 explicit failure. All ranges and the match index count UTF-16 code units;
 group zero is the full match and undefined captures are `None`. Greedy/lazy
@@ -3301,7 +3302,7 @@ The m flag changes line assertions, s changes dot, and y restricts the search
 to exactly `start`. g/d do not change the core search; capture ranges are
 always available. A start beyond the input length returns no match.
 
-Explicit gaps: lookbehind, Unicode matching and ignore-case matching
+Explicit gaps: lookbehind and ignore-case matching
 (including scoped i) return `MatchError::Unsupported` at compilation.
 `MAX_MATCH_STEPS = 1_000_000` bounds a complete search, including assertions,
 backtracking and comparisons; exhaustion returns `LimitExceeded`, never
@@ -3492,17 +3493,17 @@ it beyond the match end. All positions and captures count UTF-16 code units.
 Coercions and getters use resumable frames; matching has the documented
 1,000,000-step bound and throws catchable RangeError on exhaustion.
 
-Explicit gaps: constructing i/u/v/d patterns throws a catchable SyntaxError
+Explicit gaps: constructing i/v/d patterns throws a catchable SyntaxError
 naming the unsupported flag. Scoped i and lookbehind are also rejected.
 Literal pattern early errors, Symbol.match recognition, symbol-based string
-consumers, Unicode/case folding, indices and Unicode sets remain deferred.
+consumers, case folding, indices and Unicode sets remain deferred.
 Eval is unavailable; the upstream raw NUL case uses constructor/raw literal.
 
 ```js accept
 let r = /(b+)c/g; let m = r.exec('abbbbbc'); m[1] === 'bbbbb' && m.index === 1;
 new RegExp('a/b').source === 'a\\/b';
 r = /a/y; r.lastIndex = 1; r.test('ba') && r.lastIndex === 2;
-try { /a/u; } catch (e) { e instanceof SyntaxError; }
+/^.$/u.test('🐱');
 ```
 
 ### BigInt function and StringToBigInt (clj-quickjs-201)
@@ -3640,7 +3641,7 @@ Explicit gaps/dispatch decision: these methods use internal RegExp slots,
 not `Symbol.replace`/`Symbol.match` dispatch. RegExp overrides of `exec`,
 `flags` and boolean flag properties are ignored; internal flags select the
 loop. Other search objects undergo ToString. Symbol-based protocols and
-generic `RegExp.prototype[Symbol.replace]`, `match`/`search`, Unicode/case
+generic `RegExp.prototype[Symbol.replace]`, `match`/`search`, case
 folding and the other deferred RegExp flags remain separate work.
 
 ```js accept
@@ -3671,3 +3672,24 @@ including after object conversion; it survives collection and migration.
 
 Explicit gaps: wrapper objects and locale-sensitive `toLocaleString` remain
 unsupported; JSON serialization of BigInts still throws TypeError.
+
+### Unicode RegExp execution (clj-quickjs-190)
+
+Execution: `u` is accepted by literals and constructors. Consuming atoms and
+search candidates advance over a complete surrogate pair, or one unpaired
+surrogate. Literals, dot, positive/inverted classes, escapes, astral ranges,
+quantifiers and backreferences use code points through U+10FFFF. A surrogate
+literal never matches half a pair. Match indices, captures, callback offsets
+and lastIndex still count UTF-16 code units. A global/sticky lastIndex inside
+a pair maps back to the lead before matching; an unpaired trail is unchanged.
+`exec` preserves empty-match end offsets; global `replace`/`replaceAll` advance
+empty matches by a whole code point. Step exhaustion remains catchable RangeError.
+
+Explicit gaps: i/iu folding, property escapes, v grammar, d indices and
+lookbehind remain deferred. Unicode mode adds no size limits or dependencies.
+
+```js accept
+/^.$/u.test('🐱') && !/^.$/.test('🐱');
+/[\u{10000}-\u{10FFFF}]/u.test('\u{10400}');
+'🐱'.replace(/(?:)/gu, '-') === '-🐱-';
+```
