@@ -643,17 +643,16 @@ fn import_assignment_through_closure_and_eval_is_immutable() {
 
 #[test]
 fn rejects_json_before_effects() {
-    for sources in [vec![
+    let sources = [
         ("entry.js", "import x from './dep.json'; __rt.effect(0, 1);"),
         ("dep.json", "{}"),
-    ]] {
-        let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
-        assert!(
-            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
-            "{outcome:?}"
-        );
-        assert!(effects.is_empty());
-    }
+    ];
+    let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
 }
 
 #[test]
@@ -1550,6 +1549,15 @@ fn namespace_empty_freezes_and_inherited_writes_fail() {
 
 #[test]
 fn namespace_waits_collects_and_migrates() {
+    assert_namespace_waits_collects_and_migrates(false);
+}
+
+#[test]
+fn cyclic_namespace_waits_collects_and_migrates() {
+    assert_namespace_waits_collects_and_migrates(true);
+}
+
+fn assert_namespace_waits_collects_and_migrates(cyclic: bool) {
     use clj_quickjs::Completion;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
@@ -1557,7 +1565,11 @@ fn namespace_waits_collects_and_migrates() {
     host.add("barrel.js", "export * as ns from './m.js';");
     host.add(
         "m.js",
-        "export let n=5; export function inc(){n++;} n+=__rt.need(75,0);",
+        if cyclic {
+            "import './entry.js'; export let n=5; export function inc(){n++;} n+=__rt.need(75,0);"
+        } else {
+            "export let n=5; export function inc(){n++;} n+=__rt.need(75,0);"
+        },
     );
     let graph = ModuleLoader::new()
         .load(runtime.world(), &"entry.js".into(), &mut host)
@@ -1669,4 +1681,38 @@ fn namespace_escaped_reexport_names() {
         ],
         vec![Primitive::Bool(true)],
     );
+}
+
+#[test]
+fn cyclic_namespaces_share_origins_and_remain_live() {
+    // Synthetic fixture, not light-cljs output. Both namespaces contain a
+    // reference to the other before either module body starts.
+    let sources = [
+        (
+            "entry.js",
+            "import * as a from './a.js'; import {ns} from './barrel.js'; a.inc(); __rt.effect(0, ns===a && a.b.a===a && ns.n===2 && a.b.n===3);",
+        ),
+        (
+            "a.js",
+            "export * as b from './b.js'; export let n=1; export function inc(){n++;}",
+        ),
+        (
+            "b.js",
+            "import * as a from './a.js'; export {a}; export let n=3;",
+        ),
+        (
+            "barrel.js",
+            "export * from './left.js'; export * from './right.js';",
+        ),
+        (
+            "left.js",
+            "export * from './barrel.js'; export * as ns from './a.js';",
+        ),
+        ("right.js", "import * as ns from './a.js'; export {ns};"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true)]);
+    }
 }

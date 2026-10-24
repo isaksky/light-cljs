@@ -4003,7 +4003,7 @@ CARGO_BUILD_JOBS=3 cargo test --test quickjs_language quickjs_operator_cases_run
 
 ### Module namespaces (clj-quickjs-254)
 
-Supported: acyclic module tasks execute `import * as ns`, `export {ns}` and
+Supported: cyclic and acyclic module tasks execute `import * as ns`, `export {ns}` and
 `export * as ns from`, with one task-owned namespace per module instance.
 Namespaces have a null prototype, sorted UTF-16 export keys, live binding-cell
 reads, fixed Symbol.toStringTag "Module", non-extensibility and the namespace
@@ -4012,6 +4012,7 @@ linking, waits, GC and migration preserve identity and live reads.
 
 Verification: `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib module::namespace:: -- --test-threads=3`.
-Deferred: cyclic graph execution and the cyclic namespace TDZ integration case
-(clj-quickjs-255). Namespace TDZ errors are covered independently by source
-execution over an internal namespace fixture. The CLI remains script-only.
+Cyclic namespaces resolve before bodies execute, preserve hoisted function calls
+and throw catchable ReferenceErrors for lexical exports still in TDZ
+(clj-quickjs-255). JSON instances and default-export declarations remain
+deferred. The CLI remains script-only.

@@ -7751,8 +7751,7 @@ are retained in each node in the record's request order, including distinct
 specifier spellings that alias one key. Each key is fetched/parsed once per
 world in a loader, including across entry graphs. Host resolution may repeat
 on cache hits. Graph iteration preserves discovery order. JavaScript linking
-and evaluation, including cycles, are described below; namespace objects
-remain deferred.
+and evaluation, including cycles and namespace objects, are described below.
 
 Verification: `tests/js_modules.rs` uses the existing licensed parse fixtures
 for the three-module cyclic graph and the hello-module JavaScript imports,
@@ -7930,7 +7929,7 @@ dependency SCCs supply cached resolutions. Explicit exports override stars;
 two star paths resolving to distinct origin bindings are ambiguous, while
 two paths to one binding stay unambiguous. Explicit indirect exports are
 validated even when unused. Missing exports fail the task with SyntaxError
-naming the export and module. Namespace imports, JSON instances and
+naming the export and module. JSON instances and
 default-export declarations fail explicitly for now.
 
 The continuation allocates ordinary task-owned binding cells for all module
@@ -7968,10 +7967,14 @@ undefined. A finished task cannot be run again; a fresh spawn creates fresh
 instances, including after failure. Imports create no dependency-log edges.
 There is no public operation to select a second entry in a live instance map;
 that cached-failure invariant is exercised by a module-driver unit test.
-The namespace import variant of test_cyclic_import still fails explicitly
-until clj-quickjs-254 lands; named imports of its re-exported function already
-compute 4. The export tables remain fully resolved before import argument
-construction, preserving the namespace builder's hook into resolved cells.
+The namespace import variant of test_cyclic_import and named imports of its
+re-exported function both compute 4. Export tables are fully resolved before
+namespace creation and import argument construction. Namespace re-exports
+terminate resolution at a canonical namespace origin, including within SCCs;
+local exports of namespace imports use that same origin to avoid false star
+ambiguity. All requested namespaces and initialized namespace cells are
+created before population, so namespaces can contain one another while
+lexical export cells retain their TDZ.
 
 The task driver selects linking steps or the ordinary interpreter, returning
 from the linking driver before entering a module frame. First-use global,
@@ -8132,10 +8135,11 @@ Namespaces are classified TaskOwned in value::share, even when empty and
 frozen. Publication rejects them, containers reaching them and closures
 capturing them; they never cross task boundaries as persistent values.
 
-Cyclic graph execution remains explicitly rejected for clj-quickjs-255.
-`namespace_cyclic_tdz_fixture_is_explicitly_deferred` records that integration
-boundary; `namespace_get_in_tdz_throws_reference_error` uses a real namespace
-with an uninitialized cell as an argument to JavaScript source, proving that
+`tests/js_modules.rs::namespace_get_in_tdz_throws_reference_error` checks a
+catchable ReferenceError through a namespace imported across a cycle.
+Mutually referencing namespaces and circular barrels retain canonical identity
+and live reads across single-step budgets and collection. The internal
+`module::namespace` TDZ test additionally uses an uninitialized cell, proving that
 Get, descriptors, Object.keys and DefineProperty throw catchable ReferenceErrors
 while HasProperty and own-name enumeration succeed.
 

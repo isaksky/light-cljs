@@ -520,7 +520,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | class fields, static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
-| module `export * as ns from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
+| module string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
@@ -567,8 +567,9 @@ global is absent; the upstream attempt to call it catches its ReferenceError.
 Module source parses into static records (see "Modules"). The embedding API
 loads complete static graphs before task execution. Cyclic and acyclic
 graphs link and evaluate with live imports and re-exports (clj-quickjs-253/255).
-Namespaces, default-export declarations and JSON
-module instances remain deferred; the CLI and `compile_script` take scripts only.
+Namespace imports and re-exports execute, including cyclic TDZ checks
+(clj-quickjs-254). Default-export declarations and JSON module instances
+remain deferred; the CLI and `compile_script` take scripts only.
 
 Super properties and class fields remain deferred (clj-quickjs-138/139).
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
@@ -1050,7 +1051,7 @@ iteration values require no disposer.
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work. After loading, `Runtime::spawn_module`
-links and evaluates a graph, including cycles, with strict module environments and
+links and evaluates a graph, including cycles and namespace imports, with strict module environments and
 undefined completion (see "Module execution").
 `module::ModuleLoader` separately resolves and fetches a static graph through
 an embedder-supplied `ModuleHost`, parsing JavaScript and carrying `.json`
@@ -5843,7 +5844,7 @@ inc(); inc();
 __rt.effect(0, n);
 ```
 
-Explicit execution gaps: namespace imports, JSON instances and
+Explicit execution gaps: JSON instances and
 `export default` declarations fail before bodies execute. Top-level await,
 dynamic import, import.meta and attributes remain unsupported. The CLI stays
 script-only.
@@ -5979,6 +5980,6 @@ export * as sameCounter from './counter.js';
 
 Namespaces are task-owned and cannot be published, even when empty and frozen.
 Publication also rejects closures capturing them. Each fresh task gets fresh
-instances and namespaces. The cyclic TDZ integration fixture still fails
-explicitly at the cyclic-linking boundary pending clj-quickjs-255; internal
-source execution tests exercise catchable namespace TDZ reads independently.
+instances and namespaces. Cyclic namespaces are built from resolved exports
+before any body runs. Functions are hoisted, and namespace reads of lexical
+exports still in TDZ throw catchable ReferenceErrors (clj-quickjs-255).

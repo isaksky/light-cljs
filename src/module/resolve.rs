@@ -71,7 +71,8 @@ impl Resolver {
             State::Start => {
                 if frame.name == NAMESPACE {
                     // Namespace origins terminate resolution even inside an SCC.
-                    self.finish(Resolution::Found((frame.key, NAMESPACE.into())));
+                    let origin = (frame.key, NAMESPACE.into());
+                    self.finish(Resolution::Found(origin));
                 } else if !self.seen.insert((frame.key, frame.name.clone())) {
                     self.circular = true;
                     self.finish(Resolution::Missing);
