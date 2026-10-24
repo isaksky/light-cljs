@@ -16,43 +16,95 @@ mod workloads;
 use clj_quickjs::frontend::compile_function;
 use clj_quickjs::{Completion, ObjectCounts, RunOutcome, Runtime, TaskStatus};
 
-use workloads::{Fixtures, Probe};
+use workloads::{ConsumerKind, Fixtures, Probe};
 
 fn no_probe() -> Probe {
     Probe::default()
 }
 
-#[test]
-fn consumers_share_the_input_graph_and_code() {
+/// The facts both memory tables rest on, for one consumer fixture: each
+/// parked consumer adds exactly `own` (its own task-owned heap objects),
+/// the input is never copied, every consumer returns the input's entry
+/// itself, and dropping the tasks leaves only the rooted input.
+fn assert_shared_input(kind: ConsumerKind, own: impl Fn(usize) -> ObjectCounts) {
     let width = 50;
     let mut parked_objects = Vec::new();
     for consumers in [1, 8, 64] {
-        let m = workloads::memory(consumers, width, &no_probe);
+        let m = workloads::memory(kind, consumers, width, &no_probe);
+        assert_eq!(m.kind, kind);
         assert_eq!(m.input_objects, workloads::input_objects(width));
         assert_eq!(m.waiting, consumers, "every consumer parked");
-        // Each parked consumer adds exactly one heap object, its own
-        // transient builder; the input is never copied.
         assert_eq!(m.objects_parked, m.input_objects + consumers);
+        let input = ObjectCounts {
+            vector: 1 + 2 * width,
+            map: width,
+            ..ObjectCounts::default()
+        };
+        let own = own(consumers);
+        assert_eq!(own.total(), consumers);
         assert_eq!(
             m.usage_parked.objects,
             ObjectCounts {
-                vector: 1 + 2 * width,
-                map: width,
-                builder: consumers,
-                ..ObjectCounts::default()
+                builder: own.builder,
+                function: own.function,
+                ..input
             }
         );
-        assert_eq!(m.usage_parked.known_shareable, m.input_objects);
-        // Every consumer returned the input's entry itself.
         assert_eq!(m.identical, consumers);
-        // Dropping the tasks leaves only the rooted input.
         assert_eq!(m.objects_after_drop, m.input_objects);
+        parked_objects.push(m.objects_parked - m.input_objects);
         let t = m.task_parked;
         assert!(t.pending_need);
-        assert_eq!((t.frames, t.native_frames), (1, 0));
-        parked_objects.push(m.objects_parked - m.input_objects);
+        match kind {
+            ConsumerKind::Frame => {
+                assert_eq!((t.frames, t.native_frames), (1, 0));
+                assert_eq!(m.usage_parked.known_shareable, m.input_objects);
+            }
+            ConsumerKind::NativeFold => {
+                // Suspended inside the reduce's callback.
+                assert_eq!((t.frames, t.native_frames), (2, 1));
+            }
+        }
     }
     assert_eq!(parked_objects, [1, 8, 64]);
+}
+
+#[test]
+fn consumers_share_the_input_graph_and_code() {
+    assert_shared_input(ConsumerKind::Frame, |n| ObjectCounts {
+        builder: n,
+        ..ObjectCounts::default()
+    });
+}
+
+#[test]
+fn consumers_suspended_in_a_native_fold_share_the_input_and_resume() {
+    // Each keeps one function object (its fold callback) besides its native
+    // continuation, which lives in its task-owned VM state.
+    assert_shared_input(ConsumerKind::NativeFold, |n| ObjectCounts {
+        function: n,
+        ..ObjectCounts::default()
+    });
+}
+
+#[test]
+fn task_stats_are_unavailable_while_a_run_holds_the_task() {
+    let fx = Fixtures::compile();
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(&fx.identity, &[&workloads::num(&rt, 5.0)])
+        .unwrap();
+    let before = task.stats().expect("unstarted task has VM state");
+    let guard = task.try_begin_run().unwrap();
+    assert_eq!(task.stats(), None, "the run holds the task body");
+    drop(guard);
+    assert_eq!(
+        task.stats(),
+        Some(before),
+        "an unused guard changes nothing"
+    );
+    assert_eq!(workloads::number(&workloads::finish(&task)), 5.0);
+    assert_eq!(task.stats(), None);
 }
 
 #[test]

@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use clj_quickjs::Runtime;
-use workloads::{Fixtures, Probe};
+use workloads::{ConsumerKind, Fixtures, Probe};
 
 // ---------------------------------------------------------------------------
 // Counting allocator.
@@ -454,8 +454,8 @@ fn persistent(o: &Options, fx: &Fixtures) {
 
 fn memory(o: &Options) {
     header(
-        "memory: N consumers of consumer.js parked on one pending cell, sharing one input \
-         form and one executable (counting allocator; deterministic, one round)",
+        "memory: N consumers parked on one pending cell, sharing one input form and one \
+         executable (counting allocator; deterministic, one round per row)",
     );
     let width = 1_000;
     let counts: &[usize] = if o.quick {
@@ -463,8 +463,24 @@ fn memory(o: &Options) {
     } else {
         &[1, 10, 100, 1_000, 10_000]
     };
+    for kind in [ConsumerKind::Frame, ConsumerKind::NativeFold] {
+        memory_table(kind, width, counts);
+    }
+    println!("  {}", rss());
+}
+
+fn memory_table(kind: ConsumerKind, width: usize, counts: &[usize]) {
     println!(
-        "  {:>9} {:>11} {:>8} {:>10} {:>11} {:>11} {:>9} {:>9} {:>10} {:>9} {:>10} {:>11}",
+        "  {}: {}",
+        kind.name(),
+        match kind {
+            ConsumerKind::Frame => "parks at a need in its only frame, holding a builder",
+            ConsumerKind::NativeFold =>
+                "parks in a __rt.reduce callback: a native continuation plus a callback frame",
+        }
+    );
+    println!(
+        "  {:>9} {:>11} {:>8} {:>10} {:>11} {:>11} {:>9} {:>9} {:>10} {:>9} {:>11} {:>10} {:>9}",
         "consumers",
         "input_B",
         "input_ob",
@@ -476,16 +492,17 @@ fn memory(o: &Options) {
         "heap_ob/t",
         "vm_est_B",
         "identical",
-        "after_drop"
+        "after_drop",
+        "kept_B/t"
     );
     for &n in counts {
         LIVE.store(0, Relaxed);
         COUNTING.store(true, Relaxed);
-        let m = workloads::memory(n, width, &probe);
+        let m = workloads::memory(kind, n, width, &probe);
         COUNTING.store(false, Relaxed);
         let per_task = |p: Probe| p.bytes as f64 / n as f64;
         println!(
-            "  {:>9} {:>11} {:>8} {:>10} {:>11.1} {:>11.1} {:>9.2} {:>9} {:>10.2} {:>9} {:>10} {:>11}",
+            "  {:>9} {:>11} {:>8} {:>10} {:>11.1} {:>11.1} {:>9.2} {:>9} {:>10.2} {:>9} {:>11} {:>10} {:>9.1}",
             n,
             m.input.bytes,
             m.input_objects,
@@ -498,27 +515,25 @@ fn memory(o: &Options) {
             m.task_parked.shallow_bytes,
             format!("{}/{}", m.identical, n),
             m.objects_after_drop,
+            per_task(m.retained_after_drop),
         );
         if n == *counts.last().unwrap() {
             let u = m.usage_parked;
             println!(
                 "  at {n} consumers: heap objects by kind {:?}; known-shareable {}; table slots \
                  {} ({} free); shallow table+object bytes {} (excludes trie bodies, code, task \
-                 state); host-owned Vec<Task> {} B; probe change from spawn to after drop and \
-                 collection {} B; first consumer {:?}",
+                 state); host-owned Vec<Task> {} B (excluded above); first consumer {:?}",
                 u.objects,
                 u.known_shareable,
                 u.slots,
                 u.free_slots,
                 u.shallow_bytes(),
                 m.host_handles_bytes,
-                m.retained_after_drop.bytes,
                 m.task_parked,
             );
         }
         assert_eq!(m.waiting, n, "every consumer parked");
     }
-    println!("  {}", rss());
 }
 
 fn work(o: &Options) -> Result<(), String> {

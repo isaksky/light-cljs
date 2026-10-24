@@ -407,16 +407,44 @@ pub fn input_objects(width: usize) -> usize {
     1 + 3 * width
 }
 
-/// Memory of `consumers` tasks of `consumer.js` sharing one input form and
-/// one executable, each parked at its need. Every `Probe` field is a
-/// difference of the probe across one phase.
+/// Which consumer fixture a [`Memory`] measurement parks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsumerKind {
+    /// `consumer.js`: parks at a need in its only frame, holding a
+    /// transient builder.
+    Frame,
+    /// `consumer_fold.js`: parks inside the callback of an `__rt.reduce`
+    /// over the input, holding a native continuation and a callback frame.
+    NativeFold,
+}
+
+impl ConsumerKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ConsumerKind::Frame => "consumer.js",
+            ConsumerKind::NativeFold => "consumer_fold.js",
+        }
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            ConsumerKind::Frame => include_str!("consumer.js"),
+            ConsumerKind::NativeFold => include_str!("consumer_fold.js"),
+        }
+    }
+}
+
+/// Memory of `consumers` tasks of one consumer fixture sharing one input
+/// form and one executable, each parked at its need. Every `Probe` field is
+/// a difference of the probe across one phase.
 pub struct Memory {
+    pub kind: ConsumerKind,
     pub consumers: usize,
     pub width: usize,
     /// Building and rooting the input form.
     pub input: Probe,
     pub input_objects: usize,
-    /// Compiling `consumer.js` (shared code).
+    /// Compiling the consumer fixture (shared code).
     pub code: Probe,
     /// Host-owned storage the harness allocates for the task handles (a
     /// `Vec<Task>` of this many bytes), allocated before `spawned`.
@@ -437,16 +465,23 @@ pub struct Memory {
     /// Heap objects after dropping the tasks and results and collecting,
     /// while the input stays rooted.
     pub objects_after_drop: usize,
-    /// Probe change from before spawning to after that collection: task
-    /// storage not given back (should be near 0; allocator and table
-    /// capacity growth are not returned).
+    /// Probe change from before spawning to after that collection: runtime
+    /// storage the tasks did not give back (object-table and registry
+    /// capacity). Host storage (the handle vector, verification roots) is
+    /// allocated before and kept until after this interval, so it is
+    /// excluded.
     pub retained_after_drop: Probe,
 }
 
 /// Measure [`Memory`] in a fresh runtime. `probe` reads the harness's
-/// allocator counters (tests pass one returning zeros). `consumer.js` is
-/// compiled inside the measured code phase so its bytes are counted.
-pub fn memory(consumers: usize, width: usize, probe: &dyn Fn() -> Probe) -> Memory {
+/// allocator counters (tests pass one returning zeros). The consumer fixture
+/// is compiled inside the measured code phase so its bytes are counted.
+pub fn memory(
+    kind: ConsumerKind,
+    consumers: usize,
+    width: usize,
+    probe: &dyn Fn() -> Probe,
+) -> Memory {
     const DEF: u64 = 1;
     let rt = Runtime::new();
     let def = num(&rt, DEF as f64);
@@ -459,11 +494,22 @@ pub fn memory(consumers: usize, width: usize, probe: &dyn Fn() -> Probe) -> Memo
     let form = build_input(&rt, width);
     let p1 = probe();
     let input_objects = rt.heap_stats().objects;
-    let code = compile_function(include_str!("consumer.js")).expect("consumer.js");
+    let code =
+        compile_function(kind.source()).unwrap_or_else(|e| panic!("fixture {}: {e}", kind.name()));
     let p2 = probe();
 
+    // Host storage, allocated before the task phases and kept until after
+    // the retention probe: the handle vector, the roots the results are
+    // checked against, and a free root slot for each result as it is taken.
     let mut tasks: Vec<Task> = Vec::with_capacity(consumers);
     let host_handles_bytes = tasks.capacity() * size_of::<Task>();
+    let expected: Vec<Rooted> = rt.scope(|s| {
+        let f = s.local(&form).expect("live");
+        (0..width)
+            .map(|i| s.persist(s.nth(f, i).expect("entry")))
+            .collect()
+    });
+    drop(num(&rt, 0.0));
     let p3 = probe();
     for index in &indices {
         tasks.push(rt.spawn(&code, &[&form, &def, index]).expect("spawn"));
@@ -489,26 +535,21 @@ pub fn memory(consumers: usize, width: usize, probe: &dyn Fn() -> Probe) -> Memo
         .complete(key(&rt, DEF), request.producer(), Completion::Ready(&one))
         .expect("completion accepted");
     assert_eq!(wakeups.task_ids().len(), consumers);
-    drop(wakeups);
+    drop((wakeups, request));
 
-    let expected: Vec<Rooted> = rt.scope(|s| {
-        let f = s.local(&form).expect("live");
-        (0..width)
-            .map(|i| s.persist(s.nth(f, i).expect("entry")))
-            .collect()
-    });
     let mut identical = 0;
     for (i, task) in tasks.iter().enumerate() {
         let result = finish(task);
         identical += usize::from(result.same_object(&expected[i % width]));
     }
-    drop(expected);
-    drop(tasks);
+    // Drop the task handles but keep the vector's allocation (host storage).
+    tasks.clear();
     rt.collect().expect("no mutator is active");
     let objects_after_drop = rt.heap_stats().objects;
     let p6 = probe();
-    black_box(&form);
+    black_box((&form, &expected, &tasks));
     Memory {
+        kind,
         consumers,
         width,
         input: p1 - p0,
