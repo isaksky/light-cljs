@@ -72,6 +72,8 @@ fn number_radix_coercion_waits_yields_collects_and_migrates() {
         "Number.prototype.toString.call(n, r) === 'ff'",
         "Number.prototype.toString.apply(n, [r]) === 'ff'",
         "Number.prototype.toString.bind(n)(r) === 'ff'",
+        "n.toString({get valueOf() {count++; __rt.need(149, 1); return () => 16;}}) === 'ff'",
+        "n.toString({valueOf() {return {};}, get toString() {count++; __rt.need(149, 1); return () => '16';}}) === 'ff'",
         "Number.prototype.toString.call(n, {valueOf: Number.bind(null, {valueOf() {count++; __rt.need(149, 1); return 2;}})}) === '11111111'",
         "(() => {try {n.toString({valueOf() {count++; __rt.need(149, 1); throw 42;}});} catch(e) {return e === 42;} return false;})()",
     ] {
