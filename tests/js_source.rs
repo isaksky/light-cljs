@@ -6459,8 +6459,8 @@ fn function_own_properties() {
 /// literal is a new task-owned object. Computed member access `a[k]` is
 /// covered here as far as arrays need it (on ordinary objects:
 /// `computed_member_access`, clj-quickjs-115).
-/// Arrays inherit from the realm intrinsic `Array.prototype` (no methods
-/// yet; `Object.getPrototypeOf([])` is in `prototype_reflection`), which
+/// Arrays inherit from the realm intrinsic `Array.prototype`
+/// (`Object.getPrototypeOf([])` is in `prototype_reflection`), which
 /// inherits from `Object.prototype` (clj-quickjs-117).
 /// Synthetic fixtures, not light-cljs output.
 #[test]
@@ -6645,12 +6645,12 @@ fn array_literals() {
         assert_eq!(line, 2, "{src}");
     }
     // The prototype chain: Array.prototype, then Object.prototype. Its
-    // methods do not exist yet; toString and the constructor fail
+    // push is supported; toString and the constructor fail
     // explicitly rather than answer as Object's would.
     for src in [
         "[].valueOf === Object.prototype.valueOf",
         "let a = [1]; a.valueOf() === a",
-        "[].push === undefined && [].hasOwnProperty === undefined",
+        "typeof [].push === 'function' && [].hasOwnProperty === undefined",
         "[].toString !== Object.prototype.toString && typeof [].toString === 'function'",
         "[].constructor !== Object && [].constructor.name === 'Array'",
         "[].constructor.prototype === [1].constructor.prototype",
@@ -8885,5 +8885,154 @@ fn array_length_define_property() {
             "let a = [1,2]; let caught = false; try {{ Object.defineProperty(a, 'length', {{value:{invalid}, writable:false}}); }} catch(e) {{ caught = true; }} caught && a.length === 2 && Object.getOwnPropertyDescriptor(a, 'length').writable"
         );
         assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Array push semantic cases; synthetic fixtures, not light-cljs output.
+/// The first case adapts QuickJS tests/test_builtin.js, test_array,
+/// revision 7d1c13c5d8f8. Copyright (c) 2017-2021 Fabrice Bellard.
+/// Copyright (c) 2017-2021 Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn array_push() {
+    for src in [
+        "let a = [1, 2]; let n = a.push(3, 4); n === 4 && a[2] === 3 && a[3] === 4 && a.length === 4",
+        "[].push() === 0 && Array.prototype.push.length === 1 && Array.prototype.push.name === 'push'",
+        "let a = [,,]; a.push(undefined, {x: 7}); a.length === 4 && !(0 in a) && (2 in a) && a[3].x === 7",
+        "let o = {length: 1}; Array.prototype.push.call(o, 'x') === 2 && o[1] === 'x' && o.length === 2",
+        "let o = {}; Array.prototype.push.call(o, 7) === 1 && o[0] === 7 && o.length === 1",
+        "let o = {length: '1.9'}; Array.prototype.push.call(o, 7) === 2 && o[1] === 7 && o.length === 2",
+        "let o = {length: -2}; Array.prototype.push.call(o, 7) === 1 && o[0] === 7",
+        "let o = {length: 0/0}; Array.prototype.push.call(o) === 0 && o.length === 0",
+        "let o = {length: 1/0}; Array.prototype.push.call(o) === 9007199254740991 && o.length === 9007199254740991",
+        "let o = {length: 9007199254740990}; Array.prototype.push.call(o, 7) === 9007199254740991 && o['9007199254740990'] === 7",
+        "let o = {length: 9007199254740991}; let caught = false; try { Array.prototype.push.call(o, 7); } catch(e) { caught = true; } caught && o.length === 9007199254740991 && o['9007199254740991'] === undefined",
+        "let p = {length: 2}; let o = Object.create(p); Array.prototype.push.call(o, 7) === 3 && o[2] === 7 && p.length === 2",
+        "let a = []; a[5000] = 1; a.push(7) === 5002 && a[5001] === 7 && a[0] === undefined",
+        "let a = []; a.length = 4294967295; let caught = false; try { a.push(7); } catch (e) { caught = true; } caught && a.length === 4294967295 && a['4294967295'] === 7",
+        "let o = {length: 0}; Object.defineProperty(o, 1, {value: 9}); let caught = false; try { Array.prototype.push.call(o, 7, 8); } catch (e) { caught = true; } caught && o[0] === 7 && o[1] === 9 && o.length === 0",
+        "let o = {}; Object.defineProperty(o, 'length', {value: 0}); let caught = false; try { Array.prototype.push.call(o, 7); } catch (e) { caught = true; } caught && o[0] === 7 && o.length === 0",
+        "let a = []; Object.preventExtensions(a); a.push() === 0",
+        "Array === [].constructor && Array.prototype === Object.getPrototypeOf([]) && typeof Array === 'function'",
+        "let d = Object.getOwnPropertyDescriptor(Array.prototype, 'push'); d.writable && !d.enumerable && d.configurable",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "Array.prototype.push.call(null)",
+        "Array.prototype.push.call(undefined)",
+        "const push = [].push; push()",
+        "let a = [1, 2]; Object.defineProperty(a, 'length', {writable: false}); a.push(5)",
+        "let a = []; Object.defineProperty(a, 'length', {writable: false}); a.push()",
+        "let a = Object.freeze([1]); a.push(5)",
+        "let a = Object.freeze([]); a.push()",
+        "let a = Object.preventExtensions([]); a.push(5)",
+        "Array.prototype.push.call({length: 9007199254740991}, 7)",
+        "Array.prototype.push.call({length: 1/0}, 7)",
+        "let p = {}; Object.defineProperty(p, 0, {value: 9}); let a = []; Object.setPrototypeOf(a, p); Array.prototype.push.call(a, 7)",
+        "let p = {}; Object.defineProperty(p, 0, {value: 9}); let o = Object.create(p); Array.prototype.push.call(o, 7)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+        let caught = format!("function f() {{ try {{ {src}; }} catch(e) {{ return e; }} }} f()");
+        let RunOutcome::Complete(error) = run(&exe(&caught), &[]) else {
+            panic!("failed to catch {src}");
+        };
+        assert_eq!(
+            error.error().unwrap().kind(),
+            VmErrorKind::TypeError,
+            "{src}"
+        );
+        assert_eq!(
+            sloppy_eval(&format!(
+                "let caught = false; try {{ {src}; }} catch(e) {{ caught = true; }} caught"
+            )),
+            ValueView::Bool(true),
+            "{src}"
+        );
+    }
+    for src in [
+        "Array.prototype.push.call({length: {valueOf: function () { return 1; }}}, 7)",
+        "Array.prototype.push.call(1, 7)",
+        "Array.prototype.push.call('abc', 7)",
+        "Array.prototype.push.call(true, 7)",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+
+    assert_eq!(
+        failure("let a = []; a.length = 4294967295; a.push(7)").kind(),
+        VmErrorKind::RangeError
+    );
+    assert_eq!(failure("Array()").kind(), VmErrorKind::UnsupportedOperand);
+
+    // Yield and collect throughout repeated appends, including heap-valued
+    // elements whose only references are in the growing dense array.
+    let rt = Runtime::new();
+    let code = exe(
+        "let b = []; let objects = []; let i = 0; while (i < 10000) { b.push(i); objects.push({n: i}); i = i + 1; } b.length === 10000 && b[9999] === 9999 && objects[0].n === 0 && objects[9999].n === 9999",
+    );
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut yields = 0;
+    for _ in 0..10000 {
+        match task
+            .run_with(Budget::instructions(1000), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(result) => {
+                assert_eq!(result.view(), ValueView::Bool(true));
+                assert!(yields > 100);
+                return;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    panic!("push loop did not finish within bounded slices");
+}
+
+#[test]
+fn array_push_rejects_foreign_arrays() {
+    let rt = Runtime::new();
+    let producer = rt.spawn(&exe("[]"), &[]).unwrap();
+    let RunOutcome::Complete(array) = producer.run().unwrap() else {
+        panic!("array producer failed");
+    };
+    for src in [
+        "function f(a) { return a.push(1); }",
+        "function f(a) { return Array.prototype.push.call(a, 1); }",
+    ] {
+        let code = compile_function(src).unwrap();
+        let consumer = rt.spawn(&code, &[&array]).unwrap();
+        let RunOutcome::Failed(error) = consumer.run().unwrap() else {
+            panic!("foreign array was accepted");
+        };
+        assert_eq!(
+            error.kind(),
+            VmErrorKind::ForeignObject {
+                owner: Some(producer.id()),
+                caller: consumer.id()
+            }
+        );
     }
 }

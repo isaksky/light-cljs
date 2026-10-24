@@ -494,18 +494,20 @@ checks left to later stages:
   name per iteration), not with live objects; the collector reclaiming
   unused names is clj-quickjs-259 (`docs/architecture.md`, "Ordinary
   objects", Consequences).
-- **Arrays have no methods and a read-only `length`** (clj-quickjs-118).
+- **Array method gaps** (clj-quickjs-118, -154, -155).
   An array literal is an array object with elements, holes and an
   automatic `length`, inheriting from `Array.prototype`, a realm
-  intrinsic that inherits from `Object.prototype` and has no methods yet:
-  `[].push` reads `undefined` until the `Array.prototype` method pellets
-  (-153..-156), and `[].toString()` fails with `UnsupportedOperand`
+  intrinsic that inherits from `Object.prototype` and supports `push`.
+  `[].toString()` fails with `UnsupportedOperand`
   rather than give `"[object Array]"` (`Array.prototype.join`,
-  clj-quickjs-39). Assigning `a.length` (truncation or extension), the
-  `Array` constructor (so `Array.prototype` has no JavaScript name yet)
-  and `Array.isArray` belong to clj-quickjs-39 and fail explicitly
-  (`UnsupportedOperand`) or are unbound; `Object.getPrototypeOf([])`
-  (clj-quickjs-121) names `Array.prototype`. A persistent vector (`__rt.vector(...)`) is
+  clj-quickjs-39). Assigning `a.length` supports truncation and extension
+  (clj-quickjs-154). The global `Array` exposes `Array.prototype`, but
+  calling the constructor fails explicitly (`UnsupportedOperand`);
+  `Array.isArray` and other array methods remain deferred. `push` on a
+  primitive receiver needs wrapper objects (clj-quickjs-72), and an
+  object-valued array-like `length` needs resumable ToPrimitive
+  (clj-quickjs-70); both fail explicitly with `UnsupportedOperand`.
+  A persistent vector (`__rt.vector(...)`) is
   not an array: `v[0]` and `v.length` read `undefined`.
 - **Built-in objects are shared and immutable** (clj-quickjs-117,
   `docs/architecture.md`, "Realm intrinsics"). `Object`,
@@ -812,9 +814,10 @@ Executed, with JavaScript semantics:
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property, else the one it inherits from `Function.prototype` (clj-quickjs-102: `call`, `apply`, `constructor`) and then `Object.prototype`, and fails with `UnsupportedOperand` for a standard `Function.prototype` name that does not exist yet (`bind`, `toString`, `arguments`, `caller`); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; a function object (clj-quickjs-125, `docs/architecture.md`, "Function own properties") gives its own property, else `prototype` of a `function` declaration or expression: an object created on first read (owned by the task, inheriting from `Object.prototype`, with `constructor` the function) and the same object afterwards (an arrow has none: `undefined`); `length`, `name` (clj-quickjs-101) and a missing `Function.prototype` name (`bind`, `toString`, `arguments`, `caller`) fail with `UnsupportedOperand`, any other name continues at `Function.prototype` (`f.call`, `f.apply`, `f.constructor === Function`, clj-quickjs-102) and then `Object.prototype`; a published function's `prototype` cannot be created (`UnsupportedOperand`); a number or string reads through `Number.prototype` / `String.prototype` (clj-quickjs-73, see `(1).toString()` below); caught error objects, booleans and a string's own `length` and indices fail with `UnsupportedOperand` until their properties exist (clj-quickjs-230, -39, -142); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a function object gets the property in its task-owned property record (clj-quickjs-125), so it can no longer be published; a function that was published is shared and immutable (a catchable `TypeError`), one created by another task fails with `ForeignObject`, and `length`, `name` or a missing `Function.prototype` name fails with `UnsupportedOperand` unless the function has it as its own; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; a number, string or boolean base (clj-quickjs-73) takes no property: a catchable `TypeError` ("cannot create property 'x' on a number", "cannot assign to read-only property '0' of a string") in strict code, nothing in sloppy code, and `__proto__` runs the setter, which ignores a primitive; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
-| `[a, , b,]` array literals (clj-quickjs-118) | a new array object owned by the running task (`docs/architecture.md`, "Array objects"), inheriting from `Array.prototype` (a realm intrinsic without methods yet, which inherits from `Object.prototype`; see "Explicit gaps"): the elements are evaluated left to right and each defines the next index; an elision skips an index, leaving a hole (no own property: reading it continues along the prototype chain and gives `undefined`); `length` is the number of elements and holes (`[1, , 3].length` is 3, `[ , ].length` 1, `[1, 2,].length` 2). Two evaluations are distinct objects (`[] !== []`); `typeof` is `"object"`. Lowered to `new_array` and one `append_element`/`append_hole` per element |
+| `[a, , b,]` array literals (clj-quickjs-118) | a new array object owned by the running task (`docs/architecture.md`, "Array objects"), inheriting from `Array.prototype` (a realm intrinsic with `push`, which inherits from `Object.prototype`; see "Explicit gaps"): the elements are evaluated left to right and each defines the next index; an elision skips an index, leaving a hole (no own property: reading it continues along the prototype chain and gives `undefined`); `length` is the number of elements and holes (`[1, , 3].length` is 3, `[ , ].length` 1, `[1, 2,].length` 2). Two evaluations are distinct objects (`[] !== []`); `typeof` is `"object"`. Lowered to `new_array` and one `append_element`/`append_hole` per element |
 | `o[k]` (clj-quickjs-115, -118) | evaluates `o`, then `k`, then converts `k` by ToPropertyKey (see "Explicit gaps") and reads as `o.name` does: on an ordinary object the key string names the property (`o[1]`, `o["1"]` and `o[1.0]` are one property, `o["01"]` another); on an array an array index (the canonical decimal string of an integer `0` to `2^32 - 2`, from a string or a number: `a[1]`, `a["1"]`, `a[-0]`) names an element, `length` its length, any other key an ordinary property; failures as for `o.name`, at the `[`. Lowered to `get_elem` |
 | `o[k] = v` (clj-quickjs-115, -118) | evaluates `o`, `k`, then `v`, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`), converts `k` and writes as `o.name = v` does; writing an array index at or beyond an array's `length` sets `length` to that index plus one (`let a = [1]; a[3] = 4` gives length 4 with holes at 1 and 2), and any other key adds an ordinary property without changing `length`; assigning an array's `length` follows ArraySetLength (clj-quickjs-154, see "Array length changes" below). The expression's value is `v`. Lowered to `put_elem` |
+| `a.push(...items)` (clj-quickjs-155) | generic array-like append at ToLength(`length`), followed by a throwing length Set; returns the new length. `Array.prototype.push.call(o, item)` works through the global `Array` constructor stub. `push.length` is 1; null/undefined receivers and rejected Sets throw caught `TypeError`; primitive wrappers and object-valued length conversion fail explicitly. See "Array push" below |
 | `++x`, `--x`, `x++`, `x--` on a binding (clj-quickjs-64) | reads `x` (the checks of a read), ToNumber, adds or subtracts 1, stores (the checks of `=`, so a `const` is a TypeError after the read); a prefix update's value is the new number, a postfix update's the old one converted (`let t = true; t++` is 1, `t` is 2); no new opcode: `to_number`, `add`/`sub` and the binding's store; failures of the conversion are reported at the operator token |
 | `++o.p`, `o.p--`, `++o[k]`, `o[k]--` (clj-quickjs-76) | evaluates `o` once and, for `o[k]`, `k` once, then checks that `o` is not `undefined`/`null` (a catchable `TypeError`) and converts `k` with ToPropertyKey once; reads the property as `o.p` does (an absent one is `undefined`, so `let o = {}; o.x++` is NaN and writes NaN), ToNumber, adds or subtracts 1 and writes as `o.p = v` does (strict: a failed write is a `TypeError`); a prefix update's value is the new number, a postfix update's the old one converted (`let a = [true]; a[0]++` is 1, `a[0]` is 2). Lowered to `get_field`/`put_field` with the base `dup`ed, or to `to_property_key` (new, `0x5D`), `dup2` (new, `0x5C`), `get_elem` and `put_elem`; a postfix update keeps the old number in a scratch local across the write. The read, the checks and the write are reported at the `.`/`[`, the conversion at the `++`/`--` |
 | `x op= v` on a binding, for `op` one of `+ - * / % ** & \| ^ << >> >>>` (clj-quickjs-84) | reads `x` (the checks of a read: an unresolvable name or a binding in its temporal dead zone is a ReferenceError before `v` is evaluated), evaluates `v`, applies `op` exactly as `x op v` does (so `+=` concatenates when either value is a string, and the others apply ToNumber to both values, the old one first), then stores (the checks of `=`, so a `const` is a TypeError after `v` is evaluated); the expression's value is the stored value. As in JavaScript (QuickJS `js_parse_assign_expr2`), the old value is the one read before `v` runs: `let a = 1; function f() { a = 10; return 5; } a += f(); a` is 6. No new opcode: the binding's read and store around the operator's own instructions; failures of the operator are reported at the `op=` token |
@@ -960,7 +963,7 @@ pellet):
 [a, b] = [b, a];
 ```
 
-Arrays inherit from `Array.prototype`, which has no methods yet: its
+Arrays inherit from `Array.prototype`, which supports `push`; its
 `toString` fails explicitly instead of answering `"[object Array]"`
 (`UnsupportedOperand` at run time, at the call's `(`):
 
@@ -2022,3 +2025,32 @@ let a = [1,2,3]; a.length = '2'; a.length === 2 && a[2] === undefined;
 let a = []; a[4294967294] = 1; a.length = 0; a.length === 0;
 let a = [1,2]; let caught = false; try { a.length = 1.5; } catch(e) { caught = true; } caught && a.length === 2;
 ```
+
+## Array push (clj-quickjs-155)
+
+Execution: `Array.prototype.push(...items)` appends at ToLength(`this.length`),
+sets the new length, and returns it. It is generic over array-like objects:
+primitive lengths are converted to numbers, truncated and clamped to
+`[0, 2^53 - 1]`; a result beyond that limit throws a caught `TypeError`
+before writing any item. Every Set throws on failure even in sloppy code,
+including the final length Set when no items were supplied. Frozen arrays,
+non-extensible receivers that need a new index, and read-only lengths throw
+`TypeError`. Earlier successful writes remain if a later Set fails; an
+array's final length above `2^32 - 1` throws `RangeError` after the preceding
+index writes. Another task's array fails with `ForeignObject`.
+
+The global `Array` is the existing constructor stub, exposing its prototype;
+calling it remains unsupported. `push.length` is 1, `push.name` is `"push"`,
+and the method is writable, non-enumerable and configurable (intrinsics
+remain immutable under the runtime's sharing rule).
+
+```js accept
+let a = [1, 2]; a.push(3, 4) === 4 && a[2] === 3 && a[3] === 4 && a.length === 4;
+[].push() === 0 && Array.prototype.push.length === 1;
+let o = {length: 1}; Array.prototype.push.call(o, "x") === 2 && o[1] === "x";
+```
+
+Explicit gaps: primitive receivers require wrappers (clj-quickjs-72), and
+object-valued lengths require resumable ToPrimitive (clj-quickjs-70);
+`push` fails explicitly with `UnsupportedOperand` for these cases. Null and
+undefined receivers always throw caught `TypeError`.

@@ -1842,11 +1842,11 @@ the element or property is added.
   clj-quickjs-122 a `frozen` flag that changes the default, so freezing
   adds no entries: "Extensibility and freezing").
 - `Object.getPrototypeOf([])` names `Array.prototype` (clj-quickjs-121);
-  an `Array` global (clj-quickjs-39) will give it its usual name. Its methods are
+  the `Array` global also names it (clj-quickjs-155). Its methods are
   added to the realm (`realm::build`, `Builtin`, append-only).
 - Assigning or defining `length` uses ArraySetLength (clj-quickjs-154,
   "Array length changes" below). The `Array` constructor, `Array.isArray`
-  and `Array.prototype` methods belong to their own built-in pellets.
+  and the remaining `Array.prototype` methods belong to their own built-in pellets.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
   arrays never do). Key reclamation by the collector is clj-quickjs-259
@@ -3197,3 +3197,33 @@ Semantic references, independently implemented rather than copied:
 `test_function`, at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
 The added source tests are synthetic fixtures, not adapted upstream text or
 light-cljs output.
+
+## Array push (clj-quickjs-155)
+
+`Builtin::ArrayPrototypePush` is appended to the built-in registry and
+installed on the realm's immutable `Array.prototype`, with length 1 and
+name `push`. The existing `Array` constructor stub is exposed through an
+appended built-in-global operand so `Array.prototype.push.call(o, item)`
+works without implementing construction. No opcode or heap kind is added.
+
+The leaf builtin reads `length`, applies primitive ToLength, checks the
+`2^53 - 1` limit, and uses `property::put` for each index followed by
+`put_field` for `length`, always passing Throw=true. That preserves owner
+checks, inherited read-only properties, extensibility, ArraySetLength and
+partial writes on failure. Numeric array indices reuse the dense storage
+path (`ArrayObject::set`/`add`/`store`): a Vec append costs amortized O(1),
+with no scan of prior elements. The fixed realm prototype chain adds
+constant work; a custom chain is walked as required by OrdinarySet. Sparse
+arrays keep their existing sparse fallback. Indices from `2^32 - 1` onward
+are ordinary named properties; a failing final array length Set leaves
+them in place.
+
+The native loop is bounded by the task's operand-stack argument limit,
+independent of the receiver's numeric length. Arguments and receiver stay
+rooted on the operand stack for the instruction; array elements use the
+existing precise tracing implementation. `tests/js_source.rs::array_push`
+runs 10,000 appends of numbers and heap objects under instruction budgets,
+collecting between yields. No JavaScript callback runs inside the leaf:
+object-valued length conversion and primitive wrapper receivers fail
+explicitly. Future ToPrimitive/getter support must enter resumable native
+frames before invoking JavaScript, as for the other built-ins.

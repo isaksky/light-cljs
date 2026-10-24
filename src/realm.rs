@@ -33,9 +33,10 @@
 //! | `Object.getOwnPropertyNames` | built-in function | `length` (1), `name` |
 //! | `Object.prototype.toString` | built-in function | `length` (0), `name` |
 //! | `Object.prototype.valueOf` | built-in function | `length` (0), `name` |
-//! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString` |
+//! | `Array.prototype` (clj-quickjs-118) | ordinary object, prototype `Object.prototype` | `length` (0), `constructor` (`Array`), `toString`, `push` (clj-quickjs-155) |
 //! | `Array.prototype.toString` | built-in function ([`Builtin::ArrayPrototypeToString`]) | `length` (0), `name` |
-//! | `Array` (only as `Array.prototype.constructor`; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
+//! | `Array.prototype.push` | built-in function ([`Builtin::ArrayPrototypePush`]) | `length` (1), `name` |
+//! | `Array` (global name, clj-quickjs-155; fails when called, clj-quickjs-39) | built-in function ([`Builtin::Array`]) | `length` (1), `name`, `prototype` (`Array.prototype`) |
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
@@ -101,7 +102,7 @@
 //!
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
-//! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102). The compiler emits `get_builtin_global i` for such a
+//! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102), and `Array` (clj-quickjs-155). The compiler emits `get_builtin_global i` for such a
 //! name. When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
@@ -132,16 +133,19 @@ pub(crate) enum Global {
     Function = 3,
     /// `Reflect` (clj-quickjs-102): an ordinary object with `apply`.
     Reflect = 4,
+    /// `Array` (clj-quickjs-155): exposes its prototype; calls remain unsupported.
+    Array = 5,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 5] = [
+    const ALL: [Global; 6] = [
         Global::Object,
         Global::Number,
         Global::String,
         Global::Function,
         Global::Reflect,
+        Global::Array,
     ];
 
     /// The JavaScript name.
@@ -152,6 +156,7 @@ impl Global {
             Global::String => "String",
             Global::Function => "Function",
             Global::Reflect => "Reflect",
+            Global::Array => "Array",
         }
     }
 
@@ -175,6 +180,8 @@ pub(crate) struct Intrinsics {
     pub(crate) object: ObjectId,
     /// `Array.prototype`, the prototype of every array (clj-quickjs-118).
     pub(crate) array_prototype: ObjectId,
+    /// The `Array` stub constructor, also reachable as a global.
+    array: ObjectId,
     /// `Function.prototype`, the prototype of every function object and
     /// built-in function (clj-quickjs-102).
     pub(crate) function_prototype: ObjectId,
@@ -280,6 +287,7 @@ impl Intrinsics {
             Global::String => Value::Object(self.string),
             Global::Function => Value::Object(self.function),
             Global::Reflect => Value::Object(self.reflect),
+            Global::Array => Value::Object(self.array),
         }
     }
 }
@@ -433,7 +441,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let reflect = heap.alloc(HeapObject::Plain(reflect))?;
     b.all.push(reflect);
 
-    let array_prototype = array_prototype(&mut b, object_prototype)?;
+    let (array_prototype, array) = array_prototype(&mut b, object_prototype)?;
     let (number_prototype, number) = primitive_prototype(
         &mut b,
         object_prototype,
@@ -479,6 +487,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         object_prototype,
         object,
         array_prototype,
+        array,
         function_prototype,
         function,
         reflect,
@@ -551,12 +560,13 @@ fn primitive_prototype(
 /// `[].toString()` never answers `Object.prototype.toString`'s
 /// `"[object Array]"`. ECMAScript makes it an array exotic object itself;
 /// that is not observable while no code can write to it. Its
-/// `constructor` is the `Array` constructor, which is not a global name
-/// yet and fails when called; it and the methods are clj-quickjs-39 and
-/// -153..-156.
-fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
+/// `constructor` is the `Array` constructor stub (also a global name,
+/// clj-quickjs-155). `push` is supported; calling the constructor and the
+/// remaining methods belong to clj-quickjs-39 and -153..-156.
+fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
     let to_string = b.function(Builtin::ArrayPrototypeToString, &[])?;
+    let push = b.function(Builtin::ArrayPrototypePush, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
     let length = heap.keys().intern(&JsString::from("length"))?;
     let length_flags = PropertyFlags {
@@ -574,6 +584,7 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<Obje
         to_string,
         PropertyFlags::METHOD,
     )?;
+    define(heap, &mut prototype, "push", push, PropertyFlags::METHOD)?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
     b.all.push(id);
     // `Array.prototype.constructor` is the `Array` constructor, a stub
@@ -581,7 +592,7 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<Obje
     // not the inherited `Object`).
     let array = b.function(Builtin::Array, &[("prototype", id, PropertyFlags::FIXED)])?;
     b.add(id, "constructor", array, PropertyFlags::METHOD)?;
-    Some(id)
+    Some((id, array))
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -672,7 +683,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 34);
+        assert_eq!(first.all.len(), 35);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -688,7 +699,9 @@ mod tests {
         assert_eq!(Global::from_u16(2), Some(Global::String));
         assert_eq!(Global::from_u16(3), Some(Global::Function));
         assert_eq!(Global::from_u16(4), Some(Global::Reflect));
-        assert_eq!(Global::from_u16(5), None);
+        assert_eq!(Global::from_name("Array"), Some(Global::Array));
+        assert_eq!(Global::from_u16(5), Some(Global::Array));
+        assert_eq!(Global::from_u16(6), None);
     }
 
     /// Every built-in function inherits from `Function.prototype`, which

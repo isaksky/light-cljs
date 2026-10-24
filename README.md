@@ -1921,11 +1921,11 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
 
 Deferred:
 
-- `Array.prototype` methods, the `Array` global and constructor,
-  `Array.isArray`, assigning `length` (clj-quickjs-39, -153..-156: arrays
-  inherit from an `Array.prototype` intrinsic whose `toString` and
-  `constructor` fail when called, and `a.length = n` fails with
-  `UnsupportedOperand`); spread elements and array destructuring
+- Array methods other than `push` (clj-quickjs-155), calling the `Array`
+  constructor, and `Array.isArray` (clj-quickjs-39, -153..-156).
+  The `Array` global exposes `Array.prototype`; its `toString` and
+  constructor still fail when called. Assigning `length` supports
+  ArraySetLength (clj-quickjs-154). Spread elements and array destructuring
   (`Unsupported`); object keys in `o[k]` (ToPrimitive, clj-quickjs-70).
   `__rt.vector` values stay persistent vectors, not arrays.
 
@@ -2327,3 +2327,19 @@ Deferred to clj-quickjs-101: general ordinary-function metadata (binding uses
 code's parameter count and diagnostic name until then, including the existing
 gaps for default arity and inferred/anonymous names). `new.target` syntax
 remains clj-quickjs-99.
+
+### `Array.prototype.push` (clj-quickjs-155)
+
+Supported (`cargo test --test js_source array_push`): `a.push(...items)`
+appends, sets and returns length, including zero items; generic array-like
+receivers through `Array.prototype.push.call(o, ...)`, primitive ToLength,
+the `2^53 - 1` guard, and throwing Sets even in sloppy code. Dense appends
+are amortized O(1). Frozen/non-extensible arrays and read-only lengths
+reject invalid writes; another task's array fails with `ForeignObject`.
+The `Array` global exposes the existing constructor stub and its prototype;
+`Array.prototype.push.length` is 1.
+
+Deferred: primitive receiver wrappers and object-valued length conversion
+fail explicitly; array construction and other array methods retain their
+existing gaps. The for-in adaptation clj-quickjs-264 also needs array
+string conversion and stays deferred.

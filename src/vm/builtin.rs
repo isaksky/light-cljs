@@ -74,6 +74,7 @@
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 //! | `Array.prototype.toString()` (clj-quickjs-118) | `UnsupportedOperand` until `Array.prototype.join` exists (clj-quickjs-39), never `Object.prototype.toString`'s answer |
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
+//! | `Array.prototype.push(...items)` (clj-quickjs-155) | ToObject(receiver), ToLength(`length`), Set each index and then `length` with Throw=true, return the new length; over `2^53 - 1`: catchable `TypeError`; null/undefined: catchable `TypeError`; primitive wrappers and object-valued lengths: `UnsupportedOperand` |
 //! | `Object.defineProperty(o, k, attributes)` | define or update the own data property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError`; an accessor descriptor: `UnsupportedOperand` (clj-quickjs-120) |
 //! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 //! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `Function.prototype` for a function or built-in function (clj-quickjs-102); `undefined`/`null` `v`: catchable `TypeError`; a primitive or an error object: `UnsupportedOperand` (wrapper objects and `Error.prototype` do not exist yet) |
@@ -194,6 +195,9 @@ pub(crate) enum Builtin {
     Function,
     /// `Function.prototype.bind` (clj-quickjs-103).
     FunctionPrototypeBind,
+
+    /// `Array.prototype.push` (QuickJS `js_array_push`, clj-quickjs-155).
+    ArrayPrototypePush,
 }
 
 impl Builtin {
@@ -226,6 +230,8 @@ impl Builtin {
             Builtin::FunctionPrototypeApply | Builtin::ReflectApply => "apply",
             Builtin::Function => "Function",
             Builtin::FunctionPrototypeBind => "bind",
+
+            Builtin::ArrayPrototypePush => "push",
         }
     }
 
@@ -255,6 +261,8 @@ impl Builtin {
             Builtin::FunctionPrototypeApply => 2,
             Builtin::ReflectApply => 3,
             Builtin::FunctionPrototypeBind => 1,
+
+            Builtin::ArrayPrototypePush => 1,
         }
     }
 }
@@ -313,6 +321,7 @@ pub(crate) fn call(
         Builtin::ArrayPrototypeToString => Err(Fault::Unsupported(
             "Array.prototype.toString (Array.prototype.join) is not supported".to_string(),
         )),
+        Builtin::ArrayPrototypePush => array_push(heap, task, this, args),
         Builtin::Array => Err(Fault::Unsupported(
             "the Array constructor is not supported".to_string(),
         )),
@@ -470,6 +479,57 @@ pub(crate) fn forward(
 /// IsCallable, failing with the `… is not a function` TypeError.
 fn callable(heap: &Heap, v: &Value) -> Result<(), Fault> {
     crate::vm::dispatch::callee(heap, v).map(drop)
+}
+
+/// `Array.prototype.push`: Set with Throw=true, including the final length
+/// even for zero items. Earlier successful writes survive a later failure.
+/// Indexed Set uses the array's dense Vec append path without scanning its
+/// elements; absent indices still consult the prototype chain. The loop is
+/// bounded by the task's operand-stack argument limit, not the array length.
+/// Object-valued lengths require resumable ToPrimitive and fail explicitly.
+fn array_push(heap: &Heap, task: TaskId, this: &Value, args: &[Value]) -> Result<Value, Fault> {
+    match this {
+        Value::Undefined | Value::Null => {
+            return Err(Fault::TypeError(format!(
+                "cannot convert {} to object",
+                this.type_name()
+            )));
+        }
+        Value::Object(_) => {}
+        _ => {
+            return Err(Fault::Unsupported(
+                "Array.prototype.push on a primitive needs a wrapper object, which is not supported"
+                    .to_string(),
+            ));
+        }
+    }
+    const MAX_LENGTH: u64 = (1 << 53) - 1;
+    let length_key = JsString::from("length");
+    let length = property::get_field(heap, task, this, &length_key)?;
+    let length = crate::vm::dispatch::to_number(&length)?;
+    // ToLength: clamp ToIntegerOrInfinity to [0, 2^53 - 1].
+    let length = if length.is_nan() || length <= 0.0 {
+        0
+    } else {
+        length.trunc().min(MAX_LENGTH as f64) as u64
+    };
+    if args.len() as u64 > MAX_LENGTH - length {
+        return Err(Fault::TypeError(
+            "array-like length exceeds 2^53 - 1".to_string(),
+        ));
+    }
+    for (offset, item) in args.iter().enumerate() {
+        let index = length + offset as u64;
+        let key = if index < u64::from(u32::MAX) {
+            property::Key::Index(index as u32)
+        } else {
+            property::Key::Name(JsString::from(index.to_string().as_str()))
+        };
+        property::put(heap, task, this, &key, item.clone(), true)?;
+    }
+    let new_length = Value::Number((length + args.len() as u64) as f64);
+    property::put_field(heap, task, this, &length_key, new_length.clone(), true)?;
+    Ok(new_length)
 }
 
 /// CreateListFromArrayLike (ECMAScript §7.3.18; QuickJS `build_arg_list`):
