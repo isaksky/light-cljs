@@ -209,6 +209,8 @@ impl Assembler {
         ExecutableSpec {
             name: name.to_string(),
             params,
+            function_length: None,
+            function_name: None,
             locals,
             code: self.code,
             constants: self.constants,

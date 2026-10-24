@@ -362,6 +362,8 @@ fn spawn_with_constant(rt: &crate::Runtime, constant: ObjectId) -> crate::Task {
     let code = Code {
         name: "object-constant".into(),
         params: 0,
+        function_length: 0,
+        function_name: crate::value::JsString::from(""),
         locals: 0,
         constants: Box::new([Value::Object(constant)]),
         functions: Box::new([]),

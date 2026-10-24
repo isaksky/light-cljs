@@ -37,7 +37,7 @@
 //! | ordinary object or array of the running task, embedder object, realm intrinsic | its own properties as above |
 //! | `Object.prototype` | enumerable keys: none (all its properties are non-enumerable); all keys: `UnsupportedOperand`, because its `__proto__` accessor is applied by the property walk, not stored (clj-quickjs-261) |
 //! | built-in function | its own `length`, `name`, `prototype` and methods |
-//! | function object (clj-quickjs-125) | enumerable keys: the enumerable properties of its property record (none without one); all keys: `UnsupportedOperand` until functions have their own `length` and `name` (clj-quickjs-101) |
+//! | function object (clj-quickjs-125) | enumerable keys: the enumerable properties of its property record (none without one); all keys: initial `length`, `name`, and a constructor's `prototype` without allocation, or the complete property record |
 //! | object or array of another task | `ForeignObject` |
 //! | error object | `UnsupportedOperand` (its properties are clj-quickjs-230) |
 //! | persistent vector, map, occurrence, builder, atom, binding cell, other native payload | none (no JavaScript properties) |
@@ -189,14 +189,27 @@ pub(crate) fn own_property_keys(
     filter: KeyFilter,
 ) -> Result<Vec<OwnKey>, Fault> {
     let function = heap
-        .read(target, |o| matches!(o, HeapObject::Function(_)))
+        .read(target, |o| {
+            matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+        })
         .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
-    if function && filter == KeyFilter::All {
-        return Err(Fault::Unsupported(
-            "the own property names of a function need its own length and name, which are not supported"
-                .to_string(),
-        ));
-    } else if filter == KeyFilter::All
+    if function {
+        let initial = function::initial_keys(heap, task, target)?;
+        if !initial.is_empty() {
+            return Ok(if filter == KeyFilter::All {
+                initial
+                    .into_iter()
+                    .map(|name| OwnKey {
+                        key: Key::Name(JsString::from(name)),
+                        enumerable: false,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            });
+        }
+    }
+    if filter == KeyFilter::All
         && heap
             .realm()
             .get()
@@ -814,9 +827,8 @@ mod tests {
         ));
     }
 
-    /// A function lists its property record's enumerable keys, which only
-    /// the creating task may read; all its names wait for its own `length`
-    /// and `name` (clj-quickjs-101).
+    /// A function lists virtual initial keys or its complete property record,
+    /// which only the creating task may read.
     #[test]
     fn function_keys_come_from_its_owner_checked_record() {
         let heap = Heap::default();
@@ -849,9 +861,9 @@ mod tests {
 
         assert_eq!(names(&ok(enumerable(1))), ["x"]);
         assert!(matches!(enumerable(2), Err(Fault::ForeignObject { .. })));
-        assert!(matches!(
-            own_property_keys(&heap, task, f, KeyFilter::All),
-            Err(Fault::Unsupported(_))
-        ));
+        assert_eq!(
+            names(&ok(own_property_keys(&heap, task, f, KeyFilter::All))),
+            ["x", "hidden"]
+        );
     }
 }

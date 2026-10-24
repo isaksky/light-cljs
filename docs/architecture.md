@@ -1504,9 +1504,9 @@ runtime's other heap values (persistent vectors, maps, occurrences,
 builders, atoms, binding cells, non-error natives) have no JavaScript
 properties: a read gives `undefined`, a write is a catchable `TypeError`,
 as for a non-extensible object without properties in strict mode. Function
-objects and caught error objects do have JavaScript properties (`length`,
-`name`, `message`, ...), so until clj-quickjs-101/-125/-230 every access
-to them fails with `UnsupportedOperand` instead of a wrong `undefined`;
+objects expose code metadata and their property record (clj-quickjs-101/-125).
+Caught error objects have JavaScript properties (`name`, `message`, ...)
+whose access fails with `UnsupportedOperand` until clj-quickjs-230;
 so did numbers and strings until clj-quickjs-73 ("Primitive bases"), and
 so do booleans (clj-quickjs-39). `undefined` and
 `null` bases throw catchable `TypeError`s (`cannot read property 'x' of
@@ -1974,7 +1974,7 @@ task-owned when it is first written.
   expression has `ExecutableSpec::constructor` set (not arrows, scripts or
   hand-assembled code). Its function objects have an own `prototype`
   (writable, not enumerable, not configurable) created on first
-  observation (a read, or a write of `prototype`), as QuickJS's
+  observation (a read, or the first creation of a property record), as QuickJS's
   `js_instantiate_prototype` does: a new ordinary object owned by the same
   task, inheriting from `Object.prototype`, with a non-enumerable
   `constructor` pointing back. It is stored in the record, so repeated
@@ -1983,7 +1983,7 @@ task-owned when it is first written.
   its record (`define_target`, `own_store`), materializing `prototype`
   first, so a partial descriptor is validated against it (the upstream
   `defineProperty(g, "prototype", {writable: false})` row) and its
-  descriptor is reported; `length`/`name` fail until clj-quickjs-101.
+  descriptor is reported. Metadata descriptors need no record (clj-quickjs-101).
 - **Publication.** The function stays `Persistent` and its category never
   changes; the record is one more edge, which the publication walk follows
   like a capture, so a function with a record is rejected there:
@@ -2002,20 +2002,52 @@ task-owned when it is first written.
   a realm intrinsic: writing a property is a catchable `TypeError`, and
   creating its `prototype` fails with `UnsupportedOperand`.
 - **Fit with the neighbours.** `length` and `name` (clj-quickjs-101) are
-  derived from immutable code metadata and answered before the record
-  (configurable, so a later `delete f.length` or redefinition writes a
-  shadowing entry, or a deletion marker, into the record); until then they
-  fail explicitly. `Function.prototype` (clj-quickjs-102) is a realm
+  derived from immutable code metadata and answered without creating a record.
+  The first record creation copies both properties and materializes a
+  constructor's `prototype`, in that order, before adding user properties.
+  The record then contains all own properties and is authoritative, so
+  deletion never reveals a code default again. `Function.prototype` (clj-quickjs-102) is a realm
   intrinsic: it is the record's prototype and where a record-less
   function's reads continue (`f.call`, `f.apply`, `f.constructor`). The
   names it does not have yet (`toString`, `arguments`, `caller`)
-  and `length`/`name` fail with `UnsupportedOperand` unless the function
+  fail with `UnsupportedOperand` unless the function
   has its own (`function::FUNCTION_PROTOTYPE_NAMES`), and every other name
   continues at `Function.prototype` and then `Object.prototype`. Class statics (`static m() {}`) and `F.prototype.m =
   ...` are record writes, so a class or constructor that has been set up is
   task-owned, like the objects it creates. Bound functions (clj-quickjs-103)
   use the same record. Built-in functions keep their immutable
   intrinsic property store.
+
+**Metadata (clj-quickjs-101).** `ExecutableSpec::function_length` and
+`function_name` retain immutable JavaScript metadata separately from the
+argument-slot count and diagnostic name. Source lowering counts parameters
+before the first default, and infers anonymous function/arrow names for
+direct binding initializers, identifier assignments, parameter defaults,
+and object literal property values. Inference changes no lexical self
+binding. UTF-16 property names, including lone surrogates, remain exact.
+Missing metadata in hand-assembled specifications defaults to their
+parameter count and diagnostic name; `to_spec` preserves resolved metadata.
+
+`function::own_metadata`, `read` and key enumeration answer from code
+without a record or heap allocation (result descriptors/arrays are ordinary
+task-owned objects). Rejected metadata writes likewise create no record.
+Once the record exists, ordinary reads, descriptors, redefinitions,
+deletion, freezing, and key order apply. Deleting either configurable
+metadata property creates the record first, then removes that entry;
+`Function.prototype` supplies the inherited 0/empty-string fallback.
+`Object.getOwnPropertyNames` lists a constructor's lazy `prototype` without
+materializing its value. Published functions stay record-free and immutable;
+their metadata descriptors report non-configurable properties, matching
+`isFrozen`. Reading metadata before or after publication preserves the
+existing transitive capture checks. `bind` snapshots current own numeric
+length minus bound argument count (clamped at zero) and `bound ` plus the
+current string name, including deleted/redefined metadata and default arity.
+
+Semantic references: `research/quickjs/quickjs.c`,
+`js_function_set_properties`, `js_get_function_name`, and
+`research/quickjs/tests/test_language.js` `test_function_length`,
+`tests/test_builtin.js` `test_function`, revision `7d1c13c5d8f8`.
+The new tests are synthetic fixtures; no upstream source or test text was copied.
 
 **Alternatives considered.**
 
@@ -2253,9 +2285,8 @@ so they run inside their call instruction.
 - clj-quickjs-124 (`delete`) must reject deleting the non-configurable
   properties a frozen object has; nothing else is needed for
   non-extensible objects, whose properties stay deletable (done).
-- clj-quickjs-101 (`length`/`name` of functions) must include them in a
-  frozen function's record; until then a frozen function's `isFrozen`
-  covers only its record's properties.
+- clj-quickjs-101 includes `length`/`name` in a frozen function's record;
+  published functions report virtual metadata as non-configurable.
 - `Object.seal`/`isSealed` (not requested) would be the same two loops
   with `writable` left alone.
 ## Own-property keys (clj-quickjs-123)
@@ -2301,9 +2332,9 @@ result, a fresh array owned by the running task, last.
 
 **Consequences.**
 
-- `Object.getOwnPropertyNames` of a function fails with
-  `UnsupportedOperand` until functions have their own `length` and `name`
-  (clj-quickjs-101), and of `Object.prototype` until `__proto__` is stored
+- `Object.getOwnPropertyNames` of a function includes metadata and its
+  constructor's lazy `prototype` (clj-quickjs-101). It fails with
+  `UnsupportedOperand` for `Object.prototype` until `__proto__` is stored
   (clj-quickjs-261); `Object.keys` of either is exact, since none of the
   missing properties is enumerable. Error objects fail until their
   properties exist (clj-quickjs-230).
@@ -2373,7 +2404,7 @@ of `crate::vm::property` by kind:
   "Array objects" holds and `length` is unchanged; `length` is not
   configurable;
 - a function's own properties are in its property record
-  ("Function own properties"): the delete creates nothing, a
+  ("Function own properties"): deleting metadata creates the record first; a
   constructor's `prototype` is non-configurable whether or not it exists
   yet, so a function stays publishable after deleting an absent property;
 - a realm intrinsic or built-in function is shared and immutable, so a
@@ -2383,8 +2414,9 @@ of `crate::vm::property` by kind:
   one: a string's indices below its length and its `length` are
   non-configurable, nothing else is own.
 
-The opcode allocates nothing, interns no key (a name never interned is no
-object's property) and runs no JavaScript, so it is not a poll point.
+The opcode runs no JavaScript. Deleting initial function metadata can
+allocate its record and prototype (clj-quickjs-101); deleting an absent
+property allocates nothing.
 
 **Alternatives.** *`delete_field` and `delete_elem` opcodes* mirroring
 `get_field`/`get_elem`: two registry entries for a rare operator whose
@@ -2399,9 +2431,8 @@ dictionary use would want shapes or a compacting map later.
 Sloppy `delete` of a non-configurable property is `false` (the running
 code's `Code::strict`, as for writes). `delete super.x` (clj-quickjs-138)
 and `delete a?.b` (clj-quickjs-134) wait for those forms; `delete` of an
-identifier is clj-quickjs-105; `delete f.length`/`f.name` fail with
-`UnsupportedOperand` until clj-quickjs-101 gives functions those
-properties.
+identifier is clj-quickjs-105; `delete f.length`/`f.name` use the ordinary
+record after copying initial metadata (clj-quickjs-101).
 
 ## `in` (clj-quickjs-74)
 
@@ -3185,8 +3216,9 @@ prevent publication. The first property change copies this store into the
 same task-owned record used by ordinary functions. Publication traverses the
 bound operands and rejects mutable records, including records attached during
 a publication walk; installing a record and marking shareable exclude each
-other under the object-table lock. General ordinary-function metadata and
-`new.target` syntax remain with clj-quickjs-101 and clj-quickjs-99.
+other under the object-table lock. Ordinary-function metadata now follows
+the same descriptor/publication rules (clj-quickjs-101); `new.target`
+syntax remains with clj-quickjs-99.
 
 Rejected assignments to the initial read-only metadata follow strict/sloppy
 `[[Set]]` rules without attaching a record. Publication implicitly freezes

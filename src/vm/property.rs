@@ -20,7 +20,7 @@
 //! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
-//! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; `length`, `name` and the names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
+//! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"); a string's `length` and indices below it: `UnsupportedOperand` (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
@@ -106,8 +106,8 @@
 //! strict code, `false` in sloppy code. A property a realm intrinsic or
 //! built-in function has is a `TypeError` in both modes (the sharing rule
 //! of writes). A primitive base acts as its wrapper object without
-//! allocating one. A delete creates nothing, not even a function's
-//! property record or a key, so it is not a poll point.
+//! allocating one. Deleting initial function metadata first creates its property record;
+//! deleting an absent property creates nothing. It runs no JavaScript.
 //!
 //! # The `in` operator
 //!
@@ -957,6 +957,9 @@ fn check_inherited(
             // will own fails (`crate::vm::function::read`). The step may
             // build the realm to continue at `Object.prototype`.
             Walk::Function => {
+                if get_own_property(heap, task, id, key)?.is_some_and(|p| !p.flags.writable) {
+                    return Err(read_only(key));
+                }
                 id = match function::read(heap, task, id, key)? {
                     FunctionRead::Found(_) => match function::own_store(heap, task, id, key)? {
                         Some(record) => record,
@@ -1183,13 +1186,11 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
-    // Publication implicitly freezes a bound function without attaching a
-    // task-owned record. Reflect that state in its metadata descriptors.
-    let frozen_bound = heap
-        .read_shareable(target, |o, known| {
-            known && matches!(o, HeapObject::BoundFunction(_))
-        })
-        .unwrap_or(false);
+    if is_function(heap, target)
+        && let Some(property) = function::own_metadata(heap, task, target, key)?
+    {
+        return Ok(Some(property));
+    }
     let target = match is_function(heap, target) {
         true => match function::own_store(heap, task, target, key)? {
             Some(record) => record,
@@ -1206,14 +1207,7 @@ pub(crate) fn get_own_property(
                 .to_string(),
         ));
     }
-    let named = |o: &OrdinaryObject| {
-        k.and_then(|k| o.get_own(k)).cloned().map(|mut p| {
-            if frozen_bound {
-                p.flags.configurable = false;
-            }
-            p
-        })
-    };
+    let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
         Visit::Store(o) => Ok(named(o)),
         Visit::Array(a) => Ok(match key {

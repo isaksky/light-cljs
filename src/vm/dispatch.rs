@@ -1781,6 +1781,8 @@ mod tests {
             let code = Code {
                 name: "corrupt".into(),
                 params: 0,
+                function_length: 0,
+                function_name: crate::value::JsString::from(""),
                 locals: 0,
                 constants: Box::new([]),
                 functions: functions.into(),

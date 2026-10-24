@@ -5858,7 +5858,6 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
         )
     );
     for (src, needle) in [
-        ("let f = function () {};\nf.length = 1;", "of a function"),
         ("let s = 'a';\ns.length;", "of a string"),
         ("let b = true;\nb.x;", "of a boolean"),
         (
@@ -6314,16 +6313,18 @@ fn function_own_properties() {
     ] {
         assert_eq!(eval(src), t, "{src}");
     }
-    // Function.prototype's other methods and
-    // `length`/`name` (clj-quickjs-101) do not exist yet: their names fail
+    assert_eq!(num("let f = function () {};\nf.length;"), 0.0);
+    assert_eq!(string("let f = function f() {};\nf.name;"), "f");
+    assert_eq!(
+        failure_at("let f = function () {};\nf.length = 1;").0,
+        VmErrorKind::TypeError
+    );
+    // Function.prototype's other methods do not exist yet: their names fail
     // explicitly, not with a wrong `undefined`, and the failure is not
     // catchable.
     for src in [
         "let f = function () {};\nf.toString();",
-        "let f = function () {};\nf.length;",
-        "let f = function f() {};\nf.name;",
         "let f = function () {};\nf.caller;",
-        "let f = function () {};\nf.length = 1;",
         "let o = Object.create(function () {});\no.toString;",
     ] {
         let (kind, message, line, _) = failure_at(src);
@@ -6925,9 +6926,17 @@ fn define_property_validation_and_targets() {
             assert_eq!(unchanged, "caught:1truefalsefalse", "{define}");
         }
     }
+    assert_eq!(
+        num("let f=()=>1; Object.defineProperty(f,'length',{value:1}); f.length"),
+        1.0
+    );
+    assert_eq!(
+        string("Object.getOwnPropertyDescriptor(() => 1, 'name').value"),
+        ""
+    );
     // What needs a later pellet fails explicitly: accessors
     // (clj-quickjs-120), wrapper objects (clj-quickjs-72), ToPrimitive of a
-    // key (clj-quickjs-70), function properties (clj-quickjs-101/-125).
+    // key (clj-quickjs-70).
     for (src, needle) in [
         ("Object.defineProperty({}, 'k', {get: () => 1})", "accessor"),
         (
@@ -6940,14 +6949,6 @@ fn define_property_validation_and_targets() {
         ),
         ("Object.getOwnPropertyDescriptor(1, 'k')", "wrapper object"),
         ("Object.defineProperty({}, {}, {value: 1})", "ToPrimitive"),
-        (
-            "Object.defineProperty(() => 1, 'length', {value: 1})",
-            "a function",
-        ),
-        (
-            "Object.getOwnPropertyDescriptor(() => 1, 'name')",
-            "a function",
-        ),
     ] {
         let (kind, message, ..) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
@@ -8063,10 +8064,9 @@ fn own_property_key_order() {
         "2:b,a,"
     );
     assert_eq!(listed("", "Object.keys(() => 1)"), "0:");
-    fails(
-        "Object.getOwnPropertyNames(function () {})",
-        VmErrorKind::UnsupportedOperand,
-        "length and name",
+    assert_eq!(
+        listed("", "Object.getOwnPropertyNames(function () {})"),
+        "3:length,name,prototype,"
     );
     // Runtime values without JavaScript properties have no keys.
     assert_eq!(listed("", "Object.keys(__rt.vector(1, 2))"), "0:");
@@ -8358,10 +8358,8 @@ fn delete_property_references() {
         "let f = function () {}; delete f.prototype === false && typeof f.prototype === 'object'",
     );
     truth("let g = () => 1; delete g.prototype");
-    fails(
-        "let f = function () {}; delete f.length;",
-        VmErrorKind::UnsupportedOperand,
-        "length",
+    truth(
+        "let f = function () {}; delete f.length && Object.getOwnPropertyDescriptor(f,'length')===undefined",
     );
 
     // Built-in objects are shared and immutable: what they have cannot be

@@ -34,7 +34,7 @@ use super::instr::{Instr, Opcode, OperandKind, ThrowKind};
 use crate::error::SourceLocation;
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
-use crate::value::{Primitive, Value};
+use crate::value::{JsString, Primitive, Value};
 
 /// Input to [`Executable::load`].
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +43,11 @@ pub struct ExecutableSpec {
     pub name: String,
     /// Number of parameters; arguments are copied into locals `0..params`.
     pub params: u16,
+    /// JavaScript `length`; `None` uses `params` for hand-assembled code.
+    pub function_length: Option<u16>,
+    /// JavaScript `name`; `None` uses the diagnostic `name`. Source code
+    /// supplies an explicit name (including the empty anonymous name).
+    pub function_name: Option<JsString>,
     /// Number of locals (parameters included).
     pub locals: u16,
     /// Encoded instructions.
@@ -79,6 +84,8 @@ pub struct ExecutableSpec {
 pub(crate) struct Code {
     pub(crate) name: Arc<str>,
     pub(crate) params: u16,
+    pub(crate) function_length: u16,
+    pub(crate) function_name: JsString,
     pub(crate) locals: u16,
     pub(crate) constants: Box<[Value]>,
     /// Child function code, shared with the [`Executable`]s it was loaded from.
@@ -281,6 +288,8 @@ impl Executable {
         let ExecutableSpec {
             name,
             params,
+            function_length,
+            function_name,
             locals,
             code,
             constants,
@@ -522,6 +531,8 @@ impl Executable {
             None => None,
         };
         Ok(Executable(Arc::new(Code {
+            function_length: function_length.unwrap_or(params),
+            function_name: function_name.unwrap_or_else(|| JsString::from(name.as_str())),
             name: name.into(),
             params,
             locals,
@@ -617,6 +628,8 @@ impl Executable {
         ExecutableSpec {
             name: code.name.to_string(),
             params: code.params,
+            function_length: Some(code.function_length),
+            function_name: Some(code.function_name.clone()),
             locals: code.locals,
             code: bytes,
             constants: code
@@ -714,6 +727,8 @@ mod tests {
         Executable::load(ExecutableSpec {
             name: "t".into(),
             params: 0,
+            function_length: None,
+            function_name: None,
             locals,
             code,
             constants,
@@ -796,6 +811,8 @@ mod tests {
         let e = Executable::load(ExecutableSpec {
             name: "t".into(),
             params: 3,
+            function_length: None,
+            function_name: None,
             locals: 2,
             code: vec![UNDEF, RET],
             constants: vec![],
@@ -891,6 +908,8 @@ mod tests {
         let spec = ExecutableSpec {
             name: "t".into(),
             params: 0,
+            function_length: None,
+            function_name: None,
             locals: 0,
             code: vec![UNDEF, RET],
             constants: vec![],
@@ -943,6 +962,8 @@ mod tests {
         ExecutableSpec {
             name: "t".into(),
             params: 0,
+            function_length: None,
+            function_name: None,
             locals: 0,
             code,
             constants: vec![],

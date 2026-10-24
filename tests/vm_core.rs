@@ -106,6 +106,8 @@ fn invalid_bytecode_is_rejected_at_load_time() {
     let spec = |code: Vec<u8>| ExecutableSpec {
         name: "bad".into(),
         params: 0,
+        function_length: None,
+        function_name: None,
         locals: 1,
         code,
         constants: vec![Primitive::Null],
@@ -273,6 +275,8 @@ fn constant_pool_index_limit_is_enforced() {
     let exe = Executable::load(ExecutableSpec {
         name: "last-constant".into(),
         params: 0,
+        function_length: None,
+        function_name: None,
         locals: 0,
         code,
         constants: (0..=u16::MAX)

@@ -1056,6 +1056,8 @@ mod tests {
         let code = Code {
             name: "object-constant".into(),
             params: 1,
+            function_length: 1,
+            function_name: crate::value::JsString::from("object-constant"),
             locals: 1,
             constants: Box::new([obj(constant)]),
             functions: Box::new([]),

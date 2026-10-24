@@ -195,7 +195,7 @@ pub(crate) fn lower_script(
     };
     let facts = lower(None)?.facts;
     let mut lower = lower(Some(facts))?;
-    lower.finish_top(name, 0)
+    lower.finish_top(name, 0, 0, JsString::from(""))
 }
 
 pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Executable, SyntaxError> {
@@ -229,7 +229,16 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
         .name
         .as_ref()
         .map_or("anonymous", |n| n.name.as_str());
-    lower.finish_top(name, function.params.len() as u16)
+    lower.finish_top(
+        name,
+        function.params.len() as u16,
+        function_length(function),
+        JsString::from(function.name.as_ref().map_or("", |n| n.name.as_str())),
+    )
+}
+
+fn function_length(f: &Function) -> u16 {
+    f.defaults.iter().take_while(|d| d.is_none()).count() as u16
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,6 +500,8 @@ enum Exit {
 struct Sealed {
     name: String,
     params: u16,
+    function_length: u16,
+    function_name: JsString,
     locals: u16,
     captures: u16,
     strict: bool,
@@ -602,15 +613,28 @@ impl<'s> Lowerer<'s> {
 
     /// Seal the outermost function and load the whole function tree (emit
     /// pass).
-    fn finish_top(&mut self, name: &str, params: u16) -> Result<Executable, SyntaxError> {
+    fn finish_top(
+        &mut self,
+        name: &str,
+        params: u16,
+        length: u16,
+        function_name: JsString,
+    ) -> Result<Executable, SyntaxError> {
         let ctx = self.fns.pop().expect("the entry function");
-        self.seal(ctx, name, params)?;
+        self.seal(ctx, name, params, length, function_name)?;
         self.load_all()
     }
 
     /// Resolve `ctx`'s branch targets and keep its code for
     /// [`Self::load_all`]; returns its index in `sealed`.
-    fn seal(&mut self, ctx: FnCtx, name: &str, params: u16) -> Result<usize, SyntaxError> {
+    fn seal(
+        &mut self,
+        ctx: FnCtx,
+        name: &str,
+        params: u16,
+        length: u16,
+        function_name: JsString,
+    ) -> Result<usize, SyntaxError> {
         let FnCtx {
             mut out,
             max_slots,
@@ -638,6 +662,8 @@ impl<'s> Lowerer<'s> {
         self.sealed.push(Sealed {
             name: name.to_string(),
             params,
+            function_length: length,
+            function_name,
             locals: max_slots as u16,
             captures: captures.len() as u16,
             strict,
@@ -685,6 +711,8 @@ impl<'s> Lowerer<'s> {
             let spec = ExecutableSpec {
                 name: f.name,
                 params: f.params,
+                function_length: Some(f.function_length),
+                function_name: Some(f.function_name),
                 locals: f.locals,
                 code: f.code,
                 constants: f.constants,
@@ -846,11 +874,11 @@ impl<'s> Lowerer<'s> {
                     .then(|| (name.name.clone(), SelfKind::Declaration { key: b.key }));
                 if b.repr == Repr::Cell {
                     self.out().op_u16(Opcode::GetLocal, b.slot, f.span);
-                    self.closure(f, self_name)?;
+                    self.closure(f, self_name, None)?;
                     // `cell_init` also overwrites an initialized cell.
                     self.out().op(Opcode::CellInit, f.span);
                 } else {
-                    self.closure(f, self_name)?;
+                    self.closure(f, self_name, None)?;
                     self.out().op_u16(Opcode::SetLocal, b.slot, f.span);
                 }
                 self.initialize(name)?;
@@ -988,7 +1016,7 @@ impl<'s> Lowerer<'s> {
         for d in declarators {
             self.check_var_not_shadowed(&d.name)?;
             if let Some(init) = &d.init {
-                self.expr(init)?;
+                self.named_expr(init, JsString::from(d.name.name.as_str()))?;
                 let access = self.resolve(&d.name.name);
                 self.store(access, d.name.span)?;
                 self.out().op(Opcode::Pop, d.span);
@@ -1418,7 +1446,7 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Undefined, p.span);
                 self.out().op(Opcode::StrictEq, p.span);
                 self.out().branch(Opcode::JumpIfFalse, skip, p.span);
-                self.expr(default)?;
+                self.named_expr(default, JsString::from(p.name.as_str()))?;
                 self.out().op_u16(Opcode::SetLocal, src, default.span);
                 self.out().bind(skip);
             }
@@ -1488,6 +1516,7 @@ impl<'s> Lowerer<'s> {
         &mut self,
         f: &Function,
         self_name: Option<(String, SelfKind)>,
+        inferred_name: Option<JsString>,
     ) -> Result<(), SyntaxError> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
@@ -1511,7 +1540,19 @@ impl<'s> Lowerer<'s> {
             None
         } else {
             let name = f.name.as_ref().map_or("anonymous", |n| n.name.as_str());
-            Some(self.seal(ctx, name, f.params.len() as u16)?)
+            let function_name = f
+                .name
+                .as_ref()
+                .map(|n| JsString::from(n.name.as_str()))
+                .or(inferred_name)
+                .unwrap_or_else(|| JsString::from(""));
+            Some(self.seal(
+                ctx,
+                name,
+                f.params.len() as u16,
+                function_length(f),
+                function_name,
+            )?)
         };
         for place in captures {
             self.out().load(place, f.span);
@@ -1661,7 +1702,7 @@ impl<'s> Lowerer<'s> {
                 self.out().op_u16(Opcode::GetLocal, b.slot, d.span);
             }
             match &d.init {
-                Some(init) => self.expr(init)?,
+                Some(init) => self.named_expr(init, JsString::from(d.name.name.as_str()))?,
                 None => self.out().op(Opcode::Undefined, d.span),
             }
             let b = self.initialize(&d.name)?;
@@ -2535,7 +2576,16 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), SyntaxError> {
         self.out().op(Opcode::NewObjectLiteral, span);
         for property in properties {
-            self.expr(&property.value)?;
+            if property.sets_prototype() {
+                self.expr(&property.value)?;
+            } else {
+                let name = match &property.name {
+                    PropertyName::Identifier(n) => JsString::from(n.as_str()),
+                    PropertyName::String(n) => n.clone(),
+                    PropertyName::Number(n) => JsString::from(number_to_string(*n).as_str()),
+                };
+                self.named_expr(&property.value, name)?;
+            }
             if property.sets_prototype() {
                 // `__proto__: value` sets the prototype (clj-quickjs-121).
                 self.out().op(Opcode::SetProto, property.name_span);
@@ -2794,7 +2844,7 @@ impl<'s> Lowerer<'s> {
     /// `target = value` for a binding: the value, then the store.
     #[inline(never)]
     fn assign(&mut self, target: &Ident, value: &Expr) -> Result<(), SyntaxError> {
-        self.expr(value)?;
+        self.named_expr(value, JsString::from(target.name.as_str()))?;
         let at = self.name_span(&target.name, target.span);
         let access = self.resolve_reference(&target.name);
         self.store(access, at)
@@ -2914,7 +2964,19 @@ impl<'s> Lowerer<'s> {
             }
             None => None,
         };
-        self.closure(f, self_name)
+        self.closure(f, self_name, None)
+    }
+
+    /// NamedEvaluation changes metadata, never the lexical self binding.
+    #[inline(always)]
+    fn named_expr(&mut self, e: &Expr, name: JsString) -> Result<(), SyntaxError> {
+        if let ExprKind::Function(f) = &e.kind
+            && f.name.is_none()
+        {
+            self.closure(f, None, Some(name))
+        } else {
+            self.expr(e)
+        }
     }
 
     /// `left, right`: left to right; only the last operand's value is kept.

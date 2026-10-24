@@ -51,6 +51,98 @@ fn eval(src: &str) -> ValueView {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn function_length_and_name() {
+    for src in [
+        "(function (a,b) {}).length===2",
+        "((a,b=1,c)=>{}).length===1",
+        "(()=>{}).length===0",
+        "function f() {} f.name==='f'",
+        "const g=()=>1; g.name==='g'",
+        "let h; h=function () {}; h.name==='h'",
+        "(function () {}).name===''",
+        "var v=function () {}; v.name==='v'",
+        "const f=function named() {}; f.name==='named'",
+        "const f=(0,()=>{}); f.name===''",
+        "const o={m:function(){}, 'x':()=>1, 3:()=>0}; o.m.name==='m' && o.x.name==='x' && o[3].name==='3'",
+        "const o={'\\ud800':()=>0}; o['\\ud800'].name==='\\ud800'",
+        "function f(a=()=>{}, b=function(){}) { return a.name==='a' && b.name==='b'; } f()",
+        "function f(a,b=1,c) {} f.bind(null).length===1 && f.bind(null,1).length===0 && f.bind().name==='bound f'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    let rt = Runtime::new();
+    let RunOutcome::Complete(f) = rt.spawn(&exe("const f=(a,b=1)=>a; f.length; f.name; Object.getOwnPropertyDescriptor(f,'length'); Object.getOwnPropertyNames(f); f;"), &[]).unwrap().run().unwrap() else { panic!() };
+    rt.publish(&f)
+        .expect("metadata observations leave a function publishable");
+    rt.collect().unwrap();
+    let verify = compile_function("function verify(f) { const d=Object.getOwnPropertyDescriptor(f,'length'); return f.length===1 && f.name==='f' && !d.writable && !d.enumerable && !d.configurable && f(7)===7; }").unwrap();
+    let RunOutcome::Complete(v) = rt.spawn(&verify, &[&f]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Bool(true));
+    let entry = compile_function(
+        "function entry(a,b=1,c) { return entry.length===1 && entry.name==='entry'; }",
+    )
+    .unwrap();
+    let entry = Executable::load(entry.to_spec()).unwrap();
+    let RunOutcome::Complete(v) = rt.spawn(&entry, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn function_metadata_property_operations() {
+    for src in [
+        "function f(a,b) {} const d=Object.getOwnPropertyDescriptor(f,'length'); const n=Object.getOwnPropertyDescriptor(f,'name'); d.value===2 && !d.writable && !d.enumerable && d.configurable && n.value==='f' && !n.writable && !n.enumerable && n.configurable && Object.keys(f).length===0",
+        "function f() {} f.x=1; f.length===0 && f.name==='f' && 'length' in f && 'name' in f",
+        "function f() {} delete f.length && delete f.name && f.length===0 && f.name==='' && Object.getOwnPropertyDescriptor(f,'length')===undefined && Object.getOwnPropertyDescriptor(f,'name')===undefined",
+        "function f(a,b) {} delete f.length; delete f.name; const g=f.bind(null,1); g.length===0 && g.name==='bound '",
+        "function f(a) {} Object.defineProperty(f,'length',{value:4.8}); Object.defineProperty(f,'name',{value:'renamed'}); f.bind(null,1).length===3 && f.bind().name==='bound renamed'",
+        "function f() {} const n=Object.getOwnPropertyNames(f); n.length===3 && n[0]==='length' && n[1]==='name' && n[2]==='prototype'",
+        "function f() {} f.x=1; delete f.length; Object.defineProperty(f,'length',{value:7}); const n=Object.getOwnPropertyNames(f); n[0]==='name' && n[1]==='prototype' && n[2]==='x' && n[3]==='length'",
+        "const f=()=>{}; Object.freeze(f); const d=Object.getOwnPropertyDescriptor(f,'name'); Object.isFrozen(f) && !d.configurable && !d.writable",
+        "function f() {} Object.preventExtensions(f); delete f.name; f.name==='' && !Object.isExtensible(f)",
+        "function f() {} Object.freeze(f); const n=Object.getOwnPropertyNames(f); let caught=false; try { delete f.name; } catch(e) { caught=true; } caught && Object.isFrozen(f) && n[0]==='length' && n[1]==='name' && n[2]==='prototype'",
+        "function f() {} const o=Object.create(f); let caught=false; try { o.name='x'; } catch(e) { caught=true; } caught && o.name==='f'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for mode in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+        for property in ["length", "name"] {
+            let rt = Runtime::new();
+            let source = format!(
+                "const f=()=>0; let caught=false; try {{ f.{property}=7; }} catch(e) {{ caught=true; }} if (caught!=={}) throw 1; f;",
+                mode.strict
+            );
+            let program = compile_script_with("metadata", &source, mode).unwrap();
+            let RunOutcome::Complete(f) = rt.spawn(&program, &[]).unwrap().run().unwrap() else {
+                panic!()
+            };
+            rt.publish(&f)
+                .expect("rejected metadata assignments create no record");
+        }
+    }
+}
+
+#[test]
+fn published_function_metadata_is_frozen() {
+    let rt = Runtime::new();
+    let source = "function f(a,b=1,c) {} f.length; f.name; Object.getOwnPropertyNames(f); f;";
+    let RunOutcome::Complete(f) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&f)
+        .expect("constructor metadata needs no property record");
+    let verify = compile_function("function verify(f) { const d=Object.getOwnPropertyDescriptor(f,'name'); let caught=false; try { delete f.name; } catch(e) { caught=true; } Object.freeze(f); return caught && f.length===1 && f.name==='f' && !d.configurable && Object.isFrozen(f) && !Object.isExtensible(f) && Object.getOwnPropertyNames(f)[2]==='prototype'; }").unwrap();
+    let RunOutcome::Complete(v) = rt.spawn(&verify, &[&f]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Bool(true));
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn bound_functions() {
     assert_eq!(
         num(
