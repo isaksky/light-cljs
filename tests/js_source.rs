@@ -3883,6 +3883,8 @@ fn parse_int_and_parse_float() {
         (r#"parseFloat("123.2e3")"#, 123200.0),
         (r#"parseInt("ff", 16)"#, 255.0),
         (r#"parseInt("0x10", 16)"#, 16.0),
+        (r#"parseInt("0x10", 10)"#, 0.0),
+        (r#"parseInt("0x10", 36)"#, 42804.0),
         (r#"parseInt("-0x10")"#, -16.0),
         (r#"parseInt("123", 0)"#, 123.0),
         (r#"parseInt("9007199254740993")"#, 9007199254740992.0),
