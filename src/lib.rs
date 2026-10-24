@@ -52,7 +52,7 @@ pub mod task;
 mod value;
 pub mod vm;
 
-pub use collections::{CollectionError, PersistentKind, Provenance};
+pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
 pub use error::{Diagnostic, VmError, VmErrorKind};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,

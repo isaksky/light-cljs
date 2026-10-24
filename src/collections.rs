@@ -54,9 +54,19 @@
 //! * **Errors** never panic and never leave a partial result:
 //!   [`CollectionError`] names what was wrong.
 //!
-//! Crate-internal code (VM intrinsics, pellet clj-quickjs-19) uses the same
-//! operations on raw values through the `pub(crate)` functions of this
-//! module; the `Scope` methods are thin wrappers over them.
+//! VM code reaches the same operations through private intrinsics
+//! ([`crate::vm::intrinsics`]), which call the `pub(crate)` functions of
+//! this module on raw values; the `Scope` methods are thin wrappers over
+//! them too. The strict `get` intrinsic adds [`CollectionError::MissingKey`].
+//!
+//! # Transient builders
+//!
+//! The one mutable collection kind: a task-owned vector or map builder,
+//! mutated in place only by its owning task and frozen into a new persistent
+//! value. Lifecycle, ownership (by task, not OS thread), errors
+//! ([`BuilderError`]) and tracing are documented in `collections/builder.rs`
+//! and summarized in [`crate::vm::intrinsics`]. Builders are not persistent
+//! kinds: [`Scope::persistent_kind`] reports `None` for them.
 //!
 //! # Equality, identity, provenance
 //!
@@ -101,9 +111,9 @@
 //!
 //! # Not supported (yet)
 //!
-//! * VM intrinsics and task-owned transient builders (pellet clj-quickjs-19);
-//!   until then VM code can receive, store, compare (`===`) and return
-//!   collections, but not inspect them.
+//! * Embedder access to builders (they are created and used only by VM
+//!   code), builders seeded from an existing persistent value, and in-place
+//!   editing of map trie nodes (a map builder path-copies internally).
 //! * Publication checks: a collection may contain a plain (future mutable)
 //!   object; transitive publication rules are pellet clj-quickjs-18.
 //! * Strings, keywords and symbols (no string values exist yet), structural
@@ -111,6 +121,7 @@
 //!   slicing, iteration protocols, and JavaScript property access on
 //!   collections.
 
+pub(crate) mod builder;
 mod map;
 mod vector;
 
@@ -121,6 +132,8 @@ use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, Local, ObjectId, Scope};
 use crate::value::Value;
 
+pub use builder::BuilderError;
+pub(crate) use builder::{Builder, OwnedBuilders};
 pub(crate) use map::PMap;
 pub(crate) use vector::PVector;
 
@@ -167,7 +180,7 @@ impl PersistentKind {
 
 /// Why a collection operation failed. See the contract in
 /// [`crate::collections`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollectionError {
     /// The operand has the wrong kind (`found` uses the names `vector`,
     /// `map`, `occurrence`, `object`, `number`, ...).
@@ -182,6 +195,8 @@ pub enum CollectionError {
     IndexOutOfBounds { index: usize, count: usize },
     /// The heap's object table is exhausted.
     OutOfMemory,
+    /// A strict lookup (the `get` intrinsic) found no entry for the key.
+    MissingKey,
 }
 
 impl fmt::Display for CollectionError {
@@ -197,6 +212,7 @@ impl fmt::Display for CollectionError {
                 write!(f, "index {index} is out of bounds for count {count}")
             }
             CollectionError::OutOfMemory => f.write_str("heap object table exhausted"),
+            CollectionError::MissingKey => f.write_str("key not found in map"),
         }
     }
 }
@@ -221,11 +237,22 @@ fn body(heap: &Heap, v: Value) -> Body {
         HeapObject::Vector(vec) => Body::Vector(vec.clone()),
         HeapObject::Map(map) => Body::Map(map.clone()),
         HeapObject::Occurrence(occ) => Body::Occurrence(*occ),
-        HeapObject::Plain => Body::Other("object"),
-        HeapObject::Native(_) => Body::Other("native object"),
+        other => Body::Other(object_name(other)),
     })
     // Callers hold a live value; a stale one is reported, not trusted.
     .unwrap_or(Body::Other("reclaimed object"))
+}
+
+/// The name of a heap object's kind in `WrongType` errors.
+pub(crate) fn object_name(object: &HeapObject) -> &'static str {
+    match object {
+        HeapObject::Plain => "object",
+        HeapObject::Native(_) => "native object",
+        HeapObject::Vector(_) => PersistentKind::Vector.name(),
+        HeapObject::Map(_) => PersistentKind::Map.name(),
+        HeapObject::Occurrence(_) => PersistentKind::Occurrence.name(),
+        HeapObject::Builder(b) => b.kind().name(),
+    }
 }
 
 fn found(b: &Body) -> &'static str {
@@ -325,6 +352,27 @@ pub(crate) fn nth(heap: &Heap, vec: Value, index: usize) -> Result<Value, Collec
         index,
         count: vec.len(),
     })
+}
+
+/// The element of a vector at an index *value* (the `nth` intrinsic): the
+/// operand kind is checked before the index.
+pub(crate) fn nth_at(heap: &Heap, vec: Value, key: Value) -> Result<Value, CollectionError> {
+    let vec = vector_body(heap, vec)?;
+    let index = index_from_value(key)?;
+    vec.get(index).ok_or(CollectionError::IndexOutOfBounds {
+        index,
+        count: vec.len(),
+    })
+}
+
+/// Strict lookup (the `get` intrinsic): like [`get`], but an absent entry
+/// is an error: `IndexOutOfBounds` for a vector, `MissingKey` for a map.
+pub(crate) fn lookup(heap: &Heap, coll: Value, key: Value) -> Result<Value, CollectionError> {
+    match body(heap, coll) {
+        Body::Map(map) => map.get(key).ok_or(CollectionError::MissingKey),
+        Body::Vector(_) => nth_at(heap, coll, key),
+        other => Err(wrong("vector or map", &other)),
+    }
 }
 
 pub(crate) fn get(heap: &Heap, coll: Value, key: Value) -> Result<Option<Value>, CollectionError> {

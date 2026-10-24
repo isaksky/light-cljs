@@ -103,6 +103,16 @@ impl Assembler {
         self.op(Opcode::HostEffect).u16(op)
     }
 
+    /// Emit `NewVector` taking the top `count` operands as elements.
+    pub fn new_vector(&mut self, count: u16) -> &mut Self {
+        self.op(Opcode::NewVector).u16(count)
+    }
+
+    /// Emit `NewMap` taking the top `2 * entries` operands as key/value pairs.
+    pub fn new_map(&mut self, entries: u16) -> &mut Self {
+        self.op(Opcode::NewMap).u16(entries)
+    }
+
     pub fn jump(&mut self, label: Label) -> &mut Self {
         self.branch(Opcode::Jump, label)
     }

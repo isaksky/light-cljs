@@ -7,6 +7,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::collections::{BuilderError, CollectionError};
 use crate::ids::{TaskId, WorldId};
 use crate::vm::Opcode;
 
@@ -25,6 +26,13 @@ pub enum VmErrorKind {
     HostEffect,
     /// The heap could not allocate an object (its object table is full).
     OutOfMemory,
+    /// A collection intrinsic rejected its operands by the collection
+    /// contract: wrong operand kind, invalid or out-of-bounds index, or a
+    /// missing key (see [`crate::vm::intrinsics`]).
+    Collection(CollectionError),
+    /// A builder operation was rejected by the builder lifecycle: another
+    /// task's builder, a frozen builder, or one whose owner has finished.
+    Builder(BuilderError),
 }
 
 /// Where a failure happened.

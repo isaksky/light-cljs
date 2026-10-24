@@ -158,13 +158,50 @@ poll points) are pellet clj-quickjs-17.
 - **Crate-internal layer.** Every `Scope` method wraps a `pub(crate)`
   function over raw values and `&Heap` (`new_vector`, `nth`, `get`,
   `assoc`, `index_from_value`, `value_equals`, ...). VM intrinsics
-  (clj-quickjs-19) are meant to call these directly; their callers must be
+  (clj-quickjs-19, below) call these directly; their callers must be
   registered mutators (run guard or scope) so a freshly allocated result is
   stored before any collection can start.
 - **Open for later pellets.** Publication rules (clj-quickjs-18) must
-  classify these kinds as shareable only when their contents are; transient
-  builders (clj-quickjs-19) can build a `PVector`/`PMap` body privately and
-  allocate the heap object on freeze.
+  classify these kinds as shareable only when their contents are, and
+  reject transient builders.
+
+## Collection intrinsics and transient builders (clj-quickjs-19)
+
+`src/vm/intrinsics.rs` (the intrinsic set and its error contract),
+`src/collections/builder.rs` (builder lifecycle). Design: `design.md` §§4–5.
+
+- **Intrinsics are opcodes** `0x12`–`0x20`: `new_vector n`, `new_map n`,
+  `count`, `nth`, `get` (strict: absent is an error), `get_or`, `assoc`,
+  `dissoc`, `conj`, `pop_last`, and the builder operations
+  `new_vector_builder`, `new_map_builder`, `builder_conj`, `builder_assoc`,
+  `freeze`. They are not globals or properties; no JavaScript name reaches
+  them and none runs user code. Operand counts are validated at load
+  (`new_vector n` pops n, `new_map n` pops 2n); operand kinds, indices and
+  keys are validated at run time and a rejection fails the task with
+  `VmErrorKind::Collection(CollectionError)` or
+  `VmErrorKind::Builder(BuilderError)`, never a panic. Operands stay on the
+  operand stack (rooted by the frame) until the result exists.
+- **Builders are task-owned heap objects** (`ObjectKind::Builder`): owner
+  `TaskId`, kind, and a state `Open(draft) | Frozen | Released`. A vector
+  draft is a plain `Vec`, a map draft a `PMap`. Only the owner's run
+  mutates the draft, in place, under one object-table lock per operation;
+  ownership is checked by task identity, so a builder survives yields and
+  migration to another worker thread. `freeze` moves the draft out and
+  allocates a new persistent object; the builder becomes `Frozen`.
+- **Termination.** A task records the builders it creates in a private,
+  non-rooting list in its `VmState` (pruned as it grows). Completing or
+  failing releases every still-open one (`Released`, draft dropped). A
+  released builder fails every later use with `OwnerFinished`; another
+  task's use of a live builder fails with `NotOwner`; use after freeze
+  fails with `Frozen`.
+- **Tracing.** An open builder's `Trace` reports its draft's contents, so
+  they are kept alive by reachability of the builder object (normally the
+  owner's frame), including across yields; frozen and released builders
+  have no edges. The owner's builder list is not a root.
+- **Deferred.** Embedder (`Scope`) access to builders, builders seeded from
+  an existing persistent value, in-place map trie editing, releasing the
+  builders of a task that is dropped unfinished (they stay unusable by any
+  other task), and rejecting builders at publication (clj-quickjs-18).
 
 ## Task/dependency continuation shape (planned)
 

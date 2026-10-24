@@ -11,6 +11,7 @@
 //! are not `alloca`'d on the native stack and there is no runtime-global
 //! current-frame pointer.
 
+use crate::collections::OwnedBuilders;
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
 use crate::ids::{TaskId, WorldId};
@@ -38,6 +39,9 @@ pub(crate) struct DiagnosticContext {
 pub(crate) struct VmState {
     pub(crate) frame: Frame,
     pub(crate) diag: DiagnosticContext,
+    /// Transient builders this task created, released when it finishes. Not
+    /// a root (see `crate::collections::builder`).
+    pub(crate) builders: OwnedBuilders,
 }
 
 impl VmState {
@@ -58,10 +62,12 @@ impl VmState {
                 operands: Vec::with_capacity(code.max_stack),
             },
             diag,
+            builders: OwnedBuilders::default(),
         }
     }
 }
 
+/// Frame values only: the builder list is deliberately not traced.
 impl Trace for VmState {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         let frame = &self.frame;

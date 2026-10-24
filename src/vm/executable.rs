@@ -218,6 +218,21 @@ impl Executable {
                 Opcode::Return => Instr::Return,
                 Opcode::NewObject => Instr::NewObject,
                 Opcode::HostEffect => Instr::HostEffect(operand as u16),
+                Opcode::NewVector => Instr::NewVector(operand as u16),
+                Opcode::NewMap => Instr::NewMap(operand as u16),
+                Opcode::Count => Instr::Count,
+                Opcode::Nth => Instr::Nth,
+                Opcode::Get => Instr::Get,
+                Opcode::GetOr => Instr::GetOr,
+                Opcode::Assoc => Instr::Assoc,
+                Opcode::Dissoc => Instr::Dissoc,
+                Opcode::Conj => Instr::Conj,
+                Opcode::PopLast => Instr::PopLast,
+                Opcode::NewVectorBuilder => Instr::NewVectorBuilder,
+                Opcode::NewMapBuilder => Instr::NewMapBuilder,
+                Opcode::BuilderConj => Instr::BuilderConj,
+                Opcode::BuilderAssoc => Instr::BuilderAssoc,
+                Opcode::Freeze => Instr::Freeze,
             });
         }
 
@@ -272,7 +287,7 @@ fn check_stack(instrs: &[Instr], offsets: &[u32]) -> Result<usize, ValidationErr
         let (instr, offset) = (instrs[i], offsets[i]);
         let depth = depth_at[i].unwrap_or(0);
         let opcode = instr.opcode();
-        let (pops, pushes) = opcode.stack_effect();
+        let (pops, pushes) = instr.stack_effect();
         if depth < pops {
             return Err(err(offset, StackUnderflow { opcode, depth }));
         }

@@ -22,6 +22,8 @@ cargo test --test gc              # collection through the embedding API
 cargo test --lib heap::           # collector, native payloads, root categories
 cargo test --test collections     # persistent vectors/maps, identity, provenance
 cargo test --lib collections::    # trie internals, structural sharing, key contract
+cargo test --test collection_intrinsics   # collection intrinsics and transient builders
+cargo test --lib vm::intrinsics:: # cross-task builder rejection
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -159,10 +161,42 @@ Supported:
 
 Deferred:
 
-- VM intrinsics for collections and transient builders (clj-quickjs-19):
-  bytecode can pass, store, `===`-compare and return collections but not
-  inspect or build them.
+- VM intrinsics for collections and transient builders: superseded, see
+  clj-quickjs-19 below.
 - Publication rules for collections containing mutable objects
   (clj-quickjs-18).
 - Strings/keywords/symbols, structural map keys, ordered maps, sets, lists,
   and JavaScript property access on collections.
+
+### Collection intrinsics and transient builders (clj-quickjs-19)
+
+Supported:
+
+- Private VM intrinsics (opcodes `0x12`–`0x20`, not user-visible globals):
+  `new_vector n`, `new_map n`, `count`, `nth`, `get` (absent entry is an
+  error), `get_or` (absent entry gives a default), `assoc`, `dissoc`,
+  `conj`, `pop_last`. Contract and per-intrinsic errors: `src/vm/intrinsics.rs`
+  module docs; summary in [`docs/architecture.md`](docs/architecture.md).
+- Operand errors (wrong type, invalid or out-of-bounds index, missing key)
+  fail the task with `VmErrorKind::Collection(CollectionError)` and
+  diagnostics naming the intrinsic; nothing panics.
+- Task-owned transient builders: `new_vector_builder`, `new_map_builder`,
+  `builder_conj`, `builder_assoc` (in place) and `freeze` (a new persistent
+  vector/map; the builder becomes frozen). Ownership is by task id, so a
+  builder keeps working after a yield and on another OS thread. Use by
+  another task, after freeze, or after the owner finished fails with
+  `VmErrorKind::Builder(BuilderError::{NotOwner, Frozen, OwnerFinished})`.
+  Open builders' contents are traced by the collector; a finishing task
+  releases its open builders. Lifecycle: `src/collections/builder.rs`.
+- Tests: `cargo test --test collection_intrinsics` (hand-assembled bytecode:
+  early VM tests, not JavaScript source support) and
+  `cargo test --lib vm::intrinsics::`.
+
+Deferred:
+
+- Embedder (`Scope`) access to builders; builders seeded from an existing
+  persistent value (`transient`); in-place map trie editing (map builders
+  path-copy internally); `count`/lookups on builders.
+- Releasing builders of a task dropped without finishing (they remain
+  unusable by other tasks), and rejecting builders at publication
+  (clj-quickjs-18).

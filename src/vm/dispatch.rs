@@ -20,6 +20,7 @@
 //! to completion within one run, so a later run continues exactly where this
 //! one stopped and never replays an executed instruction or its effect.
 
+use crate::collections::{BuilderError, CollectionError};
 use crate::error::{Diagnostic, VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
@@ -27,6 +28,7 @@ use crate::value::Value;
 use crate::vm::executable::Code;
 use crate::vm::frames::VmState;
 use crate::vm::instr::{Instr, Opcode};
+use crate::vm::intrinsics;
 
 /// How a run of the interpreter loop ended.
 #[derive(Debug)]
@@ -38,13 +40,17 @@ pub(crate) enum Exit {
 }
 
 /// A failure before diagnostic context is attached.
-enum Fault {
+pub(crate) enum Fault {
     Unsupported(String),
     Internal(&'static str),
     /// The host reported an error from a leaf effect.
     Host(String),
     /// The heap could not allocate.
     OutOfMemory(&'static str),
+    /// A collection intrinsic rejected its operands.
+    Collection(CollectionError),
+    /// A builder operation was rejected by the builder lifecycle.
+    Builder(BuilderError),
 }
 
 fn pop(operands: &mut Vec<Value>) -> Result<Value, Fault> {
@@ -161,6 +167,21 @@ fn step(
             let result = call_leaf(host, call).map_err(Fault::Host)?;
             state.frame.operands.push(Value::from(result));
         }
+        Instr::NewVector(_)
+        | Instr::NewMap(_)
+        | Instr::Count
+        | Instr::Nth
+        | Instr::Get
+        | Instr::GetOr
+        | Instr::Assoc
+        | Instr::Dissoc
+        | Instr::Conj
+        | Instr::PopLast
+        | Instr::NewVectorBuilder
+        | Instr::NewMapBuilder
+        | Instr::BuilderConj
+        | Instr::BuilderAssoc
+        | Instr::Freeze => intrinsics::step(state, heap, instr)?,
     }
     Ok(None)
 }
@@ -197,6 +218,8 @@ pub(crate) fn execute(
             Err(Fault::Internal(m)) => (VmErrorKind::Internal, m.to_string()),
             Err(Fault::Host(m)) => (VmErrorKind::HostEffect, m),
             Err(Fault::OutOfMemory(m)) => (VmErrorKind::OutOfMemory, m.to_string()),
+            Err(Fault::Collection(e)) => (VmErrorKind::Collection(e), e.to_string()),
+            Err(Fault::Builder(e)) => (VmErrorKind::Builder(e), e.to_string()),
         };
         return Exit::Fail(VmError {
             kind,

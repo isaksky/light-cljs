@@ -333,7 +333,8 @@ mod tests {
             HeapObject::Plain
             | HeapObject::Vector(_)
             | HeapObject::Map(_)
-            | HeapObject::Occurrence(_) => panic!("not a native object"),
+            | HeapObject::Occurrence(_)
+            | HeapObject::Builder(_) => panic!("not a native object"),
         })
         .expect("live object");
     }

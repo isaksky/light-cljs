@@ -317,6 +317,7 @@ impl RunGuard<'_> {
                 "a host effect may not reenter the VM",
                 vm.frame.pc,
             );
+            vm.builders.release_all(&self.task.heap, self.task.id);
             *self.body = TaskBody::Finished;
             return RunOutcome::Failed(error);
         }
@@ -329,8 +330,10 @@ impl RunGuard<'_> {
             // The VM state stays in the task; dropping the guard releases it.
             Exit::Yield => return RunOutcome::Yielded,
         };
-        // Completion or failure releases the task's frames; a returned value
-        // stays alive through its persistent root, not through the task.
+        // Completion or failure releases the task's frames and its open
+        // transient builders; a returned value stays alive through its
+        // persistent root, not through the task.
+        vm.builders.release_all(&self.task.heap, self.task.id);
         *self.body = TaskBody::Finished;
         outcome
     }
