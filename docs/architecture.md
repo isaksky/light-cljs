@@ -5186,11 +5186,11 @@ catchable RangeError and never becomes a failed match. Parsing, source
 escaping, capture copying and string flattening are synchronous, bounded by
 the runtime's string length limit, like existing string leaf operations.
 
-Objects support the code-unit and Unicode matcher, g/m/s/u/y and iu, named captures with a
+Objects support the code-unit and Unicode matcher, d/g/m/s/u/y and iu, named captures with a
 null-prototype groups object, and explicit undefined elements for unmatched
-captures. Plain i and v/d constructors and literals throw SyntaxError naming the
+captures. Plain i and v constructors and literals throw SyntaxError naming the
 unsupported flag; lookbehind also fails explicitly. Symbol.match
-recognition, symbol-based string consumers, non-Unicode folding, Unicode sets and indices
+recognition, symbol-based string consumers, non-Unicode folding and Unicode sets
 remain later work. Direct and indirect eval are unavailable, so the raw NUL
 upstream case is exercised through the constructor and a literal containing
 an actual NUL instead.
@@ -5952,3 +5952,23 @@ continuations, constructor return overrides and method receivers. This final
 copy is a bounded leaf operation; all observable iteration and argument
 expression evaluation already ran through budgeted VM instructions. The
 packed list cannot invoke getters or iterate again at call entry.
+
+## RegExp indices construction (clj-quickjs-193)
+
+`regexp::object::exec` constructs indices directly from the matcher's bounded
+capture ranges. With `d`, it allocates one task-owned array plus at most one
+two-element array per matched capture, and a null-prototype groups object
+when names exist. Each named value and numbered slot hold the same pair
+object; duplicate-name selection follows the existing capture groups logic.
+No extra capture-range buffer or heap kind is introduced. Existing array
+and ordinary-object tracing retains all edges across yield, wait, collection
+and migration. Construction is a leaf without safepoints or user callbacks;
+it bypasses inherited setters through CreateDataProperty semantics.
+
+The immutable matcher program records the `d` flag. On success, its single
+1,000,000-step search budget reserves five extra units per capture before
+returning ranges: indices entry, pair allocation, two endpoints and a named
+reference. This conservative charge applies even to unmatched/unnamed slots,
+bounds allocation by the existing capture bound and prevents the indices
+loop from escaping the search allowance. Exhaustion remains a catchable
+RangeError. Matching and result offsets retain UTF-16 semantics.

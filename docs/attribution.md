@@ -773,3 +773,14 @@ length and own names rather than relying on array string conversion. The
 QuickJS MIT notice is retained beside the test. `research/quickjs/quickjs.c`
 `OP_append` and the iterator helpers were consulted as semantic references;
 no engine code was copied. Other fixtures are synthetic, not light-cljs output.
+
+## RegExp match indices (clj-quickjs-193)
+
+`tests/fixtures/js/regexp_indices.js`, run by
+`tests/js_source.rs::regexp_has_indices`, adapts the match-indices row from
+`research/quickjs/tests/test_builtin.js::test_regexp` (lines 803–807), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. It substitutes the supported `u`
+flag for upstream's `v` flag and retains the QuickJS MIT notice. Additional
+capture, identity and resource checks are synthetic. The indices path in
+`research/quickjs/quickjs.c::js_regexp_exec` at that revision was consulted
+as a semantic reference; no C implementation was copied.

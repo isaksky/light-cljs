@@ -35,7 +35,6 @@ pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compile
     let parsed_flags =
         parse::Flags::parse(flags).map_err(|e| CompileError::Syntax(e.to_string()))?;
     for (flag, set) in [
-        ('d', parsed_flags.has_indices),
         ('i', parsed_flags.ignore_case && !parsed_flags.unicode),
         ('v', parsed_flags.unicode_sets),
     ] {
@@ -242,7 +241,16 @@ pub(crate) fn exec(
         return Ok(Value::Null);
     };
     let a = property::new_array(heap, task)?;
+    // The matcher reserves the extra per-capture work for d within its search
+    // allowance before we allocate any indices. This leaf has no safepoints;
+    // the normal array/object edges trace all pairs once it returns.
+    let indices = c
+        .flags
+        .has_indices
+        .then(|| property::new_array(heap, task))
+        .transpose()?;
     let mut groups = OrdinaryObject::new(Some(task));
+    let mut indices_groups = OrdinaryObject::new(Some(task));
     let mut named = false;
     for (i, capture) in m.groups.iter().enumerate() {
         let v = capture.as_ref().map_or(Value::Undefined, |r| {
@@ -251,6 +259,20 @@ pub(crate) fn exec(
             )
         });
         property::append(heap, task, &a, Some(v.clone()))?;
+        let pair = if let Some(indices) = &indices {
+            let pair = if let Some(range) = capture {
+                let pair = property::new_array(heap, task)?;
+                property::append(heap, task, &pair, Some(Value::Number(range.start as f64)))?;
+                property::append(heap, task, &pair, Some(Value::Number(range.end as f64)))?;
+                pair
+            } else {
+                Value::Undefined
+            };
+            property::append(heap, task, indices, Some(pair.clone()))?;
+            pair
+        } else {
+            Value::Undefined
+        };
         if i > 0
             && let Some(name) = &c.names[i - 1]
         {
@@ -262,6 +284,9 @@ pub(crate) fn exec(
             // Duplicate names in disjoint alternatives select the matched one.
             if !matches!(v, Value::Undefined) || groups.get_own(k).is_none() {
                 groups.define_with(k, v, PropertyFlags::DATA);
+                if indices.is_some() {
+                    indices_groups.define_with(k, pair, PropertyFlags::DATA);
+                }
             }
         }
     }
@@ -278,17 +303,41 @@ pub(crate) fn exec(
         ("input", Value::String(input.clone())),
         ("groups", groups),
     ] {
-        let Value::Object(id) = a else { unreachable!() };
-        let desc = crate::object::PropertyDescriptor {
-            value: Some(v),
-            writable: Some(true),
-            enumerable: Some(true),
-            configurable: Some(true),
-            ..Default::default()
+        result_property(heap, task, &a, name, v)?;
+    }
+    if let Some(indices) = indices {
+        let groups = if named {
+            Value::Object(
+                heap.alloc(HeapObject::Plain(indices_groups))
+                    .ok_or(Fault::OutOfMemory("capture indices groups"))?,
+            )
+        } else {
+            Value::Undefined
         };
-        property::define_own_property(heap, task, id, &key(name), &desc)?;
+        result_property(heap, task, &indices, "groups", groups)?;
+        result_property(heap, task, &a, "indices", indices)?;
     }
     Ok(a)
+}
+
+fn result_property(
+    heap: &Heap,
+    task: TaskId,
+    result: &Value,
+    name: &str,
+    value: Value,
+) -> Result<(), Fault> {
+    let Value::Object(id) = result else {
+        unreachable!()
+    };
+    let desc = crate::object::PropertyDescriptor {
+        value: Some(value),
+        writable: Some(true),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    property::define_own_property(heap, task, *id, &key(name), &desc)
 }
 
 pub(crate) fn key(name: &str) -> property::Key {

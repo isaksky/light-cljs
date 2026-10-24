@@ -16520,6 +16520,31 @@ fn bigint_bitwise_and_shift_size_limits() {
 }
 
 #[test]
+fn regexp_has_indices() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_indices.js")),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Capture storage and indices
+/// allocation must share the allowance with matching, including at success.
+#[test]
+fn regexp_indices_limit_is_catchable() {
+    assert_eq!(
+        eval(
+            "let pattern = '^' + ''.padEnd(80000, '()') + 'a{120000}$'; \
+             let text = ''.padEnd(120000, 'a'); \
+             let ordinary = RegExp(pattern).exec(text); \
+             let caught = false; try { RegExp(pattern, 'd').exec(text); } \
+             catch(e) { caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; } \
+             ordinary.length === 40001 && ordinary[0] === text && caught"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_property_escapes() {
     // Synthetic fixture, not light-cljs output. QuickJS rows retain their notice.
     assert_eq!(
@@ -16561,7 +16586,7 @@ fn regexp_objects_exec_and_test() {
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn regexp_flags_errors_and_internal_state() {
-    for flag in ['d', 'i', 'v'] {
+    for flag in ['i', 'v'] {
         for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
             assert_eq!(
                 eval(&format!(
@@ -16627,6 +16652,8 @@ fn regexp_code_reload_and_publication() {
 #[test]
 fn regexp_coercions_wait_yield_collect_and_migrate() {
     for expression in [
+        "let r = /(?<n>.)/duy; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|(() => {let m = r.exec('🐱'); return m.indices[0][0] === 0 && m.indices[0][1] === 2 && m.indices.groups.n === m.indices[1] && m.indices[1][1] === 2;})()",
+        "let m = /(?<n>a)/d.exec('ba'); let pair = m.indices.groups.n; count++; __rt.need(188, 1);|pair === m.indices[1] && pair[0] === 1 && pair[1] === 2",
         "RegExp({toString(){count++; __rt.need(188, 1); return 'a';}}, 'g').test('a')",
         "let r = /./uy; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|r.exec('🐱')[0] === '🐱' && r.lastIndex === 2",
         "new RegExp('a', {toString(){count++; __rt.need(188, 1); return 'g';}}).test('a')",

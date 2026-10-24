@@ -53,6 +53,7 @@ pub struct Program {
     repeats: usize,
     sticky: bool,
     unicode: bool,
+    has_indices: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -412,6 +413,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
         repeats,
         sticky: pattern.flags.sticky,
         unicode,
+        has_indices: pattern.flags.has_indices,
     })
 }
 
@@ -717,8 +719,10 @@ impl Machine {
 /// Search from `start` (a UTF-16 offset), or only at `start` with the sticky flag.
 /// Returns capture offsets, no match, or a distinct error. The single work limit
 /// covers the entire search, not a fresh allowance per candidate or lookahead.
-/// `g` and `d` do not change this core operation; lastIndex/objects belong to the
-/// caller. `start > input.len()` gives no match.
+/// `g` and `d` do not change matching; lastIndex/objects belong to the caller.
+/// With `d`, the same budget reserves five extra units per capture for the
+/// indices entry, pair allocation, two endpoints and named-group reference.
+/// `start > input.len()` gives no match.
 /// Unicode mode maps a start inside a surrogate pair to its lead surrogate;
 /// candidate positions and consuming instructions then advance by code point.
 pub fn exec(
@@ -757,6 +761,15 @@ pub fn exec(
         machine.pos = index;
         if machine.run(program, input)? {
             machine.budget.charge(machine.captures.len())?;
+            if program.has_indices {
+                machine.budget.charge(
+                    machine
+                        .captures
+                        .len()
+                        .checked_mul(5)
+                        .ok_or(MatchError::LimitExceeded)?,
+                )?;
+            }
             machine.captures[0] = Some(index..machine.pos);
             return Ok(Some(Captures {
                 index,
