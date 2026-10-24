@@ -21376,6 +21376,32 @@ fn regexp_objects_exec_and_test() {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn regexp_constructor_copies_pattern_and_resets_last_index() {
+    for (constructor, flags) in [
+        ("new RegExp(r)", "g"),
+        ("RegExp(r, 'y')", "y"),
+        ("new RegExp(r, 'y')", "y"),
+    ] {
+        let source = format!(
+            "let r = /b/g;
+             r.lastIndex = 7;
+             let copy = {constructor};
+             let initial = copy !== r && copy.source === 'b' &&
+                           copy.source === r.source && copy.flags === '{flags}' &&
+                           copy.lastIndex === 0 && r.lastIndex === 7;
+             let miss = copy.exec('a') === null && copy.lastIndex === 0;
+             let hit = copy.exec('bb');
+             let matched = hit !== null && hit.length === 1 && hit[0] === 'b' &&
+                           hit.index === 0 && hit.input === 'bb' && copy.lastIndex === 1;
+             let reset = copy.exec('a') === null && copy.lastIndex === 0;
+             initial && miss && matched && reset && r.lastIndex === 7"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{constructor}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn regexp_flags_errors_and_internal_state() {
     for flag in ['i'] {
         for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
