@@ -12740,6 +12740,27 @@ fn symbol_values() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: throwing preserves primitive
+/// identity and reports Symbols without performing implicit ToString.
+#[test]
+fn symbol_thrown_values() {
+    for (expression, text) in [("Symbol()", "Symbol()"), ("Symbol('boom')", "Symbol(boom)")] {
+        let source = format!(
+            "let s = {expression}; let first = false; let caught = false; try {{ try {{ throw s; }} catch (e) {{ first = e === s; throw e; }} }} catch (e) {{ caught = e === s; }} first && caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        assert_eq!(
+            failure_at(&format!("\n  throw {expression};")),
+            (
+                VmErrorKind::Thrown,
+                format!("uncaught exception: {text}"),
+                2,
+                3
+            )
+        );
+    }
+}
+
 /// Synthetic fixture, not light-cljs output: description callbacks and
 /// symbol-keyed accessors retain their operands across suspension and GC.
 #[test]
