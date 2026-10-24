@@ -189,14 +189,23 @@ fn function_constructor_source_limits_and_small_stacks() {
     }
     // Compilation, error cleanup, and nested dynamic compilation must also
     // remain on the dedicated compiler stack.
-    for body in [
-        format!("return {}2{}", "(".repeat(40), ")".repeat(40)),
-        format!("return {}2{}", "(".repeat(256), ")".repeat(256)),
-        "return Function('return 2')()".to_owned(),
+    for (body, expected) in [
+        (
+            format!("return {}2{}", "(".repeat(40), ")".repeat(40)),
+            ValueView::Number(2.0),
+        ),
+        (
+            format!("return {}2{}", "(".repeat(256), ")".repeat(256)),
+            ValueView::Bool(false),
+        ),
+        (
+            "return Function('return 2')()".to_owned(),
+            ValueView::Number(2.0),
+        ),
     ] {
         let rt = Runtime::new();
         let text = rt.root(Primitive::String(body.as_str().into()));
-        let caller = compile_function("function caller(body) { try { return Function(body)(); } catch(e) { if (e instanceof SyntaxError) return 2; throw e; } }").unwrap();
+        let caller = compile_function("function caller(body) { try { return Function(body)(); } catch(e) { if (e instanceof SyntaxError) return false; throw e; } }").unwrap();
         let task = rt.spawn(&caller, &[&text]).unwrap();
         let value = std::thread::Builder::new()
             .stack_size(64 * 1024)
@@ -209,7 +218,7 @@ fn function_constructor_source_limits_and_small_stacks() {
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(value, ValueView::Number(2.0));
+        assert_eq!(value, expected, "{body}");
     }
 }
 
