@@ -38,6 +38,7 @@ impl WeakRefObject {
             Some(TraceEdge::Symbol(_)) => {
                 Value::Symbol(self.target.symbol().expect("symbol target").clone())
             }
+            Some(TraceEdge::PropertyKey(_)) => unreachable!("WeakRef targets are values"),
             None => Value::Undefined,
         }
     }

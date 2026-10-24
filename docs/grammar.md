@@ -785,15 +785,6 @@ checks left to later stages:
   after a string's own indices below its length (`"abc"[1]` is `"b"`)
   and its `length` (clj-quickjs-142); boolean bases fail with
   `UnsupportedOperand` until clj-quickjs-39.
-- **Property names are never forgotten** (clj-quickjs-115). Each new
-  name a write uses, by `o.name = v`, `{name: v}` or a computed
-  `o[k] = v` (also one that then fails), is interned in the runtime-wide
-  property-key table for the life of the runtime (reads and array
-  indices on arrays intern nothing). With computed keys the table grows with the number of
-  distinct names a program writes (`o["k" + i] = i` in a loop adds one
-  name per iteration), not with live objects; the collector reclaiming
-  unused names is clj-quickjs-259 (`docs/architecture.md`, "Ordinary
-  objects", Consequences).
 - **Array method gaps** (clj-quickjs-118, -154, -155, -156).
   An array literal is an array object with elements, holes and an
   automatic `length`, inheriting from `Array.prototype`, a realm

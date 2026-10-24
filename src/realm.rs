@@ -591,6 +591,13 @@ impl Trace for Intrinsics {
             .copied()
             .map(Into::into)
             .for_each(&mut *visit);
+        // Views also hold raw key ids. Trace them explicitly, independently
+        // of the matching immutable object storage.
+        for view in &self.views {
+            for (key, _) in &view.properties {
+                key.trace(visit);
+            }
+        }
         for (_, id) in self
             .templates
             .lock()

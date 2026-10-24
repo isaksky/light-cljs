@@ -536,8 +536,9 @@ pub(crate) struct Heap {
     sources: Mutex<SourceRegistry>,
     /// The object table.
     objects: Mutex<ObjectTable>,
-    /// The runtime-wide property-key table (`crate::object`). A leaf lock
-    /// outside the order below: never held together with another heap lock.
+    /// The runtime-wide property-key table (`crate::object`). Mutators take
+    /// its leaf lock outside other heap locks; the stopped collector sweeps
+    /// it with only `gc` held, after releasing the other tracing locks.
     keys: PropertyKeys,
     /// Collection observers ([`gc::CollectionObserver`]). A leaf lock: never
     /// held with another heap lock or while an observer runs.

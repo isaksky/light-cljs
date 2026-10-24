@@ -1585,6 +1585,69 @@ Design: `design.md` §§4, 11.
   unit tests in `src/value/string.rs`, `src/value.rs`,
   `src/collections/map.rs`, `src/atom.rs` and `src/value/share.rs`.
 
+## Interned property-key reclamation (clj-quickjs-259)
+
+**Decision.** Property-key slots participate in the existing precise
+stop-the-world collector through `TraceEdge::PropertyKey`. A traced
+`PropertyKey` reports its slot and, for a symbol key, the symbol's independent
+identity (which also retains symbol-keyed ephemerons). After the entire
+strong/ephemeron mark, the collector removes unmarked names and symbols from
+both lookup indexes, drops their immutable bodies, and puts the vacant u32
+slots on a free list. Only then may mutators resume. No slot held by traced
+storage is reissued, and live keys keep their identities and creation order.
+Deleted properties and unsuccessful writes retain no slot after collection.
+
+The key table is not a root. Its name/symbol indexes are reconstruction
+metadata, never strong symbol edges. A rooted symbol *value* does not need
+to retain an unused property-key slot: later writes intern that same symbol
+identity again. `Symbol.for`'s separate registry keeps its existing lifetime.
+Hash indexes shrink after large transient batches. Slot/free-list metadata
+retains its allocation high-water mark and is reused; name and description
+storage follows live keys, rather than all names ever written. Collection
+scans the slot high-water mark, as the heap's object sweep does.
+
+**Holder inventory.** Every ordinary property store traces keys alongside
+values, accessors and prototypes. This covers plain and published/frozen
+objects; arrays' named properties; Map, WeakMap, WeakRef, finalization and
+disposable stores; ArrayBuffer, typed arrays and generators; and functions'
+separate metadata/own-property objects. Promise edges, closure captures,
+with-statement object environments, module binding cells and namespace
+exports reach these stores through existing tracing. The realm traces its
+intrinsic objects and explicitly traces the keys of its cached property
+views. Template caches root their arrays, including named properties.
+
+Executable constants, including eval/Function-generated code and child
+functions, contain names or symbol values, not property-key ids; there is
+no persistent inline key cache. Module records and per-world loader caches
+also use strings and executable handles, while namespace exports use
+`JsString`. The public embedder API exposes strings/symbols and rooted
+values, not raw `PropertyKey`s. No additional key-root API is needed today.
+Any future holder/cache of raw ids must implement `Trace` and be reachable
+from the root inventory before it crosses a safepoint.
+
+**Operation-local keys.** The `Interned` cache in `vm/property.rs`, key
+enumeration snapshots, function-store builders and publication diagnostics
+use ids only within a registered, non-safepoint operation. VM polls run
+before these helpers; helpers return accessor callees before JavaScript is
+invoked. Resumable descriptors, coercion and other native continuations
+retain a `Key` name/symbol or a `Value`, and look up the slot again when
+needed. A raw key in a Rust local alone is not a root, including inside a
+scope that explicitly calls collection. Mutators take the key-table lock
+outside other heap locks. The collector sweeps it with only the rendezvous
+lock held after releasing its other tracing locks, before ending the pause.
+
+**Alternatives.** Per-key reference counts would add bookkeeping to copied
+ids and every temporary operation. Never reusing ids would release text but
+eventually exhaust the u32 space under repeated garbage batches. Tracing
+uses the existing pause and holder inventory instead. QuickJS's free-slot
+list (`research/quickjs/quickjs.c`, `JS_FreeAtomStruct`, revision
+7d1c13c5d8f8) is a reference only; its atom reference counting is not used.
+
+Lib tests exercise repeated batches of computed writes returning to the
+prior table size, surviving reads and stable live ids, slot reuse across
+names and symbols, and collection at every instruction budget boundary
+through ordinary/exotic stores, accessors and class fields.
+
 ## Ordinary objects (clj-quickjs-114)
 
 Contract: `src/object.rs` (`OrdinaryObject`, `PropertyKey`,
@@ -1622,13 +1685,13 @@ are interned on first definition (`PutField`, `DefineField`); `GetField`
 only looks up, so reading a never-defined name grows nothing. Keys compare
 and hash by their private id (derived Rust equality), never by a user hook;
 the table's `HashMap<JsString, PropertyKey>` uses the standard randomized
-hasher. Its `RwLock` is a leaf lock, never held with another heap lock, and
-consulted before the object lock is taken. A symbol key (clj-quickjs-127)
-will be a fresh id without a name entry. They are QuickJS's `JSAtom`s but
+hasher. Mutators consult its leaf `RwLock` before taking the object lock;
+the stopped collector sweeps it with only the rendezvous lock held.
+A symbol key (clj-quickjs-127) has an id without a name entry. They are QuickJS's `JSAtom`s but
 are not called atoms (`crate::atom` is the concurrent reference).
 
 **Tracing and publication.** `OrdinaryObject`'s `Trace` reports every
-property value and the prototype; the root inventory lists the holder
+property key, value and the prototype; the root inventory lists the holder
 (`object_property_retains` / `object_property_reclaims`). Publication
 rejects any value reaching an ordinary object, and describes the path on
 into its property values (`.property(name)`, "Publication rules" above).
@@ -1683,20 +1746,11 @@ for a write the right-hand side is evaluated first (PutValue).
   constant, but executable code is runtime-independent, so its keys are
   looked up at run time). A per-task or per-code key cache is a later
   optimization.
-- Interned names are never removed: the table grows with the number of
-  distinct names ever written in the runtime (a write interns its name
-  before it looks at the object, so a write that then fails interns too).
-  Computed keys (clj-quickjs-115) make that data-dependent
-  (`o["k" + i] = i` in a loop interns one name per iteration). Decision
-  (clj-quickjs-115): computed access ships without key reclamation, and
-  the growth is documented as an explicit gap (`docs/grammar.md`,
-  "Property names are never forgotten"). Reads (`GetField`, `GetElem`)
-  only look names up and array indices on arrays are never interned, so
-  only writes of new names grow the table, by one entry per distinct
-  name (not per object). Reclaiming unused names needs the collector to
-  mark the keys of every live object, the realm and any key an operation
-  holds across a safepoint, and to reissue an id only after a full
-  mark: that is clj-quickjs-259.
+- Unused interned names and symbol keys are reclaimed at collection
+  (clj-quickjs-259, decision below), including keys from failed writes or
+  deleted properties. Reads only look names up; array indices on arrays
+  are never interned. Between collections the table can grow with new
+  writes; after collection it holds only keys retained by traced storage.
 - The storage leaves room for the later pellets: the entry's value becomes
   a data/accessor enum for getters and setters (clj-quickjs-119/-120);
   `prototype` gets set by `Object.prototype` and `Object.create`
@@ -1957,7 +2011,7 @@ the element or property is added.
   one is an explicit copy (a later intrinsic if fixtures need it).
 - *Elements as ordinary named properties* (QuickJS's slow arrays only):
   no new storage, but every index would be interned in the runtime-wide
-  key table (which never shrinks), each element would cost a key lookup
+  key table, each element would cost a key lookup
   under the table lock, and index order would need a sort. Rejected.
 - *A dense vector only*: holes are cheap, but `a[4294967294] = 1` would
   allocate gigabytes. Rejected for the dense-plus-sparse split, which
@@ -1988,8 +2042,8 @@ the element or property is added.
   are supported (clj-quickjs-153); remaining methods belong to their own built-in pellets.
 - Computed keys make the property-key table data-dependent: `o[k] = v`
   with arbitrary string keys interns each new name (array indices on
-  arrays never do). Key reclamation by the collector is clj-quickjs-259
-  ("Ordinary objects", Consequences).
+  arrays never do). The collector reclaims unused keys (clj-quickjs-259,
+  "Interned property-key reclamation" below).
 - These instructions are all of computed member access
   (clj-quickjs-115 added its tests and documentation, no new
   representation): `a[k]` and `a[k] = v` with primitive keys on every
@@ -4611,12 +4665,11 @@ The alternatives were a traced heap kind (requiring rooting for a primitive
 with no heap edges), and a runtime-only identity table (preventing independent
 host ownership). An immutable leaf keeps `Primitive::Symbol` root-free,
 shareable by construction, and safely transferable between executors. The last
-value releases an ordinary symbol's body and description, unless it has been
-used to define a property: the runtime's property-key table retains those
-symbols until heap drop, just as it retains interned string names. The shared
-u32 key space bounds the table to 2^32 entries; reads of absent symbols do not
-intern. This follows the existing key-table lifetime policy rather than
-introducing a second collector. The three well-known bodies (`iterator`,
+value releases an ordinary symbol's body and description once the collector
+has also reclaimed any unused property-key entry holding it (clj-quickjs-259).
+Live symbol properties retain both the key slot and the symbol identity.
+The shared u32 key space bounds the table to 2^32 occupied slots; reads of
+absent symbols do not intern. The three well-known bodies (`iterator`,
 `toPrimitive`, `hasInstance`) live in process-wide OnceLocks and are shared by
 all realms and tasks until process exit.
 
@@ -4760,7 +4813,8 @@ The alternatives were a process-global mutable registry (unbounded retention
 beyond runtime drop) and per-task tables (incorrect worker/task identity).
 The existing heap ownership supplies the runtime boundary without adding
 per-worker imports or a global interpreter lock. Entries are append-only and
-currently unbounded, following property-key table lifetime policy.
+currently unbounded. This `Symbol.for` registry is separate from the
+collector-reclaimed property-key table (clj-quickjs-259).
 
 `Symbol.for` and `Symbol.keyFor` append to the built-in registry and are realm
 methods with the existing METHOD flags. The leaf `for` path completes primitive

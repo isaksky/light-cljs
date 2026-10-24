@@ -144,6 +144,10 @@
 //! realm intrinsic is read from the realm's immutable view instead, with no
 //! lock: `crate::realm`, "Lock-free reads"), and the property-key table is
 //! consulted before, never while that lock is held.
+//! Polls run before the operation, never inside these helpers. Interned
+//! key caches (including `Interned`) end before returning to the dispatch
+//! loop; accessor calls are returned as values for a later VM step. Keys
+//! carried across that step use `Key` names/symbols, never raw key ids.
 
 use std::fmt;
 

@@ -199,12 +199,14 @@ pub(crate) enum RootCategory {
     WeakNotification,
 }
 
-/// Strong tracing includes symbol identities even though their immutable
-/// bodies live outside the heap. Arc ownership is not GC reachability.
+/// Strong tracing includes property keys and symbol identities even though
+/// their immutable bodies live outside the heap. Arc ownership is not GC
+/// reachability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum TraceEdge {
     Object(ObjectId),
     Symbol(u64),
+    PropertyKey(crate::object::PropertyKey),
 }
 
 impl From<ObjectId> for TraceEdge {
@@ -213,7 +215,8 @@ impl From<ObjectId> for TraceEdge {
     }
 }
 
-/// Report every strong object reference and symbol identity held by `self`.
+/// Report every strong object reference, property key and symbol identity
+/// held by `self`.
 /// Implementations must not allocate on the heap, take heap locks, or run
 /// bytecode (the collector calls them while holding the heap locks).
 pub(crate) trait Trace {
@@ -1223,7 +1226,7 @@ impl Heap {
                     live += 1;
                     Some(id)
                 }
-                TraceEdge::Symbol(_) => None,
+                TraceEdge::Symbol(_) | TraceEdge::PropertyKey(_) => None,
             };
             marked.insert(edge);
             if let Some(values) = pending.remove(&edge) {
@@ -1309,7 +1312,14 @@ impl Heap {
             delivery,
             was_delivering: IN_NOTIFICATION.with(|active| active.replace(true)),
         };
-        drop((objects, registry, scopes, roots, world));
+        drop((objects, registry, scopes, roots));
+        // Key tracing takes no key-table lock. Sweep only after the full
+        // ephemeron fixpoint, with other heap locks released and the world
+        // still stopped: no mutator can hold an unreported operation-local
+        // key here or reuse a slot before its last traced holder is gone.
+        self.keys
+            .sweep(|key| marked.contains(&TraceEdge::PropertyKey(key)));
+        drop(world);
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, retired, retired_symbols, sources));

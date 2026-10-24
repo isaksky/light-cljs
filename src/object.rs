@@ -60,8 +60,8 @@
 //! never by any user-defined comparison. A symbol key (clj-quickjs-127) is a
 //! fresh id with no name entry. A name is interned when a property with it
 //! is first defined; a read of a name that was never interned cannot find a
-//! property and does not grow the table. Interned names are never removed
-//! (see the decision record for the bound and the follow-up).
+//! property and does not grow the table. The collector reclaims untraced
+//! keys and reuses their slots after a full mark (clj-quickjs-259).
 //!
 //! These keys are QuickJS's `JSAtom`s (`research/quickjs/quickjs.c`,
 //! revision 7d1c13c5d8f8, `__JS_NewAtom`); they are not called atoms here
@@ -91,9 +91,19 @@ use crate::value::{JsString, JsSymbol, Value};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PropertyKey(u32, Option<u64>);
 
-/// The runtime-wide property-key table (one per heap). Its lock is a leaf:
-/// it is never held while another heap lock is taken, nor taken while one
-/// is held, and it is held only to look up or insert one name.
+impl Trace for PropertyKey {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        visit(crate::heap::gc::TraceEdge::PropertyKey(*self));
+        if let Some(id) = self.1 {
+            visit(crate::heap::gc::TraceEdge::Symbol(id));
+        }
+    }
+}
+
+/// The runtime-wide property-key table (one per heap). Mutators take its
+/// leaf lock only outside other heap locks. The stopped collector sweeps it
+/// with only the rendezvous lock held. Raw keys must be traced across a
+/// safepoint; operation-local caches must end before the next safepoint.
 #[derive(Debug, Default)]
 pub(crate) struct PropertyKeys {
     table: RwLock<KeyTable>,
@@ -102,8 +112,9 @@ pub(crate) struct PropertyKeys {
 #[derive(Debug, Default)]
 struct KeyTable {
     ids: HashMap<JsString, PropertyKey>,
-    names: Vec<StoredKey>,
+    names: Vec<Option<StoredKey>>,
     symbols: HashMap<JsSymbol, PropertyKey>,
+    free: Vec<u32>,
 }
 
 #[derive(Debug)]
@@ -112,16 +123,39 @@ enum StoredKey {
     Symbol(JsSymbol),
 }
 
+impl KeyTable {
+    fn insert(&mut self, entry: StoredKey) -> Option<PropertyKey> {
+        let index = match self.free.pop() {
+            Some(index) => index,
+            None => u32::try_from(self.names.len()).ok()?,
+        };
+        let key = PropertyKey(
+            index,
+            match &entry {
+                StoredKey::Name(_) => None,
+                StoredKey::Symbol(symbol) => Some(symbol.identity()),
+            },
+        );
+        if index as usize == self.names.len() {
+            self.names.push(Some(entry));
+        } else {
+            self.names[index as usize] = Some(entry);
+        }
+        Some(key)
+    }
+}
+
 impl PropertyKeys {
-    /// The key of `name` if some property was ever defined with it. A
+    /// The key of `name` if it is currently interned. A
     /// shared read lock only.
     pub(crate) fn lookup(&self, name: &JsString) -> Option<PropertyKey> {
         let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
         table.ids.get(name).copied()
     }
 
-    /// The key of `name`, interning it if new. `None` only when 2^32 names
-    /// have been interned.
+    /// The key of `name`, interning it if new. `None` only when all 2^32
+    /// slots are occupied. The caller stays in heap access without a
+    /// safepoint until the key is installed in traced storage or discarded.
     pub(crate) fn intern(&self, name: &JsString) -> Option<PropertyKey> {
         if let Some(key) = self.lookup(name) {
             return Some(key);
@@ -130,8 +164,7 @@ impl PropertyKeys {
         if let Some(&key) = table.ids.get(name) {
             return Some(key);
         }
-        let key = PropertyKey(u32::try_from(table.names.len()).ok()?, None);
-        table.names.push(StoredKey::Name(name.clone()));
+        let key = table.insert(StoredKey::Name(name.clone()))?;
         table.ids.insert(name.clone(), key);
         Some(key)
     }
@@ -139,25 +172,22 @@ impl PropertyKeys {
     /// The name `key` was interned for.
     pub(crate) fn name(&self, key: PropertyKey) -> Option<JsString> {
         let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
-        match table.names.get(key.0 as usize)? {
+        match table.names.get(key.0 as usize)?.as_ref()? {
             StoredKey::Name(name) => Some(name.clone()),
             StoredKey::Symbol(_) => None,
         }
     }
 
     /// Symbols occupy the same private u32 key space as names, without
-    /// entering the name index. Entries retain identity and description
-    /// until heap drop, like interned names (docs/architecture.md).
+    /// entering the name index. Like names, their table entries live only
+    /// while traced keys hold them. Symbol value identity is independent
+    /// of the reusable property-key slot.
     pub(crate) fn intern_symbol(&self, symbol: &JsSymbol) -> Option<PropertyKey> {
         let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(&key) = table.symbols.get(symbol) {
             return Some(key);
         }
-        let key = PropertyKey(
-            u32::try_from(table.names.len()).ok()?,
-            Some(symbol.identity()),
-        );
-        table.names.push(StoredKey::Symbol(symbol.clone()));
+        let key = table.insert(StoredKey::Symbol(symbol.clone()))?;
         table.symbols.insert(symbol.clone(), key);
         Some(key)
     }
@@ -173,20 +203,54 @@ impl PropertyKeys {
 
     pub(crate) fn symbol(&self, key: PropertyKey) -> Option<JsSymbol> {
         let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
-        match table.names.get(key.0 as usize)? {
+        match table.names.get(key.0 as usize)?.as_ref()? {
             StoredKey::Symbol(symbol) => Some(symbol.clone()),
             StoredKey::Name(_) => None,
         }
     }
 
-    /// Number of interned names (tests).
+    /// Reclaim unused names and symbols after the complete strong/ephemeron
+    /// mark. Only the stopped collector calls this, before mutators resume.
+    pub(crate) fn sweep(&self, is_live: impl Fn(PropertyKey) -> bool) {
+        let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
+        for index in 0..table.names.len() {
+            let Some(entry) = &table.names[index] else {
+                continue;
+            };
+            let key = PropertyKey(
+                index as u32,
+                match entry {
+                    StoredKey::Name(_) => None,
+                    StoredKey::Symbol(symbol) => Some(symbol.identity()),
+                },
+            );
+            if is_live(key) {
+                continue;
+            }
+            match table.names[index].take().unwrap() {
+                StoredKey::Name(name) => {
+                    table.ids.remove(&name);
+                }
+                StoredKey::Symbol(symbol) => {
+                    table.symbols.remove(&symbol);
+                }
+            }
+            table.free.push(index as u32);
+        }
+        // Release hash-index capacity after a large transient batch too.
+        if table.ids.capacity() > table.ids.len().saturating_mul(4) {
+            table.ids.shrink_to_fit();
+        }
+        if table.symbols.capacity() > table.symbols.len().saturating_mul(4) {
+            table.symbols.shrink_to_fit();
+        }
+    }
+
+    /// Number of occupied name and symbol slots (tests).
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.table
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .names
-            .len()
+        let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
+        table.names.len() - table.free.len()
     }
 }
 
@@ -964,7 +1028,7 @@ pub(crate) enum DeleteOutcome {
     NonConfigurable,
 }
 
-/// The collector traces every property value and the prototype.
+/// The collector traces every property key, value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(segmenter) = &self.segmenter {
@@ -995,9 +1059,7 @@ impl Trace for OrdinaryObject {
             error.trace(visit);
         }
         for (key, property) in &self.entries {
-            if let Some(id) = key.1 {
-                visit(crate::heap::gc::TraceEdge::Symbol(id));
-            }
+            key.trace(visit);
             property.value.trace(visit);
             if let Some((get, set)) = &property.accessor {
                 get.trace(visit);
@@ -1018,6 +1080,57 @@ mod tests {
         JsString::from(text)
     }
 
+    /// Synthetic JavaScript fixture, not light-cljs output. The returned
+    /// object is the only surviving root after the script task is dropped.
+    #[test]
+    fn collector_reclaims_computed_keys_and_preserves_live_keys() {
+        use crate::{RunOutcome, Runtime};
+
+        fn run(rt: &Runtime, source: &str) -> crate::Rooted {
+            let code = crate::frontend::compile_script("key-collection", source).unwrap();
+            let task = rt.spawn(&code, &[]).unwrap();
+            match task.run().unwrap() {
+                RunOutcome::Complete(value) => value,
+                other => panic!("{other:?}"),
+            }
+        }
+
+        let rt = Runtime::new();
+        drop(run(&rt, "({})"));
+        rt.collect().unwrap();
+        let baseline = rt.heap().keys().len();
+        let live = run(&rt, "({'259-live': 73})");
+        rt.collect().unwrap();
+        let live_key = rt.heap().keys().lookup(&s("259-live")).unwrap();
+        assert_eq!(rt.heap().keys().len(), baseline + 1);
+        for batch in 0..3 {
+            drop(run(
+                &rt,
+                &format!(
+                    "for (let i = 0; i < 300; i++) {{ let dead = {{}}; dead['259-garbage-{batch}-' + i] = i; }} 0"
+                ),
+            ));
+            assert!(rt.heap().keys().len() >= baseline + 301);
+            rt.collect().unwrap();
+            assert_eq!(rt.heap().keys().len(), baseline + 1);
+            assert_eq!(rt.heap().keys().lookup(&s("259-live")), Some(live_key));
+            let Value::Object(id) = live.value_in(rt.heap()).unwrap() else {
+                panic!("expected object")
+            };
+            rt.heap()
+                .read(id, |object| {
+                    let crate::heap::HeapObject::Plain(object) = object else {
+                        panic!("expected ordinary object")
+                    };
+                    assert_eq!(object.get_own(live_key).unwrap().value, Value::Number(73.0));
+                })
+                .unwrap();
+        }
+        drop(live);
+        rt.collect().unwrap();
+        assert_eq!(rt.heap().keys().len(), baseline);
+    }
+
     #[test]
     fn keys_are_interned_once_and_lookups_do_not_intern() {
         let keys = PropertyKeys::default();
@@ -1035,6 +1148,137 @@ mod tests {
         assert_eq!(keys.lookup(&s("x")), Some(x));
         assert_eq!(keys.name(y), Some(s("y")));
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn reclaimed_name_and_symbol_slots_are_reused() {
+        let keys = PropertyKeys::default();
+        let live = keys.intern(&s("live")).unwrap();
+        let dead_name_slot = keys.intern(&s("dead")).unwrap().0;
+        let symbol = JsSymbol::new(Some(s("description")));
+        let dead_symbol_slot = keys.intern_symbol(&symbol).unwrap().0;
+        keys.sweep(|key| key == live);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys.lookup(&s("dead")), None);
+        assert_eq!(keys.lookup_symbol(&symbol), None);
+        let replacement_name = keys.intern(&s("replacement")).unwrap();
+        let replacement_symbol = keys.intern_symbol(&symbol).unwrap();
+        assert_eq!(replacement_name.0, dead_symbol_slot);
+        assert_eq!(replacement_symbol.0, dead_name_slot);
+        assert_eq!(keys.intern(&s("live")), Some(live));
+        assert_eq!(keys.name(live), Some(s("live")));
+        assert_eq!(keys.name(replacement_name), Some(s("replacement")));
+        assert_eq!(keys.symbol(replacement_symbol), Some(symbol));
+        assert_eq!(keys.table.read().unwrap().names.len(), 3);
+    }
+
+    /// Synthetic fixture, not light-cljs output. A key used only by an
+    /// unmarked object must not retain a symbol in the property table.
+    #[test]
+    fn collector_reclaims_symbol_keys() {
+        use crate::heap::{Heap, HeapObject, Rooted};
+        use std::sync::Arc;
+        let heap = Arc::new(Heap::default());
+        let live_symbol = JsSymbol::new(Some(s("live")));
+        let live = {
+            let mut object = OrdinaryObject::new(None);
+            object.define(
+                heap.keys().intern_symbol(&live_symbol).unwrap(),
+                Value::Number(42.0),
+            );
+            Rooted::new(
+                &heap,
+                Value::Object(heap.alloc(HeapObject::Plain(object)).unwrap()),
+            )
+        };
+        for i in 0..300 {
+            let symbol = JsSymbol::new(Some(s(&format!("garbage-{i}"))));
+            let mut object = OrdinaryObject::new(None);
+            object.define(heap.keys().intern_symbol(&symbol).unwrap(), Value::Null);
+            heap.alloc(HeapObject::Plain(object)).unwrap();
+        }
+        assert_eq!(heap.keys().len(), 301);
+        heap.collect().unwrap();
+        assert_eq!(heap.keys().len(), 1);
+        {
+            let key = heap.keys().lookup_symbol(&live_symbol).unwrap();
+            assert_eq!(heap.keys().symbol(key), Some(live_symbol.clone()));
+            let Value::Object(id) = live.value_in(&heap).unwrap() else {
+                unreachable!()
+            };
+            heap.read(id, |object| {
+                let HeapObject::Plain(object) = object else {
+                    unreachable!()
+                };
+                assert_eq!(object.get_own(key).unwrap().value, Value::Number(42.0));
+            })
+            .unwrap();
+        }
+        // A symbol value alone holds no raw property-key id. Reinterning it
+        // after its property's death still preserves symbol value identity.
+        let symbol_root = Rooted::new(&heap, Value::Symbol(live_symbol.clone()));
+        drop(live);
+        heap.collect().unwrap();
+        assert_eq!(heap.keys().len(), 0);
+        assert_eq!(heap.keys().lookup_symbol(&live_symbol), None);
+        let key = heap.keys().intern_symbol(&live_symbol).unwrap();
+        assert_eq!(heap.keys().symbol(key), Some(live_symbol));
+        drop(symbol_root);
+    }
+
+    /// Synthetic fixture, not light-cljs output. Collect at every budget
+    /// boundary, including accessor calls and lazy function-store creation.
+    #[test]
+    fn property_stores_and_resumable_keys_survive_collection() {
+        use crate::{Budget, RunOutcome, Runtime, ValueView};
+        let source = r#"
+            let symbol = Symbol('259-key');
+            let objects = [{}, [], new Map(), new WeakMap(), function() {},
+                (function() {}).bind(null), new ArrayBuffer(8), new Uint8Array(2),
+                (function*() { yield 1; })(), new WeakRef({}),
+                new FinalizationRegistry(() => {}), new DisposableStack()];
+            for (let i = 0; i < objects.length; i++) {
+                objects[i]['259-store-' + i] = i;
+                objects[i][symbol] = i + 100;
+                Object.defineProperty(objects[i], '259-accessor', {
+                    get() { return this[symbol]; }
+                });
+            }
+            class C { ['259-field'] = 21; ['259-method']() { return this['259-field']; } }
+            let ok = true;
+            for (let i = 0; i < objects.length; i++) {
+                ok = ok && objects[i]['259-store-' + i] === i
+                    && objects[i][symbol] === i + 100
+                    && objects[i]['259-accessor'] === i + 100;
+            }
+            let deleted = {};
+            deleted['259-deleted'] = 1;
+            delete deleted['259-deleted'];
+            try { Object.defineProperty(Object.preventExtensions({}), '259-failed', {value: 1}); } catch(e) {}
+            ok && new C()['259-method']() === 21
+        "#;
+        let rt = Runtime::new();
+        let code = crate::frontend::compile_script("key-safepoints", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        for _ in 0..5000 {
+            match task
+                .run_with(Budget::instructions(1), &mut crate::host::NoHost)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    rt.collect().unwrap();
+                    assert_eq!(rt.heap().keys().lookup(&s("259-deleted")), None);
+                    assert_eq!(rt.heap().keys().lookup(&s("259-failed")), None);
+                    return;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        panic!("fixture exceeded instruction bound");
     }
 
     #[test]
