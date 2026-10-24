@@ -4,8 +4,12 @@
 // this runtime. The helper closes over `slot` (a parameter never reassigned,
 // so it is copied and the closure passes the publication check) and descends
 // `depth` levels through that slot of a form, returning the subtree it
-// reaches unchanged.
+// reaches unchanged. A negative slot is a producer failure: the task throws
+// and fails (the `failure` variant), and the host publishes that failure.
 function produce_select(slot) {
+  if (slot < 0) {
+    throw slot;
+  }
   return function select(form, depth) {
     let node = form;
     let left = depth;

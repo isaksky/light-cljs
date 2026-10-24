@@ -55,7 +55,10 @@ cargo test --test need            # __rt.need: suspend at the need, resume witho
 cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo test --test exceptions      # throw, try/catch/finally, completion records, yields inside handlers
 cargo run --example e2e           # end-to-end compiler-host scenario on two workers (prints its trace)
-cargo test --test e2e             # the same scenario, asserted
+cargo run --example e2e -- failure    # ... the producer task fails; both consumers catch it
+cargo run --example e2e -- cancel     # ... the claiming consumer is cancelled while parked
+cargo run --example e2e -- companion  # ... a fold callback waits inside try/finally with a live closure
+cargo test --test e2e             # every e2e scenario, asserted
 cargo test --test native_fold     # resumable natives: a fold whose callback waits, needAll, GC
 cargo test --lib vm::native::     # leaf versus resumable natives, step accounting
 cargo test --test exception_waits # waits inside handlers, catchable dependency failures, cancellation cleanup
@@ -854,10 +857,12 @@ asserts it. The JavaScript is the synthetic fixtures `examples/e2e/*.js`
 compiler or C engine is used. Steps: Rust builds and roots one nested
 persistent form; two consumer tasks receive that same root on two pinned
 workers, run their pre-wait JavaScript and suspend at
-`__rt.need(7, 2)` (a callable that does not exist yet); each worker then
+`__rt.need(7, 2)` (a callable that does not exist yet), inside a
+`try`/`catch`/`finally`; each worker then
 runs an unrelated task; a worker forces a collection; only then a producer
 task runs `producer.js`, whose result (a function compiled by this
-runtime's frontend) the host publishes once; both consumers resume on the other worker, call
+runtime's frontend) the host publishes once; both consumers resume on the
+other worker, run their finally block once (not before the wait), call
 the helper and return subtrees of the input.
 
 What the assertions prove (`tests/e2e.rs`), with §13's numbering:
@@ -891,13 +896,41 @@ executor record.
 
 Not shown here (deferred):
 
-- Failure, cancellation and companion scenarios (§13 item 8 beyond
-  success, exception/finally state, native-to-JavaScript reentry): pellet
-  clj-quickjs-29.
 - The glue is example code: the host holds the producer request and runs
   the producer when the scenario says so (it does not use `host::sim`'s
   worlds and producers, whose callables are still host tokens), and the
   executor still has no producer bindings or wait-cycle detection.
+
+### End-to-end failure, cancellation and companion scenarios (clj-quickjs-29)
+
+The same example, fixtures, host, driver and steps, with one host decision
+changed per variant (`examples/e2e/scenario.rs`, `Variant`), plus a
+companion scenario on the same stage. Each command is deterministic: the
+asserted per-task effects, worker placements, endings and publication are
+identical on every run (`every_variant_is_deterministic`); only which
+consumer claims the producer request races, and the variants assert in
+terms of the claimant.
+
+| Command | What happens | What it proves (§13) |
+|---------|--------------|----------------------|
+| `cargo run --example e2e` (`success`) | as above; the finally block around the need runs once, after the wait (CLEANUP before POST) | items 1-7, item 8 completion; exception/finally state held across a wait, collection and migration |
+| `cargo run --example e2e -- failure` | the producer task is given slot -1, `producer.js` throws and the task fails; the host publishes `Completion::Failed` with a value naming the throw's line and column; the one publication wakes both consumers | item 8 failure: both consumers are woken once, resume on the other worker, their `catch` observes the dependency error (CAUGHT), the finally block runs after it, and each returns the error object whose `Rooted::error_cause` *is* the published value; the cell holds that object; nothing before the need is replayed |
+| `cargo run --example e2e -- cancel` | after both consumers park, the host cancels the one whose need claimed the producer request (`Executor::cancel`) | item 8 cancellation: its cleanup run (enqueued as `Cancelled`, on the other worker) runs the pending finally block once (no catch, nothing after the need) and ends `Cancelled`; the cell keeps its producer and loses only that waiter; the producer still completes and its publication wakes only the other consumer, which completes with the input's subtree by identity |
+| `cargo run --example e2e -- companion` | one `companion.js` task reaches the helper from inside `__rt.reduce`'s JavaScript callback, inside two `try`/`finally` blocks, with two closures sharing a reassigned local | closing paragraph: a nested call (fold → callback → helper), a live closure-captured local, try/finally state and native-to-JavaScript reentry. The task suspends inside the fold's callback, is parked through a collection, resumes on the other worker; VISIT runs once per step (1, then 2: the counter is one live binding, no step repeated), the inner then outer finally run once each after the fold, and the returned vector holds the input's body and inner subtrees by identity (not equal copies) |
+
+Tests: `cargo test --test e2e` (each row has its own test; the event
+record and the host trace are checked for order, including cleanup:
+cancellation request, finally effect, `Cancelled` run, then the rest of
+the scenario). The fixtures are written for this crate (no QuickJS text is
+adapted).
+
+Deferred:
+
+- An uncaught dependency failure, and a cancellation or failure while
+  parked inside the native fold, are not part of the example (covered by
+  `tests/exception_waits.rs` and `tests/native_unwind.rs`); error objects
+  still have no JavaScript-readable properties, so the consumer returns the
+  caught error for Rust to inspect.
 
 ### Resumable native operations (clj-quickjs-12)
 

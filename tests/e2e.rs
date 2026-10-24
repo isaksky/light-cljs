@@ -1,8 +1,11 @@
-//! The end-to-end synthetic compiler-host success scenario (pellet
-//! clj-quickjs-13, `docs/design.md` §13), asserted.
+//! The end-to-end synthetic compiler-host scenarios (`docs/design.md` §13),
+//! asserted: the success scenario (pellet clj-quickjs-13), its producer
+//! failure and consumer cancellation variants, and the companion scenario
+//! (pellet clj-quickjs-29).
 //!
-//! Each test runs the scenario of `examples/e2e/scenario.rs` (the same code
-//! `cargo run --example e2e` runs; its module docs list the steps) and
+//! Each test runs a scenario of `examples/e2e/scenario.rs` (the same code
+//! `cargo run --example e2e -- <variant>` runs; its module docs list the
+//! steps) and
 //! checks one group of claims against the executor's event record, the
 //! host's trace and the returned handles. The JavaScript is the synthetic
 //! fixtures `examples/e2e/*.js` (not light-cljs output), compiled and run by
@@ -14,10 +17,13 @@
 mod scenario;
 
 use clj_quickjs::exec::{EnqueueReason, Event, EventKind, OutcomeKind, Placement, WorkerId};
-use clj_quickjs::{CellStatus, MutatorState, TaskId, TaskStatus, ValueView};
+use clj_quickjs::{
+    CellStatus, DependencyKey, MutatorState, TaskId, TaskStatus, ValueView, VmErrorKind,
+};
 
 use scenario::{
-    CONSUMERS, ConsumerReport, EXPECTED_REPORT, MEET, POST, PRE, REPORT, Report, Trace, WORK,
+    CAUGHT, CLEANUP, COMPANION_TAG, CONSUMERS, ConsumerReport, EXPECTED_REPORT, INNER, MEET, OUTER,
+    POST, PRE, PublishedAs, REPORT, Report, Trace, VISIT, Variant, WORK, effects_of, events_of,
 };
 
 fn run() -> Report {
@@ -25,7 +31,7 @@ fn run() -> Report {
 }
 
 /// Line and column of `__rt.need(7, 2)` in `examples/e2e/consumer.js`.
-const NEED_AT: (u32, u32) = (23, 18);
+const NEED_AT: (u32, u32) = (29, 14);
 
 fn other(worker: WorkerId) -> WorkerId {
     WorkerId::new(1 - worker.index())
@@ -154,16 +160,16 @@ fn returned_subtrees_keep_the_input_identity() {
     let report = run();
     let (copy, copy_body, copy_inner) = scenario::build_form(&report.rt);
     for (c, copied) in report.consumers.iter().zip([&copy_body, &copy_inner]) {
-        assert_eq!(c.result.view(), ValueView::Object);
+        assert_eq!(c.result().view(), ValueView::Object);
         assert!(
-            c.result.same_object(&c.expected),
+            c.result().same_object(&c.expected),
             "{} returned another object",
             c.task
         );
-        assert!(!c.result.same_object(&report.form));
-        assert!(!c.result.same_object(copied));
+        assert!(!c.result().same_object(&report.form));
+        assert!(!c.result().same_object(copied));
         report.rt.scope(|s| {
-            let (r, k) = (s.local(&c.result).unwrap(), s.local(copied).unwrap());
+            let (r, k) = (s.local(c.result()).unwrap(), s.local(copied).unwrap());
             assert!(s.value_equals(r, k), "the copy is equal, not identical");
         });
     }
@@ -185,7 +191,7 @@ fn returned_subtrees_keep_the_input_identity() {
     // Results stay valid roots after the executor is gone.
     report.rt.collect().unwrap();
     for c in &report.consumers {
-        assert!(c.result.same_object(&c.expected));
+        assert!(c.result().same_object(&c.expected));
     }
 }
 
@@ -343,10 +349,12 @@ fn resumed_consumers_migrate_and_replay_nothing() {
             [
                 (PRE, first),
                 (MEET, first),
+                (CLEANUP, second),
                 (POST, second),
                 (REPORT, second)
             ],
-            "pre-wait effects ran once, on the first worker"
+            "pre-wait effects ran once, on the first worker; the finally block \
+             around the need ran once, after the wait"
         );
         assert_ne!(effects[0].1, effects[2].1, "resumed on another OS thread");
     }
@@ -387,9 +395,15 @@ fn events_follow_the_scenario_order() {
         |x| matches!(*x, Trace::Finished { task, value: ValueView::Object } if task == report.producer),
     );
     let published = position(t, |x| matches!(x, Trace::Published { .. }));
-    let resumed: Vec<[usize; 2]> = consumers
+    let resumed: Vec<[usize; 3]> = consumers
         .iter()
-        .map(|&c| [position(t, effect(c, POST)), position(t, effect(c, REPORT))])
+        .map(|&c| {
+            [
+                position(t, effect(c, CLEANUP)),
+                position(t, effect(c, POST)),
+                position(t, effect(c, REPORT)),
+            ]
+        })
         .collect();
     let finished: Vec<usize> = consumers
         .iter()
@@ -415,11 +429,12 @@ fn events_follow_the_scenario_order() {
     );
     assert!(max(&work) < collected, "{t:#?}");
     assert!(collected < produced && produced < published, "{t:#?}");
-    // Each resumed consumer runs POST, then REPORT, then is finished; the
-    // two resumed runs are independent of each other.
-    for ([post, report_at], done) in resumed.iter().zip(&finished) {
+    // Each resumed consumer runs its finally block (CLEANUP), POST, then
+    // REPORT, then is finished; the two resumed runs are independent of
+    // each other.
+    for ([cleanup, post, report_at], done) in resumed.iter().zip(&finished) {
         assert!(
-            published < *post && post < report_at && report_at < done,
+            published < *cleanup && cleanup < post && post < report_at && report_at < done,
             "{t:#?}"
         );
     }
@@ -488,4 +503,428 @@ fn events_follow_the_scenario_order() {
         let done = one(ev, is(c, EventKind::Released(OutcomeKind::Completed))).seq;
         assert!(woken < resumed && resumed < done, "{ev:#?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Failure, cancellation and companion scenarios (pellet clj-quickjs-29,
+// §13 item 8 and its closing paragraph).
+
+/// Line and column of `throw slot;` in `examples/e2e/producer.js`.
+const THROW_AT: (u32, u32) = (11, 5);
+/// Line and column of `__rt.need(7, 2)` in `examples/e2e/companion.js`.
+const COMPANION_NEED_AT: (u32, u32) = (32, 20);
+
+fn run_variant(variant: Variant) -> Report {
+    let report = scenario::run_variant(variant).unwrap_or_else(|e| panic!("{variant:?}: {e}"));
+    assert_eq!(report.variant, variant);
+    report
+}
+
+/// The executor record of a task submitted to `first` that parked on `key`,
+/// was enqueued again for `reason` on the other worker and ended `end`
+/// there: exactly two dispatches.
+fn parked_then(
+    first: WorkerId,
+    key: DependencyKey,
+    reason: EnqueueReason,
+    end: OutcomeKind,
+) -> Vec<(Option<WorkerId>, EventKind)> {
+    let second = other(first);
+    vec![
+        (
+            None,
+            EventKind::Enqueued {
+                reason: EnqueueReason::Submitted,
+                placement: Placement::Worker(first),
+            },
+        ),
+        (Some(first), EventKind::Dispatched { execution: 1 }),
+        (Some(first), EventKind::Released(OutcomeKind::Waiting(key))),
+        (
+            None,
+            EventKind::Enqueued {
+                reason,
+                placement: Placement::Worker(second),
+            },
+        ),
+        (Some(second), EventKind::Dispatched { execution: 2 }),
+        (Some(second), EventKind::Released(end)),
+    ]
+}
+
+fn kinds(events: &[&Event]) -> Vec<(Option<WorkerId>, EventKind)> {
+    events.iter().map(|e| (e.worker, e.kind.clone())).collect()
+}
+
+/// (operation, worker) of each effect.
+fn ops(effects: &[(WorkerId, std::thread::ThreadId, u16, f64)]) -> Vec<(u16, WorkerId)> {
+    effects.iter().map(|e| (e.2, e.0)).collect()
+}
+
+/// §13 item 8, failure: the producer task fails (its `throw`), the host
+/// publishes that failure once, and the one completion wakes both parked
+/// consumers. Each resumes on the other worker, its `need` raises the
+/// dependency error, its `catch` observes it (CAUGHT), its `finally` runs
+/// after the catch (CLEANUP), and it returns the error object, whose cause
+/// is the very value the host published. Nothing after the need runs, and
+/// nothing before it runs twice.
+#[test]
+fn producer_failure_wakes_both_consumers_and_their_catch_observes_it() {
+    let report = run_variant(Variant::ProducerFailure);
+    let t = &report.trace;
+
+    // The producer task failed at the throw of producer.js.
+    let failure = report.producer_failure.as_ref().expect("producer failed");
+    assert_eq!(failure.kind(), VmErrorKind::Thrown, "{failure}");
+    let at = failure.diagnostic().source.expect("source position");
+    assert_eq!((at.line, at.column), THROW_AT);
+    one(
+        &report.events,
+        is(report.producer, EventKind::Released(OutcomeKind::Failed)),
+    );
+    // The published failure value names that position, and the cell holds
+    // that same object.
+    assert_eq!(report.published, PublishedAs::Failure);
+    report.rt.scope(|s| {
+        let v = s.local(&report.published_value).unwrap();
+        let n = |i| s.view(s.nth(v, i).unwrap());
+        assert_eq!(s.count(v).unwrap(), 2);
+        assert_eq!(n(0), ValueView::Number(f64::from(THROW_AT.0)));
+        assert_eq!(n(1), ValueView::Number(f64::from(THROW_AT.1)));
+    });
+    match &report.cell_after {
+        CellStatus::Failed(v) => assert!(v.same_object(&report.published_value)),
+        other => panic!("cell after: {other:?}"),
+    }
+
+    // One publication, after the failure, woke both consumers.
+    let failed = position(
+        t,
+        |x| matches!(*x, Trace::Failed { task, .. } if task == report.producer),
+    );
+    let published = position(t, |x| matches!(x, Trace::Published { .. }));
+    assert!(failed < published, "{t:#?}");
+    let Trace::Published {
+        published: PublishedAs::Failure,
+        woke,
+        ..
+    } = &t[published]
+    else {
+        panic!("{:?}", t[published])
+    };
+    let mut woke = woke.clone();
+    woke.sort();
+    assert_eq!(woke, ids(&report));
+    assert_eq!(
+        t.iter()
+            .filter(|x| matches!(x, Trace::Published { .. }))
+            .count(),
+        1
+    );
+
+    for c in &report.consumers {
+        let (first, second) = (c.spec.start, other(c.spec.start));
+        // Woken once, resumed on the other worker, settled (completed: the
+        // catch returned).
+        assert_eq!(
+            kinds(&report.events_of(c.task)),
+            parked_then(
+                first,
+                report.key,
+                EnqueueReason::Woken,
+                OutcomeKind::Completed
+            )
+        );
+        // Effects: pre-wait once; then catch, then finally, both after the
+        // publication; no POST or REPORT.
+        let effects = report.effects_of(c.task);
+        assert_eq!(
+            ops(&effects),
+            [
+                (PRE, first),
+                (MEET, first),
+                (CAUGHT, second),
+                (CLEANUP, second)
+            ]
+        );
+        assert_eq!(effects[2].3, c.spec.tag, "this consumer's catch block");
+        assert!(published < position(t, effect(c.task, CAUGHT)), "{t:#?}");
+
+        // The caught value is the dependency error raised at the need, and
+        // its cause is the published value itself (identity).
+        let result = c.result();
+        let error = result.error().expect("an error object");
+        assert_eq!(error.kind(), VmErrorKind::DependencyFailed(report.key));
+        let at = error.diagnostic().source.expect("need position");
+        assert_eq!((at.line, at.column), NEED_AT);
+        let cause = result.error_cause().expect("a cause");
+        assert!(cause.same_object(&report.published_value));
+    }
+}
+
+/// §13 item 8, cancellation: the consumer whose need claimed the producer
+/// request is cancelled while parked. Its cleanup run (on the other worker)
+/// runs its pending finally block once (CLEANUP; no catch, no POST) and ends
+/// `Cancelled`, leaving the cell. The cell and its producer are untouched:
+/// the producer still runs, its one publication wakes only the other
+/// consumer, which completes with the input's subtree as in the success
+/// scenario.
+#[test]
+fn cancelling_the_claimant_leaves_the_producer_and_the_other_consumer_able_to_complete() {
+    let report = run_variant(Variant::ConsumerCancel);
+    let t = &report.trace;
+    let cancelled = report.cancelled.expect("a cancelled consumer");
+    assert_eq!(report.requests.len(), 1);
+    let request = report.requests[0];
+    assert_eq!(cancelled, request.task, "the claimant was cancelled");
+    let (gone, kept): (Vec<_>, Vec<_>) = report.consumers.iter().partition(|c| c.cancelled());
+    let ([gone], [kept]) = (gone.as_slice(), kept.as_slice()) else {
+        panic!("one cancelled consumer and one other")
+    };
+    assert_eq!(gone.task, cancelled);
+
+    // The cancelled consumer: enqueued by its cancellation (never woken),
+    // its cleanup run on the other worker.
+    let (first, second) = (gone.spec.start, other(gone.spec.start));
+    assert_eq!(
+        kinds(&report.events_of(gone.task)),
+        parked_then(
+            first,
+            report.key,
+            EnqueueReason::Cancelled,
+            OutcomeKind::Cancelled
+        )
+    );
+    assert_eq!(
+        ops(&report.effects_of(gone.task)),
+        [(PRE, first), (MEET, first), (CLEANUP, second)],
+        "the finally block ran once as cleanup; no catch, nothing after the need"
+    );
+    assert_eq!(gone.status_after_collection, TaskStatus::Cancelled);
+    // Cleanup order in the host trace: the request, the finally block, the
+    // end of the cleanup run, then the rest of the scenario.
+    let requested = position(
+        t,
+        |x| matches!(*x, Trace::CancelRequested { task } if task == cancelled),
+    );
+    let cleanup = position(t, effect(cancelled, CLEANUP));
+    let ended = position(
+        t,
+        |x| matches!(*x, Trace::Cancelled { task, .. } if task == cancelled),
+    );
+    let first_work = position(
+        t,
+        |x| matches!(*x, Trace::Finished { task, .. } if report.work.contains(&task)),
+    );
+    assert!(
+        requested < cleanup && cleanup < ended && ended < first_work,
+        "{t:#?}"
+    );
+
+    // The cell kept its producer and lost only the cancelled waiter.
+    match report
+        .cell_after_cancel
+        .as_ref()
+        .expect("cell after cancel")
+    {
+        CellStatus::Pending {
+            producer: Some(p),
+            waiters,
+        } => {
+            assert_eq!(*p, request.producer);
+            assert_eq!(waiters, &[kept.task]);
+        }
+        other => panic!("cell after cancel: {other:?}"),
+    }
+
+    // The producer completed and its one publication woke only the other
+    // consumer.
+    one(
+        &report.events,
+        is(report.producer, EventKind::Released(OutcomeKind::Completed)),
+    );
+    assert_eq!(report.published, PublishedAs::Helper);
+    let published = position(t, |x| matches!(x, Trace::Published { .. }));
+    let Trace::Published { woke, .. } = &t[published] else {
+        unreachable!()
+    };
+    assert_eq!(woke, &[kept.task]);
+    match &report.cell_after {
+        CellStatus::Ready(v) => assert!(v.same_object(&report.published_value)),
+        other => panic!("cell after: {other:?}"),
+    }
+
+    // The other consumer completes exactly as in the success scenario.
+    let (first, second) = (kept.spec.start, other(kept.spec.start));
+    assert_eq!(kept.status_after_collection, TaskStatus::Waiting);
+    assert_eq!(
+        kinds(&report.events_of(kept.task)),
+        parked_then(
+            first,
+            report.key,
+            EnqueueReason::Woken,
+            OutcomeKind::Completed
+        )
+    );
+    let effects = report.effects_of(kept.task);
+    assert_eq!(
+        ops(&effects),
+        [
+            (PRE, first),
+            (MEET, first),
+            (CLEANUP, second),
+            (POST, second),
+            (REPORT, second)
+        ]
+    );
+    assert_eq!(effects[4].3, EXPECTED_REPORT);
+    assert!(published < position(t, effect(kept.task, CLEANUP)));
+    assert!(kept.result().same_object(&kept.expected));
+}
+
+/// Companion scenario (§13 closing paragraph): a nested call, a live
+/// closure-captured local, try/finally state and native-to-JavaScript
+/// reentry, on the same executor and host. `__rt.reduce` calls the
+/// JavaScript `step`, whose `need` suspends the whole task inside the fold
+/// and inside two try blocks; it is collected while parked and resumes on
+/// the other worker, where the fold continues with its second step. The
+/// effect counts prove no step ran twice and the captured counter is one
+/// live binding; the finally blocks ran once each, inner first, after the
+/// fold; the result holds the input's subtrees by identity.
+#[test]
+fn companion_fold_suspends_in_its_callback_and_completes_after_migrating() {
+    let report = scenario::run_companion().unwrap_or_else(|e| panic!("companion: {e}"));
+    let (t, ev) = (&report.trace, &report.events);
+    let (first, second) = (WorkerId::new(0), WorkerId::new(1));
+
+    // Suspended inside the callback, at its need; parked through the
+    // collection; resumed once, on the other worker.
+    assert_eq!(
+        kinds(&events_of(ev, report.task)),
+        parked_then(
+            first,
+            report.key,
+            EnqueueReason::Woken,
+            OutcomeKind::Completed
+        )
+    );
+    let at = report.suspended_at.expect("suspended at the need");
+    assert_eq!((at.line, at.column), COMPANION_NEED_AT);
+    assert_eq!(report.status_after_collection, TaskStatus::Waiting);
+    let collected = one(ev, |e| matches!(e.kind, EventKind::Collected(_))).seq;
+    let wait = one(
+        ev,
+        is(
+            report.task,
+            EventKind::Released(OutcomeKind::Waiting(report.key)),
+        ),
+    )
+    .seq;
+    let resumed = one(ev, is(report.task, EventKind::Dispatched { execution: 2 })).seq;
+    assert!(wait < collected && collected < resumed, "{ev:#?}");
+    assert_eq!(report.requests.len(), 1);
+    assert_eq!(report.requests[0].task, report.task);
+
+    // Effect counts and order: VISIT once per step (the first before the
+    // wait, never repeated), with the closure's counter 1 then 2; the inner
+    // finally (reading the counter through the other closure: 2), then the
+    // outer finally, once each, after the fold returned.
+    let effects = effects_of(t, report.task);
+    let got: Vec<(u16, f64, WorkerId)> = effects.iter().map(|e| (e.2, e.3, e.0)).collect();
+    assert_eq!(
+        got,
+        [
+            (VISIT, 1.0, first),
+            (VISIT, 2.0, second),
+            (INNER, 2.0, second),
+            (OUTER, COMPANION_TAG, second),
+        ]
+    );
+    assert_ne!(effects[0].1, effects[1].1, "resumed on another OS thread");
+    let suspended = position(t, |x| matches!(x, Trace::Suspended { .. }));
+    let published = position(t, |x| matches!(x, Trace::Published { .. }));
+    let finished = position(
+        t,
+        |x| matches!(*x, Trace::Finished { task, .. } if task == report.task),
+    );
+    assert!(position(t, effect(report.task, VISIT)) < suspended);
+    assert!(
+        suspended < published && published < position(t, effect(report.task, INNER)),
+        "{t:#?}"
+    );
+    assert!(position(t, effect(report.task, OUTER)) < finished);
+
+    // The fold's result: one subtree per step, each the same object as the
+    // one Rust navigates to in the input, and not an equal copy.
+    let (_copy, copy_body, copy_inner) = scenario::build_form(&report.rt);
+    report.rt.scope(|s| {
+        let result = s.local(&report.result).unwrap();
+        assert_eq!(s.count(result).unwrap(), 2);
+        let form = s.local(&report.form).unwrap();
+        let body = s.nth(form, 2).unwrap();
+        let inner = s.nth(body, 2).unwrap();
+        for (i, (expected, (navigated, copied))) in report
+            .expected
+            .iter()
+            .zip([(body, &copy_body), (inner, &copy_inner)])
+            .enumerate()
+        {
+            let picked = s.nth(result, i).unwrap();
+            assert!(s.same_object(picked, s.local(expected).unwrap()));
+            assert!(s.same_object(picked, navigated));
+            let copied = s.local(copied).unwrap();
+            assert!(s.value_equals(picked, copied) && !s.same_object(picked, copied));
+        }
+    });
+}
+
+/// The documented commands are deterministic: running each variant twice
+/// gives the same per-consumer effect sequences (operation, worker,
+/// argument), endings and publication. Which consumer claims the producer
+/// request races, so in the cancel variant consumers are compared by
+/// ending rather than by tag.
+#[test]
+fn every_variant_is_deterministic() {
+    type Shape = Vec<(bool, Vec<(u16, WorkerId, f64)>)>;
+    fn shape(report: &Report, by_tag: bool) -> Shape {
+        let mut shape: Shape = report
+            .consumers
+            .iter()
+            .map(|c| {
+                let effects = report.effects_of(c.task);
+                let effects = effects
+                    .iter()
+                    .map(|e| {
+                        if by_tag {
+                            (e.2, e.0, e.3)
+                        } else {
+                            (e.2, WorkerId::new(0), 0.0)
+                        }
+                    })
+                    .collect();
+                (c.cancelled(), effects)
+            })
+            .collect();
+        if !by_tag {
+            shape.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        }
+        shape
+    }
+    for variant in Variant::ALL {
+        let (a, b) = (run_variant(variant), run_variant(variant));
+        assert_eq!(a.published, b.published, "{variant:?}");
+        let by_tag = variant != Variant::ConsumerCancel;
+        assert_eq!(shape(&a, by_tag), shape(&b, by_tag), "{variant:?}");
+    }
+    let effects = |r: &scenario::CompanionReport| -> Vec<(u16, WorkerId, f64)> {
+        effects_of(&r.trace, r.task)
+            .iter()
+            .map(|e| (e.2, e.0, e.3))
+            .collect()
+    };
+    let (a, b) = (
+        scenario::run_companion().unwrap(),
+        scenario::run_companion().unwrap(),
+    );
+    assert_eq!(effects(&a), effects(&b));
 }

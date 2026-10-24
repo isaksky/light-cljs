@@ -1020,9 +1020,28 @@ docs.
   recorded events (`wait_for`), terminal outcomes and the rendezvous.
   Orders that are genuinely racy (which consumer claims the request, which
   resumed consumer finishes first) are not asserted.
-- **Deferred.** Failure, cancellation and companion scenarios
-  (clj-quickjs-29); `host::sim` integration and executor-side cycle
-  detection.
+- **Variants (clj-quickjs-29).** `run_variant(Variant)` shares one `Stage`
+  (runtime, executor, input, driver, hosts) and the same fixtures and
+  steps; each variant changes one decision of the host. `failure` gives
+  the producer task a slot `producer.js` throws on; the driver traces the
+  failed run and the host publishes `Completion::Failed` with a value it
+  builds from the failure's source position. `cancel` cancels the request's
+  claimant with `Executor::cancel` right after both consumers park and
+  waits for its `Released(Cancelled)`; the placement hook sends a
+  cancellation's cleanup run to the other worker, like a wake. The driver
+  traces `Cancelled` and `Failed` runs; the host traces its cancellation
+  request (before calling `cancel`, since the cleanup run may start at
+  once) and whether a publication was the helper or a failure. The
+  consumer fixture's `need` sits in `try`/`catch`/`finally`, so every
+  variant shows the pending finally block surviving the wait.
+- **Companion (clj-quickjs-29).** `run_companion()` runs one
+  `companion.js` task on the same stage: its need is inside
+  `__rt.reduce`'s JavaScript callback and two `try`/`finally` blocks, so
+  it parks inside a native frame, is collected, migrates and completes the
+  fold.
+- **Deferred.** `host::sim` integration and executor-side cycle
+  detection; an uncaught dependency failure and cancellation inside the
+  native fold are covered by `tests/native_unwind.rs`, not by the example.
 
 ## Resumable native operations (clj-quickjs-12)
 
