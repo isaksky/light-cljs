@@ -452,6 +452,9 @@ Notes on the grammar:
   const binding per iteration (clj-quickjs-238); `using` must be followed on
   the same line by an identifier other than `of`. `for (using of a)` assigns
   to the identifier `using`; `for (using of of a)` is a syntax error.
+  Classic initializers retain ordinary expression parsing for `using[0]`
+  (including spaces/comments), and for `await using`, `await using()` or
+  `await using.value` in async functions; these have no resource binding.
 - `UsingDeclaration` (clj-quickjs-236): `using` remains contextual;
   `using of = resource` declares `of`, while `using = 1`, `using.x`,
   `using[0]`, `using(1)` and `let using` retain their expression/binding
@@ -2076,6 +2079,9 @@ for (using x of [{n: 1, [Symbol.dispose]() { disposed++; }}]) {
 disposed === 1 && fs[0]() === 1;
 let using;
 for (using of [1, 2]) {}
+using = [42];
+for (using/*comment*/[0]; false;) {}
+async function f(using) { for (await using; false;) {} }
 ```
 
 ```js reject Invalid 1:6

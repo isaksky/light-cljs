@@ -55,6 +55,7 @@ fn for_using_of_loops() {
         "let log = []; for (using x of [{tag: 'a', [Symbol.dispose]() { log.push(this.tag); }}, {tag: 'b', [Symbol.dispose]() { log.push(this.tag); }}, {tag: 'c', [Symbol.dispose]() { log.push(this.tag); }}]) log.push('iter'); log.length === 6 && log.join(',') === 'iter,a,iter,b,iter,c'",
         "let fs = [], caught; for (using x of [{n: 1, [Symbol.dispose]() {}}, {n: 2, [Symbol.dispose]() {}}]) { fs.push(() => x.n); try { x = null; } catch(e) { caught = e; } } caught instanceof TypeError && fs[0]() === 1 && fs[1]() === 2",
         "let using, sum = 0; for (using of [1, 2]) sum += using; sum === 3 && using === 2",
+        "let using = [42]; for (using[0]; false;) {} for (using [0]; false;) {} for (using/*comment*/[0]; false;) {} using[0] === 42",
         "let reads = 0, calls = 0; let r = {get [Symbol.dispose]() { reads++; return function() { if (this === r) calls++; }; }}; for (using x of [r, r]) { Object.defineProperty(r, Symbol.dispose, {value: function() { calls += 10; }}); } reads === 1 && calls === 11",
         "let n = 0; for (using x of [null, undefined]) n++; n === 2",
         "let caught; try { for (using x of x) {} } catch(e) { caught = e; } caught instanceof ReferenceError",
@@ -24270,6 +24271,10 @@ fn async_functions_and_await() {
         }
     }
     let cases = [
+        (
+            "async function f(using) { for (await using; false;) {} for (await using.value; false;) {} for (await using[0]; false;) {} for (await using(); false;) {} return 42; } let using = function() {}; using.value = 1; Object.defineProperty(using, '0', {value: 2}); f(using).then(x => __rt.effect(0, x));",
+            vec![Primitive::Number(42.)],
+        ),
         (
             "let log=''; async function f() { log+='a'; await null; log+='c'; return 7; } let p=f(); log+='b'; if (!(p instanceof Promise)) throw 'promise'; p.then(x => { __rt.effect(0,log); __rt.effect(0,x); });",
             vec![Primitive::String("abc".into()), Primitive::Number(7.)],

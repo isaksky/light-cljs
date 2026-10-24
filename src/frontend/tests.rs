@@ -1847,6 +1847,18 @@ fn for_using_of_heads() {
     assert_eq!(ast("for (using of a) {}"), "(for-of using a (block))");
     assert_eq!(ast("for (using\nof a) {}"), "(for-of using a (block))");
     for source in [
+        "let using = [42]; for (using[0]; false;) {}",
+        "let using = [42]; for (using [0]; false;) {}",
+        "let using = [42]; for (using/*comment*/[0]; false;) {}",
+        "let using = [0]; for (using[0] = 42; false;) {}",
+        "async function f(using) { for (await using; false;) {} }",
+        "async function f(using) { for (await using(); false;) {} }",
+        "async function f(using) { for (await using.value; false;) {} }",
+        "async function f(using) { for (await using[0]; false;) {} }",
+    ] {
+        assert!(parse_script(source).is_ok(), "{source}");
+    }
+    for source in [
         "for (using x in o) {}",
         "for (using [a] of b) {}",
         "for (using {a} of b) {}",

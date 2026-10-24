@@ -1072,11 +1072,16 @@ impl<'a> Parser<'a> {
     fn parse_for_head(&mut self) -> PResult<ForHead> {
         let keyword = self.advance()?.span;
         self.expect_punct(Punct::LParen)?;
-        if self.is_keyword(Keyword::Await)
-            && self.peek_next().is_some_and(
-                |next| matches!(&next.kind, TokenKind::Identifier(name) if name == "using"),
-            )
-        {
+        if self.is_keyword(Keyword::Await) && {
+            let mut lookahead = self.lexer.clone();
+            lookahead.next_token().is_ok_and(|next| {
+                matches!(&next.kind, TokenKind::Identifier(name) if name == "using")
+                    && next.span.text(self.src) == "using"
+            }) && lookahead.next_token().is_ok_and(|next| {
+                !next.newline_before
+                    && matches!(&next.kind, TokenKind::Identifier(name) if name != "of")
+            })
+        } {
             return Err(self.unsupported(self.tok.span, "`for (await using ...)` heads are"));
         }
         // `of` immediately after contextual `using` is the separator of an
@@ -1086,7 +1091,12 @@ impl<'a> Parser<'a> {
             && self.peek_next().is_some_and(|next| {
                 !next.newline_before
                     && (matches!(&next.kind, TokenKind::Identifier(name) if name != "of")
-                        || matches!(next.kind, TokenKind::Punct(Punct::LBracket | Punct::LBrace)))
+                        || matches!(next.kind, TokenKind::Punct(Punct::LBrace))
+                        || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
+                            && self.using_array_tail().is_some_and(|tail| {
+                                matches!(tail.kind, TokenKind::Keyword(Keyword::In))
+                                    || tail.span.text(self.src) == "of"
+                            })))
             })
         {
             let start = self.advance()?.span;
@@ -1455,14 +1465,15 @@ impl<'a> Parser<'a> {
                         next.kind,
                         TokenKind::Identifier(_) | TokenKind::Punct(Punct::LBrace)
                     ) || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
-                        && self.using_array_pattern()))
+                        && self
+                            .using_array_tail()
+                            .is_some_and(|tail| tail.kind == TokenKind::Punct(Punct::Assign))))
             })
     }
 
-    /// Retain the subset's explicit rejection of `using [a] = resource`
-    /// binding-pattern attempts without mistaking computed reads for them.
-    /// Token spacing/comments never affect this decision.
-    fn using_array_pattern(&self) -> bool {
+    /// Look past brackets after contextual `using` to distinguish rejected
+    /// binding patterns from computed expressions, regardless of spacing.
+    fn using_array_tail(&self) -> Option<Token> {
         let mut lexer = self.lexer.clone();
         let mut depth = 0;
         while let Ok(token) = lexer.next_token() {
@@ -1471,16 +1482,14 @@ impl<'a> Parser<'a> {
                 TokenKind::Punct(Punct::RBracket) => {
                     depth -= 1;
                     if depth == 0 {
-                        return lexer
-                            .next_token()
-                            .is_ok_and(|next| next.kind == TokenKind::Punct(Punct::Assign));
+                        return lexer.next_token().ok();
                     }
                 }
                 TokenKind::Eof => break,
                 _ => {}
             }
         }
-        false
+        None
     }
 
     #[inline(never)]
