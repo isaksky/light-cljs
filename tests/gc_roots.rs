@@ -1000,6 +1000,8 @@ fn realm_intrinsics_retain() {
         "Object.getOwnPropertyDescriptor(RegExp.prototype, 'unicode').get",
         "Object.getOwnPropertyDescriptor(RegExp.prototype, 'unicodeSets').get",
         "Object.getOwnPropertyDescriptor(RegExp.prototype, 'sticky').get",
+        "BigInt.prototype.toString",
+        "BigInt.prototype.valueOf",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1052,7 +1054,8 @@ fn realm_intrinsics_retain() {
     // UTC field access adds fifteen Date methods (-181).
     // Typed-array set/fill/join append three built-ins (-168).
     // String replacement adds two built-in functions (-189).
-    assert_eq!(rt.heap_usage().objects.builtin, 163);
+    // BigInt conversion adds two built-in methods (-202).
+    assert_eq!(rt.heap_usage().objects.builtin, 165);
     assert_eq!(rt.heap_usage().objects.plain, 33);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

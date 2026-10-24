@@ -678,7 +678,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.trace(&mut |id| ids.push(id));
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 196); // Includes typed-array methods and String replace/replaceAll.
+    assert_eq!(ids.len(), 198); // Includes typed arrays, replacement and BigInt methods.
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
