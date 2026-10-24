@@ -70,6 +70,47 @@ fn derived_constructor_waits_inside_super() {
     }
 }
 
+/// Synthetic fixtures: inherited static accessors keep the derived receiver
+/// while suspended, including special Function.prototype property names.
+#[test]
+fn derived_static_accessors_wait_and_migrate() {
+    for source in [
+        "class C { static get x() { let n = __rt.need(5, 3); return this.n + n; } } class D extends C {} C.n = 1; D.n = 20; D.x",
+        "class C { static set x(v) { let n = __rt.need(5, 3); this.n = v + n; } } class D extends C {} C.n = 1; D.x = 20; D.n + C.n - 1",
+        "class C { static get toString() { let n = __rt.need(5, 3); return this.n + n; } } class D extends C {} C.n = 1; D.n = 20; D.toString",
+        "class C { static set caller(v) { let n = __rt.need(5, 3); this.n = v + n; } } class D extends C {} C.n = 1; D.caller = 20; D.n + C.n - 1",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("static-accessor-wait", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let expected = key(&rt, NUMBER);
+        assert_eq!(waiting(task.run().unwrap()), expected);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+        let result = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..2000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut Recorder::default())
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            rt.collect().unwrap();
+                        }
+                        outcome => return number(outcome),
+                    }
+                }
+                panic!("bounded accessor completion")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(result, 30.0, "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Park inside key conversion or
 /// value evaluation, collect every yield, then migrate to another worker.
 #[test]

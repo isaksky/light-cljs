@@ -7352,6 +7352,15 @@ default and Object-derived construction on 64 KiB worker stacks.
 Ordinary Construct dispatches through the small call leaf too, keeping the
 general opcode dispatcher's temporaries off the receiver-allocation stack.
 
+Function-property reads and writes walk the constructor's actual prototype
+chain before rejecting still-missing Function.prototype names such as toString,
+caller and arguments. Bound-function metadata retains the target's internal
+prototype, and materializing an own-property record preserves that link. This
+retains inherited statics through reflection, calls, writes and conversion;
+the existing metadata/record prototype edges are traced by GC. Tests suspend in
+inherited static getters and setters, collect and migrate, and verify that their
+receiver and resulting state belong to the derived constructor.
+
 ### Intl.ListFormat (clj-quickjs-220)
 
 ListFormat uses an ordinary task-owned object with one immutable boxed record

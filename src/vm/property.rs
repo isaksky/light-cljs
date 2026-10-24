@@ -719,7 +719,10 @@ fn lookup(
                 // lazy own metadata such as prototype, length or name.
                 let next = match function::property_record(heap, id)? {
                     Some(record) => record,
-                    None => function::function_prototype(heap)?,
+                    None => match function::inheritance_prototype(heap, id)? {
+                        Some(prototype) => prototype,
+                        None => return Ok(None),
+                    },
                 };
                 Ok(FunctionRead::Continue(next))
             } else if has {

@@ -88,8 +88,8 @@
 //! A function object's JavaScript own properties live in a separate
 //! **property record**: an ordinary object (`HeapObject::Plain`) owned by
 //! the task that created the function, never itself a JavaScript value,
-//! whose `[[Prototype]]` is the function's, `Function.prototype`
-//! (clj-quickjs-102; see below). A function starts without one; the
+//! whose `[[Prototype]]` is the function's (normally `Function.prototype`,
+//! or the superclass for derived constructors, clj-quickjs-137). A function starts without one; the
 //! record is created by the first write of a property (`f.x = 1`) or the
 //! first observation of a lazy `prototype`, and from then on
 //! [`FunctionObject::properties`] names it. Property operations on the
@@ -115,13 +115,15 @@
 //!   preserving creation order. From then on the record is authoritative:
 //!   deletion never reveals the code default again. Publication makes the
 //!   virtual metadata non-configurable, as for bound functions.
-//! * **Inherited reads.** A function's `[[Prototype]]` is
-//!   `Function.prototype` (clj-quickjs-102), a realm intrinsic, and cannot
-//!   be changed yet (`crate::vm::prototype`). A name of
+//! * **Inherited reads.** Ordinary functions inherit from `Function.prototype`
+//!   (clj-quickjs-102); derived classes inherit from their superclass and
+//!   bound functions retain their target's internal prototype (clj-quickjs-137).
+//!   These links cannot be changed explicitly yet (`crate::vm::prototype`). A name of
 //!   [`FUNCTION_PROTOTYPE_NAMES`] (the standard
 //!   `Function.prototype` methods that do not exist yet:
-//!   `toString`, ...) fails with `UnsupportedOperand` unless the function
-//!   has it as its own; any other name continues at `Function.prototype`
+//!   `toString`, ...) fails with `UnsupportedOperand` only if lookup reaches
+//!   that intrinsic without finding an own or inherited definition. Other
+//!   names continue through the constructor chain to `Function.prototype`
 //!   (`call`, `apply`, `bind`, `constructor`) and then `Object.prototype`, so `f.x`
 //!   is `undefined` until assigned.
 //! * **Ownership.** Only the creating task ([`FunctionObject::owner`])
@@ -282,7 +284,11 @@ pub(crate) fn bind_with_metadata(
             .ok_or_else(exhausted)?,
         _ => JsString::from("bound "),
     };
-    let mut store = OrdinaryObject::intrinsic(Some(function_prototype(heap)?));
+    let Value::Object(target_id) = target else {
+        return Err(Fault::Internal("bound target is not an object"));
+    };
+    let parent = super::prototype::get_prototype_of(heap, task, *target_id)?;
+    let mut store = OrdinaryObject::intrinsic(parent);
     store.define_with(
         intern(heap, "length")?,
         Value::Number(length),
@@ -532,7 +538,7 @@ fn object_prototype(heap: &Heap) -> Result<ObjectId, Fault> {
         .ok_or_else(exhausted)
 }
 
-/// `Function.prototype`, every function's `[[Prototype]]` (clj-quickjs-102).
+/// The default function prototype intrinsic (clj-quickjs-102).
 pub(crate) fn function_prototype(heap: &Heap) -> Result<ObjectId, Fault> {
     realm::intrinsics(heap)
         .map(|r| r.function_prototype)
@@ -663,19 +669,14 @@ fn read_or_probe(
                 FunctionRead::Found(property.value)
             });
         }
-        if name == "prototype" {
-            if info.constructor {
-                if probe {
-                    return Ok(FunctionRead::Found(Value::Undefined));
-                }
-                let record =
-                    writable_record(heap, task, function, &info, &Change::CreatePrototype)?;
-                return Ok(FunctionRead::Found(materialize(
-                    heap, task, function, record,
-                )?));
+        if name == "prototype" && info.constructor {
+            if probe {
+                return Ok(FunctionRead::Found(Value::Undefined));
             }
-        } else if FUNCTION_PROTOTYPE_NAMES.contains(&name) {
-            return Err(unsupported_inherited(name, "read"));
+            let record = writable_record(heap, task, function, &info, &Change::CreatePrototype)?;
+            return Ok(FunctionRead::Found(materialize(
+                heap, task, function, record,
+            )?));
         }
     }
     match info.record {
@@ -837,7 +838,15 @@ fn change_target(
             None => false,
         };
         if !own {
-            return Err(unsupported_inherited(name, "set"));
+            // Probe the actual constructor chain without invoking accessors.
+            // The property walker rejects a missing Function.prototype name
+            // only when it reaches that intrinsic, after inherited statics.
+            match super::property::has_property(heap, task, &Value::Object(function), key) {
+                Err(Fault::Unsupported(_)) => return Err(unsupported_inherited(name, "set")),
+                result => {
+                    result?;
+                }
+            }
         }
     }
     let record = writable_record(heap, task, function, &info, &Change::Write(key))?;
@@ -909,7 +918,8 @@ fn writable_record(
     }
     // Allocated, then attached in the same instruction (no safepoint
     // between): reachable from the function, which the frame holds.
-    let mut fresh = OrdinaryObject::with_prototype(task, function_prototype(heap)?);
+    let mut fresh = OrdinaryObject::new(Some(task));
+    fresh.set_prototype(inheritance_prototype(heap, function)?);
     for name in ["length", "name"] {
         let key = Key::Name(JsString::from(name));
         if let Some(p) = initial_metadata(heap, task, info, &key)? {
@@ -1052,7 +1062,8 @@ pub(crate) fn inheritance_prototype(
     heap: &Heap,
     function: ObjectId,
 ) -> Result<Option<ObjectId>, Fault> {
-    let record = info(heap, function)?.record;
+    let info = info(heap, function)?;
+    let record = info.record.or(info.defaults);
     if let Some(record) = record {
         return heap
             .read(record, |o| match o {

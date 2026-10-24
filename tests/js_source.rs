@@ -145,6 +145,49 @@ fn derived_classes_error_positions() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: constructor inheritance must
+/// precede the explicit gaps on Function.prototype itself.
+#[test]
+fn derived_classes_inherited_function_names() {
+    for source in [
+        "class A { static toString() { return 7; } static caller() { return 8; } static arguments() { return 9; } } class B extends A {} B.toString() === 7 && B.caller() === 8 && B.arguments() === 9 && 'toString' in B && 'caller' in B && 'arguments' in B",
+        "class A { static toString() { return 7; } static caller() { return 8; } static arguments() { return 9; } } class B extends A {} B.toString = 10; B.caller = 11; B.arguments = 12; B.toString === 10 && B.caller === 11 && B.arguments === 12 && A.toString() === 7 && A.caller() === 8 && A.arguments() === 9",
+        "class A { static get toString() { return this.x; } static set toString(v) { this.x = v; } } class B extends A {} B.toString = 7; B.toString === 7 && A.x === undefined && !Object.getOwnPropertyDescriptor(B, 'toString')",
+        "class A {} Object.defineProperty(A, 'caller', {value:7}); class B extends A {} let ok = false; try { B.caller = 8; } catch(e) { ok = e instanceof TypeError; } ok && B.caller === 7",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn derived_classes_bound_static_inheritance() {
+    for source in [
+        "class A { static f() { return this.x; } } class B extends A {} let bound = B.bind(null); bound.x = 7; Object.getPrototypeOf(bound) === A && bound.f() === 7 && A.x === undefined && new bound() instanceof B",
+        "class A { static f() { return 7; } } class B extends A {} let bound = B.bind(null); let before = Object.getPrototypeOf(bound) === A && bound.f() === 7; bound.own = 1; before && Object.getPrototypeOf(bound) === A && bound.f() === 7 && bound.own === 1",
+        "class A { static toString() { return 7; } } class B extends A {} let bound = B.bind(null).bind(null); let before = bound.toString() === 7 && Object.getPrototypeOf(bound) === A; bound.toString = 8; before && bound.toString === 8 && B.toString() === 7 && Object.getPrototypeOf(bound) === A",
+        "class A { static toString() { return 'ok'; } } class B extends A {} let bound = B.bind(null); '' + bound === 'ok'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Native allocation beyond Object remains an explicit scoped gap.
+#[test]
+fn derived_classes_builtin_parent_gaps() {
+    for parent in ["Array", "Error", "Date", "Promise"] {
+        assert_eq!(
+            eval(&format!(
+                "class D extends {parent} {{}} Object.getPrototypeOf(D) === {parent} && Object.getPrototypeOf(D.prototype) === {parent}.prototype"
+            )),
+            ValueView::Bool(true)
+        );
+        assert_eq!(
+            failure(&format!("class D extends {parent} {{}} new D();")).kind(),
+            VmErrorKind::UnsupportedOperand
+        );
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. The C/E/P cases adapt
 /// QuickJS test_language.js::test_class (license notice below).
 #[test]

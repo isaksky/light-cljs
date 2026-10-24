@@ -5252,6 +5252,9 @@ derived constructor's prototype. An object return overrides the receiver;
 undefined returns the initialized receiver, otherwise ReferenceError if missing.
 Any other primitive return throws TypeError. Finally blocks finish before these
 return checks.
+Inherited statics include getters/setters and names such as `toString`, `caller`
+and `arguments`; a bound derived constructor retains its target's internal
+prototype and inherited statics when adding own properties.
 
 Rejected forms: `super()` outside a derived constructor or its arrows, and
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
