@@ -394,6 +394,10 @@ enum ConvertTarget {
     },
 
     BigIntToString,
+    DateFunction,
+    DateLocalString {
+        part: u8,
+    },
 }
 
 /// The operation-specific state of a native frame.
@@ -1246,11 +1250,8 @@ pub(crate) fn start_builtin(
         }
         Builtin::Date => {
             if !construct {
-                return Err(Fault::Unsupported(
-                    "Date() requires string formatting support".into(),
-                ));
-            }
-            if args.is_empty() {
+                (ConvertTarget::DateFunction, vec![], Hint::Number)
+            } else if args.is_empty() {
                 (
                     ConvertTarget::DateNow { construct: true },
                     vec![],
@@ -1276,6 +1277,14 @@ pub(crate) fn start_builtin(
             vec![],
             Hint::Number,
         ),
+        Builtin::DateToLocalString(part) if !construct => {
+            super::date::this_time_value(heap, state.diag.task, this)?;
+            (
+                ConvertTarget::DateLocalString { part },
+                vec![this.clone()],
+                Hint::Number,
+            )
+        }
         Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset if !construct => {
             let field = match which {
                 Builtin::DateGetLocalField(f) => f,
@@ -1603,7 +1612,10 @@ pub(crate) fn start_builtin(
         (1, operands.len())
     } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
         (0, 1)
-    } else if matches!(target, ConvertTarget::DateLocalGet { .. }) {
+    } else if matches!(
+        target,
+        ConvertTarget::DateLocalGet { .. } | ConvertTarget::DateLocalString { .. }
+    ) {
         (operands.len(), operands.len())
     } else if matches!(
         target,
@@ -2797,6 +2809,24 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::DateFunction => {
+                        let time = super::date::now(host)?;
+                        let zone = super::date::zone(heap, host);
+                        Ok(Action::Return(super::date::format_string(
+                            time,
+                            Some(zone),
+                            3,
+                        )))
+                    }
+                    ConvertTarget::DateLocalString { part } => {
+                        let time = super::date::this_time_value(heap, task, &operands[0])?;
+                        let zone = super::date::zone(heap, host);
+                        Ok(Action::Return(super::date::format_string(
+                            time,
+                            Some(zone),
+                            part,
+                        )))
+                    }
                     ConvertTarget::DateNow { construct } => {
                         let time = super::date::now(host)?;
                         if construct {

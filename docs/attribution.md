@@ -657,3 +657,13 @@ from `research/quickjs/intl/intl.c` through the existing exporter, with complete
 C/Rust equality verification, repeatability, edge cases and pinned input hashes.
 The decimal integration examples adapt the upstream test expectations and retain the QuickJS MIT notice
 beside the test. No C engine, ICU, new dataset or crate dependency is used.
+
+## Date non-locale formatting (clj-quickjs-183)
+
+`research/quickjs/quickjs.c::get_date_fields`, `get_date_string`,
+`getTimezoneOffset`, `js_date_constructor`, and the Date prototype registration
+table at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` were semantic
+references for local/UTC text, minute-offset truncation, the UTC alias, and
+function-call behavior. The Rust formatter is independently written; the new
+source fixtures are synthetic, not light-cljs output, and do not copy upstream
+test text. No additional data or dependencies were imported.

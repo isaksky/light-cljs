@@ -65,6 +65,7 @@
 //! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; unbranded ordinary prototype | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
 //! | `Date.prototype.toISOString` (clj-quickjs-180) | leaf built-in | length 0; method flags |
 //! | `Date.prototype` UTC fields (clj-quickjs-181) | eight leaf getters, seven resumable setters | getter lengths 0; setter lengths 3, 2, 1, 4, 3, 2, 1; method flags |
+//! | `Date.prototype` string formats (clj-quickjs-183) | three local methods, UTC method and identical `toGMTString` alias | lengths 0; method flags; `Date()` formats host time |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -1403,6 +1404,14 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
         let method = b.function(which, &[])?;
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
     }
+    for part in 1..=3 {
+        let which = Builtin::DateToLocalString(part);
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let utc_string = b.function(Builtin::DateToUtcString, &[])?;
+    b.add(prototype, "toUTCString", utc_string, PropertyFlags::METHOD)?;
+    b.add(prototype, "toGMTString", utc_string, PropertyFlags::METHOD)?;
     Some((prototype, constructor))
 }
 
@@ -1792,7 +1801,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 227); // Includes Date host methods, Promise and NumberFormat.
+        assert_eq!(first.all.len(), 231); // Includes NumberFormat and Date string formats (-183).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

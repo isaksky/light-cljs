@@ -5605,3 +5605,30 @@ Percent/currency styles and nonstandard notations,
 formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
 Non-decimal styles and nonstandard notations throw RangeError. General
 Object.prototype.toString tag consumption remains the existing explicit gap.
+
+## Date non-locale string formatting (clj-quickjs-183)
+
+`vm/date.rs::format_string` shares bounded calendar decomposition with ISO
+formatting and field access. It emits QuickJS's local date/time parts or its
+complete UTC form, including English day/month names, signed negative years
+with at least four digits, and `Invalid Date` for NaN. The formatter truncates
+the existing runtime zone's seconds offset toward zero to minutes before
+decomposition, matching QuickJS's `get_date_fields` and `get_date_string`.
+It prints `GMT±hhmm` without an abbreviation; UTC prints `GMT`. No tables,
+dependencies or heap kinds are added. Local getters keep their second precision.
+
+Four append-only built-ins are rooted in the Date realm. `toUTCString` is a
+bounded leaf; `toGMTString` aliases that exact function. Local formatting uses
+the existing traced native conversion frame with no argument conversions so
+the embedding host can supply the runtime zone. The new Date function target
+ignores arguments, reads the host clock once and formats the clipped time
+without allocating a Date object or invoking overridable prototype methods.
+Both effects follow clj-quickjs-182's unrecorded leaf host boundary. The Date
+slot and normal access checks remain unchanged. `toJSON` and default Date
+coercion still fail explicitly; explicit string conversion can call `toString`.
+
+Source tests `date_to_string_formats`, `date_string_format_receivers_and_descriptors`
+and `date_string_named_zone_formats` cover fixed/named zones, DST, minute
+truncation, invalid dates, calendar endpoints, alias identity, metadata, argument
+ignoring, and clock reads. One-instruction yields with collection check the
+native frame's receiver roots. Existing intrinsic/GC counts grow by four.

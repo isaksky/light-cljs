@@ -1064,7 +1064,8 @@ fn realm_intrinsics_retain() {
     // Promise adds one prototype and five built-ins (-246).
     // Local Date fields and host inputs add seventeen built-ins (-182).
     // NumberFormat adds one prototype and five built-ins (-213).
-    assert_eq!(rt.heap_usage().objects.builtin, 192);
+    // Date non-locale formatting adds four built-ins (-183).
+    assert_eq!(rt.heap_usage().objects.builtin, 196);
     assert_eq!(rt.heap_usage().objects.plain, 35);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

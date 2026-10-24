@@ -3830,3 +3830,20 @@ input over 100,000 characters or exponent magnitude over 10,000 throws RangeErro
 when the numeric syntax is valid. Malformed strings produce localized NaN;
 surrounding whitespace follows JavaScript's rules. BigInt decimal conversion
 yields through the shared native conversion state.
+
+## Date non-locale formats (clj-quickjs-183)
+
+Execution: `Date.prototype.toString`, `toDateString`, `toTimeString`,
+`toUTCString` and `toGMTString` are branded methods with length zero. They
+ignore arguments, reject receivers without an own Date slot with TypeError,
+and return `Invalid Date` for an invalid slot. Local formats use English
+three-letter day/month names and the runtime zone's `GMT±hhmm` offset; UTC
+uses `Day, dd Mon yyyy hh:mm:ss GMT`. Negative years have a minus sign and
+at least four digits. The two UTC names reference the same function object.
+`Date()` ignores its arguments and returns the current host time in the local
+`toString` format. Its hostless clock failure is RangeError. These replace
+earlier explicit formatting gaps; `String(date)` now uses the Date formatter.
+
+Explicit gaps: parsing, default Date coercion, `toJSON`, and `toLocale*String`
+remain deferred. Whole-minute truncation of the offset and local fields in
+these strings follows QuickJS, while local field getters retain offset seconds.

@@ -3139,3 +3139,17 @@ digits. Unknown well-formed systems fall back; the default stays Latin even for
 ar. Algorithmic systems retain Latin digits in this decimal path, as QuickJS does.
 
 Check: `cargo test --test js_source intl_number_format -- --test-threads=3`.
+
+Date non-locale string formats (clj-quickjs-183): `toString`, `toDateString`,
+`toTimeString`, `toUTCString` and its identical-function `toGMTString` alias
+are supported, superseding the earlier formatting deferrals. Local strings use
+the runtime's host-selected zone and QuickJS's `GMT+hhmm` / `GMT-hhmm` suffix
+without a zone-name annotation; UTC strings end in `GMT`. Years have at least
+four digits, with a minus sign for negative years, and invalid dates return
+`Invalid Date`. QuickJS truncates historical offsets to whole minutes before
+formatting both fields and suffix; the existing local getters retain seconds.
+`Date()` ignores its arguments and formats the host's current time; without a
+host clock it raises RangeError. Explicit `String(date)` uses `toString`.
+Parsing, default Date coercion, `toJSON`, and locale variants remain deferred.
+Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`.

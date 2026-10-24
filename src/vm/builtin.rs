@@ -341,6 +341,9 @@ pub(crate) enum Builtin {
     IntlNumberFormatBound,
     IntlNumberFormatResolvedOptions,
     IntlNumberFormatSupportedLocales,
+
+    DateToLocalString(u8),
+    DateToUtcString,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -520,6 +523,13 @@ impl Builtin {
             Builtin::DateValueOf => "valueOf",
             Builtin::DateSetTime => "setTime",
             Builtin::DateToISOString => "toISOString",
+            Builtin::DateToLocalString(part) => match part {
+                1 => "toDateString",
+                2 => "toTimeString",
+                3 => "toString",
+                _ => unreachable!("invalid Date format part"),
+            },
+            Builtin::DateToUtcString => "toUTCString",
             Builtin::DateGetUtcField(field) => super::date::UTC_GETTERS[field as usize],
             Builtin::DateSetUtcField(first) => super::date::UTC_SETTERS[first as usize].0,
 
@@ -643,6 +653,7 @@ impl Builtin {
             Builtin::DateGetTime | Builtin::DateValueOf => 0,
             Builtin::DateSetTime => 1,
             Builtin::DateToISOString => 0,
+            Builtin::DateToLocalString(_) | Builtin::DateToUtcString => 0,
             Builtin::DateGetUtcField(_) => 0,
             Builtin::DateSetUtcField(first) => super::date::UTC_SETTERS[first as usize].1,
 
@@ -765,13 +776,15 @@ pub(crate) fn call(
         | Builtin::DateSetLocalField(_)
         | Builtin::DateGetLocalField(_)
         | Builtin::DateNow
-        | Builtin::DateTimezoneOffset => Err(Fault::Internal(
+        | Builtin::DateTimezoneOffset
+        | Builtin::DateToLocalString(_) => Err(Fault::Internal(
             "Date conversion requires a resumable frame",
         )),
         Builtin::DateGetTime | Builtin::DateValueOf => {
             super::date::this_time_value(heap, task, this).map(Value::Number)
         }
         Builtin::DateToISOString => super::date::to_iso_string(heap, task, this),
+        Builtin::DateToUtcString => super::date::to_utc_string(heap, task, this),
         Builtin::DateGetUtcField(field) => super::date::get_utc_field(heap, task, this, field),
         Builtin::Error
         | Builtin::ErrorPrototypeToString

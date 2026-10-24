@@ -6,8 +6,8 @@
 //! Clock reads are unrecorded host leaf effects. One generated rule-table zone
 //! is selected per runtime (UTC without a host). Never read the OS clock or
 //! zone here. Snapshot coverage is limited; uncovered names are rejected.
-//! UTC decomposition and ISO formatting
-//! are implemented below; parsing and other formats remain separate pellets.
+//! Shared decomposition, ISO and non-locale string formatting are implemented
+//! below; parsing remains a separate pellet.
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
@@ -259,6 +259,46 @@ fn calendar_fields(time: f64) -> Option<UtcFields> {
         milliseconds: (within_day % 1_000) as u16,
         weekday: (days + 4).rem_euclid(7) as u8,
     })
+}
+
+/// Non-locale QuickJS formats. `zone` selects local formatting with date/time
+/// part bits 1/2; without a zone the complete UTC format is used. Like QuickJS's
+/// get_date_fields, truncate the offset to minutes before decomposing the time.
+/// This intentionally differs from the second-precision local field getters.
+pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part: u8) -> Value {
+    let offset = zone.map_or(0, |z| z.offset_seconds(time) / 60);
+    let Some(fields) = calendar_fields(time + f64::from(offset) * 60_000.0) else {
+        return Value::String("Invalid Date".into());
+    };
+    let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][fields.weekday as usize];
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ][fields.month as usize];
+    let width = if fields.year < 0 { 5 } else { 4 };
+    let year = format!("{:0width$}", fields.year);
+    let clock = format!(
+        "{:02}:{:02}:{:02}",
+        fields.hours, fields.minutes, fields.seconds
+    );
+    let text = if zone.is_some() {
+        let date = format!("{day} {month} {:02} {year}", fields.date);
+        let sign = if offset < 0 { '-' } else { '+' };
+        let minutes = offset.abs();
+        let time = format!("{clock} GMT{sign}{:02}{:02}", minutes / 60, minutes % 60);
+        match part {
+            1 => date,
+            2 => time,
+            3 => format!("{date} {time}"),
+            _ => unreachable!("invalid Date format part"),
+        }
+    } else {
+        format!("{day}, {:02} {month} {year} {clock} GMT", fields.date)
+    };
+    Value::String(text.as_str().into())
+}
+
+pub(crate) fn to_utc_string(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {
+    Ok(format_string(this_time_value(heap, task, this)?, None, 3))
 }
 
 pub(crate) fn to_iso_string(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {

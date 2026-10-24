@@ -1494,6 +1494,140 @@ fn date_to_iso_string() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: QuickJS's non-locale formats.
+#[test]
+fn date_to_string_formats() {
+    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+
+    for (offset, time, date, clock, utc) in [
+        (
+            3600,
+            946681200000.0,
+            "Sat Jan 01 2000",
+            "00:00:00 GMT+0100",
+            "Fri, 31 Dec 1999 23:00:00 GMT",
+        ),
+        (
+            19800,
+            946684800000.0,
+            "Sat Jan 01 2000",
+            "05:30:00 GMT+0530",
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+        ),
+        (
+            -7200,
+            946684800000.0,
+            "Fri Dec 31 1999",
+            "22:00:00 GMT-0200",
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+        ),
+        (
+            0,
+            946684800000.0,
+            "Sat Jan 01 2000",
+            "00:00:00 GMT+0000",
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+        ),
+        // QuickJS truncates its offset to whole minutes before decomposition.
+        (
+            61,
+            946684800000.0,
+            "Sat Jan 01 2000",
+            "00:01:00 GMT+0001",
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+        ),
+        (
+            -61,
+            946684800000.0,
+            "Fri Dec 31 1999",
+            "23:59:00 GMT-0001",
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+        ),
+    ] {
+        let runtime = Runtime::new();
+        let mut host = SimTimeHost::new(time, TimeZone::fixed_offset_seconds(offset).unwrap());
+        let src = format!(
+            "let d = new Date({time}); d.toString() === '{date} {clock}' && d.toDateString() === '{date}' && d.toTimeString() === '{clock}' && d.toUTCString() === '{utc}' && d.toGMTString() === '{utc}' && Date.prototype.toGMTString === Date.prototype.toUTCString && typeof Date() === 'string' && Date() === '{date} {clock}' && Date(Symbol(), {{valueOf() {{throw 1;}}}}) === '{date} {clock}'"
+        );
+        let task = runtime
+            .spawn(&compile_script("date-formats.js", &src).unwrap(), &[])
+            .unwrap();
+        let mut result = None;
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Complete(value) => {
+                    result = Some(value);
+                    break;
+                }
+                RunOutcome::Yielded => {
+                    runtime.request_collection().unwrap();
+                }
+                other => panic!("{src}: {other:?}"),
+            }
+        }
+        let value = result.expect("bounded Date formatting completes");
+        assert_eq!(
+            runtime.scope(|s| s.view(s.local(&value).unwrap())),
+            ValueView::Bool(true),
+            "{src}"
+        );
+        assert_eq!(host.clock_reads(), 3);
+        assert!(task.dependency_log().edges().is_empty());
+    }
+    for src in [
+        "new Date(-62198755200000).toString() === 'Fri Jan 01 -0001 00:00:00 GMT+0000' && new Date(-62198755200000).toUTCString() === 'Fri, 01 Jan -0001 00:00:00 GMT'",
+        "new Date(-62167219200000).toDateString() === 'Sat Jan 01 0000' && new Date(253402300800000).toDateString() === 'Sat Jan 01 10000'",
+        "new Date(8.64e15).toString() === 'Sat Sep 13 275760 00:00:00 GMT+0000' && new Date(-8.64e15).toString() === 'Tue Apr 20 -271821 00:00:00 GMT+0000'",
+        "new Date(-1).toUTCString() === 'Wed, 31 Dec 1969 23:59:59 GMT' && String(new Date(0)) === 'Thu Jan 01 1970 00:00:00 GMT+0000'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: branding, NaN, and descriptors.
+#[test]
+fn date_string_format_receivers_and_descriptors() {
+    for name in [
+        "toString",
+        "toDateString",
+        "toTimeString",
+        "toUTCString",
+        "toGMTString",
+    ] {
+        let function_name = if name == "toGMTString" {
+            "toUTCString"
+        } else {
+            name
+        };
+        let src = format!(
+            "let m = Date.prototype.{name}; let p = Object.getOwnPropertyDescriptor(Date.prototype, '{name}'); m.name === '{function_name}' && m.length === 0 && p.value === m && p.writable && !p.enumerable && p.configurable && new Date(NaN).{name}() === 'Invalid Date' && new Date(Infinity).{name}() === 'Invalid Date'"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        for receiver in [
+            "{}",
+            "null",
+            "undefined",
+            "1",
+            "'0'",
+            "Date.prototype",
+            "Object.create(new Date(0))",
+        ] {
+            let src = format!(
+                "let caught = false; try {{Date.prototype.{name}.call({receiver});}} catch(e) {{caught = e instanceof TypeError;}} caught"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+        let src = format!(
+            "let d = new Date(NaN); d.valueOf = function() {{throw 1;}}; Object.setPrototypeOf(d, null); Date.prototype.{name}.call(d, {{valueOf() {{throw 2;}}}}) === 'Invalid Date'"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        let src = format!(
+            "let caught = false; try {{new Date.prototype.{name}();}} catch(e) {{caught = e instanceof TypeError;}} caught"
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output: brand checks and method metadata.
 #[test]
 fn date_to_iso_string_receiver_and_descriptor() {
@@ -1577,13 +1711,9 @@ fn date_slots_and_coercion() {
         }
     }
     for src in [
-        "Date()",
-        "Date(1)",
         "new Date('2017-09-22')",
         "new Date('5')",
         "new Date({valueOf() {return '5';}})",
-        "new Date(0).toString()",
-        "String(new Date(0))",
         "'' + new Date(0)",
     ] {
         assert_eq!(
@@ -1591,6 +1721,10 @@ fn date_slots_and_coercion() {
             VmErrorKind::UnsupportedOperand,
             "{src}"
         );
+    }
+    // Calling Date now uses the host clock; a hostless runtime has none.
+    for src in ["Date()", "Date(1)"] {
+        assert_eq!(failure(src).kind(), VmErrorKind::RangeError, "{src}");
     }
     for src in [
         "new Date.UTC(1970)",
@@ -1601,7 +1735,7 @@ fn date_slots_and_coercion() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output: deferred Date formatting must
+/// Synthetic fixtures, not light-cljs output: deferred Date toJSON must
 /// not silently turn a Date into an ordinary JSON object. Own hooks still run.
 #[test]
 fn date_json_serialization() {

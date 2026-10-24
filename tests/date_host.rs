@@ -57,6 +57,50 @@ fn date_host_clock_and_zone() {
 }
 
 #[test]
+fn date_string_named_zone_formats() {
+    let runtime = Runtime::new();
+    let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    for source in [
+        "new Date(Date.UTC(2020, 0, 1)).toString() === 'Wed Jan 01 2020 01:00:00 GMT+0100'",
+        "new Date(Date.UTC(2020, 6, 1)).toString() === 'Wed Jul 01 2020 02:00:00 GMT+0200'",
+        "new Date(Date.UTC(2020, 2, 29, 0, 59, 59)).toTimeString() === '01:59:59 GMT+0100' && new Date(Date.UTC(2020, 2, 29, 1)).toTimeString() === '03:00:00 GMT+0200'",
+        "new Date(8.64e15).toString() === 'Sat Sep 13 275760 01:00:00 GMT+0100'",
+    ] {
+        assert_eq!(
+            evaluate(&runtime, &mut host, source),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+    let mut utc = SimTimeHost::new(0.0, TimeZone::UTC);
+    assert_eq!(
+        evaluate(
+            &runtime,
+            &mut utc,
+            "Date() === 'Thu Jan 01 1970 01:00:00 GMT+0100'"
+        ),
+        ValueView::Bool(true)
+    );
+    let mut monrovia = SimTimeHost::new(0.0, TimeZone::named("Africa/Monrovia").unwrap());
+    assert_eq!(
+        evaluate(
+            &Runtime::new(),
+            &mut monrovia,
+            "new Date(Date.UTC(1900, 0)).toString() === 'Sun Dec 31 1899 23:17:00 GMT-0043'"
+        ),
+        ValueView::Bool(true)
+    );
+    for time in [f64::NAN, f64::INFINITY, 8.64e15 + 1.0] {
+        let mut host = SimTimeHost::new(time, TimeZone::UTC);
+        assert_eq!(
+            evaluate(&Runtime::new(), &mut host, "Date() === 'Invalid Date'"),
+            ValueView::Bool(true)
+        );
+        assert_eq!(host.clock_reads(), 1);
+    }
+}
+
+#[test]
 fn date_without_host_time_inputs() {
     let runtime = Runtime::new();
     let task = runtime.spawn(&compile_script("date-host.js", "let caught = 0; try { Date.now(); } catch(e) { if(e instanceof RangeError) caught++; } try { new Date(); } catch(e) { if(e instanceof RangeError) caught++; } caught === 2 && new Date(2000, 0).getTime() === 946684800000 && new Date(0).getTimezoneOffset() === 0").unwrap(), &[]).unwrap();
