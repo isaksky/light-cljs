@@ -1265,3 +1265,44 @@ impl crate::Host for SimHost {
         Err(format!("unsupported simulated host operation {}", call.op))
     }
 }
+
+/// Deterministic leaf time host for source fixtures and embedding examples.
+/// Clock reads are unrecorded and never advance the virtual clock implicitly.
+#[derive(Debug)]
+pub struct SimTimeHost {
+    pub now_millis: f64,
+    pub zone: super::TimeZone,
+    reads: usize,
+}
+
+impl SimTimeHost {
+    pub fn new(now_millis: f64, zone: super::TimeZone) -> Self {
+        Self {
+            now_millis,
+            zone,
+            reads: 0,
+        }
+    }
+
+    pub fn clock_reads(&self) -> usize {
+        self.reads
+    }
+}
+
+impl super::Host for SimTimeHost {
+    fn current_time_millis(&mut self) -> Result<f64, String> {
+        self.reads += 1;
+        Ok(self.now_millis)
+    }
+
+    fn default_time_zone(&mut self) -> super::TimeZone {
+        self.zone
+    }
+
+    fn effect(&mut self, call: super::HostCall) -> Result<Primitive, String> {
+        Err(format!(
+            "unsupported simulated time host operation {}",
+            call.op
+        ))
+    }
+}

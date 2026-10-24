@@ -5090,11 +5090,10 @@ budgeted primitive numeric parsing (clj-quickjs-265).
 moves execution across workers, including an otherwise unreferenced receiver.
 `date_objects_are_task_owned` checks publication and foreign slot access.
 
-The clock/zone extension point is the module-level contract in `vm/date.rs`,
-reserved for clj-quickjs-182: an unrecorded leaf clock effect through the host,
-one zone per runtime from generated QuickJS rule tables, UTC without a host,
-and explicit rejection of unsupported table coverage. This pellet consumes no
-host clock or zone. Clock/local constructor forms and parsing fail explicitly;
+The clock/zone contract in `vm/date.rs` is implemented by clj-quickjs-182
+(documented below): an unrecorded host leaf clock effect, one generated rule-table
+zone per runtime, UTC without a host, and explicit rejection of uncovered zones.
+Parsing continues to fail explicitly;
 Date toString/toJSON value lookup and default coercion also reject deferred
 formatting and Symbol.toPrimitive behavior rather than returning Object's
 tag/numeric value or serializing a Date as an ordinary JSON object. Presence
@@ -5467,3 +5466,68 @@ fresh. The opening rejection-counter case in `tests/promises.rs` adapts
 `test_async_promise_rejection`, replacing its timer with a final reaction
 job; that file preserves the QuickJS LICENSE notice. Other fixtures are
 synthetic and were written for this runtime.
+
+## Date host clock and runtime zone (clj-quickjs-182)
+
+The leaf Host methods `current_time_millis` and `default_time_zone` run under
+HostEffect's thread-local guard: no VM reentry, heap access or suspension.
+Clock reads are unrecorded effects, with no dependency edge or world/version
+identity; rerunning a task may observe another time. Host errors become
+catchable RangeError; NoHost supplies no clock. Host clock numbers undergo
+TimeClip. The engine never reads the OS clock or OS timezone.
+
+`Heap::date_zone` is a OnceLock of a validated immutable `host::TimeZone`, with
+no heap edges. The first local Date operation obtains it from the current host;
+NoHost chooses UTC. Tasks, worlds, runtime clones, yields and thread migration
+all share that choice. Concurrent first use selects whichever host initializes
+the OnceLock; embedders should supply a consistent zone. No locale or timezone
+is read while holding a dependency-cell or heap-object lock. Explicit virtual
+fixed offsets preserve seconds and must have magnitude less than 24 hours.
+`SimTimeHost` has a mutable virtual clock, read count, and configurable zone.
+
+Named zones use `src/host/timezone/tables.rs`, repacked without changing values
+from the verified QuickJS exporter. Of 598 inventory names, 59 canonical zones
+have transitions and 36 aliases resolve to these records. UTC/GMT names are
+also accepted; other names fail in the embedding API instead of falling back.
+Offsets retain source seconds. For each zone, the first offset applies before
+the first finite transition and the last applies forever after the final one;
+there is no future DST recurrence extrapolation. Individual ranges and names
+are explicit in the generated tables. This is limited snapshot support, not a
+complete IANA timezone implementation.
+
+`TimeZone::local_time_millis` and `utc_time_millis` implement LocalTime and UTC(t)
+for future parsers/formatters too. UTC(t) chooses the earlier valid instant in
+an overlap and uses the offset before a forward jump for a gap. UTC lookup is
+binary search; inverse lookup is bounded by one zone's finite transition table
+(at most 243 entries in this snapshot). Local fields may exceed TimeClip by
+one offset; clipping occurs after conversion to UTC, never on intermediates.
+Local setters capture the receiver's time before ordered resumable coercion,
+then reuse UTC setter calendar arithmetic with conversion at its boundaries.
+Invalid setFullYear starts from wall time +0; other invalid setters still coerce
+arguments without overwriting mutations made during those coercions.
+
+Date() string calls remain explicitly unsupported until the formatting pellet.
+Tests in `tests/date_host.rs` cover fixed zones, actual Paris gap/overlap rules,
+historical seconds, missing/unsupported inputs, clock leaf guards, one-zone
+selection, tiny budgets and coercion through waits, GC and worker migration.
+
+Snapshot canonical zone coverage (prefixes apply to every name in each row):
+
+| Prefix | Names |
+| --- | --- |
+| `Africa/` | `Monrovia`, `Tunis` |
+| `America/` | `Anchorage`, `Argentina/Tucuman`, `Boa_Vista`, `Fortaleza`, `Los_Angeles`, `Maceio`, `New_York`, `Noronha`, `Recife`, `Sao_Paulo`, `St_Johns`, `Toronto`, `Vancouver` |
+| `Antarctica/` | `Casey` |
+| `Asia/` | `Kolkata`, `Riyadh`, `Singapore`, `Tokyo` |
+| `Australia/` | `Lord_Howe` |
+| `Etc/` | `GMT+1` through `GMT+12`, `GMT-1` through `GMT-14` |
+| `Europe/` | `Berlin`, `London`, `Moscow`, `Paris`, `Riga`, `Simferopol`, `Tirane`, `Vienna` |
+| `Pacific/` | `Apia`, `Niue` |
+| no prefix | `GMT`, `UTC` |
+
+The additional `Etc/UTC` and `Etc/GMT` spellings select UTC. The 36 snapshot
+aliases are listed in `ti_tz_aliases` in the generated module. Across all zones,
+finite recorded transitions range from 1847-12-01T00:01:15Z through
+2037-11-01T10:00:00Z; individual zone ranges vary, and fixed zones contain only
+a sentinel record. Dates outside those ranges use the documented first/last
+offset policy, which may differ from real historical or future civil time.

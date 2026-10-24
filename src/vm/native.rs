@@ -370,6 +370,17 @@ enum ConvertTarget {
     },
     NumberValueLimited(usize),
     DateConstructor,
+    DateLocalConstructor,
+    DateNow {
+        construct: bool,
+    },
+    DateLocalGet {
+        field: u8,
+    },
+    DateSetLocalField {
+        first: u8,
+        time: f64,
+    },
     DateUtc,
     DateSetTime,
     DateSetUtcField {
@@ -1217,20 +1228,46 @@ pub(crate) fn start_builtin(
         Builtin::Date => {
             if !construct {
                 return Err(Fault::Unsupported(
-                    "Date() requires host clock and formatting support".into(),
+                    "Date() requires string formatting support".into(),
                 ));
             }
-            if args.len() != 1 {
-                return Err(Fault::Unsupported(
-                    "Date construction without one argument requires host clock/local-time support"
-                        .into(),
-                ));
+            if args.is_empty() {
+                (
+                    ConvertTarget::DateNow { construct: true },
+                    vec![],
+                    Hint::Number,
+                )
+            } else if args.len() > 1 {
+                let mut fields = vec![Value::Number(0.0); 7];
+                fields[2] = Value::Number(1.0);
+                for (field, arg) in fields.iter_mut().zip(args) {
+                    *field = arg.clone();
+                }
+                (ConvertTarget::DateLocalConstructor, fields, Hint::Number)
+            } else {
+                let value = match super::date::time_value(heap, state.diag.task, &args[0])? {
+                    Some(time) => Value::Number(time),
+                    None => args[0].clone(),
+                };
+                (ConvertTarget::DateConstructor, vec![value], Hint::Default)
             }
-            let value = match super::date::time_value(heap, state.diag.task, &args[0])? {
-                Some(time) => Value::Number(time),
-                None => args[0].clone(),
+        }
+        Builtin::DateNow if !construct => (
+            ConvertTarget::DateNow { construct: false },
+            vec![],
+            Hint::Number,
+        ),
+        Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset if !construct => {
+            let field = match which {
+                Builtin::DateGetLocalField(f) => f,
+                _ => 8,
             };
-            (ConvertTarget::DateConstructor, vec![value], Hint::Default)
+            super::date::this_time_value(heap, state.diag.task, this)?;
+            (
+                ConvertTarget::DateLocalGet { field },
+                vec![this.clone()],
+                Hint::Number,
+            )
         }
         Builtin::DateUtc if !construct => {
             let mut fields = vec![Value::Number(0.0); 7];
@@ -1241,7 +1278,7 @@ pub(crate) fn start_builtin(
             }
             (ConvertTarget::DateUtc, fields, Hint::Number)
         }
-        Builtin::DateSetUtcField(first) if !construct => {
+        Builtin::DateSetUtcField(first) | Builtin::DateSetLocalField(first) if !construct => {
             let time = super::date::this_time_value(heap, state.diag.task, this)?;
             let count = super::date::UTC_SETTERS[first as usize].1 as usize;
             let mut operands = vec![this.clone()];
@@ -1250,7 +1287,11 @@ pub(crate) fn start_builtin(
                 operands.push(Value::Undefined);
             }
             (
-                ConvertTarget::DateSetUtcField { first, time },
+                if matches!(which, Builtin::DateSetLocalField(_)) {
+                    ConvertTarget::DateSetLocalField { first, time }
+                } else {
+                    ConvertTarget::DateSetUtcField { first, time }
+                },
                 operands,
                 Hint::Number,
             )
@@ -1543,7 +1584,12 @@ pub(crate) fn start_builtin(
         (1, operands.len())
     } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
         (0, 1)
-    } else if matches!(target, ConvertTarget::DateSetUtcField { .. }) {
+    } else if matches!(target, ConvertTarget::DateLocalGet { .. }) {
+        (operands.len(), operands.len())
+    } else if matches!(
+        target,
+        ConvertTarget::DateSetUtcField { .. } | ConvertTarget::DateSetLocalField { .. }
+    ) {
         (1, operands.len())
     } else if matches!(
         target,
@@ -1734,7 +1780,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     frame.awaiting = Awaiting::Nothing;
     let action = {
         let _borrow = scoped_borrow();
-        frame.state.step(heap, state.diag.task, input)?
+        frame.state.step(heap, state.diag.task, input, host)?
     };
     state.truncate_operands(base)?;
     match action {
@@ -2023,7 +2069,13 @@ fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
 impl NativeState {
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
-    fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
+    fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+        host: &mut dyn Host,
+    ) -> Result<Action, Fault> {
         match self {
             NativeState::BigIntFormat(formatter) => Ok(match formatter.advance() {
                 Some(text) => Action::Return(Value::String(text)),
@@ -2567,6 +2619,8 @@ impl NativeState {
                         if matches!(
                             target,
                             ConvertTarget::DateUtc
+                                | ConvertTarget::DateLocalConstructor
+                                | ConvertTarget::DateSetLocalField { .. }
                                 | ConvertTarget::DateSetTime
                                 | ConvertTarget::DateSetUtcField { .. }
                         ) {
@@ -2708,6 +2762,38 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::DateNow { construct } => {
+                        let time = super::date::now(host)?;
+                        if construct {
+                            super::date::construct(heap, task, &Value::Number(time))
+                                .map(Action::Return)
+                        } else {
+                            Ok(Action::Return(Value::Number(time)))
+                        }
+                    }
+                    ConvertTarget::DateLocalGet { field } => {
+                        let zone = super::date::zone(heap, host);
+                        super::date::get_local_field(heap, task, &operands[0], field, zone)
+                            .map(Action::Return)
+                    }
+                    ConvertTarget::DateLocalConstructor => {
+                        let zone = super::date::zone(heap, host);
+                        let time = zone.utc_time_millis(super::date::fields_time(operands)?);
+                        super::date::construct(heap, task, &Value::Number(time)).map(Action::Return)
+                    }
+                    ConvertTarget::DateSetLocalField { first, time } => {
+                        let zone = super::date::zone(heap, host);
+                        super::date::set_local_field(
+                            heap,
+                            task,
+                            &operands[0],
+                            first,
+                            time,
+                            &operands[1..],
+                            zone,
+                        )
+                        .map(Action::Return)
+                    }
                     ConvertTarget::DateConstructor => {
                         super::date::construct(heap, task, &operands[0]).map(Action::Return)
                     }
@@ -3209,12 +3295,16 @@ mod tests {
             method: 0,
         };
         let limit = crate::value::string::MAX_STRING_LEN;
-        assert!(matches!(pending(limit - 1).step(&heap, task, Input::Start),
-            Err(Fault::RangeError(message)) if message == "string too long"));
+        assert!(
+            matches!(pending(limit - 1).step(&heap, task, Input::Start, &mut NoHost),
+            Err(Fault::RangeError(message)) if message == "string too long")
+        );
         // The same continuation below the limit really does request the
         // later conversion callback, so the overflow assertion checks order.
-        assert!(matches!(pending(limit - 3).step(&heap, task, Input::Start),
-            Ok(Action::Call { this, .. }) if this == later));
+        assert!(
+            matches!(pending(limit - 3).step(&heap, task, Input::Start, &mut NoHost),
+            Ok(Action::Call { this, .. }) if this == later)
+        );
     }
 
     fn vector(heap: &Heap, n: usize) -> Value {

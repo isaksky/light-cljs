@@ -1384,6 +1384,16 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
         let method = b.function(which, &[])?;
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
     }
+    let now = b.function(Builtin::DateNow, &[])?;
+    b.add(constructor, "now", now, PropertyFlags::METHOD)?;
+    for which in (0..8)
+        .map(Builtin::DateGetLocalField)
+        .chain((0..7).map(Builtin::DateSetLocalField))
+        .chain([Builtin::DateTimezoneOffset])
+    {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
     Some((prototype, constructor))
 }
 
@@ -1711,7 +1721,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 204); // Includes String replacement, BigInt methods and Promise.
+        assert_eq!(first.all.len(), 221); // Includes Date host methods and Promise.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

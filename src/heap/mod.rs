@@ -444,6 +444,8 @@ pub(crate) struct ObjectsHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ObjectTable
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
+    /// Immutable host zone, shared by every task/world of this runtime.
+    pub(crate) date_zone: std::sync::OnceLock<crate::host::TimeZone>,
     /// Collector state: the per-thread mutator registry, pending
     /// collection requests, the collection counter.
     gc: Mutex<GcState>,

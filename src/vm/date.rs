@@ -3,11 +3,10 @@
 //! set_date_fields and js_Date_UTC (research/quickjs/quickjs.c, revision
 //! 7d1c13c5d8f8) are semantic references, not ported code.
 //!
-//! Clock and local-zone integration belongs here when clj-quickjs-182 lands:
-//! obtain the clock as an unrecorded leaf effect through the embedding host,
-//! and keep one generated rule-table zone per runtime (UTC without a host).
-//! Snapshot transition coverage is limited: reject uncovered zones explicitly.
-//! Never read the OS clock or zone here. UTC decomposition and ISO formatting
+//! Clock reads are unrecorded host leaf effects. One generated rule-table zone
+//! is selected per runtime (UTC without a host). Never read the OS clock or
+//! zone here. Snapshot coverage is limited; uncovered names are rejected.
+//! UTC decomposition and ISO formatting
 //! are implemented below; parsing and other formats remain separate pellets.
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
@@ -41,6 +40,62 @@ pub(crate) const UTC_GETTERS: [&str; 8] = [
     "getUTCMilliseconds",
     "getUTCDay",
 ];
+
+pub(crate) const LOCAL_GETTERS: [&str; 8] = [
+    "getFullYear",
+    "getMonth",
+    "getDate",
+    "getHours",
+    "getMinutes",
+    "getSeconds",
+    "getMilliseconds",
+    "getDay",
+];
+pub(crate) const LOCAL_SETTERS: [(&str, u32); 7] = [
+    ("setFullYear", 3),
+    ("setMonth", 2),
+    ("setDate", 1),
+    ("setHours", 4),
+    ("setMinutes", 3),
+    ("setSeconds", 2),
+    ("setMilliseconds", 1),
+];
+
+pub(crate) fn zone(heap: &Heap, host: &mut dyn crate::Host) -> crate::host::TimeZone {
+    *heap
+        .date_zone
+        .get_or_init(|| crate::host::call_time_zone(host))
+}
+
+pub(crate) fn now(host: &mut dyn crate::Host) -> Result<f64, Fault> {
+    crate::host::call_current_time(host)
+        .map(time_clip)
+        .map_err(Fault::RangeError)
+}
+
+pub(crate) fn get_local_field(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    field: u8,
+    zone: crate::host::TimeZone,
+) -> Result<Value, Fault> {
+    let time = this_time_value(heap, task, this)?;
+    let number = if time.is_nan() {
+        f64::NAN
+    } else if field == 8 {
+        -f64::from(zone.offset_seconds(time)) / 60.0 + 0.0
+    } else {
+        calendar_fields(zone.local_time_millis(time)).map_or(f64::NAN, |fields| {
+            if field == 7 {
+                f64::from(fields.weekday)
+            } else {
+                fields.numbers()[field as usize]
+            }
+        })
+    };
+    Ok(Value::Number(number))
+}
 
 /// Indexed by the first field replaced, in MakeDay/MakeTime field order.
 pub(crate) const UTC_SETTERS: [(&str, u32); 7] = [
@@ -93,12 +148,41 @@ pub(crate) fn set_utc_field(
     time: f64,
     args: &[Value],
 ) -> Result<Value, Fault> {
+    set_field(heap, task, this, first, time, args, None)
+}
+
+pub(crate) fn set_local_field(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    first: u8,
+    time: f64,
+    args: &[Value],
+    zone: crate::host::TimeZone,
+) -> Result<Value, Fault> {
+    set_field(heap, task, this, first, time, args, Some(zone))
+}
+
+fn set_field(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    first: u8,
+    time: f64,
+    args: &[Value],
+    zone: Option<crate::host::TimeZone>,
+) -> Result<Value, Fault> {
+    let time = if time.is_nan() {
+        time
+    } else {
+        zone.map_or(time, |z| z.local_time_millis(time))
+    };
     let time = if first == 0 && time.is_nan() {
         0.0
     } else {
         time
     };
-    let Some(fields) = utc_fields(time) else {
+    let Some(fields) = calendar_fields(time) else {
         // Invalid original times return NaN without overwriting changes that
         // argument callbacks may have made to the receiver's slot.
         return Ok(Value::Number(f64::NAN));
@@ -108,14 +192,15 @@ pub(crate) fn set_utc_field(
         *out = to_number(arg)?;
     }
     let [year, month, date, hour, minute, second, ms] = numbers;
+    let time = make_date(
+        make_day(year, month, date),
+        make_time(hour, minute, second, ms),
+    );
     set_time(
         heap,
         task,
         this,
-        make_date(
-            make_day(year, month, date),
-            make_time(hour, minute, second, ms),
-        ),
+        zone.map_or(time, |z| z.utc_time_millis(time)),
     )
 }
 
@@ -124,6 +209,14 @@ pub(crate) fn set_utc_field(
 /// exactly; Euclidean division keeps negative days and sub-day fields correct.
 pub(crate) fn utc_fields(time: f64) -> Option<UtcFields> {
     if !time.is_finite() || time.abs() > 8.64e15 {
+        return None;
+    }
+    calendar_fields(time)
+}
+
+fn calendar_fields(time: f64) -> Option<UtcFields> {
+    // LocalTime may extend one offset beyond TimeClip at the endpoints.
+    if !time.is_finite() || time.abs() > 8.64e15 + MS_PER_DAY {
         return None;
     }
     debug_assert_eq!(time, time.trunc(), "Date values must be TimeClipped");
@@ -282,6 +375,10 @@ pub(crate) fn make_date(day: f64, time: f64) -> f64 {
 
 /// Inputs have already undergone observable ToNumber in argument order.
 pub(crate) fn utc(fields: &[Value]) -> Result<Value, Fault> {
+    fields_time(fields).map(|time| Value::Number(time_clip(time)))
+}
+
+pub(crate) fn fields_time(fields: &[Value]) -> Result<f64, Fault> {
     let mut numbers = [f64::NAN, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
     for (out, value) in numbers.iter_mut().zip(fields) {
         *out = to_number(value)?;
@@ -290,10 +387,10 @@ pub(crate) fn utc(fields: &[Value]) -> Result<Value, Fault> {
     if year.is_finite() && (0.0..=99.0).contains(&year.trunc()) {
         year = 1900.0 + year.trunc();
     }
-    Ok(Value::Number(time_clip(make_date(
+    Ok(make_date(
         make_day(year, month, date),
         make_time(hour, minute, second, ms),
-    ))))
+    ))
 }
 
 /// Brand inspection reads only an object's own slot and observes task ownership.

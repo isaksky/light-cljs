@@ -1586,8 +1586,6 @@ fn date_slots_and_coercion() {
     for src in [
         "Date()",
         "Date(1)",
-        "new Date()",
-        "new Date(1970, 0)",
         "new Date('2017-09-22')",
         "new Date('5')",
         "new Date({valueOf() {return '5';}})",

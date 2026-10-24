@@ -3434,10 +3434,9 @@ the shared leaf StringToNumber scan/rope flatten until clj-quickjs-265 supplies
 budgeted primitive numeric parsing. Constructor strings fail explicitly as
 the parsing gap below, without scanning their contents.
 
-Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
-construction fail with UnsupportedOperand pending host clock/local time work
-(clj-quickjs-182). String construction/parsing, non-ISO formatting, local calendar
-getters/setters and Date's Symbol.toPrimitive/default conversion remain
+Explicit gaps: `Date()` calls fail with UnsupportedOperand pending formatting.
+String construction/parsing, non-ISO formatting and Date's
+Symbol.toPrimitive/default conversion remain
 separate Date/protocol work. A value lookup reaching Date.prototype for its
 deferred toString/toJSON fails explicitly rather than using Object.prototype's
 tag or silently serializing a Date as an ordinary JSON object. Presence checks
@@ -3445,7 +3444,7 @@ for these standard methods return true without running formatting. An own
 toJSON override (including a getter or non-callable value) remains observable.
 Host clock/zone integration is documented at `src/vm/date.rs`:
 unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
-no host supplies a zone. No host input is consumed by this UTC-only core.
+no host supplies a zone. Clock and local-time behavior is supplied by clj-quickjs-182 below.
 
 ### Execution: Date ISO formatting (clj-quickjs-180)
 
@@ -3460,7 +3459,7 @@ NaN throws a catchable RangeError with message `Invalid time value`;
 unbranded receivers throw TypeError. Foreign task receivers retain the
 existing ownership failure. The method is non-constructible.
 
-Explicit gaps: `toJSON`, other Date formats, parsing and local-time/host behavior remain
+Explicit gaps: `toJSON`, other Date formats and parsing remain
 deferred as above. ISO formatting consumes no clock or zone input.
 
 ## Floating-point typed arrays (clj-quickjs-167)
@@ -3568,8 +3567,8 @@ by callbacks. `setUTCFullYear` uses +0 as the base for invalid original dates.
 Frozen dates remain mutable through these internal-slot setters. Waits,
 instruction yields, collection and worker migration preserve pending receivers,
 arguments and the original numeric time. Foreign-task access remains rejected.
-Explicit gaps: local-time field access, parsing, host input, other formats
-and `toJSON` remain separate pellets.
+Explicit gaps: parsing, other formats and `toJSON` remain separate pellets;
+local fields and host inputs are implemented by clj-quickjs-182 below.
 
 ## Typed-array sources and methods (clj-quickjs-168)
 
@@ -3743,3 +3742,28 @@ lookbehind remain deferred. Unicode mode adds no size limits or dependencies.
 /[\u{10000}-\u{10FFFF}]/u.test('\u{10400}');
 '🐱'.replace(/(?:)/gu, '-') === '-🐱-';
 ```
+
+### Execution: Date host inputs and local fields (clj-quickjs-182)
+
+`Date.now()` and `new Date()` read epoch milliseconds from an unrecorded leaf
+host clock. Without one they throw RangeError; explicit Date values and local
+construction continue to work. Multiple-argument `new Date(y, m, ...)` uses
+local wall time, the same field defaults/overflow rules as Date.UTC, and the
+specified 0–99 year adjustment. Only its first seven arguments are converted.
+Eight local getters (`getFullYear`, `getMonth`, `getDate`, `getHours`,
+`getMinutes`, `getSeconds`, `getMilliseconds`, `getDay`) and seven setters
+(`setFullYear`, `setMonth`, `setDate`, `setHours`, `setMinutes`, `setSeconds`,
+`setMilliseconds`) mirror the UTC methods' branding, lengths, invalid handling,
+argument order and resumable coercion. `getTimezoneOffset()` returns minutes
+west of UTC, preserving fractional minutes from source seconds; invalid dates
+return NaN. New methods have ordinary writable/nonenumerable/configurable flags.
+
+One host zone is frozen on the runtime's first local Date operation. NoHost
+selects UTC. Validated rule-table zones cover 59 canonical names and 36 aliases
+from the pinned QuickJS snapshot; inventory-only and unknown names are rejected
+by the embedding API. First/last offsets extend indefinitely without future DST
+extrapolation. In overlaps choose the earlier instant; in gaps use the offset
+before the jump. Explicit fixed-second offsets are also available to embedders.
+Explicit gaps: Date() string calls, parsing, non-ISO formatting, legacy year
+methods and Date's default primitive conversion remain deferred. No engine
+operation reads the OS clock or zone.

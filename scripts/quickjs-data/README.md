@@ -165,3 +165,25 @@ output directory and compare the six `.rs` files and `provenance.txt` with
 `cmp`. Run `cargo test --lib intl:: -- --test-threads=3` and
 `cargo test --test js_source intl_namespace_object -- --exact --test-threads=3`
 for consumer semantics. Normal Cargo builds need none of these tools or inputs.
+
+## Checked-in Date timezone module
+
+`repack-timezone.pl` selects the four timezone record types and all timezone
+statics from the verified exporter output, preserving every value, reference,
+name, alias and region. It writes `tables.rs`, `provenance.txt` and the QuickJS
+license. Regenerate inside a worktree (both output directories must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/tz-import
+nix develop --command perl scripts/quickjs-data/repack-timezone.pl \
+  target/tz-import/first target/tz-repacked
+cp target/tz-repacked/{tables.rs,provenance.txt,QUICKJS-LICENSE} src/host/timezone/
+```
+
+Repeat the repack on `second` into another new directory and compare all three
+files with `cmp`. The safe runtime reader is `src/host/timezone.rs`; its Date
+semantics tests run with `cargo test --test date_host -- --test-threads=3`.
+The 59 transition-bearing zones and 36 aliases are supported; the 598-name
+inventory alone never grants offset coverage. First/last offsets extend beyond
+the recorded transitions without future-rule extrapolation.

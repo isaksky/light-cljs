@@ -621,3 +621,14 @@ revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The timer becomes a final
 Promise job; the QuickJS LICENSE copyright and permission notice is retained
 in the test file. The Rust implementation is written fresh, consulting the
 Promise routines in `research/quickjs/quickjs.c` listed in architecture.md.
+
+## Date host rule tables (clj-quickjs-182)
+
+`src/host/timezone/tables.rs` contains timezone types and immutable values from
+`research/quickjs/temporal/tzdata_generated.c` and `temporal/timezone.h` at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, exported by the existing
+`scripts/quickjs-data` pipeline and repacked by `repack-timezone.pl`. The full
+QuickJS notice accompanies it in `src/host/timezone/QUICKJS-LICENSE`, provenance
+and input hashes in `provenance.txt`; the Unicode data notice is retained in
+`docs/UNICODE-LICENSE`. Rule lookup, Date conversions and synthetic source
+tests are fresh Rust/JavaScript implementations; no QuickJS engine code is linked.

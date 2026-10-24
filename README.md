@@ -2934,14 +2934,14 @@ create task-owned ordinary objects with a clipped `[[DateValue]]` slot.
 `getTime`, `valueOf`, `setTime` and `Date.UTC` are supported, including NaN
 and signed-zero clipping, ordered resumable argument coercion, two-digit
 UTC years, overflowing components and the specified floating-point order.
-Deferred: `Date()`, no-argument/current-time and multiple-argument/local-time
-construction, string parsing, default Date-to-primitive conversion, non-ISO formatting,
-local calendar getters/setters and host zones. These constructor/conversion forms
+Deferred: `Date()`, string parsing, default Date-to-primitive conversion and
+non-ISO formatting. Clock, local constructors and fields are supplied by
+clj-quickjs-182 below. These constructor/conversion forms
 fail explicitly, as does JSON serialization requiring Date's deferred toJSON;
 an own toJSON override works. Numeric strings for UTC/setTime are capped at 4096 UTF-16
 units (RangeError) until budgeted numeric parsing lands.
-The host clock/zone extension point is documented in
-`src/vm/date.rs`; this core reads neither the clock nor the OS zone.
+The host clock/zone contract is documented in `src/vm/date.rs`;
+the engine reads neither the OS clock nor the OS zone.
 Tests: `cargo test --lib vm::date::tests::date_time_arithmetic` and
 `cargo test --test js_source date_`.
 
@@ -3086,3 +3086,25 @@ Deferred: thenable adoption (explicit UnsupportedOperand), Promise subclass
 capabilities/species, arbitrary own-property mutation on promises, async/await,
 combinators, finally and unhandled rejection reporting. Test with
 `cargo test --test promises -- --test-threads=3`.
+
+Date host inputs and local fields (clj-quickjs-182): `Host::current_time_millis`
+supplies `Date.now()` and `new Date()` as unrecorded leaf effects; reruns may see
+a different time. Without a clock host these throw catchable RangeError.
+`Host::default_time_zone` selects one immutable zone per runtime on its first
+local Date operation; all its tasks/worlds retain it. Without a host it is UTC.
+Use `host::TimeZone::named` for generated snapshot rules, or
+`fixed_offset_seconds` for explicit virtual offsets. `host::sim::SimTimeHost`
+provides a configurable virtual clock and zone; it never reads the OS.
+Multiple-argument local construction, all eight local calendar getters, seven
+local calendar setters and `getTimezoneOffset` are supported. Seconds in
+historical offsets are preserved (the Date offset in minutes may be fractional).
+DST overlaps select the earlier instant; gaps use the offset before the jump.
+
+The pinned QuickJS snapshot has transition data for only 59 zones plus 36
+aliases, despite listing 598 names; `TimeZone::named` rejects names without
+rules and unknown names. UTC/GMT names also work. First and last recorded
+offsets extend indefinitely: future DST rules are **not** extrapolated.
+See `src/host/timezone/tables.rs` for the supported canonical/alias records and
+individual transition ranges. Parsing, `Date()` string results, other formats,
+legacy `getYear`/`setYear` and default Date coercion remain deferred.
+Tests: `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`.

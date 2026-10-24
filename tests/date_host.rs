@@ -1,0 +1,229 @@
+//! Synthetic JavaScript fixtures, not light-cljs output.
+use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+use clj_quickjs::{Budget, Host, RunOutcome, Runtime, ValueView, frontend::compile_script};
+
+fn evaluate(runtime: &Runtime, host: &mut dyn Host, source: &str) -> ValueView {
+    let task = runtime
+        .spawn(&compile_script("date-host.js", source).unwrap(), &[])
+        .unwrap();
+    for _ in 0..10000 {
+        match task.run_with(Budget::instructions(1), host).unwrap() {
+            RunOutcome::Complete(value) => {
+                assert!(task.dependency_log().edges().is_empty());
+                return runtime.scope(|s| s.view(s.local(&value).unwrap()));
+            }
+            RunOutcome::Yielded => {}
+            other => panic!("{source}: {other:?}"),
+        }
+    }
+    panic!("bounded date evaluation did not complete");
+}
+
+#[test]
+fn date_host_clock_and_zone() {
+    let runtime = Runtime::new();
+    let mut host = SimTimeHost::new(
+        1506098258091.0,
+        TimeZone::fixed_offset_seconds(3600).unwrap(),
+    );
+    assert_eq!(
+        evaluate(
+            &runtime,
+            &mut host,
+            "Date.now() === 1506098258091 && new Date().getTime() === 1506098258091 && new Date(2000, 0).getTime() === 946681200000 && new Date(2000, 0).getTimezoneOffset() === -60"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(host.clock_reads(), 2);
+    let mut utc = SimTimeHost::new(0.0, TimeZone::UTC);
+    // All tasks/worlds in this runtime keep the first host's zone.
+    assert_eq!(
+        evaluate(&runtime, &mut utc, "new Date(2000, 0).getTimezoneOffset()"),
+        ValueView::Number(-60.0)
+    );
+    assert_eq!(
+        evaluate(&Runtime::new(), &mut utc, "new Date(2000, 0).getTime()"),
+        ValueView::Number(946684800000.0)
+    );
+    let mut paris = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    assert_eq!(
+        evaluate(
+            &Runtime::new(),
+            &mut paris,
+            "new Date(2020, 0).getTimezoneOffset() === -60 && new Date(2020, 6).getTimezoneOffset() === -120 && new Date(2020, 2, 29, 2, 30).getTime() === Date.UTC(2020, 2, 29, 1, 30) && new Date(2020, 9, 25, 2, 30).getTime() === Date.UTC(2020, 9, 25, 0, 30)"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn date_without_host_time_inputs() {
+    let runtime = Runtime::new();
+    let task = runtime.spawn(&compile_script("date-host.js", "let caught = 0; try { Date.now(); } catch(e) { if(e instanceof RangeError) caught++; } try { new Date(); } catch(e) { if(e instanceof RangeError) caught++; } caught === 2 && new Date(2000, 0).getTime() === 946684800000 && new Date(0).getTimezoneOffset() === 0").unwrap(), &[]).unwrap();
+    let RunOutcome::Complete(value) = task.run().unwrap() else {
+        panic!("expected completion")
+    };
+    assert_eq!(
+        runtime.scope(|s| s.view(s.local(&value).unwrap())),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn date_local_fields_and_setters() {
+    let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(3600).unwrap());
+    for source in [
+        "let d = new Date(2017, 8, 22, 18, 10, 11, 91); d.getFullYear() === 2017 && d.getMonth() === 8 && d.getDate() === 22 && d.getHours() === 18 && d.getMinutes() === 10 && d.getSeconds() === 11 && d.getMilliseconds() === 91 && d.getDay() === 5 && d.getUTCHours() === 17",
+        "let d = new Date(2000, 0); d.setFullYear(2001, 1, 2); d.setMonth(2, 3); d.setDate(4); d.setHours(5, 6, 7, 8); d.setMinutes(9, 10, 11); d.setSeconds(12, 13); d.setMilliseconds(14); d.toISOString() === '2001-03-04T04:09:12.014Z'",
+        "let d = new Date(NaN); let nan = d.setHours(3); Number.isNaN(nan) && Number.isNaN(d.getTimezoneOffset()) && Number.isNaN(d.getFullYear()) && d.setFullYear(2000) === Date.UTC(1999, 11, 31, 23)",
+        "let d = new Date(0); let n = d.setHours({valueOf() {d.setTime(86400000); return 2;}}); n === 3600000 && d.getTime() === 3600000",
+        "let log = ''; let d = new Date({valueOf() {log += 'y'; return 99;}}, {valueOf() {log += 'm'; return 0;}}, {valueOf() {log += 'd'; return 1;}}, 0, 0, 0, 0, Symbol()); log === 'ymd' && d.getFullYear() === 1999",
+        "let log = ''; let d = new Date(NaN); d.setHours({valueOf() {log += 'h'; return NaN;}}, {valueOf() {log += 'm'; return 1;}}); log === 'hm' && Number.isNaN(d.getTime())",
+        "let called = false; let caught = false; try {Date.prototype.setHours.call({}, {valueOf() {called = true; return 1;}});} catch(e) {caught = e instanceof TypeError;} caught && !called",
+        "let d = Object.getOwnPropertyDescriptor(Date, 'now'); Date.now.name === 'now' && Date.now.length === 0 && d.writable && !d.enumerable && d.configurable && Date.prototype.setHours.length === 4 && Date.prototype.getHours.length === 0",
+        "let d = new Date(8.64e15); d.getHours() === 1 && d.setHours(1) === 8.64e15 && new Date(275760, 8, 13, 1).getTime() === 8.64e15",
+    ] {
+        assert_eq!(
+            evaluate(&Runtime::new(), &mut host, source),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+    let mut paris = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+    assert_eq!(
+        evaluate(
+            &Runtime::new(),
+            &mut paris,
+            "let d = new Date(2020, 2, 29, 0, 30); d.setHours(2); d.getTime() === Date.UTC(2020, 2, 29, 1, 30) && d.getHours() === 3"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn date_rule_table_coverage_and_seconds() {
+    assert!(TimeZone::named("not/a/zone").is_err());
+    assert!(TimeZone::named("Africa/Abidjan").is_err()); // Inventory-only name.
+    assert!(TimeZone::fixed_offset_seconds(86400).is_err());
+    let monrovia = TimeZone::named("Africa/Monrovia").unwrap();
+    assert_eq!(monrovia.offset_seconds(-8.64e15), -2588);
+    assert_eq!(monrovia.local_time_millis(-8.64e15), -8.64e15 - 2588000.0);
+    assert_eq!(monrovia.utc_time_millis(-8.64e15 - 2588000.0), -8.64e15);
+    assert_eq!(monrovia.offset_seconds(8.64e15), 0);
+    let paris = TimeZone::named("Europe/Paris").unwrap();
+    assert_eq!(paris.offset_seconds(-8.64e15), 561);
+    // No extrapolation of future DST recurrence beyond the snapshot.
+    assert_eq!(paris.offset_seconds(8.64e15), 3600);
+    assert_eq!(
+        TimeZone::named("US/Eastern").unwrap(),
+        TimeZone::named("America/New_York").unwrap()
+    );
+    let mut host = SimTimeHost::new(0.0, monrovia);
+    assert_eq!(
+        evaluate(
+            &Runtime::new(),
+            &mut host,
+            "let d = new Date(Date.UTC(1900, 0)); d.getTimezoneOffset() === 2588 / 60 && d.getSeconds() === 52"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn date_local_coercion_waits_collects_and_migrates() {
+    use clj_quickjs::{Completion, Primitive};
+    let runtime = Runtime::new();
+    let source = "let log = ''; let d = new Date({valueOf() {log += 'y'; __rt.need(1, 1); return 2020;}}, 2, 29, 0, 30); let result = d.setHours({get valueOf() {log += 'g'; __rt.need(2, 1); return function() {log += 'h'; __rt.need(3, 1); return 2;};}}, {valueOf() {log += 'm'; __rt.need(4, 1); return 30;}}); result === Date.UTC(2020, 2, 29, 1, 30) && d.getHours() === 3 && log === 'yghm'";
+    let mut task = runtime
+        .spawn(&compile_script("date-wait.js", source).unwrap(), &[])
+        .unwrap();
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());
+            let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                runtime.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 4);
+                runtime.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = runtime.root(Primitive::Number(0.0));
+                task = runtime
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waits, 4);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("bounded date migration run did not complete");
+}
+
+#[test]
+fn date_time_host_calls_are_leaf_and_unrecorded() {
+    use clj_quickjs::{HostCall, Primitive, RunError};
+    struct GuardHost {
+        runtime: Runtime,
+        reads: usize,
+        zones: usize,
+    }
+    impl GuardHost {
+        fn check(&self) {
+            let task = self
+                .runtime
+                .spawn(&compile_script("leaf.js", "0").unwrap(), &[])
+                .unwrap();
+            assert!(matches!(task.run(), Err(RunError::InsideHostEffect)));
+        }
+    }
+    impl Host for GuardHost {
+        fn current_time_millis(&mut self) -> Result<f64, String> {
+            self.check();
+            self.reads += 1;
+            Ok(self.reads as f64)
+        }
+        fn default_time_zone(&mut self) -> TimeZone {
+            self.check();
+            self.zones += 1;
+            TimeZone::UTC
+        }
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+    }
+    let runtime = Runtime::new();
+    let mut host = GuardHost {
+        runtime: runtime.clone(),
+        reads: 0,
+        zones: 0,
+    };
+    assert_eq!(
+        evaluate(
+            &runtime,
+            &mut host,
+            "Date.now() === 1 && new Date().getTime() === 2 && new Date(2000, 0).getHours() === 0"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(host.zones, 1);
+    assert_eq!(
+        evaluate(&runtime, &mut host, "Date.now()"),
+        ValueView::Number(3.0)
+    );
+}

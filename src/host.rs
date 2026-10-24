@@ -32,6 +32,8 @@
 //! [`sim`] submodule; it drives tasks from outside and is not a leaf effect.
 
 pub mod sim;
+pub mod timezone;
+pub use timezone::TimeZone;
 
 use std::cell::Cell;
 
@@ -51,6 +53,18 @@ pub struct HostCall {
 
 /// Embedder-supplied leaf host effects. See the module docs for the contract.
 pub trait Host {
+    /// Current epoch milliseconds, an unrecorded leaf effect. No clock is
+    /// supplied by default; Date clock reads then throw a catchable RangeError.
+    fn current_time_millis(&mut self) -> Result<f64, String> {
+        Err("no host clock supplied (use Task::run_with)".into())
+    }
+
+    /// One immutable zone per runtime, selected on its first local Date use.
+    /// Later hosts and worlds of that runtime use the same selection.
+    fn default_time_zone(&mut self) -> TimeZone {
+        TimeZone::UTC
+    }
+
     /// Default locale for this run. A leaf effect: no reentry, heap access or
     /// suspension. Reads are not dependency inputs; embedders may vary this
     /// between runs/worlds and should keep it stable when reproducibility matters.
@@ -108,4 +122,16 @@ pub(crate) fn call_default_locale(host: &mut dyn Host) -> String {
     IN_EFFECT.with(|f| assert!(!f.replace(true), "nested host locale effect"));
     let _mark = EffectMark;
     host.default_locale()
+}
+
+pub(crate) fn call_current_time(host: &mut dyn Host) -> Result<f64, String> {
+    IN_EFFECT.with(|f| assert!(!f.replace(true), "nested host clock effect"));
+    let _mark = EffectMark;
+    host.current_time_millis()
+}
+
+pub(crate) fn call_time_zone(host: &mut dyn Host) -> TimeZone {
+    IN_EFFECT.with(|f| assert!(!f.replace(true), "nested host zone effect"));
+    let _mark = EffectMark;
+    host.default_time_zone()
 }

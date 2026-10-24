@@ -329,6 +329,11 @@ pub(crate) enum Builtin {
     PromiseCatch,
     PromiseResolver(ObjectId, bool),
     PromiseReaction(ObjectId),
+
+    DateNow,
+    DateGetLocalField(u8),
+    DateSetLocalField(u8),
+    DateTimezoneOffset,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -493,6 +498,10 @@ impl Builtin {
             Builtin::MapClear => "clear",
             Builtin::MapSize => "get size",
             Builtin::Date => "Date",
+            Builtin::DateNow => "now",
+            Builtin::DateGetLocalField(field) => super::date::LOCAL_GETTERS[field as usize],
+            Builtin::DateSetLocalField(first) => super::date::LOCAL_SETTERS[first as usize].0,
+            Builtin::DateTimezoneOffset => "getTimezoneOffset",
             Builtin::DateUtc => "UTC",
             Builtin::DateGetTime => "getTime",
             Builtin::DateValueOf => "valueOf",
@@ -610,6 +619,8 @@ impl Builtin {
             Builtin::MapSet => 2,
             Builtin::MapClear | Builtin::MapSize => 0,
             Builtin::Date => 7,
+            Builtin::DateNow | Builtin::DateGetLocalField(_) | Builtin::DateTimezoneOffset => 0,
+            Builtin::DateSetLocalField(first) => super::date::LOCAL_SETTERS[first as usize].1,
             Builtin::DateUtc => 2,
             Builtin::DateGetTime | Builtin::DateValueOf => 0,
             Builtin::DateSetTime => 1,
@@ -718,11 +729,16 @@ pub(crate) fn call(
             "ArrayBuffer methods require a resumable frame",
         )),
 
-        Builtin::Date | Builtin::DateUtc | Builtin::DateSetTime | Builtin::DateSetUtcField(_) => {
-            Err(Fault::Internal(
-                "Date conversion requires a resumable frame",
-            ))
-        }
+        Builtin::Date
+        | Builtin::DateUtc
+        | Builtin::DateSetTime
+        | Builtin::DateSetUtcField(_)
+        | Builtin::DateSetLocalField(_)
+        | Builtin::DateGetLocalField(_)
+        | Builtin::DateNow
+        | Builtin::DateTimezoneOffset => Err(Fault::Internal(
+            "Date conversion requires a resumable frame",
+        )),
         Builtin::DateGetTime | Builtin::DateValueOf => {
             super::date::this_time_value(heap, task, this).map(Value::Number)
         }
