@@ -453,6 +453,7 @@ pub(crate) enum Builtin {
     AsyncDisposableStackDisposed,
     /// Private entry called only by the internal async dispose activation.
     AsyncDisposableStackDisposeBody,
+    Proxy,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -498,6 +499,7 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::Proxy => "Proxy",
             Builtin::MathSumPrecise => "sumPrecise",
             Builtin::NumberPrototypeToExponential => "toExponential",
             Builtin::NumberPrototypeToPrecision => "toPrecision",
@@ -746,6 +748,7 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::Proxy => 2,
             Builtin::ArrayFrom | Builtin::MathSumPrecise => 1,
             Builtin::ArrayPrototypeSort => 1,
             Builtin::ArrayValues
@@ -1219,6 +1222,7 @@ pub(crate) fn call(
         | Builtin::MapDelete
         | Builtin::MapClear
         | Builtin::MapSize => map_operation(heap, task, which, this, args),
+        Builtin::Proxy => Err(Fault::TypeError("Proxy constructor requires new".into())),
         Builtin::Object => object_constructor(heap, task, args),
         Builtin::ObjectIs => Ok(Value::Bool(same_value(&arg(0), &arg(1)))),
         Builtin::MathFloor
@@ -2140,6 +2144,8 @@ fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
     let Value::Object(id) = value else {
         return Ok(false);
     };
+    let target = super::proxy::unwrapped(heap, *id)?;
+    let id = &target;
     let intrinsics =
         realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
     if *id == intrinsics.array_prototype {
@@ -2237,7 +2243,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::PromiseResolving(_) => Ok("Object"),
                 HeapObject::Promise(_) => Ok("Promise"),
                 HeapObject::Generator(_) | HeapObject::AsyncState(_) => Ok("Object"),
-                HeapObject::ModuleNamespace(_) => Ok("Object"),
+                HeapObject::ModuleNamespace(_) | HeapObject::Proxy(_) => Ok("Object"),
             })
             // The receiver is an operand of the running frame.
             .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),

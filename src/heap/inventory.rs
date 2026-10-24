@@ -110,11 +110,12 @@ enum Holder {
     ModuleEnvironment,
     ModuleNamespaceEdges,
     DisposableStackResources,
+    ProxyEdges,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 50] = [
+const HOLDERS: [Holder; 51] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -165,6 +166,7 @@ const HOLDERS: [Holder; 50] = [
     Holder::ModuleEnvironment,
     Holder::ModuleNamespaceEdges,
     Holder::DisposableStackResources,
+    Holder::ProxyEdges,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -181,7 +183,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 25] = [
+const KINDS: [ObjectKind; 26] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -207,6 +209,7 @@ const KINDS: [ObjectKind; 25] = [
     ObjectKind::FinalizationRegistry,
     ObjectKind::ModuleNamespace,
     ObjectKind::DisposableStack,
+    ObjectKind::Proxy,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -239,6 +242,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             FinalizationRegistryEdges,
             ModuleNamespaceEdges,
             DisposableStackResources,
+            ProxyEdges,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -308,6 +312,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::WeakRef => &[WeakRefProperties],
         ObjectKind::FinalizationRegistry => &[FinalizationRegistryEdges],
         ObjectKind::DisposableStack => &[DisposableStackResources],
+        ObjectKind::Proxy => &[ProxyEdges],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -343,6 +348,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::ProxyEdges => Coverage {
+            retains: (Inventory, "proxy_edges_retain_and_reclaim"),
+            reclaims: (Inventory, "proxy_edges_retain_and_reclaim"),
+        },
         Holder::ModuleNamespaceEdges => Coverage {
             retains: (Namespaces, "namespace_cells_retain_and_reclaim"),
             reclaims: (Namespaces, "namespace_cells_retain_and_reclaim"),
@@ -1021,7 +1030,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 341); // AsyncDisposableStack and its private entry (-241).
+    assert_eq!(ids.len(), 342); // Proxy constructor (-91).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
@@ -1231,4 +1240,29 @@ fn disposable_stack_resources_retain_and_reclaim() {
     drop(root);
     assert_eq!(heap.request_collection().unwrap().reclaimed, 5);
     assert_stale(&heap, &[holder, prototype, value, method, property]);
+}
+
+#[test]
+fn proxy_edges_retain_and_reclaim() {
+    let heap = Arc::new(Heap::default());
+    let task = crate::ids::TaskId::from_raw(1);
+    let target = heap.alloc(HeapObject::host_object()).unwrap();
+    let handler = heap.alloc(HeapObject::host_object()).unwrap();
+    let value = crate::vm::proxy::construct(
+        &heap,
+        task,
+        &[Value::Object(target), Value::Object(handler)],
+    )
+    .unwrap_or_else(|_| panic!("proxy construction failed"));
+    let Value::Object(proxy) = value else {
+        unreachable!()
+    };
+    let root = Rooted::new(&heap, value);
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 0);
+    for id in [proxy, target, handler] {
+        assert!(heap.is_live(id));
+    }
+    drop(root);
+    assert_eq!(heap.request_collection().unwrap().reclaimed, 3);
+    assert_stale(&heap, &[proxy, target, handler]);
 }

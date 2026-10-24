@@ -248,6 +248,7 @@ fn body(heap: &Heap, v: &Value) -> Body {
 /// The name of a heap object's kind in `WrongType` errors.
 pub(crate) fn object_name(object: &HeapObject) -> &'static str {
     match object {
+        HeapObject::Proxy(_) => "Proxy",
         HeapObject::Promise(_) => "Promise",
         HeapObject::Generator(_) => "generator",
         HeapObject::AsyncState(_) => "async activation",

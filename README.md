@@ -2210,7 +2210,7 @@ Supported (`cargo test --lib frontend::tests::for_in_heads`,
 
 Deferred:
 
-- Proxy traps (clj-quickjs-91). (Property targets: clj-quickjs-87;
+- Other Proxy traps remain deferred; enumeration traps are supported below (clj-quickjs-91). (Property targets: clj-quickjs-87;
   initialized non-strict `var` heads: clj-quickjs-90; `var` heads: clj-quickjs-89; inherited properties:
   clj-quickjs-86; arrays: clj-quickjs-88, all below.)
 
@@ -2235,7 +2235,7 @@ in `src/vm/keys.rs`, "Prototype chain"):
   unlinked during the loop survives waits, collections and migration until
   the walk leaves it.
 
-Deferred: Proxy traps (clj-quickjs-91) as above. Error instances use ordinary
+Proxy enumeration traps are supported below (clj-quickjs-91). Error instances use ordinary
 own keys and prototype traversal.
 
 ### `for`-`in` over arrays (clj-quickjs-88)
@@ -2669,7 +2669,7 @@ non-number element, or multiple elements. Large lengths allocate no holes.
 `Array.isArray` recognizes arrays and `Array.prototype`, and rejects
 persistent vectors and ordinary objects. Constructor/prototype links and
 standard property attributes are exposed. Results are task-owned like literals.
-Deferred: subclassing built-ins, proxies, species and remaining array methods.
+Deferred: subclassing built-ins, other Proxy traps, species and remaining array methods.
 
 Verify: `cargo test --test js_source array_constructor_and_is_array`.
 
@@ -4148,3 +4148,15 @@ CARGO_BUILD_JOBS=3 cargo test --test exceptions quickjs_using -- --test-threads=
 
 Deferred: intrinsic property mutation, `for (await using ... of ...)` and module
 top-level await remain outside the supported subset.
+
+### Proxy enumeration (clj-quickjs-91)
+
+`new Proxy(target, handler)` supports resumable `ownKeys` and
+`getOwnPropertyDescriptor` traps with invariant checks. For-in queries each
+candidate descriptor immediately before visiting its key; Object reflection,
+rest, JSON object enumeration and integrity operations share these semantics.
+Absent traps forward to the target. Other present traps fail with a TypeError
+naming the unsupported trap; revocation is deferred. Proxies remain task-owned.
+
+Checks: `cargo test --test js_source proxy_` and
+`cargo test --lib heap::inventory::proxy_edges_retain_and_reclaim`.

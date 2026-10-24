@@ -1979,6 +1979,7 @@ mod tests {
             | HeapObject::WeakRef(_)
             | HeapObject::FinalizationRegistry(_)
             | HeapObject::DisposableStack(_)
+            | HeapObject::Proxy(_)
             | HeapObject::ArrayBuffer(_)
             | HeapObject::TypedArray(_)
             | HeapObject::Promise(_)

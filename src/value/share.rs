@@ -239,7 +239,8 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         | HeapObject::WeakMap(_)
         | HeapObject::WeakRef(_)
         | HeapObject::FinalizationRegistry(_)
-        | HeapObject::DisposableStack(_) => Shareability::TaskOwned,
+        | HeapObject::DisposableStack(_)
+        | HeapObject::Proxy(_) => Shareability::TaskOwned,
         HeapObject::ArrayBuffer(_) => Shareability::TaskOwned,
         HeapObject::TypedArray(_) => Shareability::TaskOwned,
     }
@@ -249,6 +250,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
 fn owner(object: &HeapObject) -> Option<TaskId> {
     match object {
         HeapObject::Builder(b) => Some(b.owner()),
+        HeapObject::Proxy(p) => Some(p.owner),
         HeapObject::Cell(c) => Some(c.owner),
         HeapObject::ModuleNamespace(ns) => Some(ns.owner),
         HeapObject::Generator(g) => Some(g.owner),

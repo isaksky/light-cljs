@@ -485,6 +485,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Proxy(Box<super::proxy::State>),
     Dispose(dispose::State),
     Disposal(Box<dispose::Stack>),
     MathSumPrecise(Box<sum_precise::State>),
@@ -943,6 +944,7 @@ impl Trace for NativeFrame {
                 }
             }
             NativeState::DefineProperty(desc) => desc.trace(visit),
+            NativeState::Proxy(proxy) => proxy.trace(visit),
             NativeState::Instanceof { value, target } => {
                 value.trace(visit);
                 target.trace(visit);
@@ -990,7 +992,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
         Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) | UsingCheckAsync
-        | UsingDisposeAsync(_) => true,
+        | UsingDisposeAsync(_) | ForInNext => true,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
@@ -1006,9 +1008,9 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Typeof | GetField(_) | PutField(_) | DefineField(_) | GetBuiltinGlobal(_)
         | CallMethod(_) | NewObjectLiteral | ToString | GetThis | NewArray | AppendElement
         | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | Construct(_) | SetProto
-        | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments | Method(..)
-        | DefineGetter(_) | DefineSetter(_) | RequireObject | PendingThrow | CallSpread
-        | CallMethodSpread | ConstructSpread | CheckSpreadArguments => false,
+        | Instanceof | Delete | In | ForInStart | NewArguments | Method(..) | DefineGetter(_)
+        | DefineSetter(_) | RequireObject | PendingThrow | CallSpread | CallMethodSpread
+        | ConstructSpread | CheckSpreadArguments => false,
         GeneratorStart
         | GeneratorYield
         | GeneratorInitialYield
@@ -1365,6 +1367,39 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if !construct
+        && let Some(Value::Object(target)) = args.first()
+        && super::proxy::inspect(heap, state.diag.task, *target)?.is_some()
+    {
+        use super::proxy::Mode;
+        let mode = match which {
+            Builtin::ObjectKeys => Some(Mode::Keys {
+                target: *target,
+                enumerable: true,
+                symbols: false,
+            }),
+            Builtin::ObjectFreeze => Some(Mode::Freeze(*target)),
+            Builtin::ObjectIsFrozen => Some(Mode::Frozen(*target)),
+            Builtin::ObjectGetOwnPropertyNames => Some(Mode::Keys {
+                target: *target,
+                enumerable: false,
+                symbols: false,
+            }),
+            Builtin::ObjectGetOwnPropertyDescriptor
+                if !matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_))) =>
+            {
+                Some(Mode::Descriptor {
+                    target: *target,
+                    key: property::to_property_key(args.get(1).unwrap_or(&Value::Undefined))?,
+                })
+            }
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            start_proxy(state, mode, popped)?;
+            return Ok(true);
+        }
+    }
     if which == Builtin::AsyncDisposableStackDispose && !construct {
         dispose::start_async_stack(heap, state, this.clone(), popped)?;
         return Ok(true);
@@ -2416,6 +2451,12 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
+        Instr::ForInNext => (
+            1,
+            NativeState::Proxy(Box::new(super::proxy::State::new(
+                super::proxy::Mode::ForIn(operands::<1>(state)?[0].clone()),
+            ))),
+        ),
         Instr::UsingDispose(count) | Instr::UsingDisposeAsync(count) => {
             use crate::object::disposable_stack::{Hint, Resource};
             let count = usize::from(count);
@@ -2718,6 +2759,9 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             strict,
         } => {
             set_awaiting(state, Awaiting::CallResult)?;
+            if proxy_write(heap, state, &this, &key, &value, strict)? {
+                return Ok(Flow::Next);
+            }
             if !typed_array_write(heap, state, &this, &key, &value)? {
                 let setter = property::prepare_put(
                     heap,
@@ -3208,6 +3252,7 @@ impl NativeState {
                     _ => None,
                 };
                 Ok(match stringifier.advance(heap, task, result)? {
+                    StringifyStep::Native(action) => action,
                     StringifyStep::Continue => Action::Continue,
                     StringifyStep::Call { callee, this, args } => {
                         Action::Call { callee, this, args }
@@ -3495,6 +3540,7 @@ impl NativeState {
             NativeState::Instanceof { value, target } => {
                 step_instanceof(heap, task, value, target, input)
             }
+            NativeState::Proxy(proxy) => proxy.step(heap, task, input),
             NativeState::DefineProperty(desc) => {
                 let result = match input {
                     Input::Start => None,
@@ -4379,6 +4425,7 @@ impl NativeState {
                 | NativeState::StringReplace(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
+                | NativeState::Proxy(_)
                 | NativeState::Instanceof { .. }
                 | NativeState::Apply { .. }
                 | NativeState::Push { .. }
@@ -4480,6 +4527,47 @@ pub(crate) fn start_disposable_stack_constructor(
             kind,
         })),
     )
+}
+
+pub(crate) fn start_proxy(
+    state: &mut VmState,
+    mode: super::proxy::Mode,
+    popped: usize,
+) -> Result<(), Fault> {
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(
+        state,
+        NativeState::Proxy(Box::new(super::proxy::State::new(mode))),
+    )
+}
+
+/// OrdinarySet keeps the original proxy receiver while forwarding its target
+/// lookup, so the receiver's supported descriptor trap remains observable.
+pub(crate) fn proxy_write(
+    heap: &Heap,
+    state: &mut VmState,
+    base: &Value,
+    key: &property::Key,
+    value: &Value,
+    strict: bool,
+) -> Result<bool, Fault> {
+    let Value::Object(target) = base else {
+        return Ok(false);
+    };
+    if super::proxy::inspect(heap, state.diag.task, *target)?.is_none() {
+        return Ok(false);
+    }
+    start_proxy(
+        state,
+        super::proxy::Mode::Set {
+            target: *target,
+            key: key.clone(),
+            value: value.clone(),
+            strict,
+        },
+        0,
+    )?;
+    Ok(true)
 }
 
 #[cfg(test)]

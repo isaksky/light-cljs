@@ -648,6 +648,7 @@ fn lookup(
     };
     let mut realm = heap.realm().get();
     loop {
+        id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
         if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
             return entry
                 .map(|entry| {
@@ -938,6 +939,12 @@ pub(crate) fn prepare_put(
     value: Value,
     strict: bool,
 ) -> Result<Option<Value>, Fault> {
+    if let Value::Object(id) = base {
+        let target = super::proxy::forward(heap, task, *id, "set")?;
+        if target != *id {
+            return prepare_put(heap, task, &Value::Object(target), key, value, strict);
+        }
+    }
     if let Value::Object(id) = base
         && crate::module::namespace::probe(heap, task, *id, key)?.is_some()
     {
@@ -1274,6 +1281,7 @@ fn check_inherited(
 ) -> Result<Chain, Fault> {
     let mut realm = heap.realm().get();
     loop {
+        id = super::proxy::forward(heap, task, id, "set")?;
         if crate::module::namespace::probe(heap, task, id, key)?.is_some() {
             return Err(read_only(key));
         }
@@ -1479,6 +1487,7 @@ pub(crate) fn define_own_property(
     key: &Key,
     desc: &PropertyDescriptor,
 ) -> Result<(), Fault> {
+    let target = super::proxy::forward(heap, task, target, "defineProperty")?;
     if let Some(entry) = crate::module::namespace::probe(heap, task, target, key)? {
         return crate::module::namespace::define(heap, task, entry, desc);
     }
@@ -1645,6 +1654,7 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    let target = super::proxy::forward(heap, task, target, "getOwnPropertyDescriptor")?;
     if let Some(entry) = crate::module::namespace::probe(heap, task, target, key)? {
         return entry
             .map(|e| crate::module::namespace::property(heap, task, e))
@@ -1761,6 +1771,7 @@ pub(crate) fn delete(
 /// embedder-created object is `ForeignObject`; the other heap kinds have
 /// no properties.
 fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<DeleteOutcome, Fault> {
+    let id = super::proxy::forward(heap, task, id, "deleteProperty")?;
     if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
         return Ok(if entry.is_some() {
             DeleteOutcome::NonConfigurable

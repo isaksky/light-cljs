@@ -163,6 +163,7 @@ pub(crate) enum ObjectKind {
     FinalizationRegistry,
     ModuleNamespace,
     DisposableStack,
+    Proxy,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -247,6 +248,7 @@ pub(crate) enum HeapObject {
     FinalizationRegistry(Box<crate::object::finalization_registry::FinalizationRegistryObject>),
     ModuleNamespace(Box<crate::module::namespace::Namespace>),
     DisposableStack(Box<crate::object::disposable_stack::DisposableStack>),
+    Proxy(crate::vm::proxy::Proxy),
 }
 
 impl HeapObject {
@@ -284,6 +286,7 @@ impl HeapObject {
             HeapObject::Generator(_) => ObjectKind::Generator,
             HeapObject::AsyncState(_) => ObjectKind::AsyncState,
             HeapObject::ModuleNamespace(_) => ObjectKind::ModuleNamespace,
+            HeapObject::Proxy(_) => ObjectKind::Proxy,
         }
     }
 }
@@ -316,6 +319,7 @@ impl Trace for HeapObject {
             HeapObject::Generator(g) => g.trace(visit),
             HeapObject::AsyncState(a) => a.trace(visit),
             HeapObject::ModuleNamespace(ns) => ns.trace(visit),
+            HeapObject::Proxy(p) => p.trace(visit),
         }
     }
 
@@ -347,6 +351,7 @@ impl Trace for HeapObject {
             HeapObject::Generator(g) => g.trace_conditional(visit),
             HeapObject::AsyncState(a) => a.trace_conditional(visit),
             HeapObject::ModuleNamespace(_) => {}
+            HeapObject::Proxy(_) => {}
         }
     }
 }

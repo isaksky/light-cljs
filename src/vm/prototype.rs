@@ -92,6 +92,7 @@ pub(crate) fn get_prototype_of(
     task: TaskId,
     id: ObjectId,
 ) -> Result<Option<ObjectId>, Fault> {
+    let id = super::proxy::forward(heap, task, id, "getPrototypeOf")?;
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(view.prototype);
     }
@@ -148,6 +149,7 @@ pub(crate) fn set_prototype_of(
     id: ObjectId,
     proto: Option<ObjectId>,
 ) -> Result<(), Fault> {
+    let id = super::proxy::forward(heap, task, id, "setPrototypeOf")?;
     if get_prototype_of(heap, task, id)? == proto {
         return Ok(());
     }

@@ -220,11 +220,12 @@ pub(crate) enum Global {
     SuppressedError = 42,
     DisposableStack = 43,
     AsyncDisposableStack = 44,
+    Proxy = 45,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 45] = [
+    const ALL: [Global; 46] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -270,11 +271,13 @@ impl Global {
         Global::SuppressedError,
         Global::DisposableStack,
         Global::AsyncDisposableStack,
+        Global::Proxy,
     ];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Global::Proxy => "Proxy",
             Global::BigInt => "BigInt",
             Global::Promise => "Promise",
             Global::Object => "Object",
@@ -355,6 +358,7 @@ pub(crate) struct Intrinsics {
     pub(crate) array_prototype: ObjectId,
     /// The `Array` constructor, also reachable as a global.
     array: ObjectId,
+    proxy: ObjectId,
     /// `Function.prototype`, the prototype of every function object and
     /// built-in function (clj-quickjs-102).
     pub(crate) function_prototype: ObjectId,
@@ -515,6 +519,7 @@ impl Intrinsics {
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
+            Global::Proxy => Value::Object(self.proxy),
             Global::BigInt => Value::Object(self.bigint),
             Global::Promise => Value::Object(self.promise),
             Global::ArrayBuffer => Value::Object(self.array_buffer),
@@ -1299,6 +1304,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_display_names_intrinsics(&mut b, object_prototype, intl)?;
     let intl_duration_format_prototype =
         intl_duration_format_intrinsics(&mut b, object_prototype, intl)?;
+    let proxy = b.function(Builtin::Proxy, &[])?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1322,6 +1328,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Intrinsics {
+        proxy,
         array_iterator_prototype,
         string_iterator_prototype,
         bigint,
@@ -2877,7 +2884,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 341); // AsyncDisposableStack and its private entry (-241).
+        assert_eq!(first.all.len(), 342); // Proxy constructor (-91).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2956,7 +2963,8 @@ mod tests {
         assert_eq!(Global::from_u16(42), Some(Global::SuppressedError));
         assert_eq!(Global::from_u16(43), Some(Global::DisposableStack));
         assert_eq!(Global::from_u16(44), Some(Global::AsyncDisposableStack));
-        assert_eq!(Global::from_u16(45), None);
+        assert_eq!(Global::from_u16(45), Some(Global::Proxy));
+        assert_eq!(Global::from_u16(46), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

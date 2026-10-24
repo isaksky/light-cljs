@@ -99,6 +99,7 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         // A primitive is not extensible and is frozen.
         return Ok(true);
     };
+    let id = super::proxy::forward(heap, task, id, "isExtensible")?;
     if let Some(keys) =
         crate::module::namespace::keys(heap, task, id, crate::vm::keys::KeyFilter::All)?
     {
@@ -174,6 +175,7 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
     let Value::Object(id) = *v else {
         return Ok(());
     };
+    let id = super::proxy::forward(heap, task, id, "preventExtensions")?;
     if let Some(keys) =
         crate::module::namespace::keys(heap, task, id, crate::vm::keys::KeyFilter::All)?
     {

@@ -119,9 +119,10 @@
 //! only by a scratch local of the loop's frame (`crate::frontend` lowers
 //! the loop), so it lives exactly as long as the frame needs it, survives
 //! yields, waits, collections and migration with the frame, and is never
-//! reachable from JavaScript or published. Each `ForInNext` runs within
-//! one instruction, without a safepoint, so moving along the chain never
-//! leaves an untraced object behind.
+//! reachable from JavaScript or published. `ForInNext` uses a traced native
+//! continuation (clj-quickjs-91): a proxy key list and each descriptor may
+//! call JavaScript. Each leaf transition stores the current object and keys
+//! before the next safepoint. Ordinary lookups remain callback-free.
 
 use std::collections::HashSet;
 
@@ -189,6 +190,7 @@ pub(crate) fn own_property_keys(
     target: ObjectId,
     filter: KeyFilter,
 ) -> Result<Vec<OwnKey>, Fault> {
+    let target = super::proxy::forward(heap, task, target, "ownKeys")?;
     if let Some(keys) = crate::module::namespace::keys(heap, task, target, filter)? {
         return Ok(keys);
     }
@@ -264,6 +266,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             .collect()
     };
     match object {
+        HeapObject::Proxy(_) => Err(Fault::Internal("Proxy bypassed resumable key enumeration")),
         HeapObject::ModuleNamespace(_) => {
             Err(Fault::Internal("namespace bypassed exotic key enumeration"))
         }
@@ -535,6 +538,7 @@ pub(crate) struct ForInIterator {
     /// up the chain.
     keys: Vec<OwnKey>,
     next: usize,
+    pending_keys: bool,
     /// The keys of the objects the walk has left (module docs, "Prototype chain").
     visited: Visited,
 }
@@ -580,6 +584,7 @@ impl ForInIterator {
             object,
             keys,
             next: 0,
+            pending_keys: false,
             visited: Visited::default(),
         }
     }
@@ -619,6 +624,11 @@ impl Trace for ForInIterator {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(object) = self.object {
             visit(object.into());
+        }
+        for own in &self.keys {
+            if let Key::Symbol(symbol) = &own.key {
+                visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
+            }
         }
     }
 }
@@ -691,6 +701,11 @@ fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId
 /// new heap object (module docs, "`for`-`in`").
 pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
     let iterator = match value {
+        Value::Object(id) if super::proxy::inspect(heap, task, *id)?.is_some() => {
+            let mut it = ForInIterator::new(Some(*id), vec![]);
+            it.pending_keys = true;
+            it
+        }
         Value::Object(id) => match walk_keys(heap, task, *id)? {
             Some(keys) => ForInIterator::new(Some(*id), keys),
             None => ForInIterator::new(None, Vec::new()),
@@ -744,6 +759,7 @@ fn with_iterator<R>(
 /// that object (a key deleted, or made non-enumerable, before it is
 /// reached is skipped). The walk moves to the next prototype when an
 /// object's keys are used up (module docs, "Prototype chain").
+#[cfg(test)]
 pub(crate) fn for_in_next(
     heap: &Heap,
     task: TaskId,
@@ -780,6 +796,90 @@ pub(crate) fn for_in_next(
                     None => (None, Vec::new()),
                 };
                 with_iterator(heap, id, |it| it.enter(next, keys))?;
+            }
+        }
+    }
+}
+
+pub(crate) enum ForInRequest {
+    Keys(ObjectId),
+    Descriptor(ObjectId, Key),
+    Key(Key),
+    Done,
+}
+
+pub(crate) fn for_in_set_keys(
+    heap: &Heap,
+    iterator: &Value,
+    keys: Vec<OwnKey>,
+) -> Result<(), Fault> {
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    with_iterator(heap, *id, |it| {
+        it.keys = keys;
+        it.next = 0;
+        it.pending_keys = false;
+    })
+}
+
+pub(crate) fn for_in_missing_key(heap: &Heap, iterator: &Value) -> Result<(), Fault> {
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    with_iterator(heap, *id, |it| {
+        it.next -= 1;
+        it.keys.remove(it.next);
+    })
+}
+
+/// Return the next observable operation, leaving its cursor in the heap before
+/// any callback. Ordinary keys retain their fast, callback-free path.
+pub(crate) fn for_in_request(
+    heap: &Heap,
+    task: TaskId,
+    iterator: &Value,
+) -> Result<ForInRequest, Fault> {
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    loop {
+        if let Some(object) = with_iterator(heap, *id, |it| {
+            it.pending_keys.then_some(it.object).flatten()
+        })? {
+            return Ok(ForInRequest::Keys(object));
+        }
+        match with_iterator(heap, *id, ForInIterator::step)? {
+            Step::Done => return Ok(ForInRequest::Done),
+            Step::Key(Some(object), key) => {
+                if super::proxy::inspect(heap, task, object)?.is_some() {
+                    return Ok(ForInRequest::Descriptor(object, key));
+                }
+                if property::get_own_property(heap, task, object, &key)?
+                    .is_some_and(|p| p.flags.enumerable)
+                {
+                    return Ok(ForInRequest::Key(key));
+                }
+            }
+            Step::Key(None, key) => return Ok(ForInRequest::Key(key)),
+            Step::Exhausted(object) => {
+                let next = chain_next(heap, task, object)?;
+                if let Some(proto) = next {
+                    if super::proxy::inspect(heap, task, proto)?.is_some() {
+                        with_iterator(heap, *id, |it| {
+                            it.enter(Some(proto), vec![]);
+                            it.pending_keys = true;
+                        })?;
+                    } else {
+                        let keys = walk_keys(heap, task, proto)?;
+                        with_iterator(heap, *id, |it| match keys {
+                            Some(keys) => it.enter(Some(proto), keys),
+                            None => it.enter(None, vec![]),
+                        })?;
+                    }
+                } else {
+                    with_iterator(heap, *id, |it| it.enter(None, vec![]))?;
+                }
             }
         }
     }

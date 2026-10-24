@@ -27307,3 +27307,214 @@ fn class_fields_super_in_parameter_defaults() {
         ValueView::Bool(true)
     );
 }
+
+#[test]
+fn proxy_own_keys_and_descriptor_traps() {
+    // test_for_in_proxy from QuickJS tests/test_loop.js (MIT notice above).
+    let upstream = r#"
+function test_for_in_proxy() {
+    let removed_key = "";
+    let target = {}
+    let proxy = new Proxy(target, {
+        ownKeys: function() {
+            return ["a", "b", "c"];
+        },
+        getOwnPropertyDescriptor: function(target, key) {
+            if (removed_key != "" && key == removed_key)
+                return undefined;
+            else
+                return { enumerable: true, configurable: true, value: this[key] };
+        }
+    });
+    let str = "";
+    for(let o in proxy) {
+        str += " " + o;
+        if (o == "a")
+            removed_key = "b";
+    }
+    assert(str == " a c");
+}
+function assert(v) { if (!v) throw 'assertion failed'; }
+test_for_in_proxy(); true;
+"#;
+    assert_eq!(eval(upstream), ValueView::Bool(true));
+    for source in [
+        "let s=''; for(let k in new Proxy({a:1,b:2}, {})) s+=k; s === 'ab'",
+        "let p=new Proxy({x:1}, {}); p.x=2; let ok=p.x===2 && 'x' in p; delete p.x; ok && !('x' in p)",
+        "let n=0; for(let f of [() => Proxy({}, {}), () => new Proxy(1, {}), () => new Proxy({}, null), () => {for(let k in new Proxy({}, {ownKeys(){return ['a','a'];}})) {}}, () => {for(let k in new Proxy({}, {ownKeys(){return [1];}})) {}}, () => {let t={}; Object.defineProperty(t,'x',{value:1}); for(let k in new Proxy(t,{ownKeys(){return [];}})) {}}, () => {let t={}; Object.defineProperty(t,'x',{value:1,enumerable:true}); for(let k in new Proxy(t,{getOwnPropertyDescriptor(){return undefined;}})) {}}]) {try {f();} catch(e) {if(e instanceof TypeError) n++;}} n===7",
+        "let e; try {new Proxy({}, {get(){return 1;}}).x;} catch(x) {e=x;} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: get') >= 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn proxy_traps_resume_with_small_budgets_and_gc() {
+    let source = "let calls=0, s=''; let p=new Proxy({}, {ownKeys(t){calls++; let n=0; while(n<20) n++; return ['a','b'];}, getOwnPropertyDescriptor(t,k){return {value:k,enumerable:true,configurable:true};}}); for(let k in p) s+=k; s==='ab' && calls===1";
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut yields = 0;
+    loop {
+        match task
+            .run_with(Budget::instructions(5), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Bool(true));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(yields < 2000);
+    }
+    assert!(yields > 20);
+}
+
+#[test]
+fn proxy_invariants_reflection_and_forwarding() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "Proxy.length===2 && Proxy.name==='Proxy' && Proxy.prototype===undefined",
+        "let sym=Symbol('s'), t={[sym]:1,a:2}; let p=new Proxy(t,{ownKeys(){return [sym,'a'];}}); Object.getOwnPropertyNames(p).join(',')==='a' && Object.keys(p).join(',')==='a'",
+        "let t={a:1}; Object.preventExtensions(t); Object.getOwnPropertyNames(new Proxy(t,{ownKeys(){return ['a'];}}))[0]==='a'",
+        "let t={a:1}, p=new Proxy(t,{}); Object.defineProperty(p,'b',{value:2,enumerable:true}); Object.getOwnPropertyDescriptor(p,'b').value===2 && Object.getPrototypeOf(p)===Object.prototype && Object.preventExtensions(p)===p && !Object.isExtensible(t)",
+        "let h={get ownKeys(){return function(t){return {length:1,get 0(){return 'a';}};}}, getOwnPropertyDescriptor(t,k){return {get enumerable(){return true;},get configurable(){return true;},get value(){return 3;}};}}; let p=new Proxy({},h); Object.keys(p).join(',')==='a' && Object.getOwnPropertyDescriptor(p,'x').value===3",
+        "let calls='', t={a:1}, inner=new Proxy(t,{ownKeys(){calls+='k';return ['a'];},getOwnPropertyDescriptor(t,k){calls+='d';return Object.getOwnPropertyDescriptor(t,k);}}), outer=new Proxy(inner,{}), s=''; for(let k in outer) s+=k; s==='a' && calls==='kd'",
+        "let t={a:1}, p=new Proxy(t,{}); let {a,...rest}=new Proxy({a:1,b:2},{}); a===1 && rest.b===2 && Object.keys(rest).join(',')==='b'",
+        "let t={}; let f=new Proxy(function(x){return this.n+x;},{}); let o={n:2,f:f}; o.f(3)===5 && typeof f==='function' && new (new Proxy(function(){this.a=7;},{}))().a===7",
+        "let p=Object.create({x:1}), o={__proto__:new Proxy(p,{}),a:1}, s=''; for(let k in o) s+=k; s==='ax'",
+        "let s='', p=new Proxy({}, {ownKeys(){return ['x'];},getOwnPropertyDescriptor(){return {enumerable:false,configurable:true};}}); for(let k in p) s+=k; s===''",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for operation in [
+        "Object.getOwnPropertyNames(new Proxy({}, {ownKeys(){return 1;}}))",
+        "Object.getOwnPropertyNames(new Proxy({}, {ownKeys(){return [Symbol.iterator,Symbol.iterator];}}))",
+        "let t={a:1}; Object.preventExtensions(t); Object.keys(new Proxy(t,{ownKeys(){return [];}}))",
+        "let t={a:1}; Object.preventExtensions(t); Object.keys(new Proxy(t,{ownKeys(){return ['a','b'];}}))",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return 1;}}),'a')",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {};}}),'a')",
+        "let t={a:1}; Object.preventExtensions(t); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return undefined;}}),'a')",
+        "let t={}; Object.preventExtensions(t); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {configurable:true};}}),'a')",
+        "let t={}; Object.defineProperty(t,'a',{value:1}); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {value:2};}}),'a')",
+        "let t={}; Object.defineProperty(t,'a',{value:1,writable:true}); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {value:1,writable:false};}}),'a')",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {get:1,configurable:true};}}),'a')",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {get(){},value:1,configurable:true};}}),'a')",
+    ] {
+        let source = format!(
+            "let caught; try {{ {operation}; }} catch(e) {{caught=e;}} caught instanceof TypeError"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{operation}");
+    }
+    for (trap, operation) in [
+        ("set", "p.x=1"),
+        ("has", "'x' in p"),
+        ("deleteProperty", "delete p.x"),
+        ("defineProperty", "Object.defineProperty(p,'x',{value:1})"),
+        ("getPrototypeOf", "Object.getPrototypeOf(p)"),
+        ("setPrototypeOf", "Object.setPrototypeOf(p,null)"),
+        ("isExtensible", "Object.isExtensible(p)"),
+        ("preventExtensions", "Object.preventExtensions(p)"),
+        ("apply", "p()"),
+        ("construct", "new p()"),
+    ] {
+        let source = format!(
+            "let h={{}},e; h['{trap}']=function(){{throw 42;}}; let p=new Proxy(function(){{}},h); try {{{operation};}} catch(x) {{e=x;}} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: {trap}')>=0"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn proxy_publication_is_task_owned() {
+    let rt = Runtime::new();
+    for source in ["new Proxy({}, {})", "Object.freeze(new Proxy({}, {}))"] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("{source}");
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+    }
+}
+
+#[test]
+fn proxy_descriptor_observation_order_and_receivers() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let s='', p=new Proxy({__proto__:{x:1}}, {ownKeys(){return ['x'];},getOwnPropertyDescriptor(){return undefined;}}); for(let k in p) s+=k; s==='x'",
+        "let t={x:1}, log='', p=new Proxy(t,{getOwnPropertyDescriptor(t,k){log+=k;return Object.getOwnPropertyDescriptor(t,k);}}); p.x=2; p.y=3; log==='xy' && t.x===2 && t.y===3",
+        "let p,seen; p=new Proxy({set x(v){seen=this===p && v===3;}},{getOwnPropertyDescriptor(){throw 99;},defineProperty(){throw 98;}}); p.x=3; seen",
+        "let p=new Proxy({}, {defineProperty(){throw 99;}}), e; try {p.x=1;} catch(x){e=x;} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: defineProperty')>=0",
+        "let target={a:1}, log='', p=new Proxy(target,{getOwnPropertyDescriptor(){return {get enumerable(){log+='e';return true;},get configurable(){log+='c';return true;},get value(){log+='v';return 2;},get writable(){log+='w';return true;}};}}); let d=Object.getOwnPropertyDescriptor(p,'a'); log==='ecvw' && d.value===2 && d.writable && d.enumerable && d.configurable",
+        "let n=0,t={x:1}, p=new Proxy(t,{ownKeys(){n++;return ['x'];},getOwnPropertyDescriptor(t,k){n++;return Object.getOwnPropertyDescriptor(t,k);}}); Object.freeze(p)===p && Object.isFrozen(p) && n===4 && Object.isFrozen(t)",
+        "let n=0, p=new Proxy({a:1,b:2},{ownKeys(){n++;return ['b','a'];},getOwnPropertyDescriptor(t,k){n++;return Object.getOwnPropertyDescriptor(t,k);}}); JSON.stringify(p)==='{\"b\":2,\"a\":1}' && n===3",
+        "Array.isArray(new Proxy([],{})) && JSON.stringify(new Proxy([1,2],{}))==='[1,2]'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn proxy_traps_wait_collect_and_migrate() {
+    // Synthetic fixture, not light-cljs output. Every callback phase waits once.
+    let rt = Runtime::new();
+    let source = r#"
+let log='';
+function pause(s,key) { log+=s; __rt.need(key,1); }
+let handler={
+    get ownKeys() { pause('g',910); return function(t) {
+        pause('k',911); return {get length(){pause('l',912);return 1;},get 0(){pause('i',913);return 'a';}};
+    }; },
+    get getOwnPropertyDescriptor() { pause('h',914); return function(t,k) {
+        pause('d',915); return {get enumerable(){pause('e',916);return true;},get configurable(){pause('c',917);return true;},get value(){pause('v',918);return k;}};
+    }; }
+};
+let result=''; for(let k in new Proxy({},handler)) result+=k;
+result==='a' && log==='gklihdecv';
+"#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(5), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 9);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Undefined);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waits, 9);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("Proxy callbacks exceeded instruction bound");
+}

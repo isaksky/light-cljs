@@ -605,6 +605,7 @@ enum AfterIndent {
 
 #[derive(Debug)]
 enum StringifyStage {
+    ProxyKeys,
     Space,
     SpaceConverted,
     SpacePrefix {
@@ -636,6 +637,7 @@ enum StringifyStage {
 }
 
 pub(super) enum StringifyStep {
+    Native(super::native::Action),
     Continue,
     Call {
         callee: Value,
@@ -649,6 +651,7 @@ pub(super) enum StringifyStep {
 
 #[derive(Debug)]
 pub(super) struct Stringifier {
+    proxy_keys: Option<Box<super::proxy::State>>,
     value: Value,
     space: Value,
     gap: JsString,
@@ -664,6 +667,9 @@ impl Trace for Stringifier {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.value.trace(visit);
         self.space.trace(visit);
+        if let Some(proxy) = &self.proxy_keys {
+            proxy.trace(visit);
+        }
         for container in &self.stack {
             container.value.trace(visit);
         }
@@ -673,6 +679,7 @@ impl Trace for Stringifier {
 impl Stringifier {
     pub(super) fn new(value: Value, space: Value) -> Self {
         Self {
+            proxy_keys: None,
             value,
             space,
             gap: JsString::from(""),
@@ -767,7 +774,7 @@ impl Stringifier {
             .transpose()?
             .unwrap_or(0);
         let len = heap
-            .read(id, |o| match o {
+            .read(super::proxy::unwrapped(heap, id)?, |o| match o {
                 HeapObject::Array(a) => {
                     if let Some(owner) = a.object().owner()
                         && owner != task
@@ -817,6 +824,17 @@ impl Stringifier {
             self.append(JsString::from("["))?;
             Members::Array { next: 0, len }
         } else {
+            if super::proxy::inspect(heap, task, id)?.is_some() {
+                self.proxy_keys = Some(Box::new(super::proxy::State::new(
+                    super::proxy::Mode::Keys {
+                        target: id,
+                        enumerable: true,
+                        symbols: false,
+                    },
+                )));
+                self.stage = StringifyStage::ProxyKeys;
+                return Ok(());
+            }
             let mut keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
             keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
             self.append(JsString::from("{"))?;
@@ -846,6 +864,57 @@ impl Stringifier {
         use StringifyStage as S;
         use StringifyStep as A;
         match std::mem::replace(&mut self.stage, S::Next) {
+            S::ProxyKeys => {
+                let input = input
+                    .map(super::native::Input::CallResult)
+                    .unwrap_or(super::native::Input::Start);
+                let action = self.proxy_keys.as_mut().unwrap().step(heap, task, input)?;
+                if let super::native::Action::Return(array) = action {
+                    let len = property::get(
+                        heap,
+                        task,
+                        &array,
+                        &property::Key::Name(JsString::from("length")),
+                    )?;
+                    let Value::Number(len) = len else {
+                        return Err(Fault::Internal("Proxy JSON keys length"));
+                    };
+                    if len > MAX_OBJECT_PROPERTIES as f64 {
+                        return Err(Fault::RangeError(
+                            "JSON.stringify object property limit of 4096 exceeded".into(),
+                        ));
+                    }
+                    let mut keys = Vec::new();
+                    for i in 0..len as u32 {
+                        let Value::String(name) =
+                            property::get(heap, task, &array, &property::Key::Index(i))?
+                        else {
+                            return Err(Fault::Internal("Proxy JSON key is not a string"));
+                        };
+                        keys.push(keys::OwnKey {
+                            key: property::Key::from_name(&name),
+                            enumerable: true,
+                        });
+                    }
+                    self.append(JsString::from("{"))?;
+                    let Value::Object(id) = self.value else {
+                        return Err(Fault::Internal("Proxy JSON container"));
+                    };
+                    self.active.insert(id);
+                    self.stack.push(StringifyContainer {
+                        value: self.value.clone(),
+                        members: Members::Object {
+                            keys: keys.into_iter(),
+                            emitted: false,
+                        },
+                    });
+                    self.value = Value::Undefined;
+                    self.proxy_keys = None;
+                } else {
+                    self.stage = S::ProxyKeys;
+                    return Ok(A::Native(action));
+                }
+            }
             S::Space => {
                 match builtin::wrapper_data(heap, task, &self.space)? {
                     Some(PrimitiveData::Number(_)) => {

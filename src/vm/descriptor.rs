@@ -138,7 +138,11 @@ fn to_property_descriptor(
 }
 
 /// FromPropertyDescriptor of a data property (module docs, "Conversions").
-fn from_property_descriptor(heap: &Heap, task: TaskId, property: Property) -> Result<Value, Fault> {
+pub(crate) fn from_property_descriptor(
+    heap: &Heap,
+    task: TaskId,
+    property: Property,
+) -> Result<Value, Fault> {
     let exhausted = || Fault::OutOfMemory("heap object table exhausted");
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
@@ -211,6 +215,24 @@ impl Trace for DefineProperty {
 }
 
 impl DefineProperty {
+    pub(crate) fn reader(attributes: Value) -> Result<Self, Fault> {
+        if !matches!(attributes, Value::Object(_)) {
+            return Err(Fault::TypeError(
+                "a property descriptor must be an object".into(),
+            ));
+        }
+        Ok(Self {
+            target: Value::Undefined,
+            key: Key::Index(0),
+            attributes,
+            desc: PropertyDescriptor::default(),
+            next: 0,
+        })
+    }
+
+    pub(crate) fn descriptor(&self) -> &PropertyDescriptor {
+        &self.desc
+    }
     pub(crate) fn new(args: &[Value]) -> Result<Self, Fault> {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let target = arg(0);
@@ -293,6 +315,9 @@ impl DefineProperty {
             return Err(Fault::TypeError(
                 "a property descriptor cannot have both get/set and value/writable".into(),
             ));
+        }
+        if self.target == Value::Undefined {
+            return Ok(DefineStep::Done(Value::Undefined));
         }
         let Value::Object(id) = self.target else {
             unreachable!()

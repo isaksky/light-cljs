@@ -3643,8 +3643,7 @@ primitives. `Array.length` is 1 and `Array.name` is `"Array"`;
 configurable; intrinsic mutation still follows the shared-immutable rule.
 `Array.isArray` has length 1 and the usual method attributes.
 
-Explicit gaps: subclassing built-ins, proxies (including proxy array
-branding), species and the remaining array methods belong to later work.
+Explicit gaps: subclassing built-ins, other Proxy traps, species and the remaining array methods belong to later work.
 
 ### NativeError constructors (clj-quickjs-229)
 
@@ -6651,3 +6650,35 @@ all original assertions and expected values. This follows the recorded decision
 to keep realm intrinsics immutable; the fixture header lists both adaptations.
 Explicit gaps remain: intrinsic property mutation, `for (await using ... of ...)`
 and module top-level await. No new grammar examples or accepted forms are added.
+
+### Proxy enumeration (clj-quickjs-91)
+
+Grammar: `new Proxy(target, handler)` uses the existing `NewExpression`
+production (`new` with an argument list); traps use existing object properties,
+methods and function expressions. No grammar production or early error changes.
+
+Execution:
+
+| Form | Behavior |
+|------|----------|
+| `new Proxy(target, handler)` | Requires two objects; creates a traced task-owned proxy. Calling `Proxy` without `new` throws TypeError. `Proxy.length` is 2; there is no `Proxy.prototype`. |
+| `for (let key in proxy)` | Calls `ownKeys` once per object reached, then calls `getOwnPropertyDescriptor` immediately before each candidate string key. Missing and non-enumerable keys are skipped. Trap calls, trap getters, array-like result getters and descriptor getters can yield, wait, collect and migrate. |
+| `Object.keys`, `Object.getOwnPropertyNames`, `Object.getOwnPropertyDescriptor` | Use the same resumable Proxy operations, including string/symbol and duplicate validation, non-configurable property protection, descriptor compatibility and non-extensible target invariants. Object rest, JSON object enumeration and integrity operations also use this path. |
+| Other operations on a proxy | Forward to the target when the corresponding trap is absent or null/undefined. A present unsupported trap throws TypeError naming it, including `get`, `set`, `has`, `deleteProperty`, `defineProperty`, `getPrototypeOf`, `setPrototypeOf`, `isExtensible`, `preventExtensions`, `apply` and `construct`. `getPrototypeOf` forwards for for-in's prototype walk. Callable and array classification follows the target. |
+
+Rejected forms / explicit gaps: there are no new syntax rejections.
+`Proxy.revocable` and traps other than `ownKeys` and
+`getOwnPropertyDescriptor` remain unsupported. Unsupported trap accessors are
+rejected with the same explicit trap-name TypeError. Proxy objects remain
+task-owned even after freezing and cannot be published to another task.
+
+```js accept
+let p = new Proxy({}, {
+    ownKeys() { return ['a', 'b']; },
+    getOwnPropertyDescriptor(target, key) {
+        return {value: key, enumerable: true, configurable: true};
+    }
+});
+let names = ''; for (let key in p) names += key;
+names === 'ab';
+```

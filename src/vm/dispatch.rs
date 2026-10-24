@@ -400,7 +400,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::Symbol(_) => "symbol",
         Value::BigInt(_) => "bigint",
         Value::Object(id) => heap
-            .read(*id, |object| match object {
+            .read(super::proxy::unwrapped(heap, *id)?, |object| match object {
                 HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
                     "function"
                 }
@@ -424,7 +424,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::PromiseReaction(_)
                 | HeapObject::PromiseResolving(_) => "object",
                 HeapObject::Generator(_) | HeapObject::AsyncState(_) => "object",
-                HeapObject::ModuleNamespace(_) => "object",
+                HeapObject::ModuleNamespace(_) | HeapObject::Proxy(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
@@ -517,6 +517,7 @@ pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
     let Value::Object(id) = *callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
+    let id = super::proxy::unwrapped(heap, id)?;
     heap.read(id, |object| match object {
         HeapObject::Function(f) => Ok(Callee::Code(id, Arc::clone(&f.code))),
         HeapObject::Builtin(f) => Ok(Callee::Builtin(f.which)),
@@ -546,7 +547,9 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     let [f, ..] = rest else {
         return Err(Fault::Internal("operand stack underflow"));
     };
-    if let Callee::Code(id, code) = callee(heap, f)? {
+    if let Callee::Code(id, code) = callee(heap, f)?
+        && !matches!(f, Value::Object(object) if super::proxy::inspect(heap, state.diag.task, *object)?.is_some())
+    {
         if method {
             state.remove_operand(argc + 1)?;
         }
@@ -728,6 +731,9 @@ pub(crate) fn resolve(
     max_hops: usize,
 ) -> Result<(Callee, builtin::Forward), Fault> {
     for hops in 0..=max_hops {
+        if let Value::Object(id) = forward.callee {
+            forward.callee = Value::Object(super::proxy::forward(heap, task, id, "apply")?);
+        }
         match callee(heap, &forward.callee)? {
             Callee::Bound(mut bound) => {
                 if hops == max_hops {
@@ -796,7 +802,13 @@ fn construct_target(
     let mut args = args.to_vec();
     let (max_args, max_hops) = state.forward_limits(state.stack_len() - argc - 1);
     let mut hops = 0;
-    while let Ok(Callee::Bound(mut bound)) = callee(heap, &f) {
+    loop {
+        if let Value::Object(id) = f {
+            f = Value::Object(super::proxy::forward(heap, task, id, "construct")?);
+        }
+        let Ok(Callee::Bound(mut bound)) = callee(heap, &f) else {
+            break;
+        };
         if hops >= max_hops {
             return Err(Fault::StackOverflow(
                 "maximum bound constructor depth exceeded".to_string(),
@@ -823,6 +835,11 @@ fn construct_target(
         ));
     }
     let (id, code) = match callee(heap, &f) {
+        Ok(Callee::Builtin(Builtin::Proxy)) => {
+            let result = super::proxy::construct(heap, task, &args)?;
+            state.replace(argc + 1, result)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(which @ (Builtin::DisposableStack | Builtin::AsyncDisposableStack))) => {
             use crate::object::disposable_stack::Kind;
             let kind = if which == Builtin::AsyncDisposableStack {
@@ -1160,6 +1177,16 @@ fn property_step(
             let object = state.pop()?;
             let task = state.diag.task;
             if matches!(instr, Instr::PutField(_) | Instr::PutFieldStrict(_)) {
+                if native::proxy_write(
+                    heap,
+                    state,
+                    &object,
+                    &property::Key::from_name(&name),
+                    &v,
+                    code.strict || matches!(instr, Instr::PutFieldStrict(_)),
+                )? {
+                    return Ok(Flow::Next);
+                }
                 if native::typed_array_write(
                     heap,
                     state,
@@ -1207,6 +1234,16 @@ fn property_step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, true)?;
+            if native::proxy_write(
+                heap,
+                state,
+                &base,
+                &key,
+                &v,
+                code.strict || matches!(instr, Instr::PutElemStrict),
+            )? {
+                return Ok(Flow::Next);
+            }
             if native::typed_array_write(heap, state, &base, &key, &v)? {
                 return Ok(Flow::Next);
             }
@@ -1303,6 +1340,7 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                 return Ok(matches!(
                     which,
                     Builtin::Object
+                        | Builtin::Proxy
                         | Builtin::Function
                         | Builtin::Array
                         | Builtin::Map
@@ -1556,6 +1594,20 @@ fn require_coercible_step(state: &mut VmState, _heap: &Heap) -> Result<Flow, Fau
 
 #[inline(never)]
 fn own_keys_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+    if let Some(Value::Object(target)) = state.operands().last()
+        && super::proxy::inspect(heap, state.diag.task, *target)?.is_some()
+    {
+        super::native::start_proxy(
+            state,
+            super::proxy::Mode::Keys {
+                target: *target,
+                enumerable: false,
+                symbols: true,
+            },
+            1,
+        )?;
+        return Ok(Flow::Next);
+    }
     let source = state.pop()?;
     state.push(keys::rest_keys(heap, state.diag.task, &source)?);
     Ok(Flow::Next)
@@ -1565,6 +1617,12 @@ fn own_keys_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
 fn is_enumerable_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
     let key = property::to_property_key(&state.pop()?)?;
     let source = state.pop()?;
+    if let Value::Object(target) = source
+        && super::proxy::inspect(heap, state.diag.task, target)?.is_some()
+    {
+        super::native::start_proxy(state, super::proxy::Mode::Enumerable { target, key }, 0)?;
+        return Ok(Flow::Next);
+    }
     state.push(Value::Bool(property::own_enumerable(
         heap,
         state.diag.task,
@@ -2460,19 +2518,7 @@ fn step_instruction(
             return Err(Fault::Internal("using_check is resumable"));
         }
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
-        Instr::ForInNext => {
-            let iterator = state.pop()?;
-            match keys::for_in_next(heap, state.diag.task, &iterator)? {
-                Some(key) => {
-                    state.push(Value::String(key));
-                    state.push(Value::Bool(true));
-                }
-                None => {
-                    state.push(Value::Undefined);
-                    state.push(Value::Bool(false));
-                }
-            }
-        }
+        Instr::ForInNext => return Err(Fault::Internal("for-in next is resumable")),
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;

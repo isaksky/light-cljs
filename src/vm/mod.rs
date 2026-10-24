@@ -54,3 +54,5 @@ pub use executable::{
 };
 pub use frames::VmLimits;
 pub use instr::{Opcode, ThrowKind};
+
+pub(crate) mod proxy;

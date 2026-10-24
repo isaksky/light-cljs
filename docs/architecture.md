@@ -2703,7 +2703,7 @@ Non-strict `var` identifier heads may retain an initializer in the AST
 before evaluating the object, preserving name inference and resumability
 without new opcodes or per-loop runtime state. Strict, lexical, destructuring
 and for-of initialized heads remain early errors.
-Deferred: Proxy traps (clj-quickjs-91). Property targets are clj-quickjs-87.
+Proxy enumeration traps are supported (clj-quickjs-91, below). Property targets are clj-quickjs-87.
 ## Forwarding calls: `call`, `apply`, `Reflect.apply` (clj-quickjs-102)
 
 Contract: `src/vm/builtin.rs` ("Forwarding built-ins", `forward`) and
@@ -8672,3 +8672,37 @@ collects between budget slices, suspends the disposal activation at an await,
 then waits inside a resumed callback with an earlier anonymous error and a
 remaining adopted resource held by the detached continuation. It migrates on
 64 KiB workers and verifies the complete suppression chain and single settlement.
+
+## Proxy enumeration (clj-quickjs-91)
+
+The append-only Proxy heap kind traces its target and handler. Proxies belong
+to their creating task, including frozen proxies, following ordinary-object
+publication rules. `ProxyEdges` is a PersistentHandle holder covered by
+`proxy_edges_retain_and_reclaim` (lib inventory): both edges survive collection
+while only the proxy is rooted and are reclaimed after that root is dropped.
+
+`vm::proxy` keeps an explicit stack of OwnPropertyKeys/GetOwnProperty operations
+inside a traced native frame. Trap acquisition, calls, array-like list reads and
+descriptor conversion progress without a retained Rust stack. Nested target
+proxies use that same stack. Descriptor conversion reuses the resumable
+ToPropertyDescriptor cursor; invariants use completed descriptors and
+`validate_and_apply`, without changing the target. The target descriptor and
+extensibility are observed before converting a reported descriptor. Own-key
+invariants snapshot extensibility before reading target keys and descriptors.
+
+For-in retains its heap enumerator and requests proxy key lists and descriptors
+from this continuation. Its current object and all symbol keys are traced;
+missing exotic keys do not hide inherited properties. Ordinary enumeration keeps
+its existing order and prototype walk. Object reflection, rest, JSON object
+key enumeration and freeze queries use the same operations. Unsupported traps
+fail explicitly by name; absent traps forward. Callable and array brands follow
+the target. No opcode was added.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+`js_proxy_constructor`, `js_proxy_get_own_property_names`,
+`js_proxy_get_own_property`, `js_for_in_next`, and adapted
+`research/quickjs/tests/test_loop.js::test_for_in_proxy`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The test body is unchanged except for
+its assert helper and invocation; the MIT notice is retained in
+`tests/js_source.rs`. Remaining cases are synthetic fixtures, not light-cljs
+output. Rust code is original. Revocation and other traps are deferred.
