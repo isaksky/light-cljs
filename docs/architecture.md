@@ -4401,6 +4401,7 @@ iterable construction exists. Iteration/forEach and BigInt keys belong to
 later pellets. The prototype also owns the non-writable, non-enumerable,
 configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
 is exposed on `Symbol`.
+
 ## Rope strings (clj-quickjs-146)
 
 `JsString` keeps the existing coarse immutable Arc storage boundary. Each

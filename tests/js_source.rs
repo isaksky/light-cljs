@@ -21,6 +21,32 @@ fn upstream_string_rope() {
     );
 }
 
+/// Synthetic fixture, not light-cljs output. JavaScript Map uses the same
+/// content hash and equality for flat strings and append/prepend ropes.
+#[test]
+fn rope_strings_are_javascript_map_keys() {
+    assert_eq!(
+        eval(
+            r#"
+        let appended = ''; let prepended = ''; let units = [];
+        for (let i = 0; i < 100; i++) {
+            appended += String.fromCharCode(i);
+            prepended = String.fromCharCode(99 - i) + prepended;
+            units.push(i);
+        }
+        let flat = String.fromCharCode.apply(null, units);
+        let m = new Map();
+        m.set(appended, 1);
+        let found = m.get(prepended) === 1 && m.has(flat);
+        m.set(flat, 2);
+        found && m.size === 1 && m.get(prepended) === 2 &&
+        m.delete(prepended) && !m.has(appended) && m.size === 0
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
 /// Synthetic fixture, not light-cljs output. Persistent map key comparison,
 /// property interning, publication and indexed search all read rope content.
 #[test]
