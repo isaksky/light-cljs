@@ -1,8 +1,10 @@
 //! Runtime failure reported by [`RunOutcome::Failed`](crate::RunOutcome::Failed).
 //!
-//! JavaScript exception values (`throw`, `try/catch`) are deferred to pellet
-//! clj-quickjs-11; until then a failure is this Rust-side error carrying the
-//! diagnostic context saved in the task's VM state.
+//! A failure is this Rust-side error carrying the diagnostic context saved in
+//! the task's VM state. JavaScript exceptions (`throw`, `try`/`catch`/
+//! `finally`, clj-quickjs-11) become a failure only when no handler catches
+//! them; the failure then reports where the exception was raised. Which
+//! kinds are catchable is documented in `crate::vm::exception`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -36,18 +38,17 @@ pub enum VmErrorKind {
     Builder(BuilderError),
     /// A JavaScript ReferenceError raised by compiled source: a reference to
     /// an undeclared name, or use of a `let`/`const` binding before its
-    /// declaration ran (temporal dead zone). Not catchable until exceptions
-    /// exist (clj-quickjs-11).
+    /// declaration ran (temporal dead zone). Catchable (clj-quickjs-11).
     ReferenceError,
     /// A JavaScript TypeError: assignment to a `const` binding, or a `Call`
-    /// whose callee is not a function object (`… is not a function`).
+    /// whose callee is not a function object (`… is not a function`). Catchable (clj-quickjs-11).
     TypeError,
     /// A `Call` would exceed the task's [`VmLimits`](crate::VmLimits) (call
     /// depth or operand/local storage). The task fails instead of growing
     /// further; no Rust stack is involved, so deep recursion can never
     /// overflow the worker's stack. QuickJS reports this as an InternalError
-    /// "stack overflow" (`JS_ThrowStackOverflow`); it is not catchable until
-    /// exceptions exist (clj-quickjs-11).
+    /// "stack overflow" (`JS_ThrowStackOverflow`); like QuickJS's, it is
+    /// catchable (clj-quickjs-11).
     StackOverflow,
     /// A binding-cell instruction (`CellInit`, `CellGet`, `CellSet`) ran in a
     /// task other than the one that created the cell: the mutable bindings a
@@ -73,6 +74,12 @@ pub enum VmErrorKind {
     /// or the embedder). Not the cancellation of the needing task itself,
     /// which ends the run [`RunOutcome::Cancelled`](crate::RunOutcome::Cancelled).
     DependencyCancelled(DependencyKey),
+    /// A JavaScript `throw` whose value no handler caught (and that is not
+    /// an error object, which reports the error it was created for). The
+    /// diagnostic names the `throw` that raised it last; the message
+    /// describes the value (`uncaught exception: 42`). See
+    /// `crate::vm::exception`.
+    Thrown,
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

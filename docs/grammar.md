@@ -16,7 +16,8 @@ operators, assignment, blocks, `if`/`else`, `while`, function declarations
 and expressions, calls, closures (clj-quickjs-21), and the
 compiler-reserved intrinsic binding `__rt` (see "Reserved intrinsic
 binding"). String values and property access parse but are rejected by the
-compiler. `throw`/`try` are rejected by the parser until clj-quickjs-11.
+compiler. `throw` and `try`/`catch`/`finally` (clj-quickjs-11) parse and
+execute; see "Exceptions" below.
 
 ## Semantics model
 
@@ -54,11 +55,16 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 Script              = { StatementListItem } EOF
 StatementListItem   = FunctionDeclaration | LexicalDeclaration | Statement
 Statement           = Block | ";" | IfStatement | WhileStatement
-                    | ReturnStatement | ExpressionStatement
+                    | ReturnStatement | ThrowStatement | TryStatement
+                    | ExpressionStatement
 Block               = "{" { StatementListItem } "}"
 IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
 WhileStatement      = "while" "(" Expression ")" Statement
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
+ThrowStatement      = "throw" [no LineTerminator here] Expression ";"
+TryStatement        = "try" Block ( Catch [ Finally ] | Finally )
+Catch               = "catch" [ "(" BindingIdentifier ")" ] Block
+Finally             = "finally" Block
 ExpressionStatement = Expression ";"     (* not starting with "{" or "function" *)
 LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
 Declarator          = BindingIdentifier [ "=" AssignmentExpression ]
@@ -130,10 +136,9 @@ Every form below is rejected where it starts. Error kinds:
 | Form | Kind |
 |------|------|
 | `var`, `for`, `do`-`while`, `break`, `continue`, `switch`, labelled statements, `debugger`, `with` | Unsupported |
-| `throw`, `try`/`catch`/`finally` (planned: clj-quickjs-11) | Unsupported |
 | classes, `new`, `this`, `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
-| arrow functions, rest/default parameters, destructuring | Unsupported |
+| arrow functions, rest/default parameters, destructuring (including a destructuring catch parameter) | Unsupported |
 | object and array literals, computed member access `a[b]`, optional chaining `?.`, spread `...` | Unsupported |
 | template literals, regular expression literals, BigInt, numeric separators | Unsupported |
 | `typeof`, `void`, `delete`, `~`, `++`, `--`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, `??`, `in`, `instanceof`, the comma operator, compound assignment (`+=`, `&&=`, ...) | Unsupported |
@@ -141,7 +146,7 @@ Every form below is rejected where it starts. Error kinds:
 | references to `eval` or `arguments` | Unsupported |
 | reserved word as a binding name or reference; binding or assigning `undefined`/`NaN`/`Infinity`; binding `eval`/`arguments` | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`) | ReservedWord |
-| `return` outside a function, `const` without initializer, duplicate parameter, declaration as an `if`/`while` body, invalid assignment target (`1 = 2`) | Invalid |
+| `return` outside a function, `const` without initializer, duplicate parameter, declaration as an `if`/`while` body, invalid assignment target (`1 = 2`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
 ## Explicit gaps
@@ -164,7 +169,7 @@ checks left to later stages:
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
   per level, weighted by the Rust stack each construct uses: a statement 1,
-  plus 1 for a block or an `if`/`while`; a function 3 plus its body block;
+  plus 1 for a block or an `if`/`while`/`try`; a function 3 plus its body block;
   an assignment 1; `? :` 1 plus its branch assignments; a prefix operator
   or one link of a binary-operator or member chain 1; each call's
   argument list 3 plus each argument's assignment; parentheses 3 plus the
@@ -193,7 +198,9 @@ checks left to later stages:
 a script to a validated `Executable` (`src/frontend/lower.rs`); a task
 running it completes with the script's **completion value**, the value
 JavaScript `eval` would return (the last expression statement that ran;
-`if` and `while` produce `undefined` unless their body produced a value).
+`if`, `while` and `try` produce `undefined` unless their body produced a
+value; a `try` statement's value is that of its block or catch body, never
+that of a finally block that completes normally).
 `frontend::compile_function(source)` compiles a source made of exactly one
 function declaration into an entry point whose parameters are the task's
 arguments (missing ones are `undefined`); `return` completes the task and
@@ -236,21 +243,55 @@ Errors:
 | Calls nested deeper than the task's `VmLimits` (for example unbounded recursion) | run time | `VmErrorKind::StackOverflow` |
 
 Run-time failures carry the source position (`Diagnostic::source`, line and
-column) of the failing reference or operator. These errors cannot be caught
-until `throw`/`try` exist (clj-quickjs-11).
+column) of the failing reference or operator, and the call chain
+(`Diagnostic::call_chain`). The four run-time errors above are JavaScript
+exceptions: a `try` statement can catch them (see "Exceptions").
+
+### Exceptions
+
+`throw`, `try`/`catch`/`finally` and `return` through finally blocks follow
+JavaScript (clj-quickjs-11). The VM keeps the handlers and the *pending
+completion* of a running finally block (normal, a saved return value, or a
+saved exception) in task-owned state, so a task can yield, wait or migrate
+inside any of them and resume exactly there; a finally block never runs
+because the task suspends. An abrupt completion of a finally block (`return`
+or `throw`) replaces the pending one; a normal completion keeps it.
+
+```js accept
+function f() {
+  try { return 1; } finally { cleanup(); }
+}
+try { f(); } catch (e) { throw e; } finally {}
+```
+
+| Thrown | Value seen by `catch` | Reported if uncaught |
+|--------|-----------------------|----------------------|
+| `throw v` (any value) | `v` itself, by identity | `VmErrorKind::Thrown`, "uncaught exception: v", at the last `throw` of it |
+| ReferenceError, TypeError, StackOverflow above | a fresh immutable error object (no properties yet) | the original error, at the failing instruction, also when the object is rethrown |
+| any other run-time failure (`UnsupportedOperand`, collection, builder, atom or binding-cell contract violations, host errors, out of memory, a failed or cancelled `__rt.need`) | not catchable: the task fails at once without running catch or finally blocks | that failure |
+
+A failure that leaves through finally blocks keeps the position and call
+chain where it was raised. Making failed dependencies catchable, and
+running finally blocks on cancellation, are clj-quickjs-27.
 
 Gaps specific to execution:
 
 - **No string values**, so `+` and the relational operators lower to
   numeric operations; they must change when strings arrive.
+- **Error objects are opaque.** A caught ReferenceError, TypeError or
+  StackOverflow is an object without properties (`e.message`, `e.name`,
+  `instanceof` and the `Error` constructors do not exist yet); it can be
+  compared, passed around and rethrown.
 - **No ToPrimitive on objects.** Source can now create function objects and
   (through `__rt`) collections and builders; arithmetic and relational
   operators applied to them fail with `UnsupportedOperand` where JavaScript
   would call ToPrimitive (`===`/`==` compare them by identity).
 - **Temporal dead zone: static within a function, dynamic across
-  closures.** The subset has no `break`, `continue`, labels or exceptions,
-  so within the function that declares a binding, whether it is
-  initialized at a reference is known from source order, and the compiler
+  closures.** The subset has no `break`, `continue` or labels, and an
+  exception or `return` only leaves a `try` block for its catch or finally
+  block (outside the scope of the block's bindings), so within the function
+  that declares a binding, whether it is initialized at a reference is
+  known from source order, and the compiler
   decides it statically. A closure may run at any time, so a binding a
   closure captures is checked at run time when it may be read before its
   initialization: it lives in a binding cell, which raises the

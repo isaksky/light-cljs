@@ -9,8 +9,8 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, Declarator, Expr, ExprKind, Function, Ident, LexicalDecl, LexicalKind, LogicalOp,
-    Script, Stmt, StmtKind, UnaryOp,
+    BinaryOp, CatchClause, Declarator, Expr, ExprKind, Function, Ident, LexicalDecl, LexicalKind,
+    LogicalOp, Script, Stmt, StmtKind, UnaryOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -252,6 +252,8 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::If) => self.parse_if()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while()?,
             TokenKind::Keyword(Keyword::Return) => self.parse_return()?,
+            TokenKind::Keyword(Keyword::Throw) => self.parse_throw()?,
+            TokenKind::Keyword(Keyword::Try) => self.parse_try()?,
             _ => {
                 if let Some(error) = self.statement_start_error() {
                     return Err(error);
@@ -380,6 +382,88 @@ impl<'a> Parser<'a> {
         };
         self.expect_semi()?;
         Ok(StmtKind::Return(argument))
+    }
+
+    /// ThrowStatement: `throw` [no LineTerminator here] Expression `;`
+    fn parse_throw(&mut self) -> PResult<StmtKind> {
+        let keyword = self.advance()?;
+        if self.tok.newline_before && self.tok.kind != TokenKind::Eof {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                keyword.span,
+                "a line break is not allowed between `throw` and its expression",
+            ));
+        }
+        let argument = self.parse_expression()?;
+        self.expect_semi()?;
+        Ok(StmtKind::Throw(argument))
+    }
+
+    /// TryStatement: `try` Block (Catch | Finally | Catch Finally), where
+    /// Catch is `catch` (`(` BindingIdentifier `)`)? Block and Finally is
+    /// `finally` Block.
+    fn parse_try(&mut self) -> PResult<StmtKind> {
+        let saved = self.depth;
+        self.deeper(cost::BODY)?;
+        self.advance()?;
+        let block = self.parse_block()?;
+        let handler = if self.is_keyword(Keyword::Catch) {
+            Some(self.parse_catch()?)
+        } else {
+            None
+        };
+        let finalizer = if self.is_keyword(Keyword::Finally) {
+            self.advance()?;
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        if handler.is_none() && finalizer.is_none() {
+            return Err(self.unexpected("`catch` or `finally`"));
+        }
+        self.depth = saved;
+        Ok(StmtKind::Try {
+            block,
+            handler,
+            finalizer,
+        })
+    }
+
+    #[inline(never)]
+    fn parse_catch(&mut self) -> PResult<CatchClause> {
+        let start = self.advance()?.span.start;
+        let param = if self.eat_punct(Punct::LParen)? {
+            let param = self.parse_binding_identifier("a catch parameter")?;
+            self.expect_punct(Punct::RParen)?;
+            Some(param)
+        } else {
+            None
+        };
+        let body = self.parse_block()?;
+        // Early error: the block may not redeclare the catch parameter.
+        if let Some(param) = &param {
+            let redeclared = body.iter().find_map(|s| match &s.kind {
+                StmtKind::Lexical(decl) => decl
+                    .declarators
+                    .iter()
+                    .map(|d| &d.name)
+                    .find(|n| n.name == param.name),
+                StmtKind::FunctionDecl(f) => f.name.as_ref().filter(|n| n.name == param.name),
+                _ => None,
+            });
+            if let Some(name) = redeclared {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    name.span,
+                    format!("'{}' is already declared as the catch parameter", name.name),
+                ));
+            }
+        }
+        Ok(CatchClause {
+            param,
+            body,
+            span: self.span_from(start),
+        })
     }
 
     /// LexicalDeclaration: (`let` | `const`) Declarator (`,` Declarator)* `;`
@@ -1010,8 +1094,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
         Keyword::Break => "`break` is",
         Keyword::Continue => "`continue` is",
         Keyword::Switch => "`switch` is",
-        Keyword::Throw => "`throw` is (planned: clj-quickjs-11)",
-        Keyword::Try => "`try` is (planned: clj-quickjs-11)",
         Keyword::Class => "classes are",
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",

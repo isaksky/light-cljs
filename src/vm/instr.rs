@@ -59,6 +59,12 @@
 //! | `AtomLoad`      | 0x34 | –                  | atom → v               | the atom's current value |
 //! | `AtomCas`       | 0x35 | –                  | atom e n → w ok        | identity compare-and-set; `w` is the value compared |
 //! | `Need`          | 0x36 | –                  | def kind → v           | read a dependency result, or suspend until it is published |
+//! | `Throw`         | 0x37 | –                  | v → (never returns)    | raise `v` as a JavaScript exception |
+//! | `PushCatch`     | 0x38 | u32 byte offset    | –                      | push a catch handler (target entered with the exception pushed) |
+//! | `PushFinally`   | 0x39 | u32 byte offset    | –                      | push a finally handler (target is the finally block) |
+//! | `PopCatch`      | 0x3A | –                  | –                      | pop the frame's innermost handler, a catch handler |
+//! | `PopFinally`    | 0x3B | –                  | –                      | pop the innermost finally handler, recording a normal completion |
+//! | `EndFinally`    | 0x3C | –                  | –                      | resume the pending completion of the finished finally block |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -73,10 +79,10 @@
 //! the supported value types: `null == undefined`, a boolean compares as its
 //! number, objects compare by identity, and comparing an object with a
 //! number or boolean fails with `UnsupportedOperand`. `ThrowError` always
-//! fails the task with the [`ThrowKind`] named by its operand
+//! raises the error named by its [`ThrowKind`] operand
 //! ([`VmErrorKind::ReferenceError`](crate::VmErrorKind::ReferenceError) or
-//! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError)); until
-//! exceptions exist (clj-quickjs-11) it cannot be caught. For stack checking
+//! [`VmErrorKind::TypeError`](crate::VmErrorKind::TypeError)), a catchable
+//! exception since clj-quickjs-11 (`crate::vm::exception`). For stack checking
 //! it counts as pushing one value, so it can stand in for an expression.
 //!
 //! Opcodes `0x2B`–`0x2D` are calls (clj-quickjs-4). An executable carries a
@@ -127,6 +133,19 @@
 //! `UnsupportedOperand`) and pushes the shared result value, which may
 //! require ending the run suspended and continuing at this instruction when
 //! the task is run again.
+//!
+//! Opcodes `0x37`–`0x3C` are exceptions (clj-quickjs-11), documented in
+//! `crate::vm::exception`. `Throw` raises its operand; the four handler
+//! instructions maintain the task-owned handler stack, and `Return` itself
+//! runs the finally blocks of its frame (the innermost first) before leaving
+//! it. A handler target is a branch target; for stack checking a catch
+//! target starts one deeper than its `PushCatch` (the exception value) and a
+//! finally target at the depth of its `PushFinally`. Whether a run-time
+//! handler instruction matches the handler stack (a `PopCatch` whose
+//! innermost entry is a catch handler of its frame, and so on) is checked
+//! when it runs: a mismatch, possible only in hand-assembled code, fails the
+//! task with `Internal`. `ThrowError` failures (and the other JavaScript
+//! errors listed there) are catchable.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -207,6 +226,12 @@ pub enum Opcode {
     AtomLoad = 0x34,
     AtomCas = 0x35,
     Need = 0x36,
+    Throw = 0x37,
+    PushCatch = 0x38,
+    PushFinally = 0x39,
+    PopCatch = 0x3A,
+    PopFinally = 0x3B,
+    EndFinally = 0x3C,
 }
 
 /// Operand encoding of an opcode.
@@ -309,6 +334,12 @@ impl Opcode {
             0x34 => AtomLoad,
             0x35 => AtomCas,
             0x36 => Need,
+            0x37 => Throw,
+            0x38 => PushCatch,
+            0x39 => PushFinally,
+            0x3A => PopCatch,
+            0x3B => PopFinally,
+            0x3C => EndFinally,
             _ => return None,
         })
     }
@@ -371,6 +402,12 @@ impl Opcode {
             AtomLoad => "atom_load",
             AtomCas => "atom_cas",
             Need => "need",
+            Throw => "throw",
+            PushCatch => "push_catch",
+            PushFinally => "push_finally",
+            PopCatch => "pop_catch",
+            PopFinally => "pop_finally",
+            EndFinally => "end_finally",
         }
     }
 
@@ -379,7 +416,7 @@ impl Opcode {
         match self {
             Const => OperandKind::Const,
             GetLocal | SetLocal => OperandKind::Local,
-            Jump | JumpIfFalse => OperandKind::Target,
+            Jump | JumpIfFalse | PushCatch | PushFinally => OperandKind::Target,
             HostEffect => OperandKind::HostOp,
             NewVector | NewMap => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
@@ -390,7 +427,8 @@ impl Opcode {
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
-            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need => OperandKind::None,
+            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
+            | PopFinally | EndFinally => OperandKind::None,
         }
     }
 }
@@ -487,6 +525,14 @@ pub(crate) enum Instr {
     AtomLoad,
     AtomCas,
     Need,
+    Throw,
+    /// Handler target (an instruction index).
+    PushCatch(u32),
+    /// Handler target (an instruction index).
+    PushFinally(u32),
+    PopCatch,
+    PopFinally,
+    EndFinally,
 }
 
 impl Instr {
@@ -546,6 +592,12 @@ impl Instr {
             Instr::AtomLoad => Opcode::AtomLoad,
             Instr::AtomCas => Opcode::AtomCas,
             Instr::Need => Opcode::Need,
+            Instr::Throw => Opcode::Throw,
+            Instr::PushCatch(_) => Opcode::PushCatch,
+            Instr::PushFinally(_) => Opcode::PushFinally,
+            Instr::PopCatch => Opcode::PopCatch,
+            Instr::PopFinally => Opcode::PopFinally,
+            Instr::EndFinally => Opcode::EndFinally,
         }
     }
 
@@ -556,7 +608,7 @@ impl Instr {
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
             | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell => (0, 1),
-            SetLocal(_) | Pop | JumpIfFalse(_) | Return => (1, 0),
+            SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
@@ -566,7 +618,7 @@ impl Instr {
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet => (1, 1),
-            Jump(_) => (0, 0),
+            Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally => (0, 0),
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
@@ -589,6 +641,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 54);
+        assert_eq!(assigned, 60);
     }
 }

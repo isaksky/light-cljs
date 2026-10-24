@@ -12,9 +12,12 @@
 //!   source support).
 //! * `function`: function objects, the heap kind `Call` invokes (appended by
 //!   clj-quickjs-4).
+//! * `exception`: the task-owned handler stack, completion records and
+//!   error objects of `throw`/`try` (clj-quickjs-11).
 
 pub mod asm;
 pub(crate) mod dispatch;
+pub(crate) mod exception;
 pub mod executable;
 pub(crate) mod frames;
 pub(crate) mod function;

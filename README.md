@@ -51,6 +51,7 @@ cargo test --lib exec::           # builder ownership across workers, executor r
 cargo test --test executor_gc     # collection under the executor: workers, native scopes, parked roots
 cargo test --test need            # __rt.need: suspend at the need, resume without replay
 cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
+cargo test --test exceptions      # throw, try/catch/finally, completion records, yields inside handlers
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -334,8 +335,7 @@ Deferred:
 - String values and property access: they parse but are rejected by the
   compiler as `Unsupported`. (Functions, calls, closures and the reserved
   intrinsic binding compile since clj-quickjs-21, below.)
-- `throw`/`try` (clj-quickjs-11): ReferenceError and TypeError failures
-  cannot be caught. Operators on objects need ToPrimitive and fail with
+- (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
 - `for`, `do`-`while`, `break`, `continue`, `switch`, `var`, update and
   compound assignment operators (rejected by the parser).
@@ -444,8 +444,8 @@ Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
 - `this`, `arguments`, `new`, rest/default parameters, function properties
-  (`length`, `name`), native or host-function callees, and catching a
-  `StackOverflow` or `TypeError` (clj-quickjs-11).
+  (`length`, `name`), and native or host-function callees.
+  (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
 
 ### Lexical closures and captured bindings (clj-quickjs-20)
 
@@ -609,8 +609,7 @@ and `examples/`):
 
 Deferred:
 
-- `throw`/`try`/`finally` (clj-quickjs-11): run-time errors still fail the
-  task. Strings, property access (`f.call`, methods, objects), `this`,
+- Strings, property access (`f.call`, methods, objects), `this`,
   `arguments`, `new`, default/rest parameters, arrow functions, generators.
 - A function declaration repeating a parameter or another declaration at
   the top level of a script or function body (var-scoped in JavaScript) is
@@ -726,7 +725,8 @@ Supported:
 Deferred:
 
 - Raising a failed dependency as a catchable JavaScript exception
-  (clj-quickjs-11/-27); it fails the run at the `need` for now.
+  (clj-quickjs-27); it fails the run at the `need` for now, without
+  running catch or finally blocks.
 - Definition ids and result kinds are numbers (no string values yet).
 - `src/host/sim.rs` jobs still need through `RunGuard::need` in Rust and
   publish callables as host tokens.
@@ -793,3 +793,45 @@ Deferred:
   worker-local allocation buffers, and releasing a run's heap access
   around a long leaf host effect: a host effect that blocks still delays
   a request until it returns.
+
+### Exceptions and finally blocks (clj-quickjs-11)
+
+Supported:
+
+- `throw expr;` and `try`/`catch (e)`/`catch`/`finally` from source, with
+  JavaScript semantics: a thrown value is caught by the innermost handler
+  in the same or any calling function; `return` runs the frame's finally
+  blocks innermost first; an abrupt finally completion (`return`/`throw`)
+  replaces the pending one, a normal one keeps it; catch blocks rethrow.
+  Script completion values follow `try` statements.
+- Task-owned handler state: the VM keeps catch and finally handlers and the
+  *pending completion* of a running finally block (normal, saved return
+  value, or saved exception with its diagnostic) in the task's `VmState`,
+  next to its frames (`src/vm/exception.rs`). Raising unwinds frames in the
+  interpreter loop, never on the Rust stack. A task yields (and is
+  collected) inside try, catch and finally blocks and resumes with its
+  handlers intact; a finally block never runs because a task yields.
+  Saved values are traced as roots.
+- Opcodes `0x37`–`0x3C`: `throw`, `push_catch`, `push_finally`,
+  `pop_catch`, `pop_finally`, `end_finally`, validated like branches (a
+  catch target starts one value deeper). `return` consults the handler
+  stack.
+- ReferenceError, TypeError and StackOverflow failures are catchable: the
+  caught value is a fresh immutable error object; rethrowing it reports the
+  original error. An uncaught `throw` of any other value fails the task with
+  `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
+  source position and call chain, also after leaving through finally
+  blocks.
+- Adapted QuickJS `test_try_catch1`–`4`, `6` and `7` run from source
+  (`tests/fixtures/js/quickjs_try_catch.js`, with its license notice).
+
+Deferred:
+
+- Other failures (unsupported operands, collection, builder, atom and
+  binding contract violations, host errors, out of memory, failed or
+  cancelled dependencies) are not catchable and skip catch and finally
+  blocks. Catchable dependency failures, finally blocks on cancellation, and
+  waits inside handlers across migration: clj-quickjs-27.
+- Error objects have no properties (`message`, `name`), no `Error`
+  constructors or `instanceof`; strings cannot be thrown (no string values).
+- `break`/`continue` through finally blocks (no `break`/`continue` yet).

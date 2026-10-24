@@ -354,7 +354,9 @@ pub enum Wake {
 /// Task-owned state behind the execution guard.
 #[derive(Debug)]
 enum TaskBody {
-    Ready(VmState),
+    /// Boxed: the VM state (frames, value stack, handler stack) is much
+    /// larger than the finished marker.
+    Ready(Box<VmState>),
     Finished,
 }
 
@@ -529,7 +531,7 @@ impl Task {
             deps,
             exec: ExecState::new(),
             log: Mutex::new(DependencyLog::default()),
-            body: Mutex::new(TaskBody::Ready(vm)),
+            body: Mutex::new(TaskBody::Ready(Box::new(vm))),
             produce: Mutex::new(Vec::new()),
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;

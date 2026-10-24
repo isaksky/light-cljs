@@ -46,7 +46,7 @@ impl Stmt {
                 .filter_map(|d| d.init.as_ref().map(|e| e.height))
                 .max()
                 .unwrap_or(0),
-            StmtKind::Expr(e) | StmtKind::Return(Some(e)) => e.height,
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw(e) => e.height,
             StmtKind::Block(body) => max_height(body),
             StmtKind::If {
                 test,
@@ -57,6 +57,13 @@ impl Stmt {
                 .max(consequent.height)
                 .max(alternate.as_ref().map_or(0, |s| s.height)),
             StmtKind::While { test, body } => test.height.max(body.height),
+            StmtKind::Try {
+                block,
+                handler,
+                finalizer,
+            } => max_height(block)
+                .max(handler.as_ref().map_or(0, |h| max_height(&h.body)))
+                .max(finalizer.as_deref().map_or(0, max_height)),
             StmtKind::Return(None) | StmtKind::Empty => 0,
         };
         Stmt {
@@ -94,8 +101,27 @@ pub enum StmtKind {
         test: Expr,
         body: Box<Stmt>,
     },
+    /// `throw expr;`
+    Throw(Expr),
+    /// `try { ... }` with a `catch` clause, a `finally` block, or both (at
+    /// least one is present).
+    Try {
+        block: Vec<Stmt>,
+        handler: Option<CatchClause>,
+        finalizer: Option<Vec<Stmt>>,
+    },
     /// `;`
     Empty,
+}
+
+/// `catch (param) { body }` or `catch { body }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatchClause {
+    /// A plain identifier; `None` for an omitted catch binding.
+    pub param: Option<Ident>,
+    pub body: Vec<Stmt>,
+    /// From the `catch` keyword to the closing `}`.
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

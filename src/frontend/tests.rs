@@ -92,6 +92,16 @@ fn render_function(f: &Function) -> String {
     out
 }
 
+fn render_list(head: &str, body: &[Stmt]) -> String {
+    let mut out = format!("({head}");
+    for s in body {
+        out.push(' ');
+        out.push_str(&render_stmt(s));
+    }
+    out.push(')');
+    out
+}
+
 fn render_stmt(s: &Stmt) -> String {
     match &s.kind {
         StmtKind::FunctionDecl(f) => render_function(f),
@@ -115,11 +125,25 @@ fn render_stmt(s: &Stmt) -> String {
         StmtKind::Expr(e) => render_expr(e),
         StmtKind::Return(None) => "(return)".into(),
         StmtKind::Return(Some(e)) => format!("(return {})", render_expr(e)),
-        StmtKind::Block(body) => {
-            let mut out = "(block".to_string();
-            for s in body {
+        StmtKind::Block(body) => render_list("block", body),
+        StmtKind::Throw(e) => format!("(throw {})", render_expr(e)),
+        StmtKind::Try {
+            block,
+            handler,
+            finalizer,
+        } => {
+            let mut out = format!("(try {}", render_list("block", block));
+            if let Some(h) = handler {
+                let head = match &h.param {
+                    Some(p) => format!("catch {}", p.name),
+                    None => "catch".to_string(),
+                };
                 out.push(' ');
-                out.push_str(&render_stmt(s));
+                out.push_str(&render_list(&head, &h.body));
+            }
+            if let Some(f) = finalizer {
+                out.push(' ');
+                out.push_str(&render_list("finally", f));
             }
             out.push(')');
             out
@@ -197,6 +221,56 @@ fn binary_precedence_and_left_associativity() {
     assert_eq!(ast("a !== b <= c;"), "(!== a (<= b c))");
     assert_eq!(ast("a || b && c || d;"), "(|| (|| a (&& b c)) d)");
     assert_eq!(ast("a && b === c;"), "(&& a (=== b c))");
+}
+
+#[test]
+fn throw_and_try_statements() {
+    assert_eq!(ast("throw a + 1;"), "(throw (+ a 1))");
+    assert_eq!(ast("if (a) throw b;"), "(if a (throw b))");
+    assert_eq!(
+        ast("try { a; } catch (e) { b; }"),
+        "(try (block a) (catch e b))"
+    );
+    assert_eq!(ast("try {} catch {}"), "(try (block) (catch))");
+    assert_eq!(
+        ast("try { a; } finally { b; }"),
+        "(try (block a) (finally b))"
+    );
+    assert_eq!(
+        ast("try {} catch (e) { let x; } finally {}"),
+        "(try (block) (catch e (let (x))) (finally))"
+    );
+    // ASI after `throw expr`, but no line break after `throw`.
+    assert_eq!(ast("throw a\nb;"), "(throw a) b");
+    rejects("throw\na;", SyntaxErrorKind::Invalid, 1, 1);
+    rejects("throw;", SyntaxErrorKind::UnexpectedToken, 1, 6);
+    rejects("try {}", SyntaxErrorKind::UnexpectedEnd, 1, 7);
+    rejects("try {} x;", SyntaxErrorKind::UnexpectedToken, 1, 8);
+    rejects("try x; catch {}", SyntaxErrorKind::UnexpectedToken, 1, 5);
+    rejects(
+        "try {} catch (e) { const e = 1; }",
+        SyntaxErrorKind::Invalid,
+        1,
+        26,
+    );
+    rejects(
+        "try {} catch (e) { function e() {} }",
+        SyntaxErrorKind::Invalid,
+        1,
+        29,
+    );
+    rejects(
+        "try {} catch (eval) {}",
+        SyntaxErrorKind::ReservedWord,
+        1,
+        15,
+    );
+    rejects(
+        "try {} catch (e, f) {}",
+        SyntaxErrorKind::UnexpectedToken,
+        1,
+        16,
+    );
 }
 
 #[test]
@@ -663,8 +737,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("while (x) { break; }", 1, 13, "break"),
         ("while (x) continue;", 1, 11, "continue"),
         ("switch (x) {}", 1, 1, "switch"),
-        ("throw x;", 1, 1, "throw"),
-        ("try {} catch (e) {}", 1, 1, "try"),
+        ("try {} catch ([e]) {}", 1, 15, "destructuring"),
         ("label: x;", 1, 1, "labelled"),
         ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),

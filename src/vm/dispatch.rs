@@ -40,6 +40,15 @@
 //! meets a collection, and a straight-line stretch without poll points is
 //! bounded by the code length.
 //!
+//! **Exceptions.** A `Throw`, an `EndFinally` re-raising a saved exception,
+//! or a failing instruction whose error is a catchable JavaScript error
+//! raises an exception: [`VmState::raise`] unwinds the task-owned frames and
+//! handler stack to the innermost handler and the loop continues there, in
+//! the same run and budget. Raising never recurses and never keeps a Rust
+//! frame alive. A caught exception is a poll point (after unwinding, when
+//! every value is in task-owned state). Other failures, and exceptions no
+//! handler catches, end the run with [`Exit::Fail`] (`crate::vm::exception`).
+//!
 //! **Dependency waits.** `Need` decodes its operands and leaves the loop with
 //! [`Exit::Need`] (the instruction position already past it, the remaining
 //! budget carried along): the dependency protocol, suspension and the
@@ -55,8 +64,9 @@ use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::Value;
+use crate::vm::exception::{Completion, ErrorObject, Exception, HandlerKind, describe_thrown};
 use crate::vm::executable::Code;
-use crate::vm::frames::VmState;
+use crate::vm::frames::{Raised, Returned, VmState};
 use crate::vm::function::{BindingCell, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
@@ -104,6 +114,10 @@ pub(crate) enum Fault {
     },
     /// An atom intrinsic rejected its operands; the message names why.
     Atom(crate::AtomErrorKind, String),
+    /// A `Throw` instruction raised this value.
+    Thrown(Value),
+    /// An `EndFinally` re-raises the exception its finally block saved.
+    Rethrow(Exception),
 }
 
 /// What the loop does after an instruction.
@@ -270,6 +284,87 @@ fn describe(v: Value) -> String {
     }
 }
 
+/// Return `v` from the running frame, through its finally blocks.
+fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
+    Ok(match state.return_value(v)? {
+        Returned::Complete(result) => Flow::Complete(result),
+        Returned::Left | Returned::Finally => Flow::FrameChanged,
+    })
+}
+
+/// The error kind and message of a fault that is not an exception value.
+fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
+    match fault {
+        Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
+        Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
+        Fault::Host(m) => (VmErrorKind::HostEffect, m),
+        Fault::OutOfMemory(m) => (VmErrorKind::OutOfMemory, m.to_string()),
+        Fault::Collection(e) => (VmErrorKind::Collection(e), e.to_string()),
+        Fault::Builder(e) => (VmErrorKind::Builder(e), e.to_string()),
+        Fault::NotCallable(what) => (VmErrorKind::TypeError, format!("{what} is not a function")),
+        Fault::StackOverflow(m) => (VmErrorKind::StackOverflow, m),
+        Fault::Atom(kind, m) => (VmErrorKind::Atom(kind), m),
+        Fault::ForeignBinding { owner, caller } => (
+            VmErrorKind::ForeignBinding { owner, caller },
+            format!(
+                "binding is owned by {owner}, not {caller}: a closure over mutable bindings is task-owned"
+            ),
+        ),
+        Fault::Throw(kind) => {
+            let error_kind = match kind {
+                ThrowKind::Unresolvable | ThrowKind::Uninitialized => VmErrorKind::ReferenceError,
+                ThrowKind::ConstAssignment => VmErrorKind::TypeError,
+            };
+            (error_kind, throw_message(code, pc, kind))
+        }
+        // Exception values are raised by the caller, never described here.
+        Fault::Thrown(_) | Fault::Rethrow(_) => (
+            VmErrorKind::Internal,
+            "an exception reached the failure path".to_string(),
+        ),
+    }
+}
+
+/// Run-time failures that are JavaScript errors, raised as catchable
+/// exceptions (`crate::vm::exception`). Exhaustive, so a new kind must decide.
+fn catchable(kind: VmErrorKind) -> bool {
+    match kind {
+        VmErrorKind::ReferenceError | VmErrorKind::TypeError | VmErrorKind::StackOverflow => true,
+        VmErrorKind::UnsupportedOperand
+        | VmErrorKind::Internal
+        | VmErrorKind::HostEffect
+        | VmErrorKind::OutOfMemory
+        | VmErrorKind::Collection(_)
+        | VmErrorKind::Builder(_)
+        | VmErrorKind::ForeignBinding { .. }
+        | VmErrorKind::Atom(_)
+        | VmErrorKind::DependencyFailed(_)
+        | VmErrorKind::DependencyCancelled(_)
+        | VmErrorKind::Thrown => false,
+    }
+}
+
+/// The error an exception with value `v`, raised by `Throw` at `pc`, reports
+/// if nothing catches it: an error object's own error, otherwise `Thrown`.
+fn thrown_error(state: &VmState, heap: &Heap, v: Value, pc: usize) -> VmError {
+    let original = match v {
+        Value::Object(id) => heap
+            .read(id, |object| match object {
+                HeapObject::Native(payload) => {
+                    let any: &dyn std::any::Any = &**payload;
+                    any.downcast_ref::<ErrorObject>().map(|e| e.error.clone())
+                }
+                _ => None,
+            })
+            .flatten(),
+        _ => None,
+    };
+    original.unwrap_or_else(|| {
+        let message = format!("uncaught exception: {}", describe_thrown(v));
+        state.failure(VmErrorKind::Thrown, message, pc)
+    })
+}
+
 /// Execute one instruction of `code`, the running frame's code.
 fn step(
     state: &mut VmState,
@@ -376,11 +471,18 @@ fn step(
         }
         Instr::Return => {
             let v = state.pop()?;
-            return Ok(match state.leave(v) {
-                Some(result) => Flow::Complete(result),
-                None => Flow::FrameChanged,
-            });
+            return return_flow(state, v);
         }
+        Instr::Throw => return Err(Fault::Thrown(state.pop()?)),
+        Instr::PushCatch(target) => state.push_handler(HandlerKind::Catch { target })?,
+        Instr::PushFinally(target) => state.push_handler(HandlerKind::Finally { target })?,
+        Instr::PopCatch => state.pop_catch()?,
+        Instr::PopFinally => state.pop_finally()?,
+        Instr::EndFinally => match state.end_finally()? {
+            Completion::Normal => {}
+            Completion::Return(v) => return return_flow(state, v),
+            Completion::Throw(exception) => return Err(Fault::Rethrow(exception)),
+        },
         Instr::NewObject => {
             // The new object is pushed in the same instruction; no collection
             // can run in between because this run holds a mutator guard.
@@ -590,6 +692,13 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CellInit
         | Instr::CellGet
         | Instr::CellSet
+        // A caught exception polls after unwinding (see `execute`).
+        | Instr::Throw
+        | Instr::PushCatch(_)
+        | Instr::PushFinally(_)
+        | Instr::PopCatch
+        | Instr::PopFinally
+        | Instr::EndFinally
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.
         | Instr::Need => false,
@@ -626,7 +735,7 @@ pub(crate) fn execute(
             }
             None => Err(Fault::Internal("instruction position out of range")),
         };
-        let (kind, message) = match result {
+        let exception = match result {
             Ok(Flow::Next) => continue,
             Ok(Flow::FrameChanged) => {
                 code = Arc::clone(&state.top().code);
@@ -641,36 +750,49 @@ pub(crate) fn execute(
                     budget,
                 };
             }
-            Err(Fault::Unsupported(m)) => (VmErrorKind::UnsupportedOperand, m),
-            Err(Fault::Internal(m)) => (VmErrorKind::Internal, m.to_string()),
-            Err(Fault::Host(m)) => (VmErrorKind::HostEffect, m),
-            Err(Fault::OutOfMemory(m)) => (VmErrorKind::OutOfMemory, m.to_string()),
-            Err(Fault::Collection(e)) => (VmErrorKind::Collection(e), e.to_string()),
-            Err(Fault::Builder(e)) => (VmErrorKind::Builder(e), e.to_string()),
-            Err(Fault::NotCallable(what)) => {
-                (VmErrorKind::TypeError, format!("{what} is not a function"))
-            }
-            Err(Fault::StackOverflow(m)) => (VmErrorKind::StackOverflow, m),
-            Err(Fault::Atom(kind, m)) => (VmErrorKind::Atom(kind), m),
-            Err(Fault::ForeignBinding { owner, caller }) => (
-                VmErrorKind::ForeignBinding { owner, caller },
-                format!(
-                    "binding is owned by {owner}, not {caller}: a closure over mutable bindings is task-owned"
-                ),
-            ),
-            Err(Fault::Throw(kind)) => {
-                let error_kind = match kind {
-                    ThrowKind::Unresolvable | ThrowKind::Uninitialized => {
-                        VmErrorKind::ReferenceError
-                    }
-                    ThrowKind::ConstAssignment => VmErrorKind::TypeError,
+            Err(Fault::Thrown(v)) => Exception {
+                value: v,
+                error: Box::new(thrown_error(state, heap, v, pc)),
+            },
+            Err(Fault::Rethrow(exception)) => exception,
+            Err(fault) => {
+                // A failed instruction leaves the running frame as it was (a
+                // failing `Call` pushes no frame), so the failure names it
+                // and its callers.
+                let (kind, message) = fault_error(fault, &code, pc);
+                let error = state.failure(kind, message, pc);
+                if !catchable(kind) || !state.has_handlers() {
+                    return Exit::Fail(error);
+                }
+                // The error object is stored by `raise` (pushed for a catch
+                // block or kept in a pending completion) before any poll.
+                let object = HeapObject::Native(Box::new(ErrorObject {
+                    error: error.clone(),
+                }));
+                let Some(id) = heap.alloc(object) else {
+                    let message = "heap object table exhausted".to_string();
+                    return Exit::Fail(state.failure(VmErrorKind::OutOfMemory, message, pc));
                 };
-                (error_kind, throw_message(&code, pc, kind))
+                Exception {
+                    value: Value::Object(id),
+                    error: Box::new(error),
+                }
             }
         };
-        // A failed instruction leaves the running frame as it was (a failing
-        // `Call` pushes no frame), so the failure names it and its callers.
-        return Exit::Fail(state.failure(kind, message, pc));
+        match state.raise(exception) {
+            Raised::Caught => {
+                code = Arc::clone(&state.top().code);
+                // Every value is back in task-owned state: a poll point, so
+                // a loop through handlers cannot starve a collection.
+                heap.safepoint(state);
+            }
+            Raised::Uncaught(exception) => return Exit::Fail(*exception.error),
+            Raised::Broken(message) => {
+                let at = state.top().pc;
+                let message = message.to_string();
+                return Exit::Fail(state.failure(VmErrorKind::Internal, message, at));
+            }
+        }
     }
 }
 
@@ -726,6 +848,81 @@ mod tests {
                 other => panic!("{other:?}"),
             }
             assert_eq!(s.depth(), 1);
+        }
+    }
+
+    #[test]
+    fn handler_targets_are_stack_checked_and_round_trip() {
+        // A catch target starts one deeper than its `push_catch`.
+        let mut asm = Assembler::new();
+        let (catch, finally) = (asm.label(), asm.label());
+        asm.push_finally(finally).push_catch(catch);
+        asm.op(Opcode::Undefined).op(Opcode::Throw);
+        asm.bind(catch).op(Opcode::Pop).op(Opcode::PopFinally);
+        asm.bind(finally).op(Opcode::EndFinally);
+        asm.constant(Primitive::Number(5.0)).op(Opcode::Return);
+        let exe = asm.finish("t", 0, 0).unwrap();
+        let again = Executable::load(exe.to_spec()).unwrap();
+        assert_eq!(again.0.instrs, exe.0.instrs);
+        let heap = Heap::default();
+        match execute(&mut state(&exe, 1), &heap, &mut NoHost, None) {
+            Exit::Return(v) => assert_eq!(v, Value::Number(5.0)),
+            other => panic!("{other:?}"),
+        }
+        // Falling into a catch target at the try block's depth is a mismatch.
+        let mut asm = Assembler::new();
+        let catch = asm.label();
+        asm.push_catch(catch).op(Opcode::PopCatch);
+        asm.bind(catch).op(Opcode::Undefined).op(Opcode::Return);
+        let e = asm.finish("t", 0, 0).unwrap_err();
+        assert!(
+            matches!(
+                e.kind,
+                crate::ValidationErrorKind::StackDepthMismatch { .. }
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn mismatched_handler_instructions_fail_as_internal_errors() {
+        // Pops with no matching entry, and a handler whose frame's operands
+        // dropped below its height before the throw (hand-assembled code).
+        let mut programs = Vec::new();
+        programs.push(
+            Assembler::new()
+                .op(Opcode::PopCatch)
+                .op(Opcode::Undefined)
+                .op(Opcode::Return)
+                .finish("t", 0, 0)
+                .unwrap(),
+        );
+        let mut asm = Assembler::new();
+        let finally = asm.label();
+        asm.push_finally(finally).op(Opcode::PopCatch);
+        asm.bind(finally).op(Opcode::EndFinally);
+        asm.op(Opcode::Undefined).op(Opcode::Return);
+        programs.push(asm.finish("t", 0, 0).unwrap());
+        programs.push(
+            Assembler::new()
+                .op(Opcode::EndFinally)
+                .op(Opcode::Undefined)
+                .op(Opcode::Return)
+                .finish("t", 0, 0)
+                .unwrap(),
+        );
+        let mut asm = Assembler::new();
+        let catch = asm.label();
+        asm.op(Opcode::Undefined).push_catch(catch).op(Opcode::Pop);
+        asm.op(Opcode::Undefined).op(Opcode::Throw);
+        asm.bind(catch).op(Opcode::Return);
+        programs.push(asm.finish("t", 0, 0).unwrap());
+        let heap = Heap::default();
+        for exe in programs {
+            match execute(&mut state(&exe, 1), &heap, &mut NoHost, None) {
+                Exit::Fail(e) => assert_eq!(e.kind, VmErrorKind::Internal, "{e}"),
+                other => panic!("{other:?}"),
+            }
         }
     }
 

@@ -900,6 +900,51 @@ item 7, §15 ("collection with suspended frames and native references").
 - **Deferred.** Automatic collection triggers, worker-local allocation
   buffers, and releasing a run's access around a long leaf host effect.
 
+## Exceptions and completion records (clj-quickjs-11)
+
+Exception control flow is task state, not Rust control flow
+(`docs/design.md` §10). The contract is the `src/vm/exception.rs` module
+docs.
+
+- **Handler stack.** `VmState` keeps one stack of entries beside its
+  frames: catch handlers, finally handlers, and the *pending completion*
+  of each running finally block (`Normal`, `Return(value)`, or
+  `Throw(exception)`). Each entry names its frame by index and the
+  value-stack height to restore. Leaving a frame drops its entries.
+- **Raising.** `throw`, a re-raising `end_finally`, or a catchable failing
+  instruction pops entries until a handler: frames above its frame are
+  popped and the operand stack is cut to its height; a catch handler gets
+  the value pushed, a finally handler becomes a pending `Throw` and its
+  block runs. Pending completions passed on the way are discarded, which
+  is how an abrupt finally completion overrides the earlier one. The loop
+  continues in the same run and budget; a caught exception is a poll
+  point. No handler left: the run fails with the exception's error.
+- **Return.** `return` looks for a finally handler of its own frame: if
+  there is one, it becomes a pending `Return` and its block runs;
+  `end_finally` resumes the return (through the next finally handler, then
+  out of the frame). The compiler emits no per-return cleanup code.
+- **Catchability.** ReferenceError, TypeError and StackOverflow failures
+  are raised as fresh immutable error objects (a native heap payload with
+  no edges, shareable); other failures are uncatchable and end the run
+  without running catch or finally blocks, as QuickJS's uncatchable
+  errors do. Failed dependencies and cancellation cleanup are
+  clj-quickjs-27.
+- **Diagnostics.** Each raised exception carries the `VmError` to report if
+  uncaught, built where it was raised (position and call chain), and kept in
+  a pending `Throw` across finally blocks. Rethrowing an error object
+  reports its original error; an uncaught plain value reports
+  `VmErrorKind::Thrown` at its last `throw`.
+- **Suspension.** Yields and waits leave the handler stack untouched, so a
+  finally block never runs because a task suspends; pending return values
+  and exceptions are traced with the frames. Waits inside handlers across
+  migration and collection are tested by clj-quickjs-27.
+- **Tests.** `tests/exceptions.rs` (source: same-function and outer-function
+  catch, return through finally, overriding, rethrow, scoping, completion
+  values, catchable and uncatchable failures, diagnostics, one-instruction
+  yields with a collection at every yield inside try, catch and finally),
+  and early VM tests in `src/vm/dispatch.rs` (stack checking of handler
+  targets, mismatched handler instructions).
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -983,3 +1028,21 @@ and Charlie Gordon) and is listed here with its source path and revision:
   through enclosing functions and threading captures down) and
   `instantiate_hoisted_definitions` (function declarations created on scope
   entry). No code was copied.
+- `tests/fixtures/js/quickjs_try_catch.js` (clj-quickjs-11):
+  `test_try_catch1`–`test_try_catch4`, `test_try_catch6` and
+  `test_try_catch7` of `research/quickjs/tests/test_loop.js`, revision
+  7d1c13c5d8f8, as JavaScript source compiled by this frontend. Modified:
+  `let` for `var`; logged letters are digits appended to a number and the
+  thrown strings are those digits (no string values); failure flags instead
+  of `assert()` calls. `test_try_catch5` (`for`, `break`) and
+  `test_try_catch8` (`for`-`in`, object literals) are omitted. The file
+  carries the full notice.
+- `research/quickjs/quickjs.c` (clj-quickjs-11), consulted only:
+  `js_parse_statement`'s `TOK_TRY` branch (catch binding scope, optional
+  catch binding), the `OP_throw`, `OP_catch`, `OP_gosub` and `OP_ret`
+  handlers and the `exception:` unwinding label of `JS_CallInternal`, and
+  `current_exception_is_uncatchable` (uncatchable errors skip catch and
+  finally). Handlers here are typed entries of a task-owned handler stack
+  and a finally block's reason is an explicit completion record, not a
+  catch offset or `gosub` return address on the C value stack. No code was
+  copied.

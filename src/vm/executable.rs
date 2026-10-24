@@ -403,6 +403,12 @@ impl Executable {
                 Opcode::AtomLoad => Instr::AtomLoad,
                 Opcode::AtomCas => Instr::AtomCas,
                 Opcode::Need => Instr::Need,
+                Opcode::Throw => Instr::Throw,
+                Opcode::PushCatch => Instr::PushCatch(target()?),
+                Opcode::PushFinally => Instr::PushFinally(target()?),
+                Opcode::PopCatch => Instr::PopCatch,
+                Opcode::PopFinally => Instr::PopFinally,
+                Opcode::EndFinally => Instr::EndFinally,
                 Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
                     Some(kind) => Instr::ThrowError(kind),
                     // Pass 1 rejected unknown kinds.
@@ -504,7 +510,10 @@ impl Executable {
                 | Instr::GetCapture(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
-                Instr::Jump(t) | Instr::JumpIfFalse(t) => code.offsets[t as usize],
+                Instr::Jump(t)
+                | Instr::JumpIfFalse(t)
+                | Instr::PushCatch(t)
+                | Instr::PushFinally(t) => code.offsets[t as usize],
                 _ => 0,
             };
             let size = opcode.operand().size();
@@ -555,13 +564,21 @@ fn check_stack(instrs: &[Instr], offsets: &[u32]) -> Result<usize, ValidationErr
         }
         let after = depth - pops + pushes;
         max = max.max(after);
+        // Successors and their depths. A catch target starts with the
+        // exception value pushed, a finally target at its handler's depth.
+        // `Return` and `EndFinally` may also continue at a finally target of
+        // their frame, which that target's `PushFinally` edge already checks.
         let (a, b) = match instr {
-            Instr::Return => (None, None),
-            Instr::Jump(t) => (Some(t as usize), None),
-            Instr::JumpIfFalse(t) => (Some(t as usize), Some(i + 1)),
-            _ => (Some(i + 1), None),
+            Instr::Return | Instr::Throw => (None, None),
+            Instr::Jump(t) => (Some((t as usize, after)), None),
+            Instr::JumpIfFalse(t) | Instr::PushFinally(t) => {
+                (Some((t as usize, after)), Some((i + 1, after)))
+            }
+            Instr::PushCatch(t) => (Some((t as usize, after + 1)), Some((i + 1, after))),
+            _ => (Some((i + 1, after)), None),
         };
-        for next in [a, b].into_iter().flatten() {
+        for (next, after) in [a, b].into_iter().flatten() {
+            max = max.max(after);
             if next >= instrs.len() {
                 return Err(err(offset, FallsOffEnd));
             }

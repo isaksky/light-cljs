@@ -40,6 +40,13 @@
 //! environment, including binding cells shared with other closures); the
 //! entry frame's constants are the task's executable constants (`Trace for VmState`).
 //!
+//! **Exception handlers.** The handler stack (`crate::vm::exception`) is
+//! task-owned like the frames: each entry names its frame by index and the
+//! value-stack height to restore. Leaving a frame (return or unwinding)
+//! drops its entries; raising pops frames and entries in one loop, never
+//! recursing. Pending completions hold values (a saved return value or
+//! exception), traced with the frames.
+//!
 //! **Dynamic context.** The task and world in [`DiagnosticContext`] belong to
 //! the task, so every frame runs in the world its task was spawned in; a call
 //! never changes world. A failure reports the failing frame and its chain of
@@ -54,6 +61,7 @@ use crate::heap::gc::Trace;
 use crate::ids::{DependencyKey, TaskId, WorldId};
 use crate::value::Value;
 use crate::vm::dispatch::Fault;
+use crate::vm::exception::{Completion, Exception, Handler, HandlerKind};
 use crate::vm::executable::Code;
 
 /// Per-task VM resource policy, fixed when the task is spawned
@@ -130,6 +138,26 @@ pub(crate) struct PendingNeed {
     pub(crate) pc: usize,
 }
 
+/// What [`VmState::return_value`] did.
+pub(crate) enum Returned {
+    /// The entry frame returned: the task completes with this value.
+    Complete(Value),
+    /// The frame was left; the caller continues with the value pushed.
+    Left,
+    /// A finally block of the frame runs first, with the return pending.
+    Finally,
+}
+
+/// What [`VmState::raise`] did.
+pub(crate) enum Raised {
+    /// A handler took the exception; execution continues at its target.
+    Caught,
+    /// No handler is left: the task fails with the exception's error.
+    Uncaught(Exception),
+    /// The handler stack contradicts the frames (hand-assembled code only).
+    Broken(&'static str),
+}
+
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
@@ -147,6 +175,9 @@ pub(crate) struct VmState {
     /// Set while the task is suspended at a `Need` whose result is not
     /// injected yet.
     pub(crate) pending_need: Option<PendingNeed>,
+    /// The handler stack: catch and finally handlers and pending completions
+    /// of every frame, innermost last (`crate::vm::exception`).
+    handlers: Vec<Handler>,
 }
 
 /// Bind `args` to a frame's locals: as in JavaScript, missing arguments are
@@ -185,6 +216,7 @@ impl VmState {
             diag,
             builders: OwnedBuilders::default(),
             pending_need: None,
+            handlers: Vec::new(),
         }
     }
 
@@ -296,7 +328,11 @@ impl VmState {
     /// Leave the running frame with `result`. Returns `Some(result)` when it
     /// was the entry frame (the task completes); otherwise pops the frame,
     /// discarding its locals and operands, and pushes `result` for the caller.
-    pub(crate) fn leave(&mut self, result: Value) -> Option<Value> {
+    fn leave(&mut self, result: Value) -> Option<Value> {
+        let frame = self.frame_index();
+        while self.handlers.last().is_some_and(|h| h.frame >= frame) {
+            self.handlers.pop();
+        }
         match self.calls.pop() {
             None => Some(result),
             Some(frame) => {
@@ -305,6 +341,163 @@ impl VmState {
                 None
             }
         }
+    }
+
+    /// Index of the running frame (0: the entry frame).
+    fn frame_index(&self) -> usize {
+        self.calls.len()
+    }
+
+    /// Push a catch or finally handler of the running frame, at its current
+    /// operand height. The handler stack is bounded like the value stack.
+    pub(crate) fn push_handler(&mut self, kind: HandlerKind) -> Result<(), Fault> {
+        let limit = self.limits.max_stack_values;
+        if self.handlers.len() >= limit {
+            return Err(Fault::StackOverflow(format!(
+                "more than {limit} handlers or pending completions are live"
+            )));
+        }
+        self.handlers.push(Handler {
+            frame: self.frame_index(),
+            height: self.stack.len(),
+            kind,
+        });
+        Ok(())
+    }
+
+    /// The innermost handler-stack entry, if it belongs to the running frame.
+    fn own_handler(&mut self) -> Option<&mut Handler> {
+        let frame = self.frame_index();
+        self.handlers.last_mut().filter(|h| h.frame == frame)
+    }
+
+    /// `PopCatch`: pop the running frame's innermost entry, a catch handler.
+    pub(crate) fn pop_catch(&mut self) -> Result<(), Fault> {
+        match self.own_handler() {
+            Some(Handler {
+                kind: HandlerKind::Catch { .. },
+                ..
+            }) => {
+                self.handlers.pop();
+                Ok(())
+            }
+            _ => Err(Fault::Internal(
+                "pop_catch without a catch handler of its frame",
+            )),
+        }
+    }
+
+    /// `PopFinally`: the running frame's innermost entry, a finally handler,
+    /// becomes the pending normal completion of its finally block.
+    pub(crate) fn pop_finally(&mut self) -> Result<(), Fault> {
+        match self.own_handler() {
+            Some(h) if matches!(h.kind, HandlerKind::Finally { .. }) => {
+                h.kind = HandlerKind::Pending(Completion::Normal);
+                Ok(())
+            }
+            _ => Err(Fault::Internal(
+                "pop_finally without a finally handler of its frame",
+            )),
+        }
+    }
+
+    /// `EndFinally`: pop the running frame's innermost entry, a pending
+    /// completion, for the caller to resume.
+    pub(crate) fn end_finally(&mut self) -> Result<Completion, Fault> {
+        if !matches!(
+            self.own_handler(),
+            Some(Handler {
+                kind: HandlerKind::Pending(_),
+                ..
+            })
+        ) {
+            return Err(Fault::Internal(
+                "end_finally without a pending completion of its frame",
+            ));
+        }
+        match self.handlers.pop() {
+            Some(Handler {
+                kind: HandlerKind::Pending(completion),
+                ..
+            }) => Ok(completion),
+            _ => Err(Fault::Internal("handler stack changed")),
+        }
+    }
+
+    /// True when some catch or finally handler would see an exception raised
+    /// now.
+    pub(crate) fn has_handlers(&self) -> bool {
+        self.handlers
+            .iter()
+            .any(|h| !matches!(h.kind, HandlerKind::Pending(_)))
+    }
+
+    /// Return `value` from the running frame. If the frame has a finally
+    /// handler, the innermost one becomes a pending `Return` completion and
+    /// its block runs first (entries above it are discarded: catch handlers,
+    /// and pending completions that this return overrides); otherwise the
+    /// frame is left as by [`Self::leave`].
+    pub(crate) fn return_value(&mut self, value: Value) -> Result<Returned, Fault> {
+        let frame = self.frame_index();
+        while let Some(h) = self.handlers.last().filter(|h| h.frame == frame) {
+            if let HandlerKind::Finally { target } = h.kind {
+                let height = h.height;
+                if height < self.top().floor() || height > self.stack.len() {
+                    return Err(Fault::Internal(
+                        "operand stack below a finally handler's height",
+                    ));
+                }
+                self.stack.truncate(height);
+                if let Some(h) = self.handlers.last_mut() {
+                    h.kind = HandlerKind::Pending(Completion::Return(value));
+                }
+                self.top_mut().pc = target as usize;
+                return Ok(Returned::Finally);
+            }
+            self.handlers.pop();
+        }
+        Ok(match self.leave(value) {
+            Some(result) => Returned::Complete(result),
+            None => Returned::Left,
+        })
+    }
+
+    /// Raise `exception`: unwind to the innermost catch or finally handler
+    /// (popping the frames above its frame and every pending completion
+    /// passed on the way) and continue there, or report that nothing catches
+    /// it. Never recurses, whatever the number of frames.
+    pub(crate) fn raise(&mut self, exception: Exception) -> Raised {
+        while let Some(h) = self.handlers.pop() {
+            let target = match h.kind {
+                HandlerKind::Catch { target } | HandlerKind::Finally { target } => target,
+                HandlerKind::Pending(_) => continue,
+            };
+            // The handler's frame must still be live, and its operands must
+            // not have dropped below the handler's height since it was
+            // pushed (only hand-assembled code could do either).
+            let above = match self.calls.get(h.frame) {
+                Some(callee) => callee.base,
+                None => self.stack.len(),
+            };
+            if h.frame > self.calls.len() || above < h.height {
+                return Raised::Broken("operand stack below a handler's height");
+            }
+            self.calls.truncate(h.frame);
+            if h.height < self.top().floor() {
+                return Raised::Broken("handler height below its frame's operands");
+            }
+            self.stack.truncate(h.height);
+            self.top_mut().pc = target as usize;
+            match h.kind {
+                HandlerKind::Catch { .. } => self.stack.push(exception.value),
+                _ => self.handlers.push(Handler {
+                    kind: HandlerKind::Pending(Completion::Throw(exception)),
+                    ..h
+                }),
+            }
+            return Raised::Caught;
+        }
+        Raised::Uncaught(exception)
     }
 
     /// A failure at instruction `pc` of the running frame, with the call
@@ -363,7 +556,8 @@ impl VmState {
     }
 }
 
-/// Every frame's locals, operands and function object. A frame's code
+/// Every frame's locals, operands and function object, and the values held
+/// by pending completions (saved return values and exceptions). A frame's code
 /// constants are reached through its function object (whose `Trace` reports
 /// them) or, for the entry frame, through the task's executable
 /// (`RootCategory::ExecutableConstant`). The builder list is deliberately not
@@ -376,6 +570,7 @@ impl Trace for VmState {
                 visit(id);
             }
         }
+        self.handlers.iter().for_each(|h| h.trace(visit));
     }
 }
 

@@ -155,6 +155,16 @@ impl Assembler {
         self.branch(Opcode::JumpIfFalse, label)
     }
 
+    /// Emit `PushCatch` with the catch block at `label`.
+    pub fn push_catch(&mut self, label: Label) -> &mut Self {
+        self.branch(Opcode::PushCatch, label)
+    }
+
+    /// Emit `PushFinally` with the finally block at `label`.
+    pub fn push_finally(&mut self, label: Label) -> &mut Self {
+        self.branch(Opcode::PushFinally, label)
+    }
+
     /// Create an unbound label.
     pub fn label(&mut self) -> Label {
         self.labels.push(None);

@@ -44,10 +44,13 @@
 //!
 //! **Temporal dead zone.** Within the function that declares a binding,
 //! whether it is initialized at a reference is still decided by position:
-//! the subset has no `break`, `continue`, labels or exceptions, so code of
-//! one function runs in source order, and a reference before the
-//! declaration (or inside its own initializer) always runs before
-//! initialization. Such references, assignments to `const` bindings and
+//! the subset has no `break`, `continue` or labels, so code of one function
+//! runs in source order except that an exception or a `return` may leave a
+//! `try` block early for its catch or finally block. Those blocks follow the
+//! whole `try` block, and every binding declared inside it is out of their
+//! scope, so a reference before the declaration (or inside its own
+//! initializer) still always runs before initialization, and one after it
+//! always runs after. Such references, assignments to `const` bindings and
 //! references to undeclared names lower to `throw_error`. Only closures can
 //! run a reference at another time, and they use the run-time check above.
 //!
@@ -62,13 +65,19 @@
 //!
 //! **Completion value.** A script keeps its completion value in local 0 (see
 //! [`super::compile_script`]); a function body discards expression values.
+//!
+//! **Exceptions.** `throw` lowers to `throw`, and `try` statements to the
+//! VM handler instructions (`Lowerer::try_statement`); a `return` needs no
+//! special lowering, since the VM runs the frame's finally blocks itself.
+//! A catch parameter is a binding of the catch body's scope, initialized
+//! from the exception value.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, Ident, LexicalKind, LogicalOp, Script, Stmt, StmtKind,
-    UnaryOp,
+    BinaryOp, CatchClause, Expr, ExprKind, Function, Ident, LexicalKind, LogicalOp, Script, Stmt,
+    StmtKind, UnaryOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -1090,8 +1099,107 @@ impl<'s> Lowerer<'s> {
                 self.out().branch(Opcode::Jump, start, span);
                 self.out().bind(end);
             }
+            StmtKind::Throw(e) => {
+                self.expr(e)?;
+                self.out().op(Opcode::Throw, span);
+            }
+            StmtKind::Try {
+                block,
+                handler,
+                finalizer,
+            } => self.try_statement(block, handler.as_ref(), finalizer.as_deref(), span)?,
             // Created when its statement list was entered (hoisting).
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
+        }
+        Ok(())
+    }
+
+    /// Lower `try`/`catch`/`finally` onto the VM handler stack
+    /// (`crate::vm::exception`):
+    ///
+    /// ```text
+    ///     push_finally F        (with a finally block)
+    ///     push_catch C          (with a catch clause)
+    ///     <block>
+    ///     pop_catch
+    ///     jump E
+    /// C:  set_local param       (the exception; `pop` without a binding)
+    ///     <catch body>
+    /// E:  pop_finally           (records a normal completion)
+    /// F:  <finally body>
+    ///     end_finally           (resumes the pending completion)
+    /// ```
+    ///
+    /// A `return` inside reaches the finally block through the VM, which
+    /// saves the return value as the pending completion. In a script, the
+    /// completion value is that of the block or catch body (`undefined` if
+    /// empty), never that of a finally block that completes normally: the
+    /// finally block runs with the value saved in a scratch local.
+    fn try_statement(
+        &mut self,
+        block: &[Stmt],
+        handler: Option<&CatchClause>,
+        finalizer: Option<&[Stmt]>,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.reset_completion(span);
+        let finally = finalizer.map(|f| (f, self.out().label()));
+        if let Some((_, label)) = finally {
+            self.out().branch(Opcode::PushFinally, label, span);
+        }
+        match handler {
+            Some(handler) => {
+                let catch = self.out().label();
+                let end = self.out().label();
+                self.out().branch(Opcode::PushCatch, catch, span);
+                self.statement_list(block, &[], false)?;
+                self.out().op(Opcode::PopCatch, span);
+                self.out().branch(Opcode::Jump, end, span);
+                self.out().bind(catch);
+                self.reset_completion(handler.span);
+                match &handler.param {
+                    Some(param) => {
+                        // The parameter is the first binding the catch
+                        // body's scope declares, so it takes the next slot.
+                        let slot = self.cur().next_slot;
+                        if slot >= MAX_LOCALS {
+                            return Err(self.error(
+                                SyntaxErrorKind::TooLarge,
+                                param.span,
+                                "more than 65,535 bindings are live at once",
+                            ));
+                        }
+                        self.out().op_u16(Opcode::SetLocal, slot as u16, param.span);
+                        self.statement_list(&handler.body, std::slice::from_ref(param), false)?;
+                    }
+                    None => {
+                        self.out().op(Opcode::Pop, handler.span);
+                        self.statement_list(&handler.body, &[], false)?;
+                    }
+                }
+                self.out().bind(end);
+            }
+            None => self.statement_list(block, &[], false)?,
+        }
+        if let Some((body, label)) = finally {
+            self.out().op(Opcode::PopFinally, span);
+            self.out().bind(label);
+            let saved = match self.cur().completion {
+                Some(slot) => {
+                    let tmp = self.temp(span)?;
+                    self.out().op_u16(Opcode::GetLocal, slot, span);
+                    self.out().op_u16(Opcode::SetLocal, tmp, span);
+                    Some((slot, tmp))
+                }
+                None => None,
+            };
+            self.statement_list(body, &[], false)?;
+            if let Some((slot, tmp)) = saved {
+                self.out().op_u16(Opcode::GetLocal, tmp, span);
+                self.out().op_u16(Opcode::SetLocal, slot, span);
+                self.cur_mut().next_slot -= 1;
+            }
+            self.out().op(Opcode::EndFinally, span);
         }
         Ok(())
     }
