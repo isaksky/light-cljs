@@ -204,15 +204,13 @@ impl fmt::Debug for JsString {
 /// QuickJS `js_dtoa2` via `JS_ToStringInternal`, `research/quickjs/quickjs.c`,
 /// revision 7d1c13c5d8f8): `"NaN"`, `"0"` for both zeros, `"Infinity"` /
 /// `"-Infinity"`, otherwise the shortest decimal digits that round-trip to
-/// `x`, laid out in plain decimal when `1e-7 <= |x| < 1e21` and in exponent
-/// form (`"1e+21"`, `"1.5e-7"`) otherwise.
+/// `x`, laid out in plain decimal when `1e-6 <= |x| < 1e21` and in exponent
+/// form (`"1e+21"`, `"1e-7"`, `"1.5e-7"`) otherwise.
 ///
-/// The digits come from Rust's `{:e}` formatting, which prints the shortest
-/// digit string that round-trips to `x` (choosing the closest one when
-/// several are equally short): the specification's `k` digits of `s`, with
-/// exponent `n - 1`. Only the layout below is JavaScript's own; Rust's `{}`
-/// layout differs (`1e21` prints `1000000000000000000000`, `1e-7` prints
-/// `0.0000001`) and is not used. Radix 2..36 is clj-quickjs-149.
+/// Only the layout below is JavaScript's own; Rust's `{}` layout differs
+/// (`1e21` prints `1000000000000000000000`, `1e-7` prints `0.0000001`) and
+/// is not used. The digits are [`shortest_digits`]. Radix 2..36 is
+/// clj-quickjs-149.
 pub fn number_to_string(x: f64) -> String {
     if x.is_nan() {
         return "NaN".to_string();
@@ -223,18 +221,8 @@ pub fn number_to_string(x: f64) -> String {
     if x.is_infinite() {
         return if x > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
     }
-    let sci = format!("{:e}", x.abs());
-    let (mantissa, exponent) = sci
-        .split_once('e')
-        .expect("`{:e}` of a finite number has an exponent");
-    // `mantissa` is `d` or `d.ddd`: the digits of `s`, all ASCII.
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let (digits, n) = shortest_digits(x.abs());
     let k = digits.len() as i32;
-    // |x| = s × 10^(n - k), that is 0.digits × 10^n.
-    let n = exponent
-        .parse::<i32>()
-        .expect("`{:e}` exponent is an integer")
-        + 1;
     let mut out = String::with_capacity(digits.len() + 8);
     if x < 0.0 {
         out.push('-');
@@ -265,6 +253,45 @@ pub fn number_to_string(x: f64) -> String {
         out.push_str(&(n - 1).unsigned_abs().to_string());
     }
     out
+}
+
+/// The digits `s` (as ASCII, no trailing zero) and exponent `n` of a finite
+/// positive `x` per Number::toString: `x = 0.s × 10^n` where `s` has as few
+/// digits `k` as possible such that it round-trips to `x`; among several
+/// such `s`, the one closest to `x`, and of two equally close, the even one.
+///
+/// Rust's `{:e}` gives the shortest round-trip digits, so it fixes `k`, but
+/// on an exact decimal tie it rounds up (`1000000000000000.25` gives
+/// `...3`, JavaScript requires `...2`). Rust's `{:.*e}` with `k - 1`
+/// fractional digits is the correctly rounded `k`-digit decimal of the
+/// exact binary value, ties to even, i.e. the closest `k`-digit candidate;
+/// it is used whenever it round-trips. It may not (next to a power of two
+/// the round-trip interval is narrower below `x` than above, so the closest
+/// candidate can fall outside it); then the round-trip candidates all lie on
+/// the wide side and `{:e}`'s choice stands.
+fn shortest_digits(x: f64) -> (String, i32) {
+    let parse = |sci: &str| -> (String, i32) {
+        let (mantissa, exponent) = sci
+            .split_once('e')
+            .expect("`{:e}` of a finite number has an exponent");
+        // `mantissa` is `d` or `d.ddd`, all ASCII.
+        let mut digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+        while digits.len() > 1 && digits.ends_with('0') {
+            digits.pop();
+        }
+        let n = exponent
+            .parse::<i32>()
+            .expect("`{:e}` exponent is an integer")
+            + 1;
+        (digits, n)
+    };
+    let shortest = format!("{x:e}");
+    let (digits, n) = parse(&shortest);
+    let closest = format!("{x:.*e}", digits.len() - 1);
+    if closest != shortest && closest.parse::<f64>() == Ok(x) {
+        return parse(&closest);
+    }
+    (digits, n)
 }
 
 #[cfg(test)]
@@ -303,9 +330,42 @@ mod tests {
             (f64::NAN, "NaN"),
             (f64::INFINITY, "Infinity"),
             (f64::NEG_INFINITY, "-Infinity"),
+            // Exact decimal ties between two shortest candidates take the
+            // even one (Rust's `{:e}` alone rounds these up).
+            (1e15 + 0.25, "1000000000000000.2"),
+            (-(1e15 + 0.25), "-1000000000000000.2"),
+            (1e15 + 0.75, "1000000000000000.8"),
+            (0.5e-6, "5e-7"),
+            (0.25, "0.25"),
         ];
         for &(x, expected) in cases {
             assert_eq!(number_to_string(x), expected, "Number::toString({x:e})");
+        }
+    }
+
+    #[test]
+    fn number_to_string_round_trips_with_shortest_length() {
+        // A deterministic sample of bit patterns across the whole range:
+        // every result parses back to the same number and is never longer
+        // than Rust's shortest round-trip digits.
+        let mut bits: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..200_000 {
+            bits = bits
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let x = f64::from_bits(bits);
+            if !x.is_finite() || x == 0.0 {
+                continue;
+            }
+            let s = number_to_string(x);
+            assert_eq!(s.parse::<f64>(), Ok(x), "{s} for {x:e}");
+            let (digits, _) = shortest_digits(x.abs());
+            let rust_digits = format!("{:e}", x.abs())
+                .split('e')
+                .next()
+                .unwrap()
+                .replace('.', "");
+            assert_eq!(digits.len(), rust_digits.len(), "{x:e}");
         }
     }
 

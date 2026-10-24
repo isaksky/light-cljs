@@ -1297,8 +1297,12 @@ Design: `design.md` §§4, 11.
   primitive (`to_js_string` in `src/vm/dispatch.rs`) is `"undefined"`,
   `"null"`, `"true"`/`"false"`, the string itself, or Number::toString in
   radix 10 (`value::string::number_to_string`): the shortest round-trip
-  digits from Rust's `{:e}` formatting, laid out by the ECMA-262 rules
-  (plain decimal for `1e-7 <= |x| < 1e21`, else `1e+21` / `1.5e-7`;
+  digit count from Rust's `{:e}` formatting, the digits themselves the
+  closest such candidate with ties to even (Rust's correctly rounded
+  `{:.*e}`, since `{:e}` rounds exact decimal ties up:
+  `1000000000000000.25` is `"1000000000000000.2"`), laid out by the
+  ECMA-262 rules
+  (plain decimal for `1e-6 <= |x| < 1e21`, else `1e+21` / `1e-7`;
   `"0"` for `-0`). Radix 2..36 is clj-quickjs-149. The compiler emits
   `add` when both operands are statically numbers and `plus` otherwise, so
   `+` never applies ToNumber to a string. `to_number` on a string fails
@@ -1568,4 +1572,4 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/quickjs.c` `js_add_slow`, `JS_ToStringInternal` and
   `js_dtoa2` were consulted only, for semantics; the Number::toString
   layout in `src/value/string.rs` follows ECMA-262 and takes its digits
-  from Rust's shortest round-trip formatting. No code was copied.
+  from Rust's shortest and correctly rounded formatting. No code was copied.
