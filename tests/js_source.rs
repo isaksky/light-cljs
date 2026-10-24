@@ -1496,6 +1496,119 @@ fn for_in_walks_the_prototype_chain() {
     );
 }
 
+/// `for`-`in` over arrays (clj-quickjs-88). `TEST_FOR_IN_ARRAY` is adapted
+/// from the fourth group ("array optimization") of `test_for_in`, in
+/// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;
+/// see `docs/architecture.md` for the attribution). Modified: `let` for
+/// `var`, `a[a.length] = i` for `a.push(i)`, the keys collected with string
+/// `+` instead of `tab.push` and `tab.toString()` (`Array.prototype.push`,
+/// `join` and `toString` are clj-quickjs-155 and -156), and the asserted
+/// condition is the script's completion value. The other scripts are
+/// written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn for_in_over_arrays() {
+    const TEST_FOR_IN_ARRAY: &str = r#"
+        let i, tab, a;
+
+        /* array optimization */
+        a = [];
+        for(i = 0; i < 10; i++)
+            a[a.length] = i;
+        tab = "";
+        for(i in a) {
+            tab = tab + i + ",";
+        }
+        tab === "0,1,2,3,4,5,6,7,8,9,""#;
+    assert_eq!(eval(TEST_FOR_IN_ARRAY), ValueView::Bool(true));
+
+    let keys = |src: &str| string(&format!(r#"let s = ""; {src} s"#));
+    // Each key is a string (not the index number), and `length` (own,
+    // non-enumerable) is not visited.
+    assert_eq!(
+        keys(r#"for (const k in [5, 6]) s = s + typeof k + ":" + (k === "0" || k === "1") + ",";"#),
+        "string:true,string:true,"
+    );
+    // Holes are skipped, wherever they are: elisions, a deleted element, and
+    // the gaps index assignments leave (sparse storage, clj-quickjs-118).
+    assert_eq!(
+        keys(r#"for (const k in [1, , 3]) s = s + k + ",";"#),
+        "0,2,"
+    );
+    assert_eq!(
+        keys(
+            r#"const a = [, 1, , , 4, 5, ]; delete a[5];
+               for (const k in a) s = s + k + ",";
+               const b = []; b[3] = 1; b[0] = 1; b[1000] = 1; b[4294967294] = 1;
+               for (const k in b) s = s + k + ",";"#
+        ),
+        "1,4,0,3,1000,4294967294,"
+    );
+    // Named properties come after the indices, in creation order, whatever
+    // order they were added in; an index added after a name is still first.
+    assert_eq!(
+        keys(
+            r#"const a = [1, 2]; a.extra = 1; a.b = 1; a[2] = 1;
+               for (const k in a) s = s + k + ",";"#
+        ),
+        "0,1,2,extra,b,"
+    );
+    // Index-like names that are not array indices are named properties:
+    // `01`, 2**32 - 1, `-1` and `1.5` follow the indices in creation order.
+    assert_eq!(
+        keys(
+            r#"const a = [0]; a["01"] = 1; a[4294967295] = 1; a[-1] = 1; a[1.5] = 1; a[4294967294] = 1;
+               for (const k in a) s = s + k + ",";"#
+        ),
+        "0,4294967294,01,4294967295,-1,1.5,"
+    );
+    // Elements removed during the loop before they are reached are not
+    // visited: the enumerator re-checks each key as an own enumerable
+    // property. Shrinking by `a.length = 2` or `a.pop()` removes the
+    // elements past the new length the same way; neither exists yet
+    // (clj-quickjs-154, Array.prototype.pop; the rows are clj-quickjs-264),
+    // so the elements are deleted from the end instead. Growing the array adds no keys (the indices are
+    // snapshotted when the loop starts); an element deleted and put back
+    // before it is reached is visited.
+    assert_eq!(
+        keys(
+            r#"const a = [0, 1, 2, 3, 4];
+               for (const k in a) { if (k === "0") { delete a[4]; delete a[3]; delete a[2]; } s = s + k + ","; }
+               const c = [0, 1];
+               for (const k in c) { c[c.length] = 9; s = s + k + ","; }
+               const d = [0, 1, 2, 3];
+               for (const k in d) { if (k === "0") { delete d[1]; delete d[2]; d[2] = 2; } s = s + k + ","; }"#
+        ),
+        "0,1,0,1,0,2,3,"
+    );
+    // A plain identifier head and a `var` head see the same keys; the
+    // element values are read through the keys.
+    assert_eq!(
+        keys(
+            r#"let k; const a = ["x", "y"]; a.z = "w";
+               for (k in a) s = s + k + "=" + a[k] + ";";
+               for (var v in a) s = s + v;"#
+        ),
+        "0=x;1=y;z=w;01z"
+    );
+}
+
 /// `var` heads of `for` and `for`-`in` statements (clj-quickjs-89).
 /// `TEST_FOR_VAR` is the second group of `test_for`, and `TEST_FOR_IN_VAR`
 /// is adapted from the seventh group of `test_for_in`, in

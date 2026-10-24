@@ -2192,10 +2192,10 @@ Supported (`cargo test --lib frontend::tests::for_in_heads`,
 
 Deferred:
 
-- Property targets `for (a.b in o)` (clj-quickjs-87, `Unsupported`), array
-  regression tests (clj-quickjs-88), the non-strict `for (var k = 1 in o)`
-  (clj-quickjs-90), Proxy traps (clj-quickjs-91). (`var` heads:
-  clj-quickjs-89; inherited properties: clj-quickjs-86, both below.)
+- Property targets `for (a.b in o)` (clj-quickjs-87, `Unsupported`), the
+  non-strict `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps
+  (clj-quickjs-91). (`var` heads: clj-quickjs-89; inherited properties:
+  clj-quickjs-86; arrays: clj-quickjs-88, all below.)
 
 ### `for`-`in` over the prototype chain (clj-quickjs-86)
 
@@ -2219,8 +2219,27 @@ in `src/vm/keys.rs`, "Prototype chain"):
   the walk leaves it.
 
 Deferred: an error object on the chain fails with `UnsupportedOperand` (its
-own keys are clj-quickjs-230); arrays (clj-quickjs-88) and Proxy traps
-(clj-quickjs-91) as above.
+own keys are clj-quickjs-230); Proxy traps (clj-quickjs-91) as above.
+
+### `for`-`in` over arrays (clj-quickjs-88)
+
+Supported (`cargo test --test js_source for_in_over_arrays`; regression
+tests only, no code change: arrays use the generic enumerator):
+
+- `for (k in a)` on an array visits its element indices as strings
+  (`typeof k` is `"string"`) in ascending numeric order, holes skipped
+  (elisions, deleted elements, sparse gaps up to index 2^32 - 2), then its
+  named properties in creation order (`"01"`, `"-1"`, `"1.5"` and
+  `"4294967295"` are names, not indices), never `length`. QuickJS
+  `test_for_in`'s fourth group ("array optimization") runs from source,
+  adapted, with notice.
+- An element removed before it is reached is not visited; elements added
+  during the loop are not.
+
+Deferred: rows that shrink the array during the loop with `a.length = n`
+or `a.pop()`, and the upstream group's original `push` / `toString` form
+(clj-quickjs-264, after clj-quickjs-154 to -156; the test deletes the
+trailing elements and collects keys with string `+` meanwhile).
 
 ### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
 

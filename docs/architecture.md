@@ -2815,6 +2815,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   value. The test carries the full notice. `build_for_in_iterator`,
   `js_for_in_prepare_prototype_chain_enum` and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
+- `tests/js_source.rs` `for_in_over_arrays` (clj-quickjs-88): the fourth
+  group ("array optimization") of `test_for_in` (line 77) of
+  `research/quickjs/tests/test_loop.js`, revision 7d1c13c5d8f8, as
+  JavaScript source compiled by this frontend. Modified: `let` for `var`,
+  `a[a.length] = i` for `a.push(i)`, the keys collected with string `+`
+  instead of `tab.push` and `tab.toString()`, and the asserted condition is
+  the script's completion value. The test carries the full notice.
+  `build_for_in_iterator` (its fast array path) and `js_for_in_next` in
+  `research/quickjs/quickjs.c` were consulted only. No code was copied.
 - `tests/js_source.rs` `var_heads_in_for_loops` (clj-quickjs-89): the
   second group of `test_for` (line 61) and the seventh group of
   `test_for_in` (line 77) of `research/quickjs/tests/test_loop.js`,
