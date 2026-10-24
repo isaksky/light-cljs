@@ -128,6 +128,8 @@ pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
     /// payload's lifetime, and a [`Shareability::Persistent`] payload must
     /// never change the edges its [`Trace`] reports: the publication check
     /// walks those edges and caches a positive answer in the object's slot.
+    /// Called under the object lock: it must only return the category (same
+    /// restrictions as [`Trace`]).
     fn shareability(&self) -> Shareability;
 }
 
@@ -504,6 +506,33 @@ mod tests {
         assert_eq!(heap.kind(a), Some(ObjectKind::PlainObject));
         assert_eq!(heap.kind(ObjectId::from_index(99)), None);
         assert_eq!(heap.stats().objects, 2);
+    }
+
+    #[test]
+    fn a_reused_slot_does_not_inherit_the_known_shareable_bit() {
+        let heap = Heap::default();
+        let known = heap
+            .alloc_persistent(HeapObject::Vector(PVector::from_values(&[])), Some(&[]))
+            .unwrap();
+        assert_eq!(heap.known_shareable(known), Some(true));
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        // The plain object takes over the slot, with a new generation.
+        let plain = heap.alloc(HeapObject::Plain).unwrap();
+        assert_eq!(plain.index, known.index);
+        assert_eq!(heap.known_shareable(plain), Some(false));
+        assert_eq!(heap.known_shareable(known), None, "stale id");
+        // A persistent object built on it is not known either, and marking
+        // the stale id does not touch the new occupant.
+        heap.mark_shareable(&[known]);
+        assert_eq!(heap.known_shareable(plain), Some(false));
+        let parts = [Value::Object(plain)];
+        let holder = heap
+            .alloc_persistent(
+                HeapObject::Vector(PVector::from_values(&parts)),
+                Some(&parts),
+            )
+            .unwrap();
+        assert_eq!(heap.known_shareable(holder), Some(false));
     }
 
     #[test]
