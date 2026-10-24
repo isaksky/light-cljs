@@ -204,7 +204,7 @@ pub enum StmtKind {
     /// `function name(params) { body }` (always named). Allowed only directly
     /// in a statement list (script, function body or block).
     FunctionDecl(Function),
-    /// `let a = 1, b;` or `const c = 2;`. Allowed only directly in a
+    /// `let a = 1, b;`, `const c = 2;` or `using r = resource;`. Allowed only directly in a
     /// statement list.
     Lexical(LexicalDecl),
     /// `var a = 1, b;` (clj-quickjs-94): a VariableStatement, allowed in
@@ -349,12 +349,14 @@ pub struct CatchClause {
 pub enum LexicalKind {
     Let,
     Const,
+    /// Synchronous explicit resource declaration; immutable like `const`.
+    Using,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LexicalDecl {
     pub kind: LexicalKind,
-    /// At least one. Every `const` declarator has an initializer.
+    /// At least one. Every `const`/`using` declarator has an initializer.
     pub declarators: Vec<Declarator>,
 }
 

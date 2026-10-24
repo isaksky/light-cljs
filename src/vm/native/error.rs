@@ -201,7 +201,6 @@ impl crate::vm::frames::VmState {
     /// safepoints. Both inputs must remain in traced task/native state;
     /// the caller must store the result there before the next poll, where
     /// allocation pressure may collect. Heap::alloc itself never polls.
-    #[allow(dead_code)] // Used by the upcoming disposal continuations.
     pub(crate) fn suppressed_error(
         &self,
         heap: &Heap,

@@ -633,6 +633,8 @@ struct FnCtx {
     child_count: usize,
     /// Constructs `break`/`continue` may leave, innermost last.
     exits: Vec<Exit>,
+    /// Source declarator position, resource and snapshotted method locals.
+    using_resources: Vec<(usize, u16, u16)>,
     /// The label set of the loop about to be lowered (`L1: L2: while ...`),
     /// taken by [`Lowerer::push_loop`].
     loop_labels: Vec<String>,
@@ -874,6 +876,7 @@ impl<'s> Lowerer<'s> {
             children: Vec::new(),
             child_count: 0,
             exits: Vec::new(),
+            using_resources: Vec::new(),
             loop_labels: Vec::new(),
             var_scope: 0,
         });
@@ -1044,10 +1047,117 @@ impl<'s> Lowerer<'s> {
         top_level: bool,
     ) -> Result<(), SyntaxError> {
         let saved_slot = self.enter_scope(&[body], params, top_level, 0)?;
+        if body.iter().any(|stmt| {
+            matches!(&stmt.kind,
+            StmtKind::Lexical(decl) if decl.kind == LexicalKind::Using)
+        }) {
+            self.disposable_body(body)?;
+        } else {
+            for stmt in body {
+                self.statement(stmt)?;
+            }
+        }
+        self.exit_scope(saved_slot);
+        Ok(())
+    }
+
+    /// Protect a statement list with the ordinary finally completion protocol.
+    /// The hidden method is undefined until validation succeeds; resources
+    /// declared after an abrupt initializer are therefore never disposed.
+    #[inline(never)]
+    fn disposable_body(&mut self, body: &[Stmt]) -> Result<(), SyntaxError> {
+        let saved_resources = self.cur().using_resources.len();
+        let saved_slot = self.cur().next_slot;
+        for stmt in body {
+            if let StmtKind::Lexical(decl) = &stmt.kind
+                && decl.kind == LexicalKind::Using
+            {
+                for d in &decl.declarators {
+                    let value = self.temp(d.span)?;
+                    let method = self.temp(d.span)?;
+                    self.out().op(Opcode::Undefined, d.span);
+                    self.out().op_u16(Opcode::SetLocal, value, d.span);
+                    self.out().op(Opcode::Undefined, d.span);
+                    self.out().op_u16(Opcode::SetLocal, method, d.span);
+                    self.cur_mut()
+                        .using_resources
+                        .push((d.span.start, value, method));
+                }
+            }
+        }
+        if self.cur().using_resources.len() == saved_resources {
+            for stmt in body {
+                self.statement(stmt)?;
+            }
+            return Ok(());
+        }
+        let span = body[0].span;
+        let cleanup = self.out().label();
+        self.out().branch(Opcode::PushFinally, cleanup, span);
+        self.cur_mut().exits.push(Exit::Finally);
         for stmt in body {
             self.statement(stmt)?;
         }
-        self.exit_scope(saved_slot);
+        self.out().op(Opcode::PopFinally, span);
+        self.out().bind(cleanup);
+        *self.cur_mut().exits.last_mut().unwrap() = Exit::FinallyBody;
+        let has_error = self.temp(span)?;
+        let error = self.temp(span)?;
+        let caught_error = self.temp(span)?;
+        let changed = self.temp(span)?;
+        self.out().op(Opcode::PendingThrow, span);
+        self.out().op_u16(Opcode::SetLocal, has_error, span);
+        self.out().op(Opcode::PendingException, span);
+        self.out().op_u16(Opcode::SetLocal, error, span);
+        self.constant(Primitive::Bool(false), span)?;
+        self.out().op_u16(Opcode::SetLocal, changed, span);
+        let resources = self.cur().using_resources[saved_resources..].to_vec();
+        for (_, value, method) in resources.into_iter().rev() {
+            let skip = self.out().label();
+            let caught = self.out().label();
+            let first_error = self.out().label();
+            let store_error = self.out().label();
+            self.out().op_u16(Opcode::GetLocal, method, span);
+            self.out().branch(Opcode::JumpIfFalse, skip, span);
+            self.out().branch(Opcode::PushCatch, caught, span);
+            self.out().op_u16(Opcode::GetLocal, value, span);
+            self.out().op_u16(Opcode::GetLocal, method, span);
+            self.out().op_u16(Opcode::CallMethod, 0, span);
+            self.out().op(Opcode::Pop, span);
+            self.out().op(Opcode::PopCatch, span);
+            self.out().branch(Opcode::Jump, skip, span);
+            self.out().bind(caught);
+            self.out().op_u16(Opcode::SetLocal, caught_error, span);
+            self.out().op_u16(Opcode::GetLocal, has_error, span);
+            self.out().branch(Opcode::JumpIfFalse, first_error, span);
+            self.out().op_u16(Opcode::GetLocal, caught_error, span);
+            self.out().op_u16(Opcode::GetLocal, error, span);
+            self.out().op(Opcode::SuppressedError, span);
+            self.out().branch(Opcode::Jump, store_error, span);
+            self.out().bind(first_error);
+            self.out().op_u16(Opcode::GetLocal, caught_error, span);
+            self.out().bind(store_error);
+            self.out().op_u16(Opcode::SetLocal, error, span);
+            self.constant(Primitive::Bool(true), span)?;
+            self.out().op(Opcode::Dup, span);
+            self.out().op_u16(Opcode::SetLocal, has_error, span);
+            self.out().op_u16(Opcode::SetLocal, changed, span);
+            self.out().bind(skip);
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, method, span);
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, value, span);
+        }
+        let end = self.out().label();
+        self.out().op_u16(Opcode::GetLocal, changed, span);
+        self.out().branch(Opcode::JumpIfFalse, end, span);
+        self.out().op_u16(Opcode::GetLocal, error, span);
+        self.out().op(Opcode::Throw, span);
+        self.out().bind(end);
+        self.out().op(Opcode::EndFinally, span);
+        self.cur_mut().exits.pop();
+        self.cur_mut().using_resources.truncate(saved_resources);
+        self.cur_mut().next_slot = saved_slot;
         Ok(())
     }
 
@@ -1101,7 +1211,7 @@ impl<'s> Lowerer<'s> {
                     StmtKind::Lexical(decl) => {
                         let kind = match decl.kind {
                             LexicalKind::Let => BindingKind::Let,
-                            LexicalKind::Const => BindingKind::Const,
+                            LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
                         };
                         for d in &decl.declarators {
                             for name in d.name.names() {
@@ -3164,6 +3274,20 @@ impl<'s> Lowerer<'s> {
                 Some(init) => self.pattern_value(init, &d.name)?,
                 None => self.out().op(Opcode::Undefined, d.span),
             }
+            if decl.kind == LexicalKind::Using {
+                let (_, value, method) = *self
+                    .cur()
+                    .using_resources
+                    .iter()
+                    .rev()
+                    .find(|(start, _, _)| *start == d.span.start)
+                    .ok_or_else(|| self.internal(d.span, "using resource without a scope"))?;
+                self.out().op(Opcode::Dup, d.span);
+                self.out().op_u16(Opcode::SetLocal, value, d.span);
+                self.out().op(Opcode::Dup, d.span);
+                self.out().op(Opcode::UsingCheck, d.span);
+                self.out().op_u16(Opcode::SetLocal, method, d.span);
+            }
             self.pattern_store(&d.name, true, false)?;
         }
         Ok(())
@@ -3216,7 +3340,7 @@ impl<'s> Lowerer<'s> {
             Some(ForInit::Lexical(decl)) => {
                 let kind = match decl.kind {
                     LexicalKind::Let => BindingKind::Let,
-                    LexicalKind::Const => BindingKind::Const,
+                    LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
                 };
                 for d in &decl.declarators {
                     for name in d.name.names() {
@@ -3319,7 +3443,7 @@ impl<'s> Lowerer<'s> {
         if let ForInHead::Lexical(kind, name) = head {
             let kind = match kind {
                 LexicalKind::Let => BindingKind::Let,
-                LexicalKind::Const => BindingKind::Const,
+                LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
             };
             self.declare(name, kind, false, false)?;
             let b = self.local(name)?;

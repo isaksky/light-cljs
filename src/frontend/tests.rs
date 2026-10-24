@@ -23,6 +23,57 @@ use super::{
 };
 
 #[test]
+fn using_declarations() {
+    use super::ast::LexicalKind;
+    let script = parse_script("{ using x = a, y = b; } function f() { using of = r; }").unwrap();
+    let StmtKind::Block(body) = &script.body[0].kind else {
+        panic!()
+    };
+    let StmtKind::Lexical(decl) = &body[0].kind else {
+        panic!()
+    };
+    assert_eq!(decl.kind, LexicalKind::Using);
+    assert_eq!(decl.declarators.len(), 2);
+    let StmtKind::FunctionDecl(f) = &script.body[1].kind else {
+        panic!()
+    };
+    let StmtKind::Lexical(decl) = &f.body[0].kind else {
+        panic!()
+    };
+    assert_eq!(decl.declarators[0].name.identifier().unwrap().name, "of");
+    let script =
+        parse_script("using\nx = 1; using = 1; using.x; using[0]; using(1); let using;").unwrap();
+    assert_eq!(script.body.len(), 7);
+    assert!(
+        script.body[..6]
+            .iter()
+            .all(|s| matches!(s.kind, StmtKind::Expr(_)))
+    );
+    for source in [
+        "{ using [a] = r; }",
+        "{ using {a} = r; }",
+        "{ using x; }",
+        "using x = r;",
+        "'use strict'; using x = r;",
+        "switch (v) { case 1: using x = r; }",
+        "switch (v) { default: using x = r; }",
+        "if (a) using x = r;",
+        "while (a) using x = r;",
+    ] {
+        let error = parse_script(source).expect_err(source);
+        assert_eq!(
+            error.span.start,
+            source.find("using").unwrap(),
+            "{source}: {error}"
+        );
+    }
+    for source in ["{ using x = null; let x; }", "{ using x = null; var x; }"] {
+        assert!(compile_script("using", source).is_err(), "{source}");
+    }
+    assert!(super::parse_module("using x = null; export {x};").is_ok());
+}
+
+#[test]
 fn module_import_and_export_entries() {
     use super::{ImportName, parse_module};
     let source = "import d, {a, b as c, default as e} from 's';\n\
@@ -1062,6 +1113,7 @@ fn render_lexical(decl: &super::ast::LexicalDecl) -> String {
     let keyword = match decl.kind {
         super::ast::LexicalKind::Let => "let",
         super::ast::LexicalKind::Const => "const",
+        super::ast::LexicalKind::Using => "using",
     };
     render_declarators(keyword, &decl.declarators)
 }
@@ -1169,6 +1221,9 @@ fn render_stmt(s: &Stmt) -> String {
                     format!("(const {})", name.name)
                 }
                 super::ast::ForInHead::Var(name) => format!("(var {})", name.name),
+                super::ast::ForInHead::Lexical(super::ast::LexicalKind::Using, name) => {
+                    format!("(using {})", name.name)
+                }
             };
             format!(
                 "({keyword} {head} {} {})",

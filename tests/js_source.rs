@@ -3,6 +3,41 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+/// Synthetic fixtures, not light-cljs output. Validation, snapshotting and
+/// suppression scenarios follow QuickJS test_language.js::test_using (MIT
+/// notice already reproduced in this file); control-flow cases are original.
+#[test]
+fn using_declarations() {
+    for source in [
+        "let ok = 0; for (let resource of [{}, 42, false, 'x', Symbol(), 1n, {[Symbol.dispose]: 123}, {[Symbol.dispose]: null}]) { let body = false; try { using x = resource; body = true; } catch(e) { if (e instanceof TypeError && !body) ok++; } } ok === 8",
+        "let body = false, caught; let original = Error('getter'); try { using x = {get [Symbol.dispose]() { throw original; }}; body = true; } catch(e) { caught = e; } !body && caught === original",
+        "let n = 0; { using a = null; using b = undefined; using c = {[Symbol.dispose]() { n++; }}; } n === 1",
+        "let log = ''; function resource(s) { return {[Symbol.dispose]() { log += s; }}; } { using a = resource('a'), b = resource('b'); using c = resource('c'); } log === 'cba'",
+        "let caught; function resource(s) { return {[Symbol.dispose]() { throw Error(s); }}; } try { using a = resource('a'), b = resource('b'), c = resource('c'); } catch(e) { caught = e; } caught instanceof SuppressedError && caught.error.message === 'a' && caught.suppressed.error.message === 'b' && caught.suppressed.suppressed.message === 'c'",
+        "let reads = 0, disposed = 0, resource = {get [Symbol.dispose]() { reads++; return function() { if (this === resource && arguments.length === 0) disposed++; }; }}; { using x = resource; Object.defineProperty(resource, Symbol.dispose, {value: function() { throw 99; }}); } reads === 1 && disposed === 1",
+        "let called = false, caught, intrinsic = SuppressedError; let hijack = function() { called = true; throw 99; }; try { SuppressedError.prototype.constructor = hijack; } catch(e) { if (!(e instanceof TypeError)) throw e; } SuppressedError = hijack; try { using a = {[Symbol.dispose]() { throw 1; }}, b = {[Symbol.dispose]() { throw 2; }}; } catch(e) { caught = e; } !called && caught instanceof intrinsic && caught.error === 1 && caught.suppressed === 2",
+        "let original = {}, disposal = {}, caught; try { using x = {[Symbol.dispose]() { throw disposal; }}; throw original; } catch(e) { caught = e; } caught.error === disposal && caught.suppressed === original",
+        "let original = {}, caught, n = 0; try { using x = {[Symbol.dispose]() { n++; }}; throw original; } catch(e) { caught = e; } caught === original && n === 1",
+        "let n = 1; function f() { using x = {[Symbol.dispose]() { n = 2; }}; return n; } f() === 1 && n === 2",
+        "let log = ''; for (let i = 0; i < 4; i++) { using x = {[Symbol.dispose]() { log += i; }}; if (i === 0) continue; if (i === 2) break; } log === '012'",
+        "let log = ''; function fail() { throw 7; } try { using a = {[Symbol.dispose]() { log += 'a'; }}, b = fail(), c = {[Symbol.dispose]() { log += 'c'; }}; } catch(e) { log += e; } log === 'a7'",
+        "let log = ''; { using a = {[Symbol.dispose]() { log += 'a'; }}; { using b = {[Symbol.dispose]() { log += 'b'; }}; } log += 'c'; } log === 'bca'",
+        "let caught; try { using x = null; x = 1; } catch(e) { caught = e; } caught instanceof TypeError",
+        "let caught; try { using x = x; } catch(e) { caught = e; } caught instanceof ReferenceError",
+        "let caught, later; try { using x = {[Symbol.dispose]() { try { later(); } catch(e) { caught = e; } }}; later = () => y; using y = {}; } catch(e) {} caught instanceof ReferenceError",
+        "let log = ''; for (let i = 0; i < 3; i++) { if (i === 1) continue; using x = {[Symbol.dispose]() { log += i; }}; } log === '02'",
+        "let n = 0; let f = function() {}; f[Symbol.dispose] = function() { n++; }; { using x = f; } n === 1",
+        "let caught; try { using x = {[Symbol.dispose]() { throw undefined; }}; throw undefined; } catch(e) { caught = e; } caught instanceof SuppressedError && caught.error === undefined && caught.suppressed === undefined",
+        "let n = 0; { using x = null; eval('try { x = 2; } catch(e) { if (e instanceof TypeError) n++; }'); } n === 1",
+        "let n = 0; { using x = {[Symbol.dispose]() { n++; }}; eval('n += 2'); } n === 3",
+        "let n = 0; function* g() { using x = {[Symbol.dispose]() { n++; }}; yield 1; } let it = g(); it.next(); it.next().done && n === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    // Disposal is an empty completion and must preserve the block's value.
+    assert_eq!(eval("{ using x = null; 17; }"), ValueView::Number(17.0));
+}
+
 /// Synthetic fixture, not light-cljs output. Doubling retains rope children;
 /// neither the rejected result nor its large operands need a flat allocation.
 #[test]

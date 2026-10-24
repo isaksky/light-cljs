@@ -915,6 +915,16 @@ impl VmState {
         })
     }
 
+    pub(crate) fn pending_exception(&self) -> Value {
+        match self.handlers.last() {
+            Some(h) if h.frame == self.frame_index() => match &h.kind {
+                HandlerKind::Pending(Completion::Throw(exception)) => exception.value.clone(),
+                _ => Value::Undefined,
+            },
+            _ => Value::Undefined,
+        }
+    }
+
     /// A suspension must not detach this frame's pending cancellation and
     /// allow its caller to continue ordinary execution during cleanup.
     pub(crate) fn activation_cancelling(&self) -> bool {

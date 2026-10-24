@@ -134,6 +134,119 @@ fn run_to_wait(rt: &Runtime, task: &Task, log: &mut Log, expected: (DependencyId
     assert_eq!(task.status(), TaskStatus::Waiting);
 }
 
+/// Synthetic fixture, not light-cljs output. The pending return is an object
+/// rooted only by the finally completion while a disposer waits.
+#[test]
+fn a_wait_inside_a_dispose_method_resumes_disposal() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        function f() {
+            using a = {[Symbol.dispose]() { __rt.effect(1, 1); }};
+            using b = {[Symbol.dispose]() { __rt.effect(1, 2); __rt.need(5, 3); __rt.effect(1, 3); }};
+            return {answer: 42};
+        }
+        f().answer
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    assert_eq!(log.0, [2.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [2.0, 3.0, 1.0]);
+}
+
+#[test]
+fn cancellation_disposes_using_resources() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        try {
+            using a = {[Symbol.dispose]() { __rt.effect(1, 1); }};
+            using b = {[Symbol.dispose]() { __rt.effect(1, 2); throw Error('dispose'); }};
+            using c = {[Symbol.dispose]() { __rt.effect(1, 3); }};
+            __rt.need(5, 3);
+        } catch(e) { __rt.effect(1, 99); }
+        __rt.effect(1, 98);
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = cancel_parked(&task);
+    let (outcome, log) = run_elsewhere(task, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [3.0, 2.0, 1.0]);
+}
+
+#[test]
+fn using_dispose_getter_waits_before_binding_initialization() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let caught = false, reads = 0;
+        {
+            using x = {get [Symbol.dispose]() {
+                reads++; __rt.need(5, 3);
+                try { eval('x'); } catch(e) { caught = e instanceof ReferenceError; }
+                return function() { __rt.effect(1, this.answer); };
+            }, answer: 7};
+        }
+        caught && reads === 1 ? 42 : 0
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 0.0);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(task, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [7.0]);
+}
+
+#[test]
+fn using_disposal_errors_remain_rooted_across_waits() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        let original = {tag: 'body'}, caught;
+        function resource(tag, dependency) {
+            return {[Symbol.dispose]() { __rt.effect(1, dependency); __rt.need(dependency, 3); throw {tag: tag}; }};
+        }
+        try { using a = resource('a', 5), b = resource('b', 6), c = resource('c', 7); throw original; }
+        catch(e) { caught = e; }
+        caught.error.tag === 'a' && caught.suppressed.error.tag === 'b' &&
+        caught.suppressed.suppressed.error.tag === 'c' &&
+        caught.suppressed.suppressed.suppressed === original ? 42 : 0
+    "#,
+    );
+    let mut current = task;
+    let mut log = Log::default();
+    for dependency in [7, 6, 5] {
+        let (outcome, next_log) = run_elsewhere(current.clone(), log);
+        log = next_log;
+        assert_eq!(
+            waiting(outcome),
+            key(&rt, (DependencyId::new(dependency), ResultKind::new(3)))
+        );
+        rt.collect().unwrap();
+        current = publish(&rt, &current, 0.0);
+        rt.collect().unwrap();
+    }
+    let (outcome, log) = run_elsewhere(current, log);
+    assert_eq!(number(outcome), 42.0);
+    assert_eq!(log.0, [7.0, 6.0, 5.0]);
+}
+
 /// Source line and column of a failure.
 fn line_column(e: &VmError) -> (u32, u32) {
     let at = e.diagnostic().source.expect("source location");

@@ -93,6 +93,7 @@ pub(super) struct Parser<'a> {
     /// ([`Self::set_strict`]).
     strict: bool,
     module_goal: bool,
+    using_allowed: bool,
     in_function: bool,
     /// Inherited by arrows and direct eval, established by ordinary functions
     /// and methods before parsing their parameters.
@@ -162,6 +163,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             strict,
             module_goal: false,
+            using_allowed: false,
             in_function: false,
             new_target_allowed: false,
             super_call: false,
@@ -492,6 +494,16 @@ impl<'a> Parser<'a> {
 
     /// StatementListItem: a declaration or a statement.
     fn parse_statement_list_item(&mut self) -> PResult<Stmt> {
+        if self.at_using() {
+            if !self.using_allowed {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    self.tok.span,
+                    "a using declaration requires a block, function body or module",
+                ));
+            }
+            return self.parse_using_decl();
+        }
         if self.at_async_function() {
             return self.parse_function_declaration();
         }
@@ -749,6 +761,13 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn statement_start_error(&self) -> Option<SyntaxError> {
         let span = self.tok.span;
+        if self.at_using() {
+            return Some(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "a using declaration requires a statement list; wrap it in a block",
+            ));
+        }
         match &self.tok.kind {
             TokenKind::Keyword(Keyword::Import | Keyword::Export) if self.module_goal => {
                 Some(self.misplaced_module_declaration())
@@ -867,6 +886,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::BLOCK)?;
         self.expect_punct(Punct::LBrace)?;
+        let outer_using = std::mem::replace(&mut self.using_allowed, true);
         let mut body = Vec::new();
         while !self.is_punct(Punct::RBrace) {
             if self.tok.kind == TokenKind::Eof {
@@ -875,6 +895,7 @@ impl<'a> Parser<'a> {
             body.push(self.parse_statement_list_item()?);
         }
         self.advance()?;
+        self.using_allowed = outer_using;
         self.depth = saved;
         Ok(body)
     }
@@ -1021,7 +1042,9 @@ impl<'a> Parser<'a> {
                     | TokenKind::Punct(Punct::RBrace)
                     | TokenKind::Eof
             ) {
+                let outer_using = std::mem::replace(&mut self.using_allowed, false);
                 body.push(self.parse_statement_list_item()?);
+                self.using_allowed = outer_using;
             }
             cases.push(SwitchCase {
                 test,
@@ -1382,6 +1405,63 @@ impl<'a> Parser<'a> {
         self.bounded(Stmt::new(StmtKind::Lexical(decl), self.span_from(start)))
     }
 
+    fn at_using(&self) -> bool {
+        matches!(&self.tok.kind, TokenKind::Identifier(name) if name == "using")
+            && self.tok.span.text(self.src) == "using"
+            && self.peek_next().is_some_and(|next| {
+                !next.newline_before
+                    && (matches!(
+                        next.kind,
+                        TokenKind::Identifier(_) | TokenKind::Punct(Punct::LBrace)
+                    ) || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
+                        && next.span.start > self.tok.span.end))
+            })
+    }
+
+    #[inline(never)]
+    fn parse_using_decl(&mut self) -> PResult<Stmt> {
+        let start = self.tok.span;
+        self.advance()?;
+        let mut declarators = Vec::new();
+        loop {
+            if matches!(
+                self.tok.kind,
+                TokenKind::Punct(Punct::LBracket | Punct::LBrace)
+            ) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    start,
+                    "using declarations require a binding identifier",
+                ));
+            }
+            let name = self.parse_binding_identifier("a using binding name")?;
+            if !self.eat_punct(Punct::Assign)? {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    start,
+                    "missing initializer in using declaration",
+                ));
+            }
+            let init = self.parse_assignment()?;
+            declarators.push(Declarator {
+                span: self.span_from(name.span.start),
+                name: Pattern::ident(name),
+                init: Some(init),
+            });
+            if !self.eat_punct(Punct::Comma)? {
+                break;
+            }
+        }
+        self.expect_semi()?;
+        self.bounded(Stmt::new(
+            StmtKind::Lexical(LexicalDecl {
+                kind: LexicalKind::Using,
+                declarators,
+            }),
+            self.span_from(start.start),
+        ))
+    }
+
     /// VariableStatement: `var` Declarator (`,` Declarator)* `;`
     /// (clj-quickjs-94), in any statement position. Out of line, so the
     /// frame of [`Self::parse_statement`] stays small.
@@ -1731,6 +1811,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::BLOCK)?;
         self.expect_punct(Punct::LBrace)?;
+        let outer_using = std::mem::replace(&mut self.using_allowed, true);
         let no_in = std::mem::replace(&mut self.no_in, false);
         let mut body = Vec::new();
         let mut prologue = true;
@@ -1746,6 +1827,7 @@ impl<'a> Parser<'a> {
             body.push(stmt);
         }
         self.no_in = no_in;
+        self.using_allowed = outer_using;
         // Restore the enclosing mode before the token after `}` is lexed.
         let strict = self.strict;
         self.set_strict(outer_strict);

@@ -215,6 +215,7 @@
 //! keep, but no promise or job is involved here.
 
 use std::marker::PhantomData;
+mod dispose;
 mod intl;
 pub(crate) mod iterator;
 pub(crate) mod regexp;
@@ -479,6 +480,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Dispose(dispose::State),
     MathSumPrecise(Box<sum_precise::State>),
     Async(super::asynchronous::Boundary),
     Eval(Box<eval::State>),
@@ -851,6 +853,7 @@ impl Trace for NativeFrame {
             NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
+            NativeState::Dispose(dispose) => dispose.trace(visit),
             NativeState::Generator { id, failed } => {
                 visit((*id).into());
                 failed.iter().for_each(|e| e.value.trace(visit));
@@ -970,7 +973,8 @@ impl Trace for NativeFrame {
 pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
-        Reduce | NeedAll | GetIterator => true,
+        Reduce | NeedAll | GetIterator | UsingCheck => true,
+        PendingException | SuppressedError => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
         | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get
@@ -2266,6 +2270,10 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
+        Instr::UsingCheck => (
+            1,
+            NativeState::Dispose(dispose::State::new(operands::<1>(state)?[0].clone())),
+        ),
         Instr::GetIterator => (
             1,
             NativeState::Iterator(Box::new(iterator::State::get_iterator(
@@ -2861,6 +2869,7 @@ impl NativeState {
             // conversion helpers. Keep the unrelated native arms' stack
             // storage out of spread execution on 64 KiB workers.
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            NativeState::Dispose(dispose) => dispose.step(heap, task, input),
             NativeState::DurationFormat(format) => format.step(heap, task, input),
             _ => self.step_other(heap, task, jobs, input, host),
         }
@@ -2944,7 +2953,7 @@ impl NativeState {
                 }
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
-            NativeState::Iterator(_) => {
+            NativeState::Iterator(_) | NativeState::Dispose(_) => {
                 unreachable!("iterator dispatched before other native arms")
             }
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
@@ -4136,6 +4145,7 @@ impl NativeState {
                 | NativeState::MathSumPrecise(_)
                 | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)
+                | NativeState::Dispose(_)
                 | NativeState::Generator { .. }
                 | NativeState::Async(_)
                 | NativeState::TypedArray(_)

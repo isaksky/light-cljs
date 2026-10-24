@@ -420,6 +420,44 @@ fn assert_effects(sources: &[(&str, &str)], expected: Vec<Primitive>) {
 }
 
 #[test]
+fn using_module_resources_dispose_after_evaluation() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import {resource} from './resource.js'; __rt.effect(0, resource.value);",
+            ),
+            (
+                "resource.js",
+                "using resource = {value: 1, [Symbol.dispose]() { this.value = 2; __rt.effect(0, 10); }}; export {resource}; __rt.effect(0, resource.value);",
+            ),
+        ],
+        Budget::instructions(1),
+    );
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(
+        effects,
+        [
+            Primitive::Number(1.0),
+            Primitive::Number(10.0),
+            Primitive::Number(2.0)
+        ]
+    );
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './resource.js'; __rt.effect(0, 99);"),
+            (
+                "resource.js",
+                "using a = {[Symbol.dispose]() { __rt.effect(0, 1); }}, b = {[Symbol.dispose]() { __rt.effect(0, 2); throw 7; }}; throw 8;",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(matches!(outcome, RunOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(effects, [Primitive::Number(2.0), Primitive::Number(1.0)]);
+}
+
+#[test]
 fn named_import_calls_exported_function() {
     assert_effects(
         &[

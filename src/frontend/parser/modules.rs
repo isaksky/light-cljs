@@ -146,6 +146,7 @@ impl Tables {
 impl Parser<'_> {
     pub(in crate::frontend) fn parse_module(mut self) -> PResult<Module> {
         self.module_goal = true;
+        self.using_allowed = true;
         self.set_strict(true);
         self.advance()?;
         let mut tables = Tables::default();

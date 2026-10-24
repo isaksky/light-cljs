@@ -1196,6 +1196,22 @@ Exception control flow is task state, not Rust control flow
 (`docs/design.md` §10). The contract is the `src/vm/exception.rs` module
 docs.
 
+- **Synchronous disposal** (clj-quickjs-236). A statement list containing
+  `using` owns a finally handler before any initializer runs. Hidden value
+  and method locals retain each resource and its method snapshot; a method
+  slot stays undefined until AddDisposableResource succeeds. Disposal runs
+  those pairs backwards as ordinary receiver calls under individual catch
+  handlers. `pending_exception` reads the pending throw, and the leaf
+  `suppressed_error` instruction invokes the intrinsic engine helper to
+  combine errors without running JS. Hidden error locals distinguish an
+  empty error state from a thrown undefined. The existing completion stack
+  retains returns, jumps, exception identity and cancellation; catches inside
+  disposal keep later resources running, and the final throw cannot override
+  cancellation. `using_check` has a traced native continuation for a
+  `Symbol.dispose` getter. Every getter and disposer can suspend and migrate;
+  the collector traces resources, snapshots and errors through existing
+  task locals/native frames. Module evaluation uses the same protected body
+  around its module-cell bindings. No new heap kind or publication rule.
 - **Handler stack.** `VmState` keeps one stack of entries beside its
   frames: catch handlers, finally handlers, and the *pending completion*
   of each running finally block (`Normal`, `Return(value)`,
@@ -2726,6 +2742,16 @@ from virtual key synthesis. Ownership, tracing and integrity checks remain
 those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
+
+- Synchronous `using` (clj-quickjs-236): consulted
+  `research/quickjs/quickjs.c` `is_using`, `js_parse_var`,
+  `js_emit_dispose_scope`, `js_op_using_check` and `OP_using_dispose`,
+  revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The validation,
+  snapshot and error-chain scenarios in `tests/js_source.rs::using_declarations`
+  adapt `research/quickjs/tests/test_language.js::test_using`; its MIT notice
+  is retained in that test file. Rust code and additional control-flow,
+  module, suspension and cancellation fixtures are original. QuickJS's
+  recursive disposal loop and reference-counting representation are not used.
 
 - String length overflow (clj-quickjs-231) follows `string_buffer_realloc`,
   `JS_NewStringLen`, and `JS_ConcatString` in `research/quickjs/quickjs.c`,

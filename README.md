@@ -3941,3 +3941,22 @@ Lexical super properties through arrows and runtime eval remain deferred (-112).
 
 Verify with `cargo test --test js_source super_property_access` and
 `cargo test --test need super_property_access_waits_collects_and_migrates`.
+
+### Synchronous resource declarations (clj-quickjs-236)
+
+Supported: `using x = resource, y = resource;` in blocks, function bodies
+and module top level. Resources snapshot `Symbol.dispose` at declaration,
+dispose in reverse order on every scope exit, and aggregate disposal errors
+with intrinsic `SuppressedError` instances. Getters and cleanup calls retain
+their task state through waits, collection and migration; cancellation runs
+cleanup without reviving the task. Bindings follow `const` rules.
+
+Deferred: `for (using ... of ...)`, `await using` and disposal stack built-ins.
+Script top level, switch clauses without a block, single-statement bodies,
+binding patterns and missing initializers are syntax errors.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test exception_waits -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test js_modules using_module_resources_dispose_after_evaluation -- --exact --test-threads=3
+```

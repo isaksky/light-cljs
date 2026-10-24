@@ -60,7 +60,7 @@ pub(crate) fn module_bindings(
                         name: name.clone(),
                         kind: match decl.kind {
                             LexicalKind::Let => BindingKind::Let,
-                            LexicalKind::Const => BindingKind::Const,
+                            LexicalKind::Const | LexicalKind::Using => BindingKind::Const,
                         },
                     });
                 }
@@ -128,6 +128,7 @@ pub(crate) fn lower_module(
         }
         lower.cur_mut().next_slot = bindings.len();
         lower.cur_mut().max_slots = bindings.len();
+        let mut body = Vec::new();
         for item in record.body() {
             let ModuleItem::Statement(stmt) = item else {
                 unreachable!("checked bindings")
@@ -143,8 +144,11 @@ pub(crate) fn lower_module(
                     lower.out().op(Opcode::CellInit, f.span);
                 }
             } else {
-                lower.statement(stmt)?;
+                body.push(stmt.clone());
             }
+        }
+        if !instantiate {
+            lower.disposable_body(&body)?;
         }
         lower.out().op(Opcode::Undefined, record.span());
         lower.out().op(Opcode::Return, record.span());

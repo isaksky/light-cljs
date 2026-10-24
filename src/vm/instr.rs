@@ -152,6 +152,9 @@
 //! | `ToSuperKey` | 0xA6 | – | key → key | resumable ToPropertyKey before a super access |
 //! | `Dup3` | 0xA7 | – | a b c → a b c a b c | retain a super reference for updates |
 //! | `PutSuperElemStrict` | 0xA8 | – | receiver base key value → value | strict write inside class computed names |
+//! | `UsingCheck` | 0xA9 | – | resource → method | snapshot and validate Symbol.dispose (resumable getter) |
+//! | `PendingException` | 0xAA | – | → value | pending throw value, or undefined |
+//! | `SuppressedError` | 0xAB | – | new previous → error | intrinsic engine wrapping without JS |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -700,6 +703,12 @@ pub enum Opcode {
     /// a b c → a b c a b c: retain a super reference across its read.
     Dup3 = 0xA7,
     PutSuperElemStrict = 0xA8,
+    /// resource → snapshotted sync disposal method (undefined for nullish).
+    UsingCheck = 0xA9,
+    /// → value: the innermost pending throw, or undefined.
+    PendingException = 0xAA,
+    /// new-error previous-error → intrinsic SuppressedError instance.
+    SuppressedError = 0xAB,
 }
 
 /// Operand encoding of an opcode.
@@ -898,6 +907,9 @@ impl Opcode {
             0xA6 => ToSuperKey,
             0xA7 => Dup3,
             0xA8 => PutSuperElemStrict,
+            0xA9 => UsingCheck,
+            0xAA => PendingException,
+            0xAB => SuppressedError,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1076,6 +1088,9 @@ impl Opcode {
             ToSuperKey => "to_super_key",
             Dup3 => "dup3",
             PutSuperElemStrict => "put_super_elem_strict",
+            UsingCheck => "using_check",
+            PendingException => "pending_exception",
+            SuppressedError => "suppressed_error",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1170,6 +1185,7 @@ impl Opcode {
             CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuperSpread
             | BindThis | ResolveThis | ForwardArguments | GetSuperBase | GetSuperElem
             | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => OperandKind::None,
+            UsingCheck | PendingException | SuppressedError => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1397,6 +1413,9 @@ pub(crate) enum Instr {
     ToSuperKey,
     Dup3,
     PutSuperElemStrict,
+    UsingCheck,
+    PendingException,
+    SuppressedError,
 }
 
 impl Instr {
@@ -1567,6 +1586,9 @@ impl Instr {
             Instr::ToSuperKey => Opcode::ToSuperKey,
             Instr::Dup3 => Opcode::Dup3,
             Instr::PutSuperElemStrict => Opcode::PutSuperElemStrict,
+            Instr::UsingCheck => Opcode::UsingCheck,
+            Instr::PendingException => Opcode::PendingException,
+            Instr::SuppressedError => Opcode::SuppressedError,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1641,6 +1663,9 @@ impl Instr {
             CheckHeritage | GetSuperConstructor | ResolveThis => (1, 1),
             InitHeritage => (3, 1),
             ForwardArguments => (0, 1),
+            UsingCheck => (1, 1),
+            PendingException => (0, 1),
+            SuppressedError => (2, 1),
             BindThis => (2, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),
             Function(_, captures) => (usize::from(captures), 1),

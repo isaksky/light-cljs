@@ -116,7 +116,7 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 ```
 Script              = { Directive } { StatementListItem } EOF
 Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
-StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | Statement
+StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | UsingDeclaration | Statement
 ClassDeclaration    = "class" BindingIdentifier [ "extends" LeftHandSideExpression ] ClassBody
 ClassExpression     = "class" [ BindingIdentifier ] [ "extends" LeftHandSideExpression ] ClassBody
 SuperCall           = "super" Arguments  (* derived constructors and their arrows only *)
@@ -155,6 +155,9 @@ Catch               = "catch" [ "(" BindingPattern ")" ] Block
 Finally             = "finally" Block
 ExpressionStatement = Expression ";"     (* not starting with "{" or "function" *)
 LexicalDeclaration  = ( "let" | "const" ) Declarator { "," Declarator } ";"
+UsingDeclaration    = "using" [no LineTerminator here] BindingIdentifier "=" AssignmentExpression
+                      { "," BindingIdentifier "=" AssignmentExpression } ";"
+                      (* only in blocks, function bodies and modules *)
 VariableStatement   = "var" Declarator { "," Declarator } ";"
 Declarator          = BindingPattern [ "=" AssignmentExpression ] (* required for array/object patterns *)
 BindingPattern      = BindingIdentifier | ArrayBindingPattern | ObjectBindingPattern
@@ -446,6 +449,13 @@ Notes on the grammar:
   declares `of`); `for (let of a)` and `for (async of a)` are syntax errors.
   Parenthesized `(async)` is an ordinary assignment target. Property and
   destructuring heads remain unsupported; using declarations are clj-quickjs-238.
+- `UsingDeclaration` (clj-quickjs-236): `using` remains contextual;
+  `using of = resource` declares `of`, while `using = 1`, `using.x`,
+  `using[0]`, `using(1)` and `let using` retain their expression/binding
+  meanings. `using` followed by a line break starts an expression statement.
+  Each resource requires an initializer and a simple binding identifier.
+  Bindings have the same temporal dead zone, immutability and redeclaration
+  checks as `const`. Validation completes before binding initialization.
 
 ### Automatic semicolon insertion
 
@@ -496,6 +506,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 
 | Form | Kind |
 |------|------|
+| `using` declarations at script top level (strict or sloppy), directly in a `case`/`default` clause, as a single-statement body, with binding patterns or without initializers (clj-quickjs-236) | Invalid at `using` |
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
 | class fields, static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | module `export * as ns from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
@@ -525,6 +536,10 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 (clj-quickjs-253). The CLI remains script-only.
 
 ## Explicit gaps
+
+Synchronous `using` executes in blocks, function bodies and module top level.
+`for (using ... of ...)`, `await using` and disposal stack built-ins remain
+separate features (clj-quickjs-238..-242).
 
 The QuickJS collection fixture cases run with their original source except
 for the documented WeakRef kept-object adaptation (clj-quickjs-178).
@@ -1003,6 +1018,15 @@ delete a[o];
 ```
 
 ## Execution
+
+Synchronous `using` validates resources left to right and snapshots each
+`Symbol.dispose` method once at declaration. Null and undefined are skipped;
+every other resource must be an object with a callable method. At scope exit,
+initialized resources are disposed in reverse order, with the resource as
+`this` and no arguments. Normal completion, throws, returns, jumps leaving
+the scope and consumer cancellation all run disposal. A return expression
+is evaluated before disposal. Getters and disposer calls may wait, yield,
+migrate and survive collection without replaying prior effects.
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work. After loading, `Runtime::spawn_module`
@@ -1703,6 +1727,18 @@ Compile-time errors (`SyntaxError`) keep their own positions, given with each.
 
 ### Exceptions
 
+`using` raises catchable TypeError at declaration for primitive resources,
+missing/null `Symbol.dispose`, or a non-callable method; getter throws
+propagate unchanged. Earlier resources still dispose after a later failed
+declaration. Each disposal error replaces an empty error state or becomes
+`SuppressedError(newError, previousError)`, starting with the body's pending
+throw if any. All disposers run even if one throws. Without disposal errors,
+the original pending completion resumes, preserving exception identity and
+return values. Engine wrapping uses the intrinsic helper independently of
+the global `SuppressedError` binding and constructor properties. Cancellation
+disposes every initialized resource and drops final errors; existing finally
+cleanup rules govern waits or jumps inside disposers during cancellation.
+
 For-of uses IteratorClose on body failures, returns, breaks and jumps leaving
 the loop. An exception from the iterator's `return` getter/call, or its
 non-object result, preserves a pending throw; otherwise it replaces the
@@ -1999,6 +2035,40 @@ __rt[name](1);
 ```
 
 ## Examples
+
+Synchronous resources (synthetic fixtures, not light-cljs output):
+
+```js accept
+let disposed = 0;
+{ using a = null, b = { [Symbol.dispose]() { disposed++; } }; }
+disposed === 1;
+function resource() { using of = undefined; return 42; }
+```
+
+```js module-accept
+using resource = { [Symbol.dispose]() {} };
+export { resource };
+```
+
+```js reject Invalid 1:1
+using resource = null;
+```
+
+```js reject Invalid 1:3
+{ using resource; }
+```
+
+```js reject Invalid 1:3
+{ using [resource] = null; }
+```
+
+```js reject Invalid 1:22
+switch (0) { case 0: using resource = null; }
+```
+
+```js reject Invalid 1:11
+if (true) using resource = null;
+```
 
 Accepted (each block is one script):
 
@@ -3468,7 +3538,7 @@ including after publication and collection, and are distinct from registry
 symbols with matching descriptions. Their Symbol constructor properties are
 non-writable, non-enumerable and non-configurable. Exceptions: strict assignment
 or deletion throws catchable TypeError. Rejected forms and explicit gaps:
-this adds no syntax; `using`, `await using`, disposal stacks and iterator
+this adds no syntax; `await using`, disposal stacks and iterator
 disposal methods remain deferred to their own pellets.
 
 Synthetic fixture, not light-cljs output:

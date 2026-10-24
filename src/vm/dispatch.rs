@@ -2387,6 +2387,15 @@ fn step_instruction(
             ));
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
+        Instr::PendingException => state.push(state.pending_exception()),
+        Instr::SuppressedError => {
+            let [error, suppressed] = top_operands(state, 2)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            let value = state.suppressed_error(heap, error.clone(), suppressed.clone())?;
+            state.replace(2, value)?;
+        }
+        Instr::UsingCheck => return Err(Fault::Internal("using_check is resumable")),
         Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
         Instr::ForInNext => {
             let iterator = state.pop()?;
@@ -2910,6 +2919,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |
         Instr::ConstructSuper(_) | Instr::ConstructSuperSpread | Instr::BindThis | Instr::ResolveThis | Instr::ForwardArguments => true,
         Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,
+        Instr::SuppressedError => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.
@@ -3046,6 +3056,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::GetIterator
         | Instr::RequireObject
         | Instr::PendingThrow
+        | Instr::PendingException
+        | Instr::UsingCheck
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.
