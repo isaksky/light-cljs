@@ -437,11 +437,12 @@ parser, analyzer, namespace or module linking.
   this runtime, or an initializer that invokes a callable through the VM.
 - **Scheduling.** Each job (producer, top-level need, call) has its own
   task: its identity, wake handle and `DependencyLog`. Jobs need through
-  `RunGuard::need`; a pending cell parks the job (parked before its
+  `RunGuard::need`; a pending cell parks the job in the host (the run ends
+  without `RunGuard::park`, so the task stays runnable; parked before its
   producer request is scheduled, so an immediately settled request still
   finds it), and the one `ProducerRequest` per cell schedules the one
-  producer job. Completions return wake handles, which move parked jobs
-  back to a FIFO ready queue; nothing runs inline. The driver
+  producer job. Completions return `Wakeups`, whose `task_ids()` move parked
+  jobs back to a FIFO ready queue; nothing runs inline. The driver
   (`run_until_idle`) is single-threaded and deterministic.
 - **Failures.** Unknown world, missing definition and missing result kind
   are decided from the frozen world when the request is scheduled and fail

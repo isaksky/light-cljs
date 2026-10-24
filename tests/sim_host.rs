@@ -564,7 +564,8 @@ fn a_stalled_invocation_resumed_later_drops_its_answer() {
     let token = host.need(w, USER, CALLABLE).result.unwrap();
     let woken = rt
         .complete(alias, claim.producer(), Completion::Ready(&token))
-        .unwrap();
+        .unwrap()
+        .task_ids();
     assert_eq!(woken, [stalled.task]);
     host.wake(&woken);
     host.run_until_idle();
@@ -592,8 +593,10 @@ fn cancelled_inputs_fail_dependents_without_running_their_work() {
     let config = |kind| DependencyKey::new(w, CONFIG, kind);
     for kind in [INITIALIZED, CALLABLE] {
         let claim = rt.claim(config(kind)).unwrap();
-        rt.complete(config(kind), claim.producer(), Completion::Cancelled)
+        let woken = rt
+            .complete(config(kind), claim.producer(), Completion::Cancelled)
             .unwrap();
+        assert!(woken.deliveries().is_empty(), "no job waits yet");
     }
 
     assert_eq!(

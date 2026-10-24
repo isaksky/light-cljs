@@ -47,12 +47,16 @@
 //! its [`DependencyLog`] records what the job used. A job needs a result with
 //! [`RunGuard::need`](crate::RunGuard::need) (standing in for the `__rt.need`
 //! VM operation, pellet clj-quickjs-23). When the cell is pending the job
-//! parks; when the need was the first for that cell it carries the cell's one
-//! [`ProducerRequest`], and the host schedules a
-//! producer job for exactly that key. So there is one producer per result key
-//! and the producer is discovered through the cell, not by the asker. A
-//! completion returns the wake handles of the parked jobs, which the host
-//! moves back to its ready queue; nothing runs inline inside completion.
+//! parks in the host: its run ends without
+//! [`RunGuard::park`](crate::RunGuard::park), so the task stays runnable in
+//! the runtime and only the host holds the job until the wake. When the need
+//! was the first for that cell it carries the cell's one [`ProducerRequest`],
+//! and the host schedules a producer job for exactly that key. So there is
+//! one producer per result key and the producer is discovered through the
+//! cell, not by the asker. A completion returns its drained wake handles
+//! ([`Wakeups::task_ids`](crate::dep::Wakeups::task_ids)); the host moves
+//! the jobs of those tasks back to its ready queue; nothing runs inline
+//! inside completion.
 //!
 //! The driver ([`SimHost::run_until_idle`]) is a deterministic, single-thread
 //! reference loop over a FIFO queue; an executor with worker threads is
@@ -556,8 +560,9 @@ impl SimHost {
     }
 
     /// Wake parked jobs whose tasks are among `tasks`: for cells completed
-    /// outside the host ([`Runtime::complete`] returns the wake handles).
-    /// Unknown or unparked task IDs are ignored.
+    /// outside the host, pass
+    /// [`Wakeups::task_ids`](crate::dep::Wakeups::task_ids) of
+    /// [`Runtime::complete`]. Unknown or unparked task IDs are ignored.
     pub fn wake(&mut self, tasks: &[TaskId]) {
         for &task in tasks {
             if let Some(job) = self.parked.remove(&task) {
@@ -742,7 +747,7 @@ impl SimHost {
                         key,
                         ok: result.is_ok(),
                     });
-                    self.wake(&woken);
+                    self.wake(&woken.task_ids());
                     return;
                 }
                 Err(CompleteError::NotShareable(e)) if result.is_ok() => {
