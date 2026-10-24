@@ -3695,7 +3695,7 @@ counter assertion is detected in both timers and Promise jobs. The GC case
 checks that its callback collects and its unreachable suspended activation
 leaves no objects above the warmed heap baseline after collection.
 
-Deferred: this coverage adds no module loader or generator `return()`/`throw()`
+Deferred: this async fixture coverage adds no generator `return()`/`throw()`
 support; the pinned generator case does not call those methods.
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test quickjs_async -- --test-threads=3`.
 
@@ -3817,3 +3817,18 @@ yields, dependency waits, collection and worker migration.
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_functions -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib frontend:: -- --test-threads=3`.
 `Reflect.construct`, built-in subclassing and `super` remain deferred.
+
+### Static module loading (clj-quickjs-252)
+
+Supported: `module::ModuleHost` resolves opaque module keys and fetches source
+before the entry task is spawned. `ModuleLoader::load` builds a complete static
+graph in depth-first request order, including cycles and self-imports. Immutable
+JavaScript records are cached per world/version and resolved key; the cache
+belongs to one runtime/host identity domain. `.json` sources retain their kind
+and text. Positioned errors identify the failing request and referrer; no
+module body runs during loading and imports create no dependency-cell edges.
+The in-memory recording host and upstream parse fixtures are exercised with
+`CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.
+
+Deferred: linking, evaluation, per-task instances, namespace objects, cyclic
+binding initialization, and JSON default exports. The CLI remains script-only.

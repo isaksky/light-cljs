@@ -26,6 +26,9 @@
 //!   jobs drain. Jobs share the run budget and may yield or wait; a wait
 //!   blocks the whole task. An uncaught job error fails the task and drops
 //!   later jobs; cancellation drops pending jobs. Enqueue is crate-internal.
+//! * [`module::ModuleLoader`]: pre-run static graph loading through a separate
+//!   [`module::ModuleHost`], with world-scoped immutable record caching. It
+//!   accepts cycles and carries JSON source text, without executing bodies.
 //! * Dependency cells ([`dep`]): [`RunGuard::need`] reads or subscribes to the
 //!   single-assignment cell of a [`DependencyKey`] (world, definition, result
 //!   kind); [`Runtime::complete`] publishes its outcome, delivers each waiter's
@@ -57,6 +60,7 @@
 //! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
 //! | [`atom`] | atomic references: single-writer publication, identity compare-and-set, load-to-root acquisition |
 //! | [`exec`] | optional reference executor: worker threads, ready queue, placement hook, events, bounded shutdown and cancellation |
+//! | [`module`] | pre-run host resolution/fetch, world-scoped record cache and static module graphs |
 //!
 //! The module list is append-only per pellet.
 //!
@@ -129,3 +133,5 @@ pub use vm::{
 pub mod intl;
 
 mod number;
+
+pub mod module;

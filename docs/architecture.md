@@ -7470,8 +7470,8 @@ an explicit immutable code/syntax storage boundary, not a JavaScript heap object
 Default function and class declarations are distinguished from expressions in the body;
 anonymous defaults use ECMA-262's inaccessible `*default*` binding name.
 
-Loading, linking and execution are deferred. A later embedder cache can associate
-records with world/version while keeping instances per task. Static requests do
+Linking and execution are deferred. The pre-run loader below associates
+records with world/version while keeping future instances per task. Static requests do
 not create dependency edges. This parser neither fetches sources nor starts tasks;
 it imposes no filesystem resolution policy and does not accept top-level await.
 
@@ -7522,3 +7522,72 @@ every yield and requires at least one yield. It completes across 56 yields
 and collections, exercising BigInts live in explicit recursive frames.
 The existing 1 Mbit BigInt cap and one-instruction arithmetic cost remain
 unchanged; no new runtime behavior or representation is introduced.
+
+## Modules (clj-quickjs-252)
+
+1. **Timing:** the embedder calls `module::ModuleLoader::load(world, entry,
+   host)` before spawning the entry task. It returns a complete static
+   `ModuleGraph` or a `ModuleLoadError`; a failure is not a dependency-cell
+   `Failed` outcome. Pre-run loading keeps source acquisition outside resumable
+   VM frames. No JavaScript runs, no task is spawned, and no heap or waiter
+   locks are held while the loader calls the host. Module loading is a separate
+   `ModuleHost` protocol, not a leaf `Host::effect` operation.
+2. **Resolution:** `ModuleHost::resolve(specifier, referrer)` maps exact cooked
+   UTF-16 text and an optional opaque referrer key to a private numeric
+   `ModuleKey`; `None` denotes the entry request. Aliases of one resolved
+   specifier must return the same key. The engine only compares keys, never
+   module path strings or JavaScript values. The recording in-memory host in
+   `tests/js_modules.rs` resolves `./x` and `../x` relative to the referrer's
+   directory and normalizes dot segments; bare names are looked up directly.
+   An unresolvable specifier or fetch failure reports `ReferenceError: could
+   not load module`, the requested specifier, referrer name and host reason.
+   A syntax failure additionally retains the fetched source name and 1-based
+   line:column. The first failure stops the walk before later host calls.
+3. **Caching:** keep one embedder-owned `ModuleLoader` per runtime and host
+   identity domain, because worlds and host keys are domain-local. Its cache
+   keys are `(WorldId, ModuleKey)`, representing world/version plus resolved
+   specifier. Sources and resolutions must remain immutable within a world.
+   The embedder supplies a host snapshot matching the load's world; the loader
+   does not select or mutate the host's active world.
+   The cache stores `Arc<LoadedModule>` (original source plus the immutable
+   parsed `ModuleRecord`), without heap handles, environments or task state.
+   Graphs from repeated loads share these records; even unchanged sources are
+   fetched and parsed anew in a new world, preventing stale-world reuse.
+   Mutable module instances will be allocated separately per task by linking;
+   loading neither creates nor shares instances. Successfully parsed records
+   remain cached after a graph failure; failed fetches/parses and partial
+   graphs are not cached, so a retry resolves requests again.
+4. **Dependencies:** imports are static graph requests, never recorded cell
+   dependency edges or waits. `__rt.need` in a module body retains the ordinary
+   task/world/result-kind semantics once module execution is implemented; the
+   loader only parses it and never performs the need. Loading does not alter
+   dependency identity or the script VM's dependency log.
+5. **Source kinds:** host fetch returns `ModuleSource::JavaScript { name, text }`
+   or `ModuleSource::Json { name, text }`. Hosts classify a case-sensitive
+   `.json` suffix as JSON (`ModuleSource::from_name` implements this rule).
+   Import attributes remain unsupported. JSON source text is carried verbatim
+   without JavaScript or JSON parsing; synthetic default exports and JSON
+   validation belong to clj-quickjs-256. There is currently no linker accepting
+   either kind, so a graph is not an executable.
+6. **Binary:** `cargo run -- <file>` remains script-only. Embedders supply
+   resolution and acquisition; the VM gains no filesystem access or CLI mode.
+
+The graph walk is iterative depth-first in first-request source order. A node
+is inserted before its requests are followed, so cycles and self-imports point
+to the existing entry key rather than fetching a second record. Resolved keys
+are retained in each node in the record's request order, including distinct
+specifier spellings that alias one key. Each key is fetched/parsed once per
+world in a loader, including across entry graphs. Host resolution may repeat
+on cache hits. Graph iteration preserves discovery order. Linking, evaluation,
+namespace objects and cyclic binding initialization remain deferred.
+
+Verification: `tests/js_modules.rs` uses the existing licensed parse fixtures
+for the three-module cyclic graph and the hello-module JavaScript imports,
+plus synthetic JSON text and failure/cache/deep-graph cases. These tests load
+the sources without evaluating their bodies. QuickJS references and provenance:
+`research/quickjs/quickjs.c` functions `js_default_module_normalize_name`,
+`js_host_resolve_imported_module`, `js_new_module_def`, `JS_LoadModule`, and
+`research/quickjs/quickjs-libc.c::js_module_loader`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, informed resolution/caching and
+suffix classification; no C implementation was adapted. The existing fixture
+copyright notices and provenance above remain applicable.

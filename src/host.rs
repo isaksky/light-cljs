@@ -30,6 +30,8 @@
 //!
 //! The simulated compiler host of worlds, result kinds and producers is the
 //! [`sim`] submodule; it drives tasks from outside and is not a leaf effect.
+//! Pre-run module resolution/fetching uses the separate [`crate::module::ModuleHost`]
+//! protocol; it is never called by a task's leaf effect machinery.
 
 pub mod sim;
 pub mod timezone;

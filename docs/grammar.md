@@ -517,6 +517,9 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, an initializer or more than one binding in a for-in head (`for (let k = 1 in o)`, `for (let a, b in o)`, `for (var k = 1 in o)` in strict code), a for-in target that is not a reference (`for (1 in o)`), invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 
+Static module requests can be resolved and loaded through `module::ModuleLoader`
+(clj-quickjs-252); this adds no executable module syntax or CLI module mode.
+
 ## Explicit gaps
 
 The QuickJS collection fixture cases run with their original source except
@@ -527,8 +530,9 @@ The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
 sloppy declaration hoisting deferred to clj-quickjs-108.
 
-Module source parses into static records (see "Modules"). Module loading,
-resolution, linking, evaluation, namespaces, cycles and JSON module instances
+Module source parses into static records (see "Modules"). The embedding API
+loads complete static graphs, including cycles, before task execution. Linking,
+evaluation, namespaces, cyclic binding initialization and JSON module instances
 remain deferred; the CLI and `compile_script` still take scripts only.
 
 Derived classes, `super` and class fields remain deferred (clj-quickjs-137/138/139).
@@ -988,6 +992,10 @@ delete a[o];
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work; module evaluation is deferred.
+`module::ModuleLoader` separately resolves and fetches a static graph through
+an embedder-supplied `ModuleHost`, parsing JavaScript and carrying `.json`
+sources without evaluation. It creates no task or dependency edge. See
+`docs/architecture.md`, "Modules", for timing, errors and cache scope.
 
 `tests/quickjs_collections.rs::quickjs_collection_cases_run` compiles each
 of six selected QuickJS collection cases once with the upstream assertion
@@ -5270,6 +5278,23 @@ binding spans, local exports, and indirect exports. Export lists may precede
 bindings. Exporting a named/default import becomes an indirect export using
 its original imported name; exporting a namespace import remains local.
 Imports are static requests, not recorded runtime dependency edges.
+
+The pre-run loader (clj-quickjs-252) follows these requests in source order and
+accepts cyclic graphs. This synthetic fixture (not light-cljs output) loads
+when the host supplies both dependencies; JSON becomes a source-kind entry,
+without a module instance or default binding yet:
+
+```js module-accept
+import {fib} from './fib_module.js';
+import message from './message.json';
+throw new Error('loading must not execute this body');
+```
+
+Loading does not change the script grammar:
+
+```js reject Unsupported 1:1
+import './dependency.js';
+```
 
 Supported import declarations (specifier strings, optional semicolons and
 trailing commas in named lists):

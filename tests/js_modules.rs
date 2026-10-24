@@ -1,0 +1,388 @@
+//! Static loading only: upstream fixtures retain their own MIT notices.
+//! Inline JavaScript is synthetic fixture text, not light-cljs output.
+
+use std::collections::HashMap;
+
+use clj_quickjs::frontend::compile_script;
+use clj_quickjs::module::{ModuleHost, ModuleKey, ModuleLoadErrorKind, ModuleLoader, ModuleSource};
+use clj_quickjs::{Budget, Host, HostCall, JsString, Primitive, RunOutcome, Runtime, ValueView};
+
+#[derive(Debug, PartialEq, Eq)]
+enum Event {
+    Resolve(JsString, Option<ModuleKey>),
+    Fetch(ModuleKey),
+}
+
+#[derive(Default)]
+struct RecordingHost {
+    names: HashMap<String, ModuleKey>,
+    sources: HashMap<ModuleKey, (String, Result<String, String>)>,
+    events: Vec<Event>,
+}
+
+impl Host for RecordingHost {
+    fn effect(&mut self, _call: HostCall) -> Result<Primitive, String> {
+        panic!("unexpected leaf effect");
+    }
+}
+
+impl RecordingHost {
+    fn add(&mut self, name: &str, text: &str) -> ModuleKey {
+        let key = ModuleKey::new(self.names.len() as u64);
+        assert!(self.names.insert(name.into(), key).is_none());
+        self.sources.insert(key, (name.into(), Ok(text.into())));
+        key
+    }
+
+    fn fetches(&self) -> Vec<ModuleKey> {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Fetch(key) => Some(*key),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl ModuleHost for RecordingHost {
+    fn resolve(
+        &mut self,
+        specifier: &JsString,
+        referrer: Option<ModuleKey>,
+    ) -> Result<ModuleKey, String> {
+        self.events
+            .push(Event::Resolve(specifier.clone(), referrer));
+        let specifier =
+            String::from_utf16(specifier.code_units()).map_err(|_| "invalid UTF-16 specifier")?;
+        let path = if specifier.starts_with("./") || specifier.starts_with("../") {
+            let directory =
+                referrer.and_then(|key| self.sources[&key].0.rsplit_once('/').map(|(dir, _)| dir));
+            directory.map_or_else(|| specifier.clone(), |dir| format!("{dir}/{specifier}"))
+        } else {
+            specifier
+        };
+        let mut parts = Vec::new();
+        for part in path.split('/') {
+            match part {
+                "." => {}
+                ".." if parts.last().is_some_and(|part| *part != "..") => {
+                    parts.pop();
+                }
+                _ => parts.push(part),
+            }
+        }
+        self.names
+            .get(&parts.join("/"))
+            .copied()
+            .ok_or_else(|| "absent module".into())
+    }
+
+    fn fetch(&mut self, key: ModuleKey) -> Result<ModuleSource, String> {
+        self.events.push(Event::Fetch(key));
+        let (name, text) = &self.sources[&key];
+        Ok(ModuleSource::from_name(name.clone(), text.clone()?))
+    }
+}
+
+#[test]
+fn load_graph_fetches_each_module_once() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "tests/test_cyclic_import.js",
+        include_str!("fixtures/modules/test_cyclic_import.js"),
+    );
+    let assert = host.add(
+        "tests/assert.js",
+        include_str!("fixtures/modules/assert.js"),
+    );
+    let cyclic = host.add(
+        "tests/fixture_cyclic_import.js",
+        include_str!("fixtures/modules/fixture_cyclic_import.js"),
+    );
+    let graph = ModuleLoader::new()
+        .load(
+            runtime.world(),
+            &"tests/test_cyclic_import.js".into(),
+            &mut host,
+        )
+        .unwrap();
+    assert_eq!(graph.entry(), entry);
+    assert_eq!(graph.world(), runtime.world());
+    assert_eq!(graph.len(), 3);
+    assert_eq!(host.fetches(), vec![entry, assert, cyclic]);
+    assert_eq!(graph.get(cyclic).unwrap().requested_modules(), &[entry]);
+    assert_eq!(
+        graph
+            .modules()
+            .map(|node| node.module().key())
+            .collect::<Vec<_>>(),
+        vec![entry, assert, cyclic]
+    );
+}
+
+#[test]
+fn load_reports_unresolvable_specifier() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "app/entry.js",
+        "import './missing.js'; import './later.js'; throw 1;",
+    );
+    host.add("app/later.js", "throw 2;");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap_err();
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Resolve(_)));
+    let message = error.to_string();
+    assert!(
+        message.contains("ReferenceError: could not load module"),
+        "{message}"
+    );
+    assert!(
+        message.contains("./missing.js") && message.contains("app/entry.js"),
+        "{message}"
+    );
+    assert_eq!(host.fetches(), vec![entry]);
+    assert_eq!(
+        host.events.last(),
+        Some(&Event::Resolve("./missing.js".into(), Some(entry)))
+    );
+}
+
+#[test]
+fn load_reports_module_syntax_error_with_position() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("app/entry.js", "import './bad.js';");
+    host.add("app/bad.js", "\nexport const = 1;");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("./bad.js") && message.contains("app/entry.js"),
+        "{message}"
+    );
+    assert!(
+        message.contains("app/bad.js:2:14: SyntaxError"),
+        "{message}"
+    );
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Syntax { .. }));
+}
+
+#[test]
+fn load_carries_json_source_kind() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "examples/hello_module.js",
+        include_str!("fixtures/modules/hello_module.js"),
+    );
+    host.add(
+        "examples/fib_module.js",
+        include_str!("fixtures/modules/fib_module.js"),
+    );
+    let json = host.add("examples/message.json", r#"{"message":"hello"}"#);
+    let graph = ModuleLoader::new()
+        .load(
+            runtime.world(),
+            &"examples/hello_module.js".into(),
+            &mut host,
+        )
+        .unwrap();
+    let module = graph.get(json).unwrap().module();
+    assert_eq!(graph.len(), 3);
+    assert!(
+        matches!(module.source(), ModuleSource::Json { name, text } if name == "examples/message.json" && text == r#"{"message":"hello"}"#)
+    );
+    assert!(module.record().is_none());
+    assert!(graph.get(json).unwrap().requested_modules().is_empty());
+}
+
+#[test]
+fn loader_is_not_called_during_task_runs() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "entry.js",
+        "import './dep.js'; throw new Error('must not execute');",
+    );
+    host.add("dep.js", "__rt.need(9, 2); throw 2;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2);
+    let events = host.events.len();
+    // Loading produces no executable yet. Ordinary tasks retain their script API.
+    let code = compile_script("script-after-load", "let n = 0; while (n < 5) n++; n").unwrap();
+    let task = runtime.spawn(&code, &[]).unwrap();
+    let mut complete = false;
+    for _ in 0..500 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(5.0));
+                complete = true;
+                break;
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(host.events.len(), events);
+    assert!(task.dependency_log().edges().is_empty());
+}
+
+#[test]
+fn load_reports_fetch_failure_and_stops() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './bad.js'; import './later.js';");
+    let bad = host.add("bad.js", "");
+    host.sources.get_mut(&bad).unwrap().1 = Err("source unavailable".into());
+    host.add("later.js", "");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap_err();
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Fetch(_)));
+    assert!(error.to_string().contains("source unavailable"));
+    assert!(error.to_string().contains("./bad.js") && error.to_string().contains("entry.js"));
+    assert_eq!(host.fetches(), vec![entry, bad]);
+}
+
+#[test]
+fn records_are_cached_per_world_and_resolved_key() {
+    let runtime = Runtime::new();
+    let mut loader = ModuleLoader::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "app/entry.js",
+        "import './shared.js'; import './sub/../shared.js';",
+    );
+    let shared = host.add("app/shared.js", "export let value = 1;");
+    let first = loader
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    let second = loader
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first.get(entry).unwrap().requested_modules(),
+        &[shared, shared]
+    );
+    assert!(std::ptr::eq(
+        first.get(shared).unwrap().module(),
+        second.get(shared).unwrap().module()
+    ));
+    assert_eq!(host.fetches(), vec![entry, shared]);
+    host.sources.get_mut(&shared).unwrap().1 = Ok("export let value = 2;".into());
+    let next = loader
+        .load(runtime.new_world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    assert!(!std::ptr::eq(
+        first.get(shared).unwrap().module(),
+        next.get(shared).unwrap().module()
+    ));
+    assert_eq!(host.fetches(), vec![entry, shared, entry, shared]);
+    assert!(
+        next.get(shared)
+            .unwrap()
+            .module()
+            .source()
+            .text()
+            .contains("2")
+    );
+    assert!(
+        first
+            .get(shared)
+            .unwrap()
+            .module()
+            .source()
+            .text()
+            .contains("1")
+    );
+}
+
+#[test]
+fn load_walks_depth_first_in_request_order() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './a.js'; import './b.js';");
+    let a = host.add("a.js", "import './leaf.js';");
+    let b = host.add("b.js", "import './leaf.js';");
+    let leaf = host.add("leaf.js", "");
+    ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(host.fetches(), vec![entry, a, leaf, b]);
+}
+
+#[test]
+fn load_accepts_self_import_and_deep_graphs() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for n in 0..2000 {
+        let next = if n == 1999 { 0 } else { n + 1 };
+        host.add(&format!("{n}.js"), &format!("import './{next}.js';"));
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2000);
+    assert_eq!(host.fetches().len(), 2000);
+    let mut host = RecordingHost::default();
+    let entry = host.add("self.js", "import './self.js';");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"self.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 1);
+    assert_eq!(graph.get(entry).unwrap().requested_modules(), &[entry]);
+}
+
+#[test]
+fn failed_graph_keeps_records_but_retries_failed_fetch() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './dep.js';");
+    let dep = host.add("dep.js", "export let value = 1;");
+    host.sources.get_mut(&dep).unwrap().1 = Err("temporary acquisition error".into());
+    let mut loader = ModuleLoader::new();
+    assert!(
+        loader
+            .load(runtime.world(), &"entry.js".into(), &mut host)
+            .is_err()
+    );
+    host.sources.get_mut(&dep).unwrap().1 = Ok("export let value = 1;".into());
+    let graph = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2);
+    assert_eq!(host.fetches(), vec![entry, dep, dep]);
+}
+
+#[test]
+fn missing_entry_and_lone_surrogate_specifiers_are_reported() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"absent.js".into(), &mut host)
+        .unwrap_err();
+    assert_eq!(error.referrer, None);
+    assert!(
+        error
+            .to_string()
+            .contains("ReferenceError: could not load module 'absent.js'")
+    );
+    assert!(host.fetches().is_empty());
+    host.add("entry.js", r#"import '\uD800';"#);
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap_err();
+    assert_eq!(error.specifier.code_units(), &[0xd800]);
+    assert!(
+        matches!(host.events.last(), Some(Event::Resolve(specifier, Some(_))) if specifier.code_units() == [0xd800])
+    );
+}
