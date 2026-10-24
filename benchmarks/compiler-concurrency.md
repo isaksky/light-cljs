@@ -11,6 +11,260 @@ recorded, and the binaries are immutable copies selected with
 `LIGHT_CLJS_BINARY`. The gate for a pellet on the serial hot paths is +2%
 wall and +3% peak RSS against its parent commit, on medians.
 
+## The `--jobs` and macro memory defaults (light-cljs-434, October 23, 2026)
+
+Master `0f0e6c0`, immutable copies of one V8 release binary and one
+QuickJS-only binary (`--no-default-features --target-dir target/quickjs`),
+cold builds with `--no-cache --stats`, peak RSS from `/usr/bin/time -l` in
+MiB. Penpot `app.main` with `penpot.bb`'s flags at `none` and at `advanced
+--pseudo-names --elide-asserts`, each also writing a source map (so its RSS
+is about 0.2 GB above `penpot.bb`'s rows), and the seed-42 200k and 800k
+generated projects at `release bench` (advanced). Four macro memory
+policies, each passed as `--macro-memory-limit`: today's default 64 MiB,
+64 MiB x N, 256 MiB x N (the proposal below) and the project's own limit
+(Penpot's port 4 GB, the generated projects' 2 GiB). V8: one round at
+`--jobs` 1, 2, 4, 8, 12, 16 and 24 for every policy, then two more rounds
+at 1, 4 and 8, the second in reverse order; the 256 MiB x N rows have three
+rounds at 1, 4 and 8 and one elsewhere. QuickJS: 64 MiB and 256 MiB x N at
+1, 4, 8 and 16, the latter twice at 1, 4 and 8. Medians (range where there
+are several runs). One other worker (light-cljs-445) benchmarked on the
+machine throughout: the 1-minute load average was 1.8 to 6.7 for every row
+but round 1 at 12 to 24 jobs (8 to 23, most of it the 800k project's
+isolate churn below). "util" is `pool.utilization`, "wait"
+`trace.wait-ms`, the coordinator's waits at drain points, and "top-level"
+`trace.top-level-ms`, the coordinator's serial top-level passes, for the
+256 MiB x N builds.
+
+*Output identity.* Every successful build of a project has one SHA-256
+(first 16 hex digits, over the JavaScript and, for Penpot, its source map;
+for the generated projects over every file of `out/`), at every `--jobs`,
+every policy and in both engines: Penpot `none` `43a47bab27b28000` (52
+builds), `advanced` `36a44c648b7d67e5` (52), 200k `d40e1f45c899ede0` (56),
+800k `4191271d06021c87` (36).
+
+### V8
+
+*Penpot `app.main --optimize none`*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level | own limit | RSS |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | 13.07 s (12.86-13.54) | 1,001 | 13.19 s (12.54-13.55) | 15.4 s | 1,039 |  | 0.00 s | 4.25 s | 12.89 s (12.64-12.93) | 1,045 |
+| 2 | 12.43 s | 1,006 | 10.10 s | 17.5 s | 1,077 | 0.80 | 2.79 s | 4.45 s | 9.81 s | 1,172 |
+| 4 | 12.59 s (12.41-12.61) | 1,009 | 8.47 s (7.82-8.54) | 20.0 s | 1,280 | 0.45 | 1.58 s | 4.62 s | 7.84 s (7.77-7.86) | 1,341 |
+| 8 | 13.29 s (12.57-13.54) | 1,068 | 8.15 s (8.03-8.40) | 22.9 s | 1,601 | 0.25 | 1.46 s | 4.52 s | 8.27 s (7.91-8.81) | 1,735 |
+| 12 | 14.52 s | 1,101 | 8.09 s | 27.2 s | 1,887 | 0.20 | 1.34 s | 4.56 s | 8.67 s | 2,041 |
+| 16 | 13.54 s | 1,087 | 8.21 s | 30.6 s | 2,157 | 0.17 | 1.48 s | 4.46 s | 8.87 s | 2,168 |
+| 24 | 13.56 s | 1,181 | 8.59 s | 38.3 s | 2,613 | 0.15 | 1.45 s | 4.63 s | 8.88 s | 2,654 |
+
+*Penpot `app.main --optimize advanced`*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level | own limit | RSS |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | 15.21 s (14.89-15.34) | 1,181 | 15.28 s (14.69-15.75) | 17.3 s | 1,247 |  | 0.00 s | 4.22 s | 14.98 s (14.87-15.04) | 1,248 |
+| 2 | 14.36 s | 1,233 | 11.90 s | 18.9 s | 1,357 | 0.80 | 2.74 s | 4.30 s | 11.87 s | 1,344 |
+| 4 | 14.81 s (14.31-15.22) | 1,245 | 10.51 s (9.86-10.56) | 22.0 s | 1,506 | 0.44 | 1.55 s | 4.52 s | 9.96 s (9.76-10.08) | 1,528 |
+| 8 | 15.39 s (14.50-16.09) | 1,293 | 10.44 s (10.13-10.54) | 25.5 s | 1,781 | 0.25 | 1.48 s | 4.56 s | 10.09 s (10.09-10.44) | 1,916 |
+| 12 | 16.59 s | 1,294 | 10.13 s | 28.8 s | 2,065 | 0.20 | 1.45 s | 4.51 s | 10.82 s | 2,197 |
+| 16 | 15.84 s | 1,319 | 10.43 s | 32.9 s | 2,365 | 0.18 | 1.55 s | 4.50 s | 11.47 s | 2,339 |
+| 24 | 15.80 s | 1,350 | 10.63 s | 39.9 s | 2,826 | 0.15 | 1.36 s | 4.67 s | 10.56 s | 2,779 |
+
+*200k generated (advanced)*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level | own limit | RSS |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | 7.48 s (7.44-7.60) | 1,030 | 7.52 s (7.36-8.48) | 7.7 s | 1,039 |  | 0.00 s | 1.87 s | 7.71 s (7.47-7.78) | 1,054 |
+| 2 | 6.88 s | 1,039 | 5.99 s | 8.5 s | 1,116 | 0.58 | 0.00 s | 1.93 s | 6.15 s | 1,128 |
+| 4 | 7.04 s (6.61-7.20) | 1,036 | 5.41 s (5.03-5.81) | 10.6 s | 1,318 | 0.53 | 0.00 s | 2.12 s | 5.08 s (5.07-5.27) | 1,342 |
+| 8 | 7.06 s (6.94-7.63) | 1,069 | 5.44 s (5.33-5.63) | 13.8 s | 1,532 | 0.37 | 0.00 s | 2.12 s | 5.42 s (5.21-5.53) | 1,535 |
+| 12 | 7.83 s | 1,089 | 5.35 s | 18.3 s | 1,675 | 0.38 | 0.00 s | 2.08 s | 5.86 s | 1,712 |
+| 16 | 7.45 s | 1,112 | 5.38 s | 21.9 s | 1,874 | 0.35 | 0.00 s | 2.11 s | 5.81 s | 1,790 |
+| 24 | 7.57 s | 1,161 | 5.70 s | 24.8 s | 2,149 | 0.26 | 0.00 s | 2.15 s | 5.70 s | 2,022 |
+
+*800k generated (advanced)*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level | own limit | RSS |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | fails 1 of 1 |  | 38.96 s (38.32-40.44) | 39.5 s | 3,743 |  | 0.00 s | 11.49 s | 37.43 s (36.95-37.66) | 3,719 |
+| 2 | fails 1 of 1 |  | 33.50 s | 45.2 s | 3,828 | 0.43 | 0.00 s | 11.91 s | 34.15 s | 4,043 |
+| 4 | fails 1 of 1 |  | 28.49 s (27.45-29.85) | 52.5 s | 4,239 | 0.40 | 0.00 s | 12.03 s | 28.60 s (27.80-31.81) | 4,273 |
+| 8 | fails 1 of 1 |  | 29.48 s (28.00-29.95) | 70.4 s | 4,617 | 0.28 | 0.00 s | 12.79 s | 29.87 s (28.65-30.00) | 4,644 |
+| 12 | fails 1 of 1 |  | 27.91 s | 88.4 s | 5,072 | 0.28 | 0.00 s | 12.27 s | 164.77 s | 4,480 |
+| 16 | fails 1 of 1 |  | 28.80 s | 104.8 s | 5,606 | 0.26 | 0.00 s | 12.43 s | 921.54 s | 4,465 |
+| 24 | fails 1 of 1 |  | 29.91 s | 120.5 s | 6,342 | 0.20 | 0.00 s | 12.55 s |  |  |
+
+At 64 MiB x N (one worker isolate per slot, no headroom) Penpot and the
+200k project build as at 256 MiB x N within the noise (Penpot `none` 8.39,
+8.35 and 8.86 s at 4, 8 and 16 jobs, 200k 5.01, 5.52 and 6.07 s), but the
+800k project fails at every N with "JavaScript session memory limit
+exhausted".
+
+What the numbers say:
+
+- *The default memory makes `--jobs` useless.* At 64 MiB no worker isolate
+  starts (light-cljs-437), so only macro-free units leave the coordinator:
+  Penpot at 8 jobs is 1.02x its one-job wall, the 200k project 0.94x, and
+  no N gets either below 0.92x.
+- *The default memory is too small even serially.* The 800k project fails
+  at 64 MiB at every N, `--jobs 1` included (in
+  `workload.lourskeis/pailpluskei`); it builds at 128 MiB (42.0 s) and at
+  256 MiB (40.9 s). QuickJS fails Penpot at 64 MiB at every N, `--jobs 1`
+  included, in `instaparse.abnf/precompile-cljs-grammar` (as V8 did at two
+  jobs before light-cljs-437), and the 800k project at `--jobs 1`.
+- *Scaling stops at four jobs.* With memory for an isolate per slot the
+  wall falls to about 0.65x (Penpot `none`), 0.69x (`advanced`), 0.72x
+  (200k) and 0.73x (800k) of one job at four jobs, and more jobs buy
+  nothing: eight are within 4% of four either way, twelve to 24 within the
+  noise, while every isolate adds about 70 MiB of peak RSS on Penpot and
+  100 MiB on the 800k project. The floor is the coordinator: its top-level
+  passes (4.2 to 4.6 s on Penpot, 1.9 to 2.1 s on the 200k project, 11.5 to
+  12.8 s on the 800k project) stay serial, and on Penpot it also waits 1.5 s
+  at drain points from four jobs on. `pool.utilization` falls from 0.45 at
+  four jobs to 0.15 at 24 on Penpot, and from 0.53 to 0.26 on the 200k
+  project. Stage C (light-cljs-446 to 453) removes that
+  floor; light-cljs-453 re-measures where scaling stops then.
+- *A worker isolate below its need falls off a cliff.* The 800k project's
+  worker isolates need a base above 85 MiB and at most 128 MiB once they
+  have its macros (where the churn below starts; not measured directly). A
+  worker whose heap passes its base takes headroom and is retired after its
+  unit (light-cljs-341), and its replacement needs the headroom again at
+  once. At its own 2 GiB the base is the limit over twice the isolates
+  (`MemoryPool::new`): 128 MiB at 8 jobs (7 worker isolates, 29.9 s), 96 MiB
+  at 8 jobs and 1.5 GiB (14 isolates, 32.9 s), 85 MiB at 12 jobs (1,322
+  isolates, 164.8 s, 2,374 s of user CPU) and 64 MiB at 16 jobs (14,132
+  isolates, 921.5 s, 18,788 s of user CPU, 236 s of isolate startup); 24
+  jobs at 2 GiB was not run. 256 MiB x N keeps the base at 128 MiB at
+  every N, so the 800k project builds at 12, 16 and 24 jobs in 27.9 to
+  29.9 s with one isolate per worker. Filed as light-cljs-459.
+
+### QuickJS-only build
+
+*Penpot `app.main --optimize none`*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | fails 1 of 1 |  | 51.11 s (51.08-51.13) | 50.8 s | 883 |  | 0.00 s | 19.54 s |
+| 4 | fails 1 of 1 |  | 34.94 s (34.84-35.03) | 57.2 s | 1,102 | 0.34 | 12.23 s | 20.35 s |
+| 8 | fails 1 of 1 |  | 35.32 s (34.64-35.99) | 61.9 s | 1,326 | 0.16 | 12.08 s | 20.79 s |
+| 16 | fails 1 of 1 |  | 34.63 s | 68.3 s | 1,720 | 0.09 | 11.63 s | 20.56 s |
+
+*Penpot `app.main --optimize advanced`*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | fails 1 of 1 |  | 54.45 s (53.97-54.92) | 54.1 s | 1,150 |  | 0.00 s | 19.80 s |
+| 4 | fails 1 of 1 |  | 36.97 s (36.24-37.70) | 58.9 s | 1,294 | 0.34 | 12.32 s | 20.05 s |
+| 8 | fails 1 of 1 |  | 36.56 s (36.55-36.57) | 62.4 s | 1,471 | 0.16 | 11.76 s | 20.12 s |
+| 16 | fails 1 of 1 |  | 37.00 s | 70.5 s | 1,847 | 0.09 | 11.72 s | 20.56 s |
+
+*200k generated (advanced)*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 10.90 s | 957 | 11.86 s (11.81-11.90) | 11.6 s | 952 |  | 0.00 s | 3.51 s |
+| 4 | 11.05 s | 967 | 6.98 s (6.75-7.21) | 14.1 s | 1,104 | 0.56 | 0.00 s | 3.48 s |
+| 8 | 10.52 s | 1,001 | 6.95 s (6.87-7.02) | 17.5 s | 1,241 | 0.35 | 0.00 s | 3.45 s |
+| 16 | 10.87 s | 1,055 | 7.27 s | 26.5 s | 1,584 | 0.28 | 0.01 s | 3.54 s |
+
+*800k generated (advanced)*
+
+| `--jobs` | 64 MiB | RSS | 256 MiB x N | user | RSS | util | wait | top-level |
+| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | fails 1 of 1 |  | 53.94 s (53.84-54.04) | 52.7 s | 3,563 |  | 0.00 s | 17.65 s |
+| 4 | not run |  | 37.87 s (36.09-39.65) | 71.0 s | 4,154 | 0.46 | 2.57 s | 18.03 s |
+| 8 | not run |  | 40.72 s (39.83-41.62) | 91.9 s | 4,778 | 0.28 | 5.48 s | 17.97 s |
+| 16 | not run |  | 35.90 s | 120.4 s | 5,826 | 0.23 | 0.10 s | 18.25 s |
+
+At 64 MiB QuickJS builds only the 200k project, at no gain from more jobs
+(10.52 to 11.05 s). At 256 MiB x N four jobs take 0.68x of one on Penpot
+(`none` and `advanced`), 0.59x on the 200k project (0.64x of today's
+default build) and 0.70x on the 800k project, and more jobs again buy
+nothing: QuickJS's coordinator spends 19.5 to 20.8 s in Penpot's top-level
+passes and waits 11.6 to 12.3 s at drain points, against V8's 4.5 and 1.5.
+The 800k project's QuickJS workers retire some runtimes at a 128 MiB base
+(6 made at four jobs, 14 at eight, 15 at sixteen), so their need is near
+that base; a 2.5 to 5.5 s wait at drain points follows, which is why eight
+jobs are slower than four there.
+
+### Proposal (for the user's decision; nothing is changed)
+
+1. **`--jobs` defaults to the available parallelism capped at 4**
+   (`std::thread::available_parallelism()`, at least 1), for `--compile`
+   and for `compile`, `release` and `watch`'s builds through
+   `:compile-threads`. `--jobs 1` keeps the serial path. Four is where
+   scaling stops on all four projects in both engines (QuickJS's 800k
+   build at 16 jobs, 35.9 s in one run, is inside four jobs' range);
+   with V8, eight jobs are within 4% of four in wall time either way and
+   cost 210 to 380 MiB more peak RSS.
+   light-cljs-453 should raise the cap once stage C moves the top-level
+   passes off the coordinator.
+2. **The default macro memory becomes 256 MiB per job**: when neither
+   `--macro-memory-limit` nor `:macro-memory-limit` is given, the limit is
+   N x 256 MiB (1 GiB at the proposed four jobs, 256 MiB at `--jobs 1`).
+   It stays one budget for all the isolates, as decided on 2026-10-17;
+   only its default follows N. `MemoryPool::new` then gives every isolate a
+   base of 128 MiB (the limit over twice the isolates), the main isolate
+   128 MiB, twice the reservation light-cljs-437 gives it, and leaves half
+   the budget as headroom, so every slot has an isolate and no worker falls
+   to the 64 MiB base where the 800k project churns. A fixed default
+   (1 GiB) gives the same at four jobs but a 64 MiB base at 8 jobs and
+   above, where the 800k project would churn as it does at 16 jobs and
+   2 GiB (not measured at 1 GiB) or, at 16 jobs, fail as 64 MiB x N does,
+   until light-cljs-459 lands. 64 MiB x N is too little (the 800k
+   project fails at every N). `--eval`, `--repl` and retained watch sessions keep 64 MiB.
+
+What the proposal gives against today's default (`--jobs 1`, 64 MiB) and
+against shadow-cljs (Penpot: fresh `shadow-cljs compile` 32.08 s and
+2.551 GB, `release` 59.12 s and 3.901 GB, benchmarks/penpot-investigation.md;
+generated projects: uncached `release` 40.4 s and 4.09 GB at 200k, 170 s and
+7.72 GB at 800k, benchmarks/generated-shadow-vs-light.md), V8, medians of
+three rounds:
+
+| Project | Today | Proposed (`--jobs 4`, 1 GiB) | vs today | Cap 8 (`--jobs 8`, 2 GiB) | Proposed RSS vs shadow |
+| --- | --- | --- | --- | --- | ---: |
+| Penpot `none` | 13.07 s, 1,001 MiB | 8.47 s, 1,280 MiB | 0.65x wall, 1.28x RSS | 8.15 s, 1,601 MiB | 0.53x of dev |
+| Penpot `advanced` | 15.21 s, 1,181 MiB | 10.51 s, 1,506 MiB | 0.69x, 1.28x | 10.44 s, 1,781 MiB | 0.40x of release |
+| 200k | 7.48 s, 1,030 MiB | 5.41 s, 1,318 MiB | 0.72x, 1.28x | 5.44 s, 1,532 MiB | 0.34x |
+| 800k | fails (38.96 s, 3,743 MiB at 256 MiB) | 28.49 s, 4,239 MiB | 0.73x, 1.13x of 256 MiB | 29.48 s, 4,617 MiB | 0.58x |
+
+QuickJS-only, proposed against its own `--jobs 1` at 256 MiB: Penpot
+`none` 34.94 s and 1,102 MiB (0.68x, 1.25x), `advanced` 36.97 s and
+1,294 MiB (0.68x, 1.13x), 200k 6.98 s and 1,104 MiB (0.59x, 1.16x; today's
+default 10.90 s and 957 MiB), 800k 37.87 s and 4,154 MiB (0.70x, 1.17x);
+today's default fails Penpot and the 800k project. The 256 MiB serial
+default costs nothing measurable at `--jobs 1`: Penpot `none` 13.19 s and
+1,039 MiB against 13.07 s and 1,001 MiB, the 200k project 7.52 s and
+1,039 MiB against 7.48 s and 1,030 MiB.
+
+The exact change (one pellet, with the CLI and `--print-config` tests):
+
+- `src/scheduler.rs`, `impl Default for Slots`: return
+  `available_parallelism().map_or(1, NonZeroUsize::get).min(4)` slots
+  instead of `Slots::ONE`; `src/main.rs`'s `CompileFlags` takes its `jobs`
+  from this `Default` (`#[derive(Default)]`). Paths that must stay serial
+  name `Slots::ONE` already (the `analyze_entry` wrapper in `src/main.rs`
+  ~856, `parse_slots` for wasm in `src/compiler.rs` ~1555); check that
+  retained watch sessions keep one slot.
+- `src/config_file.rs`, `defaults`: `(Setting::CompileThreads,
+  integer(1))` becomes that same count, so `--print-config` shows it with
+  origin `default`; docs/build-configuration.md's `:compile-threads`.
+- The memory default: a constant `evaluator::DEFAULT_MEMORY_PER_JOB` of
+  256 MiB beside `DEFAULT_MEMORY_LIMIT` (which stays the main isolate's
+  reservation in `isolate_count` and `MemoryPool::new`, and the default of
+  `--eval`, `--repl` and watch sessions). `src/main.rs`
+  `MacroLimitFlags::apply` (~147) sets `engine.memory_limit` to
+  `jobs.get() * DEFAULT_MEMORY_PER_JOB` when `memory_limit` is `None` in a
+  `--compile` build, and `src/config_cli.rs` (~1531) does the same when
+  `:macro-memory-limit` comes from the defaults layer, which then shows
+  the computed value in `--print-config`.
+- `USAGE` in `src/main.rs` and the README command-line section: the
+  `--jobs` default and why, and "its heap in bytes (67108864)" becomes
+  256 MiB per job; docs/compiler-concurrency.md's "Gates and first steps"
+  records the decision.
+- Tests whose expected output names the defaults:
+  `tests/config_file/print_config.rs` (9 places), `retention.rs` (1) and
+  the `tests/cli.rs` cases that assume one slot without `--jobs`. CI runs
+  on smaller machines, where the default is fewer than four.
+
 ## Stage C re-measured (light-cljs-429, October 23, 2026)
 
 Master `cc1ec07`, one release binary (an immutable copy), cold builds with

@@ -2947,7 +2947,18 @@ is part of the stage A gate.
   macro memory*: light-cljs-434 proposes them from stage A, light-cljs-453
   updates the proposal with stage C; at the default 64 MiB no worker
   isolate starts, so only engine-less passes (light-cljs-450) could leave
-  the coordinator.
+  the coordinator. *As measured (light-cljs-434),* at `0f0e6c0` the
+  default 64 MiB gives no `--jobs` value a gain and fails the 800k
+  generated project at every N, and QuickJS's Penpot build, `--jobs 1`
+  included. The proposal, awaiting the user, is `--jobs` defaulting to the
+  available parallelism capped at 4, where scaling stops while the
+  top-level passes are serial (0.65x to 0.73x of one job on Penpot and
+  the generated projects, 1.13x to 1.28x the peak RSS), and a default
+  macro memory of 256 MiB per job, still one budget, which gives every
+  isolate a 128 MiB base; a worker isolate below its need is retired and
+  made again after every unit (light-cljs-459). Numbers and the exact
+  change are in benchmarks/compiler-concurrency.md, "The `--jobs` and
+  macro memory defaults".
 
 ## Method and reproduction
 
