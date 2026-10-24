@@ -451,6 +451,12 @@ are still covered by the computed-key rejection below.
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **Rope flattening** (clj-quickjs-146): the first contiguous read, comparison
+  or hash flattens synchronously in O(length). Traversal and destruction use
+  explicit stacks, so deep ropes cannot overflow the native stack, but this
+  first read can delay a budget yield or collection. The cached buffer and
+  original rope graph remain allocated until the string is released.
+
 - **String split** (clj-quickjs-157): string and undefined separators,
   ToUint32 limits, generic receivers and resumable object coercion execute.
   RegExp separators and `Symbol.split` dispatch remain deferred to the RegExp
@@ -844,6 +850,13 @@ delete a[o];
 ```
 
 ## Execution
+
+String `+`, `+=`, template interpolation and `String.prototype.concat` use
+immutable ropes above 32 UTF-16 units (clj-quickjs-146). Repeated append or
+prepend takes linear total construction work. Length stays O(1); the first
+indexed read flattens once and later indexed reads are O(1). Content equality,
+map/property keys and publication retain ordinary string semantics. See the
+flattening limitation under "Explicit gaps".
 
 `String.prototype.split(separator, limit)` returns a fresh array of UTF-16
 substrings (clj-quickjs-157). Undefined separator returns the whole receiver;
@@ -2598,8 +2611,9 @@ generic ToString, including observable wrapper conversion methods. Object
 receivers and arguments use resumable ToPrimitive with string or number
 hint as appropriate. Each output-copy step processes at most 256 units or
 part boundaries, allowing yields, GC and migration. Allocations and bulk
-primitive operand conversion are not interruptible (clj-quickjs-265); flat
-string storage remains in use (ropes are clj-quickjs-146).
+primitive operand conversion are not interruptible (clj-quickjs-265).
+Concat retains whole operands as ropes, processing at most 256 operands per
+assembly step (clj-quickjs-146), rather than copying their contents.
 
 Synthetic fixtures, not light-cljs output:
 

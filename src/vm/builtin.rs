@@ -892,8 +892,12 @@ pub(crate) fn string_build(
         }
         _ => return Err(Fault::Internal("not a string build operation")),
     };
-    crate::value::string::StringBuild::new(parts)
-        .ok_or_else(|| Fault::RangeError("string too long".to_string()))
+    (if which == StringPrototypeConcat {
+        crate::value::string::StringBuild::concatenation(parts)
+    } else {
+        crate::value::string::StringBuild::new(parts)
+    })
+    .ok_or_else(|| Fault::RangeError("string too long".to_string()))
 }
 
 /// Receiver validation precedes radix coercion; the continuation retains only

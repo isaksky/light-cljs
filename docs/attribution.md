@@ -333,3 +333,12 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+## Rope strings (clj-quickjs-146)
+
+`tests/fixtures/js/quickjs_rope.js` retains `rope_concat` and `test_rope`
+unchanged from `research/quickjs/tests/test_builtin.js`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+A minimal asserting helper and invocation were added; the QuickJS MIT
+copyright and permission notice from `research/quickjs/LICENSE` is retained
+in the fixture. This is a synthetic fixture, not light-cljs output.
+The Rust representation and tests were written afresh, without copying C.

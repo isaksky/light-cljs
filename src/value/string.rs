@@ -5,15 +5,15 @@
 //! A JavaScript string is a primitive: an immutable sequence of UTF-16 code
 //! units, compared by content. [`JsString`] stores one as a thin `Arc`
 //! (one pointer, so a raw VM value stays two words) to an immutable body
-//! that owns the code units. The body is **independently owned immutable
-//! `Arc` storage outside the heap**, like executable code and collection trie
-//! nodes (`docs/architecture.md`, "String values"):
+//! that owns flat code units or two immutable string children. The body is
+//! **independently owned immutable `Arc` storage outside the heap**, like
+//! executable code and collection trie nodes (`docs/architecture.md`, "String values"):
 //!
 //! * a string is not a heap object and has no heap edges, so the collector
 //!   neither traces nor sweeps it; a string lives exactly as long as some
 //!   value (frame slot, operand, capture, collection entry, root, constant
 //!   pool, host copy) holds its `Arc`. That is ordinary Rust ownership of an
-//!   acyclic leaf buffer, not reference counting of heap objects: no string
+//!   acyclic string graph, not reference counting of heap objects: no string
 //!   can reference another value, so no cycle can form through one;
 //! * it is persistent and shareable by construction: nothing can change its
 //!   contents, so publishing one, storing one in a persistent collection or
@@ -45,15 +45,27 @@
 //!   `Debug` (a quoted literal that writes a lone surrogate as `\u{d800}`)
 //!   are exact. None of them panics.
 //!
-//! Every string uses the 16-bit form; a narrow (Latin-1) body as in QuickJS's
-//! `JSString`, or a rope body for repeated concatenation, can be added inside
-//! the body without changing [`JsString`]'s interface or the value model.
-//! Concatenation copies both operands into a new flat body today.
+//! Concatenations up to 32 units copy into a flat buffer. Larger results
+//! retain their operands in O(1), with a cached length. The first contiguous
+//! read flattens iteratively into a `OnceLock`; subsequent reads share it.
+//! Both traversal and destruction are iterative, even for deep append/prepend
+//! chains. Flattening is synchronous O(length), not instruction-budgeted.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+const FLAT_CONCAT_LIMIT: usize = 32;
+
+thread_local! {
+    static COPIED_CODE_UNITS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn record_copies(units: usize) {
+    COPIED_CODE_UNITS.with(|n| n.set(n.get().saturating_add(units as u64)));
+}
 
 /// Maximum string length in code units: `2^30 - 1`, as QuickJS's
 /// `JS_STRING_LEN_MAX`. A concatenation that would exceed it fails instead of
@@ -69,52 +81,100 @@ pub struct JsString(Arc<Body>);
 struct Body {
     // Keeping the allocation as a Vec lets the incremental builder transfer
     // ownership without a potentially linear shrink/copy at its final step.
-    units: Vec<u16>,
+    len: usize,
+    flat: OnceLock<Vec<u16>>,
+    children: Option<(JsString, JsString)>,
+}
+
+impl Body {
+    fn flat(units: Vec<u16>) -> Self {
+        Self {
+            len: units.len(),
+            flat: OnceLock::from(units),
+            children: None,
+        }
+    }
+}
+
+impl Drop for Body {
+    fn drop(&mut self) {
+        // Arc's default recursive destruction would overflow on a long
+        // chain. Consume each uniquely owned body with its children removed.
+        // into_inner also avoids a recursive last-release race when several
+        // threads release shared subtrees concurrently.
+        let mut pending = Vec::new();
+        if let Some((left, right)) = self.children.take() {
+            pending.push(left);
+            pending.push(right);
+        }
+        while let Some(child) = pending.pop() {
+            if let Some(mut body) = Arc::into_inner(child.0)
+                && let Some((left, right)) = body.children.take()
+            {
+                pending.push(left);
+                pending.push(right);
+            }
+        }
+    }
 }
 
 impl JsString {
     /// Transfer a preallocated, incrementally filled UTF-16 buffer without
     /// shrinking or copying its contents at a native step boundary.
     pub(crate) fn from_owned_code_units(units: Vec<u16>) -> Option<JsString> {
-        (units.len() <= MAX_STRING_LEN).then(|| JsString(Arc::new(Body { units })))
+        (units.len() <= MAX_STRING_LEN).then(|| JsString(Arc::new(Body::flat(units))))
     }
 
     /// A string from arbitrary code units, including lone surrogates.
     /// `None` when longer than [`MAX_STRING_LEN`].
     pub fn from_code_units(units: impl Into<Box<[u16]>>) -> Option<JsString> {
         let units = units.into();
-        (units.len() <= MAX_STRING_LEN).then(|| {
-            JsString(Arc::new(Body {
-                units: units.into_vec(),
-            }))
-        })
+        Self::from_owned_code_units(units.into_vec())
     }
 
     /// The number of UTF-16 code units (JavaScript `length`).
     pub fn len(&self) -> usize {
-        self.0.units.len()
+        self.0.len
     }
 
     /// True for the empty string `""`.
     pub fn is_empty(&self) -> bool {
-        self.0.units.is_empty()
+        self.len() == 0
     }
 
     /// The one-code-unit string at `index` (`s[index]`, `s.charAt(index)`),
-    /// or `None` at or past the end. Constant time: no scan of the string.
+    /// or `None` at or past the end. Constant time after the first flatten.
     pub fn code_unit_at(&self, index: usize) -> Option<JsString> {
-        let unit = *self.0.units.get(index)?;
-        Some(JsString(Arc::new(Body { units: vec![unit] })))
+        if index >= self.len() {
+            return None;
+        }
+        let unit = self.code_units()[index];
+        Self::from_owned_code_units(vec![unit])
     }
 
-    /// The code units, in order.
+    /// The code units, in order. A rope flattens once, in O(length) time
+    /// using an explicit traversal stack. Concurrent readers share one cache.
     pub fn code_units(&self) -> &[u16] {
-        &self.0.units
+        self.0.flat.get_or_init(|| {
+            let mut units = Vec::with_capacity(self.len());
+            let mut pending = vec![self.0.as_ref()];
+            while let Some(body) = pending.pop() {
+                if let Some(flat) = body.flat.get() {
+                    units.extend_from_slice(flat);
+                } else if let Some((left, right)) = &body.children {
+                    pending.push(right.0.as_ref());
+                    pending.push(left.0.as_ref());
+                }
+            }
+            debug_assert_eq!(units.len(), self.len());
+            record_copies(units.len());
+            units
+        })
     }
 
     /// The contents as Rust text; a lone surrogate becomes U+FFFD.
     pub fn to_string_lossy(&self) -> String {
-        String::from_utf16_lossy(&self.0.units)
+        String::from_utf16_lossy(self.code_units())
     }
 
     /// The concatenation `self + other`, or `None` when the result would be
@@ -131,10 +191,26 @@ impl JsString {
         if len > MAX_STRING_LEN {
             return None;
         }
+        if len > FLAT_CONCAT_LIMIT {
+            return Some(JsString(Arc::new(Body {
+                len,
+                flat: OnceLock::new(),
+                children: Some((self.clone(), other.clone())),
+            })));
+        }
         let mut units = Vec::with_capacity(len);
         units.extend_from_slice(self.code_units());
         units.extend_from_slice(other.code_units());
-        JsString::from_code_units(units)
+        record_copies(len);
+        JsString::from_owned_code_units(units)
+    }
+
+    /// Cumulative units copied by concatenation, lazy flattening and native
+    /// string builders on the current OS thread. Diagnostic only: input
+    /// creation and one-unit indexing results are excluded. Take differences
+    /// around work on one thread; other threads have independent counters.
+    pub fn copied_code_units() -> u64 {
+        COPIED_CODE_UNITS.with(Cell::get)
     }
 
     /// True when both values share one body (an O(1) identity test; equal
@@ -169,9 +245,28 @@ pub(crate) struct StringBuild {
     parts: std::vec::IntoIter<(JsString, usize, usize)>,
     offset: usize,
     units: Vec<u16>,
+    concatenated: Option<JsString>,
 }
 
 impl StringBuild {
+    /// Whole-source concatenation keeps ropes rather than copying prefixes.
+    /// Conversion has already completed in observable order in the VM.
+    pub(crate) fn concatenation(parts: Vec<(JsString, usize, usize)>) -> Option<Self> {
+        let len = parts.iter().try_fold(0usize, |n, (text, start, len)| {
+            debug_assert_eq!((*start, *len), (0, text.len()));
+            n.checked_add(*len)
+        })?;
+        if len > MAX_STRING_LEN {
+            return None;
+        }
+        Some(Self {
+            parts: parts.into_iter(),
+            offset: 0,
+            units: Vec::new(),
+            concatenated: Some(JsString::from("")),
+        })
+    }
+
     pub(crate) fn new(parts: Vec<(JsString, usize, usize)>) -> Option<Self> {
         let len = parts
             .iter()
@@ -195,12 +290,22 @@ impl StringBuild {
             parts: parts.into_iter(),
             offset: 0,
             units,
+            concatenated: None,
         })
     }
 
     /// Copy at most `budget` units/part boundaries; moving the finished Vec
     /// into immutable Arc storage does no final linear copy.
     pub(crate) fn advance(&mut self, budget: usize) -> Option<JsString> {
+        if let Some(result) = &mut self.concatenated {
+            for _ in 0..budget {
+                let Some((text, _, _)) = self.parts.next() else {
+                    return Some(result.clone());
+                };
+                *result = result.concat(&text).expect("checked concatenation length");
+            }
+            return None;
+        }
         if let [(text, 0, len)] = self.parts.as_slice()
             && *len == text.len()
             && self.units.is_empty()
@@ -210,9 +315,7 @@ impl StringBuild {
         }
         for _ in 0..budget {
             let Some((text, start, len)) = self.parts.as_slice().first() else {
-                return Some(JsString(Arc::new(Body {
-                    units: std::mem::take(&mut self.units),
-                })));
+                return JsString::from_owned_code_units(std::mem::take(&mut self.units));
             };
             if self.offset == *len {
                 // Release each consumed body in a bounded step, rather than
@@ -222,6 +325,7 @@ impl StringBuild {
             } else {
                 self.units
                     .push(text.code_units()[start + self.offset % (text.len() - start)]);
+                record_copies(1);
                 self.offset += 1;
             }
         }
@@ -431,7 +535,8 @@ impl StringSplit {
 
 impl PartialEq for JsString {
     fn eq(&self, other: &Self) -> bool {
-        self.same_body(other) || self.code_units() == other.code_units()
+        self.same_body(other)
+            || (self.len() == other.len() && self.code_units() == other.code_units())
     }
 }
 
@@ -1163,6 +1268,147 @@ fn round_integer(mant: u64, dropped: u64, sticky: bool) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deep_ropes_flatten_and_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                for prepend in [false, true] {
+                    let mut text = JsString::from("");
+                    let mut snapshot = None;
+                    let before = JsString::copied_code_units();
+                    for i in 0..100_000 {
+                        let unit = JsString::from_code_units(vec![i as u16]).unwrap();
+                        text = if prepend {
+                            unit.concat(&text)
+                        } else {
+                            text.concat(&unit)
+                        }
+                        .unwrap();
+                        if i == 49_999 {
+                            snapshot = Some(text.clone());
+                        }
+                    }
+                    for (i, &unit) in text.code_units().iter().enumerate() {
+                        assert_eq!(
+                            unit,
+                            if prepend {
+                                (99_999 - i) as u16
+                            } else {
+                                i as u16
+                            }
+                        );
+                    }
+                    assert!(JsString::copied_code_units() - before <= 200_000);
+                    drop(text);
+                    assert_eq!(snapshot.as_ref().unwrap().len(), 50_000);
+                    drop(snapshot); // a separately retained ancestor
+
+                    let mut unread = JsString::from("x");
+                    for _ in 0..100_000 {
+                        unread = if prepend {
+                            JsString::from("x").concat(&unread)
+                        } else {
+                            unread.concat(&JsString::from("x"))
+                        }
+                        .unwrap();
+                    }
+                    drop(unread); // destruction must also work without any cache
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn rope_content_hash_order_and_length_limit() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut rope = JsString::from("");
+        let units: Vec<u16> = (0..300).map(|i| 0xd800 + i).collect();
+        for &unit in &units {
+            rope = rope
+                .concat(&JsString::from_code_units(vec![unit]).unwrap())
+                .unwrap();
+        }
+        let flat = JsString::from_code_units(units).unwrap();
+        assert_eq!(rope, flat);
+        assert_eq!(rope.cmp(&flat), std::cmp::Ordering::Equal);
+        assert_eq!(rope.content_hash(), flat.content_hash());
+        let hash = |text: &JsString| {
+            let mut h = DefaultHasher::new();
+            text.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&rope), hash(&flat));
+        assert!(rope.concat(&JsString::from("")).unwrap().same_body(&rope));
+        let before = JsString::copied_code_units();
+        assert!(rope.code_unit_at(rope.len()).is_none());
+        assert_eq!(JsString::copied_code_units(), before);
+
+        // Build the exact limit as a shared DAG without a gigabyte buffer.
+        let mut power = JsString::from("x");
+        let mut maximum = JsString::from("");
+        for _ in 0..30 {
+            maximum = maximum.concat(&power).unwrap();
+            if power.len() < 1 << 29 {
+                power = power.concat(&power).unwrap();
+            }
+        }
+        assert_eq!(maximum.len(), MAX_STRING_LEN);
+        let before = JsString::copied_code_units();
+        assert!(maximum.concat(&JsString::from("x")).is_none());
+        assert!(power.concat(&power).is_none());
+        assert_eq!(JsString::copied_code_units(), before);
+    }
+
+    #[test]
+    fn concurrent_rope_readers_share_one_flat_cache() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let mut rope = JsString::from("");
+        for _ in 0..20_000 {
+            rope = rope.concat(&JsString::from("x")).unwrap();
+        }
+        let (done, results) = mpsc::channel();
+        let mut starts = Vec::new();
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let rope = rope.clone();
+                let done = done.clone();
+                let (start, gate) = mpsc::channel();
+                starts.push(start);
+                std::thread::spawn(move || {
+                    gate.recv_timeout(Duration::from_secs(5))
+                        .expect("reader start");
+                    let before = JsString::copied_code_units();
+                    let units = rope.code_units();
+                    assert_eq!(units, vec![b'x' as u16; 20_000]);
+                    done.send((
+                        units.as_ptr() as usize,
+                        JsString::copied_code_units() - before,
+                    ))
+                    .unwrap();
+                })
+            })
+            .collect();
+        for start in starts {
+            start.send(()).unwrap();
+        }
+        let results: Vec<_> = (0..4)
+            .map(|_| {
+                results
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("reader completion")
+            })
+            .collect();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        assert!(results.iter().all(|r| r.0 == results[0].0));
+        assert_eq!(results.iter().map(|r| r.1).sum::<u64>(), 20_000);
+    }
+
     fn parsed(text: &str, radix: Option<u32>) -> f64 {
         let mut parser = NumberParse::new(JsString::from(text), radix);
         for _ in 0..text.len() + 2 {

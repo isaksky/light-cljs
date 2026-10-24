@@ -18,6 +18,91 @@ use clj_quickjs::{Completion, ObjectCounts, RunOutcome, Runtime, TaskStatus};
 
 use workloads::{ConsumerKind, Fixtures, Probe};
 
+/// Synthetic fixture, not light-cljs output. Copy counts include concat's
+/// short flat copies and the first flatten, but exclude input construction.
+#[test]
+fn string_concatenation_is_amortized_linear() {
+    use clj_quickjs::{Budget, Host, JsString};
+    const N: usize = 100_000;
+    let build = compile_function(workloads::STRING_CONCAT).unwrap();
+    let read = compile_function(workloads::STRING_READ).unwrap();
+    for direction in [1.0, -1.0] {
+        let rt = Runtime::new();
+        let before = JsString::copied_code_units();
+        let task = rt
+            .spawn(
+                &build,
+                &[
+                    &workloads::num(&rt, N as f64),
+                    &workloads::num(&rt, direction),
+                ],
+            )
+            .unwrap();
+        struct NoEffects;
+        impl Host for NoEffects {
+            fn effect(
+                &mut self,
+                call: clj_quickjs::HostCall,
+            ) -> Result<clj_quickjs::Primitive, String> {
+                panic!("unexpected host effect {}", call.op)
+            }
+        }
+        // The instruction slice stops partway through construction, with
+        // the only partial-string reference held in the suspended VM frame.
+        assert!(matches!(
+            task.run_with(Budget::instructions(100_000), &mut NoEffects)
+                .unwrap(),
+            RunOutcome::Yielded
+        ));
+        rt.collect().unwrap();
+        let result = workloads::finish(&task);
+        let text = result.string().expect("expected string");
+        assert_eq!(text.len(), N);
+        assert_eq!(text.code_units()[0], 0); // the single lazy flatten
+        let after_flatten = JsString::copied_code_units();
+        assert!(
+            after_flatten - before <= (2 * N) as u64,
+            "at most 2N units copied per direction"
+        );
+        let reader = rt
+            .spawn(&read, &[&result, &workloads::num(&rt, N as f64)])
+            .unwrap();
+        assert_eq!(
+            workloads::finish(&reader).view(),
+            clj_quickjs::ValueView::Bool(true)
+        );
+        assert_eq!(
+            JsString::copied_code_units(),
+            after_flatten,
+            "indexed reads reuse the flat cache"
+        );
+    }
+}
+
+#[test]
+fn concat_methods_and_templates_keep_rope_prefixes() {
+    use clj_quickjs::JsString;
+    // Synthetic fixtures, not light-cljs output. All concatenation entry
+    // points must retain existing prefixes/suffixes without flattening.
+    for expression in ["s.concat(c)", "c.concat(s)", "`${s}${c}`", "`${c}${s}`"] {
+        let source = format!(
+            "function build() {{ let s = ''; for (let i = 0; i < 10000; i++) {{ let c = 'x'; s = {expression}; }} return s; }}"
+        );
+        let code = compile_function(&source).unwrap();
+        let rt = Runtime::new();
+        let before = JsString::copied_code_units();
+        let result = workloads::finish(&rt.spawn(&code, &[]).unwrap());
+        assert_eq!(
+            result.string().unwrap().code_units(),
+            vec![b'x' as u16; 10000]
+        );
+        assert!(
+            JsString::copied_code_units() - before <= 20000,
+            "{expression}"
+        );
+    }
+}
+
 fn no_probe() -> Probe {
     Probe::default()
 }

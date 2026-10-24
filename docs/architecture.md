@@ -1354,8 +1354,9 @@ Design: `design.md` §§4, 11.
   the collector never traces or sweeps it, and a string lives exactly as
   long as some value holding its `Arc` (frame slot, operand, capture,
   collection entry, root, constant pool, an embedder's `JsString`). This is
-  Rust ownership of acyclic leaf buffers, not reference counting of heap
-  objects: a string references nothing, so no cycle can pass through one.
+  Rust ownership of an acyclic string graph, not reference counting of heap
+  objects: string children cannot reference JavaScript values, so no cycle
+  can pass through one.
   The alternative, a new heap kind behind `Value::Object`, was rejected:
   `===`, `==`, ToBoolean and persistent-map hashing and key equality
   (`collections::map::key_eq`/`key_hash`, which by contract never read the
@@ -1392,7 +1393,8 @@ Design: `design.md` §§4, 11.
   `src/collections/map.rs`), constant deduplication and relational order,
   so `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"`.
   `length` is `JsString::len` (stored count, O(1)); indexing reads one
-  stored unit (`JsString::code_unit_at`, O(1), clj-quickjs-142); relational order (`<` etc.,
+  stored unit (`JsString::code_unit_at`, O(1) after the first flatten,
+  clj-quickjs-142/-146); relational order (`<` etc.,
   clj-quickjs-68) is `JsString`'s `Ord`, lexicographic over code units
   (QuickJS `js_string_compare`), not Unicode scalar order. Reading a
   string never panics on a lone surrogate: `code_units()` is exact,
@@ -1400,13 +1402,13 @@ Design: `design.md` §§4, 11.
   `\u{d800}`; `src/main.rs` prints a string result with it), and text for
   diagnostics and host effects (`to_string_lossy`, `Display`) maps a lone
   surrogate to U+FFFD.
-- **Room for later representations.** Every string uses the 16-bit form
-  and concatenation copies both operands into a new flat body (an empty
-  operand returns the other's body). A Latin-1 body (QuickJS's 8-bit
-  `JSString`) or a rope body for repeated concatenation (clj-quickjs-146,
-  flattened on first code-unit access) fits inside the private body type
-  without changing `JsString`'s interface, `Value`, or publication, since
-  either is still immutable leaf storage. The length limit is QuickJS's
+- **Flat buffers and ropes.** Every string uses the 16-bit form.
+  Concatenation up to 32 units copies into a flat body; larger results link
+  the two operands in O(1), with a cached length (clj-quickjs-146). Empty
+  operands return the other's body. `OnceLock<Vec<u16>>` caches the first
+  contiguous read, comparison or hash. The cache changes no observable
+  content and is shared safely across readers. A Latin-1 form remains a
+  possible private representation. The length limit is QuickJS's
   `JS_STRING_LEN_MAX`, 2^30 - 1 code units; a longer concatenation fails
   the task with `OutOfMemory` ("string too long", QuickJS's InternalError).
 - **Instructions.** String literals are constants (`ExecutableSpec::constants`,
@@ -2998,8 +3000,9 @@ and Charlie Gordon) and is listed here with its source path and revision:
   revision 7d1c13c5d8f8. Modified: each `assert(a, b)` is a Rust assertion
   on `a === b`; `String.fromCharCode(0x20ac)` is the literal `"€"` and
   `eval('"\0"')` the literal itself; the `length`, `charCodeAt`,
-  `codePointAt` and `String.fromCodePoint` rows and `test_rope` wait for
-  string properties and methods. The notice is on
+  `codePointAt` and `String.fromCodePoint` rows are covered by later string
+  property/method tests; `test_rope` runs in `upstream_string_rope`
+  (clj-quickjs-146). The notice is on
   `strings_convert_with_string_to_number`. `research/quickjs/quickjs.c`
   `js_parse_string`, `JS_ConcatString` and `js_string_compare` were
   consulted only, for semantics. No code was copied.
@@ -3547,7 +3550,7 @@ before visiting the next operand. Omitted/undefined ends and fillers are
 represented by absent conversion operands, so objects returning undefined
 still undergo the required numeric or string conversion.
 
-`NativeState::StringBuild` owns flat-copy plans (immutable source strings,
+`NativeState::StringBuild` owns flat-copy or whole-operand rope plans (immutable source strings,
 a starting unit, output length) and an output `Vec<u16>`, with no heap edges.
 A repeated plan supplies padding. Each native step copies at most 256 units
 or advances part boundaries, charging the instruction budget and allowing a
@@ -3556,15 +3559,17 @@ before reserving output storage; overlong results throw `RangeError` with
 "string too long". Empty padding returns the original text even for an
 infinite target. A plan representing one whole source reuses that string.
 
-The private `JsString` body now owns a `Vec<u16>` instead of a boxed slice;
-it remains immutable behind its independently owned leaf `Arc`. This permits
+Flat `JsString` bodies own a `Vec<u16>` instead of a boxed slice;
+they remain immutable behind independently owned `Arc` storage. This permits
 the native builder to reserve once before bounded copying and transfer the
 completed allocation without a final linear shrink/copy. Allocation failure
 returns a catchable error; allocation itself is not interruptible. Bulk
 operand conversion and plan creation retain the limitation tracked by
 clj-quickjs-265. Unwind/cancellation drop the builder with its native frame.
-No heap kind, tracing edge, publication category or public string API changes;
-ropes remain clj-quickjs-146. Tests cover callback waits, budget yields,
+No heap kind, tracing edge or publication category changes. Concat uses
+the rope assembly path added in clj-quickjs-146, retaining whole operands
+and processing at most 256 parts per native step. Other plans still copy
+code units. Tests cover callback waits, budget yields,
 collection and thread migration during coercion and long result construction.
 
 ## Number predicates and constants (clj-quickjs-147)
@@ -4396,3 +4401,43 @@ iterable construction exists. Iteration/forEach and BigInt keys belong to
 later pellets. The prototype also owns the non-writable, non-enumerable,
 configurable `Symbol.toStringTag` value "Map"; the shared well-known identity
 is exposed on `Symbol`.
+## Rope strings (clj-quickjs-146)
+
+`JsString` keeps the existing coarse immutable Arc storage boundary. Each
+body stores length, an optional pair of immutable string children, and a
+`OnceLock<Vec<u16>>` flat cache. There are no heap edges or new publication
+categories. Above 32 units, concat allocates one node and retains its two
+operands, with no prefix copying or balancing. Appending/prepending N single
+units copies only 527 units during short concatenations (2 + ... + 32),
+then N at the first flatten. The deterministic measurement test bounds this
+by 2N for N = 100,000, checks every code unit in JavaScript, and verifies
+that subsequent indexed reads add no copies. `JsString::copied_code_units`
+is a thread-local diagnostic counter, including native string-builder copies;
+input construction and one-unit indexing results are excluded.
+
+`code_units()` visits cached subtrees or children with an explicit DFS stack
+and caches only the requested string. Comparison, hashing (including map and
+property keys), search, formatting and index access all use this entry point.
+Length and out-of-bounds index checks do not flatten. Concurrent first readers
+initialize one cache. Retained prefixes remain immutable and independently
+usable; flattening never changes children. Both the flat cache and children
+are retained, trading memory for simple shared lifetimes.
+
+Rope depth is intentionally unbounded. Traversal and destruction are iterative:
+`Body::drop` removes children and drains uniquely owned bodies through
+`Arc::into_inner`, stopping at shared subtrees. This also avoids recursive
+last-release races between threads. A 64 KiB stack test builds, flattens and
+drops 100,000-node chains in both directions, including retained prefixes and
+unread chains. Shared DAGs can represent `2^30 - 1` units without allocating
+that buffer; concatenations above the limit fail before flattening.
+
+Flattening remains synchronous O(length), using O(depth) temporary pointers
+and O(length) output storage. It does not resume against the instruction
+budget; allocation, first hash/comparison/index access and eventual release
+can delay yields. Subsequent contiguous access is O(1). Existing incremental
+search/copy natives retain their bounded scan/copy steps after that first
+access. String.prototype.concat assembles at most 256 whole parts per native
+step, preserving observable conversions in the existing continuation.
+
+The unchanged upstream `rope_concat`/`test_rope` functions run in
+`tests/fixtures/js/quickjs_rope.js`, invoked by `upstream_string_rope`.

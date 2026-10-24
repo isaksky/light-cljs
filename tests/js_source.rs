@@ -13,6 +13,55 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+#[test]
+fn upstream_string_rope() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/quickjs_rope.js")),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Persistent map key comparison,
+/// property interning, publication and indexed search all read rope content.
+#[test]
+fn rope_strings_are_content_keys_and_publishable() {
+    assert_eq!(
+        eval(
+            r#"
+        let s = '';
+        for (let i = 0; i < 100; i++) s += 'x';
+        let flat = ''.padEnd(100, 'x');
+        let m = __rt.map(s, 42);
+        let o = {}; o[s] = 17;
+        __rt.get(m, flat) === 42 && o[flat] === 17 && s === flat &&
+        !(s < flat) && !(s > flat) && s.indexOf('xxx', 90) === 90
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &exe("let s = ''; for (let i = 0; i < 10000; i++) s += 'x'; s"),
+            &[],
+        )
+        .unwrap();
+    let RunOutcome::Complete(value) = task.run().unwrap() else {
+        panic!("expected rope")
+    };
+    rt.publish(&value).unwrap();
+    let atom = rt.new_atom(&value).unwrap();
+    rt.collect().unwrap();
+    let reader = compile_function(
+        "function read(s) { return s.length === 10000 && s.charCodeAt(9999) === 120; }",
+    )
+    .unwrap();
+    let task = rt.spawn(&reader, &[&rt.atom_load(&atom).unwrap()]).unwrap();
+    assert!(
+        matches!(task.run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+}
+
 /// Synthetic fixtures, not light-cljs output. The first two rows adapt
 /// QuickJS tests/test_builtin.js::test_array, revision 7d1c13c5d8f8;
 /// its full copyright and MIT permission notice is retained on array_push.
@@ -1672,16 +1721,19 @@ fn string_extract_combine_coercion_and_boundaries() {
 }
 
 /// Synthetic fixtures, not light-cljs output. Construction of long results
-/// must yield while retaining the source and partially copied output.
+/// must yield while retaining the source and partially constructed output.
 #[test]
 fn string_extract_combine_long_results_yield_collect_and_migrate() {
-    for expression in [
+    for (i, expression) in [
         format!("'{}z'.substring(1)", "a".repeat(8192)),
         format!("'{}z'.slice(1)", "a".repeat(8192)),
         format!("'{}'.concat('{}z')", "a".repeat(4096), "a".repeat(4095)),
         "'z'.padStart(8192, 'a')".to_string(),
         "''.padEnd(8192, 'a').slice(0, -1).concat('z')".to_string(),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let rt = Runtime::new();
         let mut task = rt.spawn(&exe(&expression), &[]).unwrap();
         let mut yields = 0;
@@ -1713,7 +1765,13 @@ fn string_extract_combine_long_results_yield_collect_and_migrate() {
             }
         }
         assert!(complete, "construction exceeded instruction bound");
-        assert!(yields > 32, "construction did not budget copying");
+        if i == 2 {
+            // Concat now links two immutable operands without copying 8192
+            // units. Its conversion/VM steps still yield and migrate.
+            assert!(yields > 0, "concat did not yield");
+        } else {
+            assert!(yields > 32, "construction did not budget copying");
+        }
     }
 }
 

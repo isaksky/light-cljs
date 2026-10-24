@@ -15,7 +15,7 @@ reference row); none of its workloads, code or scores are used.
 cargo run --release --example bench              # full run: about 30 s on a quiet machine
 cargo run --release --example bench -- --quick   # smaller sizes, 3 rounds: about 2 s
 cargo run --release --example bench -- memory    # one row group (startup, reads, park,
-                                                 # persistent, memory, work, overhead)
+                                                 # persistent, memory, work, overhead, strings)
 cargo run --release --example bench -- work --workers 4 --rounds 9
 cargo test --test measurement                    # the workloads at small sizes, asserted
 ```
@@ -244,3 +244,55 @@ gave timing medians within about 10% of these, except `work.alone`
   heap's object lock, collection pause times under load, cross-thread
   wake latency in isolation, `__rt.needAll` continuations (the fold row
   stands for resumable natives), and any comparison with another engine.
+
+## Repeated string concatenation (clj-quickjs-146)
+
+Run `CARGO_BUILD_JOBS=2 nix develop -c cargo run --release --example bench -- strings --rounds 3`
+(or omit `nix develop -c` with the toolchain on PATH). The `strings` group
+uses synthetic JavaScript, not light-cljs output. It builds increasing UTF-16
+units by append or prepend, times the first contiguous read separately, then
+times a JavaScript `charCodeAt` pass that checks every unit. Compilation,
+runtime creation and spawning are outside the intervals; task/rope release
+is also outside them. `--quick` uses 1k/2k/10k instead of 10k/20k/100k units.
+Each row has one discarded warmup and three measured rounds.
+
+Measured on 2026-10-24, release, Rust 1.95.0, Linux x86_64, AMD Ryzen 7
+9850X3D (14 available logical CPUs), single embedder thread, other workers
+active. Flat baseline was the parent implementation with only the new
+benchmark workload added. Load averages at start/end: flat 3.27/3.27,
+rope 3.69/3.69 (one-minute values). Medians [min..max], **ns per unit**:
+
+| Direction / units | Flat build | Rope build | Rope first flatten |
+| --- | ---: | ---: | ---: |
+| append / 10,000 | 690.5 [681.8..692.3] | 728.7 [722.2..744.1] | 3.7 [3.6..6.0] |
+| prepend / 10,000 | 730.1 [728.0..733.1] | 753.1 [742.2..805.6] | 3.2 [3.1..3.3] |
+| append / 20,000 | 794.0 [792.5..794.2] | 742.7 [723.4..919.8] | 7.1 [6.5..10.4] |
+| prepend / 20,000 | 841.9 [840.5..852.8] | 888.1 [734.3..908.3] | 3.1 [3.1..4.3] |
+| append / 100,000 | 2428.6 [2412.0..2431.2] | 709.6 [703.0..758.3] | 14.5 [11.3..16.8] |
+| prepend / 100,000 | 2481.8 [2480.2..2500.8] | 742.2 [732.6..746.5] | 3.9 [3.8..4.7] |
+
+Flat first reads round to 0.0 ns/unit because their buffers already exist.
+At 100k units, build plus first flatten was about 72.4 ms append / 74.6 ms
+prepend, versus 242.9 / 248.2 ms for flat construction. Small inputs did not
+consistently improve. Cached JavaScript reads also regressed slightly in this
+sample: append 474.2 [473.2..476.5] flat versus 510.1 [505.2..514.8] rope,
+prepend 475.1 [474.3..475.4] versus 512.0 [510.5..520.1] ns/unit at 100k.
+These are noisy wall-clock observations, not complexity assertions.
+
+`cargo test --test measurement string_concatenation_is_amortized_linear`
+checks complexity deterministically: each direction constructs 100,000 units,
+collects while the task is suspended partway through construction, flattens,
+and checks every unit through JavaScript. Concat copies 527 short-string
+units, then the first flatten copies 100,000; the asserted bound is 2N.
+Subsequent indexed reads add zero copies. The thread-local diagnostic
+`JsString::copied_code_units()` counts concat, lazy flatten and incremental
+native-builder copies, excluding input construction and single-unit index
+results. Differences must be taken on the thread doing the work. Tests also
+exercise method concat, template interpolation, shared cache initialization,
+retained prefixes and deep-chain flatten/drop on a 64 KiB native stack.
+
+Ropes allocate a node per large concatenation and retain their children even
+after flattening, so this trades memory and small-string overhead for linear
+construction. This run does not quantify that memory tradeoff. First flatten
+and final release remain synchronous; neither is an instruction-budgeted
+latency measurement. No comparison with another JavaScript engine was made.

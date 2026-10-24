@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Row groups (positional filters; default all): `startup`, `reads`,
-//! `park`, `persistent`, `memory`, `work`, `overhead`. The workloads and
+//! `park`, `persistent`, `memory`, `work`, `overhead`, `strings`. The workloads and
 //! what each measures are in `workloads.rs`; how to read the output, and
 //! representative results with their environment, are in
 //! `docs/measurement.md`.
@@ -121,7 +121,7 @@ struct Options {
     groups: Vec<String>,
 }
 
-const GROUPS: [&str; 7] = [
+const GROUPS: [&str; 8] = [
     "startup",
     "reads",
     "park",
@@ -129,6 +129,7 @@ const GROUPS: [&str; 7] = [
     "memory",
     "work",
     "overhead",
+    "strings",
 ];
 
 fn options() -> Result<Options, String> {
@@ -657,6 +658,9 @@ fn main() -> ExitCode {
     };
     environment(&o);
     let fx = Fixtures::compile();
+    if o.wants("strings") {
+        strings(&o);
+    }
     if o.wants("startup") {
         startup(&o, &fx);
     }
@@ -683,4 +687,27 @@ fn main() -> ExitCode {
     }
     println!("\n  load average at end: {}", load_average());
     ExitCode::SUCCESS
+}
+
+fn strings(o: &Options) {
+    header("string concatenation, first flatten, then indexed reads");
+    let build = clj_quickjs::frontend::compile_function(workloads::STRING_CONCAT).unwrap();
+    let read = clj_quickjs::frontend::compile_function(workloads::STRING_READ).unwrap();
+    for n in if o.quick {
+        [1_000, 2_000, 10_000]
+    } else {
+        [10_000, 20_000, 100_000]
+    } {
+        for (name, direction) in [("append", 1.0), ("prepend", -1.0)] {
+            let rs = rounds(o, || workloads::string_concat(&build, &read, n, direction));
+            let param = format!("{name} n={n}");
+            for (stage, times) in [
+                ("build", col(&rs, |r| per(r.build, n as u64))),
+                ("flatten", col(&rs, |r| per(r.flatten, n as u64))),
+                ("read", col(&rs, |r| per(r.read, n as u64))),
+            ] {
+                row(&format!("strings.{stage}"), &param, times, "ns/unit");
+            }
+        }
+    }
 }

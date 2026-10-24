@@ -33,6 +33,59 @@ pub const KIND: ResultKind = ResultKind::new(1);
 /// time returns an error instead of hanging.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 
+// Synthetic fixtures, not light-cljs output. Kept inline so measurement
+// tests and the timing harness exercise exactly the same loops.
+pub const STRING_CONCAT: &str = r#"function build(n, direction) {
+    let s = "";
+    if (direction > 0) {
+        for (let i = 0; i < n; i++) s += String.fromCharCode(i & 0xffff);
+    } else {
+        for (let i = n - 1; i >= 0; i--) s = String.fromCharCode(i & 0xffff) + s;
+    }
+    return s;
+}"#;
+pub const STRING_READ: &str = r#"function read(s, n) {
+    if (s.length !== n) return false;
+    for (let i = 0; i < n; i++) if (s.charCodeAt(i) !== (i & 0xffff)) return false;
+    return true;
+}"#;
+
+pub struct StringConcat {
+    pub build: Duration,
+    pub flatten: Duration,
+    pub read: Duration,
+}
+
+pub fn string_concat(
+    build: &Executable,
+    read: &Executable,
+    n: usize,
+    direction: f64,
+) -> StringConcat {
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(build, &[&num(&rt, n as f64), &num(&rt, direction)])
+        .unwrap();
+    let start = Instant::now();
+    let result = finish(&task);
+    let build = start.elapsed();
+    let text = result.string().expect("expected string");
+    assert_eq!(text.len(), n);
+    let start = Instant::now();
+    black_box(text.code_units());
+    let flatten = start.elapsed();
+    let task = rt.spawn(read, &[&result, &num(&rt, n as f64)]).unwrap();
+    let start = Instant::now();
+    let checked = finish(&task);
+    let read = start.elapsed();
+    assert_eq!(checked.view(), ValueView::Bool(true));
+    StringConcat {
+        build,
+        flatten,
+        read,
+    }
+}
+
 /// The compiled fixtures: shared immutable code, compiled once.
 pub struct Fixtures {
     pub identity: Executable,
