@@ -185,9 +185,27 @@ pub(crate) fn lower_script(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
+    lower_script_kind(name, source, script, false)
+}
+
+pub(crate) fn lower_eval(
+    name: &str,
+    source: &str,
+    script: &Script,
+) -> Result<Executable, SyntaxError> {
+    lower_script_kind(name, source, script, true)
+}
+
+fn lower_script_kind(
+    name: &str,
+    source: &str,
+    script: &Script,
+    eval: bool,
+) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
         lower.enter_function(None, true, script.strict);
+        lower.cur_mut().global_declarations = !eval || !script.strict;
         lower.statement_list(&script.body, &[], true)?;
         let end = Span::new(script.span.end, script.span.end);
         lower.out().op_u16(Opcode::GetLocal, 0, end);
@@ -357,11 +375,6 @@ enum Access {
     /// A name in `Lowerer::global_names`, looked up in the task's global
     /// object at run time. Also used for script `var`/function bindings.
     Global(usize),
-    /// A sloppy-mode reference to `eval` or `arguments` that denotes
-    /// something the subset lacks (clj-quickjs-95,
-    /// `Lowerer::resolve_reference`): any use is an `Unsupported` compile
-    /// error with this message.
-    Unsupported(&'static str),
 }
 
 /// A property reference on the operand stack
@@ -442,6 +455,9 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    /// Script declarations use global properties; strict eval declarations
+    /// use locals while still producing a script completion value.
+    global_declarations: bool,
     out: Emitter,
     /// Innermost last.
     scopes: Vec<Scope>,
@@ -629,6 +645,7 @@ impl<'s> Lowerer<'s> {
         let arguments_key = self.next_self_key;
         self.next_self_key -= 1;
         self.fns.push(FnCtx {
+            global_declarations: script,
             out: Emitter::default(),
             scopes: Vec::new(),
             next_slot: slots,
@@ -1039,7 +1056,7 @@ impl<'s> Lowerer<'s> {
         }
         let key = name.span.start;
         let binding = Binding {
-            global: ctx.completion.is_some()
+            global: ctx.global_declarations
                 && top_level
                 && matches!(kind, BindingKind::Var | BindingKind::Function),
             kind,
@@ -1147,27 +1164,10 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// Resolve a reference to `name` written in the source (a read, an
-    /// assignment or update target, a `typeof` operand). Only unbound
-    /// `eval` remains unsupported (clj-quickjs-106). `arguments` resolves
-    /// as an ordinary binding, including the implicit function binding.
-    /// Returning no `Result` keeps the recursive [`Self::expr`] frame small.
+    /// Resolve a source reference through lexical bindings and the global object.
     #[inline(never)]
     fn resolve_reference(&mut self, name: &str) -> Access {
-        let bound = match name {
-            "eval" => self.fns.iter().any(|ctx| {
-                ctx.scopes.iter().any(|scope| scope.contains_key(name))
-                    || ctx.self_name.as_ref().is_some_and(|(n, _)| n == name)
-            }),
-            _ => true,
-        };
-        match (bound, name) {
-            (true, _) => self.resolve(name),
-            (false, "eval") => Access::Unsupported(
-                "`eval` is not supported by this JavaScript subset (only a binding named `eval` is)",
-            ),
-            (false, _) => unreachable!("only eval can be unsupported"),
-        }
+        self.resolve(name)
     }
 
     /// Install an ordinary function's implicit arguments binding in its
@@ -1397,9 +1397,6 @@ impl<'s> Lowerer<'s> {
             }
             Access::Global(global) => self.global_op(Opcode::GetGlobal, global, at)?,
             Access::Intrinsic => return Err(self.not_a_value(at)),
-            Access::Unsupported(message) => {
-                return Err(self.error(SyntaxErrorKind::Unsupported, at, message));
-            }
         }
         Ok(())
     }
@@ -1422,9 +1419,6 @@ impl<'s> Lowerer<'s> {
             }
         }
         match access {
-            Access::Unsupported(message) => {
-                return Err(self.error(SyntaxErrorKind::Unsupported, at, message));
-            }
             Access::Intrinsic => {
                 return Err(self.error(
                     SyntaxErrorKind::ReservedWord,
@@ -3779,8 +3773,6 @@ impl<'s> Lowerer<'s> {
 
     #[inline(never)]
     fn delete_identifier(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
-        // Deleting a name never reads it, so the unsupported global-eval
-        // value restriction of `resolve_reference` does not apply here.
         match self.resolve(name) {
             Access::Global(global) => {
                 self.out().op(Opcode::GetGlobalObject, at);
@@ -3790,9 +3782,6 @@ impl<'s> Lowerer<'s> {
             }
             Access::Found { .. } => self.constant(Primitive::Bool(false), at),
             Access::Intrinsic => Err(self.not_a_value(at)),
-            Access::Unsupported(message) => {
-                Err(self.error(SyntaxErrorKind::Unsupported, at, message))
-            }
         }
     }
 
@@ -3962,6 +3951,23 @@ impl<'s> Lowerer<'s> {
         span: Span,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        // Direct eval needs the caller's lexical environment (-107/-108).
+        // Preserve an explicit gap instead of silently using global scope.
+        if matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval")
+            && !self.fns.iter().any(|ctx| {
+                ctx.scopes.iter().any(|scope| scope.contains_key("eval"))
+                    || ctx
+                        .self_name
+                        .as_ref()
+                        .is_some_and(|(name, _)| name == "eval")
+            })
+        {
+            return Err(self.error(
+                SyntaxErrorKind::Unsupported,
+                callee.span,
+                "direct eval is not supported; use an indirect call",
+            ));
+        }
         let mut method = false;
         if let ExprKind::Member {
             object, property, ..
@@ -3986,6 +3992,9 @@ impl<'s> Lowerer<'s> {
             self.method_callee(callee)?;
         } else {
             self.expr(callee)?;
+            if matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval") {
+                self.out().op(Opcode::CheckDirectEval, callee.span);
+            }
         }
         if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
             self.spread_arguments(args, span)?;

@@ -5337,9 +5337,9 @@ null-prototype groups object, and explicit undefined elements for unmatched
 captures. Plain i constructors and literals throw SyntaxError naming the
 unsupported flag; lookbehind also fails explicitly. Symbol.match
 recognition, symbol-based string consumers, non-Unicode folding
-remain later work. Direct and indirect eval are unavailable, so the raw NUL
-upstream case is exercised through the constructor and a literal containing
-an actual NUL instead.
+remain later work. The raw NUL upstream case is exercised through the
+constructor and a literal containing an actual NUL; indirect eval is also
+available since clj-quickjs-106.
 
 ## BigInt conversion and string comparison (clj-quickjs-201)
 
@@ -6850,3 +6850,26 @@ The implementation is written fresh. The opening body of
 `research/quickjs/tests/test_std.js::test_async_promise_rejection` at that
 revision, replacing its timer with a final reaction job until simulated timers
 land; `tests/promises.rs` retains the upstream copyright/license notice.
+
+### Runtime compilation for indirect eval (clj-quickjs-106)
+
+The global eval builtin prepares source with a task-owned native continuation.
+Rope flattening and UTF-16 decoding yield between bounded chunks. Input is
+capped at 16,384 UTF-16 units because the existing parser/lowerer/validator is
+synchronous; no heap read closure, heap mutation lock or waiter lock spans
+compilation. The separate `frontend::compile_eval` entry point parses an
+initially sloppy script and lets directives select strictness. It uses script
+completion lowering while keeping strict eval declarations local. The result
+is the usual shared immutable `Executable`; a trampoline action releases the
+native borrow and enters a fresh ordinary VM frame. No Rust interpreter loop
+or stack is retained across a yield or wait. The frame records eval origin so
+sloppy declarations use configurable global properties. Existing task roots,
+frame tracing and native cancellation/unwinding cover the whole path.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+(`js_global_eval`, `JS_EvalObject`, `__JS_EvalInternal`),
+`research/quickjs/tests/test_builtin.js` (`test_eval`) and
+`research/quickjs/tests/test_language.js` (`test_global_var_opt`) at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. These were semantic references;
+implementation and synthetic fixtures were written independently, with no
+upstream code or test text copied.

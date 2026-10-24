@@ -106,6 +106,8 @@ impl Default for VmLimits {
 /// One activation of a function. See the module docs.
 #[derive(Debug)]
 pub(crate) struct Frame {
+    /// Eval's var/function declarations create configurable global properties.
+    pub(crate) eval: bool,
     /// The shared code this frame runs (never copied per task or call).
     pub(crate) code: Arc<Code>,
     /// The function object this frame was called through, for
@@ -278,6 +280,7 @@ impl VmState {
             std::mem::replace(
                 &mut self.entry,
                 Frame {
+                    eval: false,
                     code,
                     callee: None,
                     this: Value::Undefined,
@@ -380,6 +383,7 @@ impl VmState {
             suspended_async: Vec::new(),
             global_object: None,
             entry: Frame {
+                eval: false,
                 code: Arc::clone(code),
                 callee: None,
                 this: Value::Undefined,
@@ -641,6 +645,7 @@ impl VmState {
         bind_args(&mut self.stack, base, &code, argc);
         self.stack.reserve(code.max_stack);
         self.calls.push(Frame {
+            eval: false,
             code,
             callee: Some(callee),
             this,

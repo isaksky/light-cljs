@@ -381,9 +381,7 @@ fn array_patterns() {
     ] {
         parse_script(src).unwrap();
     }
-    let error = super::compile_script_with("array-eval", "[eval] = [];", ScriptOptions::SLOPPY)
-        .unwrap_err();
-    assert_eq!(error.kind, SyntaxErrorKind::Unsupported);
+    super::compile_script_with("array-eval", "[eval] = [];", ScriptOptions::SLOPPY).unwrap();
 }
 
 /// Fixed parameter lists across growing bodies exercise directive handling
@@ -3644,7 +3642,7 @@ fn strictness_of(script: &Script) -> Vec<(String, bool)> {
 
 #[test]
 fn directive_prologues_set_strictness() {
-    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    use SyntaxErrorKind::ReservedWord;
     // Sloppy code may bind `eval` and `arguments`.
     for src in [
         "function f(eval) {}",
@@ -3706,15 +3704,10 @@ fn directive_prologues_set_strictness() {
     );
     // Sloppy references to them parse; the compiler decides whether they
     // denote a binding (`tests/js_source.rs` `use_strict_directives`).
-    // Strict references stay unsupported.
+    // Global eval references are values in both modes (clj-quickjs-106).
     sloppy_script("let eval = 1; eval = eval + 1; eval++; typeof arguments;");
-    sloppy_rejects(
-        "function f() { 'use strict'; return eval; }",
-        Unsupported,
-        1,
-        37,
-    );
-    rejects("let a = 1; a = eval;", Unsupported, 1, 16);
+    sloppy_script("function f() { 'use strict'; return eval; }");
+    parse_script("let a = 1; a = eval;").unwrap();
 
     // The recorded mode of the script and of each function.
     let script = sloppy_script(
@@ -3971,7 +3964,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("x.y &&= 1;", 1, 5, "&&="),
         ("function f(...a) {}", 1, 12, "rest"),
         ("a ||= 1;", 1, 3, "||="),
-        ("x = eval;", 1, 5, "eval"),
     ];
     for &(src, line, column, needle) in cases {
         rejects_with(src, Unsupported, line, column, needle);

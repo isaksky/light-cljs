@@ -223,6 +223,7 @@ mod array_from;
 mod array_sort;
 mod collator;
 mod date_time_format;
+mod eval;
 mod intl_service;
 mod number_format;
 mod plural_rules;
@@ -280,6 +281,8 @@ enum Failure {
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
 pub(crate) enum Action {
+    /// Enter newly compiled eval code after releasing the native borrow.
+    Eval(super::executable::Executable),
     /// Keep this native frame runnable for another budgeted step.
     Continue,
     /// Complete a property write through the same resumable conversion and
@@ -429,6 +432,7 @@ enum ConvertTarget {
 #[derive(Debug)]
 enum NativeState {
     Async(super::asynchronous::Boundary),
+    Eval(Box<eval::State>),
     ArrayFrom(Box<array_from::State>),
     DateParse {
         parser: Box<super::date::Parser>,
@@ -787,6 +791,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
             NativeState::Async(a) => a.trace(visit),
+            NativeState::Eval(_) => {} // Source and compiler state have no heap edges.
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
@@ -933,7 +938,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Await
         | DefineGetterElem
         | DefineSetterElem
-        | SetComputedName(_) => false,
+        | SetComputedName(_)
+        | CheckDirectEval => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)
@@ -1108,6 +1114,18 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::Eval && !construct {
+        let value = args.first().cloned().unwrap_or(Value::Undefined);
+        let native = if let Value::String(text) = value {
+            eval::State::new(text)?
+        } else {
+            state.replace(popped, value)?;
+            return Ok(true);
+        };
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Eval(Box::new(native)))?;
+        return Ok(true);
+    }
     if which == Builtin::GeneratorNext {
         let id = super::generator::receiver(heap, state.diag.task, this)?;
         let value = args.first().cloned().unwrap_or(Value::Undefined);
@@ -1999,6 +2017,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Continue
             | Action::SuspendAsync(_)
             | Action::ResumeAsync { .. }
+            | Action::Eval(_)
             | Action::SetProperty { .. }
             | Action::Call { .. }
             | Action::ToNumber(_)
@@ -2103,6 +2122,19 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         } => {
             state.natives.pop();
             super::asynchronous::resume(heap, state, id, rejected, value)
+        }
+        Action::Eval(executable) => {
+            state.natives.pop();
+            let code = executable.0;
+            let function =
+                dispatch::new_function(heap, code.clone(), Box::new([]), state.diag.task, None)?;
+            let Value::Object(id) = function else {
+                return Err(Fault::Internal("eval function is not an object"));
+            };
+            state.push(function);
+            state.enter(code, id, Value::Undefined, 0)?;
+            state.top_mut().eval = true;
+            Ok(Flow::FrameChanged)
         }
         Action::DefaultLocale => {
             let locale = crate::intl::default_locale(Some(host));
@@ -2437,6 +2469,7 @@ impl NativeState {
     ) -> Result<Action, Fault> {
         match self {
             NativeState::Async(a) => a.step(heap, input),
+            NativeState::Eval(eval) => eval.step(),
             NativeState::Generator { id, failed } => {
                 if let Some(error) = failed.take() {
                     super::generator::complete(heap, *id);
@@ -3648,7 +3681,8 @@ impl NativeState {
         match (self, failure) {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
-                NativeState::Reduce { .. }
+                NativeState::Eval(_)
+                | NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
                 | NativeState::ArraySort(_)
                 | NativeState::Iterator(_)

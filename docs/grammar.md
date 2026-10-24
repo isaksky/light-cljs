@@ -492,7 +492,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
 | a second `__proto__: v` (or `"__proto__": v`) in one object literal (clj-quickjs-121; a shorthand `{__proto__}` does not count) | Invalid |
-| references to `eval` in strict code (in sloppy code it parses, and the compiler rejects references that do not denote a binding the program declares) | Unsupported |
+| direct `eval(source)` calls without a declared binding named `eval` (compiler check; indirect calls are supported) | Unsupported |
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding or assigning/updating `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
@@ -594,8 +594,10 @@ checks left to later stages:
   declarations create its non-configurable properties at entry; `let` and
   `const` stay lexical. A published closure reads the receiving task's
   globals, while lexical captures keep their usual publication rules.
-  There is one script per task; indirect eval and later script admission
-  into an existing global environment are not implemented. Block function
+  Indirect eval shares the task's global object. Script `let`/`const`
+  bindings are still frame locals and are not dynamically visible to eval;
+  their conflicts with eval global declarations are not checked. Later script
+  admission into an existing global environment is not implemented. Block function
   declarations stay lexical (sloppy Annex B hoisting is not implemented).
 - **Nesting limit.** Nesting is charged against one budget of 256 units
   (`MAX_NESTING`); input that exceeds it is rejected with `TooDeep`. Costs
@@ -760,9 +762,8 @@ checks left to later stages:
   on a non-extensible object), which sloppy code ignores instead of
   throwing a `TypeError` (clj-quickjs-119). Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
-  named for it: a reference to `eval` that would denote
-  the global `eval` (clj-quickjs-106, direct eval -107/-108) are compile
-  errors (`Unsupported`, see "Directive prologues and strictness"); silently
+  named for it: direct eval (-107/-108) remains a compile
+  error (`Unsupported`, see "Indirect eval"); silently
   ignored stores to a function expression's own name (clj-quickjs-96);
   `with`
   (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
@@ -779,7 +780,7 @@ checks left to later stages:
   The object is ordinary,
   without a special arguments brand for `Object.prototype.toString`.
 - **Default parameter values lack what the subset lacks elsewhere**
-  (clj-quickjs-100): `eval` is rejected (clj-quickjs-106, -109).
+  (clj-quickjs-100): direct `eval` is rejected (-107, -109); indirect eval works.
   An arrow's default sees its lexical
   `this` (clj-quickjs-98); a non-arrow function's default sees its own
   receiver (clj-quickjs-116). Anonymous function defaults infer their
@@ -824,10 +825,9 @@ Directive"; QuickJS `js_parse_directives` and
 - **`eval` and `arguments` in sloppy code** may be declared as
   parameters, `let`/`const`/`var` bindings, function names and catch
   parameters, and such bindings are read, assigned (`=`, compound, `++`)
-  and closed over as usual. A reference to `eval` is a compile error
-  (`Unsupported`) where it would denote something the subset lacks:
-  `eval` with no binding of that name in scope (the global `eval`,
-  clj-quickjs-106). `arguments` in a `function` (directly or through
+  and closed over as usual. References to `eval` resolve to the global
+  function unless shadowed; indirect calls compile source at runtime
+  (clj-quickjs-106). `arguments` in a `function` (directly or through
   arrows) resolves to that function's implicit object unless shadowed;
   a plain `var arguments;` keeps the object (clj-quickjs-97).
   In a script outside any `function`,
@@ -3004,8 +3004,8 @@ Global objects are task-owned and cannot be published. A published closure
 that refers to a global reads the calling task's globals; a closure with a
 lexical capture follows the usual value/cell publication rule. A script
 arrow capturing `this` captures the task-owned object and cannot publish.
-There is one script per task. Indirect eval (-106) and sloppy non-object
-receiver substitution are still deferred.
+Indirect eval (-106) runs additional scripts in the task's global scope.
+Sloppy non-object receiver substitution is still deferred.
 
 ### Error constructor and stringification (clj-quickjs-228)
 
@@ -3077,9 +3077,9 @@ frame teardown, yields, dependency waits, worker migration and collection.
 Every Error instance's stack, including engine errors, is a writable,
 configurable, non-enumerable own data property, as in QuickJS (clj-quickjs-230).
 Reads, writes, deletion, descriptors and enumeration use ordinary object rules.
-Direct/indirect eval
-remain deferred; eval SyntaxError stacks will use eval's source map when
-eval is implemented. Function `lineNumber`/`columnNumber` properties remain deferred.
+Eval runtime diagnostics use the `<eval>` source map; compilation failures
+are catchable SyntaxErrors whose messages include `<eval>:line:column`.
+Direct eval and function `lineNumber`/`columnNumber` properties remain deferred.
 
 ```js accept
 Error('hello').stack.indexOf('    at <anonymous> (') === 0;
@@ -4394,8 +4394,8 @@ never exposed to JavaScript or re-iterated when the call starts.
 Rejected forms: object spread, rest parameters and a standalone
 `(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
 intrinsics require statically supplied arguments and reject spread with
-`Unsupported`. Global eval and dynamic Function construction retain their
-existing explicit rejection; spread adds no dynamic compilation.
+`Unsupported`. Direct eval and dynamic Function construction retain their
+explicit rejection. Indirect eval supports ordinary and spread calls.
 
 Synthetic fixtures, not light-cljs output:
 
@@ -4748,4 +4748,52 @@ Promise.reject(1); 42;
 ```js accept
 let p = Promise.reject(2); Promise.resolve().then(() => p.catch(() => {})); 42;
 (async () => { try { await Promise.reject(3); } catch (e) {} })();
+```
+
+### Indirect eval (clj-quickjs-106)
+
+EBNF is unchanged: `eval` is an Identifier reference, and `(0, eval)(s)`,
+`globalThis.eval(s)` and an alias `const e = eval; e(s)` use ordinary Call
+syntax. A syntactic `eval(s)` without a declared binding named `eval` is
+rejected during compilation with `Unsupported`, pending direct eval (-107/-108).
+For a declared binding named `eval`, ordinary functions remain callable;
+the intrinsic eval value is rejected at runtime by `check_direct_eval`
+(`0x7F`, stack `callee -> callee`), rather than silently using indirect scope.
+
+Execution: `eval` is a writable, configurable, non-enumerable property of the
+task's global object. The function's length is 1 and name is `"eval"`.
+A non-string first argument is returned unchanged (including `undefined`
+when omitted). String input is compiled as a global script, initially sloppy;
+a `"use strict"` directive makes it strict. Its completion value is returned.
+Sloppy eval's `var` and top-level function declarations create configurable
+global properties; existing non-configurable script globals retain their
+flags. Eval `let`/`const` bindings, and strict eval `var`/function declarations,
+are local to the eval frame. Closures may retain those local bindings. Caller
+function bindings and caller strictness do not enter indirect eval's scope.
+Compilation errors become catchable `SyntaxError` instances with positioned
+`<eval>` messages; runtime diagnostics use the eval code's source map.
+
+The native continuation prepares UTF-16 source and flattens ropes in budgeted
+steps. The existing synchronous frontend runs with no heap or waiter lock;
+eval input is limited to 16,384 UTF-16 code units (catchable `RangeError` above
+that limit), bounding that final compilation step. Raw unpaired surrogates in
+source currently throw `SyntaxError`; Unicode escapes within source literals
+remain supported. Compiled code crosses the existing immutable `Arc` boundary
+and runs in a fresh task-owned VM frame, so instruction yields, dependency
+waits, collection and worker migration follow the ordinary VM protocol.
+
+Explicit gaps: direct eval and parameter-environment eval remain -107/-108/-109.
+Script `let`/`const` bindings still live in the initial script frame: dynamic
+lookup from eval and conflicts between those names and eval global declarations
+remain unavailable. Eval lexical declarations never become global properties.
+
+```js accept
+const e = eval;
+e('1 + 1') === 2 && (0, eval)('if (0) 2; else 3;') === 3;
+(0, eval)('var q = 1');
+Object.getOwnPropertyDescriptor(globalThis, 'q').configurable;
+```
+
+```js compile-reject Unsupported 1:1
+eval('1 + 1');
 ```

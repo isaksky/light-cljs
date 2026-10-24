@@ -3159,8 +3159,7 @@ impl<'a> Parser<'a> {
 
     /// An identifier in expression position, including the reserved
     /// constants and contextual async function expressions. `arguments` is an
-    /// ordinary reference in either mode. `eval` remains unsupported in
-    /// strict code, and must resolve to a declared binding in sloppy code.
+    /// ordinary reference in either mode, as is the global `eval` function.
     #[inline(never)]
     fn parse_identifier_reference(&mut self) -> PResult<Expr> {
         if self.at_async_function() {
@@ -3179,7 +3178,6 @@ impl<'a> Parser<'a> {
             "undefined" => ExprKind::Undefined,
             "NaN" => ExprKind::Number(f64::NAN),
             "Infinity" => ExprKind::Number(f64::INFINITY),
-            "eval" if self.strict => return Err(self.unsupported(span, "`eval` is")),
             _ => ExprKind::Identifier(name.clone()),
         };
         self.advance()?;

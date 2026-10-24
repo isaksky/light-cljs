@@ -210,11 +210,12 @@ pub(crate) enum Global {
     BigInt = 36,
     Promise = 37,
     WeakMap = 38,
+    Eval = 39,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 39] = [
+    const ALL: [Global; 40] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -254,6 +255,7 @@ impl Global {
         Global::BigInt,
         Global::Promise,
         Global::WeakMap,
+        Global::Eval,
     ];
 
     /// The JavaScript name.
@@ -272,6 +274,7 @@ impl Global {
 
             Global::ParseInt => "parseInt",
             Global::ParseFloat => "parseFloat",
+            Global::Eval => "eval",
             Global::Math => "Math",
             Global::Error => "Error",
             Global::TypeError => "TypeError",
@@ -363,6 +366,7 @@ pub(crate) struct Intrinsics {
 
     parse_int: ObjectId,
     parse_float: ObjectId,
+    eval: ObjectId,
     /// Ordinary, non-callable Math namespace.
     math: ObjectId,
     pub(crate) error_prototype: ObjectId,
@@ -499,6 +503,7 @@ impl Intrinsics {
 
             Global::ParseInt => Value::Object(self.parse_int),
             Global::ParseFloat => Value::Object(self.parse_float),
+            Global::Eval => Value::Object(self.eval),
             Global::Math => Value::Object(self.math),
             Global::Error => Value::Object(self.error),
             Global::TypeError => {
@@ -630,6 +635,16 @@ pub(crate) fn declare_global(
     name: &JsString,
     function: bool,
 ) -> Result<(), crate::vm::dispatch::Fault> {
+    declare_global_with(heap, id, name, function, false)
+}
+
+pub(crate) fn declare_global_with(
+    heap: &Heap,
+    id: ObjectId,
+    name: &JsString,
+    function: bool,
+    configurable: bool,
+) -> Result<(), crate::vm::dispatch::Fault> {
     use crate::vm::dispatch::Fault;
     let key = heap
         .keys()
@@ -655,7 +670,7 @@ pub(crate) fn declare_global(
         let flags = PropertyFlags {
             writable: true,
             enumerable: true,
-            configurable: false,
+            configurable,
         };
         if !object.define_with(key, Value::Undefined, flags) {
             return Err(Fault::SyntaxError(format!(
@@ -1112,6 +1127,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_collator_intrinsics(&mut b, object_prototype, intl)?;
     let (intl_date_time_format_prototype, intl_date_time_format_bound) =
         intl_date_time_format_intrinsics(&mut b, object_prototype, intl)?;
+    let eval = b.function(Builtin::Eval, &[])?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1164,6 +1180,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
         parse_int,
         parse_float,
+        eval,
         math,
         error_prototype,
         error,
@@ -2168,7 +2185,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 274); // Includes six DateTimeFormat intrinsics.
+        assert_eq!(first.all.len(), 275); // Includes DateTimeFormat and global eval.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -2232,7 +2249,9 @@ mod tests {
         assert_eq!(Global::from_u16(37), Some(Global::Promise));
         assert_eq!(Global::from_name("WeakMap"), Some(Global::WeakMap));
         assert_eq!(Global::from_u16(38), Some(Global::WeakMap));
-        assert_eq!(Global::from_u16(39), None);
+        assert_eq!(Global::from_name("eval"), Some(Global::Eval));
+        assert_eq!(Global::from_u16(39), Some(Global::Eval));
+        assert_eq!(Global::from_u16(40), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

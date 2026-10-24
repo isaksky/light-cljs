@@ -532,6 +532,7 @@ impl Executable {
                 Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
                 Opcode::AsyncStart => Instr::AsyncStart,
                 Opcode::Await => Instr::Await,
+                Opcode::CheckDirectEval => Instr::CheckDirectEval,
 
                 Opcode::DefineElem => Instr::DefineElem,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
@@ -958,10 +959,10 @@ mod tests {
     fn builtin_global_operands_are_validated() {
         let g = Opcode::GetBuiltinGlobal as u8;
         assert_eq!(
-            kind(load(vec![g, 39, 0, RET], vec![], 0)),
-            UnknownBuiltinGlobal { index: 39 }
+            kind(load(vec![g, 40, 0, RET], vec![], 0)),
+            UnknownBuiltinGlobal { index: 40 }
         );
-        for i in 0..39 {
+        for i in 0..40 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
     }

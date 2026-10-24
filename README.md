@@ -2545,7 +2545,7 @@ Supported (`cargo test --test js_source global_object_bindings`,
 - The object and its properties survive yields, collections and migration,
   and are reclaimed after task VM state is released.
 
-Deferred: indirect eval (-106), multiple scripts in one task, and sloppy `this`
+Deferred: direct eval (-107/-108), multiple scripts in one task, and sloppy `this`
 substitution keep their existing gaps.
 
 ### Stored `Object.prototype.__proto__` accessor (clj-quickjs-261)
@@ -2581,7 +2581,7 @@ Supported (`cargo test --test js_source sloppy_implicit_globals_and_delete`,
   Deletion never reads a binding or invokes its getter. Strict `delete x`
   remains an early `Invalid` SyntaxError.
 - Property writes use the existing resumable accessor path. Sloppy `this`
-  substitution and eval remain deferred.
+  substitution and direct eval remain deferred.
 
 ### Error constructor (clj-quickjs-228)
 
@@ -3552,3 +3552,15 @@ rejection handler propagates to the derived Promise. Yields and dependency
 waits do not report; cancellation and failure discard pending diagnostics.
 The binary prints remaining rejections to stderr and exits with status 1.
 Test: `cargo test --test promises -- --test-threads=3`.
+
+Indirect eval (clj-quickjs-106): `(0, eval)(source)`, global-object method calls
+and aliases compile initially sloppy global scripts at runtime and return
+completion values. Non-strings are returned unchanged. Sloppy eval globals are
+configurable; eval lexical bindings and strict eval declarations stay local.
+Compile errors are catchable SyntaxErrors. Execution uses ordinary resumable
+VM frames, including waits and GC. Runtime compilation accepts up to 16,384
+UTF-16 units, with budgeted rope flattening and source preparation; larger
+input throws RangeError. Direct eval remains explicitly unsupported. Script
+lexical bindings are not dynamically exposed to eval, and raw unpaired
+surrogates in source require Unicode escapes. See `docs/grammar.md`, "Indirect
+eval", for limits. Verification: `cargo test --test js_source indirect_eval`.

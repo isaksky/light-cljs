@@ -2132,6 +2132,25 @@ fn step_instruction(
             let this = this_value(state)?;
             state.push(this);
         }
+        Instr::CheckDirectEval => {
+            let [callee] = top_operands(state, 1)? else {
+                return Err(Fault::Internal("missing direct eval candidate"));
+            };
+            let intrinsic = if let Value::Object(id) = callee {
+                heap.read(
+                    *id,
+                    |object| matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval),
+                )
+                .ok_or(Fault::Internal("direct eval candidate was reclaimed"))?
+            } else {
+                false
+            };
+            if intrinsic {
+                return Err(Fault::Unsupported(
+                    "direct eval is not supported; use an indirect call".into(),
+                ));
+            }
+        }
         Instr::GetGlobalObject => {
             let global = global_object(state, heap)?;
             state.push(global);
@@ -2179,12 +2198,12 @@ fn step_instruction(
             let Value::Object(id) = global_object(state, heap)? else {
                 return Err(Fault::Internal("missing global object"));
             };
-            realm::declare_global(
-                heap,
-                id,
-                &name,
-                matches!(instr, Instr::DeclareGlobalFunction(_)),
-            )?;
+            let function = matches!(instr, Instr::DeclareGlobalFunction(_));
+            if state.top().eval {
+                realm::declare_global_with(heap, id, &name, function, true)?;
+            } else {
+                realm::declare_global(heap, id, &name, function)?;
+            }
         }
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
@@ -2312,6 +2331,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::AppendElement
         | Instr::AppendHole
         | Instr::CheckSpreadArguments
+        | Instr::CheckDirectEval
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2
         | Instr::ToPropertyKey

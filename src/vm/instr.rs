@@ -126,6 +126,7 @@
 //! | `DefineGetterElem` | 0x85 | – | object key function → object | define own enumerable/configurable getter, merging an existing setter |
 //! | `DefineSetterElem` | 0x86 | – | object key function → object | define own enumerable/configurable setter, merging an existing getter |
 //! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
+//! | `CheckDirectEval` | 0x88 | – | callee → callee | reject the intrinsic eval through a shadowed direct-call candidate until direct eval is implemented |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -623,6 +624,7 @@ pub enum Opcode {
     DefineGetterElem = 0x85,
     DefineSetterElem = 0x86,
     SetComputedName = 0x87,
+    CheckDirectEval = 0x88,
 }
 
 /// Operand encoding of an opcode.
@@ -793,6 +795,7 @@ impl Opcode {
             0x7F => RequireCoercible,
             0x83 => AsyncStart,
             0x84 => Await,
+            0x88 => CheckDirectEval,
             0x66 => Method,
             0x67 => DefineGetter,
             0x68 => DefineSetter,
@@ -937,6 +940,7 @@ impl Opcode {
             RequireCoercible => "require_coercible",
             AsyncStart => "async_start",
             Await => "await",
+            CheckDirectEval => "check_direct_eval",
             Method => "method",
             DefineGetter => "define_getter",
             DefineSetter => "define_setter",
@@ -1013,6 +1017,7 @@ impl Opcode {
             | Await => OperandKind::None,
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
+            CheckDirectEval => OperandKind::None,
         }
     }
 }
@@ -1202,6 +1207,7 @@ pub(crate) enum Instr {
     DefineGetterElem,
     DefineSetterElem,
     SetComputedName(u16),
+    CheckDirectEval,
 }
 
 impl Instr {
@@ -1322,6 +1328,7 @@ impl Instr {
             Instr::RequireCoercible => Opcode::RequireCoercible,
             Instr::AsyncStart => Opcode::AsyncStart,
             Instr::Await => Opcode::Await,
+            Instr::CheckDirectEval => Opcode::CheckDirectEval,
             Instr::Method(..) => Opcode::Method,
             Instr::DefineGetter(_) => Opcode::DefineGetter,
             Instr::DefineSetter(_) => Opcode::DefineSetter,
@@ -1378,7 +1385,7 @@ impl Instr {
             SetComputedName(_) => (2, 2),
             CallSpread | ConstructSpread => (2, 1),
             CallMethodSpread => (3, 1),
-            CheckSpreadArguments => (1, 1),
+            CheckSpreadArguments | CheckDirectEval => (1, 1),
             ForInNext => (1, 2),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
@@ -1418,6 +1425,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 135);
+        assert_eq!(assigned, 136);
     }
 }

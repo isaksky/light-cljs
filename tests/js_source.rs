@@ -296,6 +296,141 @@ fn object_destructuring() {
     }
 }
 
+#[test]
+fn indirect_eval() {
+    for (source, expected) in [
+        (r#"(0, eval)("1 + 1")"#, ValueView::Number(2.0)),
+        ("(0, eval)(5)", ValueView::Number(5.0)),
+        (r#"(0, eval)("if (0) 2; else 3;")"#, ValueView::Number(3.0)),
+        (r#"(0, eval)("var q = 1"); q"#, ValueView::Number(1.0)),
+        (
+            r#"let r = 0; try { (0, eval)("1 +"); } catch (e) { r = 1; } r"#,
+            ValueView::Number(1.0),
+        ),
+    ] {
+        assert_eq!(eval(source), expected, "{source}");
+    }
+    for source in [
+        r#"(0, eval)("var q = 1"); Object.getOwnPropertyDescriptor(globalThis, "q").configurable"#,
+        r#"const e = eval; e('var x = 3; function g() { return x; }'); g() === 3 && Object.getOwnPropertyDescriptor(globalThis, 'g').configurable && delete globalThis.x && delete globalThis.g"#,
+        r#"(0, eval)('"use strict"; var x = 1; function g() {}'); typeof x === 'undefined' && typeof g === 'undefined'"#,
+        r#"let caught = false; try { (0, eval)('1 +'); } catch (e) { caught = e instanceof SyntaxError; } caught"#,
+        r#"const e = eval; let o = {}; e(o) === o && e() === undefined && e(null) === null"#,
+        r#"eval.length === 1 && eval.name === 'eval' && globalThis.eval === eval"#,
+        r#"(0, eval)('this') === globalThis"#,
+        r#"(0, eval)('var n = 1'); (0, eval)('n += 2'); n === 3"#,
+        r#"const f = (0, eval)('"use strict"; var x = 3; () => ++x'); f() === 4 && f() === 5 && typeof x === 'undefined'"#,
+        r#"const f = (0, eval)('let x = 3; () => ++x'); f() === 4 && f() === 5 && typeof x === 'undefined'"#,
+        r#"var x = 1; (0, eval)('var x;'); x === 1 && !Object.getOwnPropertyDescriptor(globalThis, 'x').configurable"#,
+        r#"Object.preventExtensions(globalThis); let caught = false; try { (0, eval)('var x;'); } catch(e) { caught = e instanceof SyntaxError; } caught"#,
+        r#"let d = Object.getOwnPropertyDescriptor(globalThis, 'eval'); d.writable && d.configurable && !d.enumerable && delete globalThis.eval && typeof eval === 'undefined'"#,
+        r#"let caught = false; try { new eval('1'); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"eval.call(null, '2') === 2 && eval.apply(null, ['3']) === 3 && eval.bind(null)('4') === 4 && (0, eval)(...['5']) === 5"#,
+        r#"let caught = false; try { (0, eval)('1 +'); } catch(e) { caught = e.message.indexOf('<eval>:1:') === 0; } caught"#,
+        r#"(0, eval)('"\\ud800"').charCodeAt(0) === 55296"#,
+        r#"let caught = false; try { (0, eval)(' '.padEnd(16385, ' ')); } catch(e) { caught = e instanceof RangeError; } caught"#,
+        r#"let caught = false; try { (0, eval)('"' + '\ud800' + '"'); } catch(e) { caught = e instanceof SyntaxError; } caught"#,
+        r#"(0, eval)('function f(eval) { return eval(2); } f(x => x + 1)') === 3"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        r#"(0, eval)("let w = 1"); w"#,
+        r#"function f() { const k = 1; return (0, eval)("k"); } f()"#,
+    ] {
+        assert_eq!(
+            failure(source).kind(),
+            VmErrorKind::ReferenceError,
+            "{source}"
+        );
+    }
+    let rt = Runtime::new();
+    let script = compile_script(
+        "eval-caller.js",
+        r#"(0, eval)('var n = 0; while (n < 25) n++; n')"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&script, &[]).unwrap();
+    let mut yields = 0;
+    loop {
+        match task
+            .run_with(Budget::instructions(5), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Number(25.0));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(yields < 1000);
+    }
+    assert!(yields > 1);
+    assert_eq!(
+        failure(r#"(0, eval)('function f(eval) { return eval("x"); } f(globalThis.eval)')"#).kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+    let error = failure(r#"(0, eval)('\nmissing')"#);
+    assert_eq!(&*error.diagnostic().executable, "<eval>");
+    assert_eq!(error.diagnostic().source.unwrap().line, 2);
+}
+
+/// Synthetic fixtures, not light-cljs output. Eval runs in ordinary task
+/// frames, including when nested, called through natives, or fed a rope.
+#[test]
+fn indirect_eval_waits_collects_and_migrates() {
+    for source in [
+        r#"(0, eval)('let x = 7; __rt.need(106, 1); () => x')() === 7"#,
+        r#"let caught = false; try { globalThis.eval('try { __rt.need(106, 1); throw 17; } finally { var finished = true; }'); } catch(e) { caught = e === 17; } caught && finished"#,
+        r#"let s = ''; for (let i = 0; i < 128; i++) s += ' '; s += '__rt.need(106, 1); 42'; eval.call(null, s) === 42"#,
+        r#"(0, eval)('(0, eval)(\"__rt.need(106, 1); 42\")') === 42"#,
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(5), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "{source}");
+        assert_eq!(waits, 1, "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn array_destructuring() {
@@ -8201,16 +8336,11 @@ fn use_strict_directives() {
         sloppy("typeof arguments === 'undefined'"),
         ValueView::Bool(true)
     );
-    // A reference to the global `eval` (clj-quickjs-106) stays unsupported.
-    {
-        let (src, column) = ("x = eval;", 5);
-        let e = compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_err();
-        assert_eq!(
-            (e.kind, e.line, e.column),
-            (SyntaxErrorKind::Unsupported, 1, column),
-            "{src}: {e}"
-        );
-    }
+    // The global eval is now a function value in sloppy and strict code.
+    assert_eq!(
+        sloppy("x = eval; typeof x === 'function'"),
+        ValueView::Bool(true)
+    );
 
     // The entry points without options stay strict throughout.
     let script = exe("function f() { return () => 1; } f()()");

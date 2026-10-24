@@ -263,6 +263,13 @@ pub fn compile_script_with(
     lower::lower_script(name, source, &script)
 }
 
+/// Compile an eval script independently of the calling frame. Keeping this
+/// entry separate lets direct eval supply its environment in a later slice.
+pub(crate) fn compile_eval(name: &str, source: &str) -> Result<Executable, SyntaxError> {
+    let script = parse_script_with(source, ScriptOptions::SLOPPY)?;
+    lower::lower_eval(name, source, &script)
+}
+
 /// Compile `source`, which must consist of exactly one function declaration,
 /// into an executable whose parameters are that function's parameters: the
 /// entry point of a task, spawned with arguments. `return` completes the

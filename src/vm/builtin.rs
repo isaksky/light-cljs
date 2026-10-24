@@ -389,6 +389,7 @@ pub(crate) enum Builtin {
     IntlDateTimeFormatBound,
     IntlDateTimeFormatResolvedOptions,
     IntlDateTimeFormatSupportedLocales,
+    Eval,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -570,6 +571,7 @@ impl Builtin {
 
             Builtin::ParseInt => "parseInt",
             Builtin::ParseFloat => "parseFloat",
+            Builtin::Eval => "eval",
             Builtin::MathFloor => "floor",
             Builtin::MathCeil => "ceil",
             Builtin::MathAbs => "abs",
@@ -746,6 +748,7 @@ impl Builtin {
 
             Builtin::ParseInt => 2,
             Builtin::ParseFloat => 1,
+            Builtin::Eval => 1,
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
             Builtin::MathSqrt | Builtin::MathLog2 => 1,
@@ -1099,7 +1102,8 @@ pub(crate) fn call(
         | Builtin::StringPrototypePadEnd
         | Builtin::StringPrototypeSplit
         | Builtin::ParseInt
-        | Builtin::ParseFloat => Err(Fault::Internal(
+        | Builtin::ParseFloat
+        | Builtin::Eval => Err(Fault::Internal(
             "operation requires a resumable native frame",
         )),
         Builtin::GlobalIsNaN
