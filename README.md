@@ -1733,7 +1733,7 @@ Deferred:
 
 - Boolean bases fail with
   `UnsupportedOperand` (clj-quickjs-39; numbers and strings read through their prototypes since
-  clj-quickjs-73); optional chaining.
+  clj-quickjs-73).
   (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
 - Interned property names are never reclaimed, so writing many distinct
   computed keys grows the runtime's key table (clj-quickjs-259;
@@ -1881,8 +1881,12 @@ Supported (`cargo test --test js_source tagged_template`,
 - `String.raw(callSite, ...subs)` reads `raw` and its ToLength length once, then
   interleaves ToString of raw entries and available substitutions. Getters and
   coercion resume across yields, waits, collection and migration; copying is budgeted.
-- Optional chaining remains unsupported, including optional-chain template tags.
-  Boolean wrapper property reads remain deferred like other primitive reads.
+- Optional chains support member/index access, receiver-preserving calls and
+  delete (clj-quickjs-134). A nullish optional link skips the remaining chain,
+  including computed keys and arguments. Parentheses end the short circuit.
+  Optional chains as assignment targets, `new` callees or template tags are
+  early SyntaxErrors; a parenthesized optional member can be a tag.
+- Boolean wrapper property reads remain deferred like other primitive reads.
 
 ### `this` in method calls (clj-quickjs-116)
 
@@ -2142,10 +2146,12 @@ Supported (`cargo test --test js_source delete_property_references`,
   (`delete "abc"[0]` is a `TypeError`, `delete "abc"[100]` is `true`). `delete` of any other
   non-reference expression evaluates it and gives `true`.
 - `delete x` of an identifier is an early `SyntaxError` (`Invalid`) in strict code.
+- Optional-chain delete (clj-quickjs-134) returns true on a nullish base and
+  otherwise deletes the final property normally.
 
 Deferred:
 
-- `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms.
+- `delete super.x` (clj-quickjs-138) waits for `super`.
   Error instances have ordinary configurable properties. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
 

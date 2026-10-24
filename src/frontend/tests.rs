@@ -4881,6 +4881,21 @@ fn diagnostics_display_position_and_message() {
 fn operator_tokens_are_recorded() {
     fn tokens<'a>(e: &Expr, src: &'a str, out: &mut Vec<&'a str>) {
         match &e.kind {
+            ExprKind::OptionalChain { base, links } => {
+                tokens(base, src, out);
+                for link in links {
+                    out.push(link.op_span.text(src));
+                    match &link.kind {
+                        ChainLinkKind::Member(_) => {}
+                        ChainLinkKind::Index(index) => tokens(index, src, out),
+                        ChainLinkKind::Call(args) => {
+                            for arg in args {
+                                tokens(arg, src, out);
+                            }
+                        }
+                    }
+                }
+            }
             ExprKind::Binary {
                 left,
                 right,
@@ -4920,4 +4935,12 @@ fn operator_tokens_are_recorded() {
     let mut out = Vec::new();
     tokens(e, src, &mut out);
     assert_eq!(out, ["*", "**", ".", "(", "<<", ">>>", "("]);
+    let src = "a?.b.c(d)?.[e].f[g]?.(h)";
+    let script = parse_script(src).unwrap();
+    let StmtKind::Expr(e) = &script.body[0].kind else {
+        panic!("not an expression statement")
+    };
+    let mut out = Vec::new();
+    tokens(e, src, &mut out);
+    assert_eq!(out, ["?.", ".", "(", "?.", ".", "[", "?."]);
 }

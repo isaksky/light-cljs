@@ -2528,7 +2528,8 @@ dictionary use would want shapes or a compacting map later.
 **Consequences.** Deleting is linear in the object's own-property count.
 Sloppy `delete` of a non-configurable property is `false` (the running
 code's `Code::strict`, as for writes). `delete super.x` (clj-quickjs-138)
-and `delete a?.b` (clj-quickjs-134) wait for those forms; `delete` of an
+waits for `super`; `delete a?.b` (clj-quickjs-134) returns true on a nullish
+base and otherwise uses ordinary property deletion. `delete` of an
 identifier is clj-quickjs-105; `delete f.length`/`f.name` use the ordinary
 record after copying initial metadata (clj-quickjs-101).
 

@@ -161,6 +161,33 @@ fn optional_chaining() {
     assert_eq!(failure("false?.x").kind(), VmErrorKind::UnsupportedOperand);
 }
 
+/// Synthetic fixtures, not light-cljs output. Failures belong to the
+/// operator that actually executes, including ordinary links after `?.`.
+#[test]
+fn optional_chaining_runtime_error_positions() {
+    for (source, kind, column) in [
+        ("let a = {b:null};\na?.b.c", VmErrorKind::TypeError, 5),
+        ("let a = {b:null};\na?.b['c']", VmErrorKind::TypeError, 5),
+        ("let a = null;\n(a?.b).c", VmErrorKind::TypeError, 7),
+        ("let f = 1;\nf?.()", VmErrorKind::TypeError, 2),
+        ("let a = {m:1};\na?.m()", VmErrorKind::TypeError, 5),
+        ("let a = {m:1};\na.m?.()", VmErrorKind::TypeError, 4),
+        (
+            "let a = {}; Object.defineProperty(a, 'b', {value:1});\ndelete a?.b",
+            VmErrorKind::TypeError,
+            1,
+        ),
+        (
+            "let a = {}; Object.defineProperty(a, 'b', {value:1});\ndelete a?.['b']",
+            VmErrorKind::TypeError,
+            1,
+        ),
+    ] {
+        let (actual, _, line, col) = failure_at(source);
+        assert_eq!((actual, line, col), (kind, 2, column), "{source}");
+    }
+}
+
 /// Synthetic fixtures: each ordinary callback suspends on a dependency;
 /// operands and receivers survive collection and migration on 64 KiB stacks.
 #[test]
