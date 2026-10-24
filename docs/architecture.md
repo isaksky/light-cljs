@@ -23,8 +23,8 @@ JavaScript source support.
  └───────────────────────────────────────────────────────────────────┘
  ┌ Executable (Arc<Code>) ┐      ┌ Task (Arc) ─────────────────────────┐
  │ validated instrs,      │◄─────│ id, world, Executable handle        │
- │ constants, max stack;  │shared│ Mutex<TaskBody> = execution guard   │
- │ immutable, no heap refs│      │   Ready(VmState) | Finished         │
+ │ constants, max stack;  │shared│ atomic state word = execution claim │
+ │ immutable, no heap refs│      │ Mutex<TaskBody>: Ready(VmState)|Fin.│
  └────────────────────────┘      └─────────────────────────────────────┘
  Rooted (persistent root) / Local<'s> (scoped, cannot escape Runtime::scope)
  Host (embedder trait object, borrowed for one run; leaf effects only)
@@ -48,9 +48,10 @@ JavaScript source support.
 
 ## Run protocol
 
-1. `Task::try_begin_run` takes the task's execution guard with `try_lock`. It
-   never blocks: a second runner gets `RunError::AlreadyRunning`, so a task can
-   never execute on two workers at once.
+1. `Task::try_begin_run` claims the task with one CAS on its atomic state
+   word (`Runnable → Executing`). It never blocks: a second runner gets
+   `RunError::AlreadyRunning` (a parked task `RunError::Waiting`), so a task
+   can never execute on two workers at once.
 2. `RunGuard::run_with(budget, host)` runs the dispatch loop
    (`src/vm/dispatch.rs`) on the task's `VmState`.
 3. The run ends with one `RunOutcome`:
@@ -59,8 +60,8 @@ JavaScript source support.
 |------------------|-----------------|---------|
 | `Complete(root)` | `Finished`      | returned a value, delivered as a persistent root |
 | `Failed(error)`  | `Finished`      | runtime failure with executable/task/world/instruction diagnostics |
-| `Yielded`        | `Ready`         | the instruction budget ran out; state saved in the task |
-| `Waiting(key)`   | (reserved)      | not produced yet; see the continuation shape below |
+| `Yielded`        | `Ready`         | the instruction budget ran out (or a park found its wake already delivered); state saved in the task |
+| `Waiting(key)`   | `Waiting`       | parked by `RunGuard::park` on a pending need; only the completion's wake makes it `Ready` (below) |
 
 4. The guard is released when the run returns. No Rust stack frame, borrow, or
    lock survives between runs, so the next run may happen on any thread.
@@ -309,16 +310,16 @@ the run, and all state needed to continue stays in the task.
   the read is recorded as a dependency edge and execution continues in the
   same run.
 - If it is unavailable, the instruction leaves the saved position on itself
-  (it has no effect to replay), registers the task's identity as the wake
-  handle, and the run returns `Waiting(key)`. No JavaScript callback, promise,
+  (it has no effect to replay), registers the run's `WakeHandle` (task id +
+  execution number), and the run returns `Waiting(key)`. No JavaScript callback, promise,
   or Rust stack represents the continuation.
-- When the result is published, the host requeues the task (outside any cell
-  or waiter lock) and calls `run_with` again, on any worker; the instruction
+- When the result is published, the completion makes the parked task
+  runnable (outside any cell or waiter lock) and the host requeues it and calls `run_with` again, on any worker; the instruction
   re-reads the now-ready cell and continues.
 
-Dependency cells and read-or-subscribe exist (clj-quickjs-6, below); the
-suspending VM operation and race-safe parking are pellets clj-quickjs-23 and
--7; the reference executor is clj-quickjs-8.
+Dependency cells and read-or-subscribe (clj-quickjs-6) and race-safe
+parking (clj-quickjs-7) exist, below; the suspending VM operation is pellet
+clj-quickjs-23; the reference executor is clj-quickjs-8.
 
 ## Dependency cells (clj-quickjs-6)
 
@@ -330,7 +331,7 @@ suspending VM operation and race-safe parking are pellets clj-quickjs-23 and
   `spawn_in`) + `DependencyId` (host-assigned definition/query) +
   `ResultKind` (host-assigned: discovery, callable, initializer, analysis,
   ...). `ProducerId` is runtime-allocated per claim. The consumer identity
-  and wake handle is the `TaskId`.
+  is the `TaskId`; its wake handle adds the subscribing run (clj-quickjs-7).
 - **Cells.** One per key in the runtime's dependency table (a private
   `HashMap` over those numeric ids, created on first need or claim, never
   removed or reset in this slice). Each cell holds its claimed producer and
@@ -349,7 +350,8 @@ suspending VM operation and race-safe parking are pellets clj-quickjs-23 and
   rejects a world-2 result for a world-1 key); exactly once
   (`AlreadyComplete`); values and errors must pass `share::check`
   (`NotShareable`, cell left pending with its waiters). It returns the
-  drained wake handles for the caller to enqueue and runs nothing inline.
+  drained wakes (`Wakeups`, clj-quickjs-7) for the caller to enqueue and
+  runs nothing inline.
   `Runtime::claim` lets a host produce before anyone needs;
   `Runtime::cell_status` is a snapshot.
 - **No check-then-register window.** Check and registration are one
@@ -357,18 +359,61 @@ suspending VM operation and race-safe parking are pellets clj-quickjs-23 and
   completion is ordered entirely before or after a need.
 - **Locks.** Dependency table → heap `sources` (registering a new cell);
   cell lock and task log lock are leaves; none is held while rooting,
-  checking publication, or returning. The collector takes cell locks while
-  tracing root sources. Ordering is the mutexes' release/acquire; producer
-  ids use a `Relaxed` counter.
+  checking publication, delivering wakes, or returning. The table is an
+  `RwLock`; the collector reads outcomes lock-free (clj-quickjs-7).
+  Orderings: `src/dep.rs` module docs.
 - **Collection.** Each cell is a `RootSource` (category
   `DependencyOutcome`): a published value or error survives collection
   while the cell exists, after the producer drops its handle. Readers get a
   fresh `Rooted` of the same identity.
-- **Deferred.** The VM instruction and `Waiting(key)` (clj-quickjs-23);
-  the task state machine, parking and an atomic ready fast path
-  (clj-quickjs-7); consumer/cell cancellation beyond a producer completing
+- **Deferred.** The VM instruction (clj-quickjs-23); consumer/cell cancellation beyond a producer completing
   with `Cancelled`; deadlock reporting over unresolved waits; cell
   invalidation and removal.
+
+## Parking and wakeups (clj-quickjs-7)
+
+`src/task.rs` (state machine, linearization points and the full transition
+table in its module docs), `src/task/state.rs` (the atomic word),
+`src/dep.rs` (fast path, completion and wake delivery, lock and ordering
+contract). Design: `design.md` §§3, 8, 10, 15.
+
+- **Task state machine.** One `AtomicU64` per task: phase `Runnable |
+  Executing | Parked | Terminal`, a `NOTIFIED` bit, and an execution number
+  (runs claimed so far). Claim = CAS `Runnable(n) → Executing(n+1)`; the run
+  ends by a store to `Runnable` (yield, guard dropped) or `Terminal`
+  (complete, fail), or by `RunGuard::park`. `Task::status` reports
+  `Ready | Running | Waiting | Finished` from the word.
+- **Wake handles.** `WakeHandle` = task id + the execution that subscribed.
+  A cell stores one per task (a later run's re-subscription replaces the
+  stale one) plus a `Weak` reference to the task, never a callback.
+- **Park vs. wake.** `RunGuard::park` CASes `Executing(m) → Parked(m)` and
+  the run returns `Waiting(key)`; if a wake for `m` already set `NOTIFIED`
+  the task goes `Runnable` and the run returns `Yielded` (the runner
+  requeues it). A wake for `m` CASes `Parked(m) → Runnable(m)` (returned as
+  `Wake::Runnable(task)` to enqueue) or sets `NOTIFIED` on `Executing(m)`
+  (`Wake::Remembered`); anything else is `Wake::Stale`. Both sides retry on
+  CAS failure, so whichever is second sees the first: exactly one of them
+  makes the task runnable, once per suspension, and the claim CAS gives it
+  one owner. Duplicate, late or foreign handles are `Stale`.
+- **Completion.** Recheck, set the outcome and drain the waiters under the
+  cell lock; release it; deliver each wake (one CAS, nothing inline); return
+  `Wakeups` (`deliveries()`, `task_ids()`, `into_runnable()`). Failure and
+  cancellation wake exactly like success.
+- **Atomic ready fast path.** The outcome is a `OnceLock` set under the
+  cell lock: a need reads it with no lock and only takes the cell lock
+  (rechecking) when it is unset. The collector reads it lock-free too.
+- **Handoff windows** (`src/task/handoff_tests.rs`, forced with one-shot
+  test hooks at `HookPoint`s, never sleeps): completion before
+  registration (fast path), between the fast-path `Pending` read and the
+  subscription (recheck), after subscription before park (remembered;
+  also inside park between its read and CAS), after park (runnable; also
+  a park inside the wake between its read and CAS). `tests/wakeup.rs`
+  races many waiters, duplicate wakers and competing claimers through
+  barriers.
+- **Deferred.** The VM operation that needs and parks by itself
+  (clj-quickjs-23); cancellation of a consumer or a cell across these
+  windows (clj-quickjs-24); a scheduler/executor that owns a ready queue
+  (clj-quickjs-8).
 
 ## QuickJS references and provenance
 

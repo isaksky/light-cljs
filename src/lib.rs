@@ -17,11 +17,13 @@
 //!   another task; rejects values reaching task-owned mutation with a
 //!   [`PublishError`] naming the path (`value::share`).
 //! * [`RunOutcome`]: `Complete(value)`, `Failed(error)`, `Yielded` (budget used
-//!   up; run again to continue), and the reserved `Waiting(key)`.
+//!   up, or a park found its wake already delivered: run again), and
+//!   `Waiting(key)` (parked by [`RunGuard::park`] until a wake).
 //! * Dependency cells ([`dep`]): [`RunGuard::need`] reads or subscribes to the
 //!   single-assignment cell of a [`DependencyKey`] (world, definition, result
-//!   kind); [`Runtime::complete`] publishes its outcome and returns the wake
-//!   handles to enqueue.
+//!   kind); [`Runtime::complete`] publishes its outcome, delivers each waiter's
+//!   [`WakeHandle`] to its task's state machine with no lock held, and
+//!   returns the [`Wakeups`]: the tasks to enqueue.
 //!
 //! See `docs/architecture.md` for the boundaries and continuation shape.
 //!
@@ -30,11 +32,11 @@
 //! | Module | Owns |
 //! |--------|------|
 //! | `runtime` | [`Runtime`]: spawning tasks, scopes, roots |
-//! | [`task`] | [`Task`], execution guard, [`RunOutcome`] |
+//! | [`task`] | [`Task`], execution claim and state machine (park, wake), [`RunOutcome`] |
 //! | [`vm`] | instruction format, executable validation, task-owned frames, dispatch, test assembler |
 //! | [`heap`] | object storage and identity, roots and scoped handles ([`heap::roots`]), tracing contract ([`heap::gc`]) |
 //! | `value` | raw VM values (crate-private), root-free views, and publication rules (`value::share`) |
-//! | `ids` | opaque task, world, definition, result-kind, dependency-key and producer identifiers |
+//! | `ids` | opaque task, world, definition, result-kind, dependency-key, producer and wake-handle identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract |
 //! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
@@ -69,16 +71,16 @@ pub mod vm;
 pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
 pub use dep::{
     CellStatus, ClaimError, CompleteError, Completion, DependencyLog, Need, NeedError,
-    ProducerRequest,
+    ProducerRequest, Wakeups,
 };
 pub use error::{Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use heap::{
     CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
 };
 pub use host::{Host, HostCall};
-pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WorldId};
+pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};
 pub use runtime::Runtime;
-pub use task::{Budget, RunError, RunGuard, RunOutcome, Task, TaskStatus};
+pub use task::{Budget, RunError, RunGuard, RunOutcome, Task, TaskStatus, Wake};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{Primitive, ValueView};
 pub use vm::{

@@ -21,53 +21,73 @@
 //!   complete the cell, so a producer of another key, including the same
 //!   definition in another world, cannot substitute its result
 //!   ([`CompleteError::NotProducer`]).
-//! * A **consumer** is a task; its [`TaskId`] is its wake handle. Waiters are
-//!   task IDs, never JavaScript callbacks. Completion returns the drained
-//!   wake handles to the caller, which enqueues them after the call returns:
-//!   nothing runs inline inside completion.
+//! * A **consumer** is a task. A waiter is its [`WakeHandle`] (task ID plus
+//!   the run that subscribed) and a non-owning reference to the task, never
+//!   a JavaScript callback. One entry per task: a need by the same task in a
+//!   later run replaces the stale handle in place.
 //!
 //! # Read-or-subscribe
 //!
 //! A need ([`RunGuard::need`](crate::RunGuard::need)) for key `k` by task `t`:
 //!
-//! 1. finds or creates the cell for `k` (dependency-table lock, released);
-//! 2. under the cell's lock, in **one** critical section: if the cell is
-//!    terminal, copies the outcome; otherwise adds `t` to the waiters (once)
-//!    and, if no producer has been claimed, claims one;
-//! 3. records `k` in `t`'s [`DependencyLog`]: always as an edge (ready reads
+//! 1. finds or creates the cell for `k` (dependency-table read lock, or the
+//!    write lock to create; released);
+//! 2. **fast path**: reads the cell's outcome with no lock (an atomic
+//!    `OnceLock` load); if set, copies it and skips to step 4;
+//! 3. **slow path**, under the cell's lock, in **one** critical section:
+//!    *rechecks* the outcome and copies it if set; otherwise adds `t`'s
+//!    handle to the waiters and, if no producer has been claimed, claims
+//!    one;
+//! 4. records `k` in `t`'s [`DependencyLog`]: always as an edge (ready reads
 //!    included), and as `t`'s unresolved wait while the cell is pending;
-//! 4. after every lock is released, roots a terminal value for the caller.
+//! 5. after every lock is released, roots a terminal value for the caller.
 //!
-//! Step 2 is the linearization point. Completion takes the same cell lock to
-//! install the outcome and drain the waiters, so a completion is ordered
-//! either before the need (which then sees the terminal outcome) or after it
-//! (which then finds `t` among the drained waiters). There is no window
-//! between checking `Pending` and registering the waiter in which a
-//! completion can be missed. Remembering a wake that arrives before the
-//! consumer has finished parking is the scheduler's part (pellet
-//! clj-quickjs-7); the cell guarantees the wake handle is delivered.
+//! The outcome is only ever set while the cell lock is held, and completion
+//! drains the waiters in that same critical section. So a need's slow path
+//! is ordered entirely before a completion (and its handle is drained) or
+//! entirely after it (and its recheck sees the outcome): a completion that
+//! lands between the fast-path read and the slow path is never missed, and
+//! neither is one between "found `Pending`" and "registered". The fast path
+//! can only return an outcome that is really installed.
+//!
+//! # Completion and wakes
+//!
+//! [`Runtime::complete`](crate::Runtime::complete): unlocked validation and
+//! publication check, then under the cell lock recheck, set the outcome and
+//! take the waiter list; then, with **no lock held**, deliver each drained
+//! handle to its task's state machine (one CAS, [`crate::task`]) and return
+//! the results as [`Wakeups`]. Delivery only changes the task's state word
+//! and reports what to enqueue; no JavaScript, host code or callback runs,
+//! and the caller enqueues the runnable tasks after the call returns. A
+//! wake that reaches a task still in its subscribing run is remembered by
+//! the task, so a completion that races the consumer's park is not lost.
 //!
 //! # Lock and ordering contract
 //!
-//! * **Dependency table lock**: held only to find or insert a cell. Creating
-//!   a cell registers it as a collector root source while holding it, so the
-//!   order is *table → heap `sources`*. Never held while taking a cell lock.
-//! * **Cell lock**: a leaf. Its critical sections read or write the cell's
-//!   bookkeeping and allocate producer IDs (an atomic counter), and acquire
-//!   no other lock. The collector takes it while tracing root sources (under
-//!   the heap's `gc → roots → scopes` locks), which cannot deadlock because a
-//!   cell holder waits for nothing.
+//! * **Dependency table lock** (`RwLock`): held only to find (read) or
+//!   insert (write) a cell. Creating a cell registers it as a collector root
+//!   source while holding the write lock, so the order is *table → heap
+//!   `sources`*. Never held while taking a cell lock.
+//! * **Cell lock** (the small per-cell pending-waiter lock): a leaf. Its
+//!   critical sections read or write the producer and waiter bookkeeping,
+//!   set the outcome, and allocate producer IDs (an atomic counter); they
+//!   acquire no other lock. The collector does not take it: it reads the
+//!   outcome lock-free.
 //! * **Task dependency log lock**: a leaf, taken only by the task's own run
-//!   (exclusive through its run guard) and by snapshot readers.
+//!   (exclusive through its execution claim) and by snapshot readers.
 //! * No table, cell or log lock is held while rooting a value (heap `roots`),
-//!   during the publication check (heap `objects`), or when control returns
-//!   to the caller. No host code or JavaScript runs under any of them.
-//! * Memory ordering comes from the mutexes: the outcome and the drained
-//!   waiter list are published by the cell lock's release and observed by
-//!   its acquire. Producer IDs use a `Relaxed` counter (uniqueness only).
-//!
-//! An atomic completed-result fast path that skips the cell lock is a later
-//! optimization (pellet clj-quickjs-7); every read takes the cell lock now.
+//!   during the publication check (heap `objects`), while delivering wakes,
+//!   or when control returns to the caller. No host code or JavaScript runs
+//!   under any of them.
+//! * **Orderings.** The outcome is published by `OnceLock::set` (a release
+//!   store of its completion state) and read by `OnceLock::get` (an acquire
+//!   load), so a fast-path reader that sees it also sees the value it
+//!   names. The waiter list and producer are ordered by the cell mutex. A
+//!   wake is a CAS (`AcqRel`) on the task's state word made after the
+//!   outcome is set, and the next claim of the woken task loads that word
+//!   with `Acquire`, so the resumed run's need sees the outcome on the fast
+//!   path (the slow path's recheck would see it regardless). Producer IDs
+//!   use a `Relaxed` counter (uniqueness only).
 //!
 //! # Collector boundary
 //!
@@ -78,17 +98,18 @@
 //! task-owned mutation (builders, plain objects) is rejected with
 //! [`CompleteError::NotShareable`] and the cell stays pending. A terminal
 //! outcome is immutable and the cell outlives every reader, so a value
-//! copied out under the cell lock stays reachable until the reader roots it.
+//! copied out of the cell stays reachable until the reader roots it.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use crate::heap::gc::{RootCategory, RootSource, Trace};
 use crate::heap::{HandleError, Heap, ObjectId, Rooted};
-use crate::ids::{DependencyKey, ProducerId, TaskId};
+use crate::ids::{DependencyKey, ProducerId, TaskId, WakeHandle};
+use crate::task::{TaskInner, Wake, deliver_wake};
 use crate::value::Value;
 use crate::value::share::{self, PublishError};
 
@@ -115,35 +136,39 @@ impl Terminal {
     }
 }
 
-#[derive(Debug)]
-enum Phase {
-    /// Not complete. `waiters` in subscription order; `subscribed` makes
-    /// registration idempotent per task.
-    Pending {
-        waiters: Vec<TaskId>,
-        subscribed: HashSet<TaskId>,
-    },
-    /// Complete; never changes again.
-    Done(Terminal),
+/// A registered consumer: its wake handle and a non-owning reference to the
+/// task, used only to deliver the wake after every cell lock is released.
+#[derive(Clone, Debug)]
+pub(crate) struct Waiter {
+    pub(crate) handle: WakeHandle,
+    pub(crate) task: Weak<TaskInner>,
 }
 
-#[derive(Debug)]
-struct CellState {
+/// Pending bookkeeping, behind the cell's lock. Emptied by the completion
+/// that installs the outcome and never filled again.
+#[derive(Debug, Default)]
+struct PendingState {
     producer: Option<ProducerId>,
-    phase: Phase,
+    /// In subscription order, one entry per task.
+    waiters: Vec<Waiter>,
+    /// Index into `waiters` per task: registration is idempotent per task,
+    /// and a later execution's re-subscription replaces the stale handle.
+    subscribed: HashMap<TaskId, usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Cell {
-    state: Mutex<CellState>,
+    /// The terminal outcome: written once, by the completion, while holding
+    /// `pending`; read without any lock by the fast path.
+    outcome: OnceLock<Terminal>,
+    pending: Mutex<PendingState>,
 }
 
-/// A cell roots its terminal value or error while it exists.
+/// A cell roots its terminal value or error while it exists. Reads the
+/// outcome without taking the cell lock.
 impl RootSource for Cell {
     fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
-        if let Phase::Done(terminal) = lock(&self.state).phase
-            && let Some(value) = terminal.value()
-        {
+        if let Some(value) = self.outcome.get().and_then(|t| t.value()) {
             value.trace(&mut |id| visit(RootCategory::DependencyOutcome, id));
         }
     }
@@ -160,21 +185,76 @@ pub(crate) enum Read {
     },
 }
 
+/// Points in the protocol where a test can run code with no lock held, to
+/// force an interleaving deterministically (see [`DependencyTable::hook`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum HookPoint {
+    /// A need found no outcome on the fast path and is about to take the
+    /// cell lock to recheck and subscribe.
+    NeedAfterPendingRead,
+    /// A completion passed its unlocked publication check and is about to
+    /// take the cell lock to install.
+    CompleteBeforeInstall,
+    /// A completion installed its outcome and drained the waiters, released
+    /// the cell lock, and is about to deliver the wakes.
+    CompleteAfterDrain,
+    /// A park read `Executing` without a notification and is about to CAS
+    /// to `Parked`.
+    ParkBeforeCas,
+    /// A wake read a state it can change and is about to CAS.
+    WakeBeforeCas,
+}
+
+/// Test hooks: code run at a [`HookPoint`], once or every time.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Hooks(Mutex<HashMap<HookPoint, (Hook, bool)>>);
+
+#[cfg(test)]
+type Hook = Arc<dyn Fn() + Send + Sync>;
+
+#[cfg(test)]
+impl Hooks {
+    /// Run `f` every time `point` is reached.
+    pub(crate) fn always(&self, point: HookPoint, f: impl Fn() + Send + Sync + 'static) {
+        lock(&self.0).insert(point, (Arc::new(f), false));
+    }
+
+    /// Run `f` the next time `point` is reached, then forget it.
+    pub(crate) fn once(&self, point: HookPoint, f: impl Fn() + Send + Sync + 'static) {
+        lock(&self.0).insert(point, (Arc::new(f), true));
+    }
+
+    fn fire(&self, point: HookPoint) {
+        // Taken out first, so the hook runs with no lock held and may itself
+        // reach other hook points.
+        let hook = {
+            let mut hooks = lock(&self.0);
+            match hooks.get(&point) {
+                Some((_, true)) => hooks.remove(&point).map(|(f, _)| f),
+                Some((f, false)) => Some(Arc::clone(f)),
+                None => None,
+            }
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
 /// The dependency cells of one runtime. See the module docs.
 pub(crate) struct DependencyTable {
     heap: Arc<Heap>,
-    cells: Mutex<HashMap<DependencyKey, Arc<Cell>>>,
+    cells: RwLock<HashMap<DependencyKey, Arc<Cell>>>,
     next_producer: AtomicU64,
-    /// Test hook run by `complete` between its unlocked publication check
-    /// and its final cell lock, to force interleavings there.
     #[cfg(test)]
-    before_install: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pub(crate) hooks: Hooks,
 }
 
 impl fmt::Debug for DependencyTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DependencyTable")
-            .field("cells", &lock(&self.cells).len())
+            .field("cells", &self.read_cells().len())
             .finish_non_exhaustive()
     }
 }
@@ -183,29 +263,38 @@ impl DependencyTable {
     pub(crate) fn new(heap: Arc<Heap>) -> Self {
         DependencyTable {
             heap,
-            cells: Mutex::new(HashMap::new()),
+            cells: RwLock::new(HashMap::new()),
             next_producer: AtomicU64::new(1),
             #[cfg(test)]
-            before_install: Mutex::new(None),
+            hooks: Hooks::default(),
         }
+    }
+
+    /// Run the test hook for `point`, if any. Called with no lock held; a
+    /// no-op outside tests.
+    #[inline]
+    pub(crate) fn hook(&self, point: HookPoint) {
+        #[cfg(test)]
+        self.hooks.fire(point);
+        #[cfg(not(test))]
+        let _ = point;
+    }
+
+    fn read_cells(&self) -> std::sync::RwLockReadGuard<'_, HashMap<DependencyKey, Arc<Cell>>> {
+        self.cells.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The cell for `key`, created (and registered as a root source) if
     /// absent. Lock order: table → heap `sources`.
     fn cell(&self, key: DependencyKey) -> Arc<Cell> {
-        let mut cells = lock(&self.cells);
+        if let Some(cell) = self.existing(key) {
+            return cell;
+        }
+        let mut cells = self.cells.write().unwrap_or_else(PoisonError::into_inner);
         match cells.entry(key) {
             Entry::Occupied(e) => Arc::clone(e.get()),
             Entry::Vacant(e) => {
-                let cell = Arc::new(Cell {
-                    state: Mutex::new(CellState {
-                        producer: None,
-                        phase: Phase::Pending {
-                            waiters: Vec::new(),
-                            subscribed: HashSet::new(),
-                        },
-                    }),
-                });
+                let cell = Arc::new(Cell::default());
                 // Registered before the cell is visible to anyone, so no
                 // outcome can be installed in an untraced cell.
                 let source: Weak<dyn RootSource> = Arc::downgrade(&cell) as Weak<Cell>;
@@ -216,7 +305,7 @@ impl DependencyTable {
     }
 
     fn existing(&self, key: DependencyKey) -> Option<Arc<Cell>> {
-        lock(&self.cells).get(&key).cloned()
+        self.read_cells().get(&key).cloned()
     }
 
     /// Claim the producer of a pending cell whose producer is unclaimed.
@@ -232,51 +321,64 @@ impl DependencyTable {
         ProducerRequest { key, producer: id }
     }
 
-    /// Step 2 of a need (module docs): one cell critical section that either
-    /// reads the terminal outcome or registers `consumer` and claims the
-    /// producer if nobody has.
-    pub(crate) fn read_or_subscribe(&self, consumer: TaskId, key: DependencyKey) -> Read {
+    /// Step 2 of a need (module docs): the atomic fast path, then one cell
+    /// critical section that rechecks the outcome and either reads it or
+    /// registers `waiter` and claims the producer if nobody has.
+    pub(crate) fn read_or_subscribe(&self, waiter: Waiter, key: DependencyKey) -> Read {
         let cell = self.cell(key);
-        let mut state = lock(&cell.state);
-        let CellState { producer, phase } = &mut *state;
-        match phase {
-            Phase::Done(terminal) => Read::Terminal(*terminal),
-            Phase::Pending {
-                waiters,
-                subscribed,
-            } => {
-                if subscribed.insert(consumer) {
-                    waiters.push(consumer);
-                }
-                let produce = producer.is_none().then(|| self.claim_locked(key, producer));
-                Read::Waiting { produce }
+        // Fast path. Acquire (inside `OnceLock::get`) pairs with the
+        // completion's Release, so the outcome's values are visible.
+        if let Some(terminal) = cell.outcome.get() {
+            return Read::Terminal(*terminal);
+        }
+        self.hook(HookPoint::NeedAfterPendingRead);
+        let mut state = lock(&cell.pending);
+        // Recheck: the outcome is only ever set while this lock is held, so
+        // under it "no outcome" is stable until the waiter is registered.
+        if let Some(terminal) = cell.outcome.get() {
+            return Read::Terminal(*terminal);
+        }
+        let PendingState {
+            producer,
+            waiters,
+            subscribed,
+        } = &mut *state;
+        match subscribed.entry(waiter.handle.task()) {
+            // The same task again: keep its place, refresh its handle (a
+            // later execution must not be left with a stale one).
+            Entry::Occupied(e) => waiters[*e.get()] = waiter,
+            Entry::Vacant(e) => {
+                e.insert(waiters.len());
+                waiters.push(waiter);
             }
         }
+        let produce = producer.is_none().then(|| self.claim_locked(key, producer));
+        Read::Waiting { produce }
     }
 
     /// Claim the producer of `key` without subscribing.
     pub(crate) fn claim(&self, key: DependencyKey) -> Result<ProducerRequest, ClaimError> {
         let cell = self.cell(key);
-        let mut state = lock(&cell.state);
-        let CellState { producer, phase } = &mut *state;
-        match (phase, *producer) {
-            (Phase::Done(_), _) => Err(ClaimError::AlreadyComplete { key }),
-            (Phase::Pending { .. }, Some(claimed)) => {
-                Err(ClaimError::AlreadyClaimed { key, claimed })
-            }
-            (Phase::Pending { .. }, None) => Ok(self.claim_locked(key, producer)),
+        let mut state = lock(&cell.pending);
+        if cell.outcome.get().is_some() {
+            return Err(ClaimError::AlreadyComplete { key });
+        }
+        match state.producer {
+            Some(claimed) => Err(ClaimError::AlreadyClaimed { key, claimed }),
+            None => Ok(self.claim_locked(key, &mut state.producer)),
         }
     }
 
     /// Install `outcome` as the cell's terminal outcome and return the
-    /// drained wake handles (subscription order). The caller keeps any value
-    /// in `outcome` rooted for the duration of the call.
+    /// drained waiters (subscription order). The caller keeps any value in
+    /// `outcome` rooted for the duration of the call, and delivers the wakes
+    /// after this returns (every lock released).
     pub(crate) fn complete(
         &self,
         key: DependencyKey,
         producer: ProducerId,
         outcome: Terminal,
-    ) -> Result<Vec<TaskId>, CompleteError> {
+    ) -> Result<Vec<Waiter>, CompleteError> {
         let Some(cell) = self.existing(key) else {
             return Err(CompleteError::NotProducer {
                 key,
@@ -286,36 +388,34 @@ impl DependencyTable {
         };
         // Cheap rejections first, so a duplicate completion is reported as
         // such rather than as a publication failure.
-        Self::may_complete(&lock(&cell.state), key, producer)?;
+        Self::may_complete(&cell, &lock(&cell.pending), key, producer)?;
         // The publication check takes heap object locks: never under the
         // cell lock. Its result stays valid because `value` is rooted by the
         // caller and its shareability cannot change.
         if let Some(value) = outcome.value() {
             share::check(&self.heap, value).map_err(CompleteError::NotShareable)?;
         }
-        #[cfg(test)]
-        {
-            // Cloned first, so the hook runs with no lock held.
-            let hook = lock(&self.before_install).clone();
-            if let Some(hook) = hook {
-                hook();
-            }
-        }
-        let mut state = lock(&cell.state);
+        self.hook(HookPoint::CompleteBeforeInstall);
+        let mut state = lock(&cell.pending);
         // Recheck: a concurrent completion by the same producer may have won.
-        Self::may_complete(&state, key, producer)?;
-        match std::mem::replace(&mut state.phase, Phase::Done(outcome)) {
-            Phase::Pending { waiters, .. } => Ok(waiters),
-            Phase::Done(_) => unreachable!("may_complete rejected a completed cell"),
+        Self::may_complete(&cell, &state, key, producer)?;
+        // Publication point. Release (inside `OnceLock::set`) pairs with the
+        // fast path's Acquire. Under the lock, so a need's recheck cannot
+        // miss it and a need that registered before it is in `waiters`.
+        if cell.outcome.set(outcome).is_err() {
+            unreachable!("may_complete rejected a completed cell");
         }
+        state.subscribed = HashMap::new();
+        Ok(std::mem::take(&mut state.waiters))
     }
 
     fn may_complete(
-        state: &CellState,
+        cell: &Cell,
+        state: &PendingState,
         key: DependencyKey,
         producer: ProducerId,
     ) -> Result<(), CompleteError> {
-        if let Phase::Done(_) = state.phase {
+        if cell.outcome.get().is_some() {
             return Err(CompleteError::AlreadyComplete { key });
         }
         if state.producer != Some(producer) {
@@ -329,20 +429,19 @@ impl DependencyTable {
     }
 
     /// The embedder-facing status of `key`'s cell. A terminal value is
-    /// copied under the cell lock and rooted after it is released (see
-    /// [`root_terminal`]).
+    /// copied without a lock and rooted (see [`root_terminal`]).
     pub(crate) fn status(&self, key: DependencyKey) -> CellStatus {
         let Some(cell) = self.existing(key) else {
             return CellStatus::Absent;
         };
         let terminal = {
-            let state = lock(&cell.state);
-            match &state.phase {
-                Phase::Done(terminal) => *terminal,
-                Phase::Pending { waiters, .. } => {
+            let state = lock(&cell.pending);
+            match cell.outcome.get() {
+                Some(terminal) => *terminal,
+                None => {
                     return CellStatus::Pending {
                         producer: state.producer,
-                        waiters: waiters.clone(),
+                        waiters: state.waiters.iter().map(|w| w.handle.task()).collect(),
                     };
                 }
             }
@@ -372,14 +471,14 @@ fn root_terminal(heap: &Arc<Heap>, terminal: Terminal) -> Need {
     }
 }
 
-/// Steps 2 and 3 of a need, for task `consumer` with log `log` (module
-/// docs). The caller holds `consumer`'s run guard, which makes it the only
+/// Steps 2 and 3 of a need, for the consumer `waiter` with log `log` (module
+/// docs). The caller holds the consumer's run guard, which makes it the only
 /// writer of `log`. A terminal value is returned raw: it stays reachable
 /// through its cell (see [`root_terminal`]).
 pub(crate) fn read_and_record(
     table: &DependencyTable,
     log: &Mutex<DependencyLog>,
-    consumer: TaskId,
+    waiter: Waiter,
     key: DependencyKey,
 ) -> Result<Read, NeedError> {
     if let Some(waiting) = lock(log).waiting
@@ -390,7 +489,7 @@ pub(crate) fn read_and_record(
             requested: key,
         });
     }
-    let read = table.read_or_subscribe(consumer, key);
+    let read = table.read_or_subscribe(waiter, key);
     let mut log = lock(log);
     log.record(key);
     log.waiting = match read {
@@ -404,29 +503,73 @@ pub(crate) fn read_and_record(
 pub(crate) fn need(
     table: &DependencyTable,
     log: &Mutex<DependencyLog>,
-    consumer: TaskId,
+    waiter: Waiter,
     key: DependencyKey,
 ) -> Result<Need, NeedError> {
-    Ok(match read_and_record(table, log, consumer, key)? {
+    Ok(match read_and_record(table, log, waiter, key)? {
         Read::Terminal(terminal) => root_terminal(table.heap(), terminal),
         Read::Waiting { produce } => Need::Waiting { key, produce },
     })
 }
 
-/// Complete with embedder handles: checks they belong to the table's heap.
+/// Complete with embedder handles: checks they belong to the table's heap,
+/// installs the outcome, then (every lock released) delivers the drained
+/// wakes.
 pub(crate) fn complete(
     table: &DependencyTable,
     key: DependencyKey,
     producer: ProducerId,
     completion: Completion<'_>,
-) -> Result<Vec<TaskId>, CompleteError> {
+) -> Result<Wakeups, CompleteError> {
     let heap = table.heap();
     let outcome = match completion {
         Completion::Ready(v) => Terminal::Ready(v.value_in(heap).map_err(CompleteError::Handle)?),
         Completion::Failed(e) => Terminal::Failed(e.value_in(heap).map_err(CompleteError::Handle)?),
         Completion::Cancelled => Terminal::Cancelled,
     };
-    table.complete(key, producer, outcome)
+    let drained = table.complete(key, producer, outcome)?;
+    table.hook(HookPoint::CompleteAfterDrain);
+    Ok(Wakeups(
+        drained
+            .into_iter()
+            .map(|w| (w.handle, deliver_wake(&w.task, w.handle)))
+            .collect(),
+    ))
+}
+
+/// The wakes one completion delivered, in subscription order: every
+/// consumer that was registered on the cell, with what its wake did.
+///
+/// The completion has already applied each wake to its task's state; the
+/// caller's only job is to enqueue the [`Wake::Runnable`] tasks
+/// ([`Wakeups::into_runnable`]), each exactly once. A
+/// [`Wake::Remembered`] task is still in the run that subscribed; that run
+/// ends `Yielded` instead of parking, and its runner requeues it.
+#[derive(Debug)]
+#[must_use = "runnable tasks in the wakeups must be enqueued"]
+pub struct Wakeups(Vec<(WakeHandle, Wake)>);
+
+impl Wakeups {
+    /// Every drained wake handle with its delivery, in subscription order.
+    pub fn deliveries(&self) -> &[(WakeHandle, Wake)] {
+        &self.0
+    }
+
+    /// The tasks of the drained wake handles, in subscription order.
+    pub fn task_ids(&self) -> Vec<TaskId> {
+        self.0.iter().map(|(h, _)| h.task()).collect()
+    }
+
+    /// The tasks this completion made runnable, to enqueue.
+    pub fn into_runnable(self) -> Vec<crate::Task> {
+        self.0
+            .into_iter()
+            .filter_map(|(_, wake)| match wake {
+                Wake::Runnable(task) => Some(task),
+                Wake::Remembered | Wake::Stale => None,
+            })
+            .collect()
+    }
 }
 
 /// Scheduler work returned by a need or a claim: "start a producer for this
@@ -646,6 +789,18 @@ mod tests {
         DependencyKey::new(WorldId::INITIAL, DependencyId::new(def), ResultKind::new(0))
     }
 
+    /// A waiter for task `id`, execution 1, with no live task behind it.
+    fn w(id: u64) -> Waiter {
+        Waiter {
+            handle: WakeHandle::new(TaskId::from_raw(id), 1),
+            task: Weak::new(),
+        }
+    }
+
+    fn ids(r: Result<Vec<Waiter>, CompleteError>) -> Result<Vec<TaskId>, CompleteError> {
+        r.map(|ws| ws.iter().map(|w| w.handle.task()).collect())
+    }
+
     #[test]
     fn completed_cells_report_their_values_as_dependency_outcome_roots() {
         let heap = Arc::new(Heap::default());
@@ -660,9 +815,9 @@ mod tests {
             (4, Terminal::Ready(Value::Number(1.0))),
         ] {
             let cell = table.cell(key(def));
-            lock(&cell.state).phase = Phase::Done(outcome);
+            cell.outcome.set(outcome).unwrap();
         }
-        let pending = table.read_or_subscribe(TaskId::from_raw(9), key(5));
+        let pending = table.read_or_subscribe(w(9), key(5));
         assert!(matches!(pending, Read::Waiting { produce: Some(_) }));
         let mut roots = heap.root_snapshot().unwrap();
         roots.sort_by_key(|(_, id)| id.to_bits());
@@ -686,9 +841,7 @@ mod tests {
     fn a_rejected_completion_leaves_the_cell_pending_with_its_waiters() {
         let heap = Arc::new(Heap::default());
         let table = DependencyTable::new(Arc::clone(&heap));
-        let Read::Waiting { produce: Some(req) } =
-            table.read_or_subscribe(TaskId::from_raw(1), key(1))
-        else {
+        let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(w(1), key(1)) else {
             panic!("first need claims the producer");
         };
         let plain = heap.alloc(crate::heap::HeapObject::Plain).unwrap();
@@ -706,7 +859,7 @@ mod tests {
             CellStatus::Pending { waiters, .. } if waiters == [TaskId::from_raw(1)]
         ));
         assert_eq!(
-            table.complete(key(1), req.producer(), Terminal::Cancelled),
+            ids(table.complete(key(1), req.producer(), Terminal::Cancelled)),
             Ok(vec![TaskId::from_raw(1)])
         );
     }
@@ -721,21 +874,27 @@ mod tests {
         let heap = Arc::new(Heap::default());
         let table = DependencyTable::new(Arc::clone(&heap));
         let waiter = TaskId::from_raw(1);
-        let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(waiter, key(1)) else {
+        let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(w(1), key(1)) else {
             panic!("first need claims the producer");
         };
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let hook_barrier = Arc::clone(&barrier);
-        *lock(&table.before_install) = Some(Arc::new(move || {
-            hook_barrier.wait();
-        }));
+        table
+            .hooks
+            .always(HookPoint::CompleteBeforeInstall, move || {
+                hook_barrier.wait();
+            });
         let results: Vec<_> = std::thread::scope(|s| {
             let handles: Vec<_> = [1.0, 2.0]
                 .map(|n| {
                     let table = &table;
                     let producer = req.producer();
                     s.spawn(move || {
-                        let r = table.complete(key(1), producer, Terminal::Ready(Value::Number(n)));
+                        let r = ids(table.complete(
+                            key(1),
+                            producer,
+                            Terminal::Ready(Value::Number(n)),
+                        ));
                         (n, r)
                     })
                 })
@@ -754,7 +913,7 @@ mod tests {
             .count();
         assert_eq!((winners.len(), losers), (1, 1), "{results:?}");
         let Read::Terminal(Terminal::Ready(Value::Number(n))) =
-            table.read_or_subscribe(TaskId::from_raw(2), key(1))
+            table.read_or_subscribe(w(2), key(1))
         else {
             panic!("ready");
         };

@@ -32,6 +32,8 @@ cargo test --test dependency      # dependency cells: need, completion, worlds, 
 cargo test --lib dep::            # cell root category, rejected completion
 cargo test --test js_source       # JavaScript source compiled and executed
 cargo test --lib frontend::       # lexer, parser, grammar doc examples, lowering
+cargo test --test wakeup           # parking and wakeups: many waiters, duplicate wakes, one owner
+cargo test --lib task::           # task state machine and hook-forced handoff windows
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -103,8 +105,8 @@ Supported:
 
 Deferred:
 
-- `Waiting(key)` and dependency waits in the VM (pellets clj-quickjs-23, -7;
-  the cells themselves: clj-quickjs-6 below).
+- Dependency waits in the VM (pellet clj-quickjs-23; the cells: clj-quickjs-6,
+  parking and `Waiting(key)`: clj-quickjs-7, below).
 - Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
   scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
   only, not time or allocation.
@@ -250,12 +252,12 @@ Supported:
   `Runtime::new_world`; each task runs in one world, `Runtime::spawn_in`) +
   host-assigned `DependencyId` + host-assigned `ResultKind`. Different
   worlds or result kinds are different cells. `ProducerId` per claim; the
-  consumer and wake handle is the `TaskId`.
+  consumer is the `TaskId` (wake handles: clj-quickjs-7 below).
 - Single-assignment cells with immutable outcomes `Ready(value)`,
   `Failed(error)`, `Cancelled`. `Runtime::complete(key, producer, ..)`
   accepts only the claimed producer, only once (`NotProducer`,
   `AlreadyComplete`); values and errors must pass the publication check
-  (`NotShareable`). It returns the waiting tasks' ids for the caller to
+  (`NotShareable`). It returns the drained wakes for the caller to
   enqueue; nothing runs inline.
 - Read-or-subscribe: `RunGuard::need(definition, kind)` returns the shared
   value, error or cancellation, or registers the task and returns
@@ -270,12 +272,11 @@ Supported:
 
 Deferred:
 
-- The `__rt.need` VM operation and `RunOutcome::Waiting` (clj-quickjs-23);
-  needs are issued from Rust through a run guard for now.
-- Task parking state machine, deterministic handoff-window tests and an
-  atomic ready fast path (clj-quickjs-7); consumer and cell cancellation
-  other than a producer completing with `Cancelled`; deadlock reporting;
-  invalidation or removal of cells (they live as long as the runtime).
+- The `__rt.need` VM operation (clj-quickjs-23); needs are issued from Rust
+  through a run guard for now.
+- Consumer and cell cancellation other than a producer completing with
+  `Cancelled`; deadlock reporting; invalidation or removal of cells (they
+  live as long as the runtime).
 
 ### JavaScript source compilation (clj-quickjs-22)
 
@@ -320,3 +321,36 @@ Deferred:
   `UnsupportedOperand` (objects cannot come from source yet).
 - `for`, `do`-`while`, `break`, `continue`, `switch`, `var`, update and
   compound assignment operators (rejected by the parser).
+
+### Parking and wakeups (clj-quickjs-7)
+
+Supported:
+
+- A per-task state machine on one atomic word (`Runnable`, `Executing`,
+  `Parked`, `Terminal`, plus a `NOTIFIED` bit and an execution number).
+  `Task::try_begin_run` is a non-blocking claim (CAS); a parked task is
+  refused with `RunError::Waiting`; `Task::status` adds
+  `TaskStatus::Waiting`. Transition table, linearization points and
+  orderings: `src/task.rs` module docs.
+- `RunGuard::park()` ends a run whose need found the cell pending:
+  `RunOutcome::Waiting(key)` if it parked, or `RunOutcome::Yielded` (task
+  runnable, requeue it) if the result was published after the subscription
+  but before the park.
+- `WakeHandle` (task id + subscribing run): stale handles are rejected, so
+  duplicate or late wakes are harmless (`Task::wake` returns `Wake::Stale`).
+- `Runtime::complete` returns `Wakeups`: it delivers every drained handle
+  after releasing the cell lock (one CAS each, nothing inline) and
+  `into_runnable()` gives the parked tasks to enqueue, each exactly once
+  per suspension. Producer failure and cancellation wake like success.
+- An atomic completed-result fast path (`OnceLock`) with the per-cell lock
+  only for pending bookkeeping, rechecked before registration. Lock order
+  and orderings: `src/dep.rs` module docs.
+- Tests force each handoff window deterministically with test hooks
+  (`cargo test --lib task::`) and race many waiters, duplicate wakers and
+  competing claimers with barriers (`cargo test --test wakeup`). No sleeps.
+
+Deferred:
+
+- The VM instruction that needs and parks by itself (clj-quickjs-23);
+  cancellation across these windows (clj-quickjs-24); a reference executor
+  with a ready queue (clj-quickjs-8).

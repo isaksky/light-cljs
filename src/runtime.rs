@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::dep::{
     self, CellStatus, ClaimError, CompleteError, Completion, DependencyTable, ProducerRequest,
+    Wakeups,
 };
 use crate::heap::{CollectError, CollectStats, HandleError, Heap, HeapStats, Rooted, Scope};
 use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
@@ -171,7 +172,7 @@ impl Runtime {
         key: DependencyKey,
         producer: ProducerId,
         completion: Completion<'_>,
-    ) -> Result<Vec<TaskId>, CompleteError> {
+    ) -> Result<Wakeups, CompleteError> {
         dep::complete(&self.0.deps, key, producer, completion)
     }
 

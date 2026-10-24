@@ -158,3 +158,41 @@ impl fmt::Display for ProducerId {
         write!(f, "producer#{}", self.0)
     }
 }
+
+/// Identity of one suspension of one task: the wake handle a dependency cell
+/// stores for a waiting consumer (`docs/design.md` §8).
+///
+/// It names the task and the **execution** (the task's run number, counted
+/// from 1) in which the task subscribed. A wake is honoured only while that
+/// execution is still running or parked. Once the task has been woken, has
+/// ended that run without parking, has started a later run, or has finished,
+/// the handle is stale and delivering it does nothing, so a duplicate or late
+/// notification can never make a later, unrelated suspension runnable. See
+/// [`crate::task`] for the state machine that checks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WakeHandle {
+    task: TaskId,
+    execution: u64,
+}
+
+impl WakeHandle {
+    pub(crate) const fn new(task: TaskId, execution: u64) -> Self {
+        WakeHandle { task, execution }
+    }
+
+    /// The task to wake.
+    pub fn task(&self) -> TaskId {
+        self.task
+    }
+
+    /// The execution (run number of [`WakeHandle::task`]) that subscribed.
+    pub fn execution(&self) -> u64 {
+        self.execution
+    }
+}
+
+impl fmt::Display for WakeHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}@run{}", self.task, self.execution)
+    }
+}

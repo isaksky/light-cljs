@@ -14,8 +14,8 @@ use std::thread;
 
 use clj_quickjs::{
     Assembler, CellStatus, ClaimError, CompleteError, Completion, DependencyId, DependencyKey,
-    HandleError, Need, NeedError, Opcode, PathStep, Primitive, PublishError, ResultKind, Rooted,
-    Runtime, Task, TaskId, ValueView, WorldId,
+    HandleError, Need, NeedError, Opcode, PathStep, Primitive, ProducerId, PublishError,
+    ResultKind, Rooted, Runtime, Task, TaskId, ValueView, WorldId,
 };
 
 const DEF_HELPER: DependencyId = DependencyId::new(7);
@@ -31,6 +31,17 @@ fn consumer(rt: &Runtime, world: WorldId) -> Task {
 
 fn key(world: WorldId, kind: ResultKind) -> DependencyKey {
     DependencyKey::new(world, DEF_HELPER, kind)
+}
+
+/// Complete `key` and return the drained wake handles' tasks, in
+/// subscription order (what the wakes did is covered in `tests/wakeup.rs`).
+fn complete(
+    rt: &Runtime,
+    key: DependencyKey,
+    producer: ProducerId,
+    completion: Completion<'_>,
+) -> Result<Vec<TaskId>, CompleteError> {
+    rt.complete(key, producer, completion).map(|w| w.task_ids())
 }
 
 /// One need by `task` for (`DEF_HELPER`, `kind`), through a fresh run guard.
@@ -67,7 +78,7 @@ fn an_already_ready_read_returns_the_shared_value_and_records_the_edge() {
     assert_eq!(req.key(), k);
     let value = nested_vector(&rt);
     assert_eq!(
-        rt.complete(k, req.producer(), Completion::Ready(&value)),
+        complete(&rt, k, req.producer(), Completion::Ready(&value)),
         Ok(vec![])
     );
 
@@ -105,9 +116,7 @@ fn a_pending_subscription_is_woken_by_completion_and_then_reads_the_value() {
     ));
 
     let value = rt.root(Primitive::Number(42.0));
-    let woken = rt
-        .complete(k, req.producer(), Completion::Ready(&value))
-        .unwrap();
+    let woken = complete(&rt, k, req.producer(), Completion::Ready(&value)).unwrap();
     assert_eq!(woken, [task.id()], "completion returns the wake handle");
 
     assert_eq!(
@@ -135,9 +144,7 @@ fn producer_failure_wakes_every_waiter_and_stays_failed() {
         Need::Waiting { produce: None, .. }
     ));
     let error = nested_vector(&rt);
-    let woken = rt
-        .complete(k, req.producer(), Completion::Failed(&error))
-        .unwrap();
+    let woken = complete(&rt, k, req.producer(), Completion::Failed(&error)).unwrap();
     assert_eq!(
         woken,
         [a.id(), b.id()],
@@ -167,13 +174,13 @@ fn cancellation_is_terminal_and_cannot_be_reset_or_replaced() {
         panic!("first need claims");
     };
     assert_eq!(
-        rt.complete(k, req.producer(), Completion::Cancelled),
+        complete(&rt, k, req.producer(), Completion::Cancelled),
         Ok(vec![task.id()])
     );
     assert!(matches!(need(&task, RESULT_CALLABLE), Need::Cancelled));
     let value = rt.root(Primitive::Number(1.0));
     assert_eq!(
-        rt.complete(k, req.producer(), Completion::Ready(&value)),
+        complete(&rt, k, req.producer(), Completion::Ready(&value)),
         Err(CompleteError::AlreadyComplete { key: k })
     );
     assert_eq!(rt.claim(k), Err(ClaimError::AlreadyComplete { key: k }));
@@ -187,8 +194,7 @@ fn a_second_completion_is_rejected_and_the_first_outcome_stays() {
     let req = rt.claim(k).unwrap();
     let first = nested_vector(&rt);
     let second = nested_vector(&rt);
-    rt.complete(k, req.producer(), Completion::Ready(&first))
-        .unwrap();
+    complete(&rt, k, req.producer(), Completion::Ready(&first)).unwrap();
     for completion in [
         Completion::Ready(&second),
         Completion::Ready(&first),
@@ -196,7 +202,7 @@ fn a_second_completion_is_rejected_and_the_first_outcome_stays() {
         Completion::Cancelled,
     ] {
         assert_eq!(
-            rt.complete(k, req.producer(), completion),
+            complete(&rt, k, req.producer(), completion),
             Err(CompleteError::AlreadyComplete { key: k })
         );
     }
@@ -229,7 +235,7 @@ fn many_needs_of_one_key_emit_exactly_one_producer_request() {
         Err(ClaimError::AlreadyClaimed { key: k, claimed })
     );
     let ids: Vec<TaskId> = tasks.iter().map(Task::id).collect();
-    assert_eq!(rt.complete(k, claimed, Completion::Cancelled), Ok(ids));
+    assert_eq!(complete(&rt, k, claimed, Completion::Cancelled), Ok(ids));
 }
 
 #[test]
@@ -256,7 +262,7 @@ fn worlds_and_result_kinds_name_distinct_cells() {
     // World 2's producer cannot substitute its result into world 1's cell.
     let v2 = rt.root(Primitive::Number(2.0));
     assert_eq!(
-        rt.complete(r1.key(), r2.producer(), Completion::Ready(&v2)),
+        complete(&rt, r1.key(), r2.producer(), Completion::Ready(&v2)),
         Err(CompleteError::NotProducer {
             key: r1.key(),
             producer: r2.producer(),
@@ -264,7 +270,7 @@ fn worlds_and_result_kinds_name_distinct_cells() {
         })
     );
     assert_eq!(
-        rt.complete(r2.key(), r2.producer(), Completion::Ready(&v2)),
+        complete(&rt, r2.key(), r2.producer(), Completion::Ready(&v2)),
         Ok(vec![t2.id()]),
         "only world 2's waiter wakes"
     );
@@ -286,7 +292,7 @@ fn worlds_and_result_kinds_name_distinct_cells() {
     // A producer cannot complete a cell that does not exist either.
     let w3 = key(rt.new_world(), RESULT_CALLABLE);
     assert!(matches!(
-        rt.complete(w3, r1.producer(), Completion::Cancelled),
+        complete(&rt, w3, r1.producer(), Completion::Cancelled),
         Err(CompleteError::NotProducer { claimed: None, .. })
     ));
     assert!(matches!(rt.cell_status(w3), CellStatus::Absent));
@@ -324,10 +330,8 @@ fn published_results_and_errors_survive_collection_while_the_cell_holds_them() {
     let (weak_value, weak_error) = (value.downgrade(), error.downgrade());
     let req_ok = rt.claim(k_ok).unwrap();
     let req_err = rt.claim(k_err).unwrap();
-    rt.complete(k_ok, req_ok.producer(), Completion::Ready(&value))
-        .unwrap();
-    rt.complete(k_err, req_err.producer(), Completion::Failed(&error))
-        .unwrap();
+    complete(&rt, k_ok, req_ok.producer(), Completion::Ready(&value)).unwrap();
+    complete(&rt, k_err, req_err.producer(), Completion::Failed(&error)).unwrap();
     drop((value, error));
     // An unrelated unrooted object is reclaimed, so the collection is real.
     let weak_garbage = rt.scope(|s| {
@@ -378,7 +382,7 @@ fn non_shareable_values_are_rejected_at_completion_and_the_cell_stays_pending() 
         (s.persist(o), s.persist(v))
     });
     for completion in [Completion::Ready(&holder), Completion::Failed(&plain)] {
-        match rt.complete(k, req.producer(), completion) {
+        match complete(&rt, k, req.producer(), completion) {
             Err(CompleteError::NotShareable(PublishError::NotShareable { found, .. })) => {
                 assert_eq!(found, "object")
             }
@@ -386,7 +390,7 @@ fn non_shareable_values_are_rejected_at_completion_and_the_cell_stays_pending() 
         }
     }
     let Err(CompleteError::NotShareable(PublishError::NotShareable { path, .. })) =
-        rt.complete(k, req.producer(), Completion::Ready(&holder))
+        complete(&rt, k, req.producer(), Completion::Ready(&holder))
     else {
         panic!("rejected again");
     };
@@ -397,7 +401,7 @@ fn non_shareable_values_are_rejected_at_completion_and_the_cell_stays_pending() 
     ));
     let ok = rt.root(Primitive::Bool(true));
     assert_eq!(
-        rt.complete(k, req.producer(), Completion::Ready(&ok)),
+        complete(&rt, k, req.producer(), Completion::Ready(&ok)),
         Ok(vec![task.id()]),
         "a rejected completion keeps the waiters for the real one"
     );
@@ -410,7 +414,7 @@ fn handles_of_another_runtime_are_rejected_at_completion() {
     let req = rt.claim(k).unwrap();
     let foreign = other.root(Primitive::Number(1.0));
     assert_eq!(
-        rt.complete(k, req.producer(), Completion::Ready(&foreign)),
+        complete(&rt, k, req.producer(), Completion::Ready(&foreign)),
         Err(CompleteError::Handle(HandleError::ForeignRuntime))
     );
     assert!(matches!(rt.cell_status(k), CellStatus::Pending { .. }));
@@ -451,8 +455,7 @@ fn needs_racing_completion_are_never_lost_or_woken_twice() {
                 });
             }
             barrier.wait();
-            rt.complete(k, req.producer(), Completion::Ready(&value))
-                .unwrap()
+            complete(&rt, k, req.producer(), Completion::Ready(&value)).unwrap()
         });
         let saw_ready = saw_ready.into_inner().unwrap();
         for task in &tasks {
