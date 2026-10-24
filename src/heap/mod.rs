@@ -57,6 +57,7 @@ pub mod gc;
 #[cfg(test)]
 mod inventory;
 pub mod roots;
+mod stats;
 
 use std::any::Any;
 use std::fmt;
@@ -70,6 +71,7 @@ pub use gc::{
 use gc::{GcState, RootSource, SourceRegistry, Trace};
 pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
+pub use stats::{HeapUsage, ObjectCounts};
 
 use crate::atom::AtomCell;
 use crate::collections::{Builder, Occurrence, PMap, PVector};

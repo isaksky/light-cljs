@@ -61,6 +61,8 @@ cargo test --lib vm::native::     # leaf versus resumable natives, step accounti
 cargo test --test exception_waits # waits inside handlers, catchable dependency failures, cancellation cleanup
 cargo test --test concurrency     # bounded adversarial concurrency and cross-feature suite
 cargo test --test concurrency seeded   # only the seeded repeated schedules
+cargo run --release --example bench   # cost measurements (docs/measurement.md); -- --quick for a short run
+cargo test --test measurement     # measurement workloads at small sizes; shared-input object counts
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -1084,3 +1086,38 @@ Deferred:
   describing which native element failed.
 - Heap object reads (`Heap::read` closures) are not counted as scoped
   borrows; only native steps are.
+
+### Measurement harness (clj-quickjs-15)
+
+`examples/bench/` (std only). `docs/measurement.md` has the method, the
+exact commands, one recorded run with its environment, and what the
+numbers do and do not show. Run `cargo run --release --example bench`
+(or `-- --quick`, or name row groups).
+
+Supported:
+
+- Timed rows (median and min..max over measured rounds, setup outside the
+  timed interval, results checked): task spawn and first run, already-ready
+  dependency reads from JavaScript and from `RunGuard::need`, single-thread
+  need/park/complete/wake/resume cycles, persistent vector and map lookups
+  at three sizes and updates from empty, and executor throughput of
+  unrelated work alone versus with parked consumers.
+- Memory rows from a counting global allocator in the example: shared
+  input and code bytes versus per-consumer bytes for 1 to 10,000 parked
+  consumers, heap objects per consumer, host-owned handle storage, RSS,
+  and instrumentation overhead rows.
+- Read-only snapshots: `Runtime::heap_usage` (`HeapUsage`: live objects by
+  kind, known-shareable count, slots, shallow table bytes) and
+  `Task::stats` (`TaskStats`: saved frames, stack values, native frames,
+  pending need, shallow byte estimate). `HeapStats` is unchanged.
+- `tests/measurement.rs` runs every workload small and asserts results and
+  the deterministic object counts (each parked consumer adds exactly its
+  own builder; the input is never copied), never times or bytes.
+
+Deferred:
+
+- No comparison with light-cljs, QuickJS or V8 (none performed).
+- Not measured: contention on one cell or the object lock with many
+  workers, collection pause times, isolated cross-thread wake latency.
+- Allocator bytes are requested sizes; `HeapUsage` and `TaskStats` bytes
+  are shallow estimates (see their docs).

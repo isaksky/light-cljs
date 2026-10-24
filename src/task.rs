@@ -260,6 +260,7 @@ mod handoff_tests;
 #[cfg(test)]
 mod need_tests;
 mod state;
+mod stats;
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
@@ -278,6 +279,7 @@ use crate::vm::Executable;
 use crate::vm::dispatch::{Exit, execute, raise_failure};
 use crate::vm::frames::{PendingNeed, VmState};
 use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
+pub use stats::TaskStats;
 
 /// Result of one run of a task.
 #[derive(Debug)]

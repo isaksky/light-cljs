@@ -29,6 +29,10 @@
 //!   returns the [`Wakeups`]: the tasks to enqueue. [`Runtime::cancel_cell`]
 //!   lets the embedder settle a cell `Cancelled`; [`Task::cancel`] cancels a
 //!   consumer without touching its cell ([`Cancel`]).
+//! * Read-only measurement snapshots: [`Runtime::heap_stats`],
+//!   [`Runtime::heap_usage`] ([`HeapUsage`], objects by kind and shallow
+//!   table bytes) and [`Task::stats`] ([`TaskStats`], saved VM state);
+//!   `docs/measurement.md` and `examples/bench` use them.
 //!
 //! See `docs/architecture.md` for the boundaries and continuation shape.
 //!
@@ -93,12 +97,12 @@ pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use exec::{Executor, ExecutorConfig, Placement, WorkerId};
 pub use heap::{
     CollectError, CollectStats, CollectionObserver, CollectionReport, HandleError, HeapStats,
-    Local, MutatorState, Rooted, Scope, ThreadRegistration, WeakHandle,
+    HeapUsage, Local, MutatorState, ObjectCounts, Rooted, Scope, ThreadRegistration, WeakHandle,
 };
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};
 pub use runtime::Runtime;
-pub use task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStatus, Wake};
+pub use task::{Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStats, TaskStatus, Wake};
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{Primitive, ValueView};
 pub use vm::{

@@ -15,8 +15,8 @@ use crate::dep::{
     Wakeups,
 };
 use crate::heap::{
-    CollectError, CollectStats, CollectionObserver, HandleError, Heap, HeapStats, Rooted, Scope,
-    ThreadRegistration,
+    CollectError, CollectStats, CollectionObserver, HandleError, Heap, HeapStats, HeapUsage,
+    Rooted, Scope, ThreadRegistration,
 };
 use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
 use crate::task::Task;
@@ -223,6 +223,14 @@ impl Runtime {
     /// Heap usage counters.
     pub fn heap_stats(&self) -> HeapStats {
         self.0.heap.stats()
+    }
+
+    /// A read-only snapshot of the object table: live objects by kind and
+    /// the shallow bytes the table owns ([`HeapUsage`], whose docs say what
+    /// is excluded). Walks every slot under the object lock: for tests and
+    /// measurement, not hot paths.
+    pub fn heap_usage(&self) -> HeapUsage {
+        self.0.heap.usage()
     }
 
     /// Collect now: a deterministic, stop-the-world mark/sweep of the shared
