@@ -610,3 +610,165 @@ fn reaction_sender_edges_are_traced_without_permanent_roots() {
         "unreachable reaction/callable cycles must be reclaimed"
     );
 }
+
+#[test]
+fn budget_is_not_replenished_at_activation_boundaries() {
+    let (_rt, task, jobs, mut host) =
+        setup("function a() { return 1; } function b() { return 2; } __rt.effect(0, -1); 42;");
+    jobs[0].enqueue(&[]).unwrap();
+    jobs[1].enqueue(&[]).unwrap();
+    // Reach the body's final Return without executing it.
+    for _ in 0..1000 {
+        let mut guard = task.try_begin_run().unwrap();
+        let vm = guard.vm().unwrap();
+        if matches!(
+            vm.top().code.instrs[vm.top().pc],
+            crate::vm::instr::Instr::Return
+        ) {
+            break;
+        }
+        assert!(matches!(
+            guard.run_with(Budget::instructions(1), &mut host),
+            RunOutcome::Yielded
+        ));
+    }
+    // The body's Return consumes the entire budget. The first job is set up
+    // but cannot execute even its first instruction during this run.
+    assert!(matches!(
+        task.run_with(Budget::instructions(1), &mut host).unwrap(),
+        RunOutcome::Yielded
+    ));
+    {
+        let mut guard = task.try_begin_run().unwrap();
+        let vm = guard.vm().unwrap();
+        assert_eq!(vm.top().pc, 0);
+        assert_eq!(vm.script_result, Some(Value::Number(42.0)));
+    }
+    // Reach the first job's final Return; its one-instruction run likewise
+    // must leave the second job untouched at pc 0.
+    for _ in 0..1000 {
+        let mut guard = task.try_begin_run().unwrap();
+        let vm = guard.vm().unwrap();
+        if matches!(
+            vm.top().code.instrs[vm.top().pc],
+            crate::vm::instr::Instr::Return
+        ) {
+            break;
+        }
+        assert!(matches!(
+            guard.run_with(Budget::instructions(1), &mut host),
+            RunOutcome::Yielded
+        ));
+    }
+    assert!(matches!(
+        task.run_with(Budget::instructions(1), &mut host).unwrap(),
+        RunOutcome::Yielded
+    ));
+    {
+        let mut guard = task.try_begin_run().unwrap();
+        assert_eq!(guard.vm().unwrap().top().pc, 0);
+    }
+    assert_eq!(
+        task.0
+            .jobs
+            .boundaries
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        ValueView::Number(42.0)
+    );
+}
+
+#[test]
+fn enqueue_racing_final_drain_is_executed_or_closed() {
+    for publish_first in [true, false] {
+        let (_rt, task, jobs, mut host) =
+            setup("function a() { __rt.effect(0, 1); } __rt.effect(0, -1); 42;");
+        let (drain_tx, drain_rx) = mpsc::channel();
+        let (published_tx, published_rx) = mpsc::channel();
+        let mut published_rx = Some(published_rx);
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let sender = jobs[0].clone();
+        if publish_first {
+            let published_rx = published_rx.take().unwrap();
+            // Hold the runner immediately before it acquires the FIFO lock.
+            // Publication acquires that lock and completes before draining.
+            *task.0.jobs.before_next.lock().unwrap() = Some(Box::new(move || {
+                drain_tx.send(()).unwrap();
+                assert_eq!(
+                    published_rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+                    Ok(())
+                );
+            }));
+        } else {
+            // Hold the final empty check while it owns the FIFO lock. The
+            // publisher reaches push and must acquire the lock after close.
+            *task.0.jobs.before_close.lock().unwrap() = Some(Box::new(move || {
+                drain_tx.send(()).unwrap();
+                attempt_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            }));
+            *task.0.jobs.before_push.lock().unwrap() = Some(Box::new(move || {
+                attempt_tx.send(()).unwrap();
+            }));
+        }
+        let worker = std::thread::spawn(move || {
+            drain_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let result = sender.enqueue(&[]);
+            published_tx.send(result).unwrap();
+        });
+        assert_eq!(
+            complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+            ValueView::Number(42.0)
+        );
+        if publish_first {
+            assert_eq!(host.0, [-1.0, 1.0]);
+        } else {
+            assert_eq!(
+                published_rx
+                    .as_ref()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap(),
+                Err(crate::job::JobError::Closed)
+            );
+            assert_eq!(host.0, [-1.0]);
+        }
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn builtin_job_callback_waits_and_resumes() {
+    let (rt, task, jobs, mut host) = setup(
+        "let arg = {valueOf() { __rt.effect(0, 1); return __rt.need(174, 1); }}; function a() {} a = Math.abs.bind(undefined, arg); function b() { __rt.effect(0, 3); } __rt.effect(0, -1); a = undefined; b = undefined; arg = undefined; 42;",
+    );
+    jobs[0].enqueue(&[]).unwrap();
+    jobs[1].enqueue(&[]).unwrap();
+    drop(jobs);
+    let t = task.clone();
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let out = t.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        tx.send((out, host, std::thread::current().id())).unwrap();
+    });
+    let (out, mut host, first) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    worker.join().unwrap();
+    assert!(matches!(out, RunOutcome::Waiting(_)));
+    assert_eq!(host.0, [-1.0, 1.0]);
+    assert_eq!(task.stats().unwrap().native_frames, 1);
+    rt.collect().unwrap();
+    let req = task.take_producer_requests().pop().unwrap();
+    let value = rt.root(Primitive::Number(-2.0));
+    let wakes = rt
+        .complete(req.key(), req.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    assert_ne!(first, std::thread::current().id());
+    assert_eq!(
+        complete(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        ValueView::Number(42.0)
+    );
+    assert_eq!(host.0, [-1.0, 1.0, 3.0]);
+}

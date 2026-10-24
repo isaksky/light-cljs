@@ -26,11 +26,36 @@ struct Inbox {
     closed: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct JobInbox {
     inbox: Mutex<Inbox>,
     #[cfg(test)]
     pub(crate) boundaries: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    pub(crate) before_push: TestHook,
+    #[cfg(test)]
+    pub(crate) before_next: TestHook,
+    #[cfg(test)]
+    pub(crate) before_close: TestHook,
+}
+
+impl std::fmt::Debug for JobInbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobInbox")
+            .field("inbox", &self.inbox)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+pub(crate) type TestHook = Mutex<Option<Box<dyn FnOnce() + Send>>>;
+
+#[cfg(test)]
+fn run_hook(slot: &TestHook) {
+    let hook = slot.lock().unwrap().take();
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 impl JobInbox {
@@ -46,6 +71,8 @@ impl JobInbox {
             .clone()
     }
     pub(crate) fn push(&self, job: Job) -> Result<(), JobError> {
+        #[cfg(test)]
+        run_hook(&self.before_push);
         let mut inbox = self.inbox.lock().unwrap();
         if inbox.closed {
             return Err(JobError::Closed);
@@ -57,9 +84,13 @@ impl JobInbox {
     /// Empty-check and close share the enqueue linearization point. Once
     /// this returns None, no later publication can append a stranded job.
     pub(crate) fn next_or_close(&self) -> Option<Job> {
+        #[cfg(test)]
+        run_hook(&self.before_next);
         let mut inbox = self.inbox.lock().unwrap();
         let next = inbox.queue.pop_front();
         if next.is_none() {
+            #[cfg(test)]
+            run_hook(&self.before_close);
             inbox.closed = true;
         }
         next
