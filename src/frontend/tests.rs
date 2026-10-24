@@ -1,8 +1,9 @@
 //! Frontend tests. Synthetic fixtures written for this project, not
 //! light-cljs output and not adapted from QuickJS, except one line in
 //! `hashbang_comment_only_at_start`, three scripts in
-//! `arrow_functions_and_asi` and one in `break_and_continue` (each marked
-//! there, with the QuickJS notice),
+//! `arrow_functions_and_asi`, one in `break_and_continue` and six in
+//! `number_literal_member_access` (each marked there, with the QuickJS
+//! notice),
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
 //! `test_unicode_ident` (notice in `tests/js_source.rs`
 //! `identifiers_are_not_normalized`).
@@ -647,6 +648,54 @@ fn calls_and_member_chains() {
         "(call (function - (x) (return x)) 1)"
     );
     assert_eq!(ast("1..toString;"), "(. 1 toString)");
+}
+
+/// A number literal followed by a member access (clj-quickjs-48). The
+/// `0.1.a`, `0x1.a`, `0b1.a`, `0o1.a`, `01.a` and `0.a` cases are those of
+/// `test_number_literals` (line 667) in
+/// `research/quickjs/tests/test_language.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution), checked
+/// as parse trees instead of evaluated to `undefined`; `01.a` is rejected
+/// here because legacy octal literals are not supported. The other cases
+/// are written for this project.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify,
+/// merge, publish, distribute, sublicense, and/or sell copies of the
+/// Software, and to permit persons to whom the Software is furnished to do
+/// so, subject to the following conditions: The above copyright notice and
+/// this permission notice shall be included in all copies or substantial
+/// portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT
+/// WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+/// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+/// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+/// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH
+/// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#[test]
+fn number_literal_member_access() {
+    use SyntaxErrorKind::{InvalidToken, UnexpectedToken};
+    // The fraction ends at the second `.`, which starts a member access.
+    assert_eq!(ast("0.1.a;"), "(. 0.1 a)");
+    // An integer in another radix has no fraction, so its `.` is a member
+    // access.
+    assert_eq!(ast("0x1.a;"), "(. 1 a)");
+    assert_eq!(ast("0b1.a;"), "(. 1 a)");
+    assert_eq!(ast("0o1.a;"), "(. 1 a)");
+    assert_eq!(ast("0x1a.b;"), "(. 26 b)");
+    assert_eq!(ast(".5.a;"), "(. 0.5 a)");
+    assert_eq!(ast("1.5e3.a;"), "(. 1500 a)");
+    assert_eq!(ast("1..a.b;"), "(. (. 1 a) b)");
+    // `0.` is a complete literal, so an identifier may not follow it.
+    rejects("0.a", InvalidToken, 1, 3);
+    rejects("0.a;", InvalidToken, 1, 3);
+    // `.2` after `0.1` is a second number literal, not a property name.
+    rejects("0.1.2", UnexpectedToken, 1, 4);
+    // Legacy octal is not supported, so upstream's `01.a` is rejected.
+    rejects("01.a", InvalidToken, 1, 1);
 }
 
 // ----- positive: statements --------------------------------------------------

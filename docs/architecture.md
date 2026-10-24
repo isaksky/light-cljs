@@ -1414,3 +1414,11 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `research/quickjs/quickjs.c` `js_parse_unary` (`TOK_INC`/`TOK_DEC`),
   `js_parse_postfix_expr`, `OP_inc` / `OP_post_inc` and `js_post_inc_slow`
   were consulted only. No code was copied.
+- `src/frontend/tests.rs` `number_literal_member_access` (clj-quickjs-48):
+  the six cases of `test_number_literals` (line 667) of
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+  (`0.1.a`, `0x1.a`, `0b1.a`, `01.a`, `0o1.a` and `eval('0.a')`).
+  Modified: each case is checked as a parse tree or a lexer rejection
+  instead of evaluated (`undefined`, or a SyntaxError for `0.a`), and
+  `01.a` is rejected because legacy octal literals are not supported. The
+  test carries the full notice. No code was copied.
