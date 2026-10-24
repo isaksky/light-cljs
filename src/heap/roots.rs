@@ -645,4 +645,33 @@ mod tests {
             Err(HandleError::ForeignRuntime)
         );
     }
+
+    /// clj-quickjs-65: `Rooted::string` and `Scope::string` return the
+    /// contents, which outlive the handle, the scope and the heap.
+    #[test]
+    fn string_contents_outlive_root_and_scope() {
+        let heap = Arc::new(Heap::default());
+        // A supplementary character (two units) and a lone surrogate.
+        let units = [0x61, 0xD83D, 0xDE00, 0xD800];
+        let text = JsString::from_code_units(units.to_vec()).unwrap();
+        let rooted = Rooted::new(&heap, Value::String(text));
+        assert_eq!(rooted.view(), ValueView::String);
+        let from_root = rooted.string().unwrap();
+        let (from_scope, not_string) = {
+            let scope = Scope::new(&heap);
+            let local = scope.local(&rooted).unwrap();
+            let number = scope.primitive(Primitive::Number(1.0));
+            assert_eq!(scope.view(local), ValueView::String);
+            (scope.string(local).unwrap(), scope.string(number))
+        };
+        assert_eq!(not_string, None);
+        assert_eq!(Rooted::new(&heap, Value::Null).string(), None);
+        drop(rooted);
+        drop(heap);
+        for s in [from_root, from_scope] {
+            assert_eq!(s.code_units(), units);
+            assert_eq!(s.len(), 4);
+            assert_eq!(s.to_string_lossy(), "a\u{1F600}\u{FFFD}");
+        }
+    }
 }

@@ -120,6 +120,12 @@ impl JsString {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    /// Number of values sharing this body (tests of release).
+    #[cfg(test)]
+    pub(crate) fn body_refs(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
+
     /// A private, deterministic content hash (FNV-1a over the code units),
     /// used by persistent map keys: equal strings hash equally.
     pub(crate) fn content_hash(&self) -> u64 {

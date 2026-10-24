@@ -326,6 +326,19 @@ impl ObjectTable {
         true
     }
 
+    /// The values of the retired boxes of every live atom (`crate::atom`), taken
+    /// while the world is stopped so the caller can drop them after releasing
+    /// the heap locks. Each atom's retire list lock is a leaf lock.
+    fn take_atom_retirements(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for slot in &self.slots {
+            if let Some(HeapObject::Atom(cell)) = slot.object.as_deref() {
+                out.extend(cell.take_retired());
+            }
+        }
+        out
+    }
+
     /// Free every unmarked object and clear the marks. The freed objects are
     /// returned so the caller can drop them after releasing the heap locks.
     fn sweep(&mut self) -> Vec<HeapObject> {

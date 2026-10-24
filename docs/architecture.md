@@ -1255,7 +1255,10 @@ Contract: `src/value/string.rs` (`JsString`), `src/value.rs`
   `ValueView` stays `Copy` (`ValueView::String` carries no contents; read
   them with `Rooted::string` or `Scope::string`, which return a `JsString`
   that outlives the handle). Atoms box values as before; a reader clones
-  the boxed value inside its mutator registration.
+  the boxed value inside its mutator registration, and each collection now
+  releases every retired box of every live atom while the world is stopped,
+  so a replaced string body never outlives the grace period even if the
+  atom is not written again.
 - **Publication and persistence.** A string is immutable and therefore
   persistent and shareable by construction: `value::share::check` treats
   it as a primitive (no walk), a persistent collection stores it without

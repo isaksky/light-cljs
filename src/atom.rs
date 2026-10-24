@@ -100,11 +100,16 @@
 //! grace period: a box retired at collection epoch `e` (collections
 //! completed when its writer registered) is unreachable by every operation
 //! registered after the next collection, and is freed by the next write to
-//! that atom that observes an epoch greater than `e`, or when the cell is
-//! dropped. A pointer read during an operation cannot be freed and reused
-//! within that operation, so the CAS pointer comparison has no ABA either.
-//! Memory held by retired boxes is bounded by one box per write between
-//! collections. The collector traces the current value only.
+//! that atom that observes an epoch greater than `e`, by the next collection
+//! itself, or when the cell is dropped. A pointer read during an operation
+//! cannot be freed and reused within that operation, so the CAS pointer
+//! comparison has no ABA either. The collector traces the current value
+//! only, and while the world is stopped it takes every retired box of every
+//! live atom (no operation is in progress, so none can still read one) and
+//! drops them after releasing the heap locks (clj-quickjs-65: a retired
+//! value may own a string body, which must not outlive the grace period
+//! when the atom is never written again). Memory held by retired boxes is
+//! therefore bounded by one box per write between collections.
 //!
 //! # Load-to-root
 //!
@@ -170,9 +175,9 @@ pub(crate) struct AtomCell {
     current: AtomicPtr<Value>,
     /// Single-writer mode: changed only by its [`Publisher`].
     single_writer: bool,
-    /// Replaced boxes not yet known unreachable. Taken only by writers of
-    /// this atom (after their store) and by `Drop`; never by readers or the
-    /// collector.
+    /// Replaced boxes not yet known unreachable. Taken by writers of this
+    /// atom (after their store), by `Drop`, and by the collector while the
+    /// world is stopped ([`AtomCell::take_retired`]); never by readers.
     retired: Mutex<Retirement>,
 }
 
@@ -297,6 +302,26 @@ impl AtomCell {
             });
         }
         retired.boxes.push(Retired { epoch, ptr: old });
+    }
+
+    /// Take the values of every retired box (freeing the boxes), for the
+    /// collector to drop once it has
+    /// released the heap locks. Caller: the collector, while the world is
+    /// stopped (module docs: no atom operation is in progress then, so no
+    /// operation holds a pointer to a retired box, and none can load one
+    /// later: only the current box is reachable from the cell).
+    pub(crate) fn take_retired(&self) -> Vec<Value> {
+        let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
+        retired
+            .boxes
+            .drain(..)
+            // SAFETY: each retired box was unlinked from `current` and is
+            // owned by the list (taken under its lock, so no writer frees it
+            // concurrently). The caller guarantees the world is stopped, so
+            // no operation that loaded the pointer before it was unlinked
+            // is still running; the value moves out and the box is freed.
+            .map(|r| *unsafe { Box::from_raw(r.ptr) })
+            .collect()
     }
 
     /// Retired boxes still held (tests).
@@ -660,6 +685,7 @@ mod tests {
         }
         assert_eq!(cell.retired_len(), 3, "no grace period has passed");
         rt.collect().unwrap();
+        assert_eq!(cell.retired_len(), 0, "the collection released them");
         assert!(matches!(
             rt.atom_compare_and_set(&atom, &n(3.0), &n(4.0)),
             Ok(CasOutcome::Swapped)
@@ -689,15 +715,32 @@ mod tests {
         assert_eq!(cell.examined(), 0, "writes within one epoch only push");
         assert_eq!(cell.retired_len(), 1000);
         rt.collect().unwrap();
+        assert_eq!(cell.retired_len(), 0, "the collection released them");
         for i in 0..1000 {
             publisher.publish(&n(f64::from(i))).unwrap();
         }
-        assert_eq!(cell.examined(), 1000, "each retired box examined once");
-        assert_eq!(
-            cell.retired_len(),
-            1000,
-            "the first scan freed the old epoch's boxes"
-        );
+        assert_eq!(cell.examined(), 0, "nothing was left to scan");
+        assert_eq!(cell.retired_len(), 1000);
+    }
+
+    /// clj-quickjs-65: a retired value may own a string body; the
+    /// collection releases it even if the atom is never written again.
+    #[test]
+    fn retired_string_bodies_are_released_at_collection() {
+        let rt = Runtime::new();
+        let text = crate::value::JsString::from("a large retired string");
+        let s = rt.root(crate::Primitive::String(text.clone()));
+        let mut publisher = rt.new_single_writer_atom(&s).unwrap();
+        publisher
+            .publish(&rt.root(crate::Primitive::Number(1.0)))
+            .unwrap();
+        drop(s);
+        let cell = cell_of(rt.heap(), publisher.atom());
+        assert_eq!(cell.retired_len(), 1);
+        assert_eq!(text.body_refs(), 2, "ours and the retired box");
+        rt.collect().unwrap();
+        assert_eq!(cell.retired_len(), 0);
+        assert_eq!(text.body_refs(), 1, "released without another write");
     }
 
     /// A small persistent graph (a vector holding a vector).

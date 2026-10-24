@@ -347,10 +347,10 @@ Supported:
 
 Deferred:
 
-- String values and property access: they parse but are rejected by the
-  compiler as `Unsupported`. (Functions, calls, closures and the reserved
-  intrinsic binding compile since clj-quickjs-21, string values since
-  clj-quickjs-65, below.)
+- Property access: it parses but is rejected by the compiler as
+  `Unsupported`. (Functions, calls, closures and the reserved intrinsic
+  binding compile since clj-quickjs-21, string values since clj-quickjs-65,
+  below.)
 - (`throw`/`try`/`finally`: clj-quickjs-11, below.) Operators on objects need ToPrimitive and fail with
   `UnsupportedOperand` (objects cannot come from source yet).
 - labels, `switch`, `var`, update and compound
@@ -627,7 +627,8 @@ and `examples/`):
 
 Deferred:
 
-- Strings, property access (`f.call`, methods, objects), `this`,
+- Property access (`f.call`, methods, objects), `this`, (string values:
+  clj-quickjs-65 below)
   `arguments`, `new`, default/rest parameters, generators. (Arrow
   functions: clj-quickjs-53 below.)
 - A function declaration repeating a parameter or another declaration at
@@ -743,7 +744,8 @@ Supported:
 
 Deferred:
 
-- Definition ids and result kinds are numbers (no string values yet).
+- Definition ids and result kinds are numbers (string values exist since
+  clj-quickjs-65, but `need` takes numbers only).
 - `src/host/sim.rs` jobs still need through `RunGuard::need` in Rust and
   publish callables as host tokens.
 
@@ -851,7 +853,7 @@ Deferred:
   dependencies became catchable, and cancellation runs finally blocks, in
   clj-quickjs-27 (below).
 - Error objects have no properties (`message`, `name`), no `Error`
-  constructors or `instanceof`; strings cannot be thrown (no string values).
+  constructors or `instanceof`. (Strings can be thrown since clj-quickjs-65.)
 
 ### End-to-end compiler-host scenario (clj-quickjs-13)
 

@@ -767,6 +767,10 @@ impl Heap {
             }
         }
         let garbage: Vec<HeapObject> = objects.sweep();
+        // No atom operation is in progress (the world is stopped), so every
+        // retired atom box is unreachable: release them now rather than at
+        // the atom's next write (`crate::atom`, reclamation).
+        let retired = objects.take_atom_retirements();
         let stats = CollectStats {
             roots: root_count,
             live,
@@ -790,7 +794,7 @@ impl Heap {
         drop((objects, scopes, roots, world));
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
-        drop((garbage, sources));
+        drop((garbage, retired, sources));
         self.notify_observers(&report);
         stats
     }
