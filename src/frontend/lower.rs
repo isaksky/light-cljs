@@ -1802,8 +1802,9 @@ impl<'s> Lowerer<'s> {
                 });
             }
         }
-        // Reserve both the receiver and optional new.target capture.
-        if bindings.len() > MAX_COUNT - 2 {
+        let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
+        // Reserve the receiver and optional new.target capture.
+        if bindings.len() > MAX_COUNT - 1 - usize::from(new_target.is_some()) {
             return Err(self.error(
                 SyntaxErrorKind::TooLarge,
                 span,
@@ -1811,7 +1812,6 @@ impl<'s> Lowerer<'s> {
             ));
         }
         let receiver = eval_source(self.resolve_this(self.fns.len() - 1, true));
-        let new_target = self.resolve_new_target(self.fns.len() - 1).map(eval_source);
         Ok(EvalSite {
             offset: self.cur().out.code.len() as u32,
             strict: self.cur().strict,

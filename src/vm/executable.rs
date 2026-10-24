@@ -686,8 +686,11 @@ impl Executable {
                 _ => true,
             };
             let mut names = std::collections::HashSet::new();
+            // Runtime compilation imports the receiver and optional new.target
+            // after the named bindings; the complete capture count is u16.
             if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
-                || site.bindings.len() >= usize::from(u16::MAX)
+                || site.bindings.len()
+                    > usize::from(u16::MAX) - 1 - usize::from(site.new_target.is_some())
                 || !valid_source(site.receiver)
                 || site.new_target.is_some_and(|source| !valid_source(source))
                 || site.bindings.iter().any(|b| {
@@ -978,6 +981,45 @@ mod tests {
 
     const RET: u8 = Opcode::Return as u8;
     const UNDEF: u8 = Opcode::Undefined as u8;
+
+    #[test]
+    fn eval_site_capture_limits() {
+        for (count, new_target, valid) in [
+            (65_534, None, true),
+            (65_534, Some(EvalSource::NewTarget), false),
+            (65_533, Some(EvalSource::NewTarget), true),
+            (65_535, None, false),
+        ] {
+            let mut spec = with_functions(vec![UNDEF, Opcode::Call as u8, 0, 0, RET], vec![]);
+            spec.eval_sites.push(EvalSite {
+                offset: 1,
+                strict: true,
+                bindings: (0..count)
+                    .map(|i| EvalBinding {
+                        name: format!("b{i}"),
+                        source: EvalSource::This,
+                        kind: EvalBindingKind::Const,
+                        cell: false,
+                    })
+                    .collect(),
+                receiver: EvalSource::This,
+                receiver_strict: true,
+                new_target,
+            });
+            let result = Executable::load(spec);
+            if valid {
+                result.unwrap_or_else(|error| panic!("{count}, {new_target:?}: {error:?}"));
+            } else {
+                assert!(
+                    result.is_err(),
+                    "accepted {count} bindings with {new_target:?}"
+                );
+                if let Err(error) = result {
+                    assert_eq!(error.kind, InvalidEvalSite, "{count}, {new_target:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn regexp_literal_operands_validate_and_programs_survive_reload() {

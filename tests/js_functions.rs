@@ -80,6 +80,53 @@ fn new_target_in_functions_and_arrows() {
 }
 
 #[test]
+fn new_target_capture_publication() {
+    let rt = Runtime::new();
+    let apply = compile_function("function apply(f) { return f.call(99)(); }").unwrap();
+    let code = exe("function F() { return () => () => new.target; } F()");
+    assert!(!all_opcodes(&code).contains(&Opcode::NewCell));
+    let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("plain-call arrow did not complete");
+    };
+    rt.publish(&f)
+        .expect("undefined construct target publishes");
+    rt.collect().unwrap();
+    let RunOutcome::Complete(value) = rt.spawn(&apply, &[&f]).unwrap().run().unwrap() else {
+        panic!("published arrow did not complete in another task");
+    };
+    assert_eq!(value.view(), ValueView::Undefined);
+
+    let code = exe("function F() { return () => new.target; } new F()");
+    assert!(!all_opcodes(&code).contains(&Opcode::NewCell));
+    let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("construct-call arrow did not complete");
+    };
+    let error = rt.publish(&f).unwrap_err();
+    assert!(
+        matches!(&error, PublishError::NotShareable { path, found: "object", .. }
+            if path.to_string() == "value.capture(0).properties.property(prototype)"),
+        "{error:?}"
+    );
+
+    // Construction alone does not make arrows capture the constructor.
+    let code = exe("function F() { new.target; return () => 1; } new F()");
+    assert_eq!(
+        code.function(0)
+            .unwrap()
+            .function(0)
+            .unwrap()
+            .to_spec()
+            .captures,
+        0
+    );
+    let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!("unused construct target did not complete");
+    };
+    rt.publish(&f)
+        .expect("unused construct target is not captured");
+}
+
+#[test]
 fn new_target_survives_yields_waits_collection_and_migration() {
     let rt = Runtime::new();
     let program = exe(

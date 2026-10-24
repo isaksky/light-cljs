@@ -2744,10 +2744,15 @@ those of ordinary objects; virtual properties introduce no heap edges.
   task-owned frame value, initialized to undefined on calls and the resolved
   constructor on construction (bound constructors resolve to their target).
   Arrows capture that immutable value through intervening arrows using the
-  existing closure representation and publication checks. Direct-eval scope
+  existing closure representation and publication checks: undefined captures
+  from ordinary calls publish without a binding cell, while a captured
+  constructor with a task-owned property record prevents publication. An
+  unused target introduces no capture. Direct-eval scope
   descriptors carry an optional source, distinguishing an absent binding at
   script scope from a function binding whose value is undefined. The native
   eval continuation traces the imported value until the eval closure owns it.
+  Descriptor validation reserves space for the receiver and optional target
+  within the u16 capture limit used by runtime compilation.
   Frames, detached generator/async activations and escaping closures retain
   their usual yield/wait/collection/migration behavior.
 
