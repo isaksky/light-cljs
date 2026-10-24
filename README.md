@@ -2886,12 +2886,12 @@ collection and worker migration. `Complete` carries the original body value
 once jobs drain; an uncaught job error fails the task, and cancellation drops
 pending jobs. Owner-registered senders accept shareable arguments from other
 tasks without executing JavaScript during publication. Dependency waits
-continue to suspend the whole task. The boundary hook is ready for WeakRef
-kept-object clearing. Details: `docs/architecture.md`, "Task-owned jobs".
+continue to suspend the whole task. The owner clears WeakRef kept objects
+at job boundaries (-176). Details: `docs/architecture.md`, "Task-owned jobs".
 
-Deferred: JavaScript-visible enqueue APIs, async generator resumes,
-FinalizationRegistry producers, WeakRef kept-object clearing and timers.
-Promise producers and rejection reporting are described below.
+Deferred: JavaScript-visible enqueue APIs, async generator resumes and
+FinalizationRegistry producers. Promise producers, async resumes, rejection
+reporting and optional host timers are described below.
 
 ### Regular expression matcher (clj-quickjs-187)
 
@@ -3384,7 +3384,8 @@ weak slots, ephemeron tables with a key-indexed marking fixpoint, and
 cleared-slot notifications delivered after the collection pause. Retained
 notifications root their owners and held data until consumed. Existing Map
 entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
-Deferred JavaScript surfaces: WeakSet, WeakRef job keep-alives and
+WeakRef uses the weak slots and task job keep-alives (-176).
+Deferred JavaScript surfaces: WeakSet and
 FinalizationRegistry registration and cleanup jobs.
 
 ### `Array.prototype.sort` (clj-quickjs-208)
@@ -3460,7 +3461,7 @@ WeakMaps are task-owned and reject publication, even when empty or frozen;
 foreign tasks cannot use borrowed methods to bypass ownership.
 
 Deferred: non-nullish iterable construction (explicit TypeError, as for Map),
-WeakSet, WeakRef, FinalizationRegistry and generic symbol-tag consumption by
+WeakSet, FinalizationRegistry and generic symbol-tag consumption by
 Object.prototype.toString. WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and

@@ -213,7 +213,7 @@ end, alongside the ordinary collection report. They may allocate and retain
 notifications for later processing; no JavaScript, host callback or payload
 destructor runs in the pause. The collector substrate has no JavaScript
 surface itself: WeakMap builds on it (clj-quickjs-173); WeakSet remains
-deferred, WeakRef must add job keep-alives, and
+deferred, WeakRef uses task job keep-alives (clj-quickjs-176), and
 FinalizationRegistry must add registration, held-data and job scheduling.
 Collector tests use original native payload fixtures in `heap::gc::tests`.
 QuickJS's `test_weak_map_cycles`, `test_weak_ref` and
@@ -4976,8 +4976,8 @@ across runs.
 
 The boundary hook runs after the body and after each normally completed or
 uncaught-failing job, before starting the next job or reporting completion.
-It currently has no production effect; WeakRef's `ClearKeptObjects` belongs
-there. `Complete(value)` reports the original body's value only once the
+The owner clears WeakRef kept objects there (-176); terminal failure releases
+the whole VM state. `Complete(value)` reports the original body's value only once the
 queue is empty. An uncaught job exception reports `Failed(error)` and drops
 the tail. A failed body never starts jobs. Observing consumer cancellation
 closes admission and drops pending jobs before running the active activation's
@@ -4992,10 +4992,10 @@ ownership and GC retention/reclamation. QuickJS's `JS_EnqueueJob2`,
 `JS_ExecutePendingJob`, `js_finrec_job` and `tests/test_builtin.js`
 (`test_finalization_registry`, `test_weak_ref`) were consulted as semantic
 references at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`; no source or
-test text was adapted. Promise settlement/reactions, async resumes, WeakRef
-kept-object clearing, FinalizationRegistry producers and timers are deferred.
-Unhandled-rejection checks run only at quiescence after jobs and timers drain,
-rather than after each job (clj-quickjs-249 below).
+test text was adapted. Promise settlement/reactions, async resumes, timers and
+WeakRef kept-object clearing are implemented by subsequent pellets.
+FinalizationRegistry producers remain deferred. Unhandled-rejection checks run
+only at quiescence after jobs and timers drain (clj-quickjs-249 below).
 
 
 
@@ -7063,8 +7063,12 @@ adapted.
 The append-only `WeakRef` heap kind contains an ordinary task-owned property
 record and one collector `WeakSlot`. Slots now identify either objects or
 symbols via `TraceEdge`, using the same private identities and mark set as
-WeakMap. The symbol's immutable body is retained as untraced metadata so deref
+WeakMap. A symbol slot retains its immutable body as untraced metadata so deref
 can reconstruct its value; Arc ownership does not establish symbol liveness.
+Clearing a dead symbol slot moves this metadata to a retirement list dropped
+after the pause and all heap locks end, so a live cleared WeakRef cannot retain
+its target's description storage. `weak_ref_releases_cleared_symbol_metadata`
+checks both preservation by a strong symbol root and release on clearing.
 Only the collector clears slots. The notifying-slot interface remains available
 for FinalizationRegistry; no callback or payload destruction runs in the pause.
 WeakRef ordinary properties and its prototype are strong edges independently

@@ -51,8 +51,9 @@
 //! embedder's [`WeakHandle`](super::WeakHandle) remains generation-checked
 //! and lazy, separate from heap-internal slots. JavaScript WeakMap uses this
 //! storage (`crate::object::weak_map`); WeakRef uses weak slots and task
-//! job keep-alives (`crate::object::weak_ref`), and
-//! FinalizationRegistry scheduling are later layers.
+//! job keep-alives (`crate::object::weak_ref`). FinalizationRegistry scheduling
+//! is a later layer. Dead symbol-slot metadata is retired after the pause,
+//! so keeping a cleared slot does not retain the target's description storage.
 //!
 //! # Mutators
 //!
@@ -168,7 +169,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, ThreadId};
 
 use super::{Heap, HeapObject, ObjectId, lock};
-use crate::value::Value;
+use crate::value::{Value, symbol::JsSymbol};
 
 /// A source of collector roots. Append-only registry: later pellets add
 /// categories at the end (dependency results, atom contents, closure
@@ -237,6 +238,9 @@ pub(crate) trait ConditionalVisitor {
 pub(crate) struct WeakSlot {
     target: Option<TraceEdge>,
     notification: Option<u64>,
+    /// Untraced reconstruction metadata, moved out on clearing and dropped
+    /// after the pause. Arc ownership never marks the symbol identity.
+    symbol: Option<JsSymbol>,
 }
 
 // Constructors/accessors are consumed by the later weak-object pellets.
@@ -246,7 +250,20 @@ impl WeakSlot {
         Self {
             target: Some(target.into()),
             notification: None,
+            symbol: None,
         }
+    }
+
+    pub(crate) fn for_symbol(symbol: JsSymbol) -> Self {
+        Self {
+            target: Some(TraceEdge::Symbol(symbol.identity())),
+            notification: None,
+            symbol: Some(symbol),
+        }
+    }
+
+    pub(crate) fn symbol(&self) -> Option<&JsSymbol> {
+        self.symbol.as_ref()
     }
 
     /// `token` identifies this registration within its owner. Clearing
@@ -255,6 +272,7 @@ impl WeakSlot {
         Self {
             target: Some(target.into()),
             notification: Some(token),
+            symbol: None,
         }
     }
 
@@ -368,12 +386,16 @@ struct ClearConditional<'a> {
     marked: &'a HashSet<TraceEdge>,
     owner: ObjectId,
     cleared: &'a mut Vec<(ObjectId, u64)>,
+    retired_symbols: &'a mut Vec<JsSymbol>,
 }
 
 impl ConditionalVisitor for ClearConditional<'_> {
     fn weak_slot(&mut self, slot: &mut WeakSlot) {
         if slot.target.is_some_and(|id| !self.marked.contains(&id)) {
             slot.target = None;
+            if let Some(symbol) = slot.symbol.take() {
+                self.retired_symbols.push(symbol);
+            }
             if let Some(token) = slot.notification {
                 self.cleared.push((self.owner, token));
             }
@@ -1226,6 +1248,7 @@ impl Heap {
         // Empty grey plus no awakened values is the ephemeron fixpoint.
         // Clear before sweep, while all identities and marks are valid.
         let mut cleared = Vec::new();
+        let mut retired_symbols = Vec::new();
         for owner in conditional_owners {
             objects
                 .get_mut(owner)
@@ -1234,6 +1257,7 @@ impl Heap {
                     marked: &marked,
                     owner,
                     cleared: &mut cleared,
+                    retired_symbols: &mut retired_symbols,
                 });
         }
         let cleared_weak_slots = cleared
@@ -1286,7 +1310,7 @@ impl Heap {
         drop((objects, registry, scopes, roots, world));
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
-        drop((garbage, retired, sources));
+        drop((garbage, retired, retired_symbols, sources));
         self.notify_observers(&report);
         stats
     }

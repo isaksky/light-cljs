@@ -138,6 +138,57 @@ impl fmt::Display for JsSymbol {
 mod tests {
     use super::*;
 
+    /// Internal collector fixture: a live WeakRef must not retain a cleared
+    /// symbol's immutable body/description merely to reconstruct deref.
+    #[test]
+    fn weak_ref_releases_cleared_symbol_metadata() {
+        use crate::heap::gc::TraceEdge;
+        use crate::heap::{Heap, HeapObject, Rooted};
+        use crate::value::Value;
+        let heap = Arc::new(Heap::default());
+        let symbol = JsSymbol::new(Some(JsString::from(
+            "large description ".repeat(4096).as_str(),
+        )));
+        let observer = Arc::downgrade(&symbol.0);
+        let target = Value::Symbol(symbol);
+        let target_root = Rooted::new(&heap, target.clone());
+        let prototype = crate::realm::intrinsics(&heap).unwrap().weak_ref_prototype;
+        let Value::Symbol(symbol) = &target else {
+            unreachable!()
+        };
+        let id = heap
+            .alloc(HeapObject::WeakRef(Box::new(
+                crate::object::weak_ref::WeakRefObject::new(
+                    crate::ids::TaskId::from_raw(1),
+                    prototype,
+                    &target,
+                    TraceEdge::Symbol(symbol.identity()),
+                ),
+            )))
+            .unwrap();
+        let _weak_ref_root = Rooted::new(&heap, Value::Object(id));
+        drop(target);
+        heap.collect().unwrap();
+        assert!(
+            observer.upgrade().is_some(),
+            "strong symbol root preserves metadata"
+        );
+        drop(target_root);
+        heap.collect().unwrap();
+        assert!(heap.is_live(id), "the cleared WeakRef remains live");
+        assert!(
+            observer.upgrade().is_none(),
+            "clearing releases symbol metadata"
+        );
+        heap.read(id, |object| {
+            let HeapObject::WeakRef(weak) = object else {
+                unreachable!()
+            };
+            assert!(matches!(weak.deref(), Value::Undefined));
+        })
+        .unwrap();
+    }
+
     #[test]
     fn identity_description_and_leaf_lifetime() {
         let s = JsSymbol::new(Some("x".into()));

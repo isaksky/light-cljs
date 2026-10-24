@@ -4557,8 +4557,9 @@ Execution: the collector supports heap-internal weak slots and ephemeron
 tables, clears dead conditional edges before sweeping, and hands notifying
 slots to observers after the pause with rooted owners. This introduces no
 JavaScript syntax or globals and does not change ordinary Map semantics.
-Explicit gaps: JavaScript WeakSet, WeakRef and its job keep-alives,
-and FinalizationRegistry registration and cleanup scheduling remain deferred.
+WeakRef and its job keep-alives are supported (-176). Explicit gaps:
+JavaScript WeakSet and FinalizationRegistry registration and cleanup
+scheduling remain deferred.
 
 ## Array.prototype.sort (clj-quickjs-208)
 
@@ -4687,7 +4688,7 @@ self cycles and cycles between tables. WeakMaps cannot be published across
 tasks, directly or through persistent values or captures.
 
 Explicit gaps: non-nullish iterable construction throws TypeError, matching
-Map's current constructor boundary. WeakSet, WeakRef and FinalizationRegistry
+Map's current constructor boundary. WeakSet and FinalizationRegistry
 remain deferred. WeakMap has no enumeration, size, clear or iterator API;
 the host-only entry-count test hook is not a JavaScript property. Generic
 Object.prototype.toString symbol-tag consumption remains deferred.

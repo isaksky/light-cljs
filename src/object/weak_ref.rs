@@ -5,26 +5,21 @@ use crate::heap::ObjectId;
 use crate::heap::gc::{ConditionalVisitor, Trace, TraceEdge, WeakSlot};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
-use crate::value::{Value, symbol::JsSymbol};
+use crate::value::Value;
 
 #[derive(Debug)]
 pub(crate) struct WeakRefObject {
     object: OrdinaryObject,
     target: WeakSlot,
-    // Symbols live outside the object table. Keep their immutable metadata
-    // for deref, but never trace it as a strong edge. Collector clearing only
-    // mutates the slot and runs no payload destructor or notification callback.
-    symbol: Option<JsSymbol>,
 }
 
 impl WeakRefObject {
     pub(crate) fn new(owner: TaskId, prototype: ObjectId, target: &Value, edge: TraceEdge) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(owner, prototype),
-            target: WeakSlot::new(edge),
-            symbol: match target {
-                Value::Symbol(symbol) => Some(symbol.clone()),
-                _ => None,
+            target: match target {
+                Value::Symbol(symbol) => WeakSlot::for_symbol(symbol.clone()),
+                _ => WeakSlot::new(edge),
             },
         }
     }
@@ -41,7 +36,7 @@ impl WeakRefObject {
         match self.target.get() {
             Some(TraceEdge::Object(id)) => Value::Object(id),
             Some(TraceEdge::Symbol(_)) => {
-                Value::Symbol(self.symbol.clone().expect("symbol target"))
+                Value::Symbol(self.target.symbol().expect("symbol target").clone())
             }
             None => Value::Undefined,
         }
