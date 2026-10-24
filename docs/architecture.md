@@ -7138,6 +7138,8 @@ wait, survive collection and migrate. Nullish methods fall back to the ordinary
 method pair; object results throw. String's direct primitive-symbol exception
 continues to apply only before object conversion. Descriptive strings reuse
 UTF-16 JsString concatenation rather than Rust display formatting.
+If a wrapper's prototype no longer supplies @@toStringTag, Object's fallback
+tag is Object, independent of [[SymbolData]], matching `js_object_toString`.
 
 QuickJS semantic references (no C code copied): research/quickjs/quickjs.c
 `js_thisSymbolValue`, `js_symbol_toString`, `js_symbol_valueOf`,

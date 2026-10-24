@@ -17083,6 +17083,8 @@ fn symbol_prototype_and_wrappers() {
         "let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {value: null}); b.toString = function() { return 'fallback'; }; String(b) === 'fallback'",
         "let b = Object(Symbol()); let p = {[Symbol.toPrimitive](hint) { return hint; }}; Object.setPrototypeOf(b, p); String(b) === 'string' && b + '' === 'default'",
         "let s = Symbol('x'); let b = Object(s); b.x = 7; Object.freeze(b); Object.isFrozen(b) && b.x === 7 && b.valueOf() === s && b instanceof Symbol && Array.prototype.sort.call(s).valueOf() === s",
+        "let b = Object(Symbol('x')); Object.setPrototypeOf(b, Object.prototype); Object.prototype.toString.call(b) === '[object Object]' && String(b) === '[object Object]'",
+        "let b = Object(Symbol()); Object.setPrototypeOf(b, null); Object.prototype.toString.call(b) === '[object Object]'",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
@@ -17105,6 +17107,34 @@ fn symbol_prototype_and_wrappers() {
         "let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {value() { return {}; }}); String(b)",
     ] {
         assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. The inherited __proto__ setter
+/// accepts primitive receivers in both modes without changing their prototype.
+#[test]
+fn symbol_primitive_property_writes() {
+    for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+        for source in [
+            "let s = Symbol(); s.__proto__ = null; Object.getPrototypeOf(s) === Symbol.prototype",
+            "let s = Symbol(); s['__proto__'] = {}; Object.getPrototypeOf(s) === Symbol.prototype",
+        ] {
+            let script = compile_script_with("symbol primitive write", source, options).unwrap();
+            match run(&script, &[]) {
+                RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true), "{source}"),
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+    }
+    for source in ["let s = Symbol(); s.x = 1", "let s = Symbol(); s['x'] = 1"] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+        let source = format!("{source}; s.x === undefined");
+        let script =
+            compile_script_with("sloppy symbol write", &source, ScriptOptions::SLOPPY).unwrap();
+        match run(&script, &[]) {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+            other => panic!("{other:?}"),
+        }
     }
 }
 
@@ -17982,6 +18012,7 @@ fn json_stringify_inherited_property_reads() {
 #[test]
 fn json_stringify_symbols() {
     for source in [
+        r#"let b = Object(Symbol()); Object.defineProperty(b, Symbol.toPrimitive, {get() {throw 'conversion';}}); b.toString = function() {throw 'toString';}; b.valueOf = function() {throw 'valueOf';}; JSON.stringify([1], null, b) === '[1]'"#,
         r#"JSON.stringify(Symbol()) === undefined && JSON.stringify([Symbol(), 1]) === '[null,1]' && JSON.stringify({a: Symbol(), b:1}) === '{"b":1}'"#,
         r#"let s = Symbol('key'); let o = {a:1}; o[s] = 2; Object.defineProperty(o, Symbol(), {get(){throw 42;}, enumerable:true}); JSON.stringify(o) === '{"a":1}'"#,
         r#"let o = {toJSON(){return Symbol();}}; JSON.stringify(o) === undefined && JSON.stringify([o]) === '[null]' && JSON.stringify({a:o}) === '{}'"#,

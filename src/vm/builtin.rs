@@ -1980,8 +1980,9 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",
-                    Some(PrimitiveData::Symbol(_)) => "Symbol",
-                    None => "Object",
+                    // Symbol wrappers get their tag from @@toStringTag;
+                    // without it, their builtinTag is Object.
+                    None | Some(PrimitiveData::Symbol(_)) => "Object",
                 }),
                 HeapObject::Vector(_)
                 | HeapObject::Map(_)
