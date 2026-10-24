@@ -641,6 +641,20 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
         f = bound.callee;
     }
     let (id, code) = match callee(heap, &f) {
+        Ok(Callee::Builtin(Builtin::Date)) => {
+            if !super::native::start_builtin(
+                heap,
+                state,
+                Builtin::Date,
+                &Value::Undefined,
+                &args,
+                true,
+                argc + 1,
+            )? {
+                return Err(Fault::Internal("Date constructor requires a native frame"));
+            }
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
         Ok(Callee::Builtin(Builtin::Map)) => {
             let result = builtin::map_constructor(heap, task, &args)?;

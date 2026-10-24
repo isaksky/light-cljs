@@ -3393,3 +3393,45 @@ cap: left shifts check the exact result size before allocation; overflowing
 bitwise results also throw RangeError (`BigInt is too large`). Compound stores
 occur only on success.
 Explicit gaps: BigInt conversion APIs remain assigned to their sibling pellets.
+
+### Execution: Date time values and UTC (clj-quickjs-179)
+
+`new Date(value)` creates a distinct ordinary task-owned object inheriting
+from `Date.prototype`, with an own internal `[[DateValue]]` slot. An actual
+Date argument copies its slot without running conversion hooks, regardless
+of its prototype. Other arguments undergo resumable ToPrimitive with default
+hint, then ToNumber; string primitives fail explicitly pending Date parsing.
+TimeClip accepts finite milliseconds within ±8.64e15, truncates toward zero,
+canonicalizes zero to +0 and otherwise stores NaN. `Date.prototype` itself
+has a NaN slot; inheriting from it never confers the Date brand.
+
+`getTime()` and `valueOf()` return the slot; `setTime(value)` validates the
+receiver first, converts its first argument to Number resumably, clips, stores
+and returns that value. A missing argument becomes NaN. Invalid receivers
+throw catchable TypeError; a foreign task's receiver fails ownership checks.
+Freezing an instance's ordinary properties leaves its internal slot mutable;
+the shared intrinsic prototype follows the realm's immutable policy instead.
+Object.prototype.toString reports `[object Date]` for actual Date objects.
+
+`Date.UTC(year, month = 0, date = 1, hour = 0, minute = 0, second = 0, ms = 0)`
+converts the first seven supplied arguments to Number in order, including
+all later conversions after NaN/Infinity; abrupt conversion failure stops
+before later hooks. Missing year gives NaN; explicit undefined does not select
+a default. Further arguments are evaluated by the caller but never coerced.
+After conversion, integer years 0..99 become 1900..1999; other components
+truncate toward zero, normalize and combine in the ECMA-262 floating-point
+order before final clipping. Intermediate day/hour/etc. values may exceed
+the clip range and cancel. Methods have standard names, lengths and method
+attributes (Date length 7, UTC length 2, getTime/valueOf length 0, setTime
+length 1). Bound Date construction and forwarded method calls work normally.
+Callbacks may yield, wait, survive GC and resume on another worker.
+
+Explicit gaps: `Date()` calls, `new Date()` and multiple-argument local-time
+construction fail with UnsupportedOperand pending host clock/local time work
+(clj-quickjs-182). String construction/parsing, formatting, UTC calendar
+getters/setters and Date's Symbol.toPrimitive/default conversion remain
+separate Date/protocol work. A lookup reaching Date.prototype for its missing
+toString fails explicitly rather than using Object.prototype's tag as a date
+format. Host clock/zone integration is documented at `src/vm/date.rs`:
+unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
+no host supplies a zone. No host input is consumed by this UTC-only core.

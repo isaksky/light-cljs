@@ -489,3 +489,17 @@ adapt `research/quickjs/tests/test_intl.js::test_locale` at that revision. The
 QuickJS copyright and MIT permission notice precedes each test; additional
 fixtures are synthetic, not light-cljs output. The unchanged supplemental data
 retains its QuickJS and Unicode notices described above.
+
+## Date UTC time-value core (clj-quickjs-179)
+
+`src/vm/date.rs::tests::date_time_arithmetic` and
+`tests/js_source.rs::date_utc_and_time_value` adapt the Date.UTC rows in
+`research/quickjs/tests/test_builtin.js::test_date` (lines 683–712), at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The precision rows are identified there as test262 fp-evaluation-order cases.
+The QuickJS copyright and MIT permission notice from `research/quickjs/LICENSE`
+is retained with both tests. All fixtures are synthetic, not light-cljs output.
+`research/quickjs/quickjs.c` functions `time_clip`, `set_date_fields`,
+`set_date_fields_checked`, `js_date_constructor`, `js_Date_UTC`,
+`js_date_getTime` and `js_date_setTime` were semantic references at that
+revision; the Rust implementation and remaining tests were written afresh.

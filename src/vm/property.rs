@@ -653,6 +653,15 @@ fn lookup(
             };
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(Read::property(property, has))),
+                None if realm.is_some_and(|r| id == r.date_prototype)
+                    && matches!(key, Key::Name(name) if name == &JsString::from("toString")) =>
+                {
+                    // Date formatting is deferred. Falling through would run
+                    // Object.prototype.toString and silently return a tag.
+                    return Err(Fault::Unsupported(
+                        "Date string formatting is not supported".into(),
+                    ));
+                }
                 None if view.function_prototype
                     && function::lacks_inherited(key)
                     && !conversion =>

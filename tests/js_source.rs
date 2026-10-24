@@ -978,6 +978,250 @@ fn array_buffer_publication_rejected() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Date.UTC rows adapted from
+/// QuickJS tests/test_builtin.js::test_date, revision 7d1c13c5d8f8.
+/// Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon.
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the "Software"), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+/// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+#[test]
+fn date_utc_and_time_value() {
+    for (args, expected) in [
+        ("2017", 1483228800000.0),
+        ("2017, 9", 1506816000000.0),
+        ("2017, 9, 22", 1508630400000.0),
+        ("2017, 9, 22, 18", 1508695200000.0),
+        ("2017, 9, 22, 18, 10", 1508695800000.0),
+        ("2017, 9, 22, 18, 10, 11", 1508695811000.0),
+        ("2017, 9, 22, 18, 10, 11, 91", 1508695811091.0),
+        ("2017, 9, 22, 18, 10, 11, 91, NaN", 1508695811091.0),
+        (
+            "1970, 0, 1, 80063993375, 29, 1, -288230376151711740",
+            29312.0,
+        ),
+        (
+            "1970, 0, 213503982336, 0, 0, 0, -18446744073709552000",
+            34447360.0,
+        ),
+        ("2017, 9, 22 - 1e10, 18 + 24e10", 1508695200000.0),
+        ("2017, 9, 22, 18 - 1e10, 10 + 60e10", 1508695800000.0),
+        ("2017, 9, 22, 18, 10 - 1e10, 11 + 60e10", 1508695811000.0),
+        (
+            "2017, 9, 22, 18, 10, 11 - 1e12, 91 + 1000e12",
+            1508695811091.0,
+        ),
+    ] {
+        let src = format!("Date.UTC({args})");
+        assert_eq!(eval(&src), ValueView::Number(expected), "{src}");
+    }
+    for args in [
+        "",
+        "NaN",
+        "2017, NaN",
+        "2017, 9, NaN",
+        "2017, 9, 22, NaN",
+        "2017, 9, 22, 18, NaN",
+        "2017, 9, 22, 18, 10, NaN",
+        "2017, 9, 22, 18, 10, 11, NaN",
+    ] {
+        let src = format!("Number.isNaN(Date.UTC({args}))");
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "new Date(1506098258091).getTime() === 1506098258091",
+        "Number.isNaN(new Date(8.64e15 + 1).getTime())",
+        "let d = new Date(0); d.setTime(5) === 5 && d.valueOf() === 5",
+        "let caught = false; try { Date.prototype.getTime.call({}); } catch (e) { caught = e instanceof TypeError; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output: slots, descriptors, coercion
+/// ordering, clipping and the intentionally deferred constructor forms.
+#[test]
+fn date_slots_and_coercion() {
+    for src in [
+        "Date.name === 'Date' && Date.length === 7 && Date.UTC.name === 'UTC' && Date.UTC.length === 2",
+        "Date.prototype.getTime.name === 'getTime' && Date.prototype.getTime.length === 0 && Date.prototype.valueOf.name === 'valueOf' && Date.prototype.valueOf.length === 0 && Date.prototype.setTime.name === 'setTime' && Date.prototype.setTime.length === 1",
+        "let d = Object.getOwnPropertyDescriptor(Date, 'prototype'); d.value === Date.prototype && !d.writable && !d.enumerable && !d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Date, 'UTC'); d.value === Date.UTC && d.writable && !d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(Date.prototype, 'getTime'); d.value === Date.prototype.getTime && d.writable && !d.enumerable && d.configurable",
+        "let d = new Date(1); d instanceof Date && typeof d === 'object' && Object.getPrototypeOf(d) === Date.prototype && d.constructor === Date && Object.keys(d).length === 0",
+        "Number.isNaN(Date.prototype.getTime()) && Number.isNaN(Date.prototype.valueOf())",
+        "Object.prototype.toString.call(new Date(1)) === '[object Date]' && Object.prototype.toString.call(Date.prototype) === '[object Date]'",
+        "let d = new Date(7); d.valueOf = function() {throw 1;}; d.toString = function() {throw 2;}; let copy = new Date(d); copy !== d && copy.getTime() === 7",
+        "let d = new Date(NaN); Object.defineProperty(d, 'valueOf', {get() {throw 1;}}); Number.isNaN(new Date(d).valueOf())",
+        "let d = new Date(7); Object.setPrototypeOf(d, null); Date.prototype.getTime.call(d) === 7 && new Date(d).getTime() === 7",
+        "new Date(undefined).getTime() !== new Date(undefined).getTime() && new Date(null).getTime() === 0 && new Date(true).getTime() === 1",
+        "new Date(1.9).getTime() === 1 && new Date(-1.9).getTime() === -1 && Object.is(new Date(-0).getTime(), 0) && Object.is(new Date(-0.9).getTime(), 0)",
+        "new Date(8.64e15).getTime() === 8.64e15 && new Date(-8.64e15).getTime() === -8.64e15 && Number.isNaN(new Date(-8.64e15 - 1).getTime()) && Number.isNaN(new Date(Infinity).getTime())",
+        "let d = new Date(NaN); d.setTime('5.9') === 5 && d.getTime() === 5 && Object.is(d.setTime(-0), 0) && Number.isNaN(d.setTime()) && Number.isNaN(d.getTime())",
+        "let d = new Date(1); Object.freeze(d); d.setTime(5) === 5 && d.getTime() === 5",
+        "let d = new Date(1); try {d.setTime(Symbol());} catch(e) {} d.getTime() === 1",
+        "let d = new Date(1); try {d.setTime({valueOf() {throw 3;}});} catch(e) {} d.getTime() === 1",
+        "let calls = ''; let n = new Date({valueOf() {calls += 'v'; return {};}, toString() {calls += 's'; return 3;}}); calls === 'vs' && n.getTime() === 3",
+        "let calls = ''; let x = Date.UTC({valueOf() {calls += 'y'; return '1970';}}, {valueOf() {calls += 'm'; return 0;}}); x === 0 && calls === 'ym'",
+        "let calls = ''; let x = Date.UTC(NaN, {valueOf() {calls += 'm'; return 0;}}); Number.isNaN(x) && calls === 'm'",
+        "let calls = ''; let x = Date.UTC(Infinity, {valueOf() {calls += 'm'; return 0;}}); Number.isNaN(x) && calls === 'm'",
+        "let calls = ''; try {Date.UTC(Symbol(), {valueOf() {calls += 'm'; return 0;}});} catch(e) {calls += e instanceof TypeError;} calls === 'true'",
+        "let calls = ''; try {Date.UTC({valueOf() {calls += 'y'; throw 3;}}, {valueOf() {calls += 'm'; return 0;}});} catch(e) {calls += e;} calls === 'y3'",
+        "Date.UTC(1970, 0, 1, 0, 0, 0, 0, {valueOf() {throw 3;}}) === 0",
+        "Date.UTC(99.9) === Date.UTC(1999) && Date.UTC(-0.9) === Date.UTC(1900) && Date.UTC(100) !== Date.UTC(2000)",
+        "Date.UTC(1969, 12) === 0 && Date.UTC(1970, -1) === -2678400000 && Date.UTC(1970, 0, 0) === -86400000",
+        "Date.UTC(275760, 8, 13) === 8.64e15 && Date.UTC(-271821, 3, 20) === -8.64e15 && Number.isNaN(Date.UTC(275760, 8, 14))",
+        "Date.UTC('1970', null, true, false, '0', null, null) === 0 && Number.isNaN(Date.UTC(1970, undefined))",
+        "new (Date.bind(null, 9))().getTime() === 9 && Date.UTC.call(null, 1970) === 0 && Date.UTC.apply(null, [1970]) === 0",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for receiver in [
+        "{}",
+        "null",
+        "undefined",
+        "1",
+        "Object.create(Date.prototype)",
+    ] {
+        for method in ["getTime", "valueOf", "setTime"] {
+            let src = format!(
+                "let converted = false; let caught = false; try {{ Date.prototype.{method}.call({receiver}, {{valueOf() {{converted = true; return 1;}}}}); }} catch(e) {{caught = e instanceof TypeError;}} caught && !converted"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    for src in [
+        "Date()",
+        "Date(1)",
+        "new Date()",
+        "new Date(1970, 0)",
+        "new Date('2017-09-22')",
+        "new Date('5')",
+        "new Date({valueOf() {return '5';}})",
+        "new Date(0).toString()",
+        "String(new Date(0))",
+        "'' + new Date(0)",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    for src in [
+        "new Date.UTC(1970)",
+        "new Date(Symbol())",
+        "Date.prototype.setTime(1)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Exercise both pending arguments
+/// and an otherwise unreachable setTime receiver through waits, GC and migration.
+#[test]
+fn date_coercion_waits_collects_and_migrates() {
+    let rt = Runtime::new();
+    let src = r"
+        let log = '';
+        let d = new Date({get valueOf() {
+            log += 'g'; __rt.need(1, 1);
+            return function() {log += 'v'; __rt.need(2, 1); return 12;};
+        }});
+        d.extra = {n: 42};
+        let set = new Date(1).setTime({valueOf() {log += 's'; __rt.need(3, 1); return 5;}});
+        let utc = Date.UTC({valueOf() {log += 'y'; __rt.need(4, 1); return 1970;}},
+                           {valueOf() {log += 'm'; __rt.need(5, 1); return 0;}});
+        let invalid = new Date(NaN);
+        invalid.setTime({valueOf() {log += 'i'; __rt.need(6, 1); return 9;}});
+        d.getTime() === 12 && d.extra.n === 42 && set === 5 && utc === 0
+            && invalid.getTime() === 9 && log === 'gvsymi'
+    ";
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut waited = 0;
+    let mut complete = false;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                complete = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(waited, 6);
+}
+
+/// Synthetic fixtures, not light-cljs output: ordinary Date slots never permit
+/// publication or foreign-task reads, even after freezing or detaching prototypes.
+#[test]
+fn date_objects_are_task_owned() {
+    use clj_quickjs::PublishError;
+    let rt = Runtime::new();
+    for source in ["new Date(7)", "Object.freeze(new Date(7))"] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(date) = owner.run().unwrap() else {
+            panic!("expected Date");
+        };
+        assert!(matches!(
+            rt.publish(&date),
+            Err(PublishError::NotShareable { .. })
+        ));
+        for source in [
+            "function f(d) {return Date.prototype.getTime.call(d);}",
+            "function f(d) {return Date.prototype.setTime.call(d, 1);}",
+            "function f(d) {return new Date(d);}",
+        ] {
+            let reader = rt
+                .spawn(&compile_function(source).unwrap(), &[&date])
+                .unwrap();
+            assert!(
+                matches!(reader.run().unwrap(), RunOutcome::Failed(e)
+                if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+                "{source}"
+            );
+        }
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. The first two rows adapt
 /// QuickJS tests/test_builtin.js::test_array, revision 7d1c13c5d8f8;
 /// its full copyright and MIT permission notice is retained on array_push.

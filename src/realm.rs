@@ -62,6 +62,7 @@
 //! | `Intl` (clj-quickjs-209) | ordinary object, prototype `Object.prototype` | `Symbol.toStringTag` (`Intl`, non-writable, non-enumerable, configurable); service constructors deferred |
 
 //! | `Map`, `Map.prototype` (clj-quickjs-169) | constructible built-in; ordinary prototype inheriting from `Object.prototype` | constructor length 1; prototype `constructor`, `set` (length 2), `get`, `has`, `delete` (length 1), `clear` (length 0), `size` getter (length 0) |
+//! | `Date`, `Date.prototype` (clj-quickjs-179) | constructible built-in; ordinary prototype with NaN Date slot | constructor length 7, `UTC` (length 2); prototype `constructor`, `getTime`, `valueOf` (length 0), `setTime` (length 1) |
 //!
 //! NativeError constructors inherit from Error. Other built-in functions inherit from `Function.prototype`, which
 //! inherits from `Object.prototype` (clj-quickjs-102).
@@ -196,6 +197,8 @@ pub(crate) enum Global {
     Uint16Array = 28,
     Int32Array = 29,
     Uint32Array = 30,
+
+    Date = 31,
 }
 
 impl Global {
@@ -232,6 +235,7 @@ impl Global {
         Global::Uint16Array,
         Global::Int32Array,
         Global::Uint32Array,
+        Global::Date,
     ];
 
     /// The JavaScript name.
@@ -272,6 +276,8 @@ impl Global {
             Global::Uint16Array => "Uint16Array",
             Global::Int32Array => "Int32Array",
             Global::Uint32Array => "Uint32Array",
+
+            Global::Date => "Date",
         }
     }
 
@@ -351,6 +357,9 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_locale_prototype: ObjectId,
     pub(crate) typed_array_prototypes: [ObjectId; 7],
     typed_array_constructors: [ObjectId; 7],
+
+    pub(crate) date_prototype: ObjectId,
+    date: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -425,6 +434,7 @@ impl Intrinsics {
             Global::Uint32Array => Value::Object(self.typed_array_constructors[6]),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
+            Global::Date => Value::Object(self.date),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
             Global::Function => Value::Object(self.function),
@@ -907,6 +917,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             PropertyFlags::METHOD,
         )?;
     }
+
+
+    let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -964,6 +977,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         map,
         intl,
         intl_locale_prototype,
+
+        date_prototype,
+        date,
     })
 }
 
@@ -1219,6 +1235,30 @@ fn intl_locale_intrinsics(
     })?
     .then_some(())?;
     Some(prototype)
+}
+
+/// Date's prototype itself has [[DateValue]] = NaN. Slots are never inherited.
+fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b.heap.alloc(HeapObject::Plain(
+        OrdinaryObject::intrinsic(Some(object_prototype)).with_date_value(f64::NAN),
+    ))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::Date,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::DateGetTime,
+        Builtin::DateValueOf,
+        Builtin::DateSetTime,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let utc = b.function(Builtin::DateUtc, &[])?;
+    b.add(constructor, "UTC", utc, PropertyFlags::METHOD)?;
+    Some((prototype, constructor))
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -1492,7 +1532,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 146); // Includes Locale maximize/minimize and integer typed arrays.
+        assert_eq!(first.all.len(), 152); // Includes Locale methods, typed arrays and Date.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -1542,7 +1582,10 @@ mod tests {
         assert_eq!(Global::from_u16(23), Some(Global::Intl));
         assert_eq!(Global::from_u16(24), Some(Global::Int8Array));
         assert_eq!(Global::from_u16(30), Some(Global::Uint32Array));
-        assert_eq!(Global::from_u16(31), None);
+
+        assert_eq!(Global::from_name("Date"), Some(Global::Date));
+        assert_eq!(Global::from_u16(31), Some(Global::Date));
+        assert_eq!(Global::from_u16(32), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

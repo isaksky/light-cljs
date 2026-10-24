@@ -29,6 +29,7 @@
 
 pub mod asm;
 pub(crate) mod builtin;
+pub(crate) mod date;
 pub(crate) mod descriptor;
 pub(crate) mod dispatch;
 pub(crate) mod exception;

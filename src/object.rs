@@ -284,6 +284,9 @@ pub(crate) struct OrdinaryObject {
     engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
     /// Intl.Locale's immutable internal record; contains no heap edges.
     locale_data: Option<Box<crate::intl::tag::LanguageTag>>,
+
+    /// `[[DateValue]]`: clipped epoch milliseconds or NaN, never a heap edge.
+    date_value: Option<f64>,
 }
 
 impl OrdinaryObject {
@@ -301,6 +304,8 @@ impl OrdinaryObject {
             error_data: false,
             engine_error: None,
             locale_data: None,
+
+            date_value: None,
         }
     }
 
@@ -372,6 +377,22 @@ impl OrdinaryObject {
 
     pub(crate) fn engine_error(&self) -> Option<&crate::vm::exception::ErrorObject> {
         self.engine_error.as_deref()
+    }
+
+    /// Initialize Date's own slot before publishing its heap identity.
+    pub(crate) fn with_date_value(mut self, time: f64) -> Self {
+        self.date_value = Some(time);
+        self
+    }
+
+    pub(crate) fn date_value(&self) -> Option<f64> {
+        self.date_value
+    }
+
+    /// Caller validates the brand, ownership and intrinsic mutation boundary.
+    pub(crate) fn set_date_value(&mut self, time: f64) {
+        debug_assert!(self.date_value.is_some());
+        self.date_value = Some(time);
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.
@@ -738,6 +759,8 @@ impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         // PrimitiveData contains only f64 / JsString, with no heap edges.
         // locale_data owns Rust strings and also contains no heap edges.
+
+        // PrimitiveData and DateValue contain only f64 / JsString, with no heap edges.
         if let Some(error) = &self.engine_error {
             error.trace(visit);
         }

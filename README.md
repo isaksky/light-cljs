@@ -2926,3 +2926,16 @@ Compound assignments store only on success, object conversion remains resumable,
 and each operation consumes one instruction. Conversion APIs remain deferred.
 Validation: `cargo test --test js_source bigint_ -- --test-threads=3` and
 `cargo test --lib value::bigint:: -- --test-threads=3`.
+
+Date time-value core (clj-quickjs-179): `new Date(ms)` and `new Date(date)`
+create task-owned ordinary objects with a clipped `[[DateValue]]` slot.
+`getTime`, `valueOf`, `setTime` and `Date.UTC` are supported, including NaN
+and signed-zero clipping, ordered resumable argument coercion, two-digit
+UTC years, overflowing components and the specified floating-point order.
+Deferred: `Date()`, no-argument/current-time and multiple-argument/local-time
+construction, string parsing, default Date-to-primitive conversion, formatting,
+calendar getters/setters and host zones. These constructor/conversion forms
+fail explicitly. The host clock/zone extension point is documented in
+`src/vm/date.rs`; this core reads neither the clock nor the OS zone.
+Tests: `cargo test --lib vm::date::tests::date_time_arithmetic` and
+`cargo test --test js_source date_`.

@@ -309,8 +309,9 @@ enum Action {
     Unwind,
 }
 
-/// ToPrimitive's preferred primitive type. Number and default share the
-/// ordinary method order; they remain distinct for future exotic methods.
+/// ToPrimitive's preferred primitive type. Number and default share ordinary
+/// method order; Date's default conversion fails explicitly until formatting
+/// and its Symbol.toPrimitive protocol are implemented.
 #[derive(Clone, Copy, Debug)]
 enum Hint {
     Default,
@@ -362,6 +363,9 @@ enum ConvertTarget {
         magnitude: f64,
     },
     NumberValueLimited(usize),
+    DateConstructor,
+    DateUtc,
+    DateSetTime,
 }
 
 /// The operation-specific state of a native frame.
@@ -1076,6 +1080,44 @@ pub(crate) fn start_builtin(
             }
             (ConvertTarget::ArrayBuffer(which), operands, Hint::Number)
         }
+        Builtin::Date => {
+            if !construct {
+                return Err(Fault::Unsupported(
+                    "Date() requires host clock and formatting support".into(),
+                ));
+            }
+            if args.len() != 1 {
+                return Err(Fault::Unsupported(
+                    "Date construction without one argument requires host clock/local-time support"
+                        .into(),
+                ));
+            }
+            let value = match super::date::time_value(heap, state.diag.task, &args[0])? {
+                Some(time) => Value::Number(time),
+                None => args[0].clone(),
+            };
+            (ConvertTarget::DateConstructor, vec![value], Hint::Default)
+        }
+        Builtin::DateUtc if !construct => {
+            let mut fields = vec![Value::Number(0.0); 7];
+            fields[0] = Value::Undefined;
+            fields[2] = Value::Number(1.0);
+            for (field, arg) in fields.iter_mut().zip(args) {
+                *field = arg.clone();
+            }
+            (ConvertTarget::DateUtc, fields, Hint::Number)
+        }
+        Builtin::DateSetTime if !construct => {
+            super::date::this_time_value(heap, state.diag.task, this)?;
+            (
+                ConvertTarget::DateSetTime,
+                vec![
+                    this.clone(),
+                    args.first().cloned().unwrap_or(Value::Undefined),
+                ],
+                Hint::Number,
+            )
+        }
         Builtin::NumberPrototypeToString if !construct => {
             // thisNumberValue must reject an invalid receiver before any
             // observable radix conversion, even through call/apply/bind.
@@ -1327,7 +1369,10 @@ pub(crate) fn start_builtin(
         (1, operands.len())
     } else if matches!(target, ConvertTarget::ArrayBuffer(Builtin::ArrayBuffer)) {
         (0, 1)
-    } else if matches!(target, ConvertTarget::PropertyBuiltin { .. }) {
+    } else if matches!(
+        target,
+        ConvertTarget::PropertyBuiltin { .. } | ConvertTarget::DateSetTime
+    ) {
         (1, 2)
     } else {
         (0, operands.len())
@@ -2200,6 +2245,14 @@ impl NativeState {
                                 crate::object::array_buffer::to_index(&number)?;
                             }
                             operands[*next] = number;
+
+                            *next += 1;
+                            continue;
+                        }
+                        if matches!(target, ConvertTarget::DateUtc | ConvertTarget::DateSetTime) {
+                            // Finish each ToNumber before observing the next argument.
+                            // Even NaN must not skip later coercion side effects.
+                            operands[*next] = Value::Number(dispatch::to_number(receiver)?);
                             *next += 1;
                             continue;
                         }
@@ -2289,6 +2342,13 @@ impl NativeState {
                         continue;
                     }
                     while *method < 2 {
+                        if matches!(hint, Hint::Default)
+                            && super::date::time_value(heap, task, receiver)?.is_some()
+                        {
+                            return Err(Fault::Unsupported(
+                                "Date default conversion requires formatting/Symbol.toPrimitive support".into(),
+                            ));
+                        }
                         let names = if matches!(hint, Hint::String) {
                             ["toString", "valueOf"]
                         } else {
@@ -2327,6 +2387,17 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::DateConstructor => {
+                        super::date::construct(heap, task, &operands[0]).map(Action::Return)
+                    }
+                    ConvertTarget::DateUtc => super::date::utc(operands).map(Action::Return),
+                    ConvertTarget::DateSetTime => super::date::set_time(
+                        heap,
+                        task,
+                        &operands[0],
+                        dispatch::to_number(&operands[1])?,
+                    )
+                    .map(Action::Return),
                     ConvertTarget::SymbolRegistryKey => {
                         let key = dispatch::to_js_string(&operands[0])?;
                         Ok(Action::Return(Value::Symbol(heap.symbols.symbol_for(key))))

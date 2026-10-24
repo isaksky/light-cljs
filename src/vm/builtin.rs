@@ -288,6 +288,13 @@ pub(crate) enum Builtin {
 
     IntlLocaleMaximize,
     IntlLocaleMinimize,
+
+    /// UTC Date time-value core (clj-quickjs-179).
+    Date,
+    DateUtc,
+    DateGetTime,
+    DateValueOf,
+    DateSetTime,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -418,6 +425,11 @@ impl Builtin {
             Builtin::MapDelete => "delete",
             Builtin::MapClear => "clear",
             Builtin::MapSize => "get size",
+            Builtin::Date => "Date",
+            Builtin::DateUtc => "UTC",
+            Builtin::DateGetTime => "getTime",
+            Builtin::DateValueOf => "valueOf",
+            Builtin::DateSetTime => "setTime",
 
             Builtin::ObjectPrototypeProtoGetter => "get __proto__",
             Builtin::ObjectPrototypeProtoSetter => "set __proto__",
@@ -505,6 +517,10 @@ impl Builtin {
             Builtin::Map | Builtin::MapGet | Builtin::MapHas | Builtin::MapDelete => 1,
             Builtin::MapSet => 2,
             Builtin::MapClear | Builtin::MapSize => 0,
+            Builtin::Date => 7,
+            Builtin::DateUtc => 2,
+            Builtin::DateGetTime | Builtin::DateValueOf => 0,
+            Builtin::DateSetTime => 1,
 
             Builtin::ObjectPrototypeProtoGetter => 0,
             Builtin::ObjectPrototypeProtoSetter => 1,
@@ -581,6 +597,13 @@ pub(crate) fn call(
         Builtin::ArrayBufferTransfer | Builtin::ArrayBufferSlice => Err(Fault::Internal(
             "ArrayBuffer methods require a resumable frame",
         )),
+
+        Builtin::Date | Builtin::DateUtc | Builtin::DateSetTime => Err(Fault::Internal(
+            "Date conversion requires a resumable frame",
+        )),
+        Builtin::DateGetTime | Builtin::DateValueOf => {
+            super::date::this_time_value(heap, task, this).map(Value::Number)
+        }
         Builtin::Error
         | Builtin::ErrorPrototypeToString
         | Builtin::NativeError(_)
@@ -1402,6 +1425,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
+                HeapObject::Plain(o) if o.date_value().is_some() => Ok("Date"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",

@@ -5052,3 +5052,44 @@ normalization as construction: an inferred language can activate a variant alias
 intact through this normalization. The realm retention and GC inventory
 assertions count the two new function objects. Formatting service negotiation and
 `supportedLocalesOf` remain with clj-quickjs-212.
+
+## Date time-value core (clj-quickjs-179)
+
+`src/vm/date.rs` implements pure TimeClip/MakeDay/MakeTime/MakeDate arithmetic
+and the UTC core bindings. MakeDay uses Gregorian leap counts with floor for
+negative years and normalizes months without iterating over years. It does
+not clip intermediate days or years; large components can cancel before final
+TimeClip. Floating-point multiplication and addition preserve the specified
+operation order, with no fused multiply-add. The unit test
+`date_time_arithmetic` and source test `date_utc_and_time_value` cover all
+upstream UTC precision/cancellation rows and clipping boundaries.
+
+Date instances reuse `HeapObject::Plain` with `OrdinaryObject::date_value`, an
+optional scalar f64 slot independent of own properties and prototype changes.
+This follows the wrapper/Error slot model, needs no new heap kind or root
+category, and uses existing ordinary tracing for properties/prototypes and
+TaskOwned publication classification. Date.prototype is an intrinsic ordinary
+object with a NaN slot. The constructor/prototype cycle and five built-in
+functions append to the realm/global registry and its immutable views/roots.
+Intrinsic slot mutation is rejected; freezing an instance only freezes its
+properties. Both slot reads and writes enforce task ownership.
+
+`native::Convert` adds Date constructor, UTC and setTime completion targets.
+It retains arguments, pending conversion progress and setTime's receiver as
+precisely traced operands. UTC completes each primitive ToNumber before
+visiting the next argument, even when previous results were non-finite;
+only the first seven arguments participate. Date copying bypasses all user
+hooks, and invalid method receivers fail before argument coercion. Existing
+callback/unwinding and native-frame depth limits apply. Arithmetic work is
+bounded (seven fields and constant-time calendar arithmetic).
+`date_coercion_waits_collects_and_migrates` collects at every yield/wait and
+moves execution across workers, including an otherwise unreferenced receiver.
+`date_objects_are_task_owned` checks publication and foreign slot access.
+
+The clock/zone extension point is the module-level contract in `vm/date.rs`,
+reserved for clj-quickjs-182: an unrecorded leaf clock effect through the host,
+one zone per runtime from generated QuickJS rule tables, UTC without a host,
+and explicit rejection of unsupported table coverage. This pellet consumes no
+host clock or zone. Clock/local constructor forms and parsing fail explicitly;
+Date toString lookup/default coercion also reject the deferred formatting and
+Symbol.toPrimitive behavior rather than returning Object's tag/numeric value.
