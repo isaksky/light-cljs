@@ -2821,7 +2821,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   JavaScript source compiled by this frontend. Modified: `let` for `var`,
   `a[a.length] = i` for `a.push(i)`, the keys collected with string `+`
   instead of `tab.push` and `tab.toString()`, and the asserted condition is
-  the script's completion value. The test carries the full notice.
+  the script's completion value, with a string-key check added. The test
+  carries the full notice.
   `build_for_in_iterator` (its fast array path) and `js_for_in_next` in
   `research/quickjs/quickjs.c` were consulted only. No code was copied.
 - `tests/js_source.rs` `var_heads_in_for_loops` (clj-quickjs-89): the

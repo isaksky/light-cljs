@@ -2234,12 +2234,14 @@ tests only, no code change: arrays use the generic enumerator):
   `test_for_in`'s fourth group ("array optimization") runs from source,
   adapted, with notice.
 - An element removed before it is reached is not visited; elements added
-  during the loop are not.
+  during the loop are not. Shrinking with `a.length = n` during iteration
+  skips removed indices in dense and sparse arrays; named properties
+  remain enumerable even after shrinking to zero.
 
-Deferred: rows that shrink the array during the loop with `a.length = n`
-or `a.pop()`, and the upstream group's original `push` / `toString` form
-(clj-quickjs-264, after clj-quickjs-154 to -156; the test deletes the
-trailing elements and collects keys with string `+` meanwhile).
+Deferred: shrinking with `a.pop()` (not implemented), and the upstream
+group's original `push` / `toString` form (clj-quickjs-264, after
+clj-quickjs-155 and -156). The test appends with `a[a.length] = i` and
+collects keys with string `+` meanwhile.
 
 ### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
 

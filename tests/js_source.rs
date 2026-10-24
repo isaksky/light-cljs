@@ -1503,8 +1503,8 @@ fn for_in_walks_the_prototype_chain() {
 /// `var`, `a[a.length] = i` for `a.push(i)`, the keys collected with string
 /// `+` instead of `tab.push` and `tab.toString()` (`Array.prototype.push`,
 /// `join` and `toString` are clj-quickjs-155 and -156), and the asserted
-/// condition is the script's completion value. The other scripts are
-/// written for this project.
+/// condition is the script's completion value, with a string-key check
+/// added. The other scripts are written for this project.
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
 /// released under the MIT license: Permission is hereby granted, free of
@@ -1526,6 +1526,7 @@ fn for_in_walks_the_prototype_chain() {
 fn for_in_over_arrays() {
     const TEST_FOR_IN_ARRAY: &str = r#"
         let i, tab, a;
+        let strings = true;
 
         /* array optimization */
         a = [];
@@ -1533,9 +1534,10 @@ fn for_in_over_arrays() {
             a[a.length] = i;
         tab = "";
         for(i in a) {
+            strings = strings && typeof i === "string";
             tab = tab + i + ",";
         }
-        tab === "0,1,2,3,4,5,6,7,8,9,""#;
+        strings && tab === "0,1,2,3,4,5,6,7,8,9,""#;
     assert_eq!(eval(TEST_FOR_IN_ARRAY), ValueView::Bool(true));
 
     let keys = |src: &str| string(&format!(r#"let s = ""; {src} s"#));
@@ -1578,24 +1580,32 @@ fn for_in_over_arrays() {
         ),
         "0,4294967294,01,4294967295,-1,1.5,"
     );
-    // Elements removed during the loop before they are reached are not
-    // visited: the enumerator re-checks each key as an own enumerable
-    // property. Shrinking by `a.length = 2` or `a.pop()` removes the
-    // elements past the new length the same way; neither exists yet
-    // (clj-quickjs-154, Array.prototype.pop; the rows are clj-quickjs-264),
-    // so the elements are deleted from the end instead. Growing the array adds no keys (the indices are
-    // snapshotted when the loop starts); an element deleted and put back
-    // before it is reached is visited.
+    // Shrinking the array removes elements before they are reached: the
+    // enumerator re-checks each key as an own enumerable property. Growing
+    // the array adds no keys (the indices are snapshotted when the loop
+    // starts); an element deleted and put back before it is reached is
+    // visited. Array.prototype.pop is not implemented; its shrink row
+    // remains in clj-quickjs-264.
     assert_eq!(
         keys(
             r#"const a = [0, 1, 2, 3, 4];
-               for (const k in a) { if (k === "0") { delete a[4]; delete a[3]; delete a[2]; } s = s + k + ","; }
+               for (const k in a) { if (k === "0") a.length = 2; s = s + k + ","; }
                const c = [0, 1];
                for (const k in c) { c[c.length] = 9; s = s + k + ","; }
                const d = [0, 1, 2, 3];
                for (const k in d) { if (k === "0") { delete d[1]; delete d[2]; d[2] = 2; } s = s + k + ","; }"#
         ),
         "0,1,0,1,0,2,3,"
+    );
+    // Shrinking sparse storage to zero also skips removed indices, but
+    // still visits named properties after the current index.
+    assert_eq!(
+        keys(
+            r#"const a = []; a[3] = 3; a[1000] = 4; a.extra = 1;
+               for (const k in a) { if (k === "3") a.length = 0; s = s + k + ","; }
+               s = s + a.length;"#
+        ),
+        "3,extra,0"
     );
     // A plain identifier head and a `var` head see the same keys; the
     // element values are read through the keys.
