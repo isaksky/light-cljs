@@ -58,6 +58,7 @@
 //! | `AtomNew`       | 0x33 | –                  | v → atom               | new shared atom holding `v` |
 //! | `AtomLoad`      | 0x34 | –                  | atom → v               | the atom's current value |
 //! | `AtomCas`       | 0x35 | –                  | atom e n → w ok        | identity compare-and-set; `w` is the value compared |
+//! | `Need`          | 0x36 | –                  | def kind → v           | read a dependency result, or suspend until it is published |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -118,6 +119,14 @@
 //!
 //! Opcodes `0x33`–`0x35` are the private atom intrinsics (clj-quickjs-10),
 //! documented in [`crate::vm::intrinsics`] and [`crate::atom`].
+//!
+//! Opcode `0x36`, `Need`, is the dependency read behind `__rt.need`
+//! (clj-quickjs-23): the resumable wait of `docs/design.md` §7, documented in
+//! [`crate::task`] ("Dependency waits in the VM"). It pops a definition id
+//! and a result kind (non-negative integer numbers; anything else fails with
+//! `UnsupportedOperand`) and pushes the shared result value, which may
+//! require ending the run suspended and continuing at this instruction when
+//! the task is run again.
 //!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
@@ -197,6 +206,7 @@ pub enum Opcode {
     AtomNew = 0x33,
     AtomLoad = 0x34,
     AtomCas = 0x35,
+    Need = 0x36,
 }
 
 /// Operand encoding of an opcode.
@@ -298,6 +308,7 @@ impl Opcode {
             0x33 => AtomNew,
             0x34 => AtomLoad,
             0x35 => AtomCas,
+            0x36 => Need,
             _ => return None,
         })
     }
@@ -359,6 +370,7 @@ impl Opcode {
             AtomNew => "atom_new",
             AtomLoad => "atom_load",
             AtomCas => "atom_cas",
+            Need => "need",
         }
     }
 
@@ -378,7 +390,7 @@ impl Opcode {
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
             | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
-            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas => OperandKind::None,
+            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need => OperandKind::None,
         }
     }
 }
@@ -474,6 +486,7 @@ pub(crate) enum Instr {
     AtomNew,
     AtomLoad,
     AtomCas,
+    Need,
 }
 
 impl Instr {
@@ -532,6 +545,7 @@ impl Instr {
             Instr::AtomNew => Opcode::AtomNew,
             Instr::AtomLoad => Opcode::AtomLoad,
             Instr::AtomCas => Opcode::AtomCas,
+            Instr::Need => Opcode::Need,
         }
     }
 
@@ -546,7 +560,7 @@ impl Instr {
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
-            | Rem | Gt | Le | Ge | LooseEq => (2, 1),
+            | Rem | Gt | Le | Ge | LooseEq | Need => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -575,6 +589,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 53);
+        assert_eq!(assigned, 54);
     }
 }

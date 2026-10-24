@@ -515,8 +515,9 @@ fn reserved_binding_misuse_is_a_compile_error() {
         ("let op = 1; __rt.effect(op, 2);", Invalid, 1, 25),
         ("__rt.effect(70000, 2);", Invalid, 1, 13),
         ("__rt.effect(1.5, 2);", Invalid, 1, 13),
-        // Reserved, lowered by clj-quickjs-23.
-        ("const h = __rt.need(1, 2);", Unsupported, 1, 11),
+        // `__rt.need` (lowered by clj-quickjs-23): arity and literal identities.
+        ("const h = __rt.need(1);", Invalid, 1, 11),
+        ("const h = __rt.need(1.5, 2);", Invalid, 1, 21),
     ];
     for (src, kind, line, column) in cases {
         assert_eq!(compile_err(src), (kind, line, column), "{src}");
@@ -529,7 +530,7 @@ fn reserved_binding_misuse_is_a_compile_error() {
     assert!(message("const r = __rt;").contains("is not a value"));
     assert!(message("const v = __rt.vector;").contains("must be called directly"));
     assert!(message("__rt.nth(1);").contains("takes 2 arguments, got 1"));
-    assert!(message("__rt.need(1, 2);").contains("clj-quickjs-23"));
+    assert!(message("__rt.need(1, 0.5);").contains("must be an integer"));
     // The entry function of `compile_function` is a declaration too.
     let e = compile_function("function __rt() {}").unwrap_err();
     assert_eq!(e.kind, ReservedWord);

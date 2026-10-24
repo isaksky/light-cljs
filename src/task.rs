@@ -148,27 +148,74 @@
 //! taking the cell lock. No lock is held while a wake or a cancellation is
 //! delivered, and neither runs JavaScript or host code: each is one CAS
 //! that reports what the caller should enqueue.
+//!
+//! # Dependency waits in the VM (`docs/design.md` §§7, 10)
+//!
+//! `__rt.need(definition, kind)` compiles to the VM `need` instruction
+//! ([`crate::frontend::compile_script`]; the intrinsic contract is in
+//! `crate::frontend::intrinsics`). The dispatch loop only decodes its
+//! operands and returns to the run ([`RunGuard::run_with`]), which performs
+//! the same protocol as [`RunGuard::need`] in the task's own world:
+//!
+//! 1. **Record** the dependency in the task's log, ready reads included.
+//! 2. **Ready**: push the shared value (the cell's object itself, never a
+//!    copy) onto the running frame's operands and keep executing in the same
+//!    run and budget.
+//! 3. **Failed** or a **cancelled cell**: the run fails at the `need`
+//!    ([`VmErrorKind::DependencyFailed`] / [`VmErrorKind::DependencyCancelled`]),
+//!    its diagnostic naming the instruction, its source position and the
+//!    call chain, so later exception handling (clj-quickjs-11) can raise it
+//!    there instead. The published error value stays in the cell.
+//! 4. **Pending**: the task is subscribed and, if this need was the cell's
+//!    first, has claimed its single producer. The claimed
+//!    [`ProducerRequest`] is kept in the task for the embedder
+//!    ([`Task::take_producer_requests`]), since the run cannot return it.
+//! 5. **Suspend**: the run saves the pending result destination (the key and
+//!    the instruction, `PendingNeed` in the VM state; the result slot is the
+//!    running frame's operand top) and ends through [`RunGuard::park`], the
+//!    same path as an embedder's need: [`RunOutcome::Waiting`] with the key,
+//!    or `Yielded` if the completion already arrived, or `Cancelled`.
+//!    Every frame, operand, local, closure and builder stays in the task;
+//!    no Rust frame survives the run, so any thread may resume it.
+//! 6. **Resume**: the next run, before executing anything, completes the
+//!    suspended instruction by needing the same key again (cancellation is
+//!    observed first, at run start): normally the cell is complete and the
+//!    value is pushed (or the failure reported) exactly as in 2 and 3, and
+//!    execution continues after the `need`. A spurious resume finds it
+//!    still pending and suspends again. Nothing before the `need` runs
+//!    again: no effect is replayed and no function is restarted.
+//!
+//! A consumer cancellation is observed as for [`RunGuard::need`]: a need
+//! refused because the task is cancelled ends the run
+//! [`RunOutcome::Cancelled`], and one that lands after the subscription is
+//! observed by the park (any producer request it claimed is still kept for
+//! the embedder). Injecting a result on resume is part of the suspended
+//! instruction, so it happens even with a zero [`Budget`].
 
 #[cfg(test)]
 mod cancel_tests;
 #[cfg(test)]
 mod handoff_tests;
+#[cfg(test)]
+mod need_tests;
 mod state;
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
-use crate::dep::{self, DependencyLog, DependencyTable, HookPoint, Need, NeedError, Waiter};
+use crate::dep::{
+    self, DependencyLog, DependencyTable, HookPoint, Need, NeedError, ProducerRequest, Read,
+    Terminal, Waiter,
+};
 use crate::error::{SourceLocation, VmError, VmErrorKind};
 use crate::heap::gc::{Access, MutatorToken, RootCategory, RootSource, Trace};
 use crate::heap::{Heap, ObjectId, Rooted};
 use crate::host::{Host, NoHost};
 use crate::ids::{DependencyId, DependencyKey, ResultKind, TaskId, WakeHandle, WorldId};
-#[cfg(test)]
 use crate::value::Value;
 use crate::vm::Executable;
 use crate::vm::dispatch::{Exit, execute};
-use crate::vm::frames::VmState;
+use crate::vm::frames::{PendingNeed, VmState};
 use state::{CancelDelivery, Delivery, End, ExecState, NotRunnable, Park, Phase};
 
 /// Result of one run of a task.
@@ -182,8 +229,9 @@ pub enum RunOutcome {
     /// The task is parked waiting on this dependency: it occupies no worker,
     /// cannot be run, and becomes runnable exactly once, through the
     /// [`Wakeups`](crate::Wakeups) of the completion that publishes the
-    /// result. Produced by [`RunGuard::park`]; the VM operation that parks
-    /// on its own is pellet clj-quickjs-23.
+    /// result. Produced by [`RunGuard::park`], which a run also uses when a
+    /// VM `need` (`__rt.need`) finds its result pending (module docs,
+    /// "Dependency waits in the VM").
     Waiting(DependencyKey),
     /// The task is runnable and should be run again: it used up its
     /// execution [`Budget`] (its instruction position, operands and locals
@@ -334,6 +382,10 @@ pub(crate) struct TaskInner {
     log: Mutex<DependencyLog>,
     /// Locked only by the execution claim's owner (and the collector).
     body: Mutex<TaskBody>,
+    /// Producer requests claimed by this task's VM `Need` instructions, until
+    /// the embedder takes them ([`Task::take_producer_requests`]). A leaf
+    /// lock; holds no heap values.
+    produce: Mutex<Vec<ProducerRequest>>,
 }
 
 /// A task is a root source while any handle to it exists: its saved frames
@@ -478,6 +530,7 @@ impl Task {
             exec: ExecState::new(),
             log: Mutex::new(DependencyLog::default()),
             body: Mutex::new(TaskBody::Ready(vm)),
+            produce: Mutex::new(Vec::new()),
         });
         let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
         inner.heap.register_source(source);
@@ -516,11 +569,37 @@ impl Task {
     /// Source location of the next instruction this task will execute, for
     /// a ready task running code compiled from JavaScript source. `None` for
     /// hand-assembled code, or while the task is running or finished.
+    /// While the task is suspended at a `Need` instruction (`__rt.need`), the
+    /// location of that instruction.
     pub fn source_location(&self) -> Option<SourceLocation> {
         match &*self.0.body.try_lock().ok()? {
-            TaskBody::Ready(vm) => vm.top().code.location(vm.top().pc),
+            TaskBody::Ready(vm) => {
+                let pc = vm.pending_need.map_or(vm.top().pc, |p| p.pc);
+                vm.top().code.location(pc)
+            }
             TaskBody::Finished => None,
         }
+    }
+
+    /// Take the producer requests this task's VM `Need` instructions
+    /// (`__rt.need`) claimed since the last call, oldest first (module docs,
+    /// "Dependency waits in the VM").
+    ///
+    /// The first need of a pending, unclaimed cell claims its single
+    /// producer; when that need is executed by the VM rather than through
+    /// [`RunGuard::need`], the request is kept here instead of being
+    /// returned. The embedder takes it after the run (normally one that
+    /// ended [`RunOutcome::Waiting`]) and hands it to its scheduler; dropping
+    /// it leaves the cell without a producer. Requests stay here until taken,
+    /// whatever the task does next, so none is lost.
+    pub fn take_producer_requests(&self) -> Vec<ProducerRequest> {
+        std::mem::take(
+            &mut *self
+                .0
+                .produce
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// Current status. A snapshot: it may change as soon as it is returned.
@@ -687,8 +766,9 @@ impl RunGuard<'_> {
     }
 
     /// Read or subscribe to the result `kind` of `dependency` in this task's
-    /// world: the native protocol behind `__rt.need` (`docs/design.md` §7;
-    /// the VM instruction for it is pellet clj-quickjs-23).
+    /// world: the native protocol behind `__rt.need` (`docs/design.md` §7),
+    /// for an embedder issuing needs from Rust. The VM `need` instruction
+    /// runs the same protocol (module docs, "Dependency waits in the VM").
     ///
     /// Records the dependency in the task's log in every case. Returns the
     /// shared value ([`Need::Ready`]) or published error ([`Need::Failed`])
@@ -712,6 +792,19 @@ impl RunGuard<'_> {
     /// request it claimed, so the cell keeps a producer for its other
     /// consumers.
     pub fn need(&mut self, dependency: DependencyId, kind: ResultKind) -> Result<Need, NeedError> {
+        let (key, read) = self.read(dependency, kind)?;
+        Ok(dep::rooted(self.task.deps.heap(), key, read))
+    }
+
+    /// The protocol shared by [`RunGuard::need`] and the VM's `Need`: the
+    /// cancellation check, read-or-subscribe with the dependency recorded,
+    /// and the key a later [`RunGuard::park`] parks on. A terminal value is
+    /// returned raw; it stays reachable through its cell.
+    fn read(
+        &mut self,
+        dependency: DependencyId,
+        kind: ResultKind,
+    ) -> Result<(DependencyKey, Read), NeedError> {
         let key = DependencyKey::new(self.task.world, dependency, kind);
         if self.task.exec.snapshot().cancelled {
             return Err(NeedError::Cancelled { requested: key });
@@ -720,12 +813,78 @@ impl RunGuard<'_> {
             handle: self.wake_handle(),
             task: Arc::downgrade(self.task),
         };
-        let need = dep::need(&self.task.deps, &self.task.log, waiter, key)?;
-        self.subscribed = match need {
-            Need::Waiting { .. } => Some(key),
-            Need::Ready(_) | Need::Failed(_) | Need::Cancelled => None,
+        let read = dep::read_and_record(&self.task.deps, &self.task.log, waiter, key)?;
+        self.subscribed = match read {
+            Read::Waiting { .. } => Some(key),
+            Read::Terminal(_) => None,
         };
-        Ok(need)
+        Ok((key, read))
+    }
+
+    /// The task's VM state; `None` only for a finished body, which
+    /// `try_begin_run` never hands out.
+    fn vm(&mut self) -> Option<&mut VmState> {
+        match &mut *self.body {
+            TaskBody::Ready(vm) => Some(vm),
+            TaskBody::Finished => None,
+        }
+    }
+
+    /// Execute a VM `Need` of result `kind` of `dependency` at instruction
+    /// `pc` of the running frame (module docs, "Dependency waits in the
+    /// VM"): inject a terminal result, or record the pending result
+    /// destination and keep the claimed producer request for the embedder.
+    fn vm_need(&mut self, dependency: DependencyId, kind: ResultKind, pc: usize) -> VmNeed {
+        let read = self.read(dependency, kind);
+        let task = self.task;
+        let Some(vm) = self.vm() else {
+            return VmNeed::Fail(Box::new(guard_failure(
+                task,
+                VmErrorKind::Internal,
+                "run guard held for a finished task",
+                pc,
+            )));
+        };
+        let (key, terminal) = match read {
+            Err(NeedError::Cancelled { .. }) => return VmNeed::Cancelled,
+            Err(e @ NeedError::AlreadyWaiting { .. }) => {
+                return VmNeed::Fail(Box::new(vm.failure(
+                    VmErrorKind::Internal,
+                    e.to_string(),
+                    pc,
+                )));
+            }
+            Ok((key, Read::Waiting { produce })) => {
+                vm.pending_need = Some(PendingNeed { key, pc });
+                if let Some(request) = produce {
+                    task.produce
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(request);
+                }
+                return VmNeed::Park;
+            }
+            Ok((key, Read::Terminal(terminal))) => (key, terminal),
+        };
+        vm.pending_need = None;
+        let (kind, message) = match terminal {
+            Terminal::Ready(value) => {
+                // Pushed raw: the cell keeps the value alive, and this guard
+                // (a registered mutator) excludes collection until the
+                // operand stack, a root, holds it.
+                vm.push(value);
+                return VmNeed::Continue;
+            }
+            Terminal::Failed(error) => (
+                VmErrorKind::DependencyFailed(key),
+                format!("dependency {key} failed with {}", describe(error)),
+            ),
+            Terminal::Cancelled => (
+                VmErrorKind::DependencyCancelled(key),
+                format!("dependency {key} was cancelled"),
+            ),
+        };
+        VmNeed::Fail(Box::new(vm.failure(kind, message, pc)))
     }
 
     /// End this run suspended on the dependency this run's last need found
@@ -825,7 +984,7 @@ impl RunGuard<'_> {
         if task.exec.snapshot().cancelled {
             return self.end_cancelled();
         }
-        let TaskBody::Ready(vm) = &mut *self.body else {
+        let Some(vm) = self.vm() else {
             // `try_begin_run` only hands out guards for ready tasks, and only
             // `run_with` (which consumes the guard) changes the body.
             return RunOutcome::Failed(guard_failure(
@@ -845,10 +1004,54 @@ impl RunGuard<'_> {
                 vm.top().pc,
             ))
         } else {
+            let mut budget = budget.0;
+            let exit = loop {
+                let Some(vm) = self.vm() else {
+                    // Unreachable: checked above, and nothing in this loop
+                    // finishes the body.
+                    return RunOutcome::Failed(guard_failure(
+                        task,
+                        VmErrorKind::Internal,
+                        "run guard held for a finished task",
+                        0,
+                    ));
+                };
+                // A task suspended at a `Need` resumes by completing that
+                // instruction: the same read, now normally finding the cell
+                // complete (module docs, "Dependency waits in the VM").
+                let exit = match vm.pending_need {
+                    Some(PendingNeed { key, pc }) => Exit::Need {
+                        dependency: key.dependency(),
+                        kind: key.kind(),
+                        pc,
+                        budget,
+                    },
+                    None => execute(vm, &task.heap, host, budget),
+                };
+                let Exit::Need {
+                    dependency,
+                    kind,
+                    pc,
+                    budget: left,
+                } = exit
+                else {
+                    break exit;
+                };
+                budget = left;
+                match self.vm_need(dependency, kind, pc) {
+                    VmNeed::Continue => {}
+                    VmNeed::Fail(error) => break Exit::Fail(*error),
+                    // The same suspension path as an embedder's need: park
+                    // on the subscribed key (or yield, or observe a
+                    // cancellation), keeping the VM state in the task.
+                    VmNeed::Park => return self.park(),
+                    VmNeed::Cancelled => return self.end_cancelled(),
+                }
+            };
             // The returned value is rooted while this guard (a registered
             // mutator) still exists, with no safepoint in between, so no
             // collection can run while the value is held only in a Rust local.
-            match execute(vm, &task.heap, host, budget.0) {
+            match exit {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => RunOutcome::Failed(error),
                 // The budget boundary is an observation point.
@@ -858,12 +1061,21 @@ impl RunGuard<'_> {
                 // The VM state stays in the task; dropping the guard releases
                 // the body and makes the task runnable.
                 Exit::Yield => return RunOutcome::Yielded,
+                // Unreachable: the loop above handles every need.
+                Exit::Need { pc, .. } => RunOutcome::Failed(guard_failure(
+                    task,
+                    VmErrorKind::Internal,
+                    "need left unhandled",
+                    pc,
+                )),
             }
         };
         // Completion or failure releases the task's frames and its open
         // transient builders; a returned value stays alive through its
         // persistent root, not through the task.
-        vm.builders.release_all(&task.heap, task.id);
+        if let Some(vm) = self.vm() {
+            vm.builders.release_all(&task.heap, task.id);
+        }
         *self.body = TaskBody::Finished;
         let RunGuard {
             body,
@@ -874,6 +1086,26 @@ impl RunGuard<'_> {
         drop(body);
         claim.end(End::Finished);
         outcome
+    }
+}
+
+/// What a VM `Need` did ([`RunGuard::vm_need`]).
+enum VmNeed {
+    /// The result was pushed; execution continues after the instruction.
+    Continue,
+    /// The task fails at the instruction (a failed or cancelled result).
+    Fail(Box<VmError>),
+    /// The cell is pending and the task subscribed: end the run parked.
+    Park,
+    /// The task's cancellation was observed: end the run cancelled.
+    Cancelled,
+}
+
+/// A dependency's error value for a diagnostic message.
+fn describe(value: Value) -> String {
+    match value.to_primitive() {
+        Some(p) => format!("{p:?}"),
+        None => format!("an {}", value.type_name()),
     }
 }
 

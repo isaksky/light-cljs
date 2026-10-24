@@ -25,9 +25,19 @@
 //! Misuse of the binding is reported as
 //! [`SyntaxErrorKind::ReservedWord`](super::SyntaxErrorKind::ReservedWord);
 //! unknown names and bad arguments as
-//! [`SyntaxErrorKind::Invalid`](super::SyntaxErrorKind::Invalid);
-//! `__rt.need`, whose lowering to a resumable dependency wait is pellet
-//! clj-quickjs-23, as [`SyntaxErrorKind::Unsupported`](super::SyntaxErrorKind::Unsupported).
+//! [`SyntaxErrorKind::Invalid`](super::SyntaxErrorKind::Invalid).
+//!
+//! **`__rt.need(definition, kind)`** (clj-quickjs-23, `docs/design.md` §7)
+//! is the dependency read: it lowers to the VM `need` instruction, which
+//! records the dependency on result `kind` of `definition` in the running
+//! task's world (the world is execution context, never an argument) and
+//! evaluates to the shared result, suspending the whole task while the
+//! result is pending and continuing at this call when the task is run
+//! again ([`crate::task`], "Dependency waits in the VM"). Both arguments are
+//! expressions; a numeric literal argument that is not a valid identity (a
+//! non-negative integer, at most 2^53 - 1 for the definition and
+//! 4,294,967,295 for the kind) is rejected at compile time, other values at
+//! run time.
 //!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
@@ -60,8 +70,9 @@ pub(crate) enum Lowering {
     /// `0..=65535` (the `host_effect` operand); `arg` is evaluated, then
     /// `host_effect op`.
     HostEffect,
-    /// Reserved, not lowered yet; the message names the pellet that adds it.
-    Deferred(&'static str),
+    /// `__rt.need(definition, kind)`: both arguments, then `need` (a
+    /// suspension point). Literal arguments are range-checked when compiled.
+    Need,
 }
 
 /// One entry of the intrinsic table.
@@ -113,9 +124,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     Intrinsic {
         name: "need",
         arity: Arity::Exactly(2),
-        lowering: Lowering::Deferred(
-            "`__rt.need` (a resumable dependency wait) is not lowered yet (clj-quickjs-23)",
-        ),
+        lowering: Lowering::Need,
     },
 ];
 

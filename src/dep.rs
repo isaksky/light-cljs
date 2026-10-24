@@ -600,17 +600,12 @@ pub(crate) fn withdraw(table: &DependencyTable, log: &Mutex<DependencyLog>, task
     }
 }
 
-/// A need with the terminal value rooted for the embedder.
-pub(crate) fn need(
-    table: &DependencyTable,
-    log: &Mutex<DependencyLog>,
-    waiter: Waiter,
-    key: DependencyKey,
-) -> Result<Need, NeedError> {
-    Ok(match read_and_record(table, log, waiter, key)? {
-        Read::Terminal(terminal) => root_terminal(table.heap(), terminal),
+/// A need of `key` with the terminal value rooted for the embedder.
+pub(crate) fn rooted(heap: &Arc<Heap>, key: DependencyKey, read: Read) -> Need {
+    match read {
+        Read::Terminal(terminal) => root_terminal(heap, terminal),
         Read::Waiting { produce } => Need::Waiting { key, produce },
-    })
+    }
 }
 
 /// Complete with embedder handles: checks they belong to the table's heap,

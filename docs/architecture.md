@@ -498,8 +498,8 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   references, uncalled members, assignment and computed access are compile
   errors, so an intrinsic never becomes a value. Each call lowers to the
   arguments plus one existing instruction (collection intrinsics `0x12`–
-  `0x20`, `host_effect`); no opcode was added. `__rt.need` is reserved and
-  rejected until clj-quickjs-23 gives it a resumable VM wait.
+  `0x20`, `host_effect`); no opcode was added. `__rt.need` lowers to the
+  `need` instruction (clj-quickjs-23, below).
 - **Demo.** `cargo run` compiles and runs `examples/demo.js` (any script
   path can be passed instead); `cargo run --example resumable_counter`
   compiles `examples/resumable_counter.js` with `compile_function`. Both are
@@ -510,26 +510,48 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   `Unsupported`); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
 
-## Task/dependency continuation shape (planned)
+## Dependency waits in the VM (clj-quickjs-23)
 
 Dependency waits reuse the same mechanism as `Yielded`: the task returns from
-the run, and all state needed to continue stays in the task.
+the run, and all state needed to continue stays in the task. The full
+contract is the `src/task.rs` module docs, "Dependency waits in the VM".
 
-- A demanding instruction reads a dependency cell keyed by
-  world/version + definition/query id + result kind. If the result is ready,
-  the read is recorded as a dependency edge and execution continues in the
-  same run.
-- If it is unavailable, the instruction leaves the saved position on itself
-  (it has no effect to replay), registers the run's `WakeHandle` (task id +
-  execution number), and the run returns `Waiting(key)`. No JavaScript callback, promise,
+- **Lowering.** `__rt.need(definition, kind)` evaluates both arguments and
+  runs the `need` instruction (`0x36`, operands `def kind → v`). The world
+  is the task's (execution context), never an argument. Literal arguments
+  outside the identity ranges are compile errors; other bad operands fail
+  with `UnsupportedOperand` at run time.
+- **Dispatch.** The loop decodes the operands and returns `Exit::Need` to
+  the run guard with the position already past the instruction and the
+  remaining budget; the guard runs the same read-or-subscribe as
+  `RunGuard::need` (record the edge, ready reads included).
+- **Ready.** The shared value (same identity for every reader) is pushed
+  and execution continues in the same run and budget.
+- **Failed / cancelled cell.** The run fails at the `need`
+  (`VmErrorKind::DependencyFailed(key)` / `DependencyCancelled(key)`), with
+  its source position and call chain, so exception handling
+  (clj-quickjs-11) can later raise it there.
+- **Pending.** The guard stores the pending result destination
+  (`PendingNeed`: key and instruction) in the VM state, keeps any producer
+  request the need claimed for the embedder (`Task::take_producer_requests`),
+  and ends the run through `RunGuard::park`: `Waiting(key)`, or `Yielded`
+  if the wake already arrived, or `Cancelled`. Frames, operands, locals,
+  closures and builders stay in the task; no JavaScript callback, promise
   or Rust stack represents the continuation.
-- When the result is published, the completion makes the parked task
-  runnable (outside any cell or waiter lock) and the host requeues it and calls `run_with` again, on any worker; the instruction
-  re-reads the now-ready cell and continues.
+- **Resume.** When the result is published, the completion makes the
+  parked task runnable (outside any cell or waiter lock); the host runs it
+  again on any thread. The run first completes the suspended `need` (reads
+  the key again and injects the value or reports the failure at that
+  instruction), then continues after it: nothing before the `need` is
+  replayed and no function is restarted. A spurious resume suspends again.
+- **Tests.** `tests/need.rs` (a manually driven host: pre-need effect once,
+  live operands and locals across the wait, collection while parked, resume
+  on another thread, a VM callable published by a producer task and
+  invoked after the wait, failures, cell and consumer cancellation, worlds,
+  operand validation) and `src/task/need_tests.rs` (hook-forced completion
+  and cancellation windows).
 
-Dependency cells and read-or-subscribe (clj-quickjs-6) and race-safe
-parking (clj-quickjs-7) exist, below; the suspending VM operation is pellet
-clj-quickjs-23; the reference executor is clj-quickjs-8.
+The reference executor is clj-quickjs-8.
 
 ## Dependency cells (clj-quickjs-6)
 
@@ -576,7 +598,7 @@ clj-quickjs-23; the reference executor is clj-quickjs-8.
   `DependencyOutcome`): a published value or error survives collection
   while the cell exists, after the producer drops its handle. Readers get a
   fresh `Rooted` of the same identity.
-- **Deferred.** The VM instruction (clj-quickjs-23); deadlock reporting over
+- **Deferred.** Deadlock reporting over
   unresolved waits; cell invalidation and removal. Cancellation: below
   (clj-quickjs-24).
 
@@ -621,9 +643,9 @@ contract). Design: `design.md` §§3, 8, 10, 15.
   a park inside the wake between its read and CAS). `tests/wakeup.rs`
   races many waiters, duplicate wakers and competing claimers through
   barriers.
-- **Deferred.** The VM operation that needs and parks by itself
-  (clj-quickjs-23); a scheduler/executor that owns a ready queue
-  (clj-quickjs-8).
+- **Deferred.** A scheduler/executor that owns a ready queue
+  (clj-quickjs-8). The VM `need` instruction parks through the same path
+  (clj-quickjs-23, above).
 
 ## Simulated compiler host (clj-quickjs-9)
 

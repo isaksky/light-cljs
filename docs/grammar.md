@@ -293,8 +293,8 @@ function):
 | Known names, fixed arities, literal host operation selectors | `__rt.nope()`, `__rt.nth(v)`, `__rt.effect(op, x)` | `Invalid` (compiler) |
 
 Intrinsics evaluate their arguments left to right, then run one VM
-instruction (operands, results and run-time errors: `crate::vm::intrinsics`
-and `crate::host`):
+instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
+`crate::host` and, for `need`, `crate::task`):
 
 | Call | Instruction | Result |
 |------|-------------|--------|
@@ -309,7 +309,7 @@ and `crate::host`):
 | `__rt.builderConj(b, x)`, `__rt.builderAssoc(b, k, v)` | `builder_conj`, `builder_assoc` | the builder, updated in place |
 | `__rt.freeze(b)` | `freeze` | persistent collection; the builder is frozen |
 | `__rt.effect(op, x)` | `host_effect op` | the leaf host effect's result; `op` must be an integer literal `0..=65535` |
-| `__rt.need(definition, kind)` | – | reserved: `Unsupported` until clj-quickjs-23 lowers it to a resumable dependency wait (it also needs string values) |
+| `__rt.need(definition, kind)` | `need` | the shared result `kind` of `definition` in the task's world, suspending the whole task while it is pending (clj-quickjs-23); both are non-negative integers (a bad literal is a compile error) |
 
 ```js compile-reject ReservedWord 2:14
 function helper(x) {

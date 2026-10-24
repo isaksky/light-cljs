@@ -47,6 +47,8 @@ cargo test --test safepoints      # safepoints: collection requests during runs 
 cargo test --lib heap::gc::       # rendezvous root snapshot with running tasks
 cargo test --test executor        # two-worker executor: overlap, migration, cancellation, shutdown
 cargo test --lib exec::           # builder ownership across workers
+cargo test --test need            # __rt.need: suspend at the need, resume without replay
+cargo test --lib task::need_tests # hook-forced handoff windows of the VM need
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -122,8 +124,6 @@ Supported:
 
 Deferred:
 
-- Dependency waits in the VM (pellet clj-quickjs-23; the cells: clj-quickjs-6,
-  parking and `Waiting(key)`: clj-quickjs-7, below).
 - Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
   scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
   only, not time or allocation.
@@ -291,8 +291,6 @@ Supported:
 
 Deferred:
 
-- The `__rt.need` VM operation (clj-quickjs-23); needs are issued from Rust
-  through a run guard for now.
 - Deadlock reporting; invalidation or removal of cells (they live as long
   as the runtime). Cancellation: see clj-quickjs-24 below.
 
@@ -369,9 +367,9 @@ Supported:
 
 Deferred:
 
-- The VM instruction that needs and parks by itself (clj-quickjs-23); a
-  reference executor with a ready queue (clj-quickjs-8). Cancellation:
-  clj-quickjs-24 below.
+- A reference executor with a ready queue (clj-quickjs-8). Cancellation:
+  clj-quickjs-24 below. The VM `need` instruction (clj-quickjs-23, below)
+  parks through the same path.
 
 ### Simulated compiler host (clj-quickjs-9)
 
@@ -608,8 +606,6 @@ and `examples/`):
 
 Deferred:
 
-- `__rt.need` (reserved; `Unsupported` until clj-quickjs-23 lowers it to a
-  resumable dependency wait).
 - `throw`/`try`/`finally` (clj-quickjs-11): run-time errors still fail the
   task. Strings, property access (`f.call`, methods, objects), `this`,
   `arguments`, `new`, default/rest parameters, arrow functions, generators.
@@ -698,6 +694,39 @@ Deferred:
   access), but that is not tested under the executor yet, collections are
   not recorded with executor events, and a blocking host effect delays a
   request.
-- A VM-level need (clj-quickjs-23): until then a driver issues needs
-  through the run guard and parks. Work stealing, priorities, fairness
+- Producer requests claimed by VM `need` instructions (clj-quickjs-23) are
+  kept in the task (`Task::take_producer_requests`); the executor does not
+  collect them, so its drivers still issue needs through the run guard and
+  park. Work stealing, priorities, fairness
   beyond FIFO, and bounding the event record are not implemented.
+
+### Dependency waits in the VM (clj-quickjs-23)
+
+Supported:
+
+- `__rt.need(definition, kind)` compiles to the VM `need` instruction. It
+  records the dependency (ready reads included) in the task's own world and
+  evaluates to the shared result: a ready result continues in the same run;
+  a pending one ends the run `Waiting(key)` through the same park path as
+  `RunGuard::need`, with every frame, operand, local and closure kept in the
+  task. The next run (on any thread) completes the suspended `need` and
+  continues after it: no effect before it is replayed and no function is
+  restarted.
+- A producer request claimed by a VM need is kept for the embedder:
+  `Task::take_producer_requests` after the run.
+- A failed or cancelled cell fails the run at the `need`
+  (`VmErrorKind::DependencyFailed` / `DependencyCancelled`, with its source
+  position); a cancelled consumer ends `Cancelled`.
+- A producer task may publish a VM function compiled by this runtime as a
+  cell result; consumers call it after the need completes
+  (`tests/fixtures/js/need_producer.js`).
+- `tests/need.rs` drives the protocol by hand (no executor, no promises, no
+  inline dependent execution, resume on another thread).
+
+Deferred:
+
+- Raising a failed dependency as a catchable JavaScript exception
+  (clj-quickjs-11/-27); it fails the run at the `need` for now.
+- Definition ids and result kinds are numbers (no string values yet).
+- `src/host/sim.rs` jobs still need through `RunGuard::need` in Rust and
+  publish callables as host tokens.

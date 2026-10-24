@@ -45,8 +45,8 @@
 //! Every unit of host work is a *job* with its own runtime [`Task`] in the
 //! job's world: the task is the job's consumer identity and wake handle, and
 //! its [`DependencyLog`] records what the job used. A job needs a result with
-//! [`RunGuard::need`](crate::RunGuard::need) (standing in for the `__rt.need`
-//! VM operation, pellet clj-quickjs-23). When the cell is pending the job
+//! [`RunGuard::need`](crate::RunGuard::need) (the Rust form of the `__rt.need`
+//! VM operation; jobs are not moved onto the VM `need` instruction here). When the cell is pending the job
 //! parks in the host: its run ends without
 //! [`RunGuard::park`](crate::RunGuard::park), so the task stays runnable in
 //! the runtime and only the host holds the job until the wake. When the need

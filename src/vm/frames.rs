@@ -51,7 +51,7 @@ use crate::collections::OwnedBuilders;
 use crate::error::{CallSite, Diagnostic, VmError, VmErrorKind};
 use crate::heap::ObjectId;
 use crate::heap::gc::Trace;
-use crate::ids::{TaskId, WorldId};
+use crate::ids::{DependencyKey, TaskId, WorldId};
 use crate::value::Value;
 use crate::vm::dispatch::Fault;
 use crate::vm::executable::Code;
@@ -116,6 +116,20 @@ pub(crate) struct DiagnosticContext {
     pub(crate) world: WorldId,
 }
 
+/// A `Need` this task is suspended at: the pending result destination
+/// (`docs/design.md` §§7, 10). The result goes onto the running frame's
+/// operand stack, the slot the instruction's operands occupied, and the frame
+/// cannot change while the task waits. Holds a key and an instruction index
+/// only, so it is not a root. See `crate::task`, "Dependency waits in the VM".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingNeed {
+    /// The key the task subscribed to (its world is the task's).
+    pub(crate) key: DependencyKey,
+    /// Index of the `Need` instruction in the running frame's code: where a
+    /// failed or cancelled result is reported.
+    pub(crate) pc: usize,
+}
+
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
@@ -130,6 +144,9 @@ pub(crate) struct VmState {
     /// Transient builders this task created, released when it finishes. Not
     /// a root (see `crate::collections::builder`).
     pub(crate) builders: OwnedBuilders,
+    /// Set while the task is suspended at a `Need` whose result is not
+    /// injected yet.
+    pub(crate) pending_need: Option<PendingNeed>,
 }
 
 /// Bind `args` to a frame's locals: as in JavaScript, missing arguments are
@@ -167,6 +184,7 @@ impl VmState {
             limits,
             diag,
             builders: OwnedBuilders::default(),
+            pending_need: None,
         }
     }
 

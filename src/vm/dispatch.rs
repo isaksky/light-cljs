@@ -39,6 +39,13 @@
 //! local (an allocation not yet pushed, an atom value not yet rooted) never
 //! meets a collection, and a straight-line stretch without poll points is
 //! bounded by the code length.
+//!
+//! **Dependency waits.** `Need` decodes its operands and leaves the loop with
+//! [`Exit::Need`] (the instruction position already past it, the remaining
+//! budget carried along): the dependency protocol, suspension and the
+//! injection of the result belong to the run guard (`crate::task`, "Dependency
+//! waits in the VM"), which either pushes the value and calls [`execute`]
+//! again or ends the run. No Rust frame of this loop survives a wait.
 
 use std::sync::Arc;
 
@@ -46,7 +53,7 @@ use crate::collections::{BuilderError, CollectionError, object_name};
 use crate::error::{VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
-use crate::ids::TaskId;
+use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::Value;
 use crate::vm::executable::Code;
 use crate::vm::frames::VmState;
@@ -61,6 +68,15 @@ pub(crate) enum Exit {
     Fail(VmError),
     /// The budget ran out; the task can be run again.
     Yield,
+    /// A `Need` instruction at `pc` asks for result `kind` of `dependency`;
+    /// its operands are popped and the running frame's `pc` is past it. The
+    /// caller pushes the result and continues with `budget`, or suspends.
+    Need {
+        dependency: DependencyId,
+        kind: ResultKind,
+        pc: usize,
+        budget: Option<u64>,
+    },
 }
 
 /// A failure before diagnostic context is attached.
@@ -97,6 +113,8 @@ enum Flow {
     FrameChanged,
     /// The entry frame returned: the task completes with this value.
     Complete(Value),
+    /// A `Need` popped its operands: the run guard reads the dependency.
+    Need(DependencyId, ResultKind),
 }
 
 /// Allocate a function object for `code` with its captured values. Known
@@ -220,6 +238,36 @@ fn with_cell<R>(
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
     .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
+}
+
+/// The operands of `Need`: a definition id (an integer number in
+/// `0..=2^53-1`, exactly representable) and a result kind (an integer in
+/// `0..=u32::MAX`). Anything else is rejected, never rounded.
+fn need_operands(dependency: Value, kind: Value) -> Result<(DependencyId, ResultKind), Fault> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    let integer = |v: Value, max: f64| match v {
+        Value::Number(n) if n.fract() == 0.0 && (0.0..=max).contains(&n) => Some(n),
+        _ => None,
+    };
+    match (
+        integer(dependency, MAX_SAFE_INTEGER),
+        integer(kind, f64::from(u32::MAX)),
+    ) {
+        (Some(d), Some(k)) => Ok((DependencyId::new(d as u64), ResultKind::new(k as u32))),
+        _ => Err(Fault::Unsupported(format!(
+            "need takes a definition id and a result kind as non-negative integer numbers, got {} and {}",
+            describe(dependency),
+            describe(kind)
+        ))),
+    }
+}
+
+/// A value for a diagnostic: numbers as themselves, other values by type.
+fn describe(v: Value) -> String {
+    match v {
+        Value::Number(n) => n.to_string(),
+        other => other.type_name().to_string(),
+    }
 }
 
 /// Execute one instruction of `code`, the running frame's code.
@@ -459,6 +507,12 @@ fn step(
             };
             state.push(f);
         }
+        Instr::Need => {
+            let kind = state.pop()?;
+            let dependency = state.pop()?;
+            let (dependency, kind) = need_operands(dependency, kind)?;
+            return Ok(Flow::Need(dependency, kind));
+        }
         Instr::Call(argc) => {
             let argc = usize::from(argc);
             let operands = state.operands();
@@ -535,7 +589,10 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::GetCapture(_)
         | Instr::CellInit
         | Instr::CellGet
-        | Instr::CellSet => false,
+        | Instr::CellSet
+        // Leaves the loop; continuing after it re-enters `execute`, which
+        // polls at run entry.
+        | Instr::Need => false,
     }
 }
 
@@ -576,6 +633,14 @@ pub(crate) fn execute(
                 continue;
             }
             Ok(Flow::Complete(value)) => return Exit::Return(value),
+            Ok(Flow::Need(dependency, kind)) => {
+                return Exit::Need {
+                    dependency,
+                    kind,
+                    pc,
+                    budget,
+                };
+            }
             Err(Fault::Unsupported(m)) => (VmErrorKind::UnsupportedOperand, m),
             Err(Fault::Internal(m)) => (VmErrorKind::Internal, m.to_string()),
             Err(Fault::Host(m)) => (VmErrorKind::HostEffect, m),

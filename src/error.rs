@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::collections::{BuilderError, CollectionError};
 use crate::frontend::Span;
-use crate::ids::{TaskId, WorldId};
+use crate::ids::{DependencyKey, TaskId, WorldId};
 use crate::vm::Opcode;
 
 /// Category of a runtime failure.
@@ -63,6 +63,16 @@ pub enum VmErrorKind {
     /// install that reaches task-owned mutation, or compare-and-set on a
     /// single-writer atom (see [`crate::atom`]).
     Atom(crate::AtomErrorKind),
+    /// A `Need` (`__rt.need`) read a dependency whose producer failed. The
+    /// diagnostic names the `Need` instruction (and its source position), so
+    /// language exception handling (clj-quickjs-11) can later raise it
+    /// there; the published error value stays in the cell
+    /// ([`Runtime::cell_status`](crate::Runtime::cell_status)).
+    DependencyFailed(DependencyKey),
+    /// A `Need` read a dependency whose cell was cancelled (by its producer
+    /// or the embedder). Not the cancellation of the needing task itself,
+    /// which ends the run [`RunOutcome::Cancelled`](crate::RunOutcome::Cancelled).
+    DependencyCancelled(DependencyKey),
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

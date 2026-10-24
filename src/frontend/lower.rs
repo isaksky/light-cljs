@@ -1269,9 +1269,6 @@ impl<'s> Lowerer<'s> {
                 format!("`{RESERVED_BINDING}.{name}` is not an intrinsic"),
             ));
         };
-        if let Lowering::Deferred(message) = intrinsic.lowering {
-            return Err(self.error(SyntaxErrorKind::Unsupported, span, message));
-        }
         let n = args.len();
         let bad_arity = match intrinsic.arity {
             Arity::Exactly(k) if n != k => Some(format!(
@@ -1331,7 +1328,31 @@ impl<'s> Lowerer<'s> {
                 self.expr(&args[1])?;
                 self.out().op_u16(Opcode::HostEffect, selector, span);
             }
-            Lowering::Deferred(_) => {}
+            Lowering::Need => {
+                // The run-time check of `need` (`crate::vm::dispatch`), applied
+                // early to literals.
+                let limits = [
+                    ("definition id", 9_007_199_254_740_991.0),
+                    ("result kind", f64::from(u32::MAX)),
+                ];
+                for (arg, (what, max)) in args.iter().zip(limits) {
+                    if let ExprKind::Number(n) = arg.kind
+                        && !(n.fract() == 0.0 && (0.0..=max).contains(&n))
+                    {
+                        return Err(self.error(
+                            SyntaxErrorKind::Invalid,
+                            arg.span,
+                            format!(
+                                "the {what} of `{RESERVED_BINDING}.{name}` must be an integer from 0 to {max}"
+                            ),
+                        ));
+                    }
+                }
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.out().op(Opcode::Need, span);
+            }
         }
         Ok(())
     }
