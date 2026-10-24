@@ -248,7 +248,7 @@ fn body(heap: &Heap, v: &Value) -> Body {
 /// The name of a heap object's kind in `WrongType` errors.
 pub(crate) fn object_name(object: &HeapObject) -> &'static str {
     match object {
-        HeapObject::Plain => "object",
+        HeapObject::Plain(_) => "object",
         HeapObject::Native(_) => "native object",
         HeapObject::Vector(_) => PersistentKind::Vector.name(),
         HeapObject::Map(_) => PersistentKind::Map.name(),

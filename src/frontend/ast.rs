@@ -337,6 +337,10 @@ impl Expr {
             ExprKind::Member { object, .. } => object.height,
             ExprKind::Function(f) => f.height,
             ExprKind::Sequence { left, right } => left.height.max(right.height),
+            ExprKind::Object(properties) => {
+                properties.iter().map(|p| p.value.height).max().unwrap_or(0)
+            }
+            ExprKind::AssignMember { object, value, .. } => object.height.max(value.height),
         };
         Expr {
             kind,
@@ -438,6 +442,42 @@ pub enum ExprKind {
         /// reported.
         op_span: Span,
     },
+    /// An object literal `{ name: value, shorthand, ... }` (clj-quickjs-114):
+    /// its property definitions in source order.
+    Object(Vec<PropertyDef>),
+    /// `object.property = value`: assignment to a named property. `object`
+    /// is evaluated before `value`; the expression's value is `value`.
+    AssignMember {
+        object: Box<Expr>,
+        property: Ident,
+        value: Box<Expr>,
+        /// The member's `.` token, where run-time failures of the write
+        /// are reported.
+        op_span: Span,
+    },
+}
+
+/// One property definition of an object literal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PropertyDef {
+    pub name: PropertyName,
+    /// The property name's token.
+    pub name_span: Span,
+    /// The value: for a shorthand `{x}`, the identifier reference `x`.
+    pub value: Expr,
+    /// Written as a shorthand `{x}` rather than `{x: x}`.
+    pub shorthand: bool,
+}
+
+/// A literal property name of an object literal.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropertyName {
+    /// An IdentifierName, reserved words included (`if`, `get`, ...).
+    Identifier(String),
+    /// A string literal's cooked value (lone surrogates included).
+    String(crate::value::JsString),
+    /// A numeric literal's value; the key is its ToString (`1.0` is `"1"`).
+    Number(f64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

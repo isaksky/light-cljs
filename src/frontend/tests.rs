@@ -4,13 +4,14 @@
 //! `arrow_functions_and_asi`, one in `break_and_continue`, two in
 //! `labelled_statements` and six in
 //! `number_literal_member_access` (each marked there, with the QuickJS
-//! notice),
+//! notice), the keys and shorthands of `object_literals`,
 //! and the name `Ãµ` in `unicode_identifiers`, from QuickJS
 //! `test_unicode_ident` (notice in `tests/js_source.rs`
 //! `identifiers_are_not_normalized`).
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Stmt, StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, PropertyName, Stmt, StmtKind,
+    UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{MAX_NESTING, SyntaxError, SyntaxErrorKind, line_column, parse_script};
@@ -95,6 +96,34 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Sequence { left, right } => {
             format!("(, {} {})", render_expr(left), render_expr(right))
         }
+        ExprKind::Object(properties) => {
+            let mut out = "(object".to_string();
+            for p in properties {
+                let name = match &p.name {
+                    PropertyName::Identifier(name) => name.clone(),
+                    PropertyName::String(s) => format!("{s:?}"),
+                    PropertyName::Number(n) => format!("{n}"),
+                };
+                if p.shorthand {
+                    out.push_str(&format!(" (shorthand {name} {})", render_expr(&p.value)));
+                } else {
+                    out.push_str(&format!(" ({name} {})", render_expr(&p.value)));
+                }
+            }
+            out.push(')');
+            out
+        }
+        ExprKind::AssignMember {
+            object,
+            property,
+            value,
+            ..
+        } => format!(
+            "(= (. {} {}) {})",
+            render_expr(object),
+            property.name,
+            render_expr(value)
+        ),
     }
 }
 
@@ -1144,6 +1173,90 @@ fn calls_and_member_chains() {
     assert_eq!(ast("1..toString;"), "(. 1 toString)");
 }
 
+/// Object literals and property assignment (clj-quickjs-114). The
+/// `{if: 1, get: 2, ...}` keys and the `{x, get}` shorthands follow
+/// `test_object_literal` (line 378) of
+/// `research/quickjs/tests/test_language.js` (QuickJS, revision
+/// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution and the
+/// notice on `number_literal_member_access` below), checked as parse trees;
+/// the other cases are written for this project.
+#[test]
+fn object_literals() {
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    assert_eq!(ast("({});"), "(object)");
+    assert_eq!(
+        ast(r#"({a: 1, "b": 2, 3: 4,});"#),
+        r#"(object (a 1) ("b" 2) (3 4))"#
+    );
+    assert_eq!(
+        ast("({if: 1, get: 2, set: 3, async: 4, static: 5});"),
+        "(object (if 1) (get 2) (set 3) (async 4) (static 5))"
+    );
+    assert_eq!(
+        ast("({x, get});"),
+        "(object (shorthand x x) (shorthand get get))"
+    );
+    // Values are assignment expressions; literals nest.
+    assert_eq!(
+        ast("({a: b = 1, c: {d: e}.d, f: (1, 2)});"),
+        "(object (a (= b 1)) (c (. (object (d e)) d)) (f (, 1 2)))"
+    );
+    // At statement start `{` is a block, so a literal is parenthesized.
+    assert_eq!(ast("{ a: 1 }"), "(block (label a 1))");
+    assert_eq!(ast("x = {a: {b: 2}};"), "(= x (object (a (object (b 2)))))");
+
+    // A key is an IdentifierName: a reserved word written with escapes is
+    // an ordinary key, first or later, but not a shorthand or a label.
+    assert_eq!(
+        ast(r"({\u0069f: 1, n\u{65}w: 2});"),
+        "(object (if 1) (new 2))"
+    );
+    rejects_with(r"({\u0069f});", ReservedWord, 1, 3, "shorthand");
+    rejects(r"{ \u0069f: 1 }", ReservedWord, 1, 3);
+    rejects_with("({if});", ReservedWord, 1, 3, "shorthand");
+    rejects_with("({1});", UnexpectedToken, 1, 3, "needs a value");
+    rejects_with(r#"({"s"});"#, UnexpectedToken, 1, 3, "needs a value");
+    rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
+    rejects_with("({[k]: 1});", Unsupported, 1, 3, "computed property names");
+    rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
+    rejects_with("({m() {}});", Unsupported, 1, 3, "methods");
+    rejects_with("({get x() {}});", Unsupported, 1, 3, "getters and setters");
+    rejects_with("({set x(v) {}});", Unsupported, 1, 3, "getters and setters");
+    rejects_with("({async m() {}});", Unsupported, 1, 3, "async methods");
+    rejects_with("({*g() {}});", Unsupported, 1, 3, "generator methods");
+    rejects_with("({__proto__: p});", Unsupported, 1, 3, "__proto__");
+    rejects_with(r#"({"__proto__": p});"#, Unsupported, 1, 3, "__proto__");
+    rejects_with("({a: 1 b: 2});", UnexpectedToken, 1, 8, "");
+    rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
+}
+
+/// `o.name = v` (clj-quickjs-114); compound assignment and `++`/`--` of a
+/// property, and any assignment to the reserved intrinsic binding, stay
+/// rejected.
+#[test]
+fn property_assignment() {
+    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    assert_eq!(ast("a.b = 1;"), "(= (. a b) 1)");
+    assert_eq!(ast("(a.b) = 1;"), "(= (. a b) 1)");
+    assert_eq!(ast("a.b.c = d.e = f;"), "(= (. (. a b) c) (= (. d e) f))");
+    assert_eq!(ast("f().x = 1;"), "(= (. (call f) x) 1)");
+    rejects_with(
+        "a.b += 1;",
+        Unsupported,
+        1,
+        1,
+        "compound assignment to properties",
+    );
+    rejects_with(
+        "a.b++;",
+        Unsupported,
+        1,
+        1,
+        "increment and decrement of properties",
+    );
+    rejects_with("__rt.x = 1;", ReservedWord, 1, 1, "cannot be assigned");
+}
+
 /// A number literal followed by a member access (clj-quickjs-48). The
 /// `0.1.a`, `0x1.a`, `0b1.a`, `0o1.a`, `01.a` and `0.a` cases are those of
 /// `test_number_literals` (line 667) in
@@ -2012,7 +2125,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("void 0;", 1, 1, "void"),
         ("delete x.y;", 1, 1, "delete"),
         ("++x.y;", 1, 3, "increment and decrement of properties"),
-        ("x = {};", 1, 5, "object literals"),
         ("x = [1];", 1, 5, "array literals"),
         ("a[0];", 1, 2, "computed member"),
         ("f(...a);", 1, 3, "spread"),
@@ -2022,7 +2134,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
-        ("a.b = 1;", 1, 1, "assignment to properties"),
         ("x in y;", 1, 3, "in"),
         ("x instanceof y;", 1, 3, "instanceof"),
         ("x = eval;", 1, 5, "eval"),
@@ -2206,6 +2317,15 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("updates", |n| {
             format!("x = {}++b{};", "a++ + -(".repeat(n), ")".repeat(n))
+        }),
+        ("object literals", |n| {
+            format!("x = {}1{};", "{a: ".repeat(n), "}".repeat(n))
+        }),
+        ("object literal values", |n| {
+            format!("x = {}1{};", "{a: 1, b: x.y = ".repeat(n), ", c}".repeat(n))
+        }),
+        ("property assignments", |n| {
+            format!("x = {}1;", "a.b = ".repeat(n))
         }),
         ("wrapped member chains", |n| {
             let mut s = "a".to_string();

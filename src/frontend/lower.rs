@@ -141,12 +141,13 @@ use std::sync::Arc;
 
 use super::ast::{
     BinaryOp, CatchClause, Expr, ExprKind, ForInit, Function, Ident, LexicalDecl, LexicalKind,
-    LogicalOp, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
+    LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
 use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
+use crate::value::string::number_to_string;
 use crate::value::{JsString, Primitive};
 use crate::vm::executable::{Executable, ExecutableSpec};
 use crate::vm::instr::{Opcode, ThrowKind};
@@ -1772,7 +1773,21 @@ impl<'s> Lowerer<'s> {
                 return Ok(());
             }
         };
-        let index = match self.cur().out.const_index.get(&key) {
+        let index = self.constant_index(key, value, span)?;
+        self.out().op_u16(Opcode::Const, index, span);
+        Ok(())
+    }
+
+    /// The index of `value` (whose pool key is `key`) in the constant pool,
+    /// added if new.
+    #[inline(never)]
+    fn constant_index(
+        &mut self,
+        key: ConstKey,
+        value: Primitive,
+        span: Span,
+    ) -> Result<u16, SyntaxError> {
+        Ok(match self.cur().out.const_index.get(&key) {
             Some(&index) => index,
             None => {
                 if self.cur().out.constants.len() >= MAX_CONSTANTS {
@@ -1788,8 +1803,125 @@ impl<'s> Lowerer<'s> {
                 out.const_index.insert(key, index);
                 index
             }
+        })
+    }
+
+    /// The constant-pool index of the property name `name` (a string
+    /// constant), for `GetField`, `PutField` and `DefineField`.
+    #[inline(never)]
+    fn name_index(&mut self, name: &str, span: Span) -> Result<u16, SyntaxError> {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let Some(s) = JsString::from_code_units(units) else {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "a property name longer than 2^30 - 1 code units",
+            ));
         };
-        self.out().op_u16(Opcode::Const, index, span);
+        self.string_index(s, span)
+    }
+
+    /// The constant-pool index of the string `s`.
+    fn string_index(&mut self, s: JsString, span: Span) -> Result<u16, SyntaxError> {
+        self.constant_index(ConstKey::String(s.clone()), Primitive::String(s), span)
+    }
+
+    /// Member reads, object literals and property assignments, out of line
+    /// so the recursive [`Self::expr`] frame stays small (its size bounds
+    /// how deep an expression compiles on a 2 MiB stack).
+    #[inline(never)]
+    fn property_expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
+        match &e.kind {
+            ExprKind::Member { .. } => self.get_field(e),
+            ExprKind::Object(properties) => self.object_literal(properties, e.span),
+            ExprKind::AssignMember {
+                object,
+                property,
+                value,
+                op_span,
+            } => self.assign_member(object, property, value, *op_span),
+            _ => Err(self.internal(e.span, "not a property expression")),
+        }
+    }
+
+    /// `object.property`: the base, then `GetField`. A chain `a.b.c.d` is
+    /// lowered iteratively (its base once, then one `GetField` per link),
+    /// so a long chain takes no Rust stack per link.
+    #[inline(never)]
+    fn get_field(&mut self, member: &Expr) -> Result<(), SyntaxError> {
+        let mut links = Vec::new();
+        let mut base = member;
+        while let ExprKind::Member {
+            object,
+            property,
+            op_span,
+        } = &base.kind
+        {
+            links.push((base.span, property, *op_span));
+            base = object;
+        }
+        let Some(&(span, property, _)) = links.last() else {
+            return Err(self.internal(member.span, "not a member expression"));
+        };
+        if self.is_intrinsic_binding(base) {
+            return Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                span,
+                format!(
+                    "the intrinsic `{RESERVED_BINDING}.{}` must be called directly: intrinsics are not values",
+                    property.name
+                ),
+            ));
+        }
+        self.expr(base)?;
+        for &(_, property, op_span) in links.iter().rev() {
+            let index = self.name_index(&property.name, property.span)?;
+            self.out().op_u16(Opcode::GetField, index, op_span);
+        }
+        Ok(())
+    }
+
+    /// `object.property = value`: the base, then the value, then
+    /// `PutField`, which leaves the value. Run-time failures are reported
+    /// at the `.` (the operator-token convention of clj-quickjs-52).
+    #[inline(never)]
+    fn assign_member(
+        &mut self,
+        object: &Expr,
+        property: &Ident,
+        value: &Expr,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.expr(object)?;
+        self.expr(value)?;
+        let index = self.name_index(&property.name, property.span)?;
+        self.out().op_u16(Opcode::PutField, index, op_span);
+        Ok(())
+    }
+
+    /// An object literal: `NewObject`, then each value in source order
+    /// followed by a `DefineField` of its key (a later duplicate redefines
+    /// the property in place, so the last value wins at the position of the
+    /// first). Out of line, like [`Self::get_field`].
+    #[inline(never)]
+    fn object_literal(
+        &mut self,
+        properties: &[PropertyDef],
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.out().op(Opcode::NewObject, span);
+        for property in properties {
+            self.expr(&property.value)?;
+            let index = match &property.name {
+                PropertyName::Identifier(name) => self.name_index(name, property.name_span)?,
+                PropertyName::String(s) => self.string_index(s.clone(), property.name_span)?,
+                PropertyName::Number(n) => {
+                    self.name_index(&number_to_string(*n), property.name_span)?
+                }
+            };
+            self.out()
+                .op_u16(Opcode::DefineField, index, property.name_span);
+        }
         Ok(())
     }
 
@@ -1939,7 +2071,8 @@ impl<'s> Lowerer<'s> {
                     if self.is_intrinsic_binding(object) {
                         return self.intrinsic(property, args, span, *op_span);
                     }
-                    return Err(self.unsupported(callee.span, "property access"));
+                    // A method call passes its base as `this` (clj-quickjs-116).
+                    return Err(self.unsupported(callee.span, "calling a property (a method call)"));
                 }
                 if args.len() > MAX_COUNT {
                     return Err(self.error(
@@ -1954,20 +2087,8 @@ impl<'s> Lowerer<'s> {
                 }
                 self.out().op_u16(Opcode::Call, args.len() as u16, *op_span);
             }
-            ExprKind::Member {
-                object, property, ..
-            } => {
-                if self.is_intrinsic_binding(object) {
-                    return Err(self.error(
-                        SyntaxErrorKind::ReservedWord,
-                        span,
-                        format!(
-                            "the intrinsic `{RESERVED_BINDING}.{}` must be called directly: intrinsics are not values",
-                            property.name
-                        ),
-                    ));
-                }
-                return Err(self.unsupported(span, "property access"));
+            ExprKind::Member { .. } | ExprKind::Object(_) | ExprKind::AssignMember { .. } => {
+                self.property_expr(e)?;
             }
             ExprKind::Function(f) => {
                 let self_name = match &f.name {
@@ -2285,7 +2406,7 @@ fn is_number(e: &Expr) -> bool {
             alternate,
             ..
         } => is_number(consequent) && is_number(alternate),
-        ExprKind::Assign { value, .. } => is_number(value),
+        ExprKind::Assign { value, .. } | ExprKind::AssignMember { value, .. } => is_number(value),
         // The binding's old value may be a string, so only `+=` may
         // concatenate; the other compound operators are numeric.
         ExprKind::CompoundAssign { op, .. } => *op != BinaryOp::Add,

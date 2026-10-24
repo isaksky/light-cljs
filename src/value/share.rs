@@ -8,16 +8,16 @@
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure); natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), plain objects, binding cells, natives that declare it | never |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings included: a string
 //! (`crate::value::JsString`, clj-quickjs-65) is immutable `Arc` storage
 //! outside the heap with no heap edges, not a heap object, so it needs no
-//! category and the walk never descends into it. Plain objects are the ordinary mutable
-//! JavaScript objects of `design.md` §4: they have no property storage yet,
-//! but they are classified as task-owned mutation now so a collection that
-//! holds one is not silently shareable once properties exist. A builder
+//! category and the walk never descends into it. Ordinary objects
+//! (`crate::object`, clj-quickjs-114) are the mutable JavaScript objects of
+//! `design.md` §4: task-owned mutation, never shareable, whatever their
+//! properties hold (an object literal is rejected like a builder). A builder
 //! stays task-owned after `freeze` or release: the persistent result of a
 //! freeze is a separate object, the builder handle itself never becomes
 //! shareable. A concurrent reference is shareable without being immutable
@@ -62,9 +62,27 @@
 //! naming the path from the published value to that object (breadth-first,
 //! so a shortest such path) and the object's kind and owner.
 //!
+//! When that first task-owned object is an ordinary object, the description
+//! walks on into its property values: while the object reached has an own
+//! property (in creation order) whose value is a task-owned object not yet
+//! on the path, the path continues with a `.property(name)` step to it. So
+//! publishing `[{inner: {}}]` fails at `value[0].property(inner)`, naming
+//! the innermost mutable object along the first such chain, and every
+//! object the path passes after its last persistent step is an ordinary
+//! object, which is itself task-owned: the value becomes publishable only
+//! once nothing on the path is reachable from it. The extension reads each
+//! object under its own short lock, like the walk, and is bounded by the
+//! number of objects (no object is entered twice).
+//!
 //! No mutator token is needed: the published value is rooted by the caller
 //! and the walk descends only through persistent objects, whose edges never
-//! change, so everything it visits stays reachable for the whole walk.
+//! change, so everything it visits stays reachable for the whole walk. The
+//! path extension through ordinary objects is the one exception: their
+//! properties may change while it reads them (their owner may be running),
+//! so it may see an object being changed or one that a collection has just
+//! reclaimed. Every read is generation-checked, so it then describes a
+//! slightly different (still task-owned) object, or stops early; the
+//! verdict itself never depends on it.
 //!
 //! # Cache: the sticky known-shareable bit
 //!
@@ -98,7 +116,7 @@
 //! `Runtime::spawn` itself does not check its arguments; see its docs.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use crate::collections::{PMap, PVector, object_name};
@@ -125,7 +143,7 @@ pub(crate) enum Shareability {
 /// declare one (module docs, "What a later object kind must declare").
 pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
-        HeapObject::Plain => Shareability::TaskOwned,
+        HeapObject::Plain(_) => Shareability::TaskOwned,
         HeapObject::Native(payload) => payload.shareability(),
         HeapObject::Vector(_) | HeapObject::Map(_) | HeapObject::Occurrence(_) => {
             Shareability::Persistent
@@ -144,8 +162,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
     match object {
         HeapObject::Builder(b) => Some(b.owner()),
         HeapObject::Cell(c) => Some(c.owner),
-        HeapObject::Plain
-        | HeapObject::Native(_)
+        HeapObject::Plain(o) => o.owner(),
+        HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
@@ -194,6 +212,10 @@ pub enum PathStep {
     NativeEdge(usize),
     /// The n-th captured value of a closure. Displayed `.capture(n)`.
     Capture(usize),
+    /// The value of an ordinary object's own property, by its name.
+    /// Displayed `.property(name)`. Only in the description of a rejected
+    /// ordinary object (see [`PublishError::NotShareable`]).
+    Property(String),
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -219,6 +241,7 @@ impl fmt::Display for ValuePath {
                 PathStep::OccurrenceValue => f.write_str(".value")?,
                 PathStep::NativeEdge(n) => write!(f, ".edge({n})")?,
                 PathStep::Capture(n) => write!(f, ".capture({n})")?,
+                PathStep::Property(name) => write!(f, ".property({name})")?,
             }
         }
         Ok(())
@@ -231,13 +254,16 @@ pub enum PublishError {
     /// The handle does not belong to this runtime.
     Handle(HandleError),
     /// The value reaches an object that is not shareable (task-owned
-    /// mutation: a transient builder, a plain object, or a mutable native).
+    /// mutation: a transient builder, an ordinary object, a binding cell or
+    /// a mutable native). For an ordinary object the path continues into
+    /// its property values (module docs, "The check").
     NotShareable {
         /// Where the object sits inside the published value.
         path: ValuePath,
         /// The object's kind (`vector builder`, `object`, ...).
         found: &'static str,
-        /// The owning task, for builders.
+        /// The owning task, for builders, binding cells and ordinary objects
+        /// created by a task.
         owner: Option<TaskId>,
     },
 }
@@ -380,11 +406,9 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
         match node {
             Node::Shareable => {}
             Node::Rejected { found, owner } => {
-                return Err(PublishError::NotShareable {
-                    path: path_to(heap, &parents, id),
-                    found,
-                    owner,
-                });
+                let mut path = path_to(heap, &parents, id);
+                let (found, owner) = into_properties(heap, id, &mut path, (found, owner));
+                return Err(PublishError::NotShareable { path, found, owner });
             }
             Node::Expand(children) => {
                 *expanded += 1;
@@ -402,6 +426,55 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     }
     heap.mark_shareable(&proven);
     Ok(())
+}
+
+/// Extend the path of a rejected object `id` through ordinary objects'
+/// property values (module docs, "The check"); returns the kind and owner
+/// of the object the extended path ends at (`rejected` if it is not
+/// extended).
+fn into_properties(
+    heap: &Heap,
+    mut id: ObjectId,
+    path: &mut ValuePath,
+    mut rejected: (&'static str, Option<TaskId>),
+) -> (&'static str, Option<TaskId>) {
+    let mut entered = HashSet::from([id]);
+    loop {
+        // The object-valued own properties of `id`, if it is ordinary.
+        let candidates = heap
+            .read(id, |object| match object {
+                HeapObject::Plain(o) => o
+                    .properties()
+                    .filter_map(|(key, p)| match p.value {
+                        Value::Object(child) => Some((key, child)),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .unwrap_or_default();
+        let next = candidates.into_iter().find_map(|(key, child)| {
+            if entered.contains(&child) {
+                return None;
+            }
+            let task_owned = |o: &HeapObject| {
+                (classify(o) == Shareability::TaskOwned).then(|| (object_name(o), owner(o)))
+            };
+            heap.read(child, task_owned)
+                .flatten()
+                .map(|r| (key, child, r))
+        });
+        let Some((key, child, found)) = next else {
+            return rejected;
+        };
+        let name = heap
+            .keys()
+            .name(key)
+            .map_or_else(|| "<unnamed>".to_string(), |n| n.to_string_lossy());
+        path.0.push(PathStep::Property(name));
+        entered.insert(child);
+        (id, rejected) = (child, found);
+    }
 }
 
 /// The path from the walk's root to `id`, following first-discovery links.
@@ -458,7 +531,7 @@ mod tests {
     }
 
     fn plain(heap: &Heap) -> Value {
-        Value::Object(heap.alloc(HeapObject::Plain).unwrap())
+        Value::Object(heap.alloc(HeapObject::host_object()).unwrap())
     }
 
     fn known(heap: &Heap, v: &Value) -> bool {

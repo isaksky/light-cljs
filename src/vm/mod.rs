@@ -26,6 +26,7 @@ pub(crate) mod function;
 pub mod instr;
 pub mod intrinsics;
 pub(crate) mod native;
+pub(crate) mod property;
 
 pub use asm::{Assembler, Label};
 pub use executable::{Executable, ExecutableSpec, ValidationError, ValidationErrorKind};

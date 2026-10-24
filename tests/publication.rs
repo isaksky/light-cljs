@@ -11,7 +11,7 @@ use std::thread;
 use clj_quickjs::frontend::{compile_function, compile_script};
 use clj_quickjs::{
     Assembler, Executable, HandleError, KeyName, Local, Opcode, PathStep, Primitive, Provenance,
-    PublishError, Rooted, RunOutcome, Runtime, Scope, TaskId, ValueView,
+    PublishError, Rooted, RunOutcome, Runtime, Scope, TaskId, ValueView, VmErrorKind,
 };
 
 fn complete(outcome: RunOutcome) -> Rooted {
@@ -357,4 +357,150 @@ fn strings_publish_as_persistent_values() {
     assert_eq!(received.string().unwrap(), "published");
     assert_eq!(received.strict_equals(&bare), Ok(true), "equal by content");
     assert_eq!(rt.publish(&received), Ok(()));
+}
+
+/// Ordinary objects (clj-quickjs-114) are task-owned mutation: a value that
+/// reaches one is rejected, and the path continues into the object's
+/// property values to the innermost object along the first such chain
+/// (`.property(name)` steps; `crate::value::share`, "The check"). A
+/// closure that captured a `const` bound to an object is rejected at that
+/// capture. JavaScript source is a synthetic fixture, not light-cljs output.
+#[test]
+fn publishing_an_object_literal_is_rejected_with_property_path() {
+    let rt = Runtime::new();
+    let run = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("objects", src).unwrap(), &[])
+            .unwrap();
+        (complete(task.run().unwrap()), task.id())
+    };
+    let (holder, producer) = run("__rt.vector(1, {inner: {}})");
+    let (path, found, owner) = not_shareable(rt.publish(&holder).unwrap_err());
+    assert_eq!(
+        path,
+        vec![PathStep::Index(1), PathStep::Property("inner".to_string())]
+    );
+    assert_eq!((found, owner), ("object", Some(producer)));
+    assert_eq!(
+        rt.publish(&holder).unwrap_err().to_string(),
+        format!(
+            "cannot publish: value[1].property(inner) is a task-owned object \
+             (owned by {producer}), which is not shareable"
+        )
+    );
+
+    // The chain follows the first object-valued property in creation order
+    // and stops at an object with none (or at a cycle).
+    let (deep, _) = run("let o = {n: 1, a: {s: 'x'}, b: {c: {}}}; o.a.back = o; \
+         __rt.map('k', o)");
+    let (path, ..) = not_shareable(rt.publish(&deep).unwrap_err());
+    assert_eq!(
+        path,
+        vec![
+            PathStep::MapValue(KeyName::Primitive(Primitive::String("k".into()))),
+            PathStep::Property("a".to_string()),
+        ]
+    );
+    // A numeric key is the ToString of its value, the same property as the
+    // equal string key (so a later one redefines it in place).
+    for (src, name) in [
+        ("__rt.vector({1.50: {}})", "1.5"),
+        ("__rt.vector({0x10: {}})", "16"),
+        ("__rt.vector({1e21: {}})", "1e+21"),
+        ("__rt.vector({.5: 1, x: 2, '0.5': {}})", "0.5"),
+        ("__rt.vector({'16': 1, x: 2, 0x10: {}})", "16"),
+    ] {
+        let (value, _) = run(src);
+        let (path, ..) = not_shareable(rt.publish(&value).unwrap_err());
+        assert_eq!(
+            path,
+            vec![PathStep::Index(0), PathStep::Property(name.to_string())],
+            "{src}"
+        );
+    }
+    // ... so a later string key replaces the value of an equal numeric key.
+    let (value, _) = run("__rt.vector({0x10: {}, 1.50: {}, '16': 1, '1.5': 2})");
+    let (path, ..) = not_shareable(rt.publish(&value).unwrap_err());
+    assert_eq!(path, vec![PathStep::Index(0)]);
+    // A property holding a builder ends the chain at the builder.
+    let (built, _) = run("__rt.vector({b: __rt.vectorBuilder()})");
+    let (path, found, _) = not_shareable(rt.publish(&built).unwrap_err());
+    assert_eq!(
+        (path, found),
+        (
+            vec![PathStep::Index(0), PathStep::Property("b".to_string())],
+            "vector builder"
+        )
+    );
+
+    // A closure over a `const` holding an object captures the object by
+    // value: rejected at the capture.
+    let (closure, producer) =
+        run("function make() { const o = {}; return function () { return o; }; } make()");
+    assert_eq!(closure.view(), ValueView::Object);
+    assert_eq!(
+        not_shareable(rt.publish(&closure).unwrap_err()),
+        (vec![PathStep::Capture(0)], "object", Some(producer))
+    );
+    // An object alone is rejected at the value itself.
+    let (alone, producer) = run("({x: 1})");
+    assert_eq!(
+        not_shareable(rt.publish(&alone).unwrap_err()),
+        (vec![], "object", Some(producer))
+    );
+}
+
+/// An ordinary object is task-owned (clj-quickjs-114): handed to another
+/// task anyway (`spawn` does not check its arguments), it can be neither
+/// read nor written there, and the failure is not a catchable JavaScript
+/// error. An object the embedder created has no owner task: any task reads
+/// it, none writes it.
+#[test]
+fn objects_are_read_and_written_only_by_their_owner() {
+    let rt = Runtime::new();
+    let producer = rt
+        .spawn(&compile_script("make", "({x: 1})").unwrap(), &[])
+        .unwrap();
+    let object = complete(producer.run().unwrap());
+    let read = compile_function("function f(o) { return o.x; }").unwrap();
+    let write = compile_function(
+        "function f(o) { try { o.x = 2; } catch (e) { return 'caught'; } return 0; }",
+    )
+    .unwrap();
+    let outcome = |exe: &Executable, arg: &Rooted| {
+        let task = rt.spawn(exe, &[arg]).unwrap();
+        (task.run().unwrap(), task.id())
+    };
+    for exe in [&read, &write] {
+        match outcome(exe, &object) {
+            (RunOutcome::Failed(e), caller) => assert_eq!(
+                e.kind(),
+                VmErrorKind::ForeignObject {
+                    owner: Some(producer.id()),
+                    caller
+                },
+                "{e}"
+            ),
+            other => panic!("expected ForeignObject, got {other:?}"),
+        }
+    }
+
+    let host = rt.scope(|s| {
+        let o = s.new_object();
+        s.persist(o)
+    });
+    match outcome(&read, &host).0 {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Undefined),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    match outcome(&write, &host) {
+        (RunOutcome::Failed(e), caller) => assert_eq!(
+            e.kind(),
+            VmErrorKind::ForeignObject {
+                owner: None,
+                caller
+            }
+        ),
+        other => panic!("expected ForeignObject, got {other:?}"),
+    }
 }

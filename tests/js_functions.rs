@@ -95,7 +95,10 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
             | Opcode::ThrowError
             | Opcode::Function
             | Opcode::Call
-            | Opcode::GetCapture => 2,
+            | Opcode::GetCapture
+            | Opcode::GetField
+            | Opcode::PutField
+            | Opcode::DefineField => 2,
             _ => 0,
         };
     }

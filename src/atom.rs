@@ -665,9 +665,9 @@ mod tests {
     fn a_stale_object_id_never_matches_the_slot_s_new_occupant() {
         let rt = Runtime::new();
         let heap = rt.heap();
-        let old = heap.alloc(HeapObject::Plain).unwrap();
+        let old = heap.alloc(HeapObject::host_object()).unwrap();
         rt.collect().unwrap();
-        let new = heap.alloc(HeapObject::Plain).unwrap();
+        let new = heap.alloc(HeapObject::host_object()).unwrap();
         assert_eq!(new.to_bits() >> 32, old.to_bits() >> 32, "slot reused");
         assert!(!same_value(&Value::Object(old), &Value::Object(new)));
     }

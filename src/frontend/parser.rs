@@ -10,7 +10,8 @@
 
 use super::ast::{
     BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInit, Function, FunctionKind, Ident,
-    LexicalDecl, LexicalKind, LogicalOp, Script, Stmt, StmtKind, SwitchCase, UnaryOp, UpdateOp,
+    LexicalDecl, LexicalKind, LogicalOp, PropertyDef, PropertyName, Script, Stmt, StmtKind,
+    SwitchCase, UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{Keyword, Lexer, Punct, Token, TokenKind};
@@ -38,6 +39,8 @@ mod cost {
     pub const CALL: usize = 3;
     /// `( ... )` (on top of the inner `ASSIGNMENT`).
     pub const PAREN: usize = 3;
+    /// `{ ... }` object literal (on top of each value's `ASSIGNMENT`).
+    pub const OBJECT: usize = 3;
 }
 
 /// Global names the subset treats as reserved constants: they parse as
@@ -1118,6 +1121,9 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return Ok(left);
         }
+        if matches!(&left.kind, ExprKind::Member { object, .. } if !is_reserved_binding(object)) {
+            return self.assign_member(left, saved);
+        }
         let target = self.simple_target(&left, TargetUse::Assign)?;
         self.advance()?;
         let value = self.parse_assignment()?;
@@ -1172,7 +1178,7 @@ impl<'a> Parser<'a> {
         let (verb, properties, invalid) = match use_ {
             TargetUse::Assign => (
                 "assigned",
-                "assignment to properties is",
+                "compound assignment to properties is",
                 "invalid assignment target",
             ),
             TargetUse::Update => (
@@ -1200,6 +1206,199 @@ impl<'a> Parser<'a> {
                 ))
             }
             _ => Err(self.error(SyntaxErrorKind::Invalid, left.span, invalid)),
+        }
+    }
+
+    /// `object.property = value` (clj-quickjs-114), with the current token
+    /// the `=`; `left` is the member expression (possibly parenthesized),
+    /// whose object is not the reserved intrinsic binding. Only plain `=`:
+    /// compound assignment and `++`/`--` of properties stay rejected.
+    #[inline(never)]
+    fn assign_member(&mut self, left: Expr, saved: usize) -> PResult<Expr> {
+        let ExprKind::Member {
+            object,
+            property,
+            op_span,
+        } = left.kind
+        else {
+            return Err(self.unexpected("a property assignment"));
+        };
+        self.advance()?;
+        let value = self.parse_assignment()?;
+        self.depth = saved;
+        let span = left.span.to(value.span);
+        self.expr(
+            ExprKind::AssignMember {
+                object,
+                property,
+                value: Box::new(value),
+                op_span,
+            },
+            span,
+        )
+    }
+
+    /// ObjectLiteral: `{` (PropertyDefinition (`,` PropertyDefinition)*
+    /// `,`?)? `}` (clj-quickjs-114), with the current token the `{`.
+    #[inline(never)]
+    fn parse_object_literal(&mut self) -> PResult<Expr> {
+        let start = self.tok.span.start;
+        let saved = self.depth;
+        self.deeper(cost::OBJECT)?;
+        // A key is an IdentifierName, where a reserved word written with
+        // escapes is an ordinary name (`{\u0069f: 1}`).
+        self.lexer.expect_property_name();
+        self.advance()?;
+        let mut properties = Vec::new();
+        while !self.is_punct(Punct::RBrace) {
+            properties.push(self.parse_property_definition()?);
+            if self.is_punct(Punct::Comma) {
+                self.lexer.expect_property_name();
+            }
+            if !self.eat_punct(Punct::Comma)? {
+                break;
+            }
+        }
+        self.expect_punct(Punct::RBrace)?;
+        self.depth = saved;
+        let span = self.span_from(start);
+        self.expr(ExprKind::Object(properties), span)
+    }
+
+    /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
+    /// shorthand IdentifierReference. A PropertyName is an IdentifierName
+    /// (reserved words included), a string literal or a numeric literal.
+    /// Computed names, spread, methods, getters/setters and `__proto__:`
+    /// (which sets the prototype) are rejected explicitly.
+    fn parse_property_definition(&mut self) -> PResult<PropertyDef> {
+        let span = self.tok.span;
+        let next = self.peek_next();
+        let ends_shorthand = next
+            .as_ref()
+            .is_some_and(|t| matches!(t.kind, TokenKind::Punct(Punct::Comma | Punct::RBrace)));
+        if let Some(error) = self.property_definition_error(next.as_ref(), ends_shorthand) {
+            return Err(error);
+        }
+        if ends_shorthand {
+            // `{x}` is `{x: x}`: an identifier reference, with the same rules
+            // as anywhere else (`undefined`, `eval`, ...).
+            let TokenKind::Identifier(name) = &self.tok.kind else {
+                return Err(self.unexpected("a shorthand property name"));
+            };
+            if let Some(k) = Keyword::from_text(name) {
+                // A reserved word written with escapes (`{\u0069f}`).
+                return Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    span,
+                    format!(
+                        "`{}` is a reserved word and cannot be a shorthand property: write `{0}: value`",
+                        k.as_str()
+                    ),
+                ));
+            }
+            let name = PropertyName::Identifier(name.clone());
+            let value = self.parse_identifier_reference()?;
+            return Ok(PropertyDef {
+                name,
+                name_span: span,
+                value,
+                shorthand: true,
+            });
+        }
+        let name = match &self.tok.kind {
+            TokenKind::Identifier(name) => PropertyName::Identifier(name.clone()),
+            TokenKind::Keyword(k) => PropertyName::Identifier(k.as_str().to_string()),
+            TokenKind::String(s) => PropertyName::String(s.clone()),
+            TokenKind::Number(n) => PropertyName::Number(*n),
+            _ => return Err(self.unexpected("a property name")),
+        };
+        self.advance()?;
+        if self.is_punct(Punct::LParen) {
+            return Err(self.unsupported(span, "methods in object literals are"));
+        }
+        if !self.is_punct(Punct::Colon) {
+            return Err(self.unexpected("`:` after the property name"));
+        }
+        let is_proto = match &name {
+            PropertyName::Identifier(n) => n == "__proto__",
+            PropertyName::String(s) => *s == "__proto__",
+            PropertyName::Number(_) => false,
+        };
+        if is_proto {
+            return Err(self.unsupported(
+                span,
+                "setting the prototype with `__proto__: value` in an object literal is",
+            ));
+        }
+        self.advance()?;
+        let value = self.parse_assignment()?;
+        Ok(PropertyDef {
+            name,
+            name_span: span,
+            value,
+            shorthand: false,
+        })
+    }
+
+    /// The error of a property definition that starts at the current token
+    /// and that the subset does not support or JavaScript forbids; `next`
+    /// is the following token, `ends_shorthand` whether it ends a
+    /// shorthand property (`,` or `}`).
+    #[inline(never)]
+    fn property_definition_error(
+        &self,
+        next: Option<&Token>,
+        ends_shorthand: bool,
+    ) -> Option<SyntaxError> {
+        let span = self.tok.span;
+        let starts_name = |t: &Token| {
+            matches!(
+                t.kind,
+                TokenKind::Identifier(_)
+                    | TokenKind::Keyword(_)
+                    | TokenKind::String(_)
+                    | TokenKind::Number(_)
+                    | TokenKind::Punct(Punct::LBracket | Punct::Star)
+            )
+        };
+        let next_is = |p: Punct| next.is_some_and(|t| t.kind == TokenKind::Punct(p));
+        match &self.tok.kind {
+            TokenKind::Punct(Punct::LBracket) => {
+                Some(self.unsupported(span, "computed property names are"))
+            }
+            TokenKind::Punct(Punct::Ellipsis) => {
+                Some(self.unsupported(span, "spread properties are"))
+            }
+            TokenKind::Punct(Punct::Star) => Some(self.unsupported(span, "generator methods are")),
+            TokenKind::Identifier(word)
+                if (word == "get" || word == "set") && next.is_some_and(starts_name) =>
+            {
+                Some(self.unsupported(span, "getters and setters are"))
+            }
+            TokenKind::Identifier(word)
+                if word == "async" && next.is_some_and(|t| !t.newline_before && starts_name(t)) =>
+            {
+                Some(self.unsupported(span, "async methods are"))
+            }
+            TokenKind::Identifier(_) if next_is(Punct::Assign) => Some(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "a shorthand property initializer `name = value` is only valid in a destructuring pattern",
+            )),
+            TokenKind::Keyword(k) if ends_shorthand => Some(self.error(
+                SyntaxErrorKind::ReservedWord,
+                span,
+                format!(
+                    "`{}` is a reserved word and cannot be a shorthand property: write `{0}: value`",
+                    k.as_str()
+                ),
+            )),
+            TokenKind::String(_) | TokenKind::Number(_) if ends_shorthand => Some(self.error(
+                SyntaxErrorKind::UnexpectedToken,
+                span,
+                "a string or numeric property name needs a value: write `name: value`",
+            )),
+            _ => None,
         }
     }
 
@@ -1499,6 +1698,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Identifier(_) => return self.parse_identifier_reference(),
             TokenKind::Punct(Punct::LParen) => return self.parse_parenthesized(),
+            TokenKind::Punct(Punct::LBrace) => return self.parse_object_literal(),
             _ => return Err(self.primary_error()),
         };
         self.advance()?;
@@ -1545,7 +1745,6 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Slash | Punct::SlashAssign) => {
                 self.unsupported(span, "regular expression literals are")
             }
-            TokenKind::Punct(Punct::LBrace) => self.unsupported(span, "object literals are"),
             TokenKind::Punct(Punct::LBracket) => self.unsupported(span, "array literals are"),
             TokenKind::Punct(Punct::Ellipsis) => self.unsupported(span, "spread syntax is"),
             TokenKind::Keyword(k) => {

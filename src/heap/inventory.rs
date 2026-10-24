@@ -64,11 +64,13 @@ enum Holder {
     ExecutableConstant,
     /// Edges reported by a native payload's `Trace`.
     NativePayloadEdges,
+    /// Property values (and the prototype) of an ordinary object.
+    ObjectProperty,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 19] = [
+const HOLDERS: [Holder; 20] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -88,6 +90,7 @@ const HOLDERS: [Holder; 19] = [
     Holder::PersistentCollectionEdges,
     Holder::ExecutableConstant,
     Holder::NativePayloadEdges,
+    Holder::ObjectProperty,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -138,6 +141,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             HandlerCompletion,
             NativeFrame,
             TransientBuilder,
+            ObjectProperty,
         ],
         RootCategory::ExecutableConstant => &[ExecutableConstant],
         RootCategory::DependencyOutcome => &[DependencyOutcome],
@@ -145,11 +149,11 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 }
 
 /// The holders whose tests retain a value through an edge of `kind` (for
-/// [`ObjectKind::PlainObject`], which has no edges: retain one itself).
+/// [`ObjectKind::PlainObject`]: retain one itself, and through its properties).
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
-        ObjectKind::PlainObject => &[PersistentHandle],
+        ObjectKind::PlainObject => &[PersistentHandle, ObjectProperty],
         ObjectKind::Native => &[NativePayloadEdges],
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
             &[PersistentCollectionEdges, DependencyOutcome]
@@ -231,6 +235,7 @@ fn coverage(holder: Holder) -> Coverage {
             retains: (Inventory, "native_payload_edges_retain"),
             reclaims: (Inventory, "native_payload_edges_reclaim"),
         },
+        Holder::ObjectProperty => public("object_property_retains", "object_property_reclaims"),
     }
 }
 
@@ -300,14 +305,19 @@ fn assert_stale(heap: &Arc<Heap>, ids: &[ObjectId]) {
     };
     check();
     let fresh: Vec<Rooted> = (0..ids.len() + 4)
-        .map(|_| Rooted::new(heap, Value::Object(heap.alloc(HeapObject::Plain).unwrap())))
+        .map(|_| {
+            Rooted::new(
+                heap,
+                Value::Object(heap.alloc(HeapObject::host_object()).unwrap()),
+            )
+        })
         .collect();
     check();
     drop(fresh);
 }
 
 fn plain(heap: &Heap) -> ObjectId {
-    heap.alloc(HeapObject::Plain).unwrap()
+    heap.alloc(HeapObject::host_object()).unwrap()
 }
 
 /// `return constant[0]`, with an object constant. Loaded code only has

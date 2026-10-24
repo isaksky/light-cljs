@@ -205,6 +205,11 @@ pub enum ValidationErrorKind {
         instructions: usize,
         locations: usize,
     },
+    /// A property-name operand (`GetField`, `PutField`, `DefineField`) that
+    /// names a constant that is not a string.
+    NameNotString {
+        index: u16,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -298,10 +303,16 @@ impl Executable {
                 .rev()
                 .fold(0u32, |acc, &b| (acc << 8) | u32::from(b));
             match opcode.operand() {
-                OperandKind::Const if operand as usize >= constants.len() => {
+                OperandKind::Const | OperandKind::Name if operand as usize >= constants.len() => {
                     let index = operand as u16;
                     let count = constants.len();
                     return Err(err(offset, ConstantOutOfRange { index, count }));
+                }
+                OperandKind::Name
+                    if !matches!(constants[operand as usize], Primitive::String(_)) =>
+                {
+                    let index = operand as u16;
+                    return Err(err(offset, NameNotString { index }));
                 }
                 OperandKind::Function if operand as usize >= functions.len() => {
                     let index = operand as u16;
@@ -417,6 +428,9 @@ impl Executable {
                 Opcode::CompareLe => Instr::CompareLe,
                 Opcode::CompareGe => Instr::CompareGe,
                 Opcode::Typeof => Instr::Typeof,
+                Opcode::GetField => Instr::GetField(operand as u16),
+                Opcode::PutField => Instr::PutField(operand as u16),
+                Opcode::DefineField => Instr::DefineField(operand as u16),
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -525,7 +539,10 @@ impl Executable {
                 | Instr::NewMap(v)
                 | Instr::Function(v, _)
                 | Instr::Call(v)
-                | Instr::GetCapture(v) => u32::from(v),
+                | Instr::GetCapture(v)
+                | Instr::GetField(v)
+                | Instr::PutField(v)
+                | Instr::DefineField(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t)
@@ -649,6 +666,37 @@ mod tests {
 
     const RET: u8 = Opcode::Return as u8;
     const UNDEF: u8 = Opcode::Undefined as u8;
+
+    #[test]
+    fn property_name_operands_must_name_string_constants() {
+        let get = Opcode::GetField as u8;
+        let put = Opcode::PutField as u8;
+        let name = || vec![Primitive::String("x".into())];
+        // undefined.x is a run-time TypeError, but valid code.
+        let ok = load(vec![UNDEF, get, 0, 0, RET], name(), 0).unwrap();
+        // The operand survives a round trip through the byte format.
+        assert_eq!(
+            Executable::load(ok.to_spec()).unwrap().to_spec(),
+            ok.to_spec()
+        );
+        assert_eq!(
+            kind(load(
+                vec![UNDEF, get, 0, 0, RET],
+                vec![Primitive::Number(1.0)],
+                0
+            )),
+            NameNotString { index: 0 }
+        );
+        assert_eq!(
+            kind(load(vec![UNDEF, UNDEF, put, 1, 0, RET], name(), 0)),
+            ConstantOutOfRange { index: 1, count: 1 }
+        );
+        // `PutField` pops two values.
+        assert!(matches!(
+            kind(load(vec![UNDEF, put, 0, 0, RET], name(), 0)),
+            StackUnderflow { .. }
+        ));
+    }
 
     #[test]
     fn accepts_minimal_program_and_computes_max_stack() {

@@ -77,6 +77,7 @@ pub use stats::{HeapUsage, ObjectCounts};
 
 use crate::atom::AtomCell;
 use crate::collections::{Builder, Occurrence, PMap, PVector};
+use crate::object::{OrdinaryObject, PropertyKeys};
 use crate::value::Value;
 use crate::value::share::{self, Shareability};
 use crate::vm::function::{BindingCell, FunctionObject};
@@ -112,8 +113,8 @@ impl ObjectId {
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ObjectKind {
-    /// A JavaScript object with no properties. Property storage is deferred;
-    /// this kind exists so object identity is observable (`===`, handles).
+    /// An ordinary JavaScript object (`crate::object`): task-owned mutable
+    /// own properties, a prototype slot and an extensible flag.
     PlainObject,
     /// An object carrying a Rust [`NativePayload`] whose heap edges are
     /// reported by its [`Trace`] implementation (the analogue of a QuickJS
@@ -162,7 +163,9 @@ pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
 /// Storage of one heap object.
 #[derive(Debug)]
 pub(crate) enum HeapObject {
-    Plain,
+    /// An ordinary JavaScript object: task-owned and mutable by its owning
+    /// task's run only, in place under the object lock (`crate::object`).
+    Plain(OrdinaryObject),
     /// Constructed by tests today; resumable native continuations
     /// (clj-quickjs-12) and later native kinds construct it.
     #[allow(dead_code)]
@@ -190,10 +193,16 @@ pub(crate) enum HeapObject {
 }
 
 impl HeapObject {
+    /// A new empty ordinary object created by the embedder (no owner task;
+    /// see `crate::object`).
+    pub(crate) fn host_object() -> HeapObject {
+        HeapObject::Plain(OrdinaryObject::new(None))
+    }
+
     #[cfg(test)]
     pub(crate) fn kind(&self) -> ObjectKind {
         match self {
-            HeapObject::Plain => ObjectKind::PlainObject,
+            HeapObject::Plain(_) => ObjectKind::PlainObject,
             HeapObject::Native(_) => ObjectKind::Native,
             HeapObject::Vector(_) => ObjectKind::Vector,
             HeapObject::Map(_) => ObjectKind::Map,
@@ -209,7 +218,7 @@ impl HeapObject {
 impl Trace for HeapObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match self {
-            HeapObject::Plain => {}
+            HeapObject::Plain(o) => o.trace(visit),
             HeapObject::Native(payload) => payload.trace(visit),
             HeapObject::Vector(v) => v.trace(visit),
             HeapObject::Map(m) => m.trace(visit),
@@ -396,6 +405,9 @@ pub(crate) struct Heap {
     sources: Mutex<SourceRegistry>,
     /// The object table.
     objects: Mutex<ObjectTable>,
+    /// The runtime-wide property-key table (`crate::object`). A leaf lock
+    /// outside the order below: never held together with another heap lock.
+    keys: PropertyKeys,
     /// Collection observers ([`gc::CollectionObserver`]). A leaf lock: never
     /// held with another heap lock or while an observer runs.
     observers: Mutex<Vec<Weak<dyn gc::CollectionObserver>>>,
@@ -533,6 +545,11 @@ impl Heap {
         }
     }
 
+    /// The runtime-wide property-key table (`crate::object`).
+    pub(crate) fn keys(&self) -> &PropertyKeys {
+        &self.keys
+    }
+
     pub(crate) fn roots(&self) -> MutexGuard<'_, RootTable> {
         lock(&self.roots)
     }
@@ -568,8 +585,8 @@ mod tests {
     #[test]
     fn allocation_gives_distinct_stable_identities() {
         let heap = Heap::default();
-        let a = heap.alloc(HeapObject::Plain).unwrap();
-        let b = heap.alloc(HeapObject::Plain).unwrap();
+        let a = heap.alloc(HeapObject::host_object()).unwrap();
+        let b = heap.alloc(HeapObject::host_object()).unwrap();
         assert_ne!(a, b);
         assert_eq!(heap.kind(a), Some(ObjectKind::PlainObject));
         assert_eq!(heap.kind(ObjectId::from_index(99)), None);
@@ -585,7 +602,7 @@ mod tests {
         assert_eq!(heap.known_shareable(known), Some(true));
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
         // The plain object takes over the slot, with a new generation.
-        let plain = heap.alloc(HeapObject::Plain).unwrap();
+        let plain = heap.alloc(HeapObject::host_object()).unwrap();
         assert_eq!(plain.index, known.index);
         assert_eq!(heap.known_shareable(plain), Some(false));
         assert_eq!(heap.known_shareable(known), None, "stale id");
@@ -606,7 +623,7 @@ mod tests {
     #[test]
     fn slots_whose_generation_would_wrap_are_retired() {
         let heap = Heap::default();
-        let id = heap.alloc(HeapObject::Plain).unwrap();
+        let id = heap.alloc(HeapObject::host_object()).unwrap();
         lock(&heap.objects).slots[id.index as usize].generation = u32::MAX;
         let worn = ObjectId {
             index: id.index,
@@ -614,7 +631,7 @@ mod tests {
         };
         assert!(heap.is_live(worn));
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
-        let next = heap.alloc(HeapObject::Plain).unwrap();
+        let next = heap.alloc(HeapObject::host_object()).unwrap();
         assert_ne!(next.index, id.index, "a retired slot is never reused");
         assert!(!heap.is_live(worn));
         assert!(lock(&heap.objects).free.is_empty());

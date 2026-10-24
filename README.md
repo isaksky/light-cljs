@@ -1623,3 +1623,30 @@ Deferred:
 - Script-level `var`s and function declarations are bindings of the
   script, not properties of a global object (clj-quickjs-104).
   `var` in a `for` head (clj-quickjs-89) stays `Unsupported`.
+
+### Ordinary objects and named properties (clj-quickjs-114)
+
+Supported (`cargo test --lib frontend::tests::object_literals`,
+`cargo test --test js_source object_literals_and_named_properties`,
+`cargo test --test publication publishing_an_object_literal_is_rejected_with_property_path`,
+`cargo test --test gc_roots object_property`):
+
+- Object literals `{a: 1, "b": 2, 3: 4, if: 5, x}` (identifier, reserved
+  word, string and numeric keys, shorthands, trailing comma, duplicate keys,
+  left-to-right evaluation), `o.name` reads and `o.name = v` assignments.
+- Representation (decision record in `docs/architecture.md`, "Ordinary
+  objects"): task-owned mutable heap objects with own data properties in
+  creation order, keyed by runtime-interned property keys, a prototype slot
+  and an extensible flag; traced by the collector; rejected by publication
+  with a `.property(name)` path; another task's access fails with
+  `VmErrorKind::ForeignObject`.
+- Reading or writing a property of `undefined`/`null`, and writing one of a
+  collection, builder or atom, throw catchable `TypeError`s; reading one of
+  a collection gives `undefined`.
+
+Deferred:
+
+- `Object.prototype` (literals have a null prototype), getters/setters,
+  methods and method calls, computed keys and `o[k]`, `delete`,
+  `__proto__`, property `++`/`--` and compound assignment; properties of
+  functions, error objects and primitives fail with `UnsupportedOperand`.

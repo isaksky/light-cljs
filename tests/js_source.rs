@@ -85,7 +85,10 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::ThrowError
             | Opcode::Function
             | Opcode::Call
-            | Opcode::GetCapture => 2,
+            | Opcode::GetCapture
+            | Opcode::GetField
+            | Opcode::PutField
+            | Opcode::DefineField => 2,
             _ => 0,
         };
     }
@@ -1859,6 +1862,19 @@ fn runtime_error_positions_follow_operator_tokens() {
         (kind, message.as_str(), line, column),
         (VmErrorKind::TypeError, "null is not a function", 2, 8)
     );
+    // Member reads and writes (clj-quickjs-114): at the `.`.
+    let (kind, message, line, column) = failure_at("\n 1 + null . abcd;");
+    assert_eq!(
+        (kind, message.as_str(), line, column),
+        (
+            VmErrorKind::TypeError,
+            "cannot read property 'abcd' of null",
+            2,
+            11
+        )
+    );
+    let (kind, _, line, column) = failure_at("let obj;\n obj . a = 1;");
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 6));
     // Intrinsic calls too.
     let (_, _, line, column) = failure_at("let v = 1;\n  __rt.nth ( v, 0 );");
     assert_eq!((line, column), (2, 12));
@@ -2094,10 +2110,9 @@ fn redeclaration_and_unsupported_forms_are_compile_errors() {
     );
 
     // Valid syntax that cannot execute yet is rejected where it starts.
-    // (Functions and calls execute since clj-quickjs-21.)
-    for (src, line, column) in [("let o = 1;\no.p;", 2, 1), ("let o = 1;\no.p(1);", 2, 1)] {
-        assert_eq!(compile_err(src), (Unsupported, line, column), "{src}");
-    }
+    // (Functions and calls execute since clj-quickjs-21, property reads
+    // since clj-quickjs-114; method calls are clj-quickjs-116.)
+    assert_eq!(compile_err("let o = 1;\no.p(1);"), (Unsupported, 2, 1));
     // Syntax errors pass through from the parser.
     assert_eq!(compile_err("let if = 1;").0, SyntaxErrorKind::ReservedWord);
 }
@@ -2814,6 +2829,11 @@ fn deep_expressions_compile_within_a_small_stack() {
     let chain = vec!["1"; 241].join(" + ");
     let commas = vec!["1"; 241].join(", ");
     let powers = vec!["1"; 241].join(" ** ");
+    // Objects (clj-quickjs-114): 60 nested literals, a chain of 240 member
+    // reads and 120 (right-associative) property assignments.
+    let objects = format!("x = {}1{};", "{a: 1, b: ".repeat(60), "}".repeat(60));
+    let members = format!("o{};", ".b".repeat(240));
+    let assigns = format!("{}1;", "o.b = ".repeat(120));
     let handle = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
@@ -2821,14 +2841,20 @@ fn deep_expressions_compile_within_a_small_stack() {
             let b = compile_script("chain", &chain).map(|_| ());
             let c = compile_script("commas", &commas).map(|_| ());
             let d = compile_script("powers", &powers).map(|_| ());
-            (a, b, c, d)
+            let e = compile_script("objects", &objects).map(|_| ());
+            let f = compile_script("members", &members).map(|_| ());
+            let g = compile_script("assigns", &assigns).map(|_| ());
+            (a, b, c, d, e, f, g)
         })
         .unwrap();
-    let (a, b, c, d) = handle.join().unwrap();
+    let (a, b, c, d, e, f, g) = handle.join().unwrap();
     a.unwrap();
     b.unwrap();
     c.unwrap();
     d.unwrap();
+    e.unwrap();
+    f.unwrap();
+    g.unwrap();
     assert_eq!(num(&vec!["1"; 241].join(" ** ")), 1.0);
     assert_eq!(num(&vec!["1"; 241].join(" + ")), 241.0);
     assert_eq!(
@@ -3582,4 +3608,205 @@ fn parenthesized_binding_diagnostics_name_the_identifier() {
         let (_, m, l, c) = failure_at(src);
         assert_eq!((m.as_str(), l, c), (message, line, column), "{src}");
     }
+}
+
+/// Object literals with literal keys, `o.name` reads and `o.name = v`
+/// assignments (clj-quickjs-114). The `{x: 1, if: 2, async: 3}` and nested
+/// `{a: {b: 2}}` rows follow `test_op2` (line 195) and
+/// `test_optional_chaining` (line 610) of
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+/// (restated as Rust assertions on the expression's value); see
+/// `docs/architecture.md`, "QuickJS references and provenance". The rest
+/// are synthetic fixtures, not light-cljs output.
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn object_literals_and_named_properties() {
+    let o = "let o = {x: 1, if: 2, async: 3};";
+    assert_eq!(num(&format!("{o} o.x + o.if + o.async")), 6.0);
+    assert_eq!(eval(&format!("{o} o.missing")), ValueView::Undefined);
+    assert_eq!(num(&format!("{o} o.y = 4")), 4.0);
+    assert_eq!(num(&format!("{o} o.y = 4; o.y")), 4.0);
+    assert_eq!(num(&format!("{o} o.x = 5; o.x + o.if")), 7.0);
+    assert_eq!(num("({x: 1, x: 2}).x"), 2.0);
+    assert_eq!(num("({a: {b: 2}}).a.b"), 2.0);
+    assert_eq!(num("let get = 1; ({get}).get"), 1.0);
+    assert_eq!(
+        num("let a = 1, b = 2; let p = {a, b, c: a + b}; p.a + p.b * p.c"),
+        7.0
+    );
+    assert_eq!(eval("({}) !== ({})"), ValueView::Bool(true));
+    assert_eq!(eval(&format!("{o} o === o")), ValueView::Bool(true));
+    assert_eq!(string("typeof {}"), "object");
+    // String and numeric keys: a numeric key is its ToString.
+    assert_eq!(num(r#"({"b": 2, 3: 4, 1.50: 5, 0x10: 6}).b"#), 2.0);
+    assert_eq!(num(r#"let k = {"if": 7}; k.if"#), 7.0);
+    assert_eq!(num(r"({a: 1, \u0069f: 2}).if + ({n\u{65}w: 3}).new"), 5.0);
+    // Keys of every kind, reserved words included, and a trailing comma.
+    assert_eq!(
+        num(
+            "let r = {get: 2, set: 3, async: 4, static: 5, new: 6, typeof: 7,}; \
+             r.get + r.set + r.async + r.static + r.new + r.typeof"
+        ),
+        27.0
+    );
+    // Assignment is right-associative and leaves the assigned value.
+    assert_eq!(num("let p = {}, q = {}; p.v = q.v = 3; p.v + q.v"), 6.0);
+    // A property may hold any value, functions and the object itself
+    // included.
+    assert_eq!(
+        num("let m = {f: function (x) { return x * 2; }}; let f = m.f; f(21)"),
+        42.0
+    );
+    assert_eq!(
+        num("let c = {}; c.self = c; c.self.self.self === c ? 1 : 0"),
+        1.0
+    );
+
+    // Reading or writing a property of undefined or null throws a TypeError
+    // that `catch` receives, located at the `.` (clj-quickjs-52).
+    assert_eq!(
+        string("let u; let r = 'none'; try { u.x; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        string("let r = 'none'; try { null.x = 1; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        failure_at("let u;\nu.x;"),
+        (
+            VmErrorKind::TypeError,
+            "cannot read property 'x' of undefined".to_string(),
+            2,
+            2
+        )
+    );
+    assert_eq!(
+        failure_at("let n = null;\n  n.x = 1;"),
+        (
+            VmErrorKind::TypeError,
+            "cannot set property 'x' of null".to_string(),
+            2,
+            4
+        )
+    );
+    // The right-hand side runs before the base is checked (PutValue).
+    assert_eq!(
+        num("let hit = 0; try { null.x = (hit = 1); } catch (e) {} hit"),
+        1.0
+    );
+
+    // Evaluation order, observed through a closure-captured counter: the
+    // values of a literal left to right, and the base of an assignment
+    // before its right-hand side.
+    let log = "let log = 0; function f(n) { log = log * 10 + n; return n; }";
+    assert_eq!(num(&format!("{log} ({{a: f(1), b: f(2)}}); log")), 12.0);
+    assert_eq!(
+        num(&format!(
+            "{log} let t = {{}}; function g() {{ f(1); return t; }} \
+             function h() {{ f(2); return 9; }} g().x = h(); log * 100 + t.x"
+        )),
+        1209.0
+    );
+    // Duplicate keys: every value is evaluated, the last one wins.
+    assert_eq!(
+        num(&format!(
+            "{log} let d = {{x: f(1), x: f(2)}}; log * 10 + d.x"
+        )),
+        122.0
+    );
+}
+
+/// The values of the runtime that are not ordinary objects
+/// (clj-quickjs-114, `crate::vm::property`): persistent collections and
+/// builders have no JavaScript properties (reads give `undefined`, writes
+/// throw a TypeError); function objects, error objects and primitives other
+/// than `undefined`/`null` fail explicitly until their properties exist.
+#[test]
+fn property_access_on_values_that_are_not_ordinary_objects() {
+    assert_eq!(eval("__rt.vector(1, 2).x"), ValueView::Undefined);
+    assert_eq!(eval("__rt.map(1, 2).x"), ValueView::Undefined);
+    assert_eq!(eval("__rt.vectorBuilder().x"), ValueView::Undefined);
+    for base in ["__rt.map()", "__rt.mapBuilder()", "__rt.vectorBuilder()"] {
+        let (kind, message, ..) = failure_at(&format!("let b = {base};\nb.x = 1;"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{base}: {message}");
+    }
+    // Occurrences and atoms, handed to a function by the embedder, behave
+    // the same: reads give undefined, writes throw a catchable TypeError.
+    let rt = Runtime::new();
+    let one = rt.root(Primitive::Number(1.0));
+    let occurrence = rt.scope(|s| {
+        let at = clj_quickjs::Provenance {
+            source: 1,
+            line: 1,
+            column: 1,
+        };
+        let o = s
+            .new_occurrence(s.primitive(Primitive::Number(1.0)), at)
+            .unwrap();
+        s.persist(o)
+    });
+    let atom = rt.new_atom(&one).unwrap();
+    let probe = compile_function(
+        "function f(v) { let r = v.x === undefined ? 1 : 0; \
+         try { v.x = 1; } catch (e) { r = r + 10; } return r; }",
+    )
+    .unwrap();
+    for base in [&occurrence, &atom] {
+        let task = rt.spawn(&probe, &[base]).unwrap();
+        match task.run().unwrap() {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(11.0)),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        string("let r = 'none'; try { __rt.vector().x = 1; } catch (e) { r = 'caught'; } r"),
+        "caught"
+    );
+    assert_eq!(
+        failure_at("let v = __rt.vector();\nv.x = 1;"),
+        (
+            VmErrorKind::TypeError,
+            "cannot set property 'x' of a vector: it has no JavaScript properties".to_string(),
+            2,
+            2
+        )
+    );
+    for (src, needle) in [
+        ("let f = function () {};\nf.x;", "of a function"),
+        ("let f = function () {};\nf.x = 1;", "of a function"),
+        ("let n = 1;\nn.x;", "of a number"),
+        ("let s = 'a';\ns.length;", "of a string"),
+        ("let b = true;\nb.x = 1;", "of a boolean"),
+        (
+            "let e; try { null.x; } catch (c) { e = c; }\ne.message;",
+            "of an error object",
+        ),
+    ] {
+        let (kind, message, line, _) = failure_at(src);
+        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+        assert!(message.contains(needle), "{src}: {message}");
+        assert_eq!(line, 2, "{src}");
+    }
+    // An unsupported operand is not catchable: no JavaScript sees a wrong
+    // answer.
+    let (kind, ..) = failure_at("let r; try { (1).x; } catch (e) { r = 1; } r");
+    assert_eq!(kind, VmErrorKind::UnsupportedOperand);
 }

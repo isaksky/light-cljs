@@ -40,8 +40,11 @@ pub enum VmErrorKind {
     /// an undeclared name, or use of a `let`/`const` binding before its
     /// declaration ran (temporal dead zone). Catchable (clj-quickjs-11).
     ReferenceError,
-    /// A JavaScript TypeError: assignment to a `const` binding, or a `Call`
-    /// whose callee is not a function object (`… is not a function`). Catchable (clj-quickjs-11).
+    /// A JavaScript TypeError: assignment to a `const` binding, a `Call`
+    /// whose callee is not a function object (`… is not a function`), or a
+    /// property read or write that JavaScript rejects (a property of
+    /// `undefined` or `null`, a write to a read-only property or to a value
+    /// with no JavaScript properties). Catchable (clj-quickjs-11).
     TypeError,
     /// A `Call` would exceed the task's [`VmLimits`](crate::VmLimits) (call
     /// depth or operand/local storage). The task fails instead of growing
@@ -80,6 +83,17 @@ pub enum VmErrorKind {
     /// describes the value (`uncaught exception: 42`). See
     /// `crate::vm::exception`.
     Thrown,
+    /// A property instruction (`GetField`, `PutField`) on an ordinary object
+    /// that the running task does not own (clj-quickjs-114): an ordinary
+    /// object is task-owned mutable state, so only its owning task reads or
+    /// changes its properties. An object the embedder created has no owner
+    /// (`owner: None`): every task may read it and none may change it.
+    ForeignObject {
+        /// The task that created the object; `None` for the embedder.
+        owner: Option<TaskId>,
+        /// The task that tried to use it.
+        caller: TaskId,
+    },
 }
 
 /// One active caller in a failure's call chain: the `Call` instruction a

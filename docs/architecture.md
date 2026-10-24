@@ -210,6 +210,7 @@ public API cannot reach.
 | persistent collection edges | `PersistentHandle` (`Map` → `Vector` → `Occurrence`) | `persistent_collection_edges_retain` | `persistent_collection_edges_reclaim` |
 | executable object constants | `ExecutableConstant` | `executable_constant_retains` *(lib)* | `executable_constant_reclaims` *(lib)* |
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
+| ordinary object property values (and prototype) | `TaskFrame` (`PlainObject` → `PlainObject` → argument) | `object_property_retains` | `object_property_reclaims` |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -310,12 +311,12 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   | Category | Kinds | Shareable |
   |----------|-------|-----------|
   | `Persistent` | vector, map, occurrence; natives declaring it | when everything it references is |
-  | `TaskOwned` | builders in every state, plain objects, natives declaring it | never |
+  | `TaskOwned` | builders in every state, ordinary objects, binding cells, natives declaring it | never |
   | `ConcurrentReference` | atoms (clj-quickjs-10); reserved for any heap-object handle to a dependency cell (cells are runtime-owned, not heap objects) | always; not descended into |
 
-  Primitives are shareable. Plain objects are the ordinary mutable
-  JavaScript objects of §4 (property storage comes later), so they count as
-  task-owned mutation now. A native payload declares its category through
+  Primitives are shareable. Ordinary objects are the mutable JavaScript
+  objects of §4 (clj-quickjs-114, "Ordinary objects" below): task-owned
+  mutation whatever their properties hold. A native payload declares its category through
   `NativePayload::shareability`.
 - **The check** walks the value graph breadth-first with an explicit queue
   and a visited set: no recursion (depth is bounded only by memory), each
@@ -326,6 +327,10 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   `PublishError::NotShareable { path, found, owner }`, where `path` is a
   shortest path from the published value (`value[1]{7}[1]`; `{k}.key` for a
   map key, `.value` through an occurrence, `.edge(n)` through a native).
+  When that object is an ordinary object, the path continues through its
+  property values (`.property(name)`, first object-valued task-owned
+  property in creation order, no object twice) to the innermost mutable
+  object of that chain: `[{inner: {}}]` fails at `value[0].property(inner)`.
 - **Cache.** Each heap slot has a sticky known-shareable bit. A persistent
   object gets it at allocation when all its parts already have it
   (`Heap::alloc_persistent`: O(parts) for an update, never a walk), and
@@ -609,8 +614,9 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   path can be passed instead); `cargo run --example resumable_counter`
   compiles `examples/resumable_counter.js` with `compile_function`. Both are
   JavaScript source executed by this VM; no C engine is involved.
-- **Deferred.** String values and property access (so no `f.call`, method
-  calls or object literals); `this`, `arguments`, `new`, default/rest
+- **Deferred.** Method calls and function properties (so no `f.call`;
+  string values run since clj-quickjs-65, object literals and named
+  properties since clj-quickjs-114); `this`, `arguments`, `new`, default/rest
   parameters (var-scoped redeclaration by function declarations runs since
   clj-quickjs-94); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
@@ -1378,6 +1384,123 @@ Design: `design.md` §§4, 11.
   unit tests in `src/value/string.rs`, `src/value.rs`,
   `src/collections/map.rs`, `src/atom.rs` and `src/value/share.rs`.
 
+## Ordinary objects (clj-quickjs-114)
+
+Contract: `src/object.rs` (`OrdinaryObject`, `PropertyKey`,
+`PropertyKeys`), `src/vm/property.rs` (`GetField`, `PutField`,
+`DefineField`, and which values have properties), `src/value/share.rs`
+(publication). Design: `design.md` §§4, 11, 14.
+
+**Decision.** An ordinary JavaScript object is `HeapObject::Plain` (the
+existing kind, given storage: kind registry and `ObjectCounts::plain`
+unchanged) holding an `OrdinaryObject`:
+
+- its **owner** (`Option<TaskId>`: the task whose `NewObject` made it, or
+  `None` for an embedder's `Scope::new_object`);
+- **own properties in creation order**: a `Vec` of (key, property) entries,
+  plus a key → position hash index once there are more than 8; a
+  redefinition keeps the first position; each property is a data property
+  (value plus `writable`/`enumerable`/`configurable`);
+- a **`[[Prototype]]`** slot (`Option<ObjectId>`, null for now) and an
+  **`[[Extensible]]`** flag.
+
+It is `Shareability::TaskOwned` mutable state, changed in place under the
+heap's object-table lock by its owning task's run only, exactly like a
+binding cell or a transient builder: another task's `GetField`/`PutField`
+fails with `VmErrorKind::ForeignObject` (not catchable, like
+`ForeignBinding`); an embedder-made object has no owner task, so every task
+may read it and none may change it. Ownership follows the task, not a
+thread, so an object migrates with its task between workers. No per-object
+lock exists: the owner is the only reader and writer, and each access takes
+the one short object-table lock every heap read takes.
+
+**Property keys.** A `PropertyKey` is a private `u32` issued by the
+runtime-wide `PropertyKeys` table owned by the heap (one per runtime). Names
+are interned on first definition (`PutField`, `DefineField`); `GetField`
+only looks up, so reading a never-defined name grows nothing. Keys compare
+and hash by their private id (derived Rust equality), never by a user hook;
+the table's `HashMap<JsString, PropertyKey>` uses the standard randomized
+hasher. Its `RwLock` is a leaf lock, never held with another heap lock, and
+consulted before the object lock is taken. A symbol key (clj-quickjs-127)
+will be a fresh id without a name entry. They are QuickJS's `JSAtom`s but
+are not called atoms (`crate::atom` is the concurrent reference).
+
+**Tracing and publication.** `OrdinaryObject`'s `Trace` reports every
+property value and the prototype; the root inventory lists the holder
+(`object_property_retains` / `object_property_reclaims`). Publication
+rejects any value reaching an ordinary object, and describes the path on
+into its property values (`.property(name)`, "Publication rules" above).
+A closure that captured a `const` bound to an object captures the object by
+value and is rejected at `.capture(i)`.
+
+**Which values have properties** (`src/vm/property.rs` module table): an
+ordinary object reads its own property, then its prototype chain, then
+gives `undefined`; a write updates or adds an own data property. The
+runtime's other heap values (persistent vectors, maps, occurrences,
+builders, atoms, binding cells, non-error natives) have no JavaScript
+properties: a read gives `undefined`, a write is a catchable `TypeError`,
+as for a non-extensible object without properties in strict mode. Function
+objects and caught error objects do have JavaScript properties (`length`,
+`name`, `message`, ...), so until clj-quickjs-101/-125/-230 every access
+to them fails with `UnsupportedOperand` instead of a wrong `undefined`;
+so do numbers, booleans and strings (clj-quickjs-73). `undefined` and
+`null` bases throw catchable `TypeError`s (`cannot read property 'x' of
+undefined`, `cannot set property 'x' of null`) at the member expression;
+for a write the right-hand side is evaluated first (PutValue).
+
+**Alternatives considered.**
+
+- *Persistent (immutable, shareable) objects*, updated by path copying like
+  persistent maps: `o.x = v` would have to replace `o` in every binding
+  and property that refers to it, which JavaScript identity semantics
+  (`a = b; a.x = 1; b.x`) forbid. Rejected; persistent maps remain the
+  shareable record type, and an object's contents can be copied into one
+  explicitly.
+- *Objects shared between tasks with a per-object lock* (or
+  `Arc<Mutex<_>>` per object): the design (§4) excludes general shared
+  mutable object graphs, the group constraints forbid universal
+  `Arc<Mutex<_>>` objects, and every read would pay a lock. Rejected; the
+  explicit concurrent reference is the atom.
+- *A new heap kind beside an identity-only `Plain`*: two kinds for one
+  JavaScript concept, with `NewObject` and the embedder producing different
+  ones. Rejected; `Plain` gained storage.
+- *String keys compared by content* (no intern table): no shared table and
+  no table lock, but every lookup compares code units, and symbol keys,
+  which have identity and no name, would need a second key form. Rejected
+  for the private-id key space that both kinds share.
+- *Shape (hidden-class) transitions with inline caches*, as QuickJS's
+  `JSShape`: faster repeated access, but shapes are a runtime-wide shared
+  structure that tasks on different workers would contend on, and nothing
+  here needs them yet. Deferred: the entry vector can later be split into a
+  shape plus a value array without changing the instruction contract.
+
+**Consequences.**
+
+- Property access costs one object-table lock per object visited plus a
+  read lock on the key table per access (the name is an executable
+  constant, but executable code is runtime-independent, so its keys are
+  looked up at run time). A per-task or per-code key cache is a later
+  optimization.
+- Interned names are never removed: the table grows with the number of
+  distinct names ever defined in the runtime. That is bounded by the
+  program text while names come only from code (this slice); computed keys
+  (clj-quickjs-115) make it data-dependent, so key reclamation by the
+  collector must come with them.
+- The storage leaves room for the later pellets: the entry's value becomes
+  a data/accessor enum for getters and setters (clj-quickjs-119/-120);
+  `prototype` gets set by `Object.prototype` and `Object.create`
+  (clj-quickjs-117/-121), at which point a write of an absent property must
+  consult the chain (today it fails explicitly, `SetOutcome::Inherited`);
+  `extensible` is cleared by `Object.preventExtensions`/`freeze`
+  (clj-quickjs-122); creation order is kept for enumeration, where integer
+  keys must sort first (clj-quickjs-123); `delete` removes an entry and
+  rebuilds the index (clj-quickjs-124); function objects, which are
+  persistent today, need a separate task-owned property store for their
+  own properties (clj-quickjs-125).
+- A literal's `[[Prototype]]` is null until `Object.prototype` exists
+  (clj-quickjs-117), so inherited methods such as `o.toString` read
+  `undefined` today.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -1715,8 +1838,24 @@ and Charlie Gordon) and is listed here with its source path and revision:
   for `poisoned_number` (no objects or ToPrimitive yet, so the operator
   fails with `UnsupportedOperand`), `null` is called through a binding,
   and the caller-frame case calls a script function instead of `Error`;
-  the member-access cases wait for objects (clj-quickjs-114). The test
+  the `null . abcd` member-access case runs since clj-quickjs-114 (its
+  getter and setter cases wait for accessors). The test
   carries the full notice. `research/quickjs/quickjs.c` `emit_source_loc`
   in `js_parse_postfix_expr`, `js_parse_unary` and `js_parse_assign_expr2`,
   `build_backtrace` and `get_line_col` were consulted only. No code was
   copied.
+- `tests/js_source.rs` `object_literals_and_named_properties` and
+  `src/frontend/tests.rs` `object_literals` (clj-quickjs-114): the
+  `{x: 1, if: 2, async: 3}` row of `test_op2` (line 195), the nested
+  `{a: {b: 2}}` shape of `test_optional_chaining` (line 610), and the
+  contextual-keyword keys and `{x, get}` shorthands of `test_object_literal`
+  (line 378) in `research/quickjs/tests/test_language.js`, revision
+  7d1c13c5d8f8. Modified: each `assert` is a Rust assertion on the
+  expression's value or parse tree; the getter/setter, method, computed-key
+  and `__proto__` parts wait for their pellets. The notice is on the `js_source` test and on
+  `number_literal_member_access` in the frontend tests.
+  `research/quickjs/quickjs.c` `js_parse_object_literal`,
+  `js_parse_property_name`, `JS_GetPropertyInternal`,
+  `JS_SetPropertyInternal`, `add_property` and the `OP_object`,
+  `OP_get_field`, `OP_put_field` and `OP_define_field` cases were consulted
+  only, for semantics. No code was copied.

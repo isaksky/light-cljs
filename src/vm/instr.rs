@@ -362,6 +362,9 @@ pub enum Opcode {
     CompareLe = 0x4C,
     CompareGe = 0x4D,
     Typeof = 0x4E,
+    GetField = 0x4F,
+    PutField = 0x50,
+    DefineField = 0x51,
 }
 
 /// Operand encoding of an opcode.
@@ -386,6 +389,9 @@ pub(crate) enum OperandKind {
     ArgCount,
     /// u16 index into the running closure's captured values.
     Capture,
+    /// u16 index into the constant pool naming a string constant: a
+    /// property name.
+    Name,
 }
 
 impl OperandKind {
@@ -399,7 +405,8 @@ impl OperandKind {
             | OperandKind::ThrowKind
             | OperandKind::Function
             | OperandKind::ArgCount
-            | OperandKind::Capture => 2,
+            | OperandKind::Capture
+            | OperandKind::Name => 2,
             OperandKind::Target => 4,
         }
     }
@@ -488,6 +495,9 @@ impl Opcode {
             0x4C => CompareLe,
             0x4D => CompareGe,
             0x4E => Typeof,
+            0x4F => GetField,
+            0x50 => PutField,
+            0x51 => DefineField,
             _ => return None,
         })
     }
@@ -574,6 +584,9 @@ impl Opcode {
             CompareLe => "compare_le",
             CompareGe => "compare_ge",
             Typeof => "typeof",
+            GetField => "get_field",
+            PutField => "put_field",
+            DefineField => "define_field",
         }
     }
 
@@ -589,6 +602,7 @@ impl Opcode {
             Function => OperandKind::Function,
             Call => OperandKind::ArgCount,
             GetCapture => OperandKind::Capture,
+            GetField | PutField | DefineField => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
@@ -719,6 +733,12 @@ pub(crate) enum Instr {
     CompareLe,
     CompareGe,
     Typeof,
+    /// Constant index of the property name (a string).
+    GetField(u16),
+    /// Constant index of the property name (a string).
+    PutField(u16),
+    /// Constant index of the property name (a string).
+    DefineField(u16),
 }
 
 impl Instr {
@@ -802,6 +822,9 @@ impl Instr {
             Instr::CompareLe => Opcode::CompareLe,
             Instr::CompareGe => Opcode::CompareGe,
             Instr::Typeof => Opcode::Typeof,
+            Instr::GetField(_) => Opcode::GetField,
+            Instr::PutField(_) => Opcode::PutField,
+            Instr::DefineField(_) => Opcode::DefineField,
         }
     }
 
@@ -823,7 +846,8 @@ impl Instr {
             AtomCas => (3, 2),
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
-            | Typeof => (1, 1),
+            | Typeof | GetField(_) => (1, 1),
+            PutField(_) | DefineField(_) => (2, 1),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
             NewVector(n) => (usize::from(n), 1),
@@ -848,6 +872,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 78);
+        assert_eq!(assigned, 81);
     }
 }

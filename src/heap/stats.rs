@@ -7,7 +7,8 @@
 //! vectors (by capacity) and one boxed [`HeapObject`] per live object. They
 //! exclude storage the table points to but does not own inline: persistent
 //! collection trie bodies (immutable `Arc` nodes shared between versions),
-//! atom cells, native payload boxes, function captures, and everything
+//! atom cells, native payload boxes, function captures, ordinary objects'
+//! property vectors and key indexes, the property-key table, and everything
 //! outside the heap (executable code, task VM state, dependency cells, the
 //! root table). The measurement harness (`examples/bench`) measures those
 //! with a counting allocator instead; see `docs/measurement.md`.
@@ -23,7 +24,7 @@ use super::{Heap, HeapObject, Slot, lock};
 /// the kind registry).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ObjectCounts {
-    /// Plain JavaScript objects.
+    /// Ordinary JavaScript objects (object literals, `Scope::new_object`).
     pub plain: usize,
     /// Objects with a Rust native payload.
     pub native: usize,
@@ -59,7 +60,7 @@ impl ObjectCounts {
 
     fn count(&mut self, object: &HeapObject) {
         let n = match object {
-            HeapObject::Plain => &mut self.plain,
+            HeapObject::Plain(_) => &mut self.plain,
             HeapObject::Native(_) => &mut self.native,
             HeapObject::Vector(_) => &mut self.vector,
             HeapObject::Map(_) => &mut self.map,
@@ -144,7 +145,7 @@ mod tests {
         assert_eq!(empty.slots, 0);
         assert_eq!(empty.object_bytes, 0);
 
-        heap.alloc(HeapObject::Plain).unwrap();
+        heap.alloc(HeapObject::host_object()).unwrap();
         heap.alloc_persistent(HeapObject::Vector(PVector::from_values(&[])), Some(&[]))
             .unwrap();
         let two = heap.usage();

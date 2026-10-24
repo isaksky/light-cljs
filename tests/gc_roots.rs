@@ -332,6 +332,19 @@ fn transient_builder(rt: &Runtime) -> Held {
     Held::new(vec![weak], move || drop(task))
 }
 
+/// An ordinary object's property values (clj-quickjs-114): the argument
+/// is reachable only through a property of an object held by another
+/// object's property, and the outer object is a local of a suspended frame.
+/// Once the task is gone, all three are garbage.
+fn object_property(rt: &Runtime) -> Held {
+    let (task, weak) = spawn_holding(
+        rt,
+        &format!("function f(o) {{ const outer = {{p: {{q: o}}}}; o = 0; {SPIN} return outer; }}"),
+    );
+    run_prologue(&task);
+    Held::new(vec![weak], move || drop(task))
+}
+
 /// A pending `return` completion of a running `finally` block (handler
 /// stack). The argument is overwritten, so only the completion holds it.
 fn finally_return(rt: &Runtime) -> (Task, WeakHandle) {
@@ -655,6 +668,30 @@ fn transient_builder_reclaims() {
 }
 
 #[test]
+fn object_property_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &object_property(&rt));
+}
+
+#[test]
+fn object_property_reclaims() {
+    let rt = Runtime::new();
+    let held = object_property(&rt);
+    assert_retained(&rt, &held);
+    // The argument, the inner object and the outer object go together: no
+    // ordinary object is left once the task is gone.
+    let Held {
+        weak,
+        release,
+        keep,
+    } = held;
+    assert_eq!(rt.heap_usage().objects.plain, 3);
+    assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
+    rt.request_collection().unwrap();
+    assert_eq!(rt.heap_usage().objects.plain, 0);
+}
+
+#[test]
 fn handler_completion_retains() {
     for fixture in [finally_return, finally_throw, finally_return_across_wait] {
         let rt = Runtime::new();
@@ -876,6 +913,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         closure_environment(&rt),
         binding_cell(&rt),
         transient_builder(&rt),
+        object_property(&rt),
         handler_completion(&rt, finally_return),
         handler_completion(&rt, finally_throw),
         handler_completion(&rt, finally_return_across_wait),

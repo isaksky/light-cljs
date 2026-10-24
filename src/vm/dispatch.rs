@@ -77,6 +77,7 @@ use crate::error::{VmError, VmErrorKind};
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
+use crate::object::OrdinaryObject;
 use crate::value::string::{number_to_string, string_to_number};
 use crate::value::{JsString, Value};
 use crate::vm::exception::{
@@ -88,6 +89,7 @@ use crate::vm::function::{BindingCell, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
 use crate::vm::native;
+use crate::vm::property;
 
 /// How a run of the interpreter loop ended.
 #[derive(Debug)]
@@ -142,6 +144,15 @@ pub(crate) enum Fault {
     Thrown(Value),
     /// An `EndFinally` re-raises the exception its finally block saved.
     Rethrow(Exception),
+    /// A JavaScript TypeError with this message (property access,
+    /// `crate::vm::property`).
+    TypeError(String),
+    /// A property instruction on an ordinary object the running task does
+    /// not own.
+    ForeignObject {
+        owner: Option<TaskId>,
+        caller: TaskId,
+    },
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -303,7 +314,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
         Value::Object(id) => heap
             .read(*id, |object| match object {
                 HeapObject::Function(_) => "function",
-                HeapObject::Plain
+                HeapObject::Plain(_)
                 | HeapObject::Native(_)
                 | HeapObject::Vector(_)
                 | HeapObject::Map(_)
@@ -363,6 +374,15 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
             format!("assignment to constant variable '{n}'")
         }
         (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
+    }
+}
+
+/// The property name a `GetField`, `PutField` or `DefineField` operand
+/// names: a string constant (checked at load time).
+fn name_constant(code: &Code, i: u16) -> Result<JsString, Fault> {
+    match code.constants.get(usize::from(i)) {
+        Some(Value::String(name)) => Ok(name.clone()),
+        _ => Err(Fault::Internal("property name is not a string constant")),
     }
 }
 
@@ -483,6 +503,19 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
                 "binding is owned by {owner}, not {caller}: a closure over mutable bindings is task-owned"
             ),
         ),
+        Fault::TypeError(m) => (VmErrorKind::TypeError, m),
+        Fault::ForeignObject { owner, caller } => {
+            let owner_name = match owner {
+                Some(task) => task.to_string(),
+                None => "the embedder".to_string(),
+            };
+            (
+                VmErrorKind::ForeignObject { owner, caller },
+                format!(
+                    "object is owned by {owner_name}, not {caller}: an ordinary object is task-owned"
+                ),
+            )
+        }
         Fault::Throw(kind) => {
             let error_kind = match kind {
                 ThrowKind::Unresolvable | ThrowKind::Uninitialized => VmErrorKind::ReferenceError,
@@ -514,6 +547,7 @@ fn catchable(kind: VmErrorKind) -> bool {
         | VmErrorKind::Collection(_)
         | VmErrorKind::Builder(_)
         | VmErrorKind::ForeignBinding { .. }
+        | VmErrorKind::ForeignObject { .. }
         | VmErrorKind::Atom(_)
         | VmErrorKind::Thrown => false,
     }
@@ -717,6 +751,27 @@ fn step(
             let v = state.pop()?;
             state.push(Value::String(JsString::from(type_of(heap, &v)?)));
         }
+        Instr::GetField(i) => {
+            let name = name_constant(code, i)?;
+            let base = state.pop()?;
+            let v = property::get_field(heap, state.diag.task, &base, &name)?;
+            state.push(v);
+        }
+        Instr::PutField(i) | Instr::DefineField(i) => {
+            // The value stays on the stack as the result (`o.x = v` is `v`;
+            // a literal keeps its object for the next property).
+            let name = name_constant(code, i)?;
+            let v = state.pop()?;
+            let object = state.pop()?;
+            let task = state.diag.task;
+            if let Instr::PutField(_) = instr {
+                property::put_field(heap, task, &object, &name, v.clone())?;
+                state.push(v);
+            } else {
+                property::define_field(heap, task, &object, &name, v)?;
+                state.push(object);
+            }
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -787,9 +842,11 @@ fn step(
         }
         Instr::NewObject => {
             // The new object is pushed in the same instruction; no collection
-            // can run in between because this run holds a mutator guard.
+            // can run in between because this run holds a mutator guard. It
+            // is owned by the running task (`crate::object`).
+            let object = OrdinaryObject::new(Some(state.diag.task));
             let id = heap
-                .alloc(HeapObject::Plain)
+                .alloc(HeapObject::Plain(object))
                 .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
             state.push(Value::Object(id));
         }
@@ -1011,6 +1068,11 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CompareLe
         | Instr::CompareGe
         | Instr::Typeof
+        // Property storage grows outside the object table: no heap object
+        // is allocated, so no poll (`crate::vm::property`).
+        | Instr::GetField(_)
+        | Instr::PutField(_)
+        | Instr::DefineField(_)
         | Instr::ThrowError(_)
         | Instr::GetCapture(_)
         | Instr::CellInit

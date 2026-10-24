@@ -896,7 +896,7 @@ mod tests {
     }
 
     fn plain(heap: &Heap) -> ObjectId {
-        heap.alloc(HeapObject::Plain).unwrap()
+        heap.alloc(HeapObject::host_object()).unwrap()
     }
 
     fn set_edges(heap: &Heap, id: ObjectId, edges: Vec<Value>) {
@@ -905,7 +905,7 @@ mod tests {
                 let any: &mut dyn Any = &mut **p;
                 any.downcast_mut::<Edges>().unwrap().edges = edges;
             }
-            HeapObject::Plain
+            HeapObject::Plain(_)
             | HeapObject::Vector(_)
             | HeapObject::Map(_)
             | HeapObject::Occurrence(_)

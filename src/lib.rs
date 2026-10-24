@@ -83,6 +83,7 @@ pub mod frontend;
 pub mod heap;
 pub mod host;
 mod ids;
+mod object;
 mod runtime;
 pub mod task;
 mod value;

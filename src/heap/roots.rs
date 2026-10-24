@@ -454,7 +454,7 @@ impl<'s> Scope<'s> {
     pub fn new_object(&self) -> Local<'s> {
         let id = self
             .heap
-            .alloc(HeapObject::Plain)
+            .alloc(HeapObject::host_object())
             .expect("heap object table exhausted");
         // No collection can run between the allocation and the push: this
         // thread is a registered mutator between safepoints (the scope is
@@ -596,8 +596,8 @@ mod tests {
     #[test]
     fn root_table_traces_live_objects_only() {
         let heap = Arc::new(Heap::default());
-        let id = heap.alloc(HeapObject::Plain).unwrap();
-        let dead = heap.alloc(HeapObject::Plain).unwrap();
+        let id = heap.alloc(HeapObject::host_object()).unwrap();
+        let dead = heap.alloc(HeapObject::host_object()).unwrap();
         let _keep = Rooted::new(&heap, Value::Object(id));
         drop(Rooted::new(&heap, Value::Object(dead)));
         let mut seen = Vec::new();

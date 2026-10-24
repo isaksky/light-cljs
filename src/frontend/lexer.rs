@@ -259,9 +259,10 @@ fn is_ident_part(c: char) -> bool {
 pub struct Lexer<'a> {
     src: &'a str,
     pos: usize,
-    /// The previous token was `.`, so this one is an IdentifierName (a
-    /// property name), where a reserved word written with escapes is an
-    /// ordinary name. It is the subset's only IdentifierName position.
+    /// The next token is in an IdentifierName position (a property name:
+    /// after `.`, or where the parser asked for one with
+    /// [`Lexer::expect_property_name`]), where a reserved word written with
+    /// escapes is an ordinary name.
     after_dot: bool,
 }
 
@@ -281,6 +282,14 @@ impl<'a> Lexer<'a> {
             pos,
             after_dot: false,
         }
+    }
+
+    /// The next token is an object literal's property name (an
+    /// IdentifierName position, clj-quickjs-114): a reserved word written
+    /// with escapes lexes as an identifier there. One-shot: it applies to
+    /// the next token only.
+    pub(crate) fn expect_property_name(&mut self) {
+        self.after_dot = true;
     }
 
     pub fn source(&self) -> &'a str {
@@ -410,7 +419,7 @@ impl<'a> Lexer<'a> {
     /// IdentifierName: start character, then part characters, each possibly
     /// a `\u` escape. Without escapes, a reserved word is a keyword token.
     /// With escapes it is never the keyword (ECMAScript §12.7.2): after `.`
-    /// it is an ordinary property name, and anywhere else, where the subset
+    /// or as an object literal key it is an ordinary property name, and anywhere else, where the subset
     /// always reserves it, it is rejected here.
     fn lex_identifier(&mut self) -> Result<TokenKind, SyntaxError> {
         let start = self.pos;
