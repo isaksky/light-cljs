@@ -1737,6 +1737,9 @@ fn array_from_mapper_failure_and_cancellation() {
 #[test]
 fn array_sort_comparator_waits_on_dependency() {
     for src in [
+        // Number is itself a resumable native comparator; its object
+        // conversion waits while a second native (sort) remains pending.
+        "let calls = 0; function obj(i) { return {i: i, valueOf() { __rt.effect(1, ++calls); if (calls === 2) __rt.need(5,3); return 0; }}; } let a = [obj(4),obj(1),obj(3),obj(2)]; a.sort(Number); a[0].i === 4 && a[1].i === 1 && a[2].i === 3 && a[3].i === 2",
         "let calls = 0, a = [{k:4}, {k:1}, {k:3}, {k:2}, {k:1}]; a.sort(function(a,b) { __rt.effect(1, ++calls); if (calls === 2) __rt.need(5,3); return a.k-b.k; }); a[0].k === 1 && a[1].k === 1 && a[2].k === 2 && a[3].k === 3 && a[4].k === 4",
         // Only the snapshot retains the objects after the first callback.
         "let calls = 0, a = [{k:4}, {k:1}, {k:3}, {k:2}]; a.sort(function(x,y) { __rt.effect(1, ++calls); if (calls === 1) { delete a[0]; delete a[1]; delete a[2]; delete a[3]; } if (calls === 2) __rt.need(5,3); return x.k-y.k; }); a[0].k === 1 && a[1].k === 2 && a[2].k === 3 && a[3].k === 4",

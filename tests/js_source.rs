@@ -19528,3 +19528,18 @@ fn array_sort_merge_boundaries_and_errors() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Native leaf callbacks and
+/// built-ins that push their own conversion continuation deliver results
+/// through the same comparator boundary as JavaScript functions.
+#[test]
+fn array_sort_native_comparators() {
+    for src in [
+        "let a = [3,1,2]; a.sort(Number.isNaN) === a && a.join() === '3,1,2'",
+        "[3,1,2].sort(Number.isNaN.bind(null)).join() === '3,1,2'",
+        "[1,2].sort(Number).join() === '2,1'",
+        "let a = [{i:3,valueOf() { return 0; }}, {i:1,valueOf() { return 0; }}, {i:2,valueOf() { return 0; }}]; a.sort(Number); a[0].i === 3 && a[1].i === 1 && a[2].i === 2",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
