@@ -218,6 +218,7 @@ public API cannot reach.
 | function own-property record (clj-quickjs-125) and its values, the lazy `prototype` object among them | `PersistentHandle` (`Function` → `PlainObject` → `PlainObject` → argument) | `function_properties_retain` | `function_properties_reclaim` |
 | bound function target, bound receiver, bound arguments and immutable metadata (clj-quickjs-103) | `PersistentHandle` (`BoundFunction` → target closure / receiver / arguments / metadata) | `bound_function_retains` | `bound_function_reclaims` |
 | concise method home object (clj-quickjs-126), including literal → method cycles | `PersistentHandle` (`Function` → `PlainObject` → argument) | `method_home_object_retains` | `method_home_object_reclaims` |
+| engine Error's original internal cause, after replacing or deleting its own cause property (clj-quickjs-230) | `PersistentHandle` (`PlainObject` → cause) | `engine_error_cause_retains_and_reclaims` *(lib)* | `engine_error_cause_retains_and_reclaims` *(lib)* |
 
 - **Cross-check.** `src/heap/inventory.rs` maps every `RootCategory` and
   every `ObjectKind` to its holders with exhaustive matches, so a new
@@ -1238,8 +1239,8 @@ unwinding") and `src/task.rs` ("Cancellation and finally blocks"). Design:
 - **Dependency failures are language errors.** `RunGuard::vm_need` turns a
   `Failed(e)`/`Cancelled` cell into `VmNeed::Raise`; the run guard calls
   `dispatch::raise_failure`, the same path a catchable failing instruction
-  takes: if some handler could see it, a fresh `ErrorObject` (error plus
-  `cause` = `e`, its only heap edge, so it is shareable exactly when `e` is)
+  takes: if some handler could see it, a fresh task-owned Error instance
+  with an immutable internal diagnostic/cause slot (clj-quickjs-230)
   is raised at the need; otherwise the run fails with the error (key, world,
   source position, call chain). `Rooted::error`/`error_cause` expose it to
   the embedder.

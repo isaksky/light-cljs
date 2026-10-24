@@ -83,11 +83,13 @@ enum Holder {
     TaskGlobalObject,
     /// Per-realm template-site arrays, independent of tasks and closures.
     TemplateCache,
+    /// The original cause in an engine Error's internal diagnostic slot.
+    EngineErrorCause,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 27] = [
+const HOLDERS: [Holder; 28] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -115,6 +117,7 @@ const HOLDERS: [Holder; 27] = [
     Holder::MethodHomeObject,
     Holder::TaskGlobalObject,
     Holder::TemplateCache,
+    Holder::EngineErrorCause,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -161,6 +164,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             FunctionProperties,
             BoundFunction,
             MethodHomeObject,
+            EngineErrorCause,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -187,7 +191,12 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
 fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     use Holder::*;
     match kind {
-        ObjectKind::PlainObject => &[PersistentHandle, ObjectProperty, TaskGlobalObject],
+        ObjectKind::PlainObject => &[
+            PersistentHandle,
+            ObjectProperty,
+            TaskGlobalObject,
+            EngineErrorCause,
+        ],
         ObjectKind::Native => &[NativePayloadEdges],
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
             &[PersistentCollectionEdges, DependencyOutcome]
@@ -298,6 +307,10 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::MethodHomeObject => {
             public("method_home_object_retains", "method_home_object_reclaims")
         }
+        Holder::EngineErrorCause => Coverage {
+            retains: (Inventory, "engine_error_cause_retains_and_reclaims"),
+            reclaims: (Inventory, "engine_error_cause_retains_and_reclaims"),
+        },
     }
 }
 
@@ -504,6 +517,81 @@ fn native_payload_edges_reclaim() {
     drop(root);
     assert_eq!(heap.request_collection().unwrap().reclaimed, ids.len());
     assert_stale(&heap, &ids);
+}
+
+#[test]
+fn engine_error_cause_retains_and_reclaims() {
+    use crate::error::{Diagnostic, VmError, VmErrorKind};
+    use crate::ids::{TaskId, WorldId};
+    use crate::object::{DeleteOutcome, OrdinaryObject, PropertyFlags};
+    use crate::value::JsString;
+    use crate::vm::exception::ErrorObject;
+    use crate::{DependencyId, DependencyKey, ResultKind};
+
+    // Crate-internal holder test: public dependency cells retain their
+    // outcomes for the lifetime of the runtime, masking this slot's edge.
+    for delete in [false, true] {
+        let heap = Arc::new(Heap::default());
+        let task = TaskId::from_raw(1);
+        let cause = crate::collections::new_vector(&heap, &[Value::Number(13.0)]).unwrap();
+        let Value::Object(cause_id) = cause else {
+            unreachable!()
+        };
+        let key = DependencyKey::new(WorldId::INITIAL, DependencyId::new(230), ResultKind::new(1));
+        let original = VmError {
+            kind: VmErrorKind::DependencyFailed(key),
+            message: "dependency failed".into(),
+            diagnostic: Diagnostic {
+                executable: "engine-cause-gc".into(),
+                task,
+                world: WorldId::INITIAL,
+                instruction: 0,
+                byte_offset: None,
+                opcode: None,
+                source: None,
+                call_chain: vec![],
+            },
+        };
+        let prototype = crate::realm::intrinsics(&heap).unwrap().error_prototype;
+        let mut object =
+            OrdinaryObject::with_prototype(task, prototype).with_engine_error(ErrorObject {
+                error: original.clone(),
+                cause: cause.clone(),
+            });
+        let cause_key = heap.keys().intern(&JsString::from("cause")).unwrap();
+        object.define_with(cause_key, cause, PropertyFlags::METHOD);
+        let id = heap.alloc(HeapObject::Plain(object)).unwrap();
+        let root = Rooted::new(&heap, Value::Object(id));
+        let weak_cause = root.error_cause().unwrap().downgrade();
+        heap.with_object_mut(id, |object| {
+            let HeapObject::Plain(object) = object else {
+                unreachable!()
+            };
+            if delete {
+                assert_eq!(object.delete(cause_key), DeleteOutcome::Deleted);
+            } else {
+                object.define_with(cause_key, Value::Null, PropertyFlags::METHOD);
+            }
+        })
+        .unwrap();
+        for _ in 0..2 {
+            heap.request_collection().unwrap();
+            assert!(
+                heap.is_live(cause_id),
+                "the internal slot is the only cause edge"
+            );
+            assert!(
+                root.error_cause()
+                    .unwrap()
+                    .same_object(&weak_cause.upgrade().unwrap())
+            );
+            assert_eq!(root.error(), Some(original.clone()));
+        }
+        drop(root);
+        heap.request_collection().unwrap();
+        assert!(!weak_cause.is_live());
+        assert_stale(&heap, &[id, cause_id]);
+    }
 }
 
 /// A completed cell roots its outcome for as long as the cell exists (the
