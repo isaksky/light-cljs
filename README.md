@@ -3722,8 +3722,16 @@ Class constructors, prototypes and detached methods retain task-owned state and
 cannot be published. Verify with `cargo test --test js_source base_classes` and
 `cargo test --lib frontend::tests::class_syntax`.
 
-Deferred: inheritance and `super()` (-137), super properties (-138), fields and
-static initialization blocks (-139); these forms fail explicitly.
+Derived classes and `super()` execute (-137), including static/prototype
+inheritance, receiver initialization checks, default argument forwarding and
+suspension inside parent constructors. Internal new-target forwarding preserves
+the most derived prototype. Parent classes/functions and `Object` are supported;
+construction of other built-in subclasses is explicitly rejected. Verify with
+`cargo test --test js_source derived_classes` and
+`cargo test --test need derived_constructor_waits_inside_super`.
+
+Deferred: source `new.target`, super properties (-138), fields and static
+initialization blocks (-139), and super calls from runtime eval source.
 
 ### Intl.ListFormat (clj-quickjs-220)
 

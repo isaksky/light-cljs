@@ -97,6 +97,7 @@ pub(super) struct Parser<'a> {
     /// Inherited by arrows and direct eval, established by ordinary functions
     /// and methods before parsing their parameters.
     new_target_allowed: bool,
+    super_call: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -162,6 +163,7 @@ impl<'a> Parser<'a> {
             module_goal: false,
             in_function: false,
             new_target_allowed: false,
+            super_call: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -535,9 +537,20 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        if self.is_keyword(Keyword::Extends) {
-            return Err(self.unsupported(self.tok.span, "class inheritance is"));
-        }
+        let heritage_span = self.is_keyword(Keyword::Extends).then_some(self.tok.span);
+        let heritage = if heritage_span.is_some() {
+            self.advance()?;
+            let expression = self.parse_call()?;
+            if matches!(
+                expression.kind,
+                ExprKind::Update { .. } | ExprKind::UpdateProperty { .. }
+            ) {
+                return Err(self.unexpected("a class heritage expression"));
+            }
+            Some(Box::new(expression))
+        } else {
+            None
+        };
         self.lexer.expect_property_name();
         self.expect_punct(Punct::LBrace)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
@@ -560,7 +573,7 @@ impl<'a> Parser<'a> {
                     return Err(self.unsupported(self.tok.span, "static initialization blocks are"));
                 }
             }
-            let property = self.parse_class_element()?;
+            let property = self.parse_class_element(heritage.is_some() && !is_static)?;
             let is_constructor = !is_static && property.name.is_named("constructor");
             if is_static && property.name.is_named("prototype") {
                 return Err(self.error(
@@ -584,7 +597,11 @@ impl<'a> Parser<'a> {
                         "invalid or duplicate class constructor",
                     ));
                 }
-                f.kind = FunctionKind::ClassConstructor;
+                f.kind = if heritage.is_some() {
+                    FunctionKind::DerivedClassConstructor
+                } else {
+                    FunctionKind::ClassConstructor
+                };
                 constructor = Some(*f);
             } else {
                 elements.push(ClassElement {
@@ -602,7 +619,11 @@ impl<'a> Parser<'a> {
         let span = self.span_from(start);
         let constructor = constructor.unwrap_or_else(|| {
             Function::new(
-                FunctionKind::ClassConstructor,
+                if heritage.is_some() {
+                    FunctionKind::DefaultDerivedConstructor
+                } else {
+                    FunctionKind::ClassConstructor
+                },
                 None,
                 vec![],
                 vec![],
@@ -614,6 +635,8 @@ impl<'a> Parser<'a> {
         self.expr(
             ExprKind::Class(Box::new(Class {
                 name,
+                heritage,
+                heritage_span,
                 constructor,
                 elements,
                 span,
@@ -623,7 +646,7 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn parse_class_element(&mut self) -> PResult<PropertyDef> {
+    fn parse_class_element(&mut self, derived: bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
         let (generator, asynchronous) = self.parse_method_prefix()?;
         let accessor = match &self.tok.kind {
@@ -659,14 +682,24 @@ impl<'a> Parser<'a> {
         if !self.is_punct(Punct::LParen) {
             return Err(self.unsupported(name_span, "class fields are"));
         }
-        self.parse_method_property(
+        let outer_super = std::mem::replace(
+            &mut self.super_call,
+            derived
+                && name.is_named("constructor")
+                && accessor.is_none()
+                && !generator
+                && !asynchronous,
+        );
+        let result = self.parse_method_property(
             name,
             name_span,
             span,
             accessor,
             (generator, asynchronous),
             true,
-        )
+        );
+        self.super_call = outer_super;
+        result
     }
 
     #[inline(never)]
@@ -1626,6 +1659,7 @@ impl<'a> Parser<'a> {
     /// `function` Name? `(` Params `)` `{` FunctionBody `}`.
     #[inline(never)]
     fn parse_function(&mut self, declaration: bool) -> PResult<Function> {
+        let outer_super = std::mem::replace(&mut self.super_call, false);
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
@@ -1658,6 +1692,7 @@ impl<'a> Parser<'a> {
         self.labels = outer_labels;
         self.depth = saved;
         self.suspension = outer_suspension;
+        self.super_call = outer_super;
         let mut function = Function::new(
             FunctionKind::Ordinary,
             name,
@@ -2701,7 +2736,12 @@ impl<'a> Parser<'a> {
         (generator, asynchronous): (bool, bool),
         class: bool,
     ) -> PResult<PropertyDef> {
+        let outer_super = self.super_call;
+        if !class {
+            self.super_call = false;
+        }
         let mut function = self.parse_object_method(span.start, generator, asynchronous, class)?;
+        self.super_call = outer_super;
         if let Some(kind) = accessor {
             let arity = usize::from(kind == FunctionKind::Setter);
             if function.params.len() != arity {
@@ -3256,6 +3296,13 @@ impl<'a> Parser<'a> {
             self.depth = saved;
             return self.expr(ExprKind::NewTarget, op_span.to(property.span));
         }
+        if self.is_keyword(Keyword::Super) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "super cannot be a new callee",
+            ));
+        }
         let mut callee = if self.is_keyword(Keyword::New) {
             self.parse_new()?
         } else {
@@ -3428,6 +3475,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> PResult<Expr> {
+        if self.is_keyword(Keyword::Super) {
+            return self.parse_super_call();
+        }
         if self.is_punct(Punct::Slash) || self.is_punct(Punct::SlashAssign) {
             self.tok = self.lexer.rescan_regexp(&self.tok)?;
         }
@@ -3459,6 +3509,30 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         Ok(Expr::new(kind, span))
+    }
+
+    #[inline(never)]
+    fn parse_super_call(&mut self) -> PResult<Expr> {
+        let span = self.advance()?.span;
+        if !self.is_punct(Punct::LParen) {
+            return Err(self.unsupported(span, "super property access is"));
+        }
+        if !self.super_call {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                span,
+                "super() requires a derived constructor",
+            ));
+        }
+        let saved = self.depth;
+        self.deeper(cost::CALL)?;
+        let op_span = self.tok.span;
+        let args = self.parse_arguments()?;
+        self.depth = saved;
+        self.expr(
+            ExprKind::SuperCall { args, op_span },
+            self.span_from(span.start),
+        )
     }
 
     /// An identifier in expression position, including the reserved

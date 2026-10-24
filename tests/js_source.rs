@@ -32,6 +32,119 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output. The first row adapts the
+/// inheritance rows of QuickJS test_language.js::test_class (notice below).
+#[test]
+fn derived_classes() {
+    for source in [
+        "class C { constructor() { this.x = 10; } f() { return 1; } static F() { return -1; } } class D extends C { constructor() { super(); this.z = 20; } g() { return 2; } static G() { return -2; } } let o = new D(); D.F() === -1 && D.G() === -2 && o.f() === 1 && o.g() === 2 && o.x === 10 && o.z === 20 && Object.getPrototypeOf(D) === C && Object.getPrototypeOf(D.prototype) === C.prototype && o instanceof D && o instanceof C",
+        "class A { constructor(a,b) { this.s = a+b; } } class B extends A {} class C extends B {} let c = new C(1,2); c.s === 3 && Object.getPrototypeOf(c) === C.prototype && B.length === 0",
+        "class N extends null {} Object.getPrototypeOf(N.prototype) === null && Object.getPrototypeOf(N) === Function.prototype",
+        "let n = 0; for (let p of [1, {}, () => 1]) { try { class X extends p {} } catch(e) { if (e instanceof TypeError) n++; } } n === 3",
+        "function C() {} C.prototype = 1; let ok = false; try { class D extends C {} } catch(e) { ok = e instanceof TypeError; } ok",
+        "class C {} class D extends C { constructor() { this.x = 1; super(); } } let ok = false; try { new D(); } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "let n = 0; class C { constructor() { n++; } } class D extends C { constructor() { super(); super(); } } let ok = false; try { new D(); } catch(e) { ok = e instanceof ReferenceError; } ok && n === 2",
+        "class C {} class D extends C { constructor() {} } let ok = false; try { new D(); } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "class C {} class D extends C { constructor() { return 1; } } let ok = false; try { new D(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "class N extends null { constructor() { return {x: 7}; } } new N().x === 7",
+        "class N extends null {} let ok = false; try { new N(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "class D extends Object {} let o = new D(7); Object.getPrototypeOf(o) === D.prototype && o instanceof Object",
+        "class C {} class D extends C {} let ok = false; try { D(); } catch(e) { ok = e instanceof TypeError; } ok",
+        "function C(x) { this.x = x; } class D extends C {} new D(7).x === 7",
+        "class C { constructor(x) { this.x = x; } } let parent = C.bind(null, 2); let n = 0; Object.defineProperty(parent, 'prototype', {get() { n++; return C.prototype; }}); class D extends parent {} let d = new D(); d.x === 2 && n === 1 && Object.getPrototypeOf(D) === parent && Object.getPrototypeOf(d) === D.prototype",
+        "let n = 0; class C { constructor() { if (++n === 1) throw 1; this.x = 7; } } class D extends C { constructor() { try { super(); } catch(e) {} super(); } } new D().x === 7 && n === 2",
+        "class C {} class D extends C { constructor() { this.f = () => this; } } let ok = false; try { new D(); } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "class C {} class D extends C { constructor() { super(); this.f = () => this; } } let d = new D(); d.f() === d",
+        "function C() {} C.prototype = null; class D extends C {} Object.getPrototypeOf(D.prototype) === null && new D() instanceof D",
+        "class C {} class D extends C { constructor() { try { return; } finally { super(); this.x = 7; } } } new D().x === 7",
+        "class C {} class D extends C { constructor() { try { super(); return 1; } finally { return {x: 7}; } } } new D().x === 7",
+        "let ok = false; try { let C = class C extends C {}; } catch(e) { ok = e instanceof ReferenceError; } ok",
+        "class C {} class D extends C { constructor(x = super()) { this.ok = x === this; } } new D().ok",
+        "class C {} class D extends C { constructor() { let f = () => this; super(); this.x = 7; this.same = f() === this; } } let d = new D(); d.x === 7 && d.same",
+        "class C {} class D extends C { constructor() { let f = () => this; let ok = false; try { f(); } catch(e) { ok = e instanceof ReferenceError; } super(); this.ok = ok; } } new D().ok",
+        "class C {} class D extends C { constructor() { let ok = false; try { eval('this'); } catch(e) { ok = e instanceof ReferenceError; } super(); this.ok = ok && eval('this') === this; } } new D().ok",
+        "class C { constructor(a,b) { this.s = a+b; } } class D extends C { constructor() { super(...[1,2]); } } new D().s === 3",
+        "class C {} class D extends C { constructor() { (() => super())(); } } new D() instanceof D",
+        "class C { constructor() { return {x: 7}; } } class D extends C { constructor() { super(); this.z = 8; } } let d = new D(); d.x === 7 && d.z === 8",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "super()",
+        "function f() { super(); }",
+        "class C { constructor() { super(); } }",
+        "class C extends Object { m() { super(); } }",
+        "class C extends Object { constructor() { function f() { super(); } } }",
+        "class C extends Object { constructor() { let o = { m() { super(); } }; } }",
+        "class C extends Object { constructor() { new super(); } }",
+    ] {
+        assert_eq!(
+            compile_script("super.js", source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn derived_classes_on_small_worker_stack() {
+    for source in [
+        "class C { constructor(v) { this.x = v; } static f() { return 2; } } class D extends C { constructor() { super(...[7]); this.z = 3; } } let d = new D(); return d.x + d.z + D.f() === 12;",
+        "class C { constructor(a,b) { this.s = a+b; } } class D extends C {} class E extends D {} return new E(1,2).s === 3;",
+        "class D extends Object {} return new D() instanceof D;",
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = compile_function(&format!("function check() {{ {source} }}")).unwrap();
+        let code = Executable::load(code.to_spec()).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let value = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let RunOutcome::Complete(value) = task.run().unwrap() else {
+                    panic!("complete")
+                };
+                value.view()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn derived_classes_error_positions() {
+    for (source, kind, line, column) in [
+        ("class C extends 1 {}", VmErrorKind::TypeError, 1, 9),
+        (
+            "function C() {} C.prototype = 1;\nclass D extends C {}",
+            VmErrorKind::TypeError,
+            2,
+            9,
+        ),
+        (
+            "class C {}\nclass D extends C { constructor() { super(); super(); } }\nnew D();",
+            VmErrorKind::ReferenceError,
+            2,
+            51,
+        ),
+        (
+            "class C {}\nclass D extends C { constructor() { this.x = 1; } }\nnew D();",
+            VmErrorKind::ReferenceError,
+            2,
+            37,
+        ),
+    ] {
+        let (actual, _, actual_line, actual_column) = failure_at(source);
+        assert_eq!(
+            (actual, actual_line, actual_column),
+            (kind, line, column),
+            "{source}"
+        );
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. The C/E/P cases adapt
 /// QuickJS test_language.js::test_class (license notice below).
 #[test]

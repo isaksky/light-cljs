@@ -563,6 +563,10 @@ fn optional_chaining() {
 
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::SuperCall { args, .. } => format!(
+            "(super {})",
+            args.iter().map(render_expr).collect::<Vec<_>>().join(" ")
+        ),
         ExprKind::OptionalChain { base, links } => {
             let mut out = format!("(chain {}", render_expr(base));
             for link in links {
@@ -1020,6 +1024,9 @@ fn render_function(f: &Function) -> String {
         FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
         FunctionKind::Method => format!("(method ({})", params.join(" ")),
         FunctionKind::ClassConstructor => format!("(constructor ({})", params.join(" ")),
+        FunctionKind::DerivedClassConstructor | FunctionKind::DefaultDerivedConstructor => {
+            format!("(derived-constructor ({})", params.join(" "))
+        }
         FunctionKind::Getter => format!("(getter ({})", params.join(" ")),
         FunctionKind::Setter => format!("(setter ({})", params.join(" ")),
         FunctionKind::ConciseArrow => {
@@ -4597,7 +4604,6 @@ fn class_syntax() {
         );
     }
     for source in [
-        "class C extends B {}",
         "class C { x; }",
         "class C { static {} }",
         "class C { m() { return super.x; } }",
@@ -4616,7 +4622,6 @@ fn class_syntax() {
 fn rejects_unsupported_syntax_with_positions() {
     use SyntaxErrorKind::Unsupported;
     let cases: &[(&str, u32, u32, &str)] = &[
-        ("class A extends B {}", 1, 9, "inheritance"),
         ("x = class { field; };", 1, 13, "fields"),
         ("await x;", 1, 1, "await"),
         ("with (o) {}", 1, 1, "with"),
@@ -4994,6 +4999,20 @@ fn mixed_expression_depth_is_bounded() {
 fn nesting_at_the_limit_fits_a_2_mib_stack() {
     type Make = fn(usize) -> String;
     let syntax_makers: &[(&str, Make)] = &[
+        ("derived class constructors", |n| {
+            format!(
+                "{}{}",
+                "class D extends C { constructor() {".repeat(n),
+                "super(); }}".repeat(n)
+            )
+        }),
+        ("nested super arguments", |n| {
+            format!(
+                "class D extends C {{ constructor() {{ {}0{}; }} }}",
+                "super(".repeat(n),
+                ")".repeat(n)
+            )
+        }),
         ("generator declarations", |n| {
             format!("{}{}", "function* f() {".repeat(n), "}".repeat(n))
         }),

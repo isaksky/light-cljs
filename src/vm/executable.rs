@@ -50,9 +50,23 @@ pub enum ConstructorKind {
     Ordinary,
     /// A base class, requiring construction rather than an ordinary call.
     BaseClass,
+    /// A class whose receiver is initialized by super().
+    DerivedClass,
+    /// A synthesized derived constructor forwarding all actual arguments.
+    DefaultDerivedClass,
 }
 
 impl ConstructorKind {
+    pub(crate) fn is_class(self) -> bool {
+        matches!(
+            self,
+            Self::BaseClass | Self::DerivedClass | Self::DefaultDerivedClass
+        )
+    }
+
+    pub(crate) fn is_derived(self) -> bool {
+        matches!(self, Self::DerivedClass | Self::DefaultDerivedClass)
+    }
     /// Whether this kind provides `[[Construct]]`.
     pub fn is_constructor(self) -> bool {
         !matches!(self, Self::None)
@@ -625,6 +639,14 @@ impl Executable {
                 Opcode::DefineClassMethod => Instr::DefineClassMethod,
                 Opcode::DefineClassGetter => Instr::DefineClassGetter,
                 Opcode::DefineClassSetter => Instr::DefineClassSetter,
+                Opcode::CheckHeritage => Instr::CheckHeritage,
+                Opcode::InitHeritage => Instr::InitHeritage,
+                Opcode::GetSuperConstructor => Instr::GetSuperConstructor,
+                Opcode::ConstructSuper => Instr::ConstructSuper(operand as u16),
+                Opcode::ConstructSuperSpread => Instr::ConstructSuperSpread,
+                Opcode::BindThis => Instr::BindThis,
+                Opcode::ResolveThis => Instr::ResolveThis,
+                Opcode::ForwardArguments => Instr::ForwardArguments,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
@@ -740,7 +762,9 @@ impl Executable {
             captures,
             strict,
             constructor_kind,
-            uses_arguments: instrs.iter().any(|i| matches!(i, Instr::NewArguments)),
+            uses_arguments: instrs
+                .iter()
+                .any(|i| matches!(i, Instr::NewArguments | Instr::ForwardArguments)),
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,
@@ -812,6 +836,7 @@ impl Executable {
                 | Instr::Call(v)
                 | Instr::CallMethod(v)
                 | Instr::Construct(v)
+                | Instr::ConstructSuper(v)
                 | Instr::GetBuiltinGlobal(v)
                 | Instr::GetCapture(v)
                 | Instr::GetGlobal(v)

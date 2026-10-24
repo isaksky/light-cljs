@@ -7272,7 +7272,7 @@ ordinary frame entry rejects it with TypeError; the checked construction path
 uses constructor frame entry. This covers direct calls and native forwarding
 without putting JavaScript on the Rust stack. Constructor return processing and
 receiver allocation use the existing construct continuation. Derived kinds and
-super operations remain separate future extensions.
+super operations extend this path below (-137).
 
 Class function creation eagerly materializes the existing function property
 record and prototype, makes `prototype` non-writable, and installs the prototype
@@ -7289,8 +7289,8 @@ records and home objects. Constructors, prototypes and detached class methods
 therefore fail publication on their task-owned reachable state, just like
 object methods and functions with own properties. Tests exercise collection and
 worker migration during constructors, methods, accessors and computed-key
-conversion, and execution on 64 KiB worker stacks. Inheritance, fields and super
-syntax continue to fail explicitly.
+conversion, and execution on 64 KiB worker stacks. Fields and super properties
+continue to fail explicitly.
 
 Computed keys execute inline in their enclosing activation, so `yield` and
 `await` retain the enclosing generator/async continuation. In sloppy scripts,
@@ -7307,6 +7307,48 @@ before defining class elements, preserving explicit class names and later static
 `name` methods/accessors. Async class tests await both property names and method
 bodies, forcing collection and migration while the class's saved construction
 state, receiver and inner-name captures remain live.
+
+## Derived class construction (clj-quickjs-137)
+
+Class AST nodes retain an optional heritage expression. The strict inner class
+name is in its temporal dead zone during heritage and computed-key evaluation.
+Lowering evaluates heritage once, checks constructor capability, reads the
+parent's prototype with ordinary resumable property bytecode, and installs both
+inheritance links. A class function's existing property record stores its own
+prototype link, so static lookup and Object.getPrototypeOf observe the parent;
+the instance prototype separately inherits from the parent's prototype. Null
+heritage keeps Function.prototype for the constructor and uses a null instance
+prototype link. No new heap kind is introduced.
+
+Appended ConstructorKind variants distinguish explicit and default derived
+constructors. Each construct frame carries a traced internal new_target value;
+ordinary base allocation uses that constructor's prototype. Derived frames
+allocate an existing task-owned BindingCell instead of an instance receiver.
+GetRawThis transports the cell through lexical captures and eval descriptors;
+ResolveThis checks and reads it only at a source `this` occurrence. Arrows can
+therefore be created before super() and see the initialized receiver afterward.
+The internal constructor/new-target pair is also captured through arrows that
+call super(). Source new.target remains explicitly unsupported (-99).
+
+Appended instructions CheckHeritage and InitHeritage validate/install the class
+links; GetSuperConstructor and GetNewTarget load internal construction context.
+ConstructSuper/ConstructSuperSpread enter the parent through the normal checked
+construct path with an alternate new target. BindThis runs after the parent
+returns, rejects an already initialized receiver, and yields the returned object.
+The parent may wait, yield, migrate or throw while the derived frame and its
+uninitialized cell stay traced. Default constructors use ForwardArguments to
+pack the original actual arguments directly, without invoking an iterator.
+Constructor return checks run after finally blocks: objects override the
+receiver, undefined requires an initialized receiver, and other primitives throw
+TypeError. Native built-in subclass allocation is rejected explicitly except
+for Object, whose derived receiver uses ordinary allocation. Runtime eval keeps
+the existing scope/strictness model and reads the live receiver cell, but does
+not inherit super-call syntax context.
+
+Both live and detached frame tracing visit new_target, and existing cell,
+function-capture and property-record tracing cover every other edge. Tests force
+collection and migration while parked inside super() and execute explicit,
+default and Object-derived construction on 64 KiB worker stacks.
 
 ### Intl.ListFormat (clj-quickjs-220)
 

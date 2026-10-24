@@ -117,8 +117,9 @@ EBNF; `{ x }` is repetition, `[ x ]` is optional. Terminals are quoted.
 Script              = { Directive } { StatementListItem } EOF
 Directive           = String ";"     (* a whole ExpressionStatement; see "Directive prologues and strictness" *)
 StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaration | Statement
-ClassDeclaration    = "class" BindingIdentifier ClassBody
-ClassExpression     = "class" [ BindingIdentifier ] ClassBody
+ClassDeclaration    = "class" BindingIdentifier [ "extends" LeftHandSideExpression ] ClassBody
+ClassExpression     = "class" [ BindingIdentifier ] [ "extends" LeftHandSideExpression ] ClassBody
+SuperCall           = "super" Arguments  (* derived constructors and their arrows only *)
 ClassBody           = "{" { ";" | [ "static" ] ClassMethod } "}"
 ClassMethod         = PropertyName FormalParameters FunctionBody
                     | ( "get" | "set" ) PropertyName FormalParameters FunctionBody
@@ -210,6 +211,7 @@ Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" | "delete" )
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
 Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral | OptionalLink }
+LeftHandSideExpression = Call
 OptionalLink          = "?." ( IdentifierName | "[" Expression "]" | Arguments )
                         (* no TemplateLiteral after an OptionalLink in the same chain;
                            parentheses end the chain; optional chains are not assignment targets *)
@@ -218,7 +220,7 @@ New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expre
 Arguments             = "(" [ SpreadElement { "," SpreadElement } [ "," ] ] ")"
 SpreadElement         = [ "..." ] AssignmentExpression
 Primary               = Identifier | Literal | FunctionExpression | ClassExpression | ObjectLiteral
-                      | ArrayLiteral | TemplateLiteral | RegExpLiteral | "this" | NewTarget | "(" Expression ")"
+                      | ArrayLiteral | TemplateLiteral | RegExpLiteral | SuperCall | "this" | NewTarget | "(" Expression ")"
                         (* `this`: script global object, ordinary receivers, lexical arrow captures *)
 NewTarget             = "new" "." "target"
                         (* ordinary functions/methods and their lexical arrows/direct eval only *)
@@ -494,7 +496,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | Form | Kind |
 |------|------|
 | a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
-| class inheritance (`extends`), fields, static initialization blocks, `super`, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| class fields, static initialization blocks, super property access, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | module `export *`, `export * as ns from`, `export {x} from`, string-literal import/export names, import attributes, `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
@@ -535,7 +537,8 @@ loads complete static graphs, including cycles, before task execution. Linking,
 evaluation, namespaces, cyclic binding initialization and JSON module instances
 remain deferred; the CLI and `compile_script` still take scripts only.
 
-Derived classes, `super` and class fields remain deferred (clj-quickjs-137/138/139).
+Super properties and class fields remain deferred (clj-quickjs-138/139).
+Derived classes and constructor `super()` calls execute (clj-quickjs-137).
 Constructor rejection messages use the source spelling of an identifier or
 member callee (`G`, `o.m`, `o[k]`), independently of its mutable `name` property.
 Other callees use the value kind (`function` for an anonymous arrow), or the
@@ -544,7 +547,7 @@ the rejected function's `name` property (`JS_ThrowTypeErrorNotAConstructor`).
 
 Optional chains support member/index access, calls (including spread arguments)
 and delete (clj-quickjs-134). They use the same object, call and delete behavior
-and limits as ordinary chains. `super` remains unsupported, including `super?.x`.
+and limits as ordinary chains. Super property access remains unsupported, including `super?.x`.
 
 Number `toFixed`, `toExponential` and `toPrecision` are supported
 (clj-quickjs-150/-151). Digit-count strings longer than 4096 UTF-16 units
@@ -1251,7 +1254,7 @@ Executed, with JavaScript semantics:
 | `switch (e) { case a: ... default: ... }` (clj-quickjs-83) | evaluates `e` once, then the `case` tests in source order, comparing each with IsStrictlyEqual (`===`: `-0` matches `0`, `NaN` matches nothing, `"1"` does not match `1`) and evaluating none after the first match; runs from the matching clause, or from `default` (wherever it is) if none matches, through the following clauses (fall-through); an unlabelled `break` leaves the switch, `continue` the switch and the iteration of its enclosing loop; the clauses form one block scope whose function declarations are created on entry, before the tests |
 | function declarations | hoisted: entering a script, function body or block creates the closures of the declarations directly in it, in source order, before its first statement runs. At the top level of a script or function body they are var-scoped (clj-quickjs-94): one may repeat a parameter, a `var` or another function declaration there, which all share one binding, and the last declaration wins (`function g() { return 1; } function g() { return 2; } g()` is 2; `var h; function h() {}` leaves `h` the function). In a block they are lexical (strict mode) |
 | function expressions | each evaluation creates a new function object (`===` compares identity); a named expression's name is visible only inside it, is the running function, and assigning it is a TypeError |
-| arrow functions | lowered as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; `arguments` resolves lexically through enclosing functions, including in defaults (clj-quickjs-97); an arrow creates no arguments object. `new.target` resolves through the same lexical chain (clj-quickjs-99); `super` stays rejected. In bodies and default parameters, `this` is the nearest enclosing non-arrow function's receiver, captured by value when the arrow is created, through every intervening arrow (clj-quickjs-98). Plain calls, method calls, `call`, `apply`, `Reflect.apply` and `bind` cannot change it. An ordinary function nested inside an arrow has its own receiver. An arrow without an enclosing non-arrow function captures the script global object (clj-quickjs-104). A closure capturing `this` follows transitive publication rules: a primitive or otherwise shareable receiver is publishable, a task-owned object receiver is not; no binding cell is introduced. An arrow remains non-constructible (`new` throws a catchable TypeError) |
+| arrow functions | lowered as an anonymous function expression whose concise body is `{ return body; }`: same closures, captures, cells and temporal dead zone; `arguments` resolves lexically through enclosing functions, including in defaults (clj-quickjs-97); an arrow creates no arguments object. `new.target` resolves through the same lexical chain (clj-quickjs-99); super properties stay rejected, and arrows in derived constructors may call `super()` (-137). In bodies and default parameters, `this` is the nearest enclosing non-arrow function's receiver, captured by value when the arrow is created, through every intervening arrow (clj-quickjs-98). Plain calls, method calls, `call`, `apply`, `Reflect.apply` and `bind` cannot change it. An ordinary function nested inside an arrow has its own receiver. An arrow without an enclosing non-arrow function captures the script global object (clj-quickjs-104). A closure capturing `this` follows transitive publication rules: a primitive or otherwise shareable receiver is publishable, a task-owned object receiver is not; derived constructors capture a shared receiver binding cell (-137), while other receivers are captured by value. An arrow remains non-constructible (`new` throws a catchable TypeError) |
 | `f(a, b)` | evaluates the callee, then the arguments left to right, then calls in a new task-owned frame; missing parameters are `undefined`, extra values are available through `arguments`; falling off the end returns `undefined`; the callee's `this` is `undefined` (strict-mode semantics; see `this` below) |
 | `arguments` (clj-quickjs-97) | an ordinary task-owned object inheriting from `Object.prototype`, created at entry only for non-arrow functions that reference it directly or through arrows. It holds all actual arguments in writable, enumerable, configurable index properties and a writable, non-enumerable, configurable `length`. Defaults see original actual values before parameter initialization. A parameter, function or lexical declaration named `arguments` shadows it; a plain `var arguments;` preserves it. Arrows capture the binding under the value/cell rule; closures reaching the object cannot be published. Original arguments and the object are traced across yields, waits, GC and migration. At script level it is an ordinary identifier (ReferenceError if unresolved, `typeof` yields `"undefined"`) |
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
@@ -5150,7 +5153,9 @@ compilation with a catchable SyntaxError until caller hoisting lands (-108);
 sloppy eval without those declarations works. Direct eval inherits the
 enclosing function's `new.target` binding (-99), also through arrows and
 nested eval; at script scope and in indirect eval it is an early SyntaxError.
-`super` (-112) remains unsupported, including runtime eval source.
+Super property access remains unsupported. Runtime eval source does not inherit the
+constructor's super-call context; `eval('super()')` fails explicitly. Eval's
+`this` reads share the derived constructor's initialization state (-137).
 
 ```js accept
 function f() { let x=1; eval('x += 2'); return x; }
@@ -5195,9 +5200,9 @@ use resumable VM frames, including constructors and computed-key conversion.
 Rejected forms: duplicate constructors, accessor/async/generator constructors,
 and non-computed static methods/accessors named `prototype` are early `Invalid`
 SyntaxErrors. Declarations in single-statement positions are `Invalid`.
-Inheritance, `super`, fields and static blocks are explicitly unsupported.
-Explicit gaps: derived constructors and `super()` (-137), super properties
-(-138), instance/static/private fields and static initialization blocks (-139).
+Fields, super properties and static blocks are explicitly unsupported.
+Explicit gaps: super properties (-138), instance/static/private fields and
+static initialization blocks (-139). Derived constructors execute below (-137).
 
 ```js accept
 class Point { constructor(x) { this.x = x; } get y() { return this.x; } static origin() { return new Point(0); } }
@@ -5218,12 +5223,54 @@ class C { constructor() {} constructor() {} }
 class C { get constructor() {} }
 ```
 
-```js reject Unsupported 1:9
-class C extends B {}
+```js accept
+class B {} class C extends B {}
+new C() instanceof B;
 ```
 
 ```js reject Unsupported 1:11
 class C { x; }
+```
+
+## Derived classes (clj-quickjs-137)
+
+Syntax: `extends` takes a left-hand-side expression. `super(args)` and spread
+arguments are allowed in a derived constructor, its parameter defaults and its
+lexically nested arrows. Ordinary nested functions and methods have their own
+context and cannot call `super()`.
+
+Execution: heritage must be a constructor or null. A constructor's `prototype`
+must be an object or null; reading it can suspend in a getter. Both the class
+constructor and its instance prototype inherit from the parent. With `extends
+null`, the instance prototype has no prototype and the constructor inherits
+from `Function.prototype`. Reading `this` before a successful `super()` throws
+ReferenceError, including through arrows and direct eval. A second successful
+`super()` runs the parent and then throws ReferenceError when binding `this`.
+Default derived constructors forward all original arguments without iteration.
+Parent constructors run on resumable VM frames and allocate using the most
+derived constructor's prototype. An object return overrides the receiver;
+undefined returns the initialized receiver, otherwise ReferenceError if missing.
+Any other primitive return throws TypeError. Finally blocks finish before these
+return checks.
+
+Rejected forms: `super()` outside a derived constructor or its arrows, and
+`new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
+invalid parent prototypes throw TypeError at runtime. An implicit constructor
+for `extends null` throws TypeError when it tries to construct its parent.
+Explicit gaps: source `new.target`, super properties (-138), fields and static
+blocks (-139), and inherited super-call context in runtime eval source. Internal
+new-target plumbing supports ordinary/class parents and `Object`; constructing
+other built-in subclasses is explicitly rejected with UnsupportedOperand.
+
+```js accept
+class A { constructor(a, b) { this.s = a + b; } }
+class B extends A {}
+class C extends B { constructor() { super(...[1, 2]); this.z = 20; } }
+let c = new C(); c.s === 3 && c.z === 20;
+```
+
+```js reject Invalid 1:32
+class C extends Object { m() { super(); } }
 ```
 
 ### Intl.ListFormat (clj-quickjs-220)

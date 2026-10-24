@@ -468,12 +468,16 @@ pub enum FunctionKind {
     Setter,
     /// A strict base-class constructor, callable only through `new`.
     ClassConstructor,
+    DerivedClassConstructor,
+    DefaultDerivedConstructor,
 }
 
-/// A base class. Declarations use a lexical `let` initialized by this node.
+/// A class. Declarations use a lexical `let` initialized by this node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Class {
     pub name: Option<Ident>,
+    pub heritage: Option<Box<Expr>>,
+    pub heritage_span: Option<Span>,
     pub constructor: Function,
     pub elements: Vec<ClassElement>,
     pub span: Span,
@@ -521,6 +525,7 @@ impl Expr {
             } => test.height.max(consequent.height).max(alternate.height),
             ExprKind::Assign { value, .. } | ExprKind::CompoundAssign { value, .. } => value.height,
             ExprKind::AssignPattern { target, value } => target.height.max(value.height),
+            ExprKind::SuperCall { args, .. } => args.iter().map(|a| a.height).max().unwrap_or(0),
             ExprKind::Call { callee, args, .. } | ExprKind::New { callee, args, .. } => args
                 .iter()
                 .map(|a| a.height)
@@ -538,9 +543,12 @@ impl Expr {
                 })
             }
             ExprKind::Function(f) => f.height,
-            ExprKind::Class(c) => c.elements.iter().fold(c.constructor.height, |h, e| {
-                h.max(e.property.value.height).max(e.property.name.height())
-            }),
+            ExprKind::Class(c) => c.elements.iter().fold(
+                c.constructor
+                    .height
+                    .max(c.heritage.as_ref().map_or(0, |e| e.height)),
+                |h, e| h.max(e.property.value.height).max(e.property.name.height()),
+            ),
             ExprKind::Sequence { left, right } => left.height.max(right.height),
             ExprKind::Object(properties) => properties
                 .iter()
@@ -580,6 +588,10 @@ impl Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    SuperCall {
+        args: Vec<Expr>,
+        op_span: Span,
+    },
     Class(Box<Class>),
     AssignPattern {
         target: Box<Pattern>,

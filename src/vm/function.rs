@@ -958,9 +958,7 @@ fn materialize(
     let prototype_key = intern(heap, "prototype")?;
     let code = info(heap, function)?.code;
     let generator = code.as_ref().is_some_and(|c| c.is_generator());
-    let class = code
-        .as_ref()
-        .is_some_and(|c| c.constructor_kind == super::ConstructorKind::BaseClass);
+    let class = code.as_ref().is_some_and(|c| c.constructor_kind.is_class());
     let parent = if generator {
         super::generator::prototype(heap)?
     } else {
@@ -1011,6 +1009,59 @@ pub(crate) fn initialize_class(heap: &Heap, task: TaskId, function: ObjectId) ->
     })
     .ok_or(Fault::Internal("class constructor was reclaimed"))?;
     Ok(())
+}
+
+/// Install both inheritance links on a newly created class. Function
+/// inheritance lives in the already traced own-property record.
+pub(crate) fn inherit_class(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    parent: &Value,
+    parent_prototype: &Value,
+) -> Result<(), Fault> {
+    let proto = match parent_prototype {
+        Value::Object(id) => Some(*id),
+        Value::Null => None,
+        _ if matches!(parent, Value::Null) => None,
+        _ => {
+            return Err(Fault::TypeError(
+                "superclass prototype must be an object or null".into(),
+            ));
+        }
+    };
+    let (record, home) = heap
+        .read(function, |o| match o {
+            HeapObject::Function(f) => f.properties.zip(f.home_object),
+            _ => None,
+        })
+        .flatten()
+        .ok_or(Fault::Internal("class inheritance target is not a class"))?;
+    if let Value::Object(parent) = parent {
+        heap.with_object_mut(record, |o| {
+            if let HeapObject::Plain(o) = o {
+                o.set_prototype(Some(*parent));
+            }
+        })
+        .ok_or(Fault::Internal("class record was reclaimed"))?;
+    }
+    super::prototype::set_prototype_of(heap, task, home, proto)
+}
+
+pub(crate) fn inheritance_prototype(
+    heap: &Heap,
+    function: ObjectId,
+) -> Result<Option<ObjectId>, Fault> {
+    let record = info(heap, function)?.record;
+    if let Some(record) = record {
+        return heap
+            .read(record, |o| match o {
+                HeapObject::Plain(o) => Ok(o.prototype()),
+                _ => Err(Fault::Internal("function record is not an object")),
+            })
+            .ok_or(Fault::Internal("function record was reclaimed"))?;
+    }
+    function_prototype(heap).map(Some)
 }
 
 /// Storage of a mutable captured binding. See the module docs.

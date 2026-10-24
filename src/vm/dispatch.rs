@@ -206,7 +206,7 @@ pub(super) fn new_function(
     home_object: Option<ObjectId>,
 ) -> Result<Value, Fault> {
     let generator = code.is_generator();
-    let class = code.constructor_kind == super::ConstructorKind::BaseClass;
+    let class = code.constructor_kind.is_class();
     let mut function = FunctionObject::new(code, captures, owner);
     function.home_object = home_object;
     let object = HeapObject::Function(function);
@@ -767,12 +767,24 @@ fn prepend_args(bound: &mut Vec<Value>, args: Vec<Value>, max_args: usize) -> Re
 /// `Object.prototype`, and becomes the `this` of a construct frame entered
 /// like a call; `VmState::leave` applies the return-override rule.
 fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault> {
+    construct_target(state, heap, argc, None)
+}
+
+#[inline(never)]
+fn construct_target(
+    state: &mut VmState,
+    heap: &Heap,
+    argc: u16,
+    target: Option<Value>,
+) -> Result<Flow, Fault> {
     let argc = usize::from(argc);
     let task = state.diag.task;
     let [f, args @ ..] = top_operands(state, argc + 1)? else {
         return Err(Fault::Internal("operand stack underflow"));
     };
     let mut f = f.clone();
+    let super_call = target.is_some();
+    let mut new_target = target.unwrap_or_else(|| f.clone());
     let mut args = args.to_vec();
     let (max_args, max_hops) = state.forward_limits(state.stack_len() - argc - 1);
     let mut hops = 0;
@@ -785,9 +797,28 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
         hops += 1;
         prepend_args(&mut bound.args, args, max_args)?;
         args = bound.args;
+        if new_target.same_object(&f) {
+            new_target = bound.callee.clone();
+        }
         f = bound.callee;
     }
+    // Built-in allocation paths do not yet accept an alternate new.target.
+    // Object's derived allocation is ordinary and ignores arguments by spec.
+    if super_call && !is_constructor(heap, &f, max_hops)? {
+        return Err(not_a_constructor(state, &f, f.type_name()));
+    }
+    if super_call && matches!(callee(heap, &f)?, Callee::Builtin(which) if which != Builtin::Object)
+    {
+        return Err(Fault::Unsupported(
+            "subclass construction of this built-in is not supported".into(),
+        ));
+    }
     let (id, code) = match callee(heap, &f) {
+        Ok(Callee::Builtin(Builtin::Object)) if super_call => {
+            let object = allocate_receiver(heap, task, &new_target)?;
+            state.replace(argc + 1, object)?;
+            return Ok(Flow::Next);
+        }
         Ok(Callee::Builtin(Builtin::Date)) => {
             if !super::native::start_builtin(
                 heap,
@@ -867,7 +898,30 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     };
     // Reading `prototype` may create the lazy prototype object and build
     // the realm; nothing is held across it but `f`, which is an operand.
-    let prototype = match property::get_field(heap, task, &f, &JsString::from("prototype"))? {
+    let this = if code.constructor_kind.is_derived() {
+        let id = heap
+            .alloc(HeapObject::Cell(BindingCell {
+                owner: task,
+                value: None,
+            }))
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        Value::Object(id)
+    } else {
+        allocate_receiver(heap, task, &new_target)?
+    };
+    let keep = state.stack_len() - argc - 1;
+    state.truncate_operands(keep)?;
+    let argc = args.len();
+    state.push(f);
+    args.into_iter().for_each(|a| state.push(a));
+    state.enter_constructor(code, id, this, argc)?;
+    state.top_mut().construct = true;
+    state.top_mut().new_target = new_target;
+    Ok(Flow::FrameChanged)
+}
+
+fn allocate_receiver(heap: &Heap, task: TaskId, target: &Value) -> Result<Value, Fault> {
+    let prototype = match property::get_field(heap, task, target, &JsString::from("prototype"))? {
         Value::Object(prototype) => prototype,
         _ => {
             realm::intrinsics(heap)
@@ -882,15 +936,20 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             task, prototype,
         )))
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-    let keep = state.stack_len() - argc - 1;
-    state.truncate_operands(keep)?;
-    let argc = args.len();
-    state.push(f);
-    args.into_iter().for_each(|a| state.push(a));
-    state.enter_constructor(code, id, Value::Object(object), argc)?;
-    state.top_mut().construct = true;
-    state.top_mut().new_target = Value::Object(id);
-    Ok(Flow::FrameChanged)
+    Ok(Value::Object(object))
+}
+
+pub(crate) fn resolve_this(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
+    if let Value::Object(id) = value
+        && heap
+            .read(*id, |o| matches!(o, HeapObject::Cell(_)))
+            .unwrap_or(false)
+    {
+        return with_cell(heap, value, task, |v| {
+            v.clone().ok_or(Fault::Throw(ThrowKind::Uninitialized))
+        });
+    }
+    Ok(value.clone())
 }
 
 /// The TypeError of `new v` for a `v` that is not a constructor; `what`
@@ -1079,10 +1138,161 @@ fn property_step(
 
 type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> Result<Flow, Fault>;
 
+fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Fault> {
+    let mut value = value.clone();
+    for _ in 0..limit {
+        match callee(heap, &value) {
+            Ok(Callee::Bound(bound)) => value = bound.callee,
+            Ok(Callee::Code(_, code)) => return Ok(code.constructor_kind.is_constructor()),
+            Ok(Callee::Builtin(which)) => {
+                return Ok(matches!(
+                    which,
+                    Builtin::Object
+                        | Builtin::Function
+                        | Builtin::Array
+                        | Builtin::Map
+                        | Builtin::WeakMap
+                        | Builtin::WeakRef
+                        | Builtin::FinalizationRegistry
+                        | Builtin::Number
+                        | Builtin::String
+                        | Builtin::Date
+                        | Builtin::Error
+                        | Builtin::NativeError(_)
+                        | Builtin::ArrayBuffer
+                        | Builtin::IntegerTypedArray(_)
+                        | Builtin::RegExp
+                        | Builtin::Promise
+                        | Builtin::IntlLocale
+                        | Builtin::IntlNumberFormat
+                        | Builtin::IntlPluralRules
+                        | Builtin::IntlCollator
+                        | Builtin::IntlDateTimeFormat
+                        | Builtin::IntlListFormat
+                ));
+            }
+            Err(Fault::NotCallable(_)) => return Ok(false),
+            Err(fault) => return Err(fault),
+        }
+    }
+    Err(Fault::StackOverflow(
+        "maximum bound constructor depth exceeded".into(),
+    ))
+}
+
+#[inline(never)]
+fn class_step(
+    state: &mut VmState,
+    _code: &Code,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let task = state.diag.task;
+    match instr {
+        Instr::CheckHeritage => {
+            let parent = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("missing class heritage"))?;
+            if !matches!(parent, Value::Null)
+                && !is_constructor(heap, parent, state.forward_limits(state.stack_len()).1)?
+            {
+                return Err(Fault::TypeError(
+                    "class heritage must be a constructor or null".into(),
+                ));
+            }
+        }
+        Instr::InitHeritage => {
+            let proto = state.pop()?;
+            let parent = state.pop()?;
+            let class = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("missing class constructor"))?;
+            let Value::Object(id) = class else {
+                return Err(Fault::Internal("invalid class constructor"));
+            };
+            super::function::inherit_class(heap, task, *id, &parent, &proto)?;
+        }
+        Instr::GetSuperConstructor => {
+            let Value::Object(id) = state.pop()? else {
+                return Err(Fault::Internal("invalid super context"));
+            };
+            let parent =
+                prototype::get_prototype_of(heap, task, id)?.map_or(Value::Null, Value::Object);
+            state.push(parent);
+        }
+        Instr::GetNewTarget => state.push(state.top().new_target.clone()),
+        Instr::ConstructSuper(argc) => {
+            let target = state.remove_operand(usize::from(argc))?;
+            return construct_target(state, heap, argc, Some(target));
+        }
+        Instr::ConstructSuperSpread => {
+            let args = spread_arguments(state, heap, true)?;
+            state.pop()?;
+            let target = state.pop()?;
+            let argc = args.len() as u16;
+            for arg in args {
+                state.push(arg);
+            }
+            return construct_target(state, heap, argc, Some(target));
+        }
+        Instr::BindThis => {
+            let value = state.pop()?;
+            let cell = state.pop()?;
+            with_cell(heap, &cell, task, |binding| {
+                if binding.is_some() {
+                    return Err(Fault::Throw(ThrowKind::Uninitialized));
+                }
+                *binding = Some(value.clone());
+                Ok(())
+            })?;
+            state.push(value);
+        }
+        Instr::ResolveThis => {
+            let value = state.pop()?;
+            state.push(resolve_this(heap, task, &value)?);
+        }
+        Instr::ForwardArguments => {
+            let args = state
+                .top()
+                .arguments
+                .as_ref()
+                .ok_or(Fault::Internal("missing forwarded arguments"))?;
+            let prototype = realm::intrinsics(heap)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+                .array_prototype;
+            let mut array = crate::object::array::ArrayObject::with_prototype(task, prototype);
+            for value in args {
+                if !array.push(Some(value.clone())) {
+                    return Err(Fault::RangeError("too many forwarded arguments".into()));
+                }
+            }
+            let id = heap
+                .alloc(HeapObject::Array(Box::new(array)))
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            state.clear_arguments();
+            state.push(Value::Object(id));
+        }
+        _ => return Err(Fault::Internal("non-class instruction on class path")),
+    }
+    Ok(Flow::Next)
+}
+
 /// Select the leaf before entering its frame, including native-conversion
 /// resumes. Large descriptor/conversion paths must fit 64 KiB workers.
 fn instruction_step(instr: Instr) -> InstructionStep {
     match instr {
+        Instr::CheckHeritage
+        | Instr::InitHeritage
+        | Instr::GetNewTarget
+        | Instr::GetSuperConstructor
+        | Instr::ConstructSuper(_)
+        | Instr::ConstructSuperSpread
+        | Instr::BindThis
+        | Instr::ResolveThis
+        | Instr::ForwardArguments => class_step,
         Instr::Call(_)
         | Instr::CallMethod(_)
         | Instr::CallSpread
@@ -1395,8 +1605,8 @@ pub(crate) fn describe(v: &Value) -> String {
 }
 
 /// Return `v` from the running frame, through its finally blocks.
-fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
-    Ok(match state.return_value(v)? {
+fn return_flow(state: &mut VmState, heap: &Heap, v: Value) -> Result<Flow, Fault> {
+    Ok(match state.return_value(heap, v)? {
         Returned::Complete(result) => Flow::Complete(result),
         Returned::Left | Returned::Finally => Flow::FrameChanged,
         Returned::Cancelled => Flow::CleanupEnded,
@@ -1744,6 +1954,15 @@ fn step_instruction(
     }
     // Everything below, leaf natives included, runs to completion here.
     match instr {
+        Instr::CheckHeritage
+        | Instr::InitHeritage
+        | Instr::GetNewTarget
+        | Instr::GetSuperConstructor
+        | Instr::ConstructSuper(_)
+        | Instr::ConstructSuperSpread
+        | Instr::BindThis
+        | Instr::ResolveThis
+        | Instr::ForwardArguments => return class_step(state, code, heap, host, instr),
         Instr::Const(i) => {
             let v = code
                 .constants
@@ -2087,7 +2306,7 @@ fn step_instruction(
         }
         Instr::Return => {
             let v = state.pop()?;
-            return return_flow(state, v);
+            return return_flow(state, heap, v);
         }
         Instr::Throw => return Err(Fault::Thrown(state.pop()?)),
         Instr::PushCatch(target) => state.push_handler(HandlerKind::Catch { target })?,
@@ -2096,7 +2315,7 @@ fn step_instruction(
         Instr::PopFinally => state.pop_finally()?,
         Instr::EndFinally => match state.end_finally()? {
             Completion::Normal => {}
-            Completion::Return(v) => return return_flow(state, v),
+            Completion::Return(v) => return return_flow(state, heap, v),
             Completion::Throw(exception) => return Err(Fault::Rethrow(exception)),
             // `end_finally` already continued at the resume point.
             Completion::Jump(_) => {}
@@ -2287,7 +2506,6 @@ fn step_instruction(
             state.push(this);
         }
         Instr::GetRawThis => state.push(state.top().this.clone()),
-        Instr::GetNewTarget => state.push(state.top().new_target.clone()),
         Instr::CheckSloppyThis => {
             let value = state
                 .operands()
@@ -2511,6 +2729,8 @@ fn global_step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
+        Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |
+        Instr::ConstructSuper(_) | Instr::ConstructSuperSpread | Instr::BindThis | Instr::ResolveThis | Instr::ForwardArguments => true,
         Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
@@ -2621,7 +2841,6 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CheckSpreadArguments
         | Instr::CheckDirectEval
         | Instr::GetRawThis
-        | Instr::GetNewTarget
         | Instr::CheckSloppyThis
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2

@@ -659,6 +659,22 @@ pub enum Opcode {
     DeleteStrict = 0x99,
     /// The running ordinary function's construct target (undefined on call).
     GetNewTarget = 0x9A,
+    /// parent → parent: require null or a constructor.
+    CheckHeritage = 0x9B,
+    /// class parent prototype → class: install both inheritance links.
+    InitHeritage = 0x9C,
+    /// constructor → parent: read the constructor's internal prototype.
+    GetSuperConstructor = 0x9D,
+    /// parent target args… → result: resumable construction with new.target.
+    ConstructSuper = 0x9E,
+    /// parent target packed-arguments → result.
+    ConstructSuperSpread = 0x9F,
+    /// receiver-cell result → result: initialize once after super returns.
+    BindThis = 0xA0,
+    /// receiver-or-cell → receiver: read derived this with its TDZ check.
+    ResolveThis = 0xA1,
+    /// → packed-arguments: copy default constructor's original arguments.
+    ForwardArguments = 0xA2,
 }
 
 /// Operand encoding of an opcode.
@@ -843,6 +859,14 @@ impl Opcode {
             0x93 => DefineClassMethod,
             0x94 => DefineClassGetter,
             0x95 => DefineClassSetter,
+            0x9B => CheckHeritage,
+            0x9C => InitHeritage,
+            0x9D => GetSuperConstructor,
+            0x9E => ConstructSuper,
+            0x9F => ConstructSuperSpread,
+            0xA0 => BindThis,
+            0xA1 => ResolveThis,
+            0xA2 => ForwardArguments,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1007,6 +1031,14 @@ impl Opcode {
             DefineClassMethod => "define_class_method",
             DefineClassGetter => "define_class_getter",
             DefineClassSetter => "define_class_setter",
+            CheckHeritage => "check_heritage",
+            InitHeritage => "init_heritage",
+            GetSuperConstructor => "get_super_constructor",
+            ConstructSuper => "construct_super",
+            ConstructSuperSpread => "construct_super_spread",
+            BindThis => "bind_this",
+            ResolveThis => "resolve_this",
+            ForwardArguments => "forward_arguments",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1046,7 +1078,7 @@ impl Opcode {
             NewVector | NewMap | TemplateObject => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
             Function | Method => OperandKind::Function,
-            Call | CallMethod | Construct => OperandKind::ArgCount,
+            Call | CallMethod | Construct | ConstructSuper => OperandKind::ArgCount,
             GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
             GetGlobal
@@ -1098,6 +1130,8 @@ impl Opcode {
 
             DefineGetterElem | DefineSetterElem => OperandKind::None,
             GetRawThis | GetNewTarget | CheckSloppyThis => OperandKind::None,
+            CheckHeritage | InitHeritage | GetSuperConstructor
+            | ConstructSuperSpread | BindThis | ResolveThis | ForwardArguments => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1303,11 +1337,19 @@ pub(crate) enum Instr {
     DefineClassMethod,
     DefineClassGetter,
     DefineClassSetter,
+    CheckHeritage,
+    InitHeritage,
+    GetNewTarget,
+    GetSuperConstructor,
+    ConstructSuper(u16),
+    ConstructSuperSpread,
+    BindThis,
+    ResolveThis,
+    ForwardArguments,
     PutGlobalStrict(u16),
     PutFieldStrict(u16),
     PutElemStrict,
     DeleteStrict,
-    GetNewTarget,
 }
 
 impl Instr {
@@ -1464,6 +1506,14 @@ impl Instr {
             Instr::DefineClassMethod => Opcode::DefineClassMethod,
             Instr::DefineClassGetter => Opcode::DefineClassGetter,
             Instr::DefineClassSetter => Opcode::DefineClassSetter,
+            Instr::CheckHeritage => Opcode::CheckHeritage,
+            Instr::InitHeritage => Opcode::InitHeritage,
+            Instr::GetSuperConstructor => Opcode::GetSuperConstructor,
+            Instr::ConstructSuper(_) => Opcode::ConstructSuper,
+            Instr::ConstructSuperSpread => Opcode::ConstructSuperSpread,
+            Instr::BindThis => Opcode::BindThis,
+            Instr::ResolveThis => Opcode::ResolveThis,
+            Instr::ForwardArguments => Opcode::ForwardArguments,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1529,6 +1579,12 @@ impl Instr {
             NewMap(n) | TemplateObject(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
             Construct(n) => (usize::from(n) + 1, 1),
+            ConstructSuper(n) => (usize::from(n) + 2, 1),
+            ConstructSuperSpread => (3, 1),
+            CheckHeritage | GetSuperConstructor | ResolveThis => (1, 1),
+            InitHeritage => (3, 1),
+            ForwardArguments => (0, 1),
+            BindThis => (2, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),
             Function(_, captures) => (usize::from(captures), 1),
             Method(_, captures) => (usize::from(captures) + 1, 2),
@@ -1550,6 +1606,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 154);
+        assert_eq!(assigned, 162);
     }
 }

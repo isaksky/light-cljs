@@ -1066,6 +1066,16 @@ MIT license notice are retained in both test modules. `js_parse_class`,
 `research/quickjs/quickjs.c` were consulted for semantics; no C code was ported.
 All other class tests are synthetic fixtures, not light-cljs output.
 
+### Derived classes (clj-quickjs-137)
+
+The first row of `tests/js_source.rs::derived_classes` adapts the inheritance
+rows of `research/quickjs/tests/test_language.js::test_class` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The existing QuickJS MIT notice
+in that test module applies. `js_parse_class`, `OP_check_ctor`, `OP_init_ctor`
+and `JS_CallConstructorInternal` in `research/quickjs/quickjs.c` were consulted
+as semantic references; no C implementation was ported. Remaining tests are
+synthetic fixtures, not light-cljs output.
+
 ### Intl.ListFormat (clj-quickjs-220)
 
 `research/quickjs/intl/listformat.c`, revision

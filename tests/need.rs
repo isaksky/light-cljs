@@ -30,6 +30,46 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+/// Synthetic fixture, not light-cljs output: suspend in a base constructor
+/// below super(), collect, then finish the derived frame on another worker.
+#[test]
+fn derived_constructor_waits_inside_super() {
+    for source in [
+        "class C { constructor() { this.x = __rt.need(5, 3); } } class D extends C { constructor() { let f = () => this; super(); this.z = f() === this ? 20 : 0; } } let d = new D(); d.x + d.z",
+        "class C { constructor(a,b) { this.x = __rt.need(5, 3) + a + b; } } class D extends C {} class E extends D { constructor() { super(1, 2); this.z = 17; } } let d = new E(); d.x + d.z",
+        "class C { constructor(x) { this.x = x; } } let parent = C.bind(null, 10); Object.defineProperty(parent, 'prototype', {get() { __rt.need(5, 3); return C.prototype; }}); class D extends parent { constructor() { super(); this.z = 20; } } let d = new D(); d.x + d.z",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("super-wait", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let expected = key(&rt, NUMBER);
+        assert_eq!(waiting(task.run().unwrap()), expected);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+        let result = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..2000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut Recorder::default())
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            rt.collect().unwrap();
+                        }
+                        outcome => return number(outcome),
+                    }
+                }
+                panic!("bounded derived completion")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(result, 30.0);
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Park inside key conversion or
 /// value evaluation, collect every yield, then migrate to another worker.
 #[test]

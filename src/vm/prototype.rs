@@ -132,7 +132,7 @@ pub(crate) fn get_prototype_of(
         .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
     match function {
         Some(prototype) => Ok(prototype),
-        None => function::function_prototype(heap).map(Some),
+        None => function::inheritance_prototype(heap, id),
     }
 }
 

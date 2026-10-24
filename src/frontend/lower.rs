@@ -312,7 +312,11 @@ pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Execut
 }
 
 fn constructor_kind(f: &Function) -> ConstructorKind {
-    if f.kind == FunctionKind::ClassConstructor {
+    if f.kind == FunctionKind::DerivedClassConstructor {
+        ConstructorKind::DerivedClass
+    } else if f.kind == FunctionKind::DefaultDerivedConstructor {
+        ConstructorKind::DefaultDerivedClass
+    } else if f.kind == FunctionKind::ClassConstructor {
         ConstructorKind::BaseClass
     } else if f.kind == FunctionKind::Ordinary && !f.generator && !f.asynchronous {
         ConstructorKind::Ordinary
@@ -430,7 +434,7 @@ enum Place {
     Current,
     /// The nearest ordinary function's immutable frame receiver.
     This,
-    /// Transport an unevaluated receiver solely for a potential eval call.
+    /// Transport an unevaluated receiver or derived receiver cell.
     RawThis,
     NewTarget,
 }
@@ -1547,7 +1551,11 @@ impl<'s> Lowerer<'s> {
             return self.eval_this.map_or(Place::GlobalObject, Place::Capture);
         }
         if !self.fns[level].lexical_this {
-            return if raw { Place::RawThis } else { Place::This };
+            return if raw || self.fns[level].constructor_kind.is_derived() {
+                Place::RawThis
+            } else {
+                Place::This
+            };
         }
         let captured = if raw {
             self.fns[level].raw_this_capture
@@ -1588,6 +1596,48 @@ impl<'s> Lowerer<'s> {
         ctx.captures.push(parent);
         ctx.new_target_capture = Some(index);
         Some(Place::Capture(index))
+    }
+
+    fn resolve_super_constructor(&mut self, level: usize) -> Place {
+        if !self.fns[level].lexical_this {
+            return Place::Current;
+        }
+        let parent = self.resolve_super_constructor(level - 1);
+        let ctx = &mut self.fns[level];
+        let index = ctx.captures.len().min(MAX_COUNT) as u16;
+        ctx.captures.push(parent);
+        Place::Capture(index)
+    }
+
+    #[inline(never)]
+    fn super_call(&mut self, args: &[Expr], span: Span, forward: bool) -> Result<(), SyntaxError> {
+        if args.len() > MAX_COUNT {
+            return Err(self.error(SyntaxErrorKind::TooLarge, span, "too many super arguments"));
+        }
+        let level = self.fns.len() - 1;
+        let receiver = self.resolve_this(level, true);
+        self.out().load(receiver, span);
+        let constructor = self.resolve_super_constructor(level);
+        self.out().load(constructor, span);
+        self.out().op(Opcode::GetSuperConstructor, span);
+        let target = self.resolve_new_target(level)
+            .ok_or_else(|| self.internal(span, "super outside a constructor"))?;
+        self.out().load(target, span);
+        if forward {
+            self.out().op(Opcode::ForwardArguments, span);
+            self.out().op(Opcode::ConstructSuperSpread, span);
+        } else if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
+            self.spread_arguments(args, span)?;
+            self.out().op(Opcode::ConstructSuperSpread, span);
+        } else {
+            for arg in args {
+                self.expr(arg)?;
+            }
+            self.out()
+                .op_u16(Opcode::ConstructSuper, args.len() as u16, span);
+        }
+        self.out().op(Opcode::BindThis, span);
+        Ok(())
     }
 
     /// The span of the identifier token `name` within `span`, which may also
@@ -2061,6 +2111,8 @@ impl<'s> Lowerer<'s> {
             f.kind,
             FunctionKind::Ordinary
                 | FunctionKind::ClassConstructor
+                | FunctionKind::DerivedClassConstructor
+                | FunctionKind::DefaultDerivedConstructor
                 | FunctionKind::Method
                 | FunctionKind::Getter
                 | FunctionKind::Setter
@@ -2071,6 +2123,10 @@ impl<'s> Lowerer<'s> {
             self.cur_mut().this_strict = parent_this_strict;
         }
         self.function_body(f)?;
+        if f.kind == FunctionKind::DefaultDerivedConstructor {
+            self.super_call(&[], f.span, true)?;
+            self.out().op(Opcode::Return, f.span);
+        }
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
         self.out().op(Opcode::Return, end);
@@ -4085,6 +4141,7 @@ impl<'s> Lowerer<'s> {
                 args,
                 op_span,
             } => self.call(callee, args, span, *op_span),
+            ExprKind::SuperCall { args, op_span } => self.super_call(args, *op_span, false),
             ExprKind::New { .. } => self.new_expr(e),
             ExprKind::OptionalChain { base, links } => {
                 self.optional_chain(base, links, false, None, span)
@@ -4172,6 +4229,7 @@ impl<'s> Lowerer<'s> {
             ExprKind::This => {
                 let place = self.resolve_this(self.fns.len() - 1, false);
                 self.out().load(place, span);
+                self.out().op(Opcode::ResolveThis, span);
                 // Imported receivers have not been evaluated in the caller.
                 // Check only when `this` is actually read, including inside
                 // arrows created by eval. Ordinary function reads still use
@@ -4585,7 +4643,39 @@ impl<'s> Lowerer<'s> {
                 _ => None,
             })
             .unwrap_or_else(|| JsString::from(""));
+        let heritage = if let Some(parent) = &class.heritage {
+            let parent_slot = self.temp(span)?;
+            self.expr(parent)?;
+            self.out()
+                .op(Opcode::CheckHeritage, class.heritage_span.unwrap_or(span));
+            self.out().op_u16(Opcode::SetLocal, parent_slot, span);
+            Some(parent_slot)
+        } else {
+            None
+        };
         self.closure(&class.constructor, None, Some(name))?;
+        if let Some(parent) = heritage {
+            self.out().op_u16(Opcode::GetLocal, parent, span);
+            self.out().op(Opcode::Dup, span);
+            self.constant(Primitive::Null, span)?;
+            self.out().op(Opcode::StrictEq, span);
+            let non_null = self.out().label();
+            let ready = self.out().label();
+            self.out().branch(Opcode::JumpIfFalse, non_null, span);
+            self.out().op(Opcode::Undefined, span);
+            self.out().branch(Opcode::Jump, ready, span);
+            self.out().bind(non_null);
+            self.out().op(Opcode::Dup, span);
+            let prototype = self.name_index("prototype", span)?;
+            self.out().op_u16(
+                Opcode::GetField,
+                prototype,
+                class.heritage_span.unwrap_or(span),
+            );
+            self.out().bind(ready);
+            self.out()
+                .op(Opcode::InitHeritage, class.heritage_span.unwrap_or(span));
+        }
         self.out().op_u16(Opcode::SetLocal, ctor, span);
         if let Some(key) = computed {
             self.out().op_u16(Opcode::GetLocal, key, span);

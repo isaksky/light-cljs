@@ -1005,6 +1005,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | GetRawThis
         | GetNewTarget
         | CheckSloppyThis => false,
+        CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuper(_)
+        | ConstructSuperSpread | BindThis | ResolveThis | ForwardArguments => false,
         GetGlobalObject
         | GetGlobal(_)
         | GetGlobalOrUndefined(_)

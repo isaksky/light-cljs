@@ -639,7 +639,7 @@ impl VmState {
         this: Value,
         argc: usize,
     ) -> Result<(), Fault> {
-        if code.constructor_kind == super::ConstructorKind::BaseClass {
+        if code.constructor_kind.is_class() {
             return Err(Fault::TypeError(
                 "class constructor cannot be invoked without new".into(),
             ));
@@ -909,7 +909,11 @@ impl VmState {
     /// its block runs first (entries above it are discarded: catch handlers,
     /// and pending completions that this return overrides); otherwise the
     /// frame is left as by [`Self::leave`].
-    pub(crate) fn return_value(&mut self, value: Value) -> Result<Returned, Fault> {
+    pub(crate) fn return_value(
+        &mut self,
+        heap: &crate::heap::Heap,
+        mut value: Value,
+    ) -> Result<Returned, Fault> {
         let frame = self.frame_index();
         while let Some(h) = self.handlers.last().filter(|h| h.frame == frame) {
             if let HandlerKind::Pending(Completion::Cancel) = h.kind {
@@ -930,6 +934,17 @@ impl VmState {
                 return Ok(Returned::Finally);
             }
             self.handlers.pop();
+        }
+        if self.top().construct
+            && self.top().code.constructor_kind.is_derived()
+            && !matches!(value, Value::Object(_))
+        {
+            if !matches!(value, Value::Undefined) {
+                return Err(Fault::TypeError(
+                    "derived constructor must return an object or undefined".into(),
+                ));
+            }
+            value = super::dispatch::resolve_this(heap, self.diag.task, &self.top().this)?;
         }
         Ok(match self.leave(value) {
             Some(result) => Returned::Complete(result),
