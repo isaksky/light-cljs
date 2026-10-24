@@ -140,6 +140,40 @@ fn line_column(e: &VmError) -> (u32, u32) {
     (at.line, at.column)
 }
 
+/// A `do`-`while` loop (clj-quickjs-80) parks in its test after a
+/// `continue` through a finally block, then in its body: each time a
+/// collection runs while it is parked and it resumes on another thread
+/// exactly where it stopped, with every effect run once.
+#[test]
+fn do_while_waits_resume_body_and_test() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        "let n = 0;
+         do {
+           n = n + 1;
+           try { __rt.effect(1, n); if (n === 1) continue; __rt.effect(1, __rt.need(5, 3)); }
+           finally { __rt.effect(1, 10 + n); }
+         } while (__rt.need(6, 3) && n < 2);
+         n",
+    );
+    let mut log = Log::default();
+    // Iteration 1: `continue` runs the finally block, then the test waits.
+    run_to_wait(&rt, &task, &mut log, B);
+    assert_eq!(log.0, [1.0, 11.0]);
+    rt.collect().unwrap();
+    let task = publish(&rt, &task, 1.0);
+    // Iteration 2 waits in the body.
+    let (outcome, log) = run_elsewhere(task.clone(), log);
+    assert_eq!(waiting(outcome), key(&rt, A));
+    assert_eq!(log.0, [1.0, 11.0, 2.0]);
+    rt.collect().unwrap();
+    let (outcome, log) = run_elsewhere(publish(&rt, &task, 7.0), log);
+    // The test reads the ready result of `need(6, 3)` and ends the loop.
+    assert_eq!(number(outcome), 2.0);
+    assert_eq!(log.0, [1.0, 11.0, 2.0, 7.0, 12.0]);
+}
+
 /// A wait in a protected block, a catch block, and a finally block: parking
 /// runs no handler, the finally block runs once after the resumed code, and
 /// nothing before the wait is replayed.
