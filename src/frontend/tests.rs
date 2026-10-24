@@ -2395,16 +2395,11 @@ fn arrow_functions_and_asi() {
     rejects("arguments => 1", ReservedWord, 1, 1);
     rejects("undefined => 1", ReservedWord, 1, 1);
     rejects("yield => 1", ReservedWord, 1, 1);
-    // No `arguments` in the subset, inside arrows too. Script-level
-    // arrows inherit the unsupported global `this` (clj-quickjs-104).
+    // Script-level arrows inherit the unsupported global `this` (clj-quickjs-104).
     rejects_with("() => this", Unsupported, 1, 7, "`this`");
-    rejects_with(
-        "() => { return arguments; }",
-        Unsupported,
-        1,
-        16,
-        "arguments",
-    );
+    parse_script("() => { return arguments; }").unwrap();
+    rejects("arguments = 1", ReservedWord, 1, 1);
+    rejects("arguments++", ReservedWord, 1, 1);
     // `return` is allowed in a block body, not in a concise body or after
     // the arrow.
     rejects("() => return", UnexpectedToken, 1, 7);
@@ -3349,7 +3344,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
         ("x = eval;", 1, 5, "eval"),
-        ("function f() { return arguments; }", 1, 23, "arguments"),
     ];
     for &(src, line, column, needle) in cases {
         rejects_with(src, Unsupported, line, column, needle);

@@ -96,6 +96,8 @@ pub(crate) struct Code {
     pub(crate) strict: bool,
     /// An ordinary function ([`ExecutableSpec::constructor`]).
     pub(crate) constructor: bool,
+    /// Derived from the bytecode when loaded, including spec round trips.
+    pub(crate) uses_arguments: bool,
     pub(crate) instrs: Box<[Instr]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
@@ -488,6 +490,7 @@ impl Executable {
                 Opcode::In => Instr::In,
                 Opcode::ForInStart => Instr::ForInStart,
                 Opcode::ForInNext => Instr::ForInNext,
+                Opcode::NewArguments => Instr::NewArguments,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -541,6 +544,7 @@ impl Executable {
             captures,
             strict,
             constructor,
+            uses_arguments: instrs.iter().any(|i| matches!(i, Instr::NewArguments)),
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,

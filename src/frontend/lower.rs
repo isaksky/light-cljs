@@ -17,11 +17,12 @@
 //! function expression lowers to `function i`, a call to `call n`. Function
 //! declarations are hoisted: entering a statement list creates its
 //! declarations' closures, in source order, before any statement runs. An
-//! arrow function lowers exactly as an anonymous function expression (its
-//! concise body is already a `return` statement in the tree). Its `this`
-//! is captured by value from the nearest non-arrow function, through every
-//! intervening arrow (clj-quickjs-98); `arguments`, `new.target` and `super`
-//! are still outside the subset.
+//! arrow's concise body is already a `return` statement in the tree.
+//! Arrows capture `arguments` lexically; ordinary functions install an
+//! implicit binding only when referenced, using the analysis pass's facts.
+//! Their `this` is captured by value from the nearest ordinary function
+//! through intervening arrows (clj-quickjs-98). `new.target` and `super`
+//! remain deferred.
 //!
 //! **Bindings.** Every `let`/`const`/function binding and every parameter
 //! lives in a frame local. Entering a statement list (script, function body,
@@ -281,6 +282,11 @@ type Scope = HashMap<String, Binding>;
 /// [`Binding::key`]).
 #[derive(Clone, Copy, Default)]
 struct Facts {
+    /// A reference resolves to this binding (including through an arrow).
+    referenced: bool,
+    /// Body var initialized from this parameter-scope binding. Its reads
+    /// require the source even if defaults never reference it directly.
+    copied_to: Option<usize>,
     /// Some assignment targets it.
     assigned: bool,
     /// A closure capturing it is created while it is initialized.
@@ -448,13 +454,17 @@ struct FnCtx {
     /// A `function` declaration or expression (not an arrow or a script):
     /// in JavaScript it has its own `arguments` object, which a reference
     /// to `arguments` denotes unless the function binds that name itself
-    /// ([`Lowerer::check_arguments_reference`]).
+    /// ([`Lowerer::arguments_binding`]).
     own_arguments: bool,
     /// Arrows inherit their nearest ordinary function's receiver.
     lexical_this: bool,
     /// Capture index for that receiver, shared by all its uses and any
     /// nested arrows that need it. No cell: a frame's receiver is immutable.
     this_capture: Option<u16>,
+
+    /// Private identity for the implicit arguments binding, separate from
+    /// source offsets and the function's self-binding.
+    arguments_key: usize,
     /// The function's own name and how it may be referred to from inside.
     self_name: Option<(String, SelfKind)>,
     /// Identity of the self-binding (never a source offset).
@@ -600,6 +610,8 @@ impl<'s> Lowerer<'s> {
         let slots = usize::from(script);
         let self_key = self.next_self_key;
         self.next_self_key -= 1;
+        let arguments_key = self.next_self_key;
+        self.next_self_key -= 1;
         self.fns.push(FnCtx {
             out: Emitter::default(),
             scopes: Vec::new(),
@@ -610,6 +622,8 @@ impl<'s> Lowerer<'s> {
             own_arguments: false,
             lexical_this: false,
             this_capture: None,
+
+            arguments_key,
             self_name,
             self_key,
             captures: Vec::new(),
@@ -844,11 +858,24 @@ impl<'s> Lowerer<'s> {
                 }
             }
         }
+        let arguments = if top_level && self.cur().var_scope == 0 {
+            self.arguments_binding(
+                clauses
+                    .first()
+                    .and_then(|c| c.first())
+                    .map_or(Span::new(0, 0), |s| s.span),
+            )?
+        } else {
+            None
+        };
         // Cells first, so hoisted closures can capture any of them. A
         // parameter's cell holds its argument and a `var`'s `undefined`;
         // the others start uninitialized.
         for name in declared {
             let b = self.local(name)?;
+            if arguments.is_some_and(|a| a.key == b.key) {
+                continue;
+            }
             if top_level && b.kind == BindingKind::Var && self.cur().var_scope > 0 {
                 self.init_body_var(name, b);
                 continue;
@@ -1067,15 +1094,10 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Resolve a reference to `name` written in the source (a read, an
-    /// assignment or update target, a `typeof` operand). The parser passes
-    /// `eval` and `arguments` through only in sloppy code (clj-quickjs-95),
-    /// where a program may bind them; a reference is supported only where
-    /// it denotes such a binding, and is otherwise
-    /// [`Access::Unsupported`], which [`Self::load`] and [`Self::store`]
-    /// report as a compile error. `eval` must have a binding of that name
-    /// in scope (the global `eval` is clj-quickjs-106); for `arguments`,
-    /// see [`Self::arguments_is_bound`]. Returning no `Result` keeps the
-    /// recursive [`Self::expr`] frame small.
+    /// assignment or update target, a `typeof` operand). Only unbound
+    /// `eval` remains unsupported (clj-quickjs-106). `arguments` resolves
+    /// as an ordinary binding, including the implicit function binding.
+    /// Returning no `Result` keeps the recursive [`Self::expr`] frame small.
     #[inline(never)]
     fn resolve_reference(&mut self, name: &str) -> Access {
         let bound = match name {
@@ -1083,7 +1105,6 @@ impl<'s> Lowerer<'s> {
                 ctx.scopes.iter().any(|scope| scope.contains_key(name))
                     || ctx.self_name.as_ref().is_some_and(|(n, _)| n == name)
             }),
-            "arguments" => self.arguments_is_bound(),
             _ => true,
         };
         match (bound, name) {
@@ -1091,36 +1112,67 @@ impl<'s> Lowerer<'s> {
             (false, "eval") => Access::Unsupported(
                 "`eval` is not supported by this JavaScript subset (only a binding named `eval` is)",
             ),
-            (false, _) => Access::Unsupported(
-                "the `arguments` object is not supported by this JavaScript subset",
-            ),
+            (false, _) => unreachable!("only eval can be unsupported"),
         }
     }
 
-    /// A reference to `arguments` (clj-quickjs-95) is supported only where
-    /// it denotes a binding the program declares. Searching outwards, the
-    /// first function that binds `arguments` in a scope enclosing the
-    /// reference decides, unless a `function` (not an arrow) without such a
-    /// binding comes first: its own `arguments` object (clj-quickjs-97)
-    /// would be the referent. In a `function`, a plain `var arguments` is
-    /// that object too (ECMAScript FunctionDeclarationInstantiation keeps
-    /// the object for a `var`), so it does not count. A script binds no
-    /// `arguments` object: an unbound reference there is an ordinary
-    /// unresolvable name.
-    fn arguments_is_bound(&self) -> bool {
-        for ctx in self.fns.iter().rev() {
-            let binding = ctx
-                .scopes
-                .iter()
-                .rev()
-                .find_map(|scope| scope.get("arguments"));
-            match binding {
-                Some(b) => return !(ctx.own_arguments && b.kind == BindingKind::Var),
-                None if ctx.own_arguments => return false,
-                None => {}
-            }
+    /// Install an ordinary function's implicit arguments binding in its
+    /// parameter scope (or body scope without defaults). Parameters and
+    /// lexical/function declarations shadow it; a plain `var` keeps it.
+    /// Arrows and scripts introduce no implicit binding.
+    #[inline(never)]
+    fn arguments_binding(&mut self, span: Span) -> Result<Option<Binding>, SyntaxError> {
+        if !self.cur().own_arguments {
+            return Ok(None);
         }
-        true
+        let prior = self
+            .cur()
+            .scopes
+            .last()
+            .and_then(|s| s.get("arguments"))
+            .copied();
+        if prior.is_some_and(|b| b.kind != BindingKind::Var) {
+            return Ok(None);
+        }
+        let key = prior.map_or(self.cur().arguments_key, |b| b.key);
+        // The analysis pass installs the candidate binding so nested arrows
+        // resolve normally. The emit pass allocates it only if referenced.
+        let facts = self.facts_of(key);
+        let referenced = facts.referenced
+            || facts
+                .copied_to
+                .is_some_and(|body| self.facts_of(body).referenced);
+        if !self.analyzing() && !referenced {
+            return Ok(None);
+        }
+        let b = match prior {
+            Some(b) => b,
+            None => {
+                let b = Binding {
+                    kind: BindingKind::Var,
+                    slot: self.temp(span)?,
+                    initialized: true,
+                    repr: self.facts_of(key).repr(),
+                    key,
+                };
+                self.cur_mut()
+                    .scopes
+                    .last_mut()
+                    .expect("function scope")
+                    .insert("arguments".into(), b);
+                b
+            }
+        };
+        if b.repr == Repr::Cell {
+            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::Dup, span);
+        }
+        self.out().op(Opcode::NewArguments, span);
+        if b.repr == Repr::Cell {
+            self.out().op(Opcode::CellInit, span);
+        }
+        self.out().op_u16(Opcode::SetLocal, b.slot, span);
+        Ok(Some(b))
     }
 
     /// Resolve `name` as seen from function `level`, adding captures to it
@@ -1129,7 +1181,16 @@ impl<'s> Lowerer<'s> {
     /// height.
     fn resolve_in(&mut self, level: usize, name: &str) -> Access {
         let ctx = &self.fns[level];
-        if let Some(b) = ctx.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+        if let Some(b) = ctx
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .copied()
+        {
+            if self.analyzing() {
+                self.fact(b.key).referenced = true;
+            }
             return Access::Found {
                 place: Place::Local(b.slot),
                 target: Target::Binding(b.kind),
@@ -1456,6 +1517,8 @@ impl<'s> Lowerer<'s> {
                 _ => return Err(self.internal(p.span, "parameter is not in its argument slot")),
             }
         }
+        self.arguments_binding(f.span)?;
+        let parameter_slots = self.cur().next_slot;
         let mut sources = Vec::with_capacity(f.params.len());
         for p in &f.params {
             let b = self.local(p)?;
@@ -1494,7 +1557,7 @@ impl<'s> Lowerer<'s> {
         }
         // The scratch locals are free again: the body's bindings reuse them
         // (`init_body_var`).
-        self.cur_mut().next_slot = f.params.len();
+        self.cur_mut().next_slot = parameter_slots;
         Ok(())
     }
 
@@ -1513,6 +1576,9 @@ impl<'s> Lowerer<'s> {
         }
         match param {
             Some(p) => {
+                if self.analyzing() {
+                    self.fact(p.key).copied_to = Some(b.key);
+                }
                 self.out().op_u16(Opcode::GetLocal, p.slot, span);
                 if p.repr == Repr::Cell {
                     self.out().op(Opcode::CellGet, span);
@@ -1531,7 +1597,11 @@ impl<'s> Lowerer<'s> {
     /// scope the body's scope reports it as a redeclaration).
     fn check_not_parameter(&self, name: &Ident) -> Result<(), SyntaxError> {
         let ctx = self.cur();
-        if ctx.var_scope > 0 && ctx.scopes[0].contains_key(&name.name) {
+        if ctx.var_scope > 0
+            && ctx.scopes[0]
+                .get(&name.name)
+                .is_some_and(|b| b.kind == BindingKind::Param)
+        {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
                 name.span,

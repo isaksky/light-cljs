@@ -393,7 +393,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
         | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
         | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
-        | ForInNext => false,
+        | ForInNext | NewArguments => false,
     }
 }
 

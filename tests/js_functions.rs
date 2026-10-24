@@ -51,6 +51,223 @@ fn eval(src: &str) -> ValueView {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn arguments_object_holds_every_argument() {
+    for src in [
+        "function f() { return arguments.length; } f(1,3)===2",
+        "function f(a) { return arguments[1]; } f(1,3)===3",
+        "function f(a,b) { return arguments[0]===1 && arguments.length===1; } f(1)",
+        "function f() { return (()=>arguments)(); } const a=f(1,2); a.length===2 && a[0]===1 && a[1]===2",
+        "function f() { return arguments; } f()!==f()",
+        "function f(a) { a=9; arguments[0]=3; return a===9 && arguments[0]===3; } f(1)",
+        "function f() { const a=arguments; const d=Object.getOwnPropertyDescriptor(a,'length'); const i=Object.getOwnPropertyDescriptor(a,'0'); return Object.getPrototypeOf(a)===Object.prototype && d.value===2 && d.writable && !d.enumerable && d.configurable && i.writable && i.enumerable && i.configurable && Object.keys(a).length===2; } f(1,2)",
+        "function f() { return ()=>()=>arguments; } const a=f(4,5)()(); a[1]===5 && a.length===2",
+        "function f() { function g() { return arguments; } return g(9)[0]===9 && arguments[0]===1; } f(1)",
+        "function f(a,b=arguments[0]) { return b===a && arguments.length===1; } f(8)",
+        "function f(a,b=()=>arguments) { return b; } const a=f(8)(); a[0]===8 && a.length===1",
+        "function f(a=7) { return arguments.length===0 && arguments[0]===undefined; } f()",
+        "function f() { return arguments[1]; } f.call(undefined,1,3)===3 && f.apply(undefined,[1,4])===4 && Reflect.apply(f,undefined,[1,5])===5 && f.bind(undefined,1)(6)===6",
+        "function F() { return arguments; } const a=new F(1,2); a[1]===2 && a.length===2",
+        "__rt.reduce(function(a,x) { return a+x+arguments.length; },0,__rt.vector(1,2))===7",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        failure("const g=()=>arguments; g()").kind(),
+        VmErrorKind::ReferenceError
+    );
+    let rt = Runtime::new();
+    let args = [
+        rt.root(Primitive::Number(1.0)),
+        rt.root(Primitive::Undefined),
+        rt.root(Primitive::Number(3.0)),
+    ];
+    // Explicit undefined remains in the object, even when its parameter defaults.
+    let entry=compile_function("function f(a,b=2) { return arguments.length===3 && b===2 && arguments[1]===undefined && arguments[2]===3; }").unwrap();
+    let RunOutcome::Complete(v) = rt
+        .spawn(&entry, &args.iter().collect::<Vec<_>>())
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn arguments_bindings_shadow_and_capture_in_sloppy_code() {
+    for src in [
+        "function f(arguments) { return ()=>arguments; } f(7)()===7",
+        "function f() { let arguments=7; return ()=>arguments; } f(1)()===7",
+        "function f() { function arguments() { return 7; } return arguments(); } f(1)===7",
+        "function f() { var arguments; return arguments.length===2 && arguments[1]===3; } f(1,3)",
+        "function f() { var arguments=7; return arguments; } f(1)===7",
+        "function f() { const g=()=>arguments; arguments=7; return g()===7; } f(1)",
+        "function f() { const g=()=>arguments; arguments=2; arguments++; return g()===3; } f(1)",
+        "let arguments=7; function f() { return ()=>arguments; } f(1)()[0]===1",
+        "function arguments() { return arguments.length; } arguments(1,2)===2",
+        "function f(a=arguments[0]) { var arguments; return arguments.length===1 && a===4; } f(4)",
+        "function f(a=()=>arguments) { var arguments=7; return a; } f()().length===0",
+        "function f(a=()=>arguments) { let arguments=7; return a; } f()(4).length===0",
+        "function f(a=()=>arguments) { function arguments() {} return a; } f()().length===0",
+        "function f() { { let arguments=7; if (arguments!==7) return false; } return arguments[0]===1; } f(1)",
+    ] {
+        let rt = Runtime::new();
+        let exe = compile_script_with("arguments", src, ScriptOptions::SLOPPY).unwrap();
+        let RunOutcome::Complete(v) = rt.spawn(&exe, &[]).unwrap().run().unwrap() else {
+            panic!("{src}")
+        };
+        assert_eq!(v.view(), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn arguments_captures_are_task_owned_but_unused_functions_remain_publishable() {
+    let rt = Runtime::new();
+    for src in [
+        "function f() { return ()=>arguments; } f(1)",
+        "function f() { const g=()=>arguments; arguments=7; return g; } f(1)",
+    ] {
+        let program = compile_script_with("arguments", src, ScriptOptions::SLOPPY).unwrap();
+        let RunOutcome::Complete(f) = rt.spawn(&program, &[]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert!(
+            matches!(rt.publish(&f), Err(PublishError::NotShareable { .. })),
+            "{src}"
+        );
+    }
+    let program = exe("function f(a) { return ()=>a; } f(7)");
+    assert!(
+        !program
+            .function(0)
+            .unwrap()
+            .to_spec()
+            .code
+            .contains(&(Opcode::NewArguments as u8))
+    );
+    let RunOutcome::Complete(f) = rt.spawn(&program, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&f).unwrap();
+    let unused = compile_script_with(
+        "unused",
+        "function f(a=1) { var arguments; return ()=>a; } f()",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    assert!(
+        !unused
+            .function(0)
+            .unwrap()
+            .to_spec()
+            .code
+            .contains(&(Opcode::NewArguments as u8))
+    );
+    let RunOutcome::Complete(f) = rt.spawn(&unused, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&f).unwrap();
+}
+
+#[test]
+fn original_entry_arguments_are_traced_before_materialization() {
+    let rt = Runtime::new();
+    let RunOutcome::Complete(extra) = rt
+        .spawn(&exe("__rt.vector(1,2)"), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!()
+    };
+    let code = compile_function("function f() { return __rt.count(arguments[0]); }").unwrap();
+    let code = Executable::load(code.to_spec()).unwrap();
+    let task = rt.spawn(&code, &[&extra]).unwrap();
+    drop(extra);
+    assert!(matches!(
+        task.run_with(Budget::instructions(0), &mut PlusThousand::default())
+            .unwrap(),
+        RunOutcome::Yielded
+    ));
+    rt.collect().unwrap();
+    let RunOutcome::Complete(v) = std::thread::spawn(move || task.run().unwrap())
+        .join()
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Number(2.0));
+}
+
+#[test]
+fn arguments_survive_collection_at_every_instruction() {
+    let rt = Runtime::new();
+    let program =
+        exe("function f(a,b=()=>arguments) { return b; } const g=f({x:30}); g()[0].x+g().length;");
+    let mut spec = program.to_spec();
+    spec.functions = spec
+        .functions
+        .into_iter()
+        .map(|f| Executable::load(f.to_spec()).unwrap())
+        .collect();
+    let task = rt.spawn(&Executable::load(spec).unwrap(), &[]).unwrap();
+    let mut host = PlusThousand::default();
+    for _ in 0..500 {
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| task.run_with(Budget::instructions(1), &mut host))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Number(31.0));
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("did not finish within 500 instructions");
+}
+
+#[test]
+fn arguments_survive_wait_collection_and_migration() {
+    for src in [
+        "function f(a) { const g=()=>arguments; __rt.need(5,3); return g()[0].x+g()[1].x+g().length; } f({x:10},{x:20})",
+        "function f(a,b=__rt.need(5,3)) { return arguments[0].x+arguments[2].x+arguments.length; } f({x:10},undefined,{x:19})",
+    ] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(src), &[]).unwrap();
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let requests = task.take_producer_requests();
+        assert_eq!(requests.len(), 1);
+        let value = rt.root(Primitive::Number(4.0));
+        let mut ready = rt
+            .complete(
+                requests[0].key(),
+                requests[0].producer(),
+                Completion::Ready(&value),
+            )
+            .unwrap()
+            .into_runnable();
+        let task = ready.pop().unwrap();
+        let RunOutcome::Complete(v) = std::thread::spawn(move || task.run().unwrap())
+            .join()
+            .unwrap()
+        else {
+            panic!("{src}")
+        };
+        assert_eq!(v.view(), ValueView::Number(32.0));
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn function_length_and_name() {
     for src in [
         "(function (a,b) {}).length===2",
@@ -1151,9 +1368,8 @@ fn intrinsic_arguments_evaluate_left_to_right() {
     );
 }
 
-/// Arrow functions (clj-quickjs-53) are closures: the same lowering as an
-/// anonymous function expression (the subset has no `this` or `arguments`
-/// for them to differ on). The first three scripts are the
+/// Arrow functions (clj-quickjs-53) are closures with lexical arguments
+/// (clj-quickjs-97); lexical this remains deferred. The first three scripts are the
 /// `test_parse_arrow_function` cases of
 /// `research/quickjs/tests/test_language.js` (QuickJS, revision
 /// 7d1c13c5d8f8; see `docs/architecture.md` for the attribution), checked
@@ -1244,8 +1460,8 @@ fn arrow_function_values() {
         ValueView::Undefined
     );
     assert_eq!(
-        compile_err("const f = (a) => arguments;"),
-        (SyntaxErrorKind::Unsupported, 1, 18)
+        failure("const f = (a) => arguments; f();").kind(),
+        VmErrorKind::ReferenceError
     );
 }
 
@@ -1335,9 +1551,8 @@ fn arrows_capture_this_by_value_for_publication() {
 /// called instead of asking its `length` (clj-quickjs-101), and
 /// `f = function f(a = f) { return a; }; f() === f` of
 /// `test_argument_scope` (line 453), as a `const` binding a differently
-/// named expression and as a declaration. Its `arguments`, `this`
-/// (`f.call(123)`; a `new F()` stand-in runs here) and `eval` cases wait
-/// for clj-quickjs-97, -102 and -109; see
+/// named expression and as a declaration. Synthetic arguments cases are
+/// included below (clj-quickjs-97); its eval cases wait for clj-quickjs-109; see
 /// `docs/architecture.md`, "QuickJS references and provenance".
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
@@ -1475,14 +1690,18 @@ fn default_parameters() {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(6.0)),
         other => panic!("{other:?}"),
     }
-    // `arguments` (clj-quickjs-97) is not in the subset yet, in defaults as
-    // elsewhere. A default sees its function's `this` (clj-quickjs-116; the
-    // receiver of a method call, `undefined` for a plain call). An arrow
-    // default sees lexical `this`; only script-level arrows reject it.
+    // Defaults see the original arguments, including through arrows.
     assert_eq!(
-        compile_err("function f(a, b = arguments[0]) { return b; }"),
-        (SyntaxErrorKind::Unsupported, 1, 19)
+        num("function f(a, b = arguments[0]) { return b; } f(7)"),
+        7.0
     );
+    assert_eq!(
+        num("function f(a, b = () => arguments) { return b; } f(7)()[0]"),
+        7.0
+    );
+    // A default sees its function's `this` (clj-quickjs-116; the
+    // receiver of a method call, `undefined` for a plain call). An arrow's
+    // default sees lexical `this`; only script-level arrows reject it.
     assert_eq!(
         num("let o = {v: 4, F: function (a = this) { return a.v; }}; o.F()"),
         4.0

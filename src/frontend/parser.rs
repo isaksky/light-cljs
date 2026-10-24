@@ -1590,6 +1590,15 @@ impl<'a> Parser<'a> {
             ),
         };
         match &left.kind {
+            ExprKind::Identifier(name)
+                if self.strict && STRICT_RESTRICTED.contains(&name.as_str()) =>
+            {
+                Err(self.error(
+                    SyntaxErrorKind::ReservedWord,
+                    left.span,
+                    format!("`{name}` cannot be {verb} in strict mode"),
+                ))
+            }
             ExprKind::Identifier(name) => Ok(Ident {
                 name: name.clone(),
                 span: left.span,
@@ -2359,11 +2368,9 @@ impl<'a> Parser<'a> {
     }
 
     /// An identifier in expression position, including the reserved
-    /// constants and the `async` / arrow rejections. `eval` and `arguments`
-    /// are unsupported in strict code, where they cannot name a binding of
-    /// the program; in sloppy code (clj-quickjs-95) they are ordinary
-    /// identifiers here, and the compiler accepts them only where they
-    /// denote such a binding (`Lowerer::resolve_reference`).
+    /// constants and the `async` / arrow rejections. `arguments` is an
+    /// ordinary reference in either mode. `eval` remains unsupported in
+    /// strict code, and must resolve to a declared binding in sloppy code.
     #[inline(never)]
     fn parse_identifier_reference(&mut self) -> PResult<Expr> {
         let span = self.tok.span;
@@ -2378,9 +2385,6 @@ impl<'a> Parser<'a> {
             "NaN" => ExprKind::Number(f64::NAN),
             "Infinity" => ExprKind::Number(f64::INFINITY),
             "eval" if self.strict => return Err(self.unsupported(span, "`eval` is")),
-            "arguments" if self.strict => {
-                return Err(self.unsupported(span, "the `arguments` object is"));
-            }
             "async" => {
                 let next = self.peek_next().filter(|t| !t.newline_before);
                 match next.map(|t| t.kind) {

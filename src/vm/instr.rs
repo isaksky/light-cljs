@@ -89,6 +89,14 @@
 //! | `ToString`      | 0x55 | –                  | v → s                  | JavaScript ToString on primitives (clj-quickjs-57) |
 //! | `GetThis`       | 0x56 | –                  | → this                 | push the running frame's `this` value (the receiver it was called with) |
 //! | `Construct`     | 0x5E | u16 argument count | f a1 … an → obj        | `new f(a1, …, an)`: construct with the ordinary function `f` (clj-quickjs-71) |
+//! | `NewArguments`  | 0x65 | –                  | → obj                  | consume retained actual arguments into an unmapped ordinary object |
+//!
+//! `NewArguments` (clj-quickjs-97) is emitted at function entry before
+//! defaults. Loading code containing it retains all original actual values
+//! in the task-owned frame until the instruction consumes them; other code
+//! retains only declared parameters. It allocates an ordinary object with
+//! Object.prototype, enumerable writable configurable indices and a
+//! non-enumerable writable configurable length, and is a GC poll point.
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -524,6 +532,7 @@ pub enum Opcode {
     In = 0x62,
     ForInStart = 0x63,
     ForInNext = 0x64,
+    NewArguments = 0x65,
 }
 
 /// Operand encoding of an opcode.
@@ -679,6 +688,7 @@ impl Opcode {
             0x62 => In,
             0x63 => ForInStart,
             0x64 => ForInNext,
+            0x65 => NewArguments,
             _ => return None,
         })
     }
@@ -787,6 +797,7 @@ impl Opcode {
             In => "in",
             ForInStart => "for_in_start",
             ForInNext => "for_in_next",
+            NewArguments => "new_arguments",
         }
     }
 
@@ -813,7 +824,7 @@ impl Opcode {
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
-            | Instanceof | Delete | In | ForInStart | ForInNext => OperandKind::None,
+            | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
         }
     }
 }
@@ -964,6 +975,7 @@ pub(crate) enum Instr {
     In,
     ForInStart,
     ForInNext,
+    NewArguments,
 }
 
 impl Instr {
@@ -1069,6 +1081,7 @@ impl Instr {
             Instr::In => Opcode::In,
             Instr::ForInStart => Opcode::ForInStart,
             Instr::ForInNext => Opcode::ForInNext,
+            Instr::NewArguments => Opcode::NewArguments,
         }
     }
 
@@ -1079,7 +1092,7 @@ impl Instr {
         match self {
             Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
             | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
-            | NewObjectLiteral | GetThis | NewArray => (0, 1),
+            | NewObjectLiteral | GetThis | NewArray | NewArguments => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
@@ -1125,6 +1138,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 100);
+        assert_eq!(assigned, 101);
     }
 }

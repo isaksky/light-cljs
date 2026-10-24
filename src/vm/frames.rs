@@ -122,6 +122,9 @@ pub(crate) struct Frame {
     /// new object as `this`. When it returns a value that is not an object,
     /// the caller receives `this` instead (the return-override rule).
     pub(crate) construct: bool,
+    /// Original actual arguments, only for code containing NewArguments.
+    /// Traced until that instruction consumes them, before defaults run.
+    pub(crate) arguments: Option<Vec<Value>>,
     /// Index of the next instruction to execute in `code`.
     pub(crate) pc: usize,
     /// Index of this frame's local 0 in [`VmState::stack`].
@@ -191,6 +194,8 @@ pub(crate) struct VmState {
     calls: Vec<Frame>,
     /// Locals and operands of every frame (see the module docs).
     stack: Vec<Value>,
+    /// Values retained in frames before NewArguments consumes them.
+    pending_arguments: usize,
     limits: VmLimits,
     pub(crate) diag: DiagnosticContext,
     /// Transient builders this task created, released when it finishes. Not
@@ -239,11 +244,13 @@ impl VmState {
                 callee: None,
                 this: Value::Undefined,
                 construct: false,
+                arguments: code.uses_arguments.then(|| args.to_vec()),
                 pc: 0,
                 base: 0,
             },
             calls: Vec::new(),
             stack,
+            pending_arguments: if code.uses_arguments { args.len() } else { 0 },
             limits,
             diag,
             builders: OwnedBuilders::default(),
@@ -261,6 +268,19 @@ impl VmState {
 
     pub(crate) fn top_mut(&mut self) -> &mut Frame {
         self.calls.last_mut().unwrap_or(&mut self.entry)
+    }
+
+    pub(crate) fn clear_arguments(&mut self) {
+        if let Some(args) = self.top_mut().arguments.take() {
+            self.pending_arguments -= args.len();
+        }
+    }
+
+    fn truncate_calls(&mut self, len: usize) {
+        for frame in &self.calls[len..] {
+            self.pending_arguments -= frame.arguments.as_ref().map_or(0, Vec::len);
+        }
+        self.calls.truncate(len);
     }
 
     /// Number of live frames, the entry frame included.
@@ -396,7 +416,9 @@ impl VmState {
         }
         let needed = base
             .saturating_add(usize::from(code.locals))
-            .saturating_add(code.max_stack);
+            .saturating_add(code.max_stack)
+            .saturating_add(if code.uses_arguments { argc } else { 0 })
+            .saturating_add(self.pending_arguments);
         if needed > self.limits.max_stack_values {
             return Err(Fault::StackOverflow(format!(
                 "a call needing {needed} stack values exceeds the limit of {}",
@@ -405,6 +427,12 @@ impl VmState {
         }
         // Shift the arguments down over the callee slot, then bind them.
         self.stack.remove(base);
+        let arguments = code
+            .uses_arguments
+            .then(|| self.stack[base..base + argc].to_vec());
+        if arguments.is_some() {
+            self.pending_arguments += argc;
+        }
         bind_args(&mut self.stack, base, &code, argc);
         self.stack.reserve(code.max_stack);
         self.calls.push(Frame {
@@ -412,6 +440,7 @@ impl VmState {
             callee: Some(callee),
             this,
             construct: false,
+            arguments,
             pc: 0,
             base,
         });
@@ -430,6 +459,7 @@ impl VmState {
         match self.calls.pop() {
             None => Some(result),
             Some(frame) => {
+                self.pending_arguments -= frame.arguments.as_ref().map_or(0, Vec::len);
                 self.stack.truncate(frame.base);
                 let result = match result {
                     Value::Object(_) => result,
@@ -662,7 +692,7 @@ impl VmState {
             if let Err(message) = native::unwind(&mut self.natives, h.frame) {
                 return Raised::Broken(message);
             }
-            self.calls.truncate(h.frame);
+            self.truncate_calls(h.frame);
             if h.height < self.top().floor() {
                 return Raised::Broken("handler height below its frame's operands");
             }
@@ -710,7 +740,7 @@ impl VmState {
                 return false;
             }
             native::discard(&mut self.natives, h.frame);
-            self.calls.truncate(h.frame);
+            self.truncate_calls(h.frame);
             if h.height < self.top().floor() {
                 return false;
             }
@@ -796,6 +826,9 @@ impl Trace for VmState {
                 visit(id);
             }
             frame.this.trace(visit);
+            if let Some(args) = &frame.arguments {
+                args.iter().for_each(|v| v.trace(visit));
+            }
         }
         self.handlers.iter().for_each(|h| h.trace(visit));
         self.natives.iter().for_each(|n| n.trace(visit));

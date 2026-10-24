@@ -3407,3 +3407,27 @@ QuickJS semantic reference: `research/quickjs/quickjs.c`,
 `research/quickjs/tests/test_closure.js`, `test_arrow_function`, revision
 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. No source or fixture text was
 copied; the tests added for this pellet are synthetic.
+
+### Arguments object creation and lexical capture (clj-quickjs-97)
+
+The lowerer's existing analysis pass records references to an implicit
+`arguments` binding, including through arrows. Only referenced ordinary
+functions emit `new_arguments` (`0x65`); scripts and arrows introduce no object.
+With default parameters the binding lives in the parameter scope, before
+initializers, and body `var` bindings copy it under the existing scope rules.
+The normal value/cell rule handles assignment and capture; reaching the ordinary
+object remains task-owned and fails publication.
+
+Loaded code derives its argument-retention flag from the instruction stream,
+so ExecutableSpec round trips keep the behavior. A frame retains original
+actual values only until `new_arguments` builds an ordinary object with
+`Object.prototype`; frame tracing visits those values before materialization,
+and ordinary property tracing visits them afterward. Retained values count
+against call storage limits. No Rust frame is retained across yields or waits.
+
+QuickJS semantic references: `research/quickjs/quickjs.c` `js_build_arguments`,
+`add_arguments_arg`, and `OP_special_object`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The Rust implementation and inline
+synthetic tests are original; no upstream code or test text was copied. Mapped
+sloppy arguments, the callee accessor, arguments branding, and Symbol.iterator
+(clj-quickjs-127) remain deferred.

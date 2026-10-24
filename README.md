@@ -1752,7 +1752,7 @@ Supported (`cargo test --lib frontend::tests::directive_prologues_set_strictness
 Deferred:
 
 - Every other sloppy-mode difference (listed in `docs/grammar.md`,
-  "Explicit gaps"): references that would denote the `arguments` object (clj-quickjs-97) or the global `eval`
+  "Explicit gaps"): references that would denote the global `eval`
   (clj-quickjs-106), sloppy function-name
   stores (clj-quickjs-96), implicit globals (clj-quickjs-105), `with`
   (clj-quickjs-110); strict reserved words and duplicate parameters stay
@@ -1778,8 +1778,8 @@ Supported (`cargo test --lib frontend::tests::default_parameters`,
 
 Deferred:
 
-- The `arguments` object and `eval` in defaults (clj-quickjs-97,
-  -106/-109; rejected as everywhere). An arrow's default sees its lexical
+- `eval` in defaults (clj-quickjs-106/-109; rejected as everywhere).
+  An arrow's default sees its lexical
   `this` (clj-quickjs-98); a non-arrow function's default sees its own
   receiver (clj-quickjs-116). Function metadata is supported by clj-quickjs-101, below.
 
@@ -2431,3 +2431,20 @@ Supported (`cargo test --test js_source string_length_and_index_properties`,
   `[[StringData]]`. Compatible `Object.defineProperty` calls succeed; incompatible
   values or attributes throw TypeError. Other properties use ordinary storage, with
   every index sorted before `length`, then other names in creation order.
+
+### Arguments objects (clj-quickjs-97)
+
+Ordinary functions that reference `arguments` directly or through arrows
+create an unmapped ordinary object with `Object.prototype`, all actual values
+(including extra arguments), enumerable writable configurable indices, and a
+non-enumerable writable configurable `length`. Parameter defaults see original
+actual values; arrows capture the nearest enclosing binding. A parameter,
+function or lexical declaration can shadow the binding in sloppy code; a plain
+`var arguments;` preserves it. At script level an unresolved `arguments` throws
+ReferenceError. Objects and captures are task-owned, traced across yields,
+waits, GC and migration, and rejected by publication. Functions without a
+reference retain neither the object nor extra arguments.
+
+Deferred: sloppy parameter aliasing, `callee`'s restricted accessor, the
+arguments brand for `Object.prototype.toString`, and `Symbol.iterator`
+(symbols are clj-quickjs-127). Verify with `cargo test --test js_functions arguments_`.

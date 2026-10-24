@@ -86,7 +86,7 @@ use crate::heap::ObjectId;
 use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::ids::{DependencyId, ResultKind, TaskId};
-use crate::object::OrdinaryObject;
+use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::realm::{self, Global};
 use crate::value::string::{number_to_string, string_to_number};
 use crate::value::{JsString, Value};
@@ -857,6 +857,40 @@ pub(crate) fn raise_failure(
     )
 }
 
+/// Build the unmapped arguments object before parameter defaults can change
+/// the locals. This whole instruction holds the mutator guard: the new
+/// object's edges reach the stack before any collection can run.
+#[inline(never)]
+fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .object_prototype;
+    let args = state
+        .top()
+        .arguments
+        .as_ref()
+        .ok_or(Fault::Internal("arguments already materialized"))?;
+    let mut object = OrdinaryObject::with_prototype(state.diag.task, prototype);
+    let intern = |name: &str| {
+        heap.keys()
+            .intern(&JsString::from(name))
+            .ok_or(Fault::OutOfMemory("property key table exhausted"))
+    };
+    object.define_with(
+        intern("length")?,
+        Value::Number(args.len() as f64),
+        PropertyFlags::METHOD,
+    );
+    for (i, value) in args.iter().enumerate() {
+        object.define(intern(&i.to_string())?, value.clone());
+    }
+    let id = heap
+        .alloc(HeapObject::Plain(object))
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    state.clear_arguments();
+    Ok(Value::Object(id))
+}
+
 /// Execute one instruction of `code`, the running frame's code.
 pub(crate) fn step(
     state: &mut VmState,
@@ -1205,6 +1239,10 @@ pub(crate) fn step(
             let object = builtin::new_object(heap, state.diag.task)?;
             state.push(object);
         }
+        Instr::NewArguments => {
+            let object = new_arguments(state, heap)?;
+            state.push(object);
+        }
         Instr::HostEffect(op) => {
             let v = state.pop()?;
             let arg = v.to_primitive().ok_or_else(|| {
@@ -1385,6 +1423,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::In => true,
         Instr::NewObject
         | Instr::NewObjectLiteral
+        | Instr::NewArguments
         | Instr::NewArray
         | Instr::ForInStart
         | Instr::NewVector(_)
@@ -1807,6 +1846,7 @@ mod tests {
                 captures: 0,
                 strict: true,
                 constructor: false,
+                uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

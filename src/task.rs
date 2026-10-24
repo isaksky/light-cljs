@@ -1671,6 +1671,7 @@ mod tests {
                 captures: 0,
                 strict: true,
                 constructor: false,
+                uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
                 instrs: instrs.clone().into(),
                 max_stack: 0,

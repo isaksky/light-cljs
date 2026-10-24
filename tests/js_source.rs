@@ -2527,19 +2527,9 @@ fn use_strict_directives() {
         sloppy("typeof arguments === 'undefined'"),
         ValueView::Bool(true)
     );
-    // Where they would denote the global `eval` (clj-quickjs-106) or a
-    // function's own `arguments` object (clj-quickjs-97), they are not
-    // supported yet; `var arguments` in a function is that object.
-    for (src, column) in [
-        ("x = eval;", 5),
-        ("function f() { return arguments; }", 23),
-        ("function f() { var arguments = 2; return arguments; }", 42),
-        (
-            "let arguments = 1; function f() { return () => arguments; }",
-            48,
-        ),
-        ("function arguments() { return arguments; }", 31),
-    ] {
+    // A reference to the global `eval` (clj-quickjs-106) stays unsupported.
+    {
+        let (src, column) = ("x = eval;", 5);
         let e = compile_script_with("sloppy", src, ScriptOptions::SLOPPY).unwrap_err();
         assert_eq!(
             (e.kind, e.line, e.column),

@@ -370,6 +370,7 @@ fn spawn_with_constant(rt: &crate::Runtime, constant: ObjectId) -> crate::Task {
         captures: 0,
         strict: true,
         constructor: false,
+        uses_arguments: false,
         offsets: Box::new([0, 3]),
         instrs: Box::new([Instr::Const(0), Instr::Return]),
         max_stack: 1,
