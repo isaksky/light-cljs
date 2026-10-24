@@ -673,7 +673,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::NativeError(_)
             | Builtin::ArrayBuffer
             | Builtin::IntlLocale
-            | Builtin::IntegerTypedArray(_)),
+            | Builtin::IntegerTypedArray(_)
+            | Builtin::RegExp),
         )) => {
             if super::native::start_builtin(
                 heap,
@@ -1394,6 +1395,22 @@ pub(crate) fn step(
             };
             state.push(key);
         }
+        Instr::RegExpLiteral(index) => {
+            let compiled = state
+                .top()
+                .code
+                .regexps
+                .get(&index)
+                .ok_or(Fault::Internal("RegExp constant missing"))?
+                .as_ref()
+                .map_err(|e| e.fault())?
+                .clone();
+            state.push(crate::regexp::object::allocate(
+                heap,
+                state.diag.task,
+                compiled,
+            )?);
+        }
         Instr::NewArray => {
             // Pushed in the same instruction, like `NewObject`: no
             // collection can run in between.
@@ -1818,6 +1835,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // (clj-quickjs-74).
         | Instr::In => true,
         Instr::NewObject
+        | Instr::RegExpLiteral(_)
         | Instr::TemplateObject(_)
         | Instr::NewObjectLiteral
         | Instr::NewArguments
@@ -2364,6 +2382,7 @@ mod tests {
         let heap = Heap::default();
         for (instrs, functions) in programs {
             let code = Code {
+                regexps: std::collections::HashMap::new(),
                 name: "corrupt".into(),
                 params: 0,
                 function_length: 0,

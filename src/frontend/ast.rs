@@ -648,7 +648,7 @@ pub enum ExprKind {
         op_span: Span,
     },
     /// A regular expression literal's source text, excluding delimiters.
-    /// Escapes are preserved; pattern validation and RegExp objects are deferred.
+    /// Escapes are preserved; RegExp objects compile in lowering/code loading.
     RegExp {
         pattern: String,
         flags: String,

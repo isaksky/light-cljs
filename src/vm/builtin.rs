@@ -298,6 +298,13 @@ pub(crate) enum Builtin {
     DateValueOf,
     DateSetTime,
     DateToISOString,
+    RegExp,
+    RegExpExec,
+    RegExpTest,
+    RegExpToString,
+    RegExpSource,
+    RegExpFlags,
+    RegExpFlag(char),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -354,6 +361,22 @@ impl Builtin {
 
             Builtin::IntlLocaleMaximize => "maximize",
             Builtin::IntlLocaleMinimize => "minimize",
+            Builtin::RegExp => "RegExp",
+            Builtin::RegExpExec => "exec",
+            Builtin::RegExpTest => "test",
+            Builtin::RegExpToString => "toString",
+            Builtin::RegExpSource => "get source",
+            Builtin::RegExpFlags => "get flags",
+            Builtin::RegExpFlag(c) => match c {
+                'd' => "get hasIndices",
+                'g' => "get global",
+                'i' => "get ignoreCase",
+                'm' => "get multiline",
+                's' => "get dotAll",
+                'u' => "get unicode",
+                'v' => "get unicodeSets",
+                _ => "get sticky",
+            },
             Builtin::ArrayBuffer => "ArrayBuffer",
             Builtin::ArrayBufferByteLength => "get byteLength",
             Builtin::ArrayBufferDetached => "get detached",
@@ -461,6 +484,12 @@ impl Builtin {
             | Builtin::IntlLocaleGet(_)
             | Builtin::IntlLocaleMaximize
             | Builtin::IntlLocaleMinimize => 0,
+            Builtin::RegExp => 2,
+            Builtin::RegExpExec | Builtin::RegExpTest => 1,
+            Builtin::RegExpToString
+            | Builtin::RegExpSource
+            | Builtin::RegExpFlags
+            | Builtin::RegExpFlag(_) => 0,
             Builtin::ArrayBuffer => 1,
             Builtin::ArrayBufferByteLength
             | Builtin::ArrayBufferDetached
@@ -589,6 +618,14 @@ pub(crate) fn call(
         | Builtin::TypedArrayByteLength
         | Builtin::TypedArrayByteOffset => {
             crate::object::typed_array::inspect(heap, task, this, which)
+        }
+        Builtin::RegExp
+        | Builtin::RegExpExec
+        | Builtin::RegExpTest
+        | Builtin::RegExpToString
+        | Builtin::RegExpFlags => Err(Fault::Internal("RegExp requires a resumable frame")),
+        Builtin::RegExpSource | Builtin::RegExpFlag(_) => {
+            crate::vm::native::regexp::getter(heap, task, which, this)
         }
         Builtin::ArrayBuffer => Err(Fault::TypeError("ArrayBuffer requires new".into())),
         Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => {
@@ -1432,6 +1469,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) if o.date_value().is_some() => Ok("Date"),
+                HeapObject::Plain(o) if o.regexp().is_some() => Ok("RegExp"),
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",

@@ -287,6 +287,8 @@ pub(crate) struct OrdinaryObject {
 
     /// `[[DateValue]]`: clipped epoch milliseconds or NaN, never a heap edge.
     date_value: Option<f64>,
+    /// Immutable RegExp code has no heap edges; mutable state is lastIndex.
+    regexp: Option<std::sync::Arc<crate::regexp::object::Compiled>>,
 }
 
 impl OrdinaryObject {
@@ -306,6 +308,7 @@ impl OrdinaryObject {
             locale_data: None,
 
             date_value: None,
+            regexp: None,
         }
     }
 
@@ -358,6 +361,18 @@ impl OrdinaryObject {
 
     pub(crate) fn locale_data(&self) -> Option<&crate::intl::tag::LanguageTag> {
         self.locale_data.as_deref()
+    }
+
+    pub(crate) fn with_regexp(
+        mut self,
+        compiled: std::sync::Arc<crate::regexp::object::Compiled>,
+    ) -> Self {
+        self.regexp = Some(compiled);
+        self
+    }
+
+    pub(crate) fn regexp(&self) -> Option<&std::sync::Arc<crate::regexp::object::Compiled>> {
+        self.regexp.as_ref()
     }
 
     pub(crate) fn with_error_data(mut self) -> Self {

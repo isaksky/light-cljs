@@ -2741,7 +2741,7 @@ groups, alternatives, assertions/lookaround, captures and forward references,
 quantifiers, classes, Annex B escapes and strict u-mode parsing, preserving
 lone surrogates. Run `cargo test --lib regexp::parse::tests::`.
 
-Deferred: JavaScript RegExp objects, literal-site early errors,
+Deferred: literal-site early errors,
 v grammar and Unicode property escapes. Quantifier counts above u64::MAX
 return an explicit error. See `docs/architecture.md`, "Regular expression
 pattern IR", and `docs/grammar.md` for the API boundary.
@@ -2872,8 +2872,8 @@ positions, assertions and backtracks. Exhaustion returns `LimitExceeded`
 (the RegExp object layer must throw a catchable RangeError). Native stack
 depth is independent of pattern depth and input length. Compilation has its
 own allowance of the same size. Lookbehind, ignore-case (including scoped i),
-and Unicode matching fail explicitly. JavaScript RegExp objects/methods and
-literal execution remain deferred; global lastIndex belongs to that layer.
+and Unicode matching fail explicitly. JavaScript RegExp objects/methods,
+literals and global lastIndex are supplied by clj-quickjs-188.
 
 ### BigInt arithmetic (clj-quickjs-198)
 
@@ -2965,3 +2965,22 @@ NaNs. Loads widen exactly to Number; bytes are always little-endian.
 Deferred: `Math.f16round`, BigInt views and the remaining typed-array constructor
 forms/methods listed above. Validation: `cargo test --test js_source float_typed_array`
 and `cargo test --lib object::typed_array::tests::`.
+
+### RegExp objects (clj-quickjs-188)
+
+Supported: fresh regexp literals, `RegExp` and `new RegExp`, copying source
+and overriding flags, `exec`, generic `test` and `toString`, `source`, generic
+`flags`, all eight boolean flag accessors, and writable `lastIndex` with
+ToLength and global/sticky updates. Match arrays include `index`, `input`,
+`groups`, and present undefined elements for unmatched captures. Named groups
+use a null-prototype object. Programs are immutable; objects are task-owned
+and cannot be published. Argument coercions and getters may suspend.
+
+Matching supports g/m/s/y. The 1,000,000-step search/compilation bounds throw
+catchable RangeError; invalid patterns and deferred i/u/v/d flags throw
+catchable SyntaxError. Flag ordering is `dgimsuvy` (generic getter), `gmsy`
+for currently constructible patterns. Deferred: literal pattern early errors,
+lookbehind, scoped i, Unicode/case folding, indices, Symbol.match recognition,
+and string regexp consumers. Eval is deferred; the raw NUL case uses the
+constructor and a raw-NUL literal. Run
+`CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.

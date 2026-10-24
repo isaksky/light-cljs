@@ -3174,22 +3174,17 @@ fn regexp_literals() {
         "function f() { return /x/; }",
         "delete /x/;",
     ] {
-        let error = compile_script("regexp", source).unwrap_err();
-        assert_eq!(error.kind, SyntaxErrorKind::Unsupported, "{source}");
-        assert!(error.message.contains("RegExp objects"), "{error}");
-        assert!(error.span.text(source).starts_with('/'), "{error}");
+        compile_script("regexp", source).unwrap();
     }
 }
 
 #[test]
 fn rejects_lexically_ambiguous_input() {
     use SyntaxErrorKind::*;
-    // Regexp-goal cases now parse; evaluation still needs RegExp objects.
+    // Regexp-goal cases parse and compile to fresh RegExp objects.
     for source in ["x = /ab+c/g;", "x = /=/;", "if (a) /re/.test(b);", "f(/'/)"] {
         parse_script(source).unwrap();
-        let error = compile_script("regexp", source).unwrap_err();
-        assert_eq!(error.kind, Unsupported);
-        assert!(error.message.contains("RegExp objects"), "{error}");
+        compile_script("regexp", source).unwrap();
     }
     // A number literal must not run into an identifier or digit.
     rejects("3.toString()", InvalidToken, 1, 3);
@@ -4510,12 +4505,12 @@ fn grammar_doc_examples() {
 
 #[test]
 fn diagnostics_display_position_and_message() {
-    let e = compile_script("regexp", "let a = 1;\nlet b = /x/;").unwrap_err();
+    let e = compile_script("regexp", "let a = 1;\nlet b = /x/gg;").unwrap_err();
     assert_eq!(
         e.to_string(),
-        "2:9: SyntaxError: RegExp objects cannot be executed yet"
+        "2:9: SyntaxError: duplicate regular expression flag `g`"
     );
-    assert_eq!(e.span.text("let a = 1;\nlet b = /x/;"), "/x/");
+    assert_eq!(e.span.text("let a = 1;\nlet b = /x/gg;"), "/");
 }
 
 /// Binary operators, calls and member accesses record their operator

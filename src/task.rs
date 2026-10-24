@@ -1724,6 +1724,7 @@ mod tests {
         let rt = Runtime::new();
         for instrs in programs {
             let code = Code {
+                regexps: std::collections::HashMap::new(),
                 name: "corrupt".into(),
                 params: 0,
                 function_length: 0,

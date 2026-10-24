@@ -528,3 +528,17 @@ Semantic references: `js_TA_get_float16`, `js_TA_get_float32` and
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The Rust bit conversion and rounding implementation was written afresh;
 no upstream conversion code was copied. License: `research/quickjs/LICENSE`.
+
+## RegExp objects (clj-quickjs-188)
+
+`tests/fixtures/js/regexp_objects.js` adapts the non-i/u/v/d rows of
+`research/quickjs/tests/test_builtin.js::test_regexp`, lines 717–766, at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT license notice precedes the fixture.
+The eval raw-NUL row uses RegExp construction and an actual-NUL literal
+because eval remains unavailable. Additional assertions are synthetic.
+`js_regexp_constructor`, `js_regexp_get_source`, `js_regexp_get_flag`,
+`js_regexp_get_flags`, `js_regexp_exec`, `js_regexp_test` and
+`js_regexp_toString` in `research/quickjs/quickjs.c` at that revision were
+consulted as semantic references. Object/native Rust code is independently
+written and no QuickJS implementation is linked or copied.

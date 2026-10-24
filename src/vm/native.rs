@@ -213,6 +213,7 @@
 
 use std::marker::PhantomData;
 mod intl;
+pub(crate) mod regexp;
 mod string_raw;
 
 use super::builtin;
@@ -377,6 +378,7 @@ enum NativeState {
         remaining: u32,
     },
     Error(error::ErrorState),
+    RegExp(regexp::State),
     Bind {
         target: Value,
         args: Vec<Value>,
@@ -658,6 +660,7 @@ impl Trace for NativeFrame {
             }
             NativeState::ArrayToString { this, .. } => this.trace(visit),
             NativeState::Error(error) => error.trace(visit),
+            NativeState::RegExp(re) => re.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
                     v.trace(visit);
@@ -735,12 +738,12 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
         Reduce | NeedAll => true,
-        Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add | Sub | Mul | Lt
-        | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject | HostEffect(_)
-        | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get | GetOr | Assoc
-        | Dissoc | Conj | PopLast | NewVectorBuilder | NewMapBuilder | BuilderConj
-        | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumeric | Inc | Dec
-        | ToNumberPair | Gt | Le | Ge | LooseEq | ThrowError(_) | Function(..) | Call(_)
+        RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
+        | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
+        | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get
+        | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder | NewMapBuilder
+        | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumeric | Inc
+        | Dec | ToNumberPair | Gt | Le | Ge | LooseEq | ThrowError(_) | Function(..) | Call(_)
         | CurrentFunction | GetCapture(_) | NewCell | CellInit | CellGet | CellSet | AtomNew
         | AtomLoad | AtomCas | Need | Throw | PushCatch(_) | PushFinally(_) | PopCatch
         | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl | Sar | UShr | BitNot | Pow
@@ -907,6 +910,11 @@ pub(crate) fn start_builtin(
         let native = intl::Intl::new(args, construct)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::Intl(Box::new(native)))?;
+        return Ok(true);
+    }
+    if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::RegExp(native))?;
         return Ok(true);
     }
     let error = match which {
@@ -1851,6 +1859,7 @@ impl NativeState {
                 }
             }
             NativeState::Error(error) => error.step(heap, task, input),
+            NativeState::RegExp(re) => re.step(heap, task, input),
             NativeState::Bind {
                 target,
                 args,
@@ -2685,6 +2694,7 @@ impl NativeState {
             (
                 NativeState::Reduce { .. }
                 | NativeState::Error(_)
+                | NativeState::RegExp(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
                 | NativeState::Instanceof { .. }

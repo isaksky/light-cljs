@@ -203,11 +203,13 @@ pub(crate) enum Global {
     Float16Array = 32,
     Float32Array = 33,
     Float64Array = 34,
+
+    RegExp = 35,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 35] = [
+    const ALL: [Global; 36] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -243,6 +245,8 @@ impl Global {
         Global::Float16Array,
         Global::Float32Array,
         Global::Float64Array,
+
+        Global::RegExp,
     ];
 
     /// The JavaScript name.
@@ -288,6 +292,8 @@ impl Global {
             Global::Float16Array => "Float16Array",
             Global::Float32Array => "Float32Array",
             Global::Float64Array => "Float64Array",
+
+            Global::RegExp => "RegExp",
         }
     }
 
@@ -370,6 +376,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) date_prototype: ObjectId,
     date: ObjectId,
+    pub(crate) regexp_prototype: ObjectId,
+    regexp: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -483,6 +491,7 @@ impl Intrinsics {
 
             Global::Symbol => Value::Object(self.symbol),
             Global::Intl => Value::Object(self.intl),
+            Global::RegExp => Value::Object(self.regexp),
         }
     }
 }
@@ -932,6 +941,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     }
 
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
+    let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -957,6 +967,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     Some(Intrinsics {
         typed_array_prototypes,
         typed_array_constructors,
+        regexp_prototype,
+        regexp,
         array_buffer_prototype,
         array_buffer,
         templates: Mutex::new(std::collections::HashMap::new()),
@@ -1431,6 +1443,59 @@ fn typed_array_intrinsics(
     }
     Some((prototypes, constructors))
 }
+/// RegExp's shared immutable prototype and constructor (clj-quickjs-188).
+fn regexp_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::RegExp,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for (name, which) in [
+        ("exec", Builtin::RegExpExec),
+        ("test", Builtin::RegExpTest),
+        ("toString", Builtin::RegExpToString),
+    ] {
+        let f = b.function(which, &[])?;
+        b.add(prototype, name, f, PropertyFlags::METHOD)?;
+    }
+    let mut getters = vec![
+        ("source", Builtin::RegExpSource),
+        ("flags", Builtin::RegExpFlags),
+    ];
+    getters.extend(
+        crate::regexp::object::FLAG_NAMES
+            .iter()
+            .map(|&(name, c)| (name, Builtin::RegExpFlag(c))),
+    );
+    for (name, which) in getters {
+        let f = b.function(which, &[])?;
+        let key = b.heap.keys().intern(&JsString::from(name))?;
+        let desc = PropertyDescriptor {
+            get: Some(Value::Object(f)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..PropertyDescriptor::default()
+        };
+        let ok = b.heap.with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_own_property(key, &desc) == DefineOutcome::Done,
+            _ => false,
+        })?;
+        if !ok {
+            return None;
+        }
+    }
+    Some((prototype, constructor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

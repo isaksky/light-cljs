@@ -2396,6 +2396,19 @@ impl<'s> Lowerer<'s> {
 
     // ----- expressions -----
 
+    #[inline(never)]
+    fn regexp_literal(
+        &mut self,
+        pattern: &str,
+        flags: &str,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let encoded = JsString::from(format!("{flags}\0{pattern}").as_str());
+        let index = self.string_index(encoded, span)?;
+        self.out().op_u16(Opcode::RegExpLiteral, index, span);
+        Ok(())
+    }
+
     fn constant(&mut self, value: Primitive, span: Span) -> Result<(), SyntaxError> {
         let key = match &value {
             Primitive::Null => ConstKey::Null,
@@ -2812,7 +2825,7 @@ impl<'s> Lowerer<'s> {
     fn expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
         let span = e.span;
         match &e.kind {
-            ExprKind::RegExp { .. } => Err(self.unsupported(span, "RegExp objects")),
+            ExprKind::RegExp { pattern, flags } => self.regexp_literal(pattern, flags, span),
             ExprKind::Number(_)
             | ExprKind::BigInt(_)
             | ExprKind::Bool(_)

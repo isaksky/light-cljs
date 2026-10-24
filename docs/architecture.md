@@ -5152,3 +5152,40 @@ binary64 neighbors on either side, plus negative ties and overflow. Source
 tests cover shared bytes, metadata, errors and coercion across waits, GC and
 worker migration. `Math.f16round` and further typed-array methods/forms remain
 outside this slice.
+
+## RegExp objects (clj-quickjs-188)
+
+RegExp instances use task-owned `OrdinaryObject` storage (`HeapObject::Plain`)
+with an immutable `Arc<regexp::object::Compiled>` internal slot. Programs,
+UTF-16 source text, flags and capture names have no heap edges. The ordinary
+object traces prototype and property edges; `lastIndex` is an own writable,
+non-enumerable, non-configurable data property. Publication rejects instances,
+even when frozen; only immutable code is shared. RegExp's realm intrinsics
+are built before publication and never changed.
+
+The append-only `RegExpLiteral` opcode (`0x73`, u16 string-constant index)
+uses a constant containing flags, NUL, then raw pattern code units. Loading
+compiles each referenced constant once into the executable's immutable
+program table, retaining failures for catchable runtime SyntaxError/RangeError
+construction. Executable serialization retains the constant and recompiles
+on loading; repeated evaluation allocates fresh objects sharing the program.
+Pattern early errors at literal sites remain clj-quickjs-56.
+
+Constructor argument conversion, `exec` input and `lastIndex` conversion,
+generic `test` dispatch, `toString` and `flags` getters use traced native
+continuations. JavaScript getters, ToPrimitive methods and overridden exec
+run as ordinary VM frames and may wait, yield, collect and migrate. Matching
+runs as a leaf with `MAX_MATCH_STEPS = 1_000_000` for each search (all starting
+positions combined); compilation has its own allowance. Exhaustion throws a
+catchable RangeError and never becomes a failed match. Parsing, source
+escaping, capture copying and string flattening are synchronous, bounded by
+the runtime's string length limit, like existing string leaf operations.
+
+Objects support the non-Unicode matcher, g/m/s/y, named captures with a
+null-prototype groups object, and explicit undefined elements for unmatched
+captures. i/u/v/d constructors and literals throw SyntaxError naming the
+unsupported flag; scoped i and lookbehind also fail explicitly. Symbol.match
+recognition, symbol-based string consumers, Unicode/case folding and indices
+remain later work. Direct and indirect eval are unavailable, so the raw NUL
+upstream case is exercised through the constructor and a literal containing
+an actual NUL instead.

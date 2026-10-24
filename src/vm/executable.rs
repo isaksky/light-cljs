@@ -91,6 +91,10 @@ pub(crate) struct Code {
     pub(crate) function_name: JsString,
     pub(crate) locals: u16,
     pub(crate) constants: Box<[Value]>,
+    pub(crate) regexps: std::collections::HashMap<
+        u16,
+        Result<Arc<crate::regexp::object::Compiled>, crate::regexp::object::CompileError>,
+    >,
     /// Child function code, shared with the [`Executable`]s it was loaded from.
     pub(crate) functions: Box<[Arc<Code>]>,
     /// Number of captured values a closure over this code carries.
@@ -521,6 +525,7 @@ impl Executable {
                 Opcode::ToNumeric => Instr::ToNumeric,
                 Opcode::Inc => Instr::Inc,
                 Opcode::Dec => Instr::Dec,
+                Opcode::RegExpLiteral => Instr::RegExpLiteral(operand as u16),
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -560,7 +565,18 @@ impl Executable {
             Some(info) => Some(info),
             None => None,
         };
+        let mut regexps = std::collections::HashMap::new();
+        for instr in &instrs {
+            if let Instr::RegExpLiteral(index) = instr
+                && let Primitive::String(encoded) = &constants[*index as usize]
+            {
+                regexps
+                    .entry(*index)
+                    .or_insert_with(|| crate::regexp::object::compile_literal(encoded));
+            }
+        }
         Ok(Executable(Arc::new(Code {
+            regexps,
             function_length: function_length.unwrap_or(params),
             function_name: function_name.unwrap_or_else(|| JsString::from(name.as_str())),
             name: name.into(),
@@ -630,7 +646,8 @@ impl Executable {
             let opcode = instr.opcode();
             bytes.push(opcode as u8);
             let operand = match instr {
-                Instr::Const(v)
+                Instr::RegExpLiteral(v)
+                | Instr::Const(v)
                 | Instr::GetLocal(v)
                 | Instr::SetLocal(v)
                 | Instr::HostEffect(v)
@@ -785,6 +802,23 @@ mod tests {
 
     const RET: u8 = Opcode::Return as u8;
     const UNDEF: u8 = Opcode::Undefined as u8;
+
+    #[test]
+    fn regexp_literal_operands_validate_and_programs_survive_reload() {
+        let bytes = vec![Opcode::RegExpLiteral as u8, 0, 0, RET];
+        assert_eq!(
+            kind(load(bytes.clone(), vec![], 0)),
+            ConstantOutOfRange { index: 0, count: 0 }
+        );
+        assert_eq!(
+            kind(load(bytes.clone(), vec![Primitive::Null], 0)),
+            NameNotString { index: 0 }
+        );
+        let code = load(bytes, vec![Primitive::String("g\0a".into())], 0).unwrap();
+        assert!(code.0.regexps[&0].is_ok());
+        let reloaded = Executable::load(code.to_spec()).unwrap();
+        assert!(reloaded.0.regexps[&0].is_ok());
+    }
 
     #[test]
     fn property_name_operands_must_name_string_constants() {

@@ -6,3 +6,5 @@
 pub mod ir;
 pub mod matcher;
 pub mod parse;
+
+pub(crate) mod object;

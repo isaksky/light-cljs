@@ -15831,3 +15831,140 @@ fn bigint_bitwise_and_shift_size_limits() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
 }
+
+#[test]
+fn regexp_objects_exec_and_test() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_objects.js")),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval("let a = /\0a/; a.toString() === '/\\0a/' && a.exec('\\0a')[0] === '\\0a'"),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn regexp_flags_errors_and_internal_state() {
+    for flag in ['d', 'i', 'u', 'v'] {
+        for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
+            assert_eq!(
+                eval(&format!(
+                    "let caught = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof SyntaxError && e.message.indexOf(\"'{flag}'\") >= 0; }} caught"
+                )),
+                ValueView::Bool(true)
+            );
+        }
+    }
+    for src in [
+        "let r = /a/g; RegExp(r) === r && new RegExp(r) !== r && new RegExp(r).flags === 'g' && RegExp(r, 'm').flags === 'm'",
+        "let r = /a/g; let d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); d.value === 0 && d.writable && !d.enumerable && !d.configurable && r instanceof RegExp && r.constructor === RegExp",
+        "RegExp.prototype.source === '(?:)' && RegExp.prototype.flags === '' && RegExp.prototype.global === undefined && RegExp.prototype.toString() === '/(?:)/'",
+        "let r = /./msgy; r.global && r.multiline && r.dotAll && r.sticky && !r.ignoreCase && !r.unicode && !r.unicodeSets && !r.hasIndices",
+        "let m = /(?<x>a)(?<y>b)?/.exec('a'); m.groups.x === 'a' && m.groups.y === undefined && Object.getPrototypeOf(m.groups) === null && 2 in m && m[2] === undefined",
+        "let m = /(?<x>a)|(?<x>b)/.exec('b'); m.groups.x === 'b'",
+        "let r = /a/g; r.lastIndex = 1.9; r.exec('baa').index === 1 && r.lastIndex === 2",
+        "let r = /a/g; r.lastIndex = Infinity; r.exec('a') === null && r.lastIndex === 0",
+        "let r = /a/; r.lastIndex = 123; r.exec('a')[0] === 'a' && r.lastIndex === 123",
+        "let r = /a/g; Object.defineProperty(r, 'lastIndex', {writable:false}); let caught = false; try {r.exec('a');} catch(e) {caught = e instanceof TypeError;} caught",
+        "let r = /a/g; r.lastIndex = -10; r.test('a') && r.lastIndex === 1",
+        "let r = /(?:)/g; r.lastIndex = 1; r.exec('a').index === 1 && r.lastIndex === 1",
+        "let r = /./g; let s = String.fromCharCode(0xd800, 0xdc00); r.exec(s)[0].length === 1 && r.lastIndex === 1 && r.exec(s).index === 1 && r.lastIndex === 2",
+        "let r = /a/; let n = 0; r.lastIndex = {valueOf(){n++; return 8;}}; r.test('a') && n === 1",
+        "let r = /a/; r.exec = () => null; !r.test('a')",
+        "RegExp.prototype.test.call({exec(s){return s === '3' ? {} : null;}}, 3)",
+        "let caught = false; try {RegExp.prototype.test.call({exec(){return 42;}}, 'a');} catch(e){caught = e instanceof TypeError;} caught",
+        "let caught = false; try {RegExp.prototype.exec.call({}, {toString(){throw 42;}});} catch(e){caught = e instanceof TypeError;} caught",
+        "let r = /a/; r.exec = 0; r.test('a')",
+        "RegExp.prototype.toString.call({source:'x',flags:'y'}) === '/x/y'",
+        "let get = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get; get.call({global:1,ignoreCase:1,multiline:1,dotAll:1,sticky:1}) === 'gimsy'",
+        r"new RegExp('a/b\n\r\u2028\u2029').source === 'a\\/b\\n\\r\\u2028\\u2029'",
+        r"new RegExp('[/]').source === '[/]' && /a\/b/.source === 'a\\/b'",
+        "let caught = false; let s = ''; for (let i = 0; i < 25; i++) s += 'a'; try {/(a+)+b/.test(s);} catch(e){caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0;} caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Programs survive serialization;
+/// object mutation remains task-owned and rejects cross-task publication.
+#[test]
+fn regexp_code_reload_and_publication() {
+    let rt = Runtime::new();
+    let code = Executable::load(exe("/a/g").to_spec()).unwrap();
+    let owner = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(value) = owner.run().unwrap() else {
+        panic!("regexp")
+    };
+    rt.collect().unwrap();
+    assert!(rt.publish(&value).is_err());
+    let reader = compile_function("function read(r) {return r.exec('a');}").unwrap();
+    let task = rt.spawn(&reader, &[&value]).unwrap();
+    assert!(
+        matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. }))
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Every observable coercion and
+/// getter resumes across waits, collection and migration without replay.
+#[test]
+fn regexp_coercions_wait_yield_collect_and_migrate() {
+    for expression in [
+        "RegExp({toString(){count++; __rt.need(188, 1); return 'a';}}, 'g').test('a')",
+        "new RegExp('a', {toString(){count++; __rt.need(188, 1); return 'g';}}).test('a')",
+        "let r = /a/g; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|r.exec('ba').index === 1",
+        "let r = /a/g;|r.exec({toString(){count++; __rt.need(188, 1); return 'a';}})[0] === 'a'",
+        "RegExp.prototype.toString.call({get source(){count++; __rt.need(188, 1); return 'a';}, flags:'g'}) === '/a/g'",
+        "let get = Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags').get;|get.call({get global(){count++; __rt.need(188, 1); return true;}, sticky:true}) === 'gy'",
+        "let r = /a/; Object.defineProperty(r, 'constructor', {get(){count++; __rt.need(188, 1); return RegExp;}});|RegExp(r) === r",
+        "RegExp.prototype.test.call({get exec(){count++; __rt.need(188, 1); return () => ({});}}, 'a')",
+        "RegExp.prototype.test.call({exec(){count++; __rt.need(188, 1); return null;}}, 'a') === false",
+        "let caught = false; try {RegExp({toString(){count++; __rt.need(188, 1); throw 42;}});} catch(e){caught = e === 42;}|caught",
+    ] {
+        let rt = Runtime::new();
+        // Preserve statement setup while returning its final expression.
+        let (setup, result) = expression.split_once('|').unwrap_or(("", expression));
+        let source = format!(
+            "let count = 0; let result = (() => {{ {setup} return {result}; }})(); result && count === 1"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut done = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(done, "instruction bound: {source}");
+        assert_eq!(waits, 1);
+    }
+}

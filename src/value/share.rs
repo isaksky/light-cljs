@@ -198,8 +198,7 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
-        // engine Error instance or Intl.Locale with immutable internal data
-        // and mutable ordinary properties, is task-owned.
+        // engine Error, Intl.Locale or RegExp instance, is task-owned.
         HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,
         HeapObject::Native(payload) => payload.shareability(),

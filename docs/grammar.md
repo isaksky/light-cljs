@@ -11,10 +11,9 @@ compile that way (`frontend::tests::grammar_doc_examples`). Examples marked
 `js sloppy-accept` / `js sloppy-reject` are parsed as non-strict code
 (`ScriptOptions::SLOPPY`); all others are strict.
 
-Status: regular expression literals parse but require RegExp objects to
-execute (clj-quickjs-55; compilation reports `Unsupported`). Other forms
-below parse and also compile to VM bytecode and
-executes (`frontend::compile_script`; see
+Status: regular expression literals compile and execute with the non-Unicode
+RegExp object support of clj-quickjs-188. Forms below parse and compile to
+VM bytecode and execute (`frontend::compile_script`; see
 "Execution" below): literals (string values since clj-quickjs-65), bindings,
 operators, assignment, blocks, `if`/`else`, `while`, `do`-`while`
 (clj-quickjs-80), `for` with an empty, expression or `let`/`const` head
@@ -104,7 +103,7 @@ non-strict (sloppy) scripts and functions compile (clj-quickjs-95; see
 | Numbers | decimal integers, fractions (`1.5`, `.5`, `5.`), exponents (`1e-3`), `0x`/`0o`/`0b` integers; values are IEEE-754 doubles, correctly rounded; overflow gives `Infinity`; a member access may follow a literal (`0.1.a`, `0x1.a`, `.5.a`, `1..a`: the second `.` starts the access); in sloppy code only (clj-quickjs-51; ECMAScript B.1.1), a `0` followed by digits: all octal digits make a legacy octal integer (`017` is 15), which takes no fraction or exponent, so `01.a` is a member access; an `8` or `9` among them makes a decimal literal that may take a fraction and exponent (`08` is 8, `09.5`, `08e1`) | in strict code, legacy octal / leading zeros (`017`, `08`) at the `0`, also right after a `"use strict"` directive (`"use strict"; 010`); in sloppy code, a legacy octal integer followed by a fraction (`01.5` is `01` then `.5`, `UnexpectedToken`) or an exponent (`01e1`), and a `n` suffix or separator after a leading `0` (`01n`, `08n`, `0_1`, `08_1`: `InvalidToken`); numeric separators (`1_000`), a literal immediately followed by an identifier or digit (`3in`, `1.toString`, `0.a`), a number literal where a property name is expected (`0.1.2`), missing digits (`0x`, `1e`) |
 | Strings | `'...'` and `"..."` with escapes `\n \t \r \b \f \v \0 \xHH \uHHHH \u{H...}`, each `\u` escape is its UTF-16 code unit(s), so two surrogate escapes spell a pair (`"\u{dbff}\u{dfff}"` is U+10FFFF) and a lone surrogate escape (`\u{d800}`, a high surrogate before a non-surrogate) is a lone code unit (clj-quickjs-141), line continuations, identity escapes (`\'`, `\\`, `\q`), raw U+2028/U+2029; in sloppy code only (clj-quickjs-258; ECMAScript B.1.2), legacy octal escapes of at most three octal digits and value 0o377 (`"\07"` is U+0007, `"\101"` is `A`, `"\400"` is U+0020 then `0`; `\0` not followed by a digit is the null character in either mode) and `\8` `\9` (the characters `8` and `9`) | unterminated strings, raw LF/CR inside a string, malformed `\x`/`\u`; in strict code, octal escapes (`\07`, `\1`, `\08`) and `\8` `\9` at the `\`, also in a directive before a `"use strict"` directive (`"\07"; "use strict";`) and in the string right after one (`"use strict"; "\07"`) |
 | Template literals (clj-quickjs-57) | `` `...` `` with substitutions `${ Expression }`, nested to any depth within the nesting budget; one token per part (NoSubstitutionTemplate, TemplateHead, TemplateMiddle, TemplateTail): the `}` that closes a substitution (the first `}` not matching a `{` inside it) starts the next part. The text may contain raw line terminators (CR and CRLF read as LF, U+2028/U+2029 kept; they count for line numbers but not for ASI) and the escapes of string literals, except that a digit escape other than `\0` not followed by a digit is invalid in an untagged template in either mode (tagged parts instead have undefined cooked text); `` \` `` and `\$` are text. Each part keeps its cooked value (escapes decoded) and its raw value (escapes as written, CR and CRLF read as LF; for tagged templates, clj-quickjs-58) | unterminated (`UnexpectedEnd` at the backtick, or at the `}` of the open part); in untagged templates only: malformed `\x`/`\u` escapes, octal escapes (`\1`, `\07`, `\00`) and `\8` `\9` (`InvalidToken` at the `\`, also in sloppy code); a substitution that is not one Expression followed by `}` (`` `${}` ``, `` `${a b}` ``: `UnexpectedToken`) |
-| Regular expressions (clj-quickjs-55) | `/pattern/flags` where an operand is expected, including `/=/`; a slash inside `[...]` or escaped with `\` is pattern text. Escapes are preserved in the AST. Flags are IdentifierPart characters; `dgimsuyv` are supported spellings | a line terminator, even escaped (`InvalidToken`), or unterminated body/class/escape (`UnexpectedEnd`), at the opening `/`; duplicate/unknown/escaped flags and combining `u` with `v` (`Invalid` at the `/`). Pattern early errors are deferred to clj-quickjs-56; compiling a literal reports `Unsupported` until RegExp objects exist |
+| Regular expressions (clj-quickjs-55) | `/pattern/flags` where an operand is expected, including `/=/`; a slash inside `[...]` or escaped with `\` is pattern text. Escapes are preserved in the AST. Flags are IdentifierPart characters; `dgimsuyv` are supported spellings | a line terminator, even escaped (`InvalidToken`), or unterminated body/class/escape (`UnexpectedEnd`), at the opening `/`; duplicate/unknown/escaped flags and combining `u` with `v` (`Invalid` at the `/`). Pattern early errors remain clj-quickjs-56; literals execute with g/m/s/y and reject i/u/v/d at runtime |
 | Punctuators | every ECMAScript punctuator is lexed by maximal munch (`a>>>=b` is `a`, `>>>=`, `b`) so the parser can name an unsupported operator precisely | other characters (`@`, `#`, ...) |
 
 ## Syntactic grammar
@@ -470,10 +469,9 @@ checks left to later stages:
 - **Regular expressions** (clj-quickjs-55): literals produce positioned
   `RegExp { pattern, flags }` AST nodes. The parser requests the regexp
   lexical goal at operand positions; `a` newline `/ b / g` remains division.
-  Pattern early errors are clj-quickjs-56. RegExp objects and methods are
-  deferred (clj-quickjs-188–194); standalone parsing and bounded non-Unicode
-  matching are available (clj-quickjs-186/-187). Compilation rejects literals explicitly
-  with `Unsupported` naming RegExp objects.
+  Pattern early errors remain clj-quickjs-56. RegExp objects and methods
+  execute with the bounded non-Unicode matcher (clj-quickjs-188); Unicode,
+  case folding, indices and string consumers remain clj-quickjs-189–194.
 - **JSON.parse** (clj-quickjs-159) recognizes the JSON grammar with
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
@@ -1965,7 +1963,7 @@ let o = {f: function () { return 1; }};
 Object = o.f; Object() === 1;
 ```
 
-```js compile-reject Unsupported 1:9
+```js accept
 let r = /ab+c/g;
 ```
 
@@ -3185,9 +3183,8 @@ Quantifier counts above u64::MAX fail explicitly.
 
 Explicit gaps: v patterns and Unicode property escapes are deferred to
 clj-quickjs-194/-192. Pattern validation at literal sites remains
-clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects,
-Unicode/case-insensitive matching and methods remain clj-quickjs-188–194.
-Compiling a literal continues to report `Unsupported` for RegExp objects.
+clj-quickjs-56; the lexer/AST currently preserves the pattern. RegExp objects and methods execute (clj-quickjs-188);
+Unicode/case-insensitive matching remains deferred.
 
 ### BigInt values and literals (clj-quickjs-196)
 
@@ -3307,10 +3304,10 @@ Explicit gaps: lookbehind, Unicode matching and ignore-case matching
 (including scoped i) return `MatchError::Unsupported` at compilation.
 `MAX_MATCH_STEPS = 1_000_000` bounds a complete search, including assertions,
 backtracking and comparisons; exhaustion returns `LimitExceeded`, never
-`None`. The later RegExp object layer must translate it to a catchable
+`None`. The RegExp object layer translates it to a catchable
 RangeError. Compilation has an independent allowance of the same size.
-There are no JavaScript RegExp objects, exec/test methods or lastIndex updates
-in this layer, and literal execution remains unsupported.
+The object layer supplies JavaScript RegExp objects, exec/test, lastIndex
+and literal execution (clj-quickjs-188).
 
 ### BigInt additive and multiplicative arithmetic (clj-quickjs-198)
 
@@ -3480,3 +3477,31 @@ are little-endian; all existing exotic operations and detachment rules apply.
 Explicit gaps: `Math.f16round`, BigInt views, iterable/array-like/copy
 construction, typed-array methods, resizable buffers and subclass/species
 construction remain deferred.
+
+### RegExp object execution (clj-quickjs-188)
+
+Execution: literals allocate fresh task-owned objects from immutable compiled
+programs. `RegExp(pattern, flags)` and `new RegExp` accept strings or RegExp
+objects. `exec` returns null or an array with index/input/groups; unmatched
+captures are present undefined elements. Named groups use a null-prototype
+object. `test`, generic `toString`, source escaping, all boolean flag getters,
+generic `flags` in dgimsuvy order, and own writable/non-enumerable/
+non-configurable `lastIndex` execute. Global/sticky matching applies ToLength,
+updates lastIndex on success and resets it on failure. Nonglobal matching
+reads/converts lastIndex but leaves it unchanged. Empty matches do not advance
+it beyond the match end. All positions and captures count UTF-16 code units.
+Coercions and getters use resumable frames; matching has the documented
+1,000,000-step bound and throws catchable RangeError on exhaustion.
+
+Explicit gaps: constructing i/u/v/d patterns throws a catchable SyntaxError
+naming the unsupported flag. Scoped i and lookbehind are also rejected.
+Literal pattern early errors, Symbol.match recognition, symbol-based string
+consumers, Unicode/case folding, indices and Unicode sets remain deferred.
+Eval is unavailable; the upstream raw NUL case uses constructor/raw literal.
+
+```js accept
+let r = /(b+)c/g; let m = r.exec('abbbbbc'); m[1] === 'bbbbb' && m.index === 1;
+new RegExp('a/b').source === 'a\\/b';
+let r = /a/y; r.lastIndex = 1; r.test('ba') && r.lastIndex === 2;
+try { /a/u; } catch (e) { e instanceof SyntaxError; }
+```

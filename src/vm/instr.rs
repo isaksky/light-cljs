@@ -103,6 +103,7 @@
 //! | `ToNumeric` | 0x70 | – | v → numeric | ToPrimitive with hint number, then preserve BigInt or apply ToNumber |
 //! | `Inc` | 0x71 | – | numeric → numeric+1 | increment using the operand's numeric type |
 //! | `Dec` | 0x72 | – | numeric → numeric-1 | decrement using the operand's numeric type |
+//! | `RegExpLiteral` | 0x73 | u16 string constant | → regexp | fresh task-owned object sharing immutable compiled code; constant encodes flags, NUL, pattern (clj-quickjs-188) |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -577,6 +578,7 @@ pub enum Opcode {
     ToNumeric = 0x70,
     Inc = 0x71,
     Dec = 0x72,
+    RegExpLiteral = 0x73,
 }
 
 /// Operand encoding of an opcode.
@@ -746,6 +748,7 @@ impl Opcode {
             0x70 => ToNumeric,
             0x71 => Inc,
             0x72 => Dec,
+            0x73 => RegExpLiteral,
             _ => return None,
         })
     }
@@ -868,6 +871,7 @@ impl Opcode {
             ToNumeric => "to_numeric",
             Inc => "inc",
             Dec => "dec",
+            RegExpLiteral => "regexp_literal",
         }
     }
 
@@ -875,6 +879,7 @@ impl Opcode {
         use Opcode::*;
         match self {
             Const => OperandKind::Const,
+            RegExpLiteral => OperandKind::Name,
             GetLocal | SetLocal => OperandKind::Local,
             Jump | JumpIfFalse | PushCatch | PushFinally => OperandKind::Target,
             HostEffect => OperandKind::HostOp,
@@ -1071,6 +1076,7 @@ pub(crate) enum Instr {
     ToNumeric,
     Inc,
     Dec,
+    RegExpLiteral(u16),
 }
 
 impl Instr {
@@ -1190,6 +1196,7 @@ impl Instr {
             Instr::ToNumeric => Opcode::ToNumeric,
             Instr::Inc => Opcode::Inc,
             Instr::Dec => Opcode::Dec,
+            Instr::RegExpLiteral(_) => Opcode::RegExpLiteral,
         }
     }
 
@@ -1198,9 +1205,10 @@ impl Instr {
     pub(crate) fn stack_effect(self) -> (usize, usize) {
         use Instr::*;
         match self {
-            Const(_) | Undefined | GetLocal(_) | NewObject | NewVectorBuilder | NewMapBuilder
-            | ThrowError(_) | CurrentFunction | GetCapture(_) | NewCell | GetBuiltinGlobal(_)
-            | NewObjectLiteral | GetThis | NewArray | NewArguments => (0, 1),
+            RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | NewObject
+            | NewVectorBuilder | NewMapBuilder | ThrowError(_) | CurrentFunction
+            | GetCapture(_) | NewCell | GetBuiltinGlobal(_) | NewObjectLiteral | GetThis
+            | NewArray | NewArguments => (0, 1),
             GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) => (0, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw => (1, 0),
             PutGlobal(_) => (1, 1),
@@ -1251,6 +1259,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 114);
+        assert_eq!(assigned, 115);
     }
 }
