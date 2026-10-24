@@ -1340,7 +1340,9 @@ Deferred:
 ### `++`/`--` on properties (clj-quickjs-76)
 
 Supported (`cargo test --lib frontend::tests::update_expressions`,
-`cargo test --test js_source update_expressions_on_properties`):
+`cargo test --test js_source update_expressions_on_properties`,
+`cargo test --test need property_update_resumes_after_wait`,
+`cargo test --test gc_roots property_update_base_survives`):
 
 - Prefix and postfix `++`/`--` on `o.p` and `o[k]`, possibly
   parenthesized: the base and the key are evaluated once, the base is

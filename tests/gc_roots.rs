@@ -830,6 +830,41 @@ fn array_literal_survives_wait_collection_and_migration() {
     });
 }
 
+/// A property update (clj-quickjs-76) waiting in its computed key: the
+/// base, an object literal holding the argument, is then reachable only
+/// from the suspended frame's operand stack (the argument's local was
+/// cleared). It survives collections, resumes on another thread, and the
+/// update finishes with the key evaluated once and the old value given.
+#[test]
+fn property_update_base_survives_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let (task, weak) = spawn_holding(
+        &rt,
+        "function f(o) { let n = 0; \
+         const r = {v: o, k: 5}[(n = n + 1, o = 0, __rt.need(9, 1), 'k')]++; \
+         return __rt.vector(r, n); }",
+    );
+    let outcome = task.run().unwrap();
+    assert!(matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 9)));
+    for _ in 0..2 {
+        rt.request_collection().unwrap();
+        assert_live(std::slice::from_ref(&weak));
+    }
+    for request in task.take_producer_requests() {
+        let value = rt.root(Primitive::Number(0.0));
+        let wakeups = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap();
+        assert_eq!(wakeups.task_ids(), vec![task.id()]);
+    }
+    let result = thread::spawn(move || run_to_end(&task)).join().unwrap();
+    rt.scope(|s| {
+        let v = s.local(&result).unwrap();
+        assert_eq!(s.view(s.nth(v, 0).unwrap()), ValueView::Number(5.0));
+        assert_eq!(s.view(s.nth(v, 1).unwrap()), ValueView::Number(1.0));
+    });
+}
+
 #[test]
 fn array_element_retains() {
     let rt = Runtime::new();
