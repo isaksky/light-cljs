@@ -68,9 +68,10 @@
 //!
 //! An atom's cell (`AtomCell`, independently owned `Arc` storage referenced
 //! by the heap object, like collection bodies) holds an `AtomicPtr` to an
-//! immutable boxed value. Operations clone the cell's `Arc` under the heap's
-//! object lock (one short lock, as every heap object access) and then use
-//! only Rust atomics on the cell:
+//! immutable boxed value. Each operation first takes two short heap metadata
+//! locks: the `gc` lock to register as a mutator (below) and the object lock
+//! to clone the cell's `Arc`, as every heap object access does. The value
+//! itself is then read, compared and replaced with Rust atomics only:
 //!
 //! * a write allocates and fills its box, then installs it with
 //!   `compare_exchange(_, _, AcqRel, Acquire)` (CAS) or `swap(_, AcqRel)`
@@ -490,6 +491,12 @@ impl Runtime {
     /// Create a shared (multi-writer) atom holding `initial`, which must pass
     /// the publication check. It changes only by
     /// [`Runtime::atom_compare_and_set`]. See [`crate::atom`].
+    ///
+    /// # Panics
+    ///
+    /// This and the other atom methods of `Runtime` panic when called from
+    /// inside a leaf host effect, which may not access heap values (as
+    /// [`Runtime::scope`]).
     pub fn new_atom(&self, initial: &Rooted) -> Result<Rooted, AtomError> {
         assert_not_in_effect();
         let heap = self.heap();

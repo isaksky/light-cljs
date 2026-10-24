@@ -590,8 +590,10 @@ parser, analyzer, namespace or module linking.
   with `Acquire`. The release/acquire pair also orders the writer's earlier
   construction of the value's graph, so readers never see a partially
   initialized node. Each atom synchronizes alone; no `SeqCst` order across
-  atoms, no volatile access, no lock on the read or compare path (the only
-  lock is the heap's object-table lock used to find the cell).
+  atoms, no volatile access, and the value itself is never read or compared
+  under a lock. Each operation does take two short heap metadata locks
+  before touching the cell: the `gc` lock to register as a mutator (see
+  below) and the object-table lock to clone the cell's `Arc`.
 - **Reclamation.** Atom operations are registered heap mutators
   (`Heap::enter_mutator`, nested inside a run's registration in the VM), and
   collections run only with no mutator registered. A replaced box is
