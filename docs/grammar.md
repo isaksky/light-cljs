@@ -317,6 +317,10 @@ Notes on the grammar:
   properties. Completed generators always return `{value: undefined, done: true}`.
   Uncaught exceptions complete the generator and propagate to the next caller;
   executing generators reject re-entrant next with TypeError.
+  Generator functions create their own prototype/property record eagerly, so
+  publication rejects that task-owned record while preserving local callability.
+  The inherited `Symbol.toStringTag` is `Generator`; general tag consumption by
+  `Object.prototype.toString` remains explicitly unsupported.
   Async functions still fail compilation at the function's first token;
   delegated `yield*` fails at the yield expression.
 - The comma operator (clj-quickjs-61) appears only where the grammar has
@@ -467,6 +471,8 @@ Generator `return(value)`, `throw(error)` and delegated `yield*` are deferred.
 `return` and `throw` methods are absent from the generator prototype. Async
 functions and `await` remain unsupported. Suspended generators cannot publish
 or cross tasks, including through immutable collections or shared references.
+Generator functions also cannot publish because their own property record is
+task-owned, as for an ordinary function whose prototype has been materialized.
 
 `Intl` provides locale identifiers and likely-subtag maximize/minimize
 (clj-quickjs-209/-210/-211), plus decimal/percent/currency `NumberFormat` with bound `format`,

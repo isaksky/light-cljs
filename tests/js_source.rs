@@ -186,6 +186,64 @@ fn generator_rejected_resume_preserves_suspension() {
 }
 
 #[test]
+fn generator_branding_uses_prototype() {
+    // Synthetic fixtures, not light-cljs output. General @@toStringTag
+    // consumption remains explicitly unsupported, as for other iterators.
+    assert_eq!(
+        eval(
+            "function* g() {} let a = g(); let p = Object.getPrototypeOf(g.prototype); let d = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); a[Symbol.toStringTag] === 'Generator' && d.value === 'Generator' && !d.writable && !d.enumerable && d.configurable"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            "function* g() {} g.prototype = {}; Object.prototype.toString.call(g()) === '[object Object]'"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        failure("function* g() {} Object.prototype.toString.call(g())").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+}
+
+#[test]
+fn generator_throw_preserves_exception_diagnostics() {
+    // Synthetic fixtures, not light-cljs output.
+    for (source, throw_line, caller_line) in [
+        ("function* g() {\nthrow 42;\n}\ng().next();", 2, 4),
+        (
+            "function* g() {\ntry {\nthrow 42;\n} finally { let x = 1; }\n}\ng().next();",
+            3,
+            6,
+        ),
+    ] {
+        let error = failure(source);
+        assert_eq!(error.kind(), VmErrorKind::Thrown);
+        assert_eq!(error.diagnostic().source.unwrap().line, throw_line);
+        assert_eq!(error.diagnostic().call_chain.len(), 1);
+        assert_eq!(
+            error.diagnostic().call_chain[0].source.unwrap().line,
+            caller_line
+        );
+    }
+}
+
+#[test]
+fn generator_preserves_operands_and_handlers_across_callers() {
+    // Synthetic fixtures, not light-cljs output. Move suspended handlers
+    // between shallower and deeper JavaScript callers in both directions.
+    for source in [
+        "function* f() { return 2 + (yield 1); } let g=f(); function a() { return b(); } function b() { return g.next(5); } let x=a(); let y=g.next(5); x.value===1 && !x.done && y.value===7 && y.done",
+        "function* f() { try { let n=yield 1; throw n; } catch(e) { return e+4; } } let g=f(); function a() { return b(); } function b() { return g.next(3); } let x=g.next(); let y=a(); x.value===1 && !x.done && y.value===7 && y.done",
+        "function* f() { try { return {n:7}; } finally { yield 1; } } let g=f(); function a() { return b(); } function b() { return g.next(); } let x=a(); let y=g.next(); x.value===1 && !x.done && y.value.n===7 && y.done",
+        "function* f() { try { throw {n:7}; } finally { yield 1; } } let g=f(); function a() { return b(); } function b() { return g.next(); } let x=g.next(); let n=0; try { a(); } catch(e) { n=e.n; } x.value===1 && !x.done && n===7 && g.next().done",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
 fn generator_call_protocols_and_prototypes() {
     // Synthetic fixtures, not light-cljs output.
     for source in [
@@ -204,6 +262,7 @@ fn generator_call_protocols_and_prototypes() {
         "function* g() { yield 2; yield 3; } let sum=0; for (let n of g()) { sum+=n; } sum===5",
         "function* g() { yield 2; yield 3; } let a=[...g()]; a.length===2 && a[0]===2 && a[1]===3",
         "function* g() { yield 2; yield 3; } function sum(a,b) { return a+b; } sum(...g())===5",
+        "function* g() { yield 2; yield 3; } Array.from(g(), n=>n*2).join(',')==='4,6'",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }

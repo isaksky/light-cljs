@@ -38,6 +38,22 @@ pub(crate) fn prototype(heap: &Heap) -> Result<ObjectId, Fault> {
         .ok_or(Fault::OutOfMemory("generator prototype"))
 }
 
+/// Establish the task-owned property record before publication can mark a
+/// generator function immutable and prevent its first prototype lookup.
+pub(crate) fn initialize_function(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+) -> Result<(), Fault> {
+    super::function::read(
+        heap,
+        task,
+        function,
+        &super::property::Key::Name("prototype".into()),
+    )?;
+    Ok(())
+}
+
 /// Keep generator instruction temporaries out of the ordinary dispatch
 /// frame, including the error path on workers with small Rust stacks.
 pub(crate) fn step(heap: &Heap, vm: &mut VmState, initial: bool) -> Result<Flow, Fault> {
@@ -62,14 +78,16 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
     let function = match vm.top().callee {
         Some(id) => id,
         None => {
-            let f = super::function::FunctionObject::new(
+            let Value::Object(id) = super::dispatch::new_function(
+                heap,
                 vm.top().code.clone(),
                 Box::new([]),
                 vm.diag.task,
-            );
-            let id = heap
-                .alloc(HeapObject::Function(f))
-                .ok_or(Fault::OutOfMemory("generator function"))?;
+                None,
+            )?
+            else {
+                unreachable!("function allocation returns an object")
+            };
             vm.top_mut().callee = Some(id);
             id
         }

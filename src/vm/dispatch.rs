@@ -189,19 +189,24 @@ pub(crate) enum Flow {
 /// value is: until a publication check proves it shareable (which makes it
 /// immutable), its creator may still give it own properties
 /// (`crate::vm::function`, "Own properties").
-fn new_function(
+pub(super) fn new_function(
     heap: &Heap,
     code: Arc<Code>,
     captures: Box<[Value]>,
     owner: TaskId,
     home_object: Option<ObjectId>,
 ) -> Result<Value, Fault> {
+    let generator = code.is_generator();
     let mut function = FunctionObject::new(code, captures, owner);
     function.home_object = home_object;
     let object = HeapObject::Function(function);
-    heap.alloc(object)
-        .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+    let id = heap
+        .alloc(object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    if generator {
+        super::generator::initialize_function(heap, owner, id)?;
+    }
+    Ok(Value::Object(id))
 }
 
 /// Reject mixed numeric types after ToNumeric, without rounding a BigInt.

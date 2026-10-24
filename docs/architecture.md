@@ -6060,11 +6060,15 @@ initial suspension instruction before body execution. Default expressions thus
 run at call time, including through ordinary resumable callbacks and dependency
 waits. Initial suspension allocates the generator with the function's object
 `prototype`, or the realm's generator prototype for a non-object property.
-Generator functions have a lazy own prototype but remain non-constructors.
+Generator functions materialize their own prototype/property record at creation
+and remain non-constructors. This task-owned record prevents publication of the
+function before a call can need its prototype; failed publication (including
+Promise settlement) leaves the function callable in its creating task.
 `next` uses a native boundary: attach, run ordinary VM frames, then return an
 ordinary iterator result. Yield saves the activation and delivers a value;
 return completes it. A native exception boundary lets inner catch/finally run
-before completing the generator and rethrowing to the next caller. Cancellation
+before completing the generator and rethrowing the full original exception to
+the next caller, preserving primitive-throw locations and call chains. Cancellation
 runs attached finally blocks and completes abandoned generator boundaries.
 Detached generators are inert traced objects; attached frames retain ordinary
 `__rt.need`, budget, safepoint, migration and cancellation behavior.
@@ -6080,6 +6084,10 @@ collected together. `classify` marks generators TaskOwned; publication rejects
 this kind and reports its owner, and foreign property access/next is rejected
 with the existing ForeignObject/ForeignBinding policy. Freezing their ordinary
 properties does not freeze their execution state or make them shareable.
+The realm generator prototype exposes the inherited `Symbol.toStringTag` value
+`Generator` with a non-writable, non-enumerable, configurable descriptor. Its
+builtin tag fallback is Object when a custom prototype lacks that symbol;
+general tag consumption by Object.prototype.toString remains explicitly deferred.
 
 QuickJS references and provenance: semantic comparison with
 `research/quickjs/quickjs.c` `async_func_init`, `async_func_resume`,
@@ -6105,3 +6113,6 @@ collects while the generator is retained by a waiting task's local, verifies the
 value after resume, then releases the generator and checks both reclamation and
 live-generator counts. The append-only SuspendedGenerator inventory holder maps
 this coverage to the task-frame root category and the Generator heap kind.
+`suspended_generator_operands_and_completions_are_traced` additionally collects
+with an object held only by a saved operand or pending return/throw completion,
+then resumes from deeper callers and checks its value and reclamation.

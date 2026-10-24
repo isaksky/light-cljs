@@ -3319,3 +3319,7 @@ waits, budgets, collection and worker migration. Publication and foreign-task
 access are rejected. Deferred: `yield*`, generator `return`/`throw`, async/await.
 Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
+Generator functions eagerly create their own task-owned prototype records, so
+publication rejects them without disabling local calls. Generators expose the
+inherited `Symbol.toStringTag` value `Generator`; general tag consumption by
+`Object.prototype.toString` remains explicitly deferred.

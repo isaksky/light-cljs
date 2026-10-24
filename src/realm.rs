@@ -1061,10 +1061,18 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let array_from = b.function(Builtin::ArrayFrom, &[])?;
     b.add(array, "from", array_from, PropertyFlags::METHOD)?;
 
-
-    let generator_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        iterator_prototype,
-    ))))?;
+    let mut generator = OrdinaryObject::intrinsic(Some(iterator_prototype));
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    generator
+        .define_with(
+            tag,
+            Value::String("Generator".into()),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
+    let generator_prototype = heap.alloc(HeapObject::Plain(generator))?;
     b.all.push(generator_prototype);
     let next = b.function(Builtin::GeneratorNext, &[])?;
     b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;

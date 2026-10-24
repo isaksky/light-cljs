@@ -419,7 +419,7 @@ enum NativeState {
     },
     Generator {
         id: ObjectId,
-        failed: Option<Value>,
+        failed: Option<super::exception::Exception>,
     },
     BigIntFormat(Box<crate::value::bigint::BigIntToString>),
     Iterator(Box<iterator::State>),
@@ -740,7 +740,7 @@ impl Trace for NativeFrame {
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Generator { id, failed } => {
                 visit(*id);
-                failed.iter().for_each(|v| v.trace(visit));
+                failed.iter().for_each(|e| e.value.trace(visit));
             }
             NativeState::TypedArray(array) => array.trace(visit),
             NativeState::Promise(p) => p.trace(visit),
@@ -2115,9 +2115,10 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     }
 }
 
-/// A native boundary consumes an exception after JavaScript's own
-/// catch/finally handlers have run. Array.from retains the full exception
-/// for IteratorClose; promises consume its value. Cancellation skips this.
+/// Native boundaries receive exceptions after JavaScript's own catch/finally
+/// handlers have run. Generators and Array.from retain the full diagnostic
+/// for rethrowing or IteratorClose; promises consume the value. Cancellation
+/// never calls this path.
 pub(crate) fn catch(
     natives: &mut Vec<NativeFrame>,
     index: usize,
@@ -2128,7 +2129,7 @@ pub(crate) fn catch(
     match &mut frame.state {
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
-        NativeState::Generator { failed, .. } => *failed = Some(exception.value),
+        NativeState::Generator { failed, .. } => *failed = Some(exception),
         _ => return Err("invalid native catch"),
     }
     frame.awaiting = Awaiting::Nothing;
@@ -2305,7 +2306,7 @@ impl NativeState {
             NativeState::Generator { id, failed } => {
                 if let Some(error) = failed.take() {
                     super::generator::complete(heap, *id);
-                    return Err(Fault::Thrown(error));
+                    return Err(Fault::Rethrow(error));
                 }
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("generator expected result"));

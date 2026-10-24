@@ -25,6 +25,48 @@ fn complete(outcome: RunOutcome) -> Rooted {
 }
 
 #[test]
+fn suspended_generator_operands_and_completions_are_traced() {
+    // Synthetic fixtures, not light-cljs output. Only a saved operand or
+    // pending completion retains the object while the task waits.
+    use clj_quickjs::frontend::compile_script;
+    for body in [
+        "function read(a,b) { return a; } return read({n:17}, yield 0);",
+        "try { return {n:17}; } finally { yield 0; }",
+        "try { throw {n:17}; } finally { yield 0; }",
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "function* f() {{ {body} }} let g=f(); g.next(); __rt.need(90,1); function a() {{ return b(); }} function b() {{ try {{ return g.next().value; }} catch(e) {{ return e; }} }} a().n"
+        );
+        let code = compile_script("generator-saved-values", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        assert_eq!(rt.heap_usage().objects.generator, 1);
+        let request = &task.take_producer_requests()[0];
+        let ready = rt.root(Primitive::Number(0.0));
+        let resumed = rt
+            .complete(
+                request.key(),
+                request.producer(),
+                clj_quickjs::Completion::Ready(&ready),
+            )
+            .unwrap()
+            .into_runnable();
+        assert_eq!(
+            complete(resumed[0].run().unwrap()).view(),
+            ValueView::Number(17.0),
+            "{body}"
+        );
+        drop(resumed);
+        drop(task);
+        let collected = rt.collect().unwrap();
+        assert!(collected.reclaimed >= 2, "{body}");
+        assert_eq!(rt.heap_usage().objects.generator, 0);
+    }
+}
+
+#[test]
 fn suspended_generator_is_traced_and_reclaimed() {
     // Synthetic source fixture, not light-cljs output. Only the saved
     // activation retains `held` after the first next returns.

@@ -22,6 +22,35 @@ fn complete(outcome: RunOutcome) -> Rooted {
 }
 
 #[test]
+fn generator_function_publication_preserves_callability() {
+    // Synthetic fixtures, not light-cljs output. Promise settlement attempts
+    // publication within the creating task, before the first generator call.
+    let rt = Runtime::new();
+    let script = compile_script(
+        "generator-publication",
+        "function* g() { yield 1; } Promise.resolve(g).catch(() => 0); g().next().value === 1",
+    )
+    .unwrap();
+    assert_eq!(
+        complete(rt.spawn(&script, &[]).unwrap().run().unwrap()).view(),
+        ValueView::Bool(true)
+    );
+    let source = compile_script("generator-function", "function* g() { yield 1; } g").unwrap();
+    let task = rt.spawn(&source, &[]).unwrap();
+    let function = complete(task.run().unwrap());
+    let (_, _, owner) = not_shareable(rt.publish(&function).unwrap_err());
+    assert_eq!(owner, Some(task.id()));
+
+    // The directly spawned entry's self-reference is allocated before its
+    // initial suspension when a parameter default refers to the function.
+    rt.collect().unwrap();
+    let entry = compile_function("function* g(x = Promise.resolve(g)) { yield 1; }").unwrap();
+    let generator = complete(rt.spawn(&entry, &[]).unwrap().run().unwrap());
+    assert_eq!(rt.heap_usage().objects.generator, 1);
+    assert!(rt.publish(&generator).is_err());
+}
+
+#[test]
 fn generators_are_task_owned() {
     // Synthetic fixture, not light-cljs output. Directly spawning compiled
     // generator code also returns an unexecuted generator object.
