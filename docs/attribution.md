@@ -290,6 +290,18 @@ fixtures, not light-cljs output. `js_json_check`, `js_json_to_str` and
 as semantic references. The resumable Rust serializer was written afresh;
 no upstream C implementation was copied.
 
+## JSON.stringify indentation (clj-quickjs-161)
+
+`tests/js_source.rs::json_stringify_indentation` adapts the nested indentation
+row from `research/quickjs/tests/test_builtin.js::test_json` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), using
+both escaped ordinary strings and the upstream template-literal layout.
+The full QuickJS copyright and MIT permission notice is retained at
+`string_code_unit_access` in that test file. Other cases are synthetic
+fixtures, not light-cljs output. `JS_JSONStringify` and `js_json_to_str`
+in `research/quickjs/quickjs.c` at that revision were semantic references;
+the resumable Rust gap conversion and indentation stages were written afresh.
+
 ## Symbol registry (clj-quickjs-128)
 
 `tests/js_source.rs::symbol_registry` adapts the registry identity and key

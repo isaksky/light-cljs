@@ -436,7 +436,7 @@ fn hex(c: u16) -> Option<u16> {
 use super::{dispatch, keys};
 use crate::heap::HeapObject;
 use crate::object::PrimitiveData;
-use crate::value::string::{MAX_STRING_LEN, StringBuild, number_to_string};
+use crate::value::string::{CursorStep, MAX_STRING_LEN, StringBuild, UnitCursor, number_to_string};
 use std::collections::HashSet;
 
 // Own-key collection is a shared leaf API. Bound its scan/sort here; arrays
@@ -465,14 +465,33 @@ struct StringifyContainer {
 }
 
 #[derive(Debug)]
+enum AfterIndent {
+    Key,
+    Emit,
+    Close(bool),
+}
+
+#[derive(Debug)]
 enum StringifyStage {
+    Space,
+    SpaceConverted,
+    SpacePrefix {
+        cursor: UnitCursor,
+        units: Vec<u16>,
+    },
     Prepare,
     Method,
     ToJsonResult,
     Unwrap,
     Converted,
     Ready,
+    Key,
     Emit,
+    Indent {
+        remaining: usize,
+        after: AfterIndent,
+    },
+    Close(bool),
     Next,
     PropertyResult,
     Quote {
@@ -498,6 +517,8 @@ pub(super) enum StringifyStep {
 #[derive(Debug)]
 pub(super) struct Stringifier {
     value: Value,
+    space: Value,
+    gap: JsString,
     key: JsString,
     stack: Vec<StringifyContainer>,
     active: HashSet<ObjectId>,
@@ -509,6 +530,7 @@ pub(super) struct Stringifier {
 impl Trace for Stringifier {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.value.trace(visit);
+        self.space.trace(visit);
         for container in &self.stack {
             container.value.trace(visit);
         }
@@ -516,16 +538,59 @@ impl Trace for Stringifier {
 }
 
 impl Stringifier {
-    pub(super) fn new(value: Value) -> Self {
+    pub(super) fn new(value: Value, space: Value) -> Self {
         Self {
             value,
+            space,
+            gap: JsString::from(""),
             key: JsString::from(""),
             stack: Vec::new(),
             active: HashSet::new(),
-            stage: StringifyStage::Prepare,
+            stage: StringifyStage::Space,
             parts: Vec::new(),
             units: 0,
         }
+    }
+
+    fn set_gap(&mut self) {
+        self.stage = StringifyStage::Prepare;
+        self.gap = match std::mem::replace(&mut self.space, Value::Undefined) {
+            Value::Number(n) => {
+                // Rust's saturating float cast maps NaN/negative values to zero
+                // and truncates positive fractions, including after clamping.
+                let count = n.clamp(0.0, 10.0) as usize;
+                JsString::from_code_units(vec![32; count]).expect("gap at most 10 units")
+            }
+            Value::String(s) => {
+                self.stage = StringifyStage::SpacePrefix {
+                    cursor: UnitCursor::new(s),
+                    units: Vec::with_capacity(10),
+                };
+                JsString::from("")
+            }
+            _ => JsString::from(""),
+        };
+    }
+
+    fn after_indent(&mut self, after: AfterIndent) {
+        self.stage = match after {
+            AfterIndent::Key => StringifyStage::Key,
+            AfterIndent::Emit => StringifyStage::Emit,
+            AfterIndent::Close(array) => StringifyStage::Close(array),
+        };
+    }
+
+    fn indent(&mut self, depth: usize, after: AfterIndent) -> Result<(), Fault> {
+        if self.gap.is_empty() {
+            self.after_indent(after);
+        } else {
+            self.append(JsString::from("\n"))?;
+            self.stage = StringifyStage::Indent {
+                remaining: depth * self.gap.len(),
+                after,
+            };
+        }
+        Ok(())
     }
 
     fn append(&mut self, text: JsString) -> Result<(), Fault> {
@@ -648,6 +713,47 @@ impl Stringifier {
         use StringifyStage as S;
         use StringifyStep as A;
         match std::mem::replace(&mut self.stage, S::Next) {
+            S::Space => {
+                match builtin::wrapper_data(heap, task, &self.space)? {
+                    Some(PrimitiveData::Number(_)) => {
+                        self.stage = S::SpaceConverted;
+                        return Ok(A::ToNumber(self.space.clone()));
+                    }
+                    Some(PrimitiveData::String(_)) => {
+                        self.stage = S::SpaceConverted;
+                        return Ok(A::ToString(self.space.clone()));
+                    }
+                    None => {}
+                }
+                self.set_gap();
+            }
+            S::SpaceConverted => {
+                self.space =
+                    input.ok_or(Fault::Internal("JSON.stringify missing space conversion"))?;
+                self.set_gap();
+            }
+            S::SpacePrefix {
+                mut cursor,
+                mut units,
+            } => {
+                for _ in 0..STEP {
+                    match cursor.step() {
+                        CursorStep::Unit(unit) => units.push(unit),
+                        CursorStep::Continue => continue,
+                        CursorStep::End => {
+                            self.gap = JsString::from_owned_code_units(units).expect("bounded gap");
+                            self.stage = S::Prepare;
+                            return Ok(A::Continue);
+                        }
+                    }
+                    if units.len() == 10 {
+                        self.gap = JsString::from_owned_code_units(units).expect("bounded gap");
+                        self.stage = S::Prepare;
+                        return Ok(A::Continue);
+                    }
+                }
+                self.stage = S::SpacePrefix { cursor, units };
+            }
             S::Prepare => {
                 if matches!(self.value, Value::Object(_)) {
                     match property::read(
@@ -720,16 +826,43 @@ impl Stringifier {
                     if comma {
                         self.append(JsString::from(","))?;
                     }
-                    self.append(JsString::from("\""))?;
-                    self.stage = S::Quote {
-                        text: self.key.clone(),
-                        next: 0,
-                        key: true,
-                    };
-                } else {
+                    self.indent(self.stack.len(), AfterIndent::Key)?;
+                } else if self.stack.is_empty() {
                     self.stage = S::Emit;
+                } else {
+                    self.indent(self.stack.len(), AfterIndent::Emit)?;
                 }
             }
+            S::Key => {
+                self.append(JsString::from("\""))?;
+                self.stage = S::Quote {
+                    text: self.key.clone(),
+                    next: 0,
+                    key: true,
+                };
+            }
+            S::Indent { remaining, after } => {
+                let count = remaining.min(STEP);
+                let gap = self.gap.code_units();
+                // remaining starts at a whole number of gaps. Preserve its
+                // position even when a 256-unit chunk splits a gap.
+                let offset = (gap.len() - remaining % gap.len()) % gap.len();
+                let units = (0..count)
+                    .map(|i| gap[(offset + i) % gap.len()])
+                    .collect::<Vec<_>>();
+                self.append(
+                    JsString::from_owned_code_units(units).expect("bounded indentation chunk"),
+                )?;
+                if remaining == count {
+                    self.after_indent(after);
+                } else {
+                    self.stage = S::Indent {
+                        remaining: remaining - count,
+                        after,
+                    };
+                }
+            }
+            S::Close(array) => self.append(JsString::from(if array { "]" } else { "}" }))?,
             S::Emit => match &self.value {
                 Value::String(text) => {
                     let text = text.clone();
@@ -785,13 +918,15 @@ impl Stringifier {
                         unreachable!()
                     };
                     self.active.remove(&id);
-                    self.append(JsString::from(
-                        if matches!(container.members, Members::Array { .. }) {
-                            "]"
-                        } else {
-                            "}"
-                        },
-                    ))?;
+                    let (array, emitted) = match container.members {
+                        Members::Array { len, .. } => (true, len != 0),
+                        Members::Object { emitted, .. } => (false, emitted),
+                    };
+                    if emitted {
+                        self.indent(self.stack.len(), AfterIndent::Close(array))?;
+                    } else {
+                        self.stage = S::Close(array);
+                    }
                     return Ok(A::Continue);
                 };
                 let holder = top.value.clone();
@@ -876,7 +1011,11 @@ impl Stringifier {
                     JsString::from_owned_code_units(units).expect("bounded JSON quote chunk"),
                 )?;
                 if next == source.len() {
-                    self.append(JsString::from(if key { "\":" } else { "\"" }))?;
+                    self.append(JsString::from(if key {
+                        if self.gap.is_empty() { "\":" } else { "\": " }
+                    } else {
+                        "\""
+                    }))?;
                     self.stage = if key { S::Emit } else { S::Next };
                 } else {
                     self.stage = S::Quote { text, next, key };

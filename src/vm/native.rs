@@ -1275,18 +1275,13 @@ pub(crate) fn start_builtin(
                 })))
             }
             Builtin::JsonStringify => {
-                if !matches!(arg(1), Value::Undefined) {
+                if !matches!(arg(1), Value::Undefined | Value::Null) {
                     return Err(Fault::TypeError(
                         "JSON.stringify replacer is not supported".into(),
                     ));
                 }
-                if !matches!(arg(2), Value::Undefined) {
-                    return Err(Fault::TypeError(
-                        "JSON.stringify space is not supported".into(),
-                    ));
-                }
                 Some(NativeState::JsonStringify(Box::new(
-                    super::json::Stringifier::new(arg(0)),
+                    super::json::Stringifier::new(arg(0), arg(2)),
                 )))
             }
             Builtin::JsonParse => Some(NativeState::Json {

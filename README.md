@@ -2672,7 +2672,7 @@ engine SyntaxError path, with input line/UTF-16 column/offset in its message.
 The explicit parser stack permits 512 open containers; object member names
 permit 4096 decoded UTF-16 units. Exceeding either limit throws SyntaxError.
 Callable revivers explicitly throw TypeError; reviver traversal and
-JSON extensions remain deferred. Compact JSON.stringify is described below.
+JSON extensions remain deferred. JSON.stringify is described below.
 
 Tests: `cargo test --test js_source json_parse`.
 
@@ -2692,7 +2692,7 @@ Tests: `cargo test --test js_source symbol_`,
 Symbol.prototype, wrappers, other well-known symbols and
 protocol dispatch remain deferred.
 
-### Compact JSON.stringify (clj-quickjs-160)
+### JSON.stringify (clj-quickjs-160/-161)
 
 `JSON.stringify(value)` serializes primitives, Number/String wrappers, arrays
 and ordinary objects in ECMAScript key order, with well-formed UTF-16 quoting,
@@ -2700,10 +2700,13 @@ resumable getters/`toJSON`/wrapper conversion and catchable cycle errors.
 Undefined/functions/symbols are omitted in objects, become null in arrays and yield
 undefined at the root. Traversal and string work respect instruction budgets;
 512-container, 4096-stored-property and 4096-unit member-name limits throw
-RangeError. Non-undefined replacer or space arguments fail explicitly.
+RangeError. Undefined/null replacers are accepted; other replacers fail explicitly.
+The optional space argument indents output with 0–10 spaces for numbers or
+the first 10 UTF-16 code units for strings, including Number/String wrappers
+with resumable conversion. Empty containers stay compact and indentation is budgeted.
 Number-wrapper conversion strings are capped at 4096 UTF-16 units before
 leaf numeric parsing; ordinary quoted strings keep their normal length limit.
-Indentation/replacers and Boolean wrappers remain deferred or prerequisite
+Replacer functions/lists and Boolean wrappers remain deferred or prerequisite
 gaps. See `docs/grammar.md` for precise limits and behavior.
 
 Tests: `cargo test --test js_source json_stringify`.

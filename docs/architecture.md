@@ -4387,11 +4387,25 @@ This bounds whitespace scanning, grammar validation, radix/decimal parsing
 and copying without changing other users of the shared ToNumber path.
 Limits throw catchable RangeError and are independent of native stack size;
 array lengths and quoted string values retain their underlying limits.
-Unsupported replacer and space arguments fail explicitly. Boolean wrappers
+Replacer arguments other than undefined/null fail explicitly. Boolean wrappers
 remain an absent prerequisite. Symbol primitives follow the omission rules;
 enumerated symbol keys are filtered before any value read. The bounded
 property preflight includes stored symbol keys, keeping the shared leaf
 enumeration bounded even when none of those keys contribute JSON members.
+
+Indentation (clj-quickjs-161) saves the original space value as a traced
+continuation root until its optional Number/String wrapper conversion has
+completed. These conversions run before root `toJSON` and use the existing
+VM conversion frames, including the 4096-unit Number conversion bound.
+The resulting gap owns at most 10 UTF-16 units; a saved UnitCursor visits at
+most 256 rope nodes/units per transition and stops after the prefix without
+flattening the original string. Container depth supplies the indentation width without
+recursive traversal or copying an accumulated indent per level. An explicit
+indentation stage emits at most 256 code units per transition, saving the
+remaining width and the next action (key, value or closing delimiter).
+Object separators are emitted only after omission checks, so an all-omitted
+object stays compact. Indent chunks use the same checked output parts and
+budgeted final assembly as quoted strings; no new heap representation is added.
 
 ## Runtime symbol registry (clj-quickjs-128)
 

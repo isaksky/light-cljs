@@ -16349,6 +16349,7 @@ fn json_stringify() {
         r#"let s = '{"x":1,"y":true,"z":null,"a":[1,2,3],"s":"str"}'; JSON.stringify(JSON.parse(s)) === s"#,
         r#"JSON.stringify(1) === '1' && JSON.stringify(-0) === '0' && JSON.stringify(NaN) === 'null' && JSON.stringify(Infinity) === 'null'"#,
         r#"JSON.stringify(true) === 'true' && JSON.stringify(false) === 'false' && JSON.stringify(null) === 'null'"#,
+        r#"JSON.stringify(1, null) === '1' && JSON.stringify(1, undefined, 2) === '1'"#,
         r#"JSON.stringify('a"b\n\u0001') === '"a\\"b\\n\\u0001"'"#,
         r#"JSON.stringify('\ud800') === '"\\ud800"' && JSON.stringify('\udc00') === '"\\udc00"' && JSON.stringify('😀') === '"😀"'"#,
         r#"JSON.stringify('\b\f\r\t\\\u0000\u001f') === '"\\b\\f\\r\\t\\\\\\u0000\\u001f"'"#,
@@ -16382,7 +16383,6 @@ fn json_stringify() {
     }
     for src in [
         "JSON.stringify(1, function(k,v){return v;})",
-        "JSON.stringify(1, null)",
         "JSON.stringify(1, [])",
     ] {
         let error = failure(src);
@@ -16393,13 +16393,6 @@ fn json_stringify() {
                 .contains("JSON.stringify replacer is not supported")
         );
     }
-    let error = failure("JSON.stringify(1, undefined, 2)");
-    assert_eq!(error.kind(), VmErrorKind::TypeError);
-    assert!(
-        error
-            .message()
-            .contains("JSON.stringify space is not supported")
-    );
     assert_eq!(
         failure("new JSON.stringify(1)").kind(),
         VmErrorKind::TypeError
@@ -16408,6 +16401,204 @@ fn json_stringify() {
         failure("let c = {}; c.self = c; JSON.stringify(c)").kind(),
         VmErrorKind::TypeError
     );
+}
+
+/// The nested row adapts QuickJS test_builtin.js::test_json at 7d1c13c5d8f8;
+/// the full MIT notice is retained at string_code_unit_access. Other rows
+/// are synthetic fixtures, not light-cljs output.
+#[test]
+fn json_stringify_indentation() {
+    for src in [
+        r#"JSON.stringify([[{x:1,y:{},z:[]},2,3]], undefined, 1) === '[\n [\n  {\n   "x": 1,\n   "y": {},\n   "z": []\n  },\n  2,\n  3\n ]\n]'"#,
+        r#"JSON.stringify([[{x:1,y:{},z:[]},2,3]], undefined, 1) === `[
+ [
+  {
+   "x": 1,
+   "y": {},
+   "z": []
+  },
+  2,
+  3
+ ]
+]`"#,
+        r#"JSON.stringify([1], null, 2) === '[\n  1\n]'"#,
+        r#"JSON.stringify({a:[1]}, undefined, '--') === '{\n--"a": [\n----1\n--]\n}'"#,
+        r#"JSON.stringify([1], undefined, 20) === '[\n          1\n]'"#,
+        r#"JSON.stringify([1], undefined, 'abcdefghijkl') === '[\nabcdefghij1\n]'"#,
+        r#"JSON.stringify([1], undefined, 0) === '[1]' && JSON.stringify([1], undefined, '') === '[1]'"#,
+        r#"JSON.stringify({}, undefined, 2) === '{}' && JSON.stringify([], undefined, 2) === '[]'"#,
+        r#"JSON.stringify([1], undefined, new Number(1)) === '[\n 1\n]'"#,
+        r#"JSON.stringify([1], undefined, new String('--')) === '[\n--1\n]'"#,
+        r#"JSON.stringify([1], null, 1.9) === '[\n 1\n]' && JSON.stringify([1], null, Infinity) === '[\n          1\n]'"#,
+        r#"JSON.stringify([1], null, -Infinity) === '[1]' && JSON.stringify([1], null, NaN) === '[1]' && JSON.stringify([1], null, -3) === '[1]'"#,
+        r#"JSON.stringify([1], null, true) === '[1]' && JSON.stringify([1], null, {toString(){throw 1;},valueOf(){throw 2;}}) === '[1]'"#,
+        r#"JSON.stringify([1], null, '123456789😀') === '[\n123456789\ud83d1\n]'"#,
+        r#"JSON.stringify({a:undefined,b:function(){},c:Symbol()}, null, 2) === '{}'"#,
+        r#"JSON.stringify({a:undefined,b:1,c:undefined,d:2,e:undefined}, null, 1) === '{\n "b": 1,\n "d": 2\n}'"#,
+        r#"JSON.stringify([undefined,,function(){},Symbol()], null, 1) === '[\n null,\n null,\n null,\n null\n]'"#,
+        r#"JSON.stringify(1, null, 2) === '1' && JSON.stringify(undefined, null, 2) === undefined"#,
+        r#"let log = ''; let n = new Number(1); n.valueOf = function(){log += 's'; return 2;}; let v = {toJSON(){log += 'j'; return [1];}}; JSON.stringify(v, null, n) === '[\n  1\n]' && log === 'sj'"#,
+        r#"let s = new String('-'); s.toString = function(){return {};}; s.valueOf = function(){return '..';}; JSON.stringify([1], null, s) === '[\n..1\n]'"#,
+        r#"let caught = false; let n = new Number(1); n.valueOf = function(){throw 42;}; try {JSON.stringify(undefined, null, n);} catch(e){caught = e === 42;} caught"#,
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Space coercion precedes
+/// toJSON, and all receivers remain rooted across waits and worker changes.
+#[test]
+fn json_stringify_indentation_wait_collect_and_migrate() {
+    for (wrapper, method, gap) in [
+        ("new Number(1)", "valueOf", "2"),
+        ("new String('-')", "toString", "'  '"),
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            r#"
+            let log = '';
+            let space = {wrapper};
+            space.{method} = function() {{log += 's'; __rt.need(1,1); return {gap};}};
+            let value = {{keep: {{n: 7}}, get a() {{
+                log += 'g'; __rt.need(2,1);
+                return {{toJSON(key) {{log += key; __rt.need(3,1); return [8];}}}};
+            }}}};
+            JSON.stringify(value, null, space) === '{{\n  "keep": {{\n    "n": 7\n  }},\n  "a": [\n    8\n  ]\n}}' && log === 'sga'
+            "#
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waited = 0;
+        let mut complete = false;
+        for _ in 0..1500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert!(waited <= 3);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    assert_eq!(waited, 3);
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete, "indented JSON.stringify did not finish");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. A deep multicode-unit gap
+/// crosses 256-unit chunks at different offsets; the full output is checked.
+#[test]
+fn json_stringify_indentation_is_budgeted() {
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(
+        "let value = 1; for (let i = 0; i < 100; i++) {value = [value];} JSON.stringify(value, null, 'abc');"
+    ), &[]).unwrap();
+    let mut expected = String::new();
+    for depth in 1..=100 {
+        expected.push_str("[\n");
+        expected.push_str(&"abc".repeat(depth));
+    }
+    expected.push('1');
+    for depth in (0..100).rev() {
+        expected.push('\n');
+        expected.push_str(&"abc".repeat(depth));
+        expected.push(']');
+    }
+    let mut yields = 0;
+    for _ in 0..10000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.string().unwrap(), expected.as_str());
+                assert!(yields > 500, "deep indentation must consume budget");
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("deep indented JSON.stringify did not finish");
+}
+
+/// Synthetic fixtures, not light-cljs output. Taking ten units must neither
+/// flatten a large rope nor traverse a deep prefix in a single native step.
+#[test]
+fn json_stringify_space_strings_are_budgeted() {
+    use clj_quickjs::JsString;
+    for body in [
+        "return JSON.stringify([1], null, text);",
+        "let s = new String(''); s.toString = function(){return text;}; return JSON.stringify([1], null, s);",
+    ] {
+        let code = compile_function(&format!("function stringify(text) {{{body}}}")).unwrap();
+        let mut gap = JsString::from("abcdefghijklmnopqrstuvwxyz0123456789");
+        for _ in 0..10000 {
+            gap = gap.concat(&JsString::from("x")).unwrap();
+        }
+        let rt = Runtime::new();
+        let root = rt.root(Primitive::String(gap));
+        let task = rt.spawn(&code, &[&root]).unwrap();
+        drop(root);
+        let before = JsString::copied_code_units();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.string().unwrap(), "[\nabcdefghij1\n]");
+                    assert!(yields >= 10000 / 256, "rope visits must consume budget");
+                    assert!(
+                        JsString::copied_code_units() - before < 1024,
+                        "space must not flatten its full input"
+                    );
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(complete, "rope gap did not finish");
+    }
+    let code = compile_function(
+        "function stringify(text) {let n = new Number(1); n.valueOf = function(){return text;}; return JSON.stringify([1], null, n);}"
+    ).unwrap();
+    assert!(matches!(
+        run(&code, &[Primitive::String("1".repeat(4097).as_str().into())]),
+        RunOutcome::Failed(e) if e.kind() == VmErrorKind::RangeError && e.message().contains("Number conversion limit of 4096")
+    ));
 }
 
 /// Synthetic fixture, not light-cljs output. Every callback suspends once;

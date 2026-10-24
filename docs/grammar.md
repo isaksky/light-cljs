@@ -556,10 +556,11 @@ checks left to later stages:
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
   SyntaxErrors; callable revivers fail explicitly with TypeError.
-  Reviver traversal remains deferred. Compact `JSON.stringify` (clj-quickjs-160)
+  Reviver traversal remains deferred. `JSON.stringify` (clj-quickjs-160/-161)
   serializes primitives, wrappers, arrays and objects with resumable getters/
-  `toJSON`, cycle checks and bounded quoting/traversal. Replacer and space
-  arguments fail explicitly; see "JSON.stringify" below for resource limits.
+  `toJSON`, cycle checks, bounded quoting/traversal and the indentation space
+  argument. Replacer functions/lists fail explicitly; see "JSON.stringify"
+  below for resource limits.
 - **Error instances** (clj-quickjs-228/-229): `Error` and all seven NativeError
   constructors are callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
@@ -3250,7 +3251,7 @@ Plus and relational comparisons first obtain both primitive operands.
 Inherited symbol-keyed setters run as ordinary resumable calls and retain the
 receiver, assigned value and assignment-expression result through waits and GC.
 
-### JSON.stringify (clj-quickjs-160)
+### JSON.stringify (clj-quickjs-160/-161)
 
 Execution: `JSON.stringify(value)` (name `"stringify"`, length 3) produces
 compact JSON. Null, booleans, finite numbers and strings serialize normally;
@@ -3273,9 +3274,21 @@ Accessors, methods and coercion may yield, wait, collect or migrate without
 replaying effects. A circular active path throws catchable TypeError;
 repeated references outside that path are allowed.
 
+`JSON.stringify(value, replacer, space)` accepts `undefined` or `null` as
+no replacer. A numeric space supplies its integer number of spaces, clamped
+to 0–10 (NaN and negative values give no gap, positive infinity gives 10).
+A string space supplies its first 10 UTF-16 code units, even if this splits
+a surrogate pair. Number/String wrappers use observable, resumable
+ToNumber/ToString before the root's `toJSON`; other space types are ignored
+without coercion. A nonempty gap puts each included member/element on a new
+line at the container's depth, inserts one space after each object colon,
+and puts the closing delimiter on a new line at the enclosing depth. Empty
+arrays/objects, including objects whose members are all omitted, stay compact.
+
 Traversal uses an explicit stack with at most 512 open containers (catchable
 RangeError beyond it). Each step visits one member/transition or quotes at
-most 256 UTF-16 units; final string assembly copies at most 256 units/part
+most 256 UTF-16 units; indentation emits at most 256 units per step;
+final string assembly copies at most 256 units/part
 boundaries per step. Output retains the normal `2^30 - 1` code-unit limit.
 Shared leaf own-key enumeration is bounded by a limit of 4096 stored
 properties per ordinary object, including non-enumerable properties. Member
@@ -3287,12 +3300,13 @@ conversion limit. Wrapper getters/methods still run once and resumably before
 this check. These limits throw catchable RangeError. Arrays stream indices
 and have no corresponding element-count limit. Primitive string values and
 String-wrapper results are quoted in chunks without this conversion limit.
+The same limited ToNumber path applies to Number space wrappers; String
+space wrapper results use a budgeted rope cursor that stops after 10 units
+without flattening or scanning the remainder.
 
-Explicit gaps: every non-undefined replacer throws TypeError
-`"JSON.stringify replacer is not supported"`; every non-undefined space
-argument throws TypeError `"JSON.stringify space is not supported"`.
-Replacer functions/lists and indentation are deferred (indentation belongs
-to clj-quickjs-161). Boolean wrapper construction is unavailable in the
+Explicit gaps: every replacer other than undefined/null throws TypeError
+`"JSON.stringify replacer is not supported"`.
+Replacer functions/lists are deferred. Boolean wrapper construction is unavailable in the
 underlying value model, so it remains an explicit prerequisite gap;
 `new Boolean(true)` fails ReferenceError.
 Boolean primitives are supported. BigInt serialization throws TypeError; JSON extensions are deferred.
@@ -3304,6 +3318,7 @@ JSON.stringify({b: 1, a: undefined, 1: 3}) === '{"1":3,"b":1}';
 JSON.stringify([undefined, , NaN]) === '[null,null,null]';
 JSON.stringify({toJSON(key) { return key; }}) === '""';
 JSON.stringify('\ud800') === '"\\ud800"';
+JSON.stringify({a: [1]}, null, 2) === '{\n  "a": [\n    1\n  ]\n}';
 ```
 
 ### Symbol registry (clj-quickjs-128)
