@@ -1031,8 +1031,25 @@ type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> R
 /// resumes. Large descriptor/conversion paths must fit 64 KiB workers.
 fn instruction_step(instr: Instr) -> InstructionStep {
     match instr {
-        Instr::Call(_) | Instr::CallMethod(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => call_step,
-        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) | Instr::CheckGlobalLexicalConflict(_) => global_step,
+        Instr::Call(_)
+        | Instr::CallMethod(_)
+        | Instr::CallSpread
+        | Instr::CallMethodSpread
+        | Instr::ConstructSpread => call_step,
+        Instr::GetGlobalObject
+        | Instr::GetGlobal(_)
+        | Instr::GetGlobalOrUndefined(_)
+        | Instr::PutGlobal(_)
+        | Instr::DeclareGlobalVar(_)
+        | Instr::DeclareGlobalFunction(_)
+        | Instr::DeclareGlobalLet(_)
+        | Instr::DeclareGlobalConst(_)
+        | Instr::InitGlobalLexical(_)
+        | Instr::CheckGlobalVar(_)
+        | Instr::CheckGlobalFunction(_)
+        | Instr::DeleteGlobal(_)
+        | Instr::DeclareGlobalConstValue(_)
+        | Instr::CheckGlobalLexicalConflict(_) => global_step,
         Instr::RequireCoercible
         | Instr::OwnKeys
         | Instr::IsEnumerable
