@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::heap::{HandleError, Heap, HeapStats, Rooted, Scope};
+use crate::heap::{CollectError, CollectStats, HandleError, Heap, HeapStats, Rooted, Scope};
 use crate::ids::{TaskId, WorldId};
 use crate::task::Task;
 use crate::value::{Primitive, Value};
@@ -92,8 +92,28 @@ impl Runtime {
         ))
     }
 
+    /// The shared heap (crate tests).
+    #[cfg(test)]
+    pub(crate) fn heap(&self) -> &Arc<Heap> {
+        &self.0.heap
+    }
+
     /// Heap usage counters.
     pub fn heap_stats(&self) -> HeapStats {
         self.0.heap.stats()
+    }
+
+    /// Collect now: a deterministic, stop-the-world mark/sweep of the shared
+    /// heap. Everything not reachable from a persistent root, an open scope
+    /// on this thread, or a live task's frames and executable constants is
+    /// reclaimed, cycles included; reachable objects keep their identity
+    /// (nothing moves).
+    ///
+    /// Fails without collecting, and without waiting, with
+    /// [`CollectError::MutatorActive`] while any [`RunGuard`](crate::RunGuard)
+    /// exists (including inside a host effect) or a scope is open on another
+    /// thread. See [`crate::heap::gc`].
+    pub fn collect(&self) -> Result<CollectStats, CollectError> {
+        self.0.heap.collect()
     }
 }

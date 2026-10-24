@@ -18,6 +18,8 @@ cargo run                         # early VM test program (hand-assembled byteco
 cargo run --example resumable_counter   # budgeted yield/resume with a host counter
 cargo test --lib resume_tests     # yield/resume and host-effect unit tests
 cargo test --test resumable       # resume on another embedder thread
+cargo test --test gc              # collection through the embedding API
+cargo test --lib heap::           # collector, native payloads, root categories
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
@@ -25,10 +27,11 @@ cargo clippy --all-targets -- -D warnings
 ## Crate layout
 
 Library (`src/lib.rs`) plus a thin binary (`src/main.rs`). Modules:
-`runtime` (embedding entry point), `task` (task state, execution guard, run
-outcomes), `vm` (instruction format, executable validation, task-owned frames,
-dispatch, test assembler), `heap` (object identity, roots and scoped handles,
-tracing contract), `value`, `ids`, `error`, `host` (leaf host effects). See
+`runtime` (embedding entry point, `collect`), `task` (task state, execution
+guard, run outcomes), `vm` (instruction format, executable validation,
+task-owned frames, dispatch, test assembler), `heap` (object identity, roots,
+scoped and weak handles, tracing contract, mark/sweep collector), `value`,
+`ids`, `error`, `host` (leaf host effects). See
 the `lib.rs` crate docs and [`docs/architecture.md`](docs/architecture.md).
 
 ## Supported and deferred
@@ -61,8 +64,7 @@ Deferred (explicitly not implemented):
   early VM test tool, not JavaScript source support.
 - `Waiting` is reserved but never produced (`Yielded` and budgets: see
   clj-quickjs-16 below).
-- Garbage collection: the heap is a temporary non-reclaiming stub. Tracing
-  hooks exist; no collector runs.
+- Garbage collection: superseded, see clj-quickjs-2 below.
 - Arithmetic on non-number operands fails with `UnsupportedOperand` instead of
   applying JavaScript coercions. No strings, properties, calls, closures,
   exceptions, collections, atoms or dependency cells yet.
@@ -91,3 +93,39 @@ Deferred:
 - Resumable natives that call JavaScript or suspend (clj-quickjs-12); a
   scheduler/executor with budgets (clj-quickjs-8). Budgets count instructions
   only, not time or allocation.
+
+### Garbage collection (clj-quickjs-2)
+
+Supported:
+
+- A precise, nonmoving, stop-the-world mark/sweep collector over the one
+  shared heap (`src/heap/gc.rs`). `Runtime::collect()` is the deterministic
+  "collect now" entry point; it returns `CollectStats` (roots, live,
+  reclaimed). Unreachable objects are reclaimed, cycles included; reachable
+  objects keep their identity and storage address.
+- Roots: persistent `Rooted` handles (including task results), locals of
+  open `Runtime::scope` scopes, and every live task's saved frames (operands
+  and locals) plus its executable's constants. Native heap objects report
+  their payload edges through `Trace`. Later root kinds (dependency results,
+  atoms, closures, native continuations) register through the same
+  `RootSource` boundary.
+- A Rust variable is not a root: `WeakHandle` (`Rooted::downgrade`,
+  `Scope::downgrade`) names an object without keeping it alive. After
+  reclamation `upgrade` fails with `HandleError::Reclaimed`, even when the
+  object's storage slot has been reused (slot generations are checked on
+  every lookup).
+- Finishing a task releases its frames but not its allocations: a returned
+  value lives as long as its `Rooted` result.
+
+Deferred:
+
+- Collection while tasks run: `collect` refuses with
+  `CollectError::MutatorActive` (it never waits) while any `RunGuard` exists
+  or a scope is open on another thread. Cooperative safepoints and mutator
+  registration are pellet clj-quickjs-17; executor integration is
+  clj-quickjs-25; per-root-kind coverage is clj-quickjs-31.
+- No automatic collection trigger (allocation never collects), no
+  generational, concurrent or compacting collection, and no worker-local
+  allocation buffers.
+- Heap-object constants in executables: the constant-pool edge is traced,
+  but loaded code still accepts only primitive constants.

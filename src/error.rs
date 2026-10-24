@@ -23,6 +23,8 @@ pub enum VmErrorKind {
     /// A leaf host effect reported an error, or the run had no host
     /// ([`Task::run`](crate::Task::run) supplies none).
     HostEffect,
+    /// The heap could not allocate an object (its object table is full).
+    OutOfMemory,
 }
 
 /// Where a failure happened.

@@ -17,6 +17,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::instr::{Instr, Opcode, OperandKind};
+use crate::heap::ObjectId;
+use crate::heap::gc::Trace;
 use crate::value::{Primitive, Value};
 
 /// Input to [`Executable::load`].
@@ -244,6 +246,17 @@ impl Executable {
     /// True when both handles share the same loaded code (no copy was made).
     pub fn same_code(a: &Executable, b: &Executable) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
+    }
+}
+
+/// Executable constants are a root edge (QuickJS marks bytecode constant
+/// pools in `mark_children`). They are traced through every live task that
+/// runs the code (`RootCategory::ExecutableConstant`). In this slice they are
+/// primitives, so this visits nothing for loaded code; a later pellet that
+/// allows heap constants must also root code that no live task runs yet.
+impl Trace for Code {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.constants.trace(visit);
     }
 }
 

@@ -21,10 +21,10 @@
 //! saved instruction. No Rust stack frame survives between runs.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use crate::error::{VmError, VmErrorKind};
-use crate::heap::gc::Trace;
+use crate::heap::gc::{MutatorToken, RootCategory, RootSource, Trace};
 use crate::heap::{Heap, ObjectId, Rooted};
 use crate::host::{Host, NoHost};
 use crate::ids::{TaskId, WaitKey, WorldId};
@@ -134,15 +134,39 @@ struct TaskInner {
     body: Mutex<TaskBody>,
 }
 
+/// A task is a root source while any handle to it exists: its saved frames
+/// (`TaskFrame`) and its executable's constants (`ExecutableConstant`). The
+/// collector only runs when no run guard exists, so the body lock is free or
+/// held only for an instant by a status query.
+impl RootSource for TaskInner {
+    fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, ObjectId)) {
+        self.executable
+            .0
+            .trace(&mut |id| visit(RootCategory::ExecutableConstant, id));
+        // A poisoned body (a run panicked) is traced as-is: its values are
+        // conservative roots until the task handle is dropped.
+        let body = self.body.lock().unwrap_or_else(PoisonError::into_inner);
+        body.trace(&mut |id| visit(RootCategory::TaskFrame, id));
+    }
+}
+
 /// A resumable unit of execution. See the module docs.
 #[derive(Clone, Debug)]
 pub struct Task(Arc<TaskInner>);
 
 /// Exclusive right to run a task, held for one run. Not `Send`: the run
 /// happens on the thread that acquired it.
+///
+/// A guard is a registered heap mutator from acquisition to drop: while any
+/// guard exists, [`Runtime::collect`](crate::Runtime::collect) refuses to run
+/// (see [`crate::heap::gc`]).
 pub struct RunGuard<'t> {
     task: &'t TaskInner,
+    // Field order matters: the body lock is released before the mutator
+    // registration, so a collector never sees zero mutators while the body
+    // is still locked by a run.
     body: MutexGuard<'t, TaskBody>,
+    _mutator: MutatorToken<'t>,
 }
 
 impl Task {
@@ -153,13 +177,16 @@ impl Task {
         heap: Arc<Heap>,
         vm: VmState,
     ) -> Task {
-        Task(Arc::new(TaskInner {
+        let inner = Arc::new(TaskInner {
             id,
             world,
             executable,
             heap,
             body: Mutex::new(TaskBody::Ready(vm)),
-        }))
+        });
+        let source: Weak<dyn RootSource> = Arc::downgrade(&inner) as Weak<TaskInner>;
+        inner.heap.register_source(source);
+        Task(inner)
     }
 
     pub fn id(&self) -> TaskId {
@@ -177,6 +204,8 @@ impl Task {
     }
 
     /// Current status. A snapshot: it may change as soon as it is returned.
+    /// During a collection pause the collector briefly locks the task to
+    /// trace it, so a ready task may momentarily report `Running`.
     pub fn status(&self) -> TaskStatus {
         match self.0.body.try_lock() {
             Ok(body) => match *body {
@@ -193,6 +222,10 @@ impl Task {
         if crate::host::inside_effect() {
             return Err(RunError::InsideHostEffect);
         }
+        // Register as a mutator before taking the body, so a collector that
+        // sees no mutators also sees every body unlocked. On the error paths
+        // below the token is dropped, deregistering again.
+        let mutator = self.0.heap.enter_mutator();
         let body = match self.0.body.try_lock() {
             Ok(body) => body,
             Err(TryLockError::WouldBlock) => return Err(RunError::AlreadyRunning),
@@ -202,6 +235,7 @@ impl Task {
             TaskBody::Ready(_) => Ok(RunGuard {
                 task: &self.0,
                 body,
+                _mutator: mutator,
             }),
             TaskBody::Finished => Err(RunError::Finished),
         }
@@ -234,8 +268,8 @@ impl Task {
     }
 
     /// Visit heap references in the task's VM state; `false` if the state is
-    /// not accessible (the task is running). For the future collector, which
-    /// reaches tasks at safepoints.
+    /// not accessible (the task is running). Test helper; the collector
+    /// reaches tasks through their `RootSource` registration.
     #[cfg(test)]
     pub(crate) fn trace_frames(&self, visit: &mut dyn FnMut(ObjectId)) -> bool {
         match self.0.body.try_lock() {
@@ -286,6 +320,9 @@ impl RunGuard<'_> {
             *self.body = TaskBody::Finished;
             return RunOutcome::Failed(error);
         }
+        // The returned value is rooted while this guard (a registered
+        // mutator) still exists, so no collection can run while the value is
+        // held only in a Rust local.
         let outcome = match execute(vm, &self.task.executable.0, &self.task.heap, host, budget.0) {
             Exit::Return(value) => RunOutcome::Complete(Rooted::new(&self.task.heap, value)),
             Exit::Fail(error) => RunOutcome::Failed(error),

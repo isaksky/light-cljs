@@ -16,7 +16,7 @@ JavaScript source support.
      │  Task::run_with(budget, &mut host) ──► RunOutcome
      ▼
  ┌─────────── Runtime (Arc, Send + Sync) ────────────────────────────┐
- │ shared Heap: object table + persistent root table (one per runtime)│
+ │ shared Heap: object table, roots, scopes, root sources; mark/sweep│
  │ task id counter, world                                            │
  └───────────────────────────────────────────────────────────────────┘
  ┌ Executable (Arc<Code>) ┐      ┌ Task (Arc) ─────────────────────────┐
@@ -39,7 +39,8 @@ JavaScript source support.
   A worker thread only borrows it for one run.
 - **Handles** (`src/heap/roots.rs`): embedders never see raw values. `Rooted`
   is a persistent root (how results are returned); `Local<'s>` is valid only
-  inside `Runtime::scope`. A Rust local holding a raw value is not a root.
+  inside `Runtime::scope`; `WeakHandle` names a value without keeping it
+  alive. A Rust local holding a raw value is not a root.
 - **Host** (`src/host.rs`): the narrow embedder trait for leaf effects, passed
   as `&mut dyn Host` to one run.
 
@@ -92,6 +93,44 @@ Resumable natives that invoke JavaScript or wait on dependencies need a
 task-owned native continuation instead of a Rust call; that is pellet
 clj-quickjs-12.
 
+## Heap and collection
+
+The heap (`src/heap/`) is one object table per runtime, shared by all tasks,
+collected by a precise, nonmoving, stop-the-world mark/sweep
+(`Runtime::collect`, `src/heap/gc.rs`).
+
+- **Identity.** An object is named by a crate-private `ObjectId` (slot index +
+  generation). Each object is its own `Box` allocation that never moves.
+  Sweeping a slot bumps its generation before reuse and every lookup checks
+  it, so a stale id resolves to nothing rather than to a newer object; a slot
+  whose generation would wrap is retired. Embedders see this as
+  `HandleError::Reclaimed` from `WeakHandle::upgrade`.
+- **Roots** (`RootCategory`): `Rooted` handles, open-scope locals (stored in
+  the heap's scope table, not on the Rust stack), and registered root
+  sources. A `RootSource` registers a `Weak` and is traced while alive; tasks
+  register themselves and report their saved frames and their executable's
+  constants. Heap objects report their own edges through `Trace`; a `Native`
+  object's payload is a Rust value whose `Trace` reports its edges (the
+  analogue of a QuickJS class `gc_mark`).
+- **When it runs.** A `RunGuard` is a registered mutator from acquisition to
+  drop; a scope is a mutator for threads other than its own. `collect`
+  refuses with `CollectError::MutatorActive`, without waiting, while either
+  exists. During the pause it holds every heap lock, so runs, scopes,
+  allocations and root changes on other threads wait briefly. No lock is held
+  across bytecode execution; the mutator count only stops the collector from
+  starting. Lock order: `gc` → `roots` → `scopes` → `sources` → task bodies →
+  `objects`.
+- **Ownership.** A task's allocations are not owned by the task: completion
+  drops its frames, and what remains reachable (the returned `Rooted` and
+  anything it references) survives. `Executable` code is independently owned
+  immutable `Arc` storage outside the heap; its constants are primitives in
+  this slice.
+- **No unsafe code.** Objects are reached only under the `objects` lock;
+  reclaimed objects are dropped after all heap locks are released.
+
+Cooperative safepoints (collection that waits for running mutators to reach
+poll points) are pellet clj-quickjs-17.
+
 ## Task/dependency continuation shape (planned)
 
 Dependency waits reuse the same mechanism as `Yielded`: the task returns from
@@ -127,6 +166,11 @@ references only:
 - `research/quickjs/doc/quickjs.texi`, "Function call": QuickJS frames live on
   the system stack, which is the property this design replaces with
   task-owned frames.
+- `research/quickjs/quickjs.c` `JS_MarkValue` / `mark_children` and
+  `research/quickjs/quickjs.h` `JSClassGCMark`: edge inventory for the
+  collector (object edges, bytecode constants, class mark hooks). QuickJS's
+  reference counting, cycle removal and running-stack exemption are not used;
+  `research/quickjs/doc/quickjs.texi`, "Garbage collection", for the contrast.
 
 No QuickJS source, tests or encodings were copied or adapted, so no QuickJS
 license header applies to this repository's code yet. Any future adapted

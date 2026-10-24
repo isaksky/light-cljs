@@ -21,7 +21,7 @@
 //! one stopped and never replays an executed instruction or its effect.
 
 use crate::error::{Diagnostic, VmError, VmErrorKind};
-use crate::heap::{Heap, ObjectKind};
+use crate::heap::{Heap, HeapObject};
 use crate::host::{Host, HostCall, call_leaf};
 use crate::value::Value;
 use crate::vm::executable::Code;
@@ -43,6 +43,8 @@ enum Fault {
     Internal(&'static str),
     /// The host reported an error from a leaf effect.
     Host(String),
+    /// The heap could not allocate.
+    OutOfMemory(&'static str),
 }
 
 fn pop(operands: &mut Vec<Value>) -> Result<Value, Fault> {
@@ -133,7 +135,14 @@ fn step(
             }
         }
         Instr::Return => return pop(ops).map(Some),
-        Instr::NewObject => ops.push(Value::Object(heap.alloc(ObjectKind::PlainObject))),
+        Instr::NewObject => {
+            // The new object is pushed in the same instruction; no collection
+            // can run in between because this run holds a mutator guard.
+            let id = heap
+                .alloc(HeapObject::Plain)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            ops.push(Value::Object(id));
+        }
         Instr::HostEffect(op) => {
             let v = pop(ops)?;
             let arg = v.to_primitive().ok_or_else(|| {
@@ -187,6 +196,7 @@ pub(crate) fn execute(
             Err(Fault::Unsupported(m)) => (VmErrorKind::UnsupportedOperand, m),
             Err(Fault::Internal(m)) => (VmErrorKind::Internal, m.to_string()),
             Err(Fault::Host(m)) => (VmErrorKind::HostEffect, m),
+            Err(Fault::OutOfMemory(m)) => (VmErrorKind::OutOfMemory, m.to_string()),
         };
         return Exit::Fail(VmError {
             kind,

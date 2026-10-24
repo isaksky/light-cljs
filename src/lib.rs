@@ -9,7 +9,10 @@
 //!   [`Task::run_with`] (instruction [`Budget`] plus leaf [`Host`] effects)
 //!   under a non-blocking execution guard ([`Task::try_begin_run`]).
 //! * [`Rooted`] (persistent root) and [`Local`] (scoped access within
-//!   [`Runtime::scope`]): the only ways to hold heap values from Rust.
+//!   [`Runtime::scope`]): the only ways to keep heap values alive from Rust.
+//!   A [`WeakHandle`] names a value without keeping it alive.
+//! * [`Runtime::collect`]: deterministic stop-the-world mark/sweep of the
+//!   shared heap ([`heap::gc`]).
 //! * [`RunOutcome`]: `Complete(value)`, `Failed(error)`, `Yielded` (budget used
 //!   up; run again to continue), and the reserved `Waiting(key)`.
 //!
@@ -34,8 +37,9 @@
 //!
 //! No JavaScript source frontend exists yet. Executables are built from
 //! hand-assembled bytecode ([`Assembler`]), which is an early VM test tool,
-//! not JavaScript source support. The heap is a temporary non-reclaiming stub;
-//! no garbage collection is implemented.
+//! not JavaScript source support. Garbage collection is a precise nonmoving
+//! mark/sweep that runs only when no task run or foreign scope is active
+//! (cooperative safepoints are deferred; see [`heap::gc`]).
 
 mod error;
 pub mod heap;
@@ -47,7 +51,9 @@ mod value;
 pub mod vm;
 
 pub use error::{Diagnostic, VmError, VmErrorKind};
-pub use heap::{HandleError, HeapStats, Local, Rooted, Scope};
+pub use heap::{
+    CollectError, CollectStats, HandleError, HeapStats, Local, Rooted, Scope, WeakHandle,
+};
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, TaskId, WaitKey, WorldId};
 pub use runtime::Runtime;
