@@ -3597,3 +3597,11 @@ Explicit gaps: BigInt views, resizable/shared buffers, species/subclassing,
 and other typed-array methods (including built-in iterator methods) remain
 deferred. Allocation and iterable collection are bounded by the existing
 16 MiB backing-buffer limit per view; infinite iterables hit that limit.
+
+For default array sources, typed-array construction supplies array iteration
+locally until the general Array iterator intrinsic lands: it rereads length
+before each indexed read, then converts the collected values. This also applies
+to array-like objects inheriting Array.prototype. Explicit null/undefined
+iterator overrides, or removal of Array.prototype from the chain, select
+array-like read/conversion order. `set` always uses array-like order for
+ordinary sources and ignores their iterator properties.

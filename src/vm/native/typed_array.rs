@@ -36,6 +36,8 @@ enum Stage {
     FillEnd,
     FillEndValue,
     Fill,
+    DefaultArrayPrototype,
+    ArrayElement,
 }
 
 #[derive(Debug)]
@@ -57,6 +59,7 @@ pub(super) struct TypedArray {
     offset: usize,
     target_len: usize,
     fill_value: Value,
+    default_array: bool,
 }
 
 impl Trace for TypedArray {
@@ -114,6 +117,7 @@ impl TypedArray {
             offset: 0,
             target_len: 0,
             fill_value: Value::Undefined,
+            default_array: false,
         }
     }
 
@@ -277,6 +281,10 @@ impl TypedArray {
                     property::Key::Name(JsString::from("value")),
                 ))
             }
+            Stage::ArrayElement => {
+                self.stage = Stage::CollectValue;
+                Some((self.source.clone(), index_key(self.values.len() as u64)))
+            }
             Stage::Element
                 if self.next < self.len && self.source_view.is_none() && self.values.is_empty() =>
             {
@@ -295,10 +303,39 @@ impl TypedArray {
                     });
                 }
                 Some(property::Read::Value(value)) => Input::CallResult(value),
+                None if self.stage == Stage::IteratorMethod => {
+                    // The general array-iterator intrinsic has not landed.
+                    // Supply its collection semantics locally, only when no
+                    // iterator override exists and Array.prototype is still
+                    // in the source chain. Explicit undefined/null use the
+                    // array-like path, including getter-returned undefined.
+                    self.iterator = self.source.clone();
+                    self.stage = Stage::DefaultArrayPrototype;
+                    return Ok(Action::Continue);
+                }
                 None => Input::CallResult(Value::Undefined),
             };
         }
         match self.stage {
+            Stage::DefaultArrayPrototype => {
+                let Value::Object(id) = self.iterator else {
+                    self.stage = Stage::Length;
+                    return Ok(Action::Continue);
+                };
+                if id
+                    == crate::realm::intrinsics(heap)
+                        .ok_or(Fault::OutOfMemory("array iterator realm"))?
+                        .array_prototype
+                {
+                    self.default_array = true;
+                    self.stage = Stage::Length;
+                } else {
+                    self.iterator = prototype::get_prototype_of(heap, task, id)?
+                        .map(Value::Object)
+                        .unwrap_or(Value::Null);
+                }
+                Ok(Action::Continue)
+            }
             Stage::IteratorMethod => {
                 let method = Self::value(input)?;
                 if matches!(method, Value::Null | Value::Undefined) {
@@ -350,7 +387,11 @@ impl TypedArray {
                     ));
                 }
                 self.values.push(value);
-                self.stage = Stage::Next;
+                self.stage = if self.default_array {
+                    Stage::Length
+                } else {
+                    Stage::Next
+                };
                 Ok(Action::Continue)
             }
             Stage::LengthValue => {
@@ -358,7 +399,20 @@ impl TypedArray {
                 if matches!(value, Value::Object(_)) {
                     return Ok(Action::ToNumber(value));
                 }
-                self.check_length(heap, task, to_length(&value)?)?;
+                let length = to_length(&value)?;
+                if self.default_array && (self.values.len() as u64) < length {
+                    self.stage = Stage::ArrayElement;
+                } else {
+                    self.check_length(
+                        heap,
+                        task,
+                        if self.default_array {
+                            self.values.len() as u64
+                        } else {
+                            length
+                        },
+                    )?;
+                }
                 Ok(Action::Continue)
             }
             Stage::Offset => {

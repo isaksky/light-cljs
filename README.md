@@ -3019,6 +3019,8 @@ view, an iterable object, or an array-like object; `set(source, offset?)`,
 shares the actual `Array.prototype.toString` function. Typed-array copies
 handle overlapping buffers and preserve exact bits for equal element types.
 Getters, iterator calls and conversions can yield, wait, collect and migrate.
+Default array sources collect values before conversion, observing length
+changes during indexed reads; explicit iterator overrides are honored.
 Element loops are budgeted; backing buffers and iterable lists use the existing
 16 MiB buffer limit. Validation: `cargo test --test js_source typed_array_`.
 

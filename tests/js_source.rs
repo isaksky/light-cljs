@@ -804,6 +804,7 @@ fn typed_array_constructor_validation_and_metadata() {
 fn typed_array_coercion_survives_waits_gc_and_migration() {
     // Synthetic fixtures, not light-cljs output.
     for source in [
+        "let a = [0,2]; Object.defineProperty(a,'0',{get() {a.length=1; a=null; __rt.need(166,1); return 7;}}); new Uint8Array(a).join() === '7'",
         "let s = {get length() { __rt.need(166,1); return 2; },0:7,1:8}; new Uint8Array(s).join() === '7,8'",
         "let s = {length:{valueOf() { __rt.need(166,1); return 1; }},get 0() {return {valueOf() {return 7;}};}}; new Uint8Array(s).join() === '7'",
         "let a = new Uint8Array({length:1,get 0() { __rt.need(166,1); return {valueOf() {return 7;}};}}); a.join() === '7'",
@@ -16599,6 +16600,7 @@ fn typed_array_methods_budget() {
         "let a = new Uint8Array(100000); __rt.effect(168,0); a.join(',').length === 199999",
         "let a = new Uint8Array(100000); __rt.effect(168,0); a.fill(42); a[99999] === 42",
         "let a = new Uint8Array(100000); let b = new Uint8Array(100000); b.fill(17); __rt.effect(168,0); a.set(b); a[99999] === 17",
+        "let a = new Array(100000); __rt.effect(168,0); new Uint8Array(a)[99999] === 0",
     ] {
         let rt = Runtime::new();
         let task = rt.spawn(&exe(source), &[]).unwrap();
@@ -16724,5 +16726,26 @@ fn typed_array_copy_preserves_nan_payloads() {
         "#
         );
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn typed_array_array_source_collection_order() {
+    // Synthetic fixtures, not light-cljs output. Default array iteration
+    // gathers values before numeric conversion and rereads length each time.
+    for source in [
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; new Uint8Array(a).join() === '1,2'",
+        "let a = [1,2]; Object.defineProperty(a,'0',{get() {a.length=1; return 7;}}); new Uint8Array(a).join() === '7'",
+        "let a = [1]; Object.defineProperty(a,'0',{get() {a[1]=8; return 7;}}); new Uint8Array(a).join() === '7,8'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; a[Symbol.iterator] = undefined; new Uint8Array(a).join() === '1,9'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; a[Symbol.iterator] = null; new Uint8Array(a).join() === '1,9'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; Object.defineProperty(a,Symbol.iterator,{get() {return undefined;}}); new Uint8Array(a).join() === '1,9'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; Object.setPrototypeOf(a,null); new Uint8Array(a).join() === '1,9'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; Object.setPrototypeOf(a,Object.create(Array.prototype)); new Uint8Array(a).join() === '1,2'",
+        "let a = Object.create(Array.prototype); a.length=2; a[0]={valueOf() {a[1]=9; return 1;}}; a[1]=2; new Uint8Array(a).join() === '1,2'",
+        "let a = [1,2]; a[Symbol.iterator]=function () {let n=0; return {next() {n++; return {done:n>1,value:42};}};}; new Uint8Array(a).join() === '42'",
+        "let a = [{valueOf() {a[1] = 9; return 1;}},2]; let b = new Uint8Array(2); b.set(a); b.join() === '1,9'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }

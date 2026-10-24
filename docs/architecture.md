@@ -5282,3 +5282,12 @@ Element reads and final `StringBuild` copying are budgeted. The shared
 prototype references Array.prototype.toString's existing function object and
 appends three method functions to the realm's intrinsic allocation sequence.
 Other typed-array methods and BigInt/resizable/shared views remain deferred.
+
+The general Array iterator intrinsic is still deferred. Typed-array
+construction supplies its default collection behavior locally when iterator
+lookup finds no property and the source's prototype chain contains
+Array.prototype. It walks one prototype per step, then rereads length before
+each indexed read and collects values before any numeric conversion. Explicit
+null/undefined iterator overrides select array-like behavior; custom iterators
+use the ordinary iterator stages. This fallback becomes unused when the
+standard iterator intrinsic lands, without changing the public realm here.
