@@ -4903,6 +4903,145 @@ fn instanceof_operator() {
     }
 }
 
+/// The `in` operator (clj-quickjs-74): HasProperty with ToPropertyKey of the
+/// left operand, after QuickJS `OP_in` / `js_operator_in`. The `"x" in a`
+/// cases are adapted from `test_op2` in
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
+/// (QuickJS copyright and MIT license notice: see
+/// `loose_equality_with_a_boolean_left_operand`).
+#[test]
+fn in_operator() {
+    for src in [
+        // The pellet's acceptance rows.
+        "'x' in {x: 2}",
+        "!('y' in {x: 2})",
+        "'x' in {x: undefined}",
+        "'toString' in {}",
+        "1 in {1: 0}",
+        // ToPropertyKey of the left operand.
+        "'1' in {1: 0} && 1 in {'1': 0}",
+        "1.5 in {'1.5': 0} && -0 in {0: 0} && 1e21 in {'1e+21': 0}",
+        "true in {true: 1} && null in {null: 1} && undefined in {undefined: 1}",
+        "!(2 in {1: 0})",
+        // Inherited properties, through any chain; the value does not matter.
+        "const p = {a: undefined}; 'a' in Object.create(p) && !('a' in Object.create(null))",
+        "!('toString' in Object.create(null))",
+        "const o = {}; Object.setPrototypeOf(o, {q: 0}); 'q' in o",
+        "'valueOf' in [] && 'constructor' in {} && 'constructor' in []",
+        // `Object.prototype.__proto__` is inherited, not an own property.
+        "'__proto__' in {} && !('__proto__' in Object.create(null))",
+        // ... without running its getter, which would fail on a function.
+        "function f() {} '__proto__' in f",
+        // Arrays: elements, holes, `length`.
+        "0 in [5] && !(1 in [5]) && !(1 in [1, , 3]) && 2 in [1, , 3] && 'length' in []",
+        "'0' in ['a'] && !(-1 in ['a'])",
+        // Functions: own properties, the lazy `prototype`, Object.prototype.
+        "function f() {} 'prototype' in f && 'valueOf' in f && !('x' in f)",
+        "const o = {m: function () {}}; 'prototype' in o.m",
+        "'is' in Object",
+        // Properties appear with the object's writes.
+        "const o = {}; const before = 'k' in o; o.k = 0; !before && 'k' in o",
+        // Persistent collections and builders have no JavaScript properties.
+        "!(0 in __rt.vector(1)) && !('x' in __rt.vector()) && !('count' in __rt.vector())",
+        // Relational precedence: below `+`, above `==`, left-associative.
+        "'ab' in {ab: 1} === true",
+        "('a' + 'b' in {ab: 1}) === true",
+        "('x' in {x: 1} in {true: 1}) === true",
+        "('x' in {} < 1) === true",
+        // The `[In]` grammar: allowed in a `for` head's test and nested init.
+        "let n = 0; for (let i = ('x' in {x: 1}) ? 0 : 5; i < 3 && 'x' in {x: 1}; i++) n++; n === 3",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    // The upstream `test_op2` case (`research/quickjs/tests/test_language.js`,
+    // revision 7d1c13c5d8f8).
+    assert_eq!(
+        eval("let a = {x : 2}; ('x' in a) === true && ('y' in a) === false"),
+        ValueView::Bool(true)
+    );
+    // The left operand is evaluated first, then the right one, then the
+    // right one is checked, then the key is converted.
+    assert_eq!(
+        string(
+            "let log = ''; function l() { log = log + 'l'; return 'x'; } \
+             function r() { log = log + 'r'; return 1; } \
+             try { l() in r(); } catch (e) { log = log + 'e'; } log"
+        ),
+        "lre"
+    );
+    // An unbound left operand fails before the right one is looked at.
+    assert_eq!(failure("nope in {};").kind(), VmErrorKind::ReferenceError);
+    assert_eq!(failure("nope in 1;").kind(), VmErrorKind::ReferenceError);
+    assert_eq!(failure("({}) in nope;").kind(), VmErrorKind::ReferenceError);
+    // Catchable TypeErrors for a right operand that is not an object,
+    // reported at the `in` token, before the key is converted.
+    for (src, message) in [
+        (
+            "'x' in 1",
+            "cannot use 'in' operator to search for 'x' in 1",
+        ),
+        (
+            "'x' in null",
+            "cannot use 'in' operator to search for 'x' in null",
+        ),
+        (
+            "'x' in undefined",
+            "cannot use 'in' operator to search for 'x' in undefined",
+        ),
+        (
+            "'length' in 'abc'",
+            "cannot use 'in' operator to search for 'length' in \"abc\"",
+        ),
+        (
+            "0 in true",
+            "cannot use 'in' operator to search for '0' in true",
+        ),
+        (
+            "({}) in 1.5",
+            "cannot use 'in' operator to search for an object key in 1.5",
+        ),
+    ] {
+        assert_eq!(
+            string(&format!(
+                "let r = 'none'; try {{ {src}; }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught",
+            "{src}"
+        );
+        let (kind, got, line, column) = failure_at(&format!("\n{src};"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{src}");
+        assert_eq!(got, message, "{src}");
+        let at = src.rfind(" in ").unwrap() as u32 + 2;
+        assert_eq!((line, column), (2, at), "{src}");
+    }
+    // Not supported yet, explicitly: an object key needs ToPrimitive
+    // (clj-quickjs-70); a name a built-in function would inherit from
+    // Function.prototype (clj-quickjs-102); an error object's properties
+    // (clj-quickjs-230).
+    for src in [
+        "({}) in {}",
+        "'x' in Object",
+        "function f() {} 'toString' in f",
+        "let e; try { nope; } catch (x) { e = x; } 'message' in e",
+    ] {
+        assert_eq!(
+            failure(src).kind(),
+            VmErrorKind::UnsupportedOperand,
+            "{src}"
+        );
+    }
+    // `in` compiles to the `in` opcode.
+    assert!(opcodes(&exe("'x' in {}")).contains(&Opcode::In));
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "'x' in {x: undefined} && 'toString' in {} && !('y' in {x: 2}) && 1 in {1: 0};",
+        "0 in [1] && !(1 in [1]) && !('toString' in Object.create(null));",
+        "let r = false; try { 'x' in 1; } catch (e) { r = true; } r;",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// `Executable::to_spec` re-encodes the argument counts of `construct` and
 /// `call_method` (clj-quickjs-71): the reloaded script has the same bytes
 /// and computes the same value.
@@ -7345,8 +7484,8 @@ fn delete_property_reference_resumes_after_need() {
 /// `src/vm/property.rs` `delete`). The `a = {x: 1, y: 1}`, `"abc"[100]` and
 /// `null.a` rows follow `test_delete` (line 222) of
 /// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8
-/// (restated as Rust assertions; `"x" in a` as an absent own descriptor
-/// until `in` exists, clj-quickjs-74; the caught error checked as a
+/// (restated as Rust assertions; `"x" in a` checked with `in`,
+/// clj-quickjs-74; the caught error checked as a
 /// `TypeError` failure instead of `instanceof TypeError`); the QuickJS MIT
 /// notice on `object_literals_and_named_properties` covers them. The rest
 /// are synthetic fixtures, not light-cljs output.
@@ -7373,8 +7512,7 @@ fn delete_property_references() {
     let a = "let a = {x: 1, y: 1};";
     truth(&format!("{a} delete a.x === true"));
     truth(&format!(
-        "{a} delete a.x; a.x === undefined && Object.getOwnPropertyDescriptor(a, 'x') === undefined \
-         && a.y === 1"
+        "{a} delete a.x; a.x === undefined && ('x' in a) === false && a.y === 1"
     ));
     truth("delete 'abc'[100] === true");
     caught("delete null.a;");

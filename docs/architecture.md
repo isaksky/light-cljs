@@ -2389,6 +2389,41 @@ identifier is clj-quickjs-105; `delete f.length`/`f.name` fail with
 `UnsupportedOperand` until clj-quickjs-101 gives functions those
 properties.
 
+## `in` (clj-quickjs-74)
+
+Contract: `src/vm/property.rs` (`in_operator`, `has_property`),
+`src/vm/instr.rs` (`in`, `0x62`). Semantics: `docs/grammar.md`,
+"Execution".
+
+**Decision.** `in` is a binary operator at relational precedence
+(`BinaryOp::In`), lowered by `binary_expr` to one appended opcode, as
+QuickJS's `OP_in`. The opcode checks that the right operand is an object
+(a catchable TypeError otherwise, before the key is converted, as
+`js_operator_in`), converts the key with the existing
+`property::to_property_key` and asks HasProperty. HasProperty is the read
+walk of `property::find` with one difference: reaching
+`Object.prototype.__proto__` answers true without running the accessor's
+getter (whose `[[GetPrototypeOf]]` of the receiver would otherwise fail
+on a function). Sharing the walk keeps one set of owner and kind rules for
+reads, so the kinds without JavaScript properties answer false and error
+objects and `Function.prototype` names stay explicit `UnsupportedOperand`.
+A constructor's lazy `prototype` is reported present without being
+created (`function::probe`; QuickJS `JS_HasProperty` leaves autoinit
+properties alone), so asking attaches no task-owned state and works on a
+published function. Continuing from a function to `Object.prototype` may
+build the realm, so the opcode is a poll point and keeps both operands on
+the operand stack until it has the answer. It calls no JavaScript (no getters, no proxies, no ToPrimitive of
+an object key yet); once a `has` trap or ToPrimitive can run, the
+instruction must become a call into a frame like `construct`.
+
+The parser gained ECMAScript's `[~In]` parameter as one `no_in` flag: set
+while the init of a `for` head is parsed, cleared by every bracketing
+construct that the grammar parses with `[+In]` (parentheses, brackets,
+braces, template substitutions, arguments, the middle of `? :`, function
+parameters and bodies), and consulted only by the binary-operator loop.
+An `in` after any init then reaches the existing for-in rejection, which
+the for-in pellet (clj-quickjs-85) turns into the loop.
+
 ## QuickJS references and provenance
 
 Consulted (Bellard upstream `https://github.com/bellard/quickjs.git`, revision
@@ -2895,10 +2930,18 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `delete null.a` rows of `test_delete` (line 222) in
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
   Modified: `let` declares `a`, the asserts are Rust assertions,
-  `("x" in a) === false` is an absent own descriptor until `in` exists
-  (clj-quickjs-74), and the caught error is checked as a `TypeError`
+  `("x" in a) === false` is checked with `in` (clj-quickjs-74), and
+  the caught error is checked as a `TypeError`
   failure rather than with `instanceof TypeError`. The notice on
   `object_literals_and_named_properties` covers it.
   `research/quickjs/quickjs.c` `js_parse_delete`, `CASE(OP_delete)`,
   `JS_DeleteProperty` and `delete_property` were consulted only, for
   semantics. No code was copied.
+- `tests/js_source.rs` `in_operator` (clj-quickjs-74): the
+  `a = {x : 2}; assert(("x" in a), true); assert(("y" in a), false)` cases
+  of `test_op2` (line 195) in `research/quickjs/tests/test_language.js`,
+  revision 7d1c13c5d8f8. Modified: `let` declares `a`, the asserts are one
+  `===` conjunction checked by a Rust assertion. The notice on
+  `loose_equality_with_a_boolean_left_operand` covers it.
+  `research/quickjs/quickjs.c` `js_operator_in`, `OP_in` and
+  `JS_HasProperty` were consulted only, for semantics. No code was copied.

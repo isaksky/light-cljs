@@ -476,6 +476,7 @@ impl Executable {
                 Opcode::SetProto => Instr::SetProto,
                 Opcode::Instanceof => Instr::Instanceof,
                 Opcode::Delete => Instr::Delete,
+                Opcode::In => Instr::In,
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,

@@ -111,6 +111,13 @@ pub(super) struct Parser<'a> {
     /// literals, and `delete` must still tell them from a literal
     /// (clj-quickjs-124, [`Self::check_delete_operand`]).
     reserved_constant: Option<Span>,
+    /// Parsing the init of a `for` head, outside any nested parentheses,
+    /// brackets, braces, template substitution or function (ECMAScript's
+    /// `[~In]` parameter): an `in` there ends the expression instead of
+    /// being the `in` operator, so it can start a for-in head
+    /// (clj-quickjs-74). Every construct that ECMAScript parses with
+    /// `[+In]` clears it while it parses its contents.
+    no_in: bool,
 }
 
 /// A label of an enclosing labelled statement (clj-quickjs-82).
@@ -144,6 +151,7 @@ impl<'a> Parser<'a> {
             labels: Vec::new(),
             use_strict_candidate: None,
             reserved_constant: None,
+            no_in: false,
         }
     }
 
@@ -678,9 +686,9 @@ impl<'a> Parser<'a> {
     /// Expression? `)` Statement, where ForInit is an Expression or a
     /// `let`/`const` declaration list (QuickJS `TOK_FOR` in
     /// `js_parse_statement_or_decl`). For-in, for-of and `var` heads are
-    /// rejected as unsupported, at the `for` keyword. The `in` operator is
-    /// itself unsupported, so an expression head needs no `in` restriction
-    /// yet.
+    /// rejected as unsupported, at the `for` keyword. The init is parsed
+    /// without a top-level `in` operator (`[~In]`, [`Self::no_in`]), so an
+    /// `in` after it starts a for-in head (clj-quickjs-74).
     fn parse_for(&mut self) -> PResult<StmtKind> {
         let saved = self.depth;
         self.deeper(cost::BODY)?;
@@ -770,6 +778,8 @@ impl<'a> Parser<'a> {
     fn parse_for_head(&mut self) -> PResult<(Option<ForInit>, Option<Expr>, Option<Expr>)> {
         let keyword = self.advance()?.span;
         self.expect_punct(Punct::LParen)?;
+        // `[~In]`: an `in` at the top level of the init ends it.
+        let outer_no_in = std::mem::replace(&mut self.no_in, true);
         let init = match &self.tok.kind {
             TokenKind::Punct(Punct::Semicolon) => None,
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => Some(ForInit::Lexical(
@@ -779,21 +789,25 @@ impl<'a> Parser<'a> {
                 return Err(self.unsupported(self.tok.span, "`var` in a `for` head is"));
             }
             _ => {
-                // `for (k in o)`: the expression parser would report the
-                // unsupported `in` operator.
+                // `for (k of o)`: `of` would end the expression `k` with an
+                // unexpected token.
                 if matches!(self.tok.kind, TokenKind::Identifier(_))
                     && let Some(next) = self.peek_next()
                     && let Some(error) = self.for_in_of_error(&next.kind, keyword)
                 {
                     return Err(error);
                 }
-                let init = self.parse_expression()?;
-                if let Some(error) = self.for_in_of_error(&self.tok.kind, keyword) {
-                    return Err(error);
-                }
-                Some(ForInit::Expr(init))
+                Some(ForInit::Expr(self.parse_expression()?))
             }
         };
+        self.no_in = outer_no_in;
+        // An `in` (or `of`) after any init, including a declaration with an
+        // initializer (`for (let k = 1 in o)`), is a for-in (for-of) head.
+        if init.is_some()
+            && let Some(error) = self.for_in_of_error(&self.tok.kind, keyword)
+        {
+            return Err(error);
+        }
         self.expect_punct(Punct::Semicolon)?;
         let test = if self.is_punct(Punct::Semicolon) {
             None
@@ -1167,6 +1181,7 @@ impl<'a> Parser<'a> {
         let outer_strict = self.strict;
         self.deeper(cost::BLOCK)?;
         self.expect_punct(Punct::LBrace)?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut body = Vec::new();
         let mut prologue = true;
         while !self.is_punct(Punct::RBrace) {
@@ -1180,6 +1195,7 @@ impl<'a> Parser<'a> {
             prologue = prologue && self.directive(&stmt, &body, name, params)?;
             body.push(stmt);
         }
+        self.no_in = no_in;
         // Restore the enclosing mode before the token after `}` is lexed.
         let strict = self.strict;
         self.set_strict(outer_strict);
@@ -1233,6 +1249,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_formal_parameters(&mut self) -> PResult<Params> {
         self.expect_punct(Punct::LParen)?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut params: Vec<Ident> = Vec::new();
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         while !self.is_punct(Punct::RParen) {
@@ -1257,6 +1274,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.no_in = no_in;
         self.expect_punct(Punct::RParen)?;
         Ok((params, defaults))
     }
@@ -1569,6 +1587,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::ARRAY)?;
         self.advance()?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut elements = Vec::new();
         loop {
             match self.tok.kind {
@@ -1588,6 +1607,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.no_in = no_in;
         self.expect_punct(Punct::RBracket)?;
         self.depth = saved;
         let span = self.span_from(start);
@@ -1605,7 +1625,9 @@ impl<'a> Parser<'a> {
         self.deeper(cost::PAREN)?;
         let op_span = self.tok.span;
         self.advance()?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let index = self.parse_expression()?;
+        self.no_in = no_in;
         self.expect_punct(Punct::RBracket)?;
         self.depth = link;
         let span = self.span_from(object.span.start);
@@ -1632,6 +1654,7 @@ impl<'a> Parser<'a> {
         self.advance()?;
         let mut properties = Vec::new();
         let mut proto_seen = false;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         while !self.is_punct(Punct::RBrace) {
             properties.push(self.parse_property_definition(&mut proto_seen)?);
             if self.is_punct(Punct::Comma) {
@@ -1641,6 +1664,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.no_in = no_in;
         self.expect_punct(Punct::RBrace)?;
         self.depth = saved;
         let span = self.span_from(start);
@@ -1825,7 +1849,9 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::CONDITIONAL)?;
         self.advance()?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let consequent = self.parse_assignment()?;
+        self.no_in = no_in;
         self.expect_punct(Punct::Colon)?;
         let alternate = self.parse_assignment()?;
         self.depth = saved;
@@ -1848,6 +1874,10 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_exponent()?;
         loop {
             self.reject_unsupported_binary()?;
+            // `[~In]` (a `for` head's init): `in` ends the expression.
+            if self.no_in && self.is_keyword(Keyword::In) {
+                break;
+            }
             let Some((prec, op)) = binary_op(&self.tok.kind) else {
                 break;
             };
@@ -1868,7 +1898,6 @@ impl<'a> Parser<'a> {
     fn reject_unsupported_binary(&self) -> PResult<()> {
         let what = match &self.tok.kind {
             TokenKind::Punct(p @ Punct::Nullish) => p.as_str(),
-            TokenKind::Keyword(Keyword::In) => Keyword::In.as_str(),
             _ => return Ok(()),
         };
         Err(self.unsupported(self.tok.span, &format!("the `{what}` operator is")))
@@ -2202,7 +2231,9 @@ impl<'a> Parser<'a> {
             if tail {
                 break;
             }
+            let no_in = std::mem::replace(&mut self.no_in, false);
             exprs.push(self.parse_expression()?);
+            self.no_in = no_in;
             if matches!(&self.tok.kind, TokenKind::Template(part) if part.head) {
                 return Err(self.unexpected("`}` closing the template substitution"));
             }
@@ -2215,6 +2246,7 @@ impl<'a> Parser<'a> {
     /// Arguments: `(` (AssignmentExpression (`,` AssignmentExpression)* `,`?)? `)`
     fn parse_arguments(&mut self) -> PResult<Vec<Expr>> {
         self.expect_punct(Punct::LParen)?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut args = Vec::new();
         while !self.is_punct(Punct::RParen) {
             if self.is_punct(Punct::Ellipsis) {
@@ -2225,6 +2257,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.no_in = no_in;
         self.expect_punct(Punct::RParen)?;
         Ok(args)
     }
@@ -2330,7 +2363,9 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::PAREN)?;
         self.open_paren()?;
+        let no_in = std::mem::replace(&mut self.no_in, false);
         let mut inner = self.parse_expression()?;
+        self.no_in = no_in;
         self.expect_punct(Punct::RParen)?;
         self.depth = saved;
         inner.span = self.span_from(start);
@@ -2413,6 +2448,7 @@ fn binary_op(kind: &TokenKind) -> Option<(u8, BinOrLogical)> {
     let p = match kind {
         TokenKind::Punct(p) => p,
         TokenKind::Keyword(Keyword::Instanceof) => return Some((7, Binary(BinaryOp::Instanceof))),
+        TokenKind::Keyword(Keyword::In) => return Some((7, Binary(BinaryOp::In))),
         _ => return None,
     };
     Some(match p {

@@ -50,6 +50,7 @@ The `void` operator (clj-quickjs-133) parses and executes. The `instanceof`
 operator (clj-quickjs-75) parses and executes. The `delete` operator on
 property references `o.p` and `o[k]` (clj-quickjs-124) parses and executes;
 `delete` of an identifier is an early error in strict code.
+The `in` operator (clj-quickjs-74) parses and executes.
 `var` statements (clj-quickjs-94) parse and execute, with function-level
 hoisting; top-level function declarations of a script or function body
 are var-scoped. `"use strict"` directive prologues are interpreted and
@@ -150,7 +151,7 @@ BitwiseOr             = BitwiseXor { "|" BitwiseXor }
 BitwiseXor            = BitwiseAnd { "^" BitwiseAnd }
 BitwiseAnd            = Equality { "&" Equality }
 Equality              = Relational { ( "==" | "!=" | "===" | "!==" ) Relational }
-Relational            = Shift { ( "<" | ">" | "<=" | ">=" | "instanceof" ) Shift }
+Relational            = Shift { ( "<" | ">" | "<=" | ">=" | "instanceof" | "in" ) Shift }
 Shift                 = Additive { ( "<<" | ">>" | ">>>" ) Additive }
 Additive              = Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative        = Exponentiation { ( "*" | "/" | "%" ) Exponentiation }
@@ -308,9 +309,16 @@ Notes on the grammar:
 - `ForStatement` (clj-quickjs-81): a `let`/`const` head declares bindings
   scoped to the whole loop (a `const` needs an initializer here too). For-in
   and for-of heads (`for (x in o)`, `for (let x of y)`) and `var` heads
-  (`for (var i = 0; ;)`) are rejected as `Unsupported`; the `in` operator
-  is itself unsupported, so an
-  expression head has no `in` ambiguity yet.
+  (`for (var i = 0; ;)`) are rejected as `Unsupported`. The init of a
+  `for` head takes no `in` operator at its top level (ECMAScript's
+  `[~In]`, clj-quickjs-74): an `in` after the init, also after a
+  declaration's initializer (`for (a.b in o)`, `for (x = a in b; ;)`,
+  `for (let x = a in b; ;)`), starts a for-in head, rejected as
+  `Unsupported` at the `for`. Parentheses, brackets, braces, template
+  substitutions, call arguments, the middle operand of `? :` and function
+  parameters and bodies inside the init take `in` again
+  (`for (x = (a in b); ;)`), as do the test and the update; an arrow's
+  expression body does not.
 
 ### Automatic semicolon insertion
 
@@ -359,7 +367,7 @@ Every form below is rejected where it starts. Error kinds:
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
 | in object literals: computed keys `{[k]: v}` (clj-quickjs-233), methods `{m() {}}`, getters and setters, `async` and generator methods | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
-| `??`, `in`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
+| `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
 | `delete` of an identifier reference, possibly parenthesized, including `undefined`/`NaN`/`Infinity` (`delete x`, `delete (x)`), in sloppy code (clj-quickjs-105); `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
@@ -766,6 +774,7 @@ Executed, with JavaScript semantics:
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
 | `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey: an object key is `UnsupportedOperand`, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (`length`/`name` are `UnsupportedOperand` until clj-quickjs-101); an error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
 | `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, whose own properties are read since neither `Function.prototype` nor `Object.prototype` has a `prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function or error object on the left (`F instanceof Object`, a caught error) fails with `UnsupportedOperand` until `Function.prototype` (clj-quickjs-102) and `Error.prototype` (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) and bound functions (clj-quickjs-103) are not consulted. Runs no JavaScript |
+| `k in o` (clj-quickjs-74) | evaluates `k`, then `o`, then the `in` opcode (`0x61`) at the operator token (ECMAScript `in` and HasProperty; QuickJS `js_operator_in`, `OP_in`): an `o` that is not an object is a catchable TypeError "cannot use 'in' operator to search for 'k' in o" (`'x' in 1`, `'x' in null`, `'length' in 'abc'`), checked before `k` is converted; then ToPropertyKey(`k`) as for `o[k]` (`1 in {1: 0}` and `'1' in {1: 0}` are the same key) and the result is whether `o` or an object on its prototype chain has the property, whatever its value (`'x' in {x: undefined}` and `'toString' in {}` are true; `Object.create(null)` has nothing inherited; `'__proto__' in {}` is true through `Object.prototype`'s accessor, which is not run). Arrays have their elements (not holes) and `length`; a function has its own properties, its lazy `prototype` (reported without being created, so the function stays publishable) and `Object.prototype`'s. Persistent vectors, maps, occurrences, builders, atoms and cells have no JavaScript properties: `false`. Relational precedence, left-associative. An object `k` needs ToPrimitive (clj-quickjs-70), a name a built-in function or a function would inherit from `Function.prototype` (`'x' in Object`, `'toString' in f`, clj-quickjs-102) and an error object's properties (clj-quickjs-230) fail with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist. Runs no JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
@@ -1475,6 +1484,15 @@ function F() {} ({}) instanceof Object && !(1 instanceof F) && !(Object.create(n
 let r = false; try { ({}) instanceof {}; } catch (e) { r = true; } r;
 ```
 
+`in` looks a key up through the prototype chain (clj-quickjs-74); each line
+below evaluates to `true`:
+
+```js accept
+'x' in {x: undefined} && 'toString' in {} && !('y' in {x: 2}) && 1 in {1: 0};
+0 in [1] && !(1 in [1]) && !('toString' in Object.create(null));
+let r = false; try { 'x' in 1; } catch (e) { r = true; } r;
+```
+
 Rejected (`kind line:column` of the reported position):
 
 ```js reject Unsupported 2:12
@@ -1817,6 +1835,11 @@ operand is dropped and gives `true`), `CASE(OP_delete)`,
 `test_language.js` are adapted in `tests/js_source.rs`
 `delete_property_references` (notice on
 `object_literals_and_named_properties`).
+For `in` (clj-quickjs-74): `js_operator_in` and `OP_in` (TypeError for a
+non-object right operand before the key conversion, then
+`JS_HasProperty`); the `"x" in a` cases of `test_op2` in
+`test_language.js` are adapted in `tests/js_source.rs` `in_operator`
+(notice on `loose_equality_with_a_boolean_left_operand`).
 For `var` (clj-quickjs-94): `js_parse_var` (declarators; an initializer
 lowered as an assignment to the resolved name), `define_var` (a `var`
 reuses the function's one variable of that name and is an error inside a

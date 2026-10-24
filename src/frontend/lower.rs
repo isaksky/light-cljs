@@ -3054,6 +3054,12 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Instanceof, span);
                 return;
             }
+            // Operands of any type; the key is converted after the base is
+            // checked (clj-quickjs-74).
+            BinaryOp::In => {
+                self.out().op(Opcode::In, span);
+                return;
+            }
             BinaryOp::LooseEq | BinaryOp::LooseNe | BinaryOp::StrictEq | BinaryOp::StrictNe => {
                 let (compare, negate) = match op {
                     BinaryOp::LooseEq => (Opcode::LooseEq, false),

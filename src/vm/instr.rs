@@ -312,6 +312,16 @@
 //! and its `length` are non-configurable). It allocates nothing and runs
 //! no JavaScript, so it is not a poll point.
 //!
+//! Opcode `0x62`, `In` (clj-quickjs-74; QuickJS `OP_in`, `js_operator_in`):
+//! `k o → bool`, JavaScript `k in o`. `o` must be an object, else a
+//! catchable `TypeError`; then ToPropertyKey(k) (an object `k` needs
+//! ToPrimitive and is `UnsupportedOperand`, as for `GetElem`) and
+//! HasProperty: an own or inherited property, whatever its value
+//! (`crate::vm::property::has_property`); a function's lazy `prototype`
+//! is reported without being created. Continuing from a function to
+//! `Object.prototype` may build the realm, so it is a poll point; it runs
+//! no JavaScript.
+//!
 //! Opcode `0x52`, `GetBuiltinGlobal` (clj-quickjs-117), pushes the value of
 //! a built-in global name of the runtime's realm (`crate::realm`), building
 //! the realm on first use, so it may allocate and is a poll point. Its
@@ -491,6 +501,7 @@ pub enum Opcode {
     SetProto = 0x5F,
     Instanceof = 0x60,
     Delete = 0x61,
+    In = 0x62,
 }
 
 /// Operand encoding of an opcode.
@@ -643,6 +654,7 @@ impl Opcode {
             0x5F => SetProto,
             0x60 => Instanceof,
             0x61 => Delete,
+            0x62 => In,
             _ => return None,
         })
     }
@@ -748,6 +760,7 @@ impl Opcode {
             SetProto => "set_proto",
             Instanceof => "instanceof",
             Delete => "delete",
+            In => "in",
         }
     }
 
@@ -774,7 +787,7 @@ impl Opcode {
             | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
-            | Instanceof | Delete => OperandKind::None,
+            | Instanceof | Delete | In => OperandKind::None,
         }
     }
 }
@@ -922,6 +935,7 @@ pub(crate) enum Instr {
     SetProto,
     Instanceof,
     Delete,
+    In,
 }
 
 impl Instr {
@@ -1024,6 +1038,7 @@ impl Instr {
             Instr::SetProto => Opcode::SetProto,
             Instr::Instanceof => Opcode::Instanceof,
             Instr::Delete => Opcode::Delete,
+            Instr::In => Opcode::In,
         }
     }
 
@@ -1041,7 +1056,7 @@ impl Instr {
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
             | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe
-            | Instanceof => (2, 1),
+            | Instanceof | In => (2, 1),
             ToNumberPair => (2, 2),
             AtomNew | AtomLoad => (1, 1),
             AtomCas => (3, 2),
@@ -1078,6 +1093,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 97);
+        assert_eq!(assigned, 98);
     }
 }

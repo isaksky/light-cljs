@@ -221,6 +221,7 @@ fn binary_name(op: BinaryOp) -> &'static str {
         BinaryOp::UShr => ">>>",
         BinaryOp::Exp => "**",
         BinaryOp::Instanceof => "instanceof",
+        BinaryOp::In => "in",
     }
 }
 
@@ -459,6 +460,15 @@ fn binary_precedence_and_left_associativity() {
     assert_eq!(ast("a << b instanceof c;"), "(instanceof (<< a b) c)");
     assert_eq!(ast("!a instanceof b;"), "(instanceof (! a) b)");
     assert_eq!(ast("a instanceof b && c;"), "(&& (instanceof a b) c)");
+    // `in` (clj-quickjs-74): relational, left-associative, with
+    // `instanceof` and `<`.
+    assert_eq!(ast("a in b < c;"), "(< (in a b) c)");
+    assert_eq!(ast("a in b in c;"), "(in (in a b) c)");
+    assert_eq!(ast("a < b in c;"), "(in (< a b) c)");
+    assert_eq!(ast("a in b instanceof c;"), "(instanceof (in a b) c)");
+    assert_eq!(ast("a + b in c === d;"), "(=== (in (+ a b) c) d)");
+    assert_eq!(ast("!a in b;"), "(in (! a) b)");
+    assert_eq!(ast("a in b && c;"), "(&& (in a b) c)");
 }
 
 /// The comma operator (clj-quickjs-61): `Expression : Expression ,
@@ -868,6 +878,70 @@ fn for_statements() {
     rejects_with("for (a.b of y) {}", Unsupported, 1, 1, "`for`-`of`");
     rejects_with("for (var i = 0; ;) {}", Unsupported, 1, 6, "`var`");
     rejects("for (let [a] = b; ;) {}", Unsupported, 1, 10);
+    // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
+    // level of the init, so an `in` after any init starts a for-in head.
+    rejects_with("for (a.b in y) {}", Unsupported, 1, 1, "`for`-`in`");
+    rejects_with("for (x = a in b; ;) {}", Unsupported, 1, 1, "`for`-`in`");
+    rejects_with(
+        "for (let x = a in b; ;) {}",
+        Unsupported,
+        1,
+        1,
+        "`for`-`in`",
+    );
+    rejects_with(
+        "for (let x = 1, y = a in b) {}",
+        Unsupported,
+        1,
+        1,
+        "`for`-`in`",
+    );
+    rejects_with(
+        "for (x = c ? d : a in b;;) {}",
+        Unsupported,
+        1,
+        1,
+        "`for`-`in`",
+    );
+    rejects_with(
+        "for (x = () => a in b;;) {}",
+        Unsupported,
+        1,
+        1,
+        "`for`-`in`",
+    );
+    // Nested parentheses, brackets, braces, templates, arguments, a
+    // conditional's middle operand and function bodies take it again, as
+    // do the test and the update.
+    for (src, init) in [
+        ("for (x = (a in b); ;) ;", "(= x (in a b))"),
+        ("for (let x = (a in b); ;) ;", "(let (x (in a b)))"),
+        ("for (x = [a in b]; ;) ;", "(= x (array (in a b)))"),
+        ("for (x = o[a in b]; ;) ;", "(= x ([] o (in a b)))"),
+        ("for (x = {k: a in b}; ;) ;", "(= x (object (k (in a b))))"),
+        ("for (x = f(a in b); ;) ;", "(= x (call f (in a b)))"),
+        ("for (x = c ? a in b : d; ;) ;", "(= x (? c (in a b) d))"),
+        (
+            "for (x = `${a in b}`; ;) ;",
+            "(= x (template \"\" (in a b) \"\"))",
+        ),
+    ] {
+        assert_eq!(ast(src), format!("(for {init} _ _ (empty))"), "{src}");
+    }
+    for src in [
+        "for (x = function () { return a in b; }; ;) ;",
+        "for (x = function (y = a in b) {}; ;) ;",
+        "for (x = () => { for (;;) a in b; }; ;) ;",
+        "for (let x = () => { if (a in b) {} }; ;) ;",
+    ] {
+        parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    assert_eq!(
+        ast("for (; a in b; a in c) ;"),
+        "(for _ (in a b) (in a c) (empty))"
+    );
+    // The body is not part of the head.
+    assert_eq!(ast("for (;;) a in b;"), "(for _ _ _ (in a b))");
     // `let` is a keyword (strict mode); the head is parenthesized and has
     // exactly two `;`.
     rejects("for (let let = 1; ;) {}", ReservedWord, 1, 10);
@@ -3055,7 +3129,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("let {a} = b;", 1, 5, "destructuring"),
         ("function f({a}) {}", 1, 12, "destructuring"),
         ("a ||= 1;", 1, 3, "||="),
-        ("x in y;", 1, 3, "in"),
         ("x = eval;", 1, 5, "eval"),
         ("function f() { return arguments; }", 1, 23, "arguments"),
     ];
@@ -3215,6 +3288,10 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
         ("nested instanceof", |n| {
             format!("x = {}b{};", "a instanceof (".repeat(n), ")".repeat(n))
+        }),
+        ("in", |n| format!("x = a{};", " in b".repeat(n))),
+        ("nested in", |n| {
+            format!("x = {}b{};", "a in (".repeat(n), ")".repeat(n))
         }),
         ("exponent", |n| format!("x = 1{};", " ** 1".repeat(n))),
         ("exponent of unary", |n| {

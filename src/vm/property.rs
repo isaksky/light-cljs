@@ -85,6 +85,13 @@
 //! allocating one. A delete creates nothing, not even a function's
 //! property record or a key, so it is not a poll point.
 //!
+//! # The `in` operator
+//!
+//! [`in_operator`] (clj-quickjs-74) is the `In` instruction and
+//! [`has_property`] its HasProperty, the read walk above answering only
+//! whether the property exists (a kind without JavaScript properties has
+//! none; `Object.prototype.__proto__` exists without its getter running).
+//!
 //! # Property keys
 //!
 //! A computed key goes through ToPropertyKey ([`to_property_key`]) when the
@@ -101,7 +108,7 @@
 //! No operation here allocates a heap object or runs JavaScript, except
 //! `NewArray` and an access to a function object, which may allocate its
 //! property record and lazy `prototype` (`crate::vm::function`), so
-//! `GetField`, `PutField`, `GetElem` and `PutElem` are poll points. Each
+//! `GetField`, `PutField`, `GetElem`, `PutElem` and `In` are poll points. Each
 //! object visited is read or changed under one short object-table lock (a
 //! realm intrinsic is read from the realm's immutable view instead, with no
 //! lock: `crate::realm`, "Lock-free reads"), and the property-key table is
@@ -392,6 +399,66 @@ pub(crate) fn find(
     base: &Value,
     key: &Key,
 ) -> Result<Option<Value>, Fault> {
+    lookup(heap, task, base, key, false)
+}
+
+/// HasProperty(`base`, `key`) for the running task `task` (QuickJS
+/// `JS_HasProperty`; the `in` operator, clj-quickjs-74): whether the object
+/// `base` or an object on its prototype chain has the property, whatever
+/// its value. The walk and its failures are [`find`]'s, except that
+/// reaching `Object.prototype.__proto__` answers true without running its
+/// getter (it is an own property of `Object.prototype`, not of `base`).
+pub(crate) fn has_property(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+) -> Result<bool, Fault> {
+    lookup(heap, task, base, key, true).map(|found| found.is_some())
+}
+
+/// `key in base` (`In`, clj-quickjs-74; QuickJS `OP_in`,
+/// `js_operator_in`): a `base` that is not an object is a catchable
+/// `TypeError`, checked before the key is converted; then
+/// ToPropertyKey(`key`) ([`to_property_key`]: an object key needs
+/// ToPrimitive and is `UnsupportedOperand`) and [`has_property`]. Heap
+/// kinds without JavaScript properties (module docs) have none, so the
+/// answer is false; an error object is `UnsupportedOperand`.
+pub(crate) fn in_operator(
+    heap: &Heap,
+    task: TaskId,
+    key: &Value,
+    base: &Value,
+) -> Result<bool, Fault> {
+    if !matches!(base, Value::Object(_)) {
+        // Only the message converts the key: a primitive's conversion has
+        // no effects, and an object key is not converted.
+        let wanted = match to_property_key(key) {
+            Ok(key) => format!("'{key}'"),
+            Err(_) => "an object key".to_string(),
+        };
+        let base = match base {
+            Value::Number(n) => number_to_string(*n),
+            Value::Bool(b) => b.to_string(),
+            Value::String(s) => format!("\"{s}\""),
+            other => other.type_name().to_string(),
+        };
+        return Err(Fault::TypeError(format!(
+            "cannot use 'in' operator to search for {wanted} in {base}"
+        )));
+    }
+    has_property(heap, task, base, &to_property_key(key)?)
+}
+
+/// [`find`], or with `has` [`has_property`]'s walk: the found value is
+/// then only a presence marker.
+fn lookup(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    has: bool,
+) -> Result<Option<Value>, Fault> {
     let Value::Object(mut id) = *base else {
         return Err(primitive_base(base, key, Access::Read));
     };
@@ -413,6 +480,9 @@ pub(crate) fn find(
             };
             // `Object.prototype.__proto__`'s getter (`crate::vm::prototype`).
             if k.is_some_and(|k| realm.is_some_and(|r| r.is_proto_accessor(id, k))) {
+                if has {
+                    return Ok(Some(Value::Undefined));
+                }
                 return prototype::proto_getter(heap, task, receiver).map(Some);
             }
             match k.and_then(|k| view.get_own(k)) {
@@ -452,7 +522,11 @@ pub(crate) fn find(
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(None),
             Lookup::NeedsName => interned = Some(heap.keys().lookup(&key.to_name())),
-            Lookup::Function => match function::read(heap, task, id, key)? {
+            Lookup::Function => match if has {
+                function::probe(heap, task, id, key)?
+            } else {
+                function::read(heap, task, id, key)?
+            } {
                 FunctionRead::Found(v) => return Ok(Some(v)),
                 FunctionRead::Continue(next) => {
                     id = next;

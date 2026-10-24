@@ -984,6 +984,15 @@ fn step(
             let deleted = property::delete(heap, state.diag.task, &base, &key, code.strict)?;
             state.push(Value::Bool(deleted));
         }
+        Instr::In => {
+            // Both operands stay on the stack (reachable) while the key is
+            // looked up, which may build the realm.
+            let [key, base] = top_operands(state, 2)? else {
+                return Err(Fault::Internal("operand stack underflow"));
+            };
+            let result = property::in_operator(heap, state.diag.task, key, base)?;
+            state.replace(2, Value::Bool(result))?;
+        }
         Instr::StrictEq => {
             let b = state.pop()?;
             let a = state.pop()?;
@@ -1241,7 +1250,10 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // (`crate::vm::function`, clj-quickjs-125).
         Instr::GetField(_) | Instr::PutField(_) | Instr::GetElem | Instr::PutElem
         // Reads `f.prototype` (clj-quickjs-75).
-        | Instr::Instanceof => true,
+        | Instr::Instanceof
+        // Looks the key up through the chain, functions included
+        // (clj-quickjs-74).
+        | Instr::In => true,
         Instr::NewObject
         | Instr::NewObjectLiteral
         | Instr::NewArray

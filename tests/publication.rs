@@ -821,6 +821,43 @@ fn function_own_properties_follow_publication_rule() {
     rt.publish(&h).unwrap();
 }
 
+/// `'prototype' in f` (clj-quickjs-74) reports a constructor's lazy
+/// `prototype` without creating it, as QuickJS `JS_HasProperty` leaves
+/// autoinit properties alone: the function stays publishable, and a
+/// published function can be asked from another task. JavaScript source is
+/// a synthetic fixture, not light-cljs output.
+#[test]
+fn in_operator_preserves_function_publication() {
+    let rt = Runtime::new();
+    let run = |src: &str| {
+        let task = rt
+            .spawn(&compile_script("functions", src).unwrap(), &[])
+            .unwrap();
+        complete(task.run().unwrap())
+    };
+    // Asked before publication by its creating task: nothing is attached.
+    let h = run("function h() {} const r = 'prototype' in h && !('y' in h); r ? h : 0");
+    rt.publish(&h).unwrap();
+    // Asked after publication, from another task; an arrow has none.
+    let probe = compile_function(
+        "function probe(h) { return ('prototype' in h ? 1 : 0) + ('__proto__' in h ? 10 : 0) \
+         + ('y' in h ? 100 : 0); }",
+    )
+    .unwrap();
+    for (src, expected) in [("function h() {} h", 11.0), ("const h = () => 1; h", 10.0)] {
+        let h = run(src);
+        rt.publish(&h).unwrap();
+        let task = rt.spawn(&probe, &[&h]).unwrap();
+        assert_eq!(
+            complete(task.run().unwrap()).view(),
+            ValueView::Number(expected),
+            "{src}"
+        );
+        // Still publishable after being asked (nothing was attached).
+        rt.publish(&h).unwrap();
+    }
+}
+
 /// Extensibility and freezing across tasks (clj-quickjs-122;
 /// `src/vm/integrity.rs`): freezing does not change ownership, so a frozen
 /// object stays task-owned and is rejected by publication, and freezing a

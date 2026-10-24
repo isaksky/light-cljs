@@ -2142,3 +2142,24 @@ Deferred:
   `delete f.length`/`f.name` of a function (clj-quickjs-101) and properties of error objects
   (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
+
+### `in` (clj-quickjs-74)
+
+Supported (`cargo test --test js_source in_operator`,
+`cargo test --lib frontend::tests::binary_precedence_and_left_associativity`,
+`cargo test --lib frontend::tests::for_statements`):
+
+- `k in o` at relational precedence, lowered to the appended `in` opcode (`0x62`): an `o` that
+  is not an object is a catchable `TypeError`, checked before `k` is converted; then
+  ToPropertyKey(`k`) as for `o[k]` and HasProperty through the prototype chain (own and inherited
+  properties of objects, arrays, functions and `Object.prototype`; `'__proto__' in {}` is true).
+  Persistent collections, builders and other `__rt` values have no JavaScript properties.
+- The init of a `for` head takes no top-level `in` (`[~In]`): `for (a.b in o)` and
+  `for (let x = a in b; ;)` are for-in heads (still `Unsupported`, clj-quickjs-85), while
+  `for (x = (a in b); ;)` and an `in` in the test or update parse as the operator.
+
+Deferred:
+
+- An object key needs ToPrimitive (clj-quickjs-70); names a function would inherit from
+  `Function.prototype` (clj-quickjs-102) and error objects' properties (clj-quickjs-230) fail
+  with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.

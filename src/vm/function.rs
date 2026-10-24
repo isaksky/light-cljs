@@ -369,6 +369,30 @@ pub(crate) fn read(
     function: ObjectId,
     key: &Key,
 ) -> Result<FunctionRead, Fault> {
+    read_or_probe(heap, task, function, key, false)
+}
+
+/// [`read`] for HasProperty (the `in` operator, clj-quickjs-74): a
+/// constructor's lazy `prototype` is reported present (as
+/// `Found(undefined)`, a presence marker) without being created, as QuickJS
+/// `JS_HasProperty` leaves autoinit properties alone, so a published
+/// function can be asked and an unpublished one gains no task-owned state.
+pub(crate) fn probe(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    key: &Key,
+) -> Result<FunctionRead, Fault> {
+    read_or_probe(heap, task, function, key, true)
+}
+
+fn read_or_probe(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    key: &Key,
+    probe: bool,
+) -> Result<FunctionRead, Fault> {
     let info = info(heap, function)?;
     if let Some(name) = special(key) {
         if let Some(record) = info.record
@@ -378,6 +402,9 @@ pub(crate) fn read(
         }
         if name == "prototype" {
             if info.constructor {
+                if probe {
+                    return Ok(FunctionRead::Found(Value::Undefined));
+                }
                 let record =
                     writable_record(heap, task, function, &info, &Change::CreatePrototype)?;
                 return Ok(FunctionRead::Found(materialize(

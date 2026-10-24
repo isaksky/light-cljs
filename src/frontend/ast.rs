@@ -710,6 +710,8 @@ pub enum BinaryOp {
     Exp,
     /// `instanceof` (clj-quickjs-75)
     Instanceof,
+    /// `in` (clj-quickjs-74)
+    In,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
