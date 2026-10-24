@@ -281,6 +281,8 @@ pub(crate) struct OrdinaryObject {
     error_data: bool,
     /// Engine-only diagnostic and original cause, independent of properties.
     engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
+    /// Intl.Locale's immutable internal record; contains no heap edges.
+    locale_data: Option<Box<crate::intl::tag::LanguageTag>>,
 }
 
 impl OrdinaryObject {
@@ -297,6 +299,7 @@ impl OrdinaryObject {
             primitive_data: None,
             error_data: false,
             engine_error: None,
+            locale_data: None,
         }
     }
 
@@ -340,6 +343,15 @@ impl OrdinaryObject {
     /// A wrapper's internal data, independent of its JavaScript prototype.
     pub(crate) fn primitive_data(&self) -> Option<&PrimitiveData> {
         self.primitive_data.as_ref()
+    }
+
+    pub(crate) fn with_locale_data(mut self, data: crate::intl::tag::LanguageTag) -> Self {
+        self.locale_data = Some(Box::new(data));
+        self
+    }
+
+    pub(crate) fn locale_data(&self) -> Option<&crate::intl::tag::LanguageTag> {
+        self.locale_data.as_deref()
     }
 
     pub(crate) fn with_error_data(mut self) -> Self {
@@ -724,6 +736,7 @@ pub(crate) enum DeleteOutcome {
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         // PrimitiveData contains only f64 / JsString, with no heap edges.
+        // locale_data owns Rust strings and also contains no heap edges.
         if let Some(error) = &self.engine_error {
             error.trace(visit);
         }

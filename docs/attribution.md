@@ -423,3 +423,16 @@ Rust arithmetic was written afresh using the existing in-tree limb type.
 `research/quickjs/tests/test_bigint.js`; its full copyright and MIT permission
 notice is retained on the test. Other arithmetic fixtures are synthetic,
 not light-cljs output.
+
+## Locale identifiers (clj-quickjs-210)
+
+`src/intl/tag.rs`, `src/intl/locale.rs`, and `src/vm/native/intl.rs` are fresh Rust
+implementations using `research/quickjs/intl/intl.c` (`is_wellformed_language_tag`,
+`canonicalize_locale`, `js_canonicalizeLocaleList_core`, `js_intl_getCanonicalLocales`)
+and `research/quickjs/intl/locale.c` (constructor, options, keyword parsing and
+component getters) as semantic references at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. New tests are synthetic fixtures,
+including round-trip inputs from the pellet's acceptance list corresponding to
+`research/quickjs/tests/test_intl.js::test_locale`; no upstream test text is
+copied. The QuickJS MIT notice is retained in `src/intl/data/QUICKJS-LICENSE`.
+No new generated tables or CLDR source are introduced.

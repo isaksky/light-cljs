@@ -274,6 +274,10 @@ pub(crate) enum Builtin {
     ArrayBufferDetached,
     ArrayBufferTransfer,
     ArrayBufferSlice,
+    IntlLocale,
+    IntlGetCanonicalLocales,
+    IntlLocaleToString,
+    IntlLocaleGet(crate::intl::locale::Field),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -316,6 +320,10 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::IntlLocale => "Locale",
+            Builtin::IntlGetCanonicalLocales => "getCanonicalLocales",
+            Builtin::IntlLocaleToString => "toString",
+            Builtin::IntlLocaleGet(field) => field.getter_name(),
             Builtin::ArrayBuffer => "ArrayBuffer",
             Builtin::ArrayBufferByteLength => "get byteLength",
             Builtin::ArrayBufferDetached => "get detached",
@@ -405,6 +413,8 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
+            Builtin::IntlLocaleToString | Builtin::IntlLocaleGet(_) => 0,
             Builtin::ArrayBuffer => 1,
             Builtin::ArrayBufferByteLength
             | Builtin::ArrayBufferDetached
@@ -503,6 +513,14 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::IntlLocale => Err(Fault::TypeError("Intl.Locale requires new".into())),
+        Builtin::IntlGetCanonicalLocales => {
+            Err(Fault::Internal("locale lists require a resumable frame"))
+        }
+        Builtin::IntlLocaleToString => crate::intl::locale::inspect(heap, task, this, None),
+        Builtin::IntlLocaleGet(field) => {
+            crate::intl::locale::inspect(heap, task, this, Some(field))
+        }
         Builtin::ArrayBuffer => Err(Fault::TypeError("ArrayBuffer requires new".into())),
         Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => {
             crate::object::array_buffer::inspect(

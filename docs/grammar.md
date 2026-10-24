@@ -448,9 +448,10 @@ are still covered by the computed-key rejection below.
 
 ## Explicit gaps
 
-`Intl` exists as an ordinary namespace (clj-quickjs-209), but language-tag
-canonicalization, `Intl.Locale` and service constructors remain deferred.
-Canonical-tag locale data lookup is currently a Rust API, not JS formatting.
+`Intl` provides locale identifiers (clj-quickjs-209/-210); formatting service
+constructors, likely-subtag maximize/minimize, Locale information methods and
+service `supportedLocalesOf` remain deferred. Canonical-tag locale data lookup
+is currently a Rust API, not JS formatting.
 
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
@@ -860,7 +861,30 @@ delete a[o];
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
 and `new Intl()` throw catchable TypeErrors. The namespace follows shared
-intrinsic mutation restrictions. Service constructors are not installed yet.
+intrinsic mutation restrictions. Formatting service constructors are not installed yet.
+
+`Intl.getCanonicalLocales(locales)` canonicalizes a string, Locale, or array-like
+list, skipping absent indices and removing duplicates in first-occurrence order.
+`undefined` gives an empty list; `null` and non-string/non-object elements throw
+TypeError. Locale objects use their internal tags without calling `toString`.
+Other object elements use resumable ToString; length/index getters and ToLength
+also run through resumable native frames.
+
+`new Intl.Locale(tag, options)` accepts a string or an object (a Locale's internal
+tag, otherwise resumable ToString), with optional language/script/region and
+calendar/collation/hourCycle/caseFirst/numeric/numberingSystem overrides. Calling
+without `new` throws TypeError. Tags parse language, script, region, variants,
+Unicode/other extensions and private use; canonicalization adjusts case, selected
+deprecated aliases, variant order, attributes, keywords and singleton order.
+Invalid tags/options throw RangeError. The explicit legacy `co-phonebook` alias
+is accepted before the usual eight-character type-subtag check. The parser
+retains the pinned QuickJS limits of fewer than 512 bytes and 64 subtags.
+Locale prototype `toString`, `baseName`, `language`, `script`, `region`, `variants`,
+`calendar`, `collation`, `hourCycle`, `caseFirst`, `numeric` and `numberingSystem`
+check internal-slot branding, independently of the current prototype. The tag
+descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent fields (including
+numeric) return `undefined`, matching the pinned snapshot. `variants` and
+`firstDayOfWeek` options and general `@@toStringTag` consumption remain deferred.
 
 String `+`, `+=`, template interpolation and `String.prototype.concat` use
 immutable ropes above 32 UTF-16 units (clj-quickjs-146). Repeated append or

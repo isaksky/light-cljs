@@ -14483,3 +14483,173 @@ fn bigint_update_results_use_numeric_coercion() {
         }
     }
 }
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_locale_construct_and_canonicalize() {
+    for tag in [
+        "en", "de", "ja", "zh", "zh-Hant", "ru", "fr", "ar", "pt-BR", "en-GB",
+    ] {
+        assert_eq!(
+            eval(&format!("new Intl.Locale('{tag}').toString() === '{tag}'")),
+            ValueView::Bool(true)
+        );
+    }
+    assert_eq!(
+        eval(
+            r#"
+        let range = false; let type = false; let call = false;
+        try { new Intl.Locale(''); } catch(e) { range = e instanceof RangeError; }
+        try { new Intl.Locale(5); } catch(e) { type = e instanceof TypeError; }
+        try { Intl.Locale('en'); } catch(e) { call = e instanceof TypeError; }
+        new Intl.Locale('zh-Hant').script === 'Hant' &&
+        new Intl.Locale('pt-BR').region === 'BR' &&
+        new Intl.Locale('de-u-co-phonebk').collation === 'phonebk' &&
+        new Intl.Locale('en', {region: 'GB'}).toString() === 'en-GB' &&
+        new Intl.Locale('en').baseName === 'en' &&
+        Intl.getCanonicalLocales(['EN-us', 'en-US']).join() === 'en-US' &&
+        range && type && call
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_locale_options_lists_and_brand_checks() {
+    for source in [
+        r#"let l = new Intl.Locale('EN-latn-us-u-ca-buddhist-co-dict-hc-h12-kf-lower-kn-false-nu-arab-x-Private', {language:'de', script:'CYRL', region:'gb', calendar:'islamicc', collation:'phonebk', hourCycle:'h23', caseFirst:'upper', numeric: {}, numberingSystem:'LATN'}); l.toString() === 'de-Cyrl-GB-u-ca-islamic-civil-co-phonebk-hc-h23-kf-upper-kn-nu-latn-x-private' && l.baseName === 'de-Cyrl-GB' && l.language === 'de' && l.script === 'Cyrl' && l.region === 'GB' && l.calendar === 'islamic-civil' && l.collation === 'phonebk' && l.hourCycle === 'h23' && l.caseFirst === 'upper' && l.numeric === true && l.numberingSystem === 'latn'"#,
+        r#"let a = new Intl.Locale('en-u-kn'); a.toString = function() { throw 9; }; new Intl.Locale(a, {numeric: false}).toString() === 'en-u-kn-false' && Intl.getCanonicalLocales([a, 'en-u-kn-true']).join() === 'en-u-kn' && Intl.getCanonicalLocales(a)[0] === 'en-u-kn'"#,
+        r#"let l = new Intl.Locale('xx'); l.script === undefined && l.region === undefined && l.calendar === undefined && l.numeric === undefined && l[Symbol.toStringTag] === 'Intl.Locale' && Object.getPrototypeOf(l) === Intl.Locale.prototype && l instanceof Intl.Locale"#,
+        r#"Intl.getCanonicalLocales().length === 0 && Intl.getCanonicalLocales(5).length === 0 && Intl.getCanonicalLocales('EN-us').join() === 'en-US' && Intl.getCanonicalLocales({0:'fr', 2:'EN-us', 3:'fr', length:4}).join() === 'fr,en-US' && Intl.getCanonicalLocales({length:-1}).length === 0"#,
+        r#"let proto = {1:'de'}; let list = Object.create(proto); list[0] = 'fr'; list.length = 2; Intl.getCanonicalLocales(list).join() === 'fr,de'"#,
+        r#"let log = ''; let l = new Intl.Locale({toString(){log += 't';return 'en';}}, {get language(){log += 'l';return {toString(){log += 's';return 'DE';}};}, get script(){log += 'S';}, get region(){log += 'r';return 'GB';}, get calendar(){log += 'c';}, get collation(){log += 'C';}, get hourCycle(){log += 'h';}, get caseFirst(){log += 'f';}, get numeric(){log += 'n';return {valueOf(){throw 9;}};}, get numberingSystem(){log += 'N';}}); l.toString() === 'de-GB-u-kn' && log === 'tlsSrcChfnN'"#,
+        r#"let log = ''; let list = {get length(){log += 'l';return {valueOf(){log += 'n';return 3.9;}};}, get 0(){log += 'a';return {toString(){log += 's';return 'DE';}};}, get 2(){log += 'b';return 'FR';}}; Intl.getCanonicalLocales(list).join() === 'de,fr' && log === 'lnasb'"#,
+        r#"let d = Object.getOwnPropertyDescriptor(Intl.Locale.prototype,'language'); let t = Object.getOwnPropertyDescriptor(Intl.Locale.prototype,Symbol.toStringTag); d.get.name === 'get language' && d.get.length === 0 && d.set === undefined && !d.enumerable && d.configurable && t.value === 'Intl.Locale' && !t.writable && !t.enumerable && t.configurable && Intl.Locale.name === 'Locale' && Intl.Locale.length === 1 && Intl.getCanonicalLocales.length === 1 && !Object.getOwnPropertyDescriptor(Intl,'Locale').enumerable"#,
+        r#"let caught = false; let log = ''; try { Intl.getCanonicalLocales({length:2, get 0(){ log += 'a'; throw 42; }, get 1(){log += 'b'; return 'en';}}); } catch(e) {caught = e === 42;} caught && log === 'a'"#,
+        r#"let caught = false; let log = ''; try { new Intl.Locale('en', {get language(){log += 'l';return 'bad!';}, get region(){log += 'r';return 'US';}}); } catch(e) { caught = e instanceof RangeError; } caught && log === 'l'"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "Intl.Locale.prototype.toString.call({})",
+        "Object.getOwnPropertyDescriptor(Intl.Locale.prototype,'language').get.call({})",
+        "Intl.Locale.prototype.toString.call(Intl.Locale.prototype)",
+        "Intl.getCanonicalLocales([5])",
+        "Intl.getCanonicalLocales([null])",
+        "Intl.getCanonicalLocales([undefined])",
+        "Intl.getCanonicalLocales([Symbol()])",
+        "Intl.getCanonicalLocales(null)",
+        "new Intl.Locale()",
+        "new Intl.Locale(Symbol())",
+        "new Intl.Locale('en', null)",
+        "new Intl.Locale('', null)",
+        "new Intl.Locale('en', {region:Symbol()})",
+        "new Intl.getCanonicalLocales('en')",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+    for source in [
+        "new Intl.Locale('en-', {region:'US'})",
+        "new Intl.Locale('en', {language:'abcd'})",
+        "new Intl.Locale('en', {script:'1234'})",
+        "new Intl.Locale('en', {region:'USA'})",
+        "new Intl.Locale('en', {calendar:'ab'})",
+        "new Intl.Locale('en', {collation:'a-b'})",
+        "new Intl.Locale('en', {hourCycle:'H12'})",
+        "new Intl.Locale('en', {caseFirst:'UPPER'})",
+        "new Intl.Locale('en', {numberingSystem:'l!'})",
+        "Intl.getCanonicalLocales(['en', ''])",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Each callback waits once and
+/// survives single-instruction yields, collection and migration to fresh threads.
+#[test]
+fn intl_locale_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log = '';
+        let locale = new Intl.Locale({toString(){log += 't'; __rt.need(1,1); return 'en-u-ca-gregory';}}, {
+            get region(){log += 'r'; __rt.need(2,1); return {toString(){log += 's'; __rt.need(3,1); return 'GB';}};},
+            get numeric(){log += 'n'; __rt.need(4,1); return true;}
+        });
+        let locales = Intl.getCanonicalLocales({get length(){log += 'l'; __rt.need(5,1); return {valueOf(){log += 'v'; __rt.need(6,1); return 2;}};},
+            get 0(){log += 'a'; __rt.need(7,1); return {toString(){log += 'S'; __rt.need(8,1); return 'DE';}};},
+            get 1(){log += 'b'; __rt.need(9,1); return locale;}
+        });
+        locales.join() === 'de,en-GB-u-ca-gregory-kn' && log === 'trsnlvaSb' && locale.region === 'GB'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 9);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 9);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("Intl continuation did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output. Locale's ordinary properties keep
+/// the existing task ownership/publication boundary despite immutable slots.
+#[test]
+fn intl_locale_task_ownership() {
+    let rt = Runtime::new();
+    let owner = rt
+        .spawn(&exe("Object.freeze(new Intl.Locale('en'))"), &[])
+        .unwrap();
+    let RunOutcome::Complete(locale) = owner.run().unwrap() else {
+        panic!("expected Locale");
+    };
+    assert!(matches!(
+        rt.publish(&locale),
+        Err(clj_quickjs::PublishError::NotShareable { .. })
+    ));
+    for body in [
+        "value.language",
+        "Intl.Locale.prototype.toString.call(value)",
+        "Object.getOwnPropertyDescriptor(Intl.Locale.prototype,'region').get.call(value)",
+        "new Intl.Locale(value)",
+        "Intl.getCanonicalLocales(value)",
+    ] {
+        let code = compile_function(&format!("function read(value) {{ return {body}; }}")).unwrap();
+        let caller = rt.spawn(&code, &[&locale]).unwrap();
+        assert!(
+            matches!(caller.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. })),
+            "{body}"
+        );
+    }
+}

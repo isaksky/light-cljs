@@ -2805,8 +2805,29 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Deferred: locale-tag canonicalization, Intl.Locale and all Intl service
-constructors, general resumable `@@toStringTag` reads, and full UCA/UAX #29 data.
+Deferred: Intl formatting service constructors, general resumable
+`@@toStringTag` reads, and full UCA/UAX #29 data.
+
+### Locale identifiers (clj-quickjs-210)
+
+Supported: `Intl.getCanonicalLocales` and `new Intl.Locale(tag, options)`,
+case/alias canonicalization, sorted variants and Unicode keywords, other
+extensions and private use, deduplicated array-like locale lists, and Locale's
+`toString`, `baseName`, component/Unicode keyword getters and `Symbol.toStringTag`.
+Options cover language, script, region, calendar, collation, hourCycle, caseFirst,
+numeric and numberingSystem; option getters and object coercions may yield/wait.
+Malformed tags/options throw RangeError; invalid argument kinds and receivers
+throw TypeError. Unknown well-formed tags such as `xx` remain valid identifiers;
+they do not advertise extra formatting-data coverage.
+
+Deferred: `maximize`/`minimize`, Locale information methods, `variants` and
+`firstDayOfWeek` constructor options, service locale resolution and
+`supportedLocalesOf`. Alias rules follow the selected pinned QuickJS cases,
+with `co-phonebook` accepted and normalized to `co-phonebk` as required by this
+pellet. Locale's absent `numeric` getter returns `undefined` as in that snapshot.
+General `Object.prototype.toString` consumption of Locale's tag shares the
+existing deferred `@@toStringTag` behavior.
+
 
 ### Task-owned job queue (clj-quickjs-174)
 

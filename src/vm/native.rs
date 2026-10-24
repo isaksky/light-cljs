@@ -212,6 +212,7 @@
 //! keep, but no promise or job is involved here.
 
 use std::marker::PhantomData;
+mod intl;
 mod string_raw;
 
 use super::builtin;
@@ -442,6 +443,7 @@ enum NativeState {
     },
     Join(Box<ArrayJoin>),
     StringRaw(Box<string_raw::StringRaw>),
+    Intl(Box<intl::Intl>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -632,6 +634,7 @@ impl Trace for NativeFrame {
                 }
             }
             NativeState::StringRaw(raw) => raw.trace(visit),
+            NativeState::Intl(intl) => intl.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -840,6 +843,14 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if (which == Builtin::IntlLocale && construct)
+        || (which == Builtin::IntlGetCanonicalLocales && !construct)
+    {
+        let native = intl::Intl::new(args, construct)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Intl(Box::new(native)))?;
+        return Ok(true);
+    }
     let error = match which {
         Builtin::Error => Some(error::ErrorState::constructor(
             heap,
@@ -1601,6 +1612,7 @@ impl NativeState {
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -2464,6 +2476,7 @@ impl NativeState {
                 | NativeState::Push { .. }
                 | NativeState::Join(_)
                 | NativeState::StringRaw(_)
+                | NativeState::Intl(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }

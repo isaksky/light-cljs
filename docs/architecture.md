@@ -4691,7 +4691,7 @@ enumerable=false, configurable=true. `Object.prototype.toString.call(Intl)`
 reads that fixed intrinsic identity without a callback. General user-defined
 `@@toStringTag` consumption remains deferred. Intrinsic mutation retains the
 realm-wide restriction even where descriptors are configurable. Global binding
-attributes follow the existing task global-object mechanism. Individual Intl
+attributes follow the existing task global-object mechanism. Formatting service
 constructors are deferred to their sibling pellets.
 
 CLDR-derived tables carry Unicode License v3, reproduced in
@@ -4877,3 +4877,43 @@ The Number constructor keeps a separate explicit UnsupportedOperand guard for
 BigInt until clj-quickjs-203: `Number(bigint)` is permitted by JavaScript and
 must not inherit the TypeError of unary plus/ToNumber. This guard also applies
 after an object's resumable ToPrimitive conversion and during construction.
+
+## Locale identifiers (clj-quickjs-210)
+
+`intl::tag::LanguageTag` parses the Unicode locale identifier subset of BCP 47
+using owned Rust strings and ordered maps/sets. It validates language, optional
+script/region, unique variants/singletons, Unicode attributes/keywords,
+transformed-language fields, other extensions and private use. Serialization
+normalizes case, applies the selected snapshot aliases, sorts variants,
+attributes, keywords and singleton extensions, and leaves private use last.
+The requested legacy `co-phonebook` spelling is normalized before the standard
+eight-character type-subtag bound. The parser does not consult service data:
+unknown well-formed identifiers remain valid. It keeps the reference's
+512-byte/64-subtag limits; complete CLDR alias coverage is not claimed.
+
+Locale instances remain ordinary task-owned objects with a private, immutable
+`locale_data` record initialized before allocation. This avoids a new heap kind
+and reuses ordinary properties, prototypes, integrity operations and publication
+checks. Slot data owns only strings and containers with no heap edges; existing
+ordinary-object tracing retains the prototype and property values. A Locale
+cannot be published between tasks even when frozen, since its ordinary property
+store remains task-owned. Prototype changes cannot forge or remove the brand.
+
+`vm::native::intl` drives Locale construction and CanonicalizeLocaleList as saved
+stages. Every getter, tag/option ToString, and object-valued list-length ToNumber
+returns an action to the trampoline, so no Rust stack survives JavaScript,
+waits, budget yields, GC or thread migration. The continuation traces the source,
+options and intermediate result values; duplicate keys are private Rust strings
+with no user comparison. Locale list reads use HasProperty before Get to skip
+holes while including inherited indices, and deduplicate only after canonicalizing
+each element. Locale internal records bypass user-overridden string methods.
+The shared list operation returns the ordinary array consumed by the public
+`Intl.getCanonicalLocales` built-in and can be called by later service natives.
+
+Locale's namespace/prototype functions and branded accessors are appended to the
+realm, including `Symbol.toStringTag = 'Intl.Locale'`. The existing restriction
+on intrinsic mutation still applies. General Object.prototype.toString tag
+consumption remains deferred. Likely-subtag operations, information methods,
+`variants`/`firstDayOfWeek` options and formatting service resolution belong to
+later pellets. Numeric absent from the tag/options yields `undefined`, matching
+the pinned QuickJS getter rather than assuming another engine's output.

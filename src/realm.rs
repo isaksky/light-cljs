@@ -327,6 +327,7 @@ pub(crate) struct Intrinsics {
     array_buffer: ObjectId,
 
     pub(crate) intl: ObjectId,
+    pub(crate) intl_locale_prototype: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -864,6 +865,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         _ => false,
     })?
     .then_some(())?;
+    let intl_locale_prototype = intl_locale_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -918,6 +920,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         map_prototype,
         map,
         intl,
+        intl_locale_prototype,
     })
 }
 
@@ -1115,6 +1118,64 @@ fn array_buffer_intrinsics(
         }
     }
     Some((prototype, constructor))
+}
+
+/// Append the Locale constructor/prototype and canonical locale-list operation.
+fn intl_locale_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlLocale,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "Locale", constructor, PropertyFlags::METHOD)?;
+    let canonical = b.function(Builtin::IntlGetCanonicalLocales, &[])?;
+    b.add(
+        intl,
+        "getCanonicalLocales",
+        canonical,
+        PropertyFlags::METHOD,
+    )?;
+    let to_string = b.function(Builtin::IntlLocaleToString, &[])?;
+    b.add(prototype, "toString", to_string, PropertyFlags::METHOD)?;
+    for field in crate::intl::locale::Field::ALL {
+        let getter = b.function(Builtin::IntlLocaleGet(field), &[])?;
+        let key = heap.keys().intern(&JsString::from(field.name()))?;
+        let descriptor = PropertyDescriptor {
+            get: Some(Value::Object(getter)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..PropertyDescriptor::default()
+        };
+        if heap.with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+            _ => unreachable!(),
+        })? != DefineOutcome::Done
+        {
+            return None;
+        }
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.Locale")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(prototype)
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -1320,7 +1381,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 109); // Includes ArrayBuffer and Intl.
+        assert_eq!(first.all.len(), 124); // Includes ArrayBuffer, Intl and Locale.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

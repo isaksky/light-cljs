@@ -656,7 +656,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::String
             | Builtin::Error
             | Builtin::NativeError(_)
-            | Builtin::ArrayBuffer),
+            | Builtin::ArrayBuffer
+            | Builtin::IntlLocale),
         )) => {
             if super::native::start_builtin(
                 heap,

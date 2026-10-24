@@ -1,6 +1,6 @@
-//! Intl namespace support and pinned locale data. Language-tag validation and
-//! service-specific ResolveLocale/options algorithms are separate from this
-//! canonical-tag data lookup (see docs/architecture.md, "Intl locale data").
+//! Intl namespace, BCP 47 locale identifiers, and pinned locale data.
+//! Service-specific ResolveLocale algorithms remain separate from canonical
+//! tag parsing and data lookup (see docs/architecture.md, "Intl locale data").
 
 pub mod data;
 
@@ -253,3 +253,6 @@ mod tests {
         assert_eq!(data::locale::locale_data_count, 14);
     }
 }
+
+pub(crate) mod locale;
+pub mod tag;
