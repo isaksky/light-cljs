@@ -18,9 +18,10 @@
 //! declarations are hoisted: entering a statement list creates its
 //! declarations' closures, in source order, before any statement runs. An
 //! arrow function lowers exactly as an anonymous function expression (its
-//! concise body is already a `return` statement in the tree): the subset
-//! has no `this`, `arguments`, `new.target` or `super`, the only bindings
-//! an arrow would take lexically instead of having its own.
+//! concise body is already a `return` statement in the tree). Its `this`
+//! is captured by value from the nearest non-arrow function, through every
+//! intervening arrow (clj-quickjs-98); `arguments`, `new.target` and `super`
+//! are still outside the subset.
 //!
 //! **Bindings.** Every `let`/`const`/function binding and every parameter
 //! lives in a frame local. Entering a statement list (script, function body,
@@ -326,6 +327,8 @@ enum Place {
     Capture(u16),
     /// `current_function`.
     Current,
+    /// The nearest ordinary function's immutable frame receiver.
+    This,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -422,6 +425,7 @@ impl Emitter {
             Place::Local(slot) => self.op_u16(Opcode::GetLocal, slot, span),
             Place::Capture(i) => self.op_u16(Opcode::GetCapture, i, span),
             Place::Current => self.op(Opcode::CurrentFunction, span),
+            Place::This => self.op(Opcode::GetThis, span),
         }
     }
 }
@@ -446,6 +450,11 @@ struct FnCtx {
     /// to `arguments` denotes unless the function binds that name itself
     /// ([`Lowerer::check_arguments_reference`]).
     own_arguments: bool,
+    /// Arrows inherit their nearest ordinary function's receiver.
+    lexical_this: bool,
+    /// Capture index for that receiver, shared by all its uses and any
+    /// nested arrows that need it. No cell: a frame's receiver is immutable.
+    this_capture: Option<u16>,
     /// The function's own name and how it may be referred to from inside.
     self_name: Option<(String, SelfKind)>,
     /// Identity of the self-binding (never a source offset).
@@ -599,6 +608,8 @@ impl<'s> Lowerer<'s> {
             completion: script.then_some(0),
             strict,
             own_arguments: false,
+            lexical_this: false,
+            this_capture: None,
             self_name,
             self_key,
             captures: Vec::new(),
@@ -1195,6 +1206,26 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// Capture `this` through each intervening arrow, stopping at an
+    /// ordinary function. The parser rejects a script-level `this`, so
+    /// every lexical chain reaches an ordinary frame. Capture counts are
+    /// checked by `closure`, as for named bindings.
+    #[inline(never)]
+    fn resolve_this(&mut self, level: usize) -> Place {
+        if !self.fns[level].lexical_this {
+            return Place::This;
+        }
+        if let Some(index) = self.fns[level].this_capture {
+            return Place::Capture(index);
+        }
+        let parent = self.resolve_this(level - 1);
+        let ctx = &mut self.fns[level];
+        let index = ctx.captures.len().min(MAX_COUNT) as u16;
+        ctx.captures.push(parent);
+        ctx.this_capture = Some(index);
+        Place::Capture(index)
+    }
+
     /// The span of the identifier token `name` within `span`, which may also
     /// cover parentheses and comments around it (`( /* c */ x )`), so
     /// diagnostics point at, and quote, the name itself.
@@ -1523,6 +1554,7 @@ impl<'s> Lowerer<'s> {
         }
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().own_arguments = f.kind == FunctionKind::Ordinary;
+        self.cur_mut().lexical_this = f.kind != FunctionKind::Ordinary;
         self.function_body(f)?;
         let end = Span::new(f.span.end.saturating_sub(1), f.span.end);
         self.out().op(Opcode::Undefined, end);
@@ -2704,7 +2736,8 @@ impl<'s> Lowerer<'s> {
             ExprKind::Null => self.constant(Primitive::Null, span),
             ExprKind::String(s) => self.constant(Primitive::String(s.clone()), span),
             ExprKind::This => {
-                self.out().op(Opcode::GetThis, span);
+                let place = self.resolve_this(self.fns.len() - 1);
+                self.out().load(place, span);
                 Ok(())
             }
             ExprKind::Undefined => {

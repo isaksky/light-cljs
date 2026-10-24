@@ -3338,3 +3338,21 @@ The first three snippets in `tests/js_source.rs`
 the wrapper expressions of `research/quickjs/tests/test_language.js`, `test_eq`,
 at that revision. The test references the full QuickJS copyright and MIT notice
 on `loose_equality_with_a_boolean_left_operand` in the same file.
+
+## Arrow receiver captures (clj-quickjs-98)
+
+The parser preserves `this_allowed` through arrows, including parameter
+expressions, and resets it at ordinary-function boundaries. Script-level
+arrows retain the script's rejection until the global object exists.
+`lower::Place::This` loads an ordinary frame's receiver with `get_this`.
+`Lowerer::resolve_this` adds one value capture to each intervening arrow,
+reusing it for repeated reads and nested closures. Both lowering passes
+visit these captures identically; they need no mutable-binding facts or
+cells because a frame's receiver is immutable. Closure tracing and
+transitive publication therefore apply without new VM or heap state.
+
+QuickJS semantic reference: `research/quickjs/quickjs.c`,
+`js_parse_function_decl2` and `OP_special_object`, and
+`research/quickjs/tests/test_closure.js`, `test_arrow_function`, revision
+7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. No source or fixture text was
+copied; the tests added for this pellet are synthetic.

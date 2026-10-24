@@ -417,7 +417,7 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
         let op = Opcode::from_byte(code[pos]).unwrap();
         ops.push(op);
         pos += 1 + match op {
-            Opcode::Jump | Opcode::JumpIfFalse => 4,
+            Opcode::Jump | Opcode::JumpIfFalse | Opcode::PushCatch | Opcode::PushFinally => 4,
             Opcode::Const
             | Opcode::GetLocal
             | Opcode::SetLocal
@@ -427,6 +427,9 @@ fn all_opcodes(exe: &Executable) -> Vec<Opcode> {
             | Opcode::ThrowError
             | Opcode::Function
             | Opcode::Call
+            | Opcode::CallMethod
+            | Opcode::Construct
+            | Opcode::GetBuiltinGlobal
             | Opcode::GetCapture
             | Opcode::GetField
             | Opcode::PutField
@@ -1235,15 +1238,95 @@ fn arrow_function_values() {
         failure_at("const f = () => later;\nf();\nconst later = 1;").0,
         VmErrorKind::ReferenceError
     );
-    // `this` and `arguments` stay rejected inside arrows.
+    // An arrow inside an ordinary function captures its receiver.
     assert_eq!(
-        compile_err("const f = () => this;"),
-        (SyntaxErrorKind::Unsupported, 1, 17)
+        eval("function make() { const f = () => this; return f; } make()()"),
+        ValueView::Undefined
     );
     assert_eq!(
         compile_err("const f = (a) => arguments;"),
         (SyntaxErrorKind::Unsupported, 1, 18)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn arrows_capture_this_lexically() {
+    for src in [
+        "function f() { return (() => this)(); } f() === undefined",
+        "let r; function F() { r = (() => this)(); } const o = new F(); r === o",
+        "let r; function F() { const k = () => () => this; r = k()(); } const o = new F(); r === o",
+        "let r; function F() { r = () => this; } const o = new F(); const first = r; const p = new F(); first() === o && r() === p",
+        "function make() { return () => this; } const a = make.call(7); const o = {a: a}; a() === 7 && o.a() === 7 && a.call(8) === 7 && a.apply(9, []) === 7 && Reflect.apply(a, 10, []) === 7 && a.bind(11)() === 7",
+        "function make() { return () => { return function () { return () => this; }; }; } const a = make.call(1)().call(2); a.call(3) === 2",
+        "function make() { return (x = this) => x; } const a = make.call(7); a.call(8) === 7 && a(9) === 9",
+        "function make(a = () => this) { return a; } make.call(7)() === 7",
+        "function F() { this.a = (x = () => this) => x; } const o = new F(); o.a()() === o",
+        "function make() { return () => 1; } make()() === 1",
+        "function make(n) { return (x = this) => { const a = () => n + this + x; return a() + this; }; } make.call(7, 2)() === 23",
+        // Executable documentation examples.
+        "function f() { return () => this; } f.call(7).call(8) === 7",
+        "function f() { return (x = this) => x; } f.call(7).bind(8)() === 7",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        compile_err("const f = () => this;"),
+        (SyntaxErrorKind::Unsupported, 1, 17)
+    );
+    assert_eq!(
+        failure("function make() { return () => this; } const a = make(); new a();").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        eval(
+            "function make() { return () => this; } const a = make(); let ok = false; try { new a(); } catch (e) { ok = true; } ok"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn arrows_capture_this_by_value_for_publication() {
+    let rt = Runtime::new();
+    let apply = compile_function("function apply(f) { return f.call(99)(); }").unwrap();
+    for (src, expected) in [
+        (
+            "function make() { return () => () => this; } make()",
+            ValueView::Undefined,
+        ),
+        (
+            "function make() { return () => () => this; } make.call(7)",
+            ValueView::Number(7.0),
+        ),
+    ] {
+        let code = exe(src);
+        assert!(!all_opcodes(&code).contains(&Opcode::NewCell));
+        let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("{src}")
+        };
+        rt.publish(&f).expect("immutable this capture publishes");
+        rt.collect().unwrap();
+        let RunOutcome::Complete(v) = rt.spawn(&apply, &[&f]).unwrap().run().unwrap() else {
+            panic!("{src}")
+        };
+        assert_eq!(v.view(), expected);
+    }
+    let code = exe("function F() { return () => this; } new F()");
+    let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    let err = rt.publish(&f).unwrap_err();
+    assert!(
+        matches!(&err, PublishError::NotShareable { path, found: "object", .. } if path.to_string() == "value.capture(0)"),
+        "{err:?}"
+    );
+    // A receiver is not captured unless the arrow uses it.
+    let code = exe("function F() { return () => 1; } new F()");
+    let RunOutcome::Complete(f) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&f).unwrap();
 }
 
 /// Default parameter values (clj-quickjs-100). Two cases are adapted from
@@ -1394,8 +1477,8 @@ fn default_parameters() {
     }
     // `arguments` (clj-quickjs-97) is not in the subset yet, in defaults as
     // elsewhere. A default sees its function's `this` (clj-quickjs-116; the
-    // receiver of a method call, `undefined` for a plain call); an arrow's
-    // default still rejects it (lexical `this`, clj-quickjs-98).
+    // receiver of a method call, `undefined` for a plain call). An arrow
+    // default sees lexical `this`; only script-level arrows reject it.
     assert_eq!(
         compile_err("function f(a, b = arguments[0]) { return b; }"),
         (SyntaxErrorKind::Unsupported, 1, 19)

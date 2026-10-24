@@ -88,9 +88,9 @@ pub(super) struct Parser<'a> {
     strict: bool,
     in_function: bool,
     /// `this` is an expression here (clj-quickjs-116): inside the parameters
-    /// or body of a non-arrow function and not inside an arrow function
-    /// (an arrow's lexical `this` is clj-quickjs-98, the script top
-    /// level's is clj-quickjs-104), so both still reject it.
+    /// or body of a non-arrow function, including nested arrows whose
+    /// `this` is lexical (clj-quickjs-98). Script-level arrows still reject
+    /// it until the global object exists (clj-quickjs-104).
     this_allowed: bool,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -1362,7 +1362,6 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::FUNCTION)?;
         let start = self.tok.span.start;
-        let outer_this = std::mem::replace(&mut self.this_allowed, false);
         let (params, defaults) = if self.is_punct(Punct::LParen) {
             self.parse_formal_parameters()?
         } else {
@@ -1400,7 +1399,6 @@ impl<'a> Parser<'a> {
             (FunctionKind::ConciseArrow, vec![body], self.strict)
         };
         self.depth = saved;
-        self.this_allowed = outer_this;
         let function = Function::new(
             kind,
             None,

@@ -1188,10 +1188,9 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
 
 Deferred:
 
-- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100, below); `this`
-  (lexical `this`, clj-quickjs-98; non-arrow functions have `this` since
-  clj-quickjs-116, below), `arguments`, `new.target` and `super` (rejected
-  inside arrows).
+- `async` arrows; rest and destructuring parameters (defaults: clj-quickjs-100,
+  below), `arguments`, `new.target` and `super` (rejected inside arrows).
+  Lexical `this` is supported by clj-quickjs-98, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
 
@@ -1781,9 +1780,9 @@ Supported (`cargo test --lib frontend::tests::default_parameters`,
 Deferred:
 
 - The `arguments` object and `eval` in defaults (clj-quickjs-97,
-  -106/-109; rejected as everywhere), `this` in an arrow's default
-  (clj-quickjs-98; a non-arrow function's default sees its `this` since
-  clj-quickjs-116, below). Function metadata is supported by clj-quickjs-101, below.
+  -106/-109; rejected as everywhere). An arrow's default sees its lexical
+  `this` (clj-quickjs-98); a non-arrow function's default sees its own
+  receiver (clj-quickjs-116). Function metadata is supported by clj-quickjs-101, below.
 
 ### Legacy octal number literals in sloppy code (clj-quickjs-51)
 
@@ -1878,8 +1877,9 @@ Supported (`cargo test --test js_source method_calls_bind_this`,
 
 Deferred:
 
-- `this` at the script top level (the global object, clj-quickjs-104) and
-  an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
+- `this` at the script top level, including arrows without an enclosing
+  non-arrow function (the global object, clj-quickjs-104): `Unsupported`
+  compile errors. Arrows nested in functions capture `this` (clj-quickjs-98).
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
@@ -2400,3 +2400,19 @@ Deferred: String wrapper `length`, indices and own-key enumeration explicitly fa
 until clj-quickjs-142. Boolean wrappers, other radixes and Number constants
 remain deferred. ToObject integration for `Object(primitive)`, reflection
 on primitives and sloppy-mode `this` remains unsupported.
+
+### Lexical `this` in arrows (clj-quickjs-98)
+
+Supported (`cargo test --test js_functions arrows_capture_this`,
+`cargo test --test need an_arrow_retains_lexical_this_after_a_wait_collection_and_migration`):
+
+- An arrow's body and default parameters capture the nearest enclosing
+  ordinary function's `this` by value, through any intervening arrows.
+  The capture survives its enclosing call, collection, waits and migration.
+- Plain and method calls, `call`, `apply`, `Reflect.apply` and `bind`
+  preserve that receiver. Ordinary functions nested inside arrows have
+  their own `this`; `new` on an arrow remains a catchable TypeError.
+- The capture uses no binding cell. Publication checks its value normally:
+  shareable receivers permit publication, task-owned object receivers do not.
+- Script-level arrows still reject `this` until the global object exists
+  (clj-quickjs-104). Sloppy receiver substitution retains its existing gap.

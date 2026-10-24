@@ -861,6 +861,50 @@ fn a_method_resumes_with_the_same_this_after_a_wait_and_migration() {
     exec.shutdown(TIMEOUT).unwrap();
 }
 
+/// Synthetic fixture, not light-cljs output. The constructor has returned;
+/// only the arrow's value capture retains its receiver across the wait.
+#[test]
+fn an_arrow_retains_lexical_this_after_a_wait_collection_and_migration() {
+    let rt = Runtime::new();
+    let effects = WorkerEffects::default();
+    let exec = migrating_executor(&rt, &effects);
+    let exe = compile_script(
+        "arrow_this_need",
+        "function F() {
+           this.x = 5;
+           return () => {
+             __rt.effect(1, 1);
+             let v = __rt.need(5, 3);
+             return this.x * 100 + v + __rt.effect(1, 2);
+           };
+         }
+         const f = new F();
+         f.call({x: 99})",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    let parked = OutcomeKind::Waiting(key(&rt, NUMBER));
+    assert!(exec.wait_for(TIMEOUT, |ev| {
+        ev.iter()
+            .any(|e| e.task == Some(task.id()) && e.kind == EventKind::Released(parked))
+    }));
+    collect_on_worker(&exec, WorkerId::new(0));
+    collect_on_worker(&exec, WorkerId::new(1));
+    let request = one_request(&task, key(&rt, NUMBER));
+    assert_eq!(exec.wake(publish_number(&rt, &request, 7.0)).unwrap(), 1);
+    assert_eq!(
+        number(exec.take_outcome(task.id(), TIMEOUT).expect("an outcome")),
+        509.0
+    );
+    assert_eq!(
+        *effects.lock().unwrap(),
+        [(WorkerId::new(0), 1.0), (WorkerId::new(1), 2.0)]
+    );
+    exec.shutdown(TIMEOUT).unwrap();
+}
+
 /// A construct frame (clj-quickjs-71) is task-owned state like any frame:
 /// the constructor writes through `this` (the new object, held only by the
 /// frame's traced `this` slot), suspends at `__rt.need` on a pending cell,

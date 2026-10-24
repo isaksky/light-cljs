@@ -2007,26 +2007,22 @@ fn this_expressions() {
         ast("() => function () { return this; }"),
         "(arrow () => (function - () (return this)))"
     );
-    // Still rejected with the existing kind and message at the script top
-    // level (clj-quickjs-104) and inside arrows (lexical `this`,
-    // clj-quickjs-98), even an arrow nested in a function.
+    // Script-level arrows inherit the unsupported global `this`.
     rejects_with("this;", Unsupported, 1, 1, "`this`");
     rejects_with("x = this.y;", Unsupported, 1, 5, "`this`");
     rejects_with("() => this", Unsupported, 1, 7, "`this`");
     rejects_with("(a = this) => a", Unsupported, 1, 6, "`this`");
-    rejects_with(
-        "function f() { return () => this; }",
-        Unsupported,
-        1,
-        29,
-        "`this`",
+    assert_eq!(
+        ast("function f() { return () => this; }"),
+        "(function f () (return (arrow () => this)))"
     );
-    rejects_with(
-        "function f() { let g = (a) => { return this; }; }",
-        Unsupported,
-        1,
-        40,
-        "`this`",
+    assert_eq!(
+        ast("function f() { let g = (a) => { return this; }; }"),
+        "(function f () (let (g (arrow (a) (return this)))))"
+    );
+    assert_eq!(
+        ast("function f() { return (a = this) => () => a; }"),
+        "(function f () (return (arrow (a=this) => (arrow () => a))))"
     );
     // After an arrow or function ends, the enclosing context applies again.
     rejects_with("function f() {} this;", Unsupported, 1, 17, "`this`");
@@ -2399,8 +2395,8 @@ fn arrow_functions_and_asi() {
     rejects("arguments => 1", ReservedWord, 1, 1);
     rejects("undefined => 1", ReservedWord, 1, 1);
     rejects("yield => 1", ReservedWord, 1, 1);
-    // No `arguments` in the subset, inside arrows too; an arrow's lexical
-    // `this` is not supported yet (clj-quickjs-98).
+    // No `arguments` in the subset, inside arrows too. Script-level
+    // arrows inherit the unsupported global `this` (clj-quickjs-104).
     rejects_with("() => this", Unsupported, 1, 7, "`this`");
     rejects_with(
         "() => { return arguments; }",
